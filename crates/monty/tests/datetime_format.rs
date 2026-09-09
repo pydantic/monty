@@ -85,3 +85,30 @@ fn time_strptime_is_not_implemented() {
     "#
     );
 }
+
+/// `date.strptime` is CPython 3.14's other new `strptime`, also unimplemented —
+/// and `datetime.strptime` is not a substitute for a time-only format, since it
+/// requires the string to carry a date. Both are one-sided, so neither can live
+/// in `test_cases/`. See limitations/datetime.md.
+#[test]
+fn strptime_gaps_on_date_and_datetime() {
+    assert_snapshot!(
+        run_err("from datetime import date\ndate.strptime('2020-01-01', '%Y-%m-%d')"),
+        @r#"
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        date.strptime('2020-01-01', '%Y-%m-%d')
+    AttributeError: type object 'datetime.date' has no attribute 'strptime'
+    "#
+    );
+    assert_snapshot!(
+        run_err("from datetime import datetime\ndatetime.strptime('12:30', '%H:%M')"),
+        @r#"
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        datetime.strptime('12:30', '%H:%M')
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ValueError: time data '12:30' does not match format '%H:%M'
+    "#
+    );
+}

@@ -11,7 +11,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::HeapData,
     resource_checks::check_div_size,
-    types::{LongInt, allocate_tuple},
+    types::{LongInt, allocate_tuple, timedelta},
     value::{Value, floor_divmod},
 };
 
@@ -113,6 +113,25 @@ pub fn builtin_divmod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                     vm.heap,
                 ))
             }
+        }
+        // `divmod(td, td)` pairs the `//` count with the `%` remainder.
+        (Value::Ref(id), other) if matches!(vm.heap.get(*id), HeapData::TimeDelta(_)) => {
+            let Some(rhs) = timedelta::rhs_microseconds(other, vm)? else {
+                let a_type = a.py_type_name(vm);
+                let b_type = b.py_type_name(vm);
+                return Err(SimpleException::new_msg(
+                    ExcType::TypeError,
+                    format!("unsupported operand type(s) for divmod(): '{a_type}' and '{b_type}'"),
+                )
+                .into());
+            };
+            let HeapData::TimeDelta(lhs) = vm.heap.get(*id) else {
+                unreachable!("matched as a TimeDelta above")
+            };
+            let (quotient, remainder) = timedelta::floor_div_rem(timedelta::total_microseconds(lhs), rhs);
+            let quot = timedelta::int_from_microseconds(quotient, vm.heap);
+            let rem = timedelta::allocate_micros(remainder, vm.heap);
+            Ok(allocate_tuple(smallvec![quot, rem], vm.heap))
         }
         _ => {
             let a_type = a.py_type_name(vm);

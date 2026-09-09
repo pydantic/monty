@@ -20,7 +20,7 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{CmpOrder, LazyHeapSet, PyTrait, Type, date, datetime, str::allocate_string},
+    types::{CmpOrder, LazyHeapSet, PyTrait, Type, date, datetime, long_int, str::allocate_string},
     value::{EitherStr, Value},
 };
 
@@ -34,7 +34,7 @@ pub(crate) const SECONDS_PER_HOUR: i32 = 3_600;
 pub(crate) const SECONDS_PER_MINUTE: i32 = 60;
 pub(crate) const MICROSECONDS_PER_SECOND: i128 = 1_000_000;
 const MILLISECONDS_PER_SECOND: i128 = 1_000;
-const DAY_MICROSECONDS: i128 = (DAY_SECONDS as i128) * MICROSECONDS_PER_SECOND;
+pub(crate) const DAY_MICROSECONDS: i128 = (DAY_SECONDS as i128) * MICROSECONDS_PER_SECOND;
 const HOUR_MICROSECONDS: i128 = (SECONDS_PER_HOUR as i128) * MICROSECONDS_PER_SECOND;
 const MINUTE_MICROSECONDS: i128 = (SECONDS_PER_MINUTE as i128) * MICROSECONDS_PER_SECOND;
 
@@ -169,6 +169,52 @@ pub(crate) fn from_total_microseconds(total_microseconds: i128) -> RunResult<Tim
     let delta = ChronoTimeDelta::new(seconds, nanos)
         .ok_or_else(|| SimpleException::new_msg(ExcType::OverflowError, "timedelta value out of range"))?;
     Ok(TimeDelta(delta))
+}
+
+/// Total microseconds of a `timedelta` divisor, or `None` if `other` is not one.
+///
+/// The zero check lives here so `/`, `//`, `%` and `divmod` all raise the same
+/// `ZeroDivisionError` rather than each repeating it.
+pub(crate) fn rhs_microseconds(other: &Value, vm: &VM<'_>) -> RunResult<Option<i128>> {
+    let Value::Ref(id) = other else {
+        return Ok(None);
+    };
+    let HeapData::TimeDelta(rhs) = vm.heap.get(*id) else {
+        return Ok(None);
+    };
+    let total = total_microseconds(rhs);
+    if total == 0 {
+        return Err(ExcType::zero_division().into());
+    }
+    Ok(Some(total))
+}
+
+/// Wraps a `td // td` quotient as a Python int.
+///
+/// Dividing by `timedelta.resolution` counts every microsecond in the range, so
+/// the quotient reaches ~8.6e19 and overflows `i64` — hence the `LongInt` arm.
+pub(crate) fn int_from_microseconds(quotient: i128, heap: &Heap) -> Value {
+    match i64::try_from(quotient) {
+        Ok(quotient) => Value::Int(quotient),
+        Err(_) => long_int::wide_i128_into_value(quotient, heap),
+    }
+}
+
+/// Python's floor division and remainder for `i128`.
+///
+/// Rust's `/` truncates toward zero and `div_euclid` forces a positive
+/// remainder; Python floors and gives the remainder the *divisor's* sign, so
+/// `3 // -2` is `-2` remainder `-1`. Callers must reject a zero divisor first;
+/// both operands are microsecond counts, far inside `i128`, so neither step
+/// can overflow.
+pub(crate) fn floor_div_rem(total: i128, divisor: i128) -> (i128, i128) {
+    let quotient = total / divisor;
+    let remainder = total % divisor;
+    if remainder != 0 && (remainder < 0) != (divisor < 0) {
+        (quotient - 1, remainder + divisor)
+    } else {
+        (quotient, remainder)
+    }
 }
 
 /// Allocates a `timedelta` from a microsecond count known to be in range.
@@ -429,6 +475,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
     }
 
     fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        // `td / td` is a plain ratio, so it yields a float rather than a duration.
+        if let Some(rhs) = rhs_microseconds(other, vm)? {
+            let ratio = total_microseconds(self.get(vm.heap)) as f64 / rhs as f64;
+            return Ok(Some(Value::Float(ratio)));
+        }
         let divisor = match other {
             Value::Int(0) | Value::Bool(false) => return Err(ExcType::zero_division().into()),
             Value::Int(value) => i128::from(*value),
@@ -442,6 +493,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
     }
 
     fn py_floordiv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        // `td // td` counts whole divisors, so it yields an int.
+        if let Some(rhs) = rhs_microseconds(other, vm)? {
+            let (quotient, _) = floor_div_rem(total_microseconds(self.get(vm.heap)), rhs);
+            return Ok(Some(int_from_microseconds(quotient, vm.heap)));
+        }
         let divisor = match other {
             Value::Int(0) | Value::Bool(false) => return Err(ExcType::zero_division().into()),
             Value::Int(value) => i128::from(*value),
@@ -449,7 +505,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
             _ => return Ok(None),
         };
         let total = total_microseconds(self.get(vm.heap));
-        let result = from_total_microseconds(total.div_euclid(divisor))?;
+        let (quotient, _) = floor_div_rem(total, divisor);
+        let result = from_total_microseconds(quotient)?;
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result)))))
+    }
+
+    fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        // Only defined against another timedelta; `td % int` is a TypeError in
+        // CPython, so anything else falls through to the caller's error.
+        let Some(rhs) = rhs_microseconds(other, vm)? else {
+            return Ok(None);
+        };
+        let (_, remainder) = floor_div_rem(total_microseconds(self.get(vm.heap)), rhs);
+        let result = from_total_microseconds(remainder)?;
         Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result)))))
     }
 

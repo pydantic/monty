@@ -20,9 +20,11 @@ use crate::{
         instance::class_name,
         long_int::INT_MAX_STR_DIGITS,
         str::StringRepr,
-        time, timedelta,
+        time,
+        timedelta::{self, DAY_MICROSECONDS, MAX_TIMEDELTA_DAYS, MIN_TIMEDELTA_DAYS},
+        timezone::{self, MAX_TIMEZONE_CONSTANT_SECONDS},
     },
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// Represents the Python type of a value.
@@ -519,6 +521,9 @@ impl Type {
             (Self::Object, m) if vm.interns.get_str(m) == "__setattr__" => {
                 builtin_object_setattr(vm, args).map(AttrCallResult::Value)
             }
+            (Self::DateTime, m) if m == StaticStrings::Combine => {
+                datetime::class_combine(vm, args).map(AttrCallResult::Value)
+            }
             (Self::Time, m) if m == StaticStrings::Fromisoformat => {
                 time::class_fromisoformat(vm, args).map(AttrCallResult::Value)
             }
@@ -531,6 +536,42 @@ impl Type {
                 ))
             }
         }
+    }
+
+    /// Resolves a class-level constant on a builtin type object (`time.max`,
+    /// `timezone.utc`, ...), returning `None` so the caller can fall through to
+    /// its own `AttributeError`.
+    ///
+    /// Every lookup allocates a fresh object, so `date.min is date.min` is
+    /// `False` where CPython caches (see limitations/datetime.md).
+    pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+        // One microsecond short of `MAX_TIMEDELTA_DAYS + 1` days, which
+        // normalizes to CPython's `timedelta(days=999999999, seconds=86399,
+        // microseconds=999999)`.
+        const MAX_TIMEDELTA_MICROS: i128 = ((MAX_TIMEDELTA_DAYS as i128) + 1) * DAY_MICROSECONDS - 1;
+        const MIN_TIMEDELTA_MICROS: i128 = (MIN_TIMEDELTA_DAYS as i128) * DAY_MICROSECONDS;
+
+        Some(match (self, attr.static_string()?) {
+            (Self::Date, StaticStrings::Min) => date::allocate_ymd(1, 1, 1, vm.heap),
+            (Self::Date, StaticStrings::Max) => date::allocate_ymd(9999, 12, 31, vm.heap),
+            (Self::Date, StaticStrings::Resolution) => timedelta::allocate_micros(DAY_MICROSECONDS, vm.heap),
+            (Self::DateTime, StaticStrings::Min) => datetime::allocate_naive(1, 1, 1, 0, 0, 0, 0, vm.heap),
+            (Self::DateTime, StaticStrings::Max) => {
+                datetime::allocate_naive(9999, 12, 31, 23, 59, 59, 999_999, vm.heap)
+            }
+            (Self::Time, StaticStrings::Min) => time::allocate_naive(0, 0, 0, 0, vm.heap),
+            (Self::Time, StaticStrings::Max) => time::allocate_naive(23, 59, 59, 999_999, vm.heap),
+            (Self::TimeDelta, StaticStrings::Min) => timedelta::allocate_micros(MIN_TIMEDELTA_MICROS, vm.heap),
+            (Self::TimeDelta, StaticStrings::Max) => timedelta::allocate_micros(MAX_TIMEDELTA_MICROS, vm.heap),
+            // The three microsecond-resolution classes share one constant.
+            (Self::DateTime | Self::Time | Self::TimeDelta, StaticStrings::Resolution) => {
+                timedelta::allocate_micros(1, vm.heap)
+            }
+            (Self::TimeZone, StaticStrings::Utc) => vm.heap.get_timezone_utc(),
+            (Self::TimeZone, StaticStrings::Min) => timezone::allocate_offset(-MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
+            (Self::TimeZone, StaticStrings::Max) => timezone::allocate_offset(MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
+            _ => return None,
+        })
     }
 
     /// Calls this type as a constructor (e.g., `list(x)`, `int(x)`).

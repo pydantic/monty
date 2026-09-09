@@ -1120,7 +1120,7 @@ pub enum StaticStrings {
     /// `tzname()` method of `time`, `datetime` and `timezone`. (`dst()` reuses
     /// the `Dst` variant already interned for the `os` kwarg of the same name.)
     Tzname,
-    /// `timespec` keyword of `time.isoformat()`.
+    /// `timespec` keyword of `time.isoformat()` and `datetime.isoformat()`.
     Timespec,
     /// `functools.partial` type.
     Partial,
@@ -1204,6 +1204,18 @@ pub enum StaticStrings {
     /// `header` parameter of the `binascii` quoted-printable pair.
     #[strum(serialize = "header")]
     Header,
+
+    // `datetime.combine()`. Appended at the enum end like every block before
+    // it: discriminants are serialized `StringId`s, so mid-enum insertion
+    // would shift every later id.
+    /// `datetime.combine()` class method.
+    Combine,
+    /// `min` class constant of the `datetime` classes.
+    Min,
+    /// `max` class constant of the `datetime` classes.
+    Max,
+    /// `resolution` class constant of the `datetime` classes.
+    Resolution,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.
