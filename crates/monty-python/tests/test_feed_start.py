@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,7 @@ from pydantic_monty import (
     AsyncFutureSnapshot,
     AsyncMonty,
     AsyncNameLookupSnapshot,
+    ClassInstance,
     FunctionSnapshot,
     FutureSnapshot,
     Monty,
@@ -25,6 +28,14 @@ from pydantic_monty import (
 )
 
 
+@dataclass
+class _Counter:
+    value: int
+
+    def add(self, n: int) -> int:
+        return self.value + n
+
+
 def test_function_call_suspends_then_completes(session: MontySession):
     snap = session.feed_start('x = add(2, 3)\nx * 10')
     assert isinstance(snap, FunctionSnapshot)
@@ -32,7 +43,7 @@ def test_function_call_suspends_then_completes(session: MontySession):
     assert snap.args == snapshot((2, 3))
     assert snap.kwargs == snapshot({})
     assert snap.is_os_function == snapshot(False)
-    assert snap.is_method_call == snapshot(False)
+    assert snap.object_id == snapshot(None)
     done = snap.resume({'return_value': 5})
     assert isinstance(done, MontyComplete)
     assert done.output == snapshot(50)
@@ -42,6 +53,32 @@ def test_kwargs_surface(session: MontySession):
     snap = session.feed_start('greet(name="ada", times=2)')
     assert isinstance(snap, FunctionSnapshot)
     assert snap.kwargs == snapshot({'name': 'ada', 'times': 2})
+
+
+def test_method_call_snapshot_has_object_id(session: MontySession):
+    # a sandbox method call on a host instance surfaces as a FunctionSnapshot
+    # whose object_id is the receiver's session uuid (not included in args)
+    counter = _Counter(value=5)
+    snap = session.feed_start('c.add(3)', inputs={'c': ClassInstance(counter, allowed_methods='all')})
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.function_name == snapshot('add')
+    assert isinstance(snap.object_id, uuid.UUID)
+    assert snap.args == snapshot((3,))
+    done = snap.resume_auto()
+    assert isinstance(done, MontyComplete)
+    assert done.output == snapshot(8)
+
+
+def test_lazy_attr_name_lookup_snapshot_has_object_id(session: MontySession):
+    # a lazy attribute read surfaces as a NameLookupSnapshot scoped to the instance
+    counter = _Counter(value=7)
+    snap = session.feed_start('c.value', inputs={'c': ClassInstance(counter, lazy_attrs='all')})
+    assert isinstance(snap, NameLookupSnapshot)
+    assert snap.variable_name == snapshot('value')
+    assert isinstance(snap.object_id, uuid.UUID)
+    done = snap.resume_auto()
+    assert isinstance(done, MontyComplete)
+    assert done.output == snapshot(7)
 
 
 def test_resume_with_exception_instance(session: MontySession):

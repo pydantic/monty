@@ -1242,6 +1242,35 @@ except TypeError as e:
     assert str(e) == "argument for function given by name ('month') and position (2)", f'dt dup month: {e}'
 
 
+# === reprs and error messages carry the `datetime.` prefix, `__name__` does not ===
+
+assert repr(datetime.date) == "<class 'datetime.date'>"
+assert repr(datetime.datetime) == "<class 'datetime.datetime'>"
+assert repr(datetime.time) == "<class 'datetime.time'>"
+assert repr(datetime.timedelta) == "<class 'datetime.timedelta'>"
+assert repr(datetime.timezone) == "<class 'datetime.timezone'>"
+
+assert datetime.date.__name__ == 'date'
+assert datetime.datetime.__name__ == 'datetime'
+assert datetime.time.__name__ == 'time'
+assert datetime.timedelta.__name__ == 'timedelta'
+assert datetime.timezone.__name__ == 'timezone'
+
+_values = [
+    (datetime.date(2024, 1, 1), 'datetime.date'),
+    (datetime.datetime(2024, 1, 1), 'datetime.datetime'),
+    (datetime.time(1, 2), 'datetime.time'),
+    (datetime.timedelta(days=1), 'datetime.timedelta'),
+    (datetime.timezone.utc, 'datetime.timezone'),
+]
+for _value, _name in _values:
+    try:
+        _value + 1
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == f"unsupported operand type(s) for +: '{_name}' and 'int'", f'operand type name: {e}'
+
+
 # === GC must follow datetime.tzinfo_ref ===
 # Regression: aware datetimes retain the tzinfo as a private heap reference,
 # so the GC mark phase must follow it. Without that, a cycle-triggered

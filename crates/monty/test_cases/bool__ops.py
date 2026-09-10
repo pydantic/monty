@@ -1,3 +1,5 @@
+import itertools
+
 # === Boolean 'and' operator ===
 # returns first falsy value, or last value if all truthy
 assert (5 and 3) == 3
@@ -34,3 +36,24 @@ assert type(True ^ False) == bool
 assert type(True & 1) == int
 assert type(1 | False) == int
 assert type(True ^ 1) == int
+
+# === bool is accepted wherever an integer argument is ===
+# `bool` is an `int` subclass in CPython, so every "cannot be interpreted as an
+# integer" consumer takes it directly.
+assert list(range(True)) == [0]
+assert list(range(False, True)) == [0]
+assert list(range(False, True, True)) == [0]
+assert 'x'.center(True) == 'x'
+assert 'x'.ljust(True) == 'x'
+assert 'x'.rjust(True) == 'x'
+assert 'abcabc'.find('b', True) == 1
+assert b'abcabc'.find(b'b', True) == 1
+assert 'a\tb'.expandtabs(True) == 'a b'
+assert list(itertools.repeat('x', True)) == ['x']
+assert round(1.234, True) == 1.2
+
+# The same holds for indexing and slicing, which take a separate path.
+assert [10, 20, 30][True] == 20
+assert [10, 20, 30][False] == 10
+assert [1, 2, 3, 4][True:] == [2, 3, 4]
+assert [1, 2, 3, 4][:True] == [1]

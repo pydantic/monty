@@ -24,6 +24,19 @@ export interface MontyDateTime {
   timezoneName?: string
 }
 
+/** Marker object representing a Python `datetime.time`. */
+export interface MontyTime {
+  __monty_type__: 'Time'
+  hour: number
+  minute: number
+  second: number
+  microsecond: number
+  offsetSeconds?: number
+  timezoneName?: string
+  /** Disambiguates a repeated wall clock; Monty stores it but never reads it. */
+  fold?: number
+}
+
 /** Marker object representing a Python `datetime.timedelta`. */
 export interface MontyTimeDelta {
   __monty_type__: 'TimeDelta'

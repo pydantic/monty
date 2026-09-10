@@ -21,12 +21,10 @@ assert mut_point.active == True
 result = setattr(mut_point, 'x', 999)
 assert result == None
 
-frozen_point = make_point()
-try:
-    setattr(frozen_point, 'x', 10)
-    assert False, 'setattr on frozen dataclass should raise AttributeError'
-except AttributeError as e:
-    assert str(e) == "cannot assign to field 'x'", str(e)
+# setattr on any host instance mutates the local copy only
+other_point = make_point()
+setattr(other_point, 'x', 10)
+assert other_point.x == 10
 
 try:
     setattr()

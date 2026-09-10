@@ -82,6 +82,10 @@ if is_monty:
 # round edge cases with extreme values
 assert isinstance(round(1e15), int)
 assert isinstance(round(-1e15), int)
+assert round(9.223372036854776e18) == 9223372036854775808
+assert round(1e20) == 100000000000000000000
+assert round(-1e20) == -100000000000000000000
+assert round(1.7976931348623157e308) == (2**53 - 1) * 2**971
 assert round(0.0) == 0
 assert round(-0.0) == 0
 

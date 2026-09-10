@@ -61,7 +61,6 @@ result = add(1, '2')
     3 |
     4 | result = add(1, '2')
       |                 ^^^ Expected `int`, found `Literal["2"]`
-      |
     info: Function defined here
      --> main.py:1:5
       |
@@ -106,7 +105,6 @@ result = add(1, '2')";
     3 |
     4 | result = add(1, '2')
       |                 ^^^ Expected `int`, found `Literal["2"]`
-      |
     info: Function defined here
      --> main.py:1:5
       |
@@ -380,6 +378,39 @@ fn deeply_nested_parentheses_do_not_stack_overflow() {
     );
 }
 
+/// Regression test for issue #799: attribute access on a `TypedDict` value must
+/// be rejected (only subscript access works at runtime). ty synthesizes
+/// TypedDict members from `_typeshed._type_checker_internals.TypedDictFallback`;
+/// if the vendored typeshed drops that file, attribute access silently resolves
+/// to `Unknown` and this test fails with no diagnostics at all.
+#[test]
+fn typed_dict_attribute_access_is_rejected() {
+    let stubs = "\
+from typing import TypedDict
+
+class Change(TypedDict):
+    field_diffs: dict[str, object]
+
+def get_change() -> Change: ...
+";
+    let code = "\
+change = get_change()
+ok = change['field_diffs']
+bad = change.field_diffs
+";
+    let mut checker = TypeChecker::default();
+    let diagnostics = checker
+        .run(
+            &SourceFile::new(code, "main.py"),
+            Some(&SourceFile::new(stubs, "type_stubs.pyi")),
+            concise(),
+        )
+        .unwrap()
+        .expect("attribute access on a TypedDict must be a type error")
+        .to_string();
+    assert_snapshot!(diagnostics, @"main.py:3:7: error[unresolved-attribute] Object of type `Change` has no attribute `field_diffs`");
+}
+
 /// The narrowed `collections` stub must expose exactly what Monty implements at
 /// runtime — importing the four implemented names type-checks clean.
 #[test]
@@ -403,34 +434,29 @@ fn collections_unimplemented_names_are_unresolved() {
       |
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
       |                         ^^^^^^^^^^^
-      |
 
     error[unresolved-import]: Module `collections` has no member `ChainMap`
      --> main.py:1:38
       |
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
       |                                      ^^^^^^^^
-      |
 
     error[unresolved-import]: Module `collections` has no member `UserDict`
      --> main.py:1:48
       |
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
       |                                                ^^^^^^^^
-      |
 
     error[unresolved-import]: Module `collections` has no member `UserList`
      --> main.py:1:58
       |
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
       |                                                          ^^^^^^^^
-      |
 
     error[unresolved-import]: Module `collections` has no member `UserString`
      --> main.py:1:68
       |
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
       |                                                                    ^^^^^^^^^^
-      |
     ");
 }

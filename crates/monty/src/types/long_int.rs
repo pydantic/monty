@@ -24,7 +24,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_long_int},
-    heap::{Heap, HeapData, HeapId, HeapRead},
+    heap::{Heap, HeapData, HeapObjectRead, HeapRead},
     resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
     types::{LazyHeapSet, PyTrait, Type, str::allocate_string},
     value::{Value, eq_bigint},
@@ -81,6 +81,25 @@ impl LongInt {
             let long_int = Self::new(BigInt::from(value));
             let heap_id = heap.allocate(HeapData::LongInt(long_int));
             Value::Ref(heap_id)
+        }
+    }
+
+    /// Truncates a float into its most compact Python integer representation.
+    ///
+    /// Finite values outside the immediate range become arbitrary-precision integers;
+    /// infinity and NaN raise the exceptions required by Python.
+    pub(crate) fn value_from_f64(value: f64, heap: &Heap) -> RunResult<Value> {
+        if value.is_infinite() {
+            Err(ExcType::overflow_float_infinity_to_integer())
+        } else if value.is_nan() {
+            Err(ExcType::value_error_float_nan_to_integer())
+        } else if value >= i64::MIN as f64 && value < i64::MAX as f64 {
+            // `i64::MAX as f64` rounds up to 2**63, so the upper bound is strict.
+            #[expect(clippy::cast_possible_truncation, reason = "finite value is within the i64 range")]
+            Ok(Value::Int(value as i64))
+        } else {
+            let value = BigInt::from_f64(value).expect("finite f64 converts to BigInt");
+            Ok(Self::new(value).into_value(heap))
         }
     }
 
@@ -376,7 +395,7 @@ fn int_max_str_digits_threshold() -> &'static BigInt {
 
 // === Trait Implementations ===
 
-impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Int
     }
@@ -389,11 +408,17 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         Ok(!self.get(vm.heap).is_zero())
     }
 
+    /// A `LongInt` *is* an int, so it indexes as itself — the caller narrows it
+    /// (or reports the overflow its own way).
+    fn py_index_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(Some(self.clone_value(vm.heap)))
+    }
+
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(eq_bigint(self.get(vm.heap).inner(), other, vm))
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         Ok(Some(self.get(vm.heap).hash()))
     }
 
@@ -409,7 +434,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         Ok(allocate_string(value.to_string(), vm.heap))
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let lhs = self.get(vm.heap);
         let result = match other {
             Value::Int(rhs) => lhs.inner() + rhs,
@@ -423,26 +448,23 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
 
     fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         // `+` is commutative here, and the id is unused by the direct form.
-        self.py_add_impl(other, vm, None)
+        self.py_add_impl(other, vm)
     }
 
-    fn py_neg_impl(&self, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let negated = -LongInt::new(self.get(vm.heap).inner().clone());
         // A negated LongInt may fit back in an `i64`, which `into_value` demotes.
         Ok(Some(negated.into_value(vm.heap)))
     }
 
-    fn py_pos_impl(&self, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_pos_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         // `+x` on an int is the identity, so hand back this same LongInt rather
         // than allocating a copy of its digits. The caller owns the returned
         // value, hence the extra reference.
-        Ok(self_id.map(|id| {
-            vm.heap.inc_ref(id);
-            Value::Ref(id)
-        }))
+        Ok(Some(self.clone_value(vm.heap)))
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let lhs = self.get(vm.heap);
         let result = match other {
             Value::Int(rhs) => lhs.inner() - rhs,
@@ -612,7 +634,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         }
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| lhs & rhs))
     }
 
@@ -620,7 +642,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| rhs & lhs))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| lhs | rhs))
     }
 

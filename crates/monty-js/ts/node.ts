@@ -3,6 +3,15 @@
 
 export { Monty, type CheckoutOptions, type MontyOptions, type ResourceLimits } from './pool.js'
 export {
+  ClassInstance,
+  ClassType,
+  MontyClassProxy,
+  type AttrPolicy,
+  type BaseWrapperOptions,
+  type ClassInstanceOptions,
+  type ClassTypeOptions,
+} from './classInstance.js'
+export {
   FunctionSnapshot,
   FutureSnapshot,
   MontyComplete,
@@ -38,15 +47,16 @@ export {
   type MontyException,
   MontyFileHandle,
   type MontyFileHandleOptions,
+  type MontyTime,
   type MontyTimeDelta,
   type MontyTimeZone,
 } from './types.js'
 export { findMontyBinary } from './binary.js'
 export {
-  _installTelemetryAdapter,
-  type MontyTelemetryAdapter,
-  type TelemetryEvent,
-  type TelemetryParentContext,
-  type TelemetryTimestamp,
+  flushTelemetry,
+  instrumentTelemetry,
+  MontyInstrumentation,
+  type MontyInstrumentationConfig,
+  type TelemetryComponents,
 } from './telemetry.js'
 export { MAX_VALUE_DEPTH } from '../native-addon.js'

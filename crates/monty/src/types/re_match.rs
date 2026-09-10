@@ -18,7 +18,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapRead},
+    heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, allocate_tuple,
@@ -309,7 +309,7 @@ impl ReMatch {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::ReMatch
     }
@@ -348,13 +348,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         }
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let result = match attr.static_string() {
             Some(StaticStrings::Group) => call_group(self, args, vm)?,
             Some(StaticStrings::Groups) => {
@@ -380,9 +374,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
                 let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
                 self.get(vm.heap).get_span(n, vm)?
             }
-            _ => {
-                return Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns)));
-            }
+            _ => return Err(ExcType::attribute_error_method(Type::ReMatch, attr, args, vm)),
         };
         Ok(CallResult::Value(result))
     }

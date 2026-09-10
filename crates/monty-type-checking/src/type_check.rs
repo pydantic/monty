@@ -13,7 +13,7 @@ use ruff_db::{
 };
 use ruff_text_size::{TextRange, TextSize};
 use salsa::Setter as _;
-use ty_python_semantic::check_file_unwrap;
+use ty_python_semantic::{Db as _, check_file_unwrap};
 
 use crate::db::{MemoryDb, SRC_ROOT};
 
@@ -37,6 +37,7 @@ impl<'a> SourceFile<'a> {
 pub struct TypeChecker {
     db: MemoryDb,
     touched_files: Vec<TouchedRootFile>,
+    next_revision: u128,
 }
 
 impl TypeChecker {
@@ -86,7 +87,7 @@ impl TypeChecker {
         // and unsupported-syntax errors are included — otherwise malformed input
         // (e.g. deeply nested parentheses that ruff's parser rejects) would silently
         // type-check clean.
-        let mut diagnostics = check_file_unwrap(&self.db, main_file);
+        let mut diagnostics = check_file_unwrap(&self.db, self.db.program_file(main_file));
         diagnostics.retain(filter_diagnostics);
 
         if diagnostics.is_empty() {
@@ -176,9 +177,10 @@ impl TypeChecker {
             }
             current = path.parent();
         }
+        self.next_revision = self.next_revision.wrapping_add(1);
         for file in files {
-            let next = FileRevision::new(file.revision(&self.db).as_u128() + 1);
-            file.set_revision(&mut self.db).to(next);
+            file.set_revision(&mut self.db)
+                .to(FileRevision::new(self.next_revision));
         }
     }
 
@@ -270,7 +272,7 @@ impl fmt::Display for TypeCheckingDiagnostics<'_> {
 fn filter_diagnostics(d: &Diagnostic) -> bool {
     !(matches!(d.id(), DiagnosticId::InvalidSyntax)
         && matches!(
-            d.primary_message(),
+            d.headline_message(),
             "`await` statement outside of a function" | "`await` outside of an asynchronous function"
         ))
 }

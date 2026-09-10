@@ -11,7 +11,9 @@ members = [
     "crates/monty-wasm-runtime",
     "crates/monty-python",
     "crates/monty-js",
+    "crates/monty-apidoc",
     "crates/monty-datatest",
+    "crates/monty-doctest",
     "crates/monty-bench",
     "crates/monty-type-checking",
     "crates/monty-typeshed",
@@ -22,7 +24,7 @@ default-members = ["crates/monty-runtime"]
 
 [workspace.package]
 edition = "2024"
-version = "0.0.21"
+version = "0.0.23"
 rust-version = "1.95"
 license = "MIT"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
@@ -58,33 +60,29 @@ strip = false
 # rejects path-only dependencies). These versions MUST be kept in lockstep with
 # `workspace.package.version` above and bumped together on each release — see
 # RELEASING.md.
-monty = { path = "crates/monty", version = "0.0.21" }
-monty-types = { path = "crates/monty-types", version = "0.0.21" }
-monty-alloc = { path = "crates/monty-alloc", version = "0.0.21" }
-monty-fs = { path = "crates/monty-fs", version = "0.0.21" }
-monty-macros = { path = "crates/monty-macros", version = "0.0.21" }
-monty-proto = { path = "crates/monty-proto", version = "0.0.21" }
-monty-pool = { path = "crates/monty-pool", version = "0.0.21" }
-monty-type-checking = { path = "crates/monty-type-checking", version = "0.0.21" }
-monty-typeshed = { path = "crates/monty-typeshed", version = "0.0.21" }
+monty = { path = "crates/monty", version = "0.0.23" }
+monty-types = { path = "crates/monty-types", version = "0.0.23" }
+monty-alloc = { path = "crates/monty-alloc", version = "0.0.23" }
+monty-fs = { path = "crates/monty-fs", version = "0.0.23" }
+monty-macros = { path = "crates/monty-macros", version = "0.0.23" }
+monty-proto = { path = "crates/monty-proto", version = "0.0.23" }
+monty-pool = { path = "crates/monty-pool", version = "0.0.23" }
+monty-type-checking = { path = "crates/monty-type-checking", version = "0.0.23" }
+monty-typeshed = { path = "crates/monty-typeshed", version = "0.0.23" }
 # ruff, ty and related crates
-ruff_python_parser = "0.0.3"
-ruff_python_stdlib = "0.0.3"
-ruff_python_ast = "0.0.3"
-ruff_python_codegen = "0.0.3"
-ruff_source_file = "0.0.3"
-ruff_text_size = "0.0.3"
-ruff_db = { version="0.0.3" ,features = ["serde"] }
-# ty_python_semantic, ty_python_core and ty_vendored are only published at 0.0.2,
-# but those 0.0.2 crates depend on the 0.0.3 line of the ruff crates and on
-# ty_module_resolver 0.0.3, so the lower-level pins must be 0.0.3 to avoid two
-# incompatible copies of each crate ending up in the dependency tree.
-ty_python_semantic = "0.0.2"
-ty_python_core = "0.0.2"
-ty_module_resolver = "0.0.3"
-ty_vendored = "0.0.2"
+ruff_python_parser = "0.0.9"
+ruff_python_stdlib = "0.0.9"
+ruff_python_ast = "0.0.9"
+ruff_python_codegen = "0.0.9"
+ruff_source_file = "0.0.9"
+ruff_text_size = "0.0.9"
+ruff_db = { version = "0.0.9", features = ["serde"] }
+ty_python_semantic = "0.0.9"
+ty_python_core = "0.0.9"
+ty_module_resolver = "0.0.9"
+ty_vendored = "0.0.9"
 # salsa version matches the version ruff uses
-salsa = { version="0.27.0", default-features = false, features = [
+salsa = { version = "0.28.2", default-features = false, features = [
     "compact_str",
     "macros",
     "salsa_unstable",
@@ -159,8 +157,11 @@ rustls = { version = "0.23", features = ["aws_lc_rs"] }
 # Async runtime. Only the version is pinned here — tokio has no default
 # features and each consumer needs a very different slice of it.
 tokio = { version = "1" }
-# Feature-free: monty-pool builds spans only, while monty-runtime adds its exporter.
+# Feature-free: monty-pool builds telemetry only, while monty-runtime adds its network exporter.
 logfire = { version = "0.12", default-features = false }
+# Canonical OTLP batches cross the Python and Node extension boundaries after
+# Rust's metrics SDK has aggregated them.
+opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "metrics"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

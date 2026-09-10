@@ -8,7 +8,7 @@
 //! its body is compiled to bytecode and a `Function` struct is created. All compiled
 //! functions are collected and returned along with the module code.
 
-use std::{borrow::Cow, mem};
+use std::borrow::Cow;
 
 use monty_types::{MontyException, StackFrame};
 
@@ -28,7 +28,7 @@ use crate::{
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
-    intern::{Interns, StringId},
+    intern::{InternerBuilder, StringId},
     modules::StandardLib,
     name_map::NameMap,
     namespace::NamespaceId,
@@ -251,15 +251,17 @@ pub struct Compiler<'a> {
     /// Current code being built.
     code: CodeBuilder,
 
-    /// Reference to interns for string/function lookups.
-    interns: &'a Interns,
+    /// Interner for string lookups; only the parse-time table is needed, so
+    /// compilation runs before the runtime [`Interns`](crate::intern::Interns) is built.
+    interns: &'a InternerBuilder,
 
     /// Compiled functions, indexed by their position in this vector.
     ///
-    /// Functions are added in the order they are encountered during compilation.
-    /// Nested functions are compiled before their containing function's code
-    /// finishes, so inner functions have lower indices.
-    functions: Vec<Function>,
+    /// Borrowed from the caller so the table is only ever appended to and nested
+    /// compilers reborrow it (inner functions get lower indices). The REPL relies
+    /// on this to keep its session table across a failed snippet;
+    /// [`compile_module`](Self::compile_module) rolls back what a failure appended.
+    functions: &'a mut Vec<Function>,
 
     /// Enclosing control blocks whose cleanup is emitted by non-local exits.
     /// This mirrors CPython's compiler `fblockinfo` stack and keeps each
@@ -501,21 +503,13 @@ enum CompSlot {
     Cell(u16),
 }
 
-/// Result of module compilation: the module code and all compiled functions.
-pub struct CompileResult {
-    /// The compiled module code.
-    pub code: Code,
-    /// All functions compiled during module compilation, indexed by their function ID.
-    pub functions: Vec<Function>,
-}
-
 impl<'a> Compiler<'a> {
     /// Creates a compiler for a module or function.
     /// `frame_locals` is zero at module scope or the function namespace size;
     /// comprehension slots follow it on the operand stack.
     fn new(
-        interns: &'a Interns,
-        functions: Vec<Function>,
+        interns: &'a InternerBuilder,
+        functions: &'a mut Vec<Function>,
         is_module_scope: bool,
         frame_locals: u16,
         assert_message_annotations: bool,
@@ -535,39 +529,44 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Compiles module-level code (a sequence of statements).
+    /// Compiles module-level code (a sequence of statements) to the module `Code`.
     ///
-    /// Returns the compiled module Code and all compiled Functions, or a compile
-    /// error if limits were exceeded. The module implicitly returns the value
-    /// of the last expression, or None if empty.
+    /// Every function compiled along the way is appended to `functions`, and its
+    /// `FunctionId` is its index there — so a REPL passes its session table to
+    /// keep earlier ids stable, while a fresh run passes an empty vector. On
+    /// failure `functions` is restored to its original length, so a rejected
+    /// snippet can't consume `FunctionId`s. The module implicitly returns the
+    /// value of the last expression, or None if empty.
     pub fn compile_module(
         nodes: &[PreparedNode],
-        interns: &Interns,
+        interns: &InternerBuilder,
         globals: &NameMap,
+        functions: &mut Vec<Function>,
         options: CompileOptions,
-    ) -> Result<CompileResult, CompileError> {
-        Self::compile_module_with_functions(nodes, interns, globals, Vec::new(), options)
+    ) -> Result<Code, CompileError> {
+        let functions_len = functions.len();
+        let result = Self::compile_module_inner(nodes, interns, globals, functions, options);
+        if result.is_err() {
+            functions.truncate(functions_len);
+        }
+        result
     }
 
-    /// Compiles module-level code while preserving an existing function table prefix.
-    ///
-    /// This is used by incremental REPL compilation so previously created
-    /// `FunctionId`s remain stable: new function IDs are allocated after
-    /// `existing_functions.len()`.
-    pub fn compile_module_with_functions(
+    /// [`compile_module`](Self::compile_module) without the rollback of `functions`.
+    fn compile_module_inner(
         nodes: &[PreparedNode],
-        interns: &Interns,
+        interns: &InternerBuilder,
         globals: &NameMap,
-        existing_functions: Vec<Function>,
+        functions: &mut Vec<Function>,
         options: CompileOptions,
-    ) -> Result<CompileResult, CompileError> {
+    ) -> Result<Code, CompileError> {
         let num_locals = check_namespace_size_u16(globals.len(), "module")?;
         // Module frames have `locals_count = 0` at runtime (globals live in
         // `self.globals`), so comp-var offsets are emitted as plain operand-
         // stack indices.
         let mut compiler = Compiler::new(
             interns,
-            existing_functions,
+            functions,
             true,
             0,
             options.assert_message_annotations.enabled(),
@@ -584,27 +583,21 @@ impl<'a> Compiler<'a> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(CompileResult {
-            code: compiler.code.build(num_locals),
-            functions: compiler.functions,
-        })
+        Ok(compiler.code.build(num_locals))
     }
 
-    /// Compiles a function body to bytecode, returning the Code and any nested functions.
+    /// Compiles a function body to bytecode, appending any nested functions to `functions`.
     ///
     /// Used internally when compiling function definitions. The function body is
     /// compiled to bytecode with an implicit `return None` at the end if there's
     /// no explicit return statement.
-    ///
-    /// The `functions` parameter receives any previously compiled functions, and
-    /// any nested functions found in the body will be added to it.
     fn compile_function_body(
         body: &[PreparedNode],
-        interns: &Interns,
-        functions: Vec<Function>,
+        interns: &InternerBuilder,
+        functions: &mut Vec<Function>,
         num_locals: u16,
         assert_message_annotations: bool,
-    ) -> Result<(Code, Vec<Function>), CompileError> {
+    ) -> Result<Code, CompileError> {
         // Function frames have `locals_count = num_locals` at runtime, so
         // comp-var load/store opcodes use `num_locals + offset` to skip past
         // the locals region into the operand-stack region.
@@ -615,7 +608,7 @@ impl<'a> Compiler<'a> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok((compiler.code.build(num_locals), compiler.functions))
+        Ok(compiler.code.build(num_locals))
     }
 
     /// Compiles statements, retaining `finally` bodies for inline cleanup.
@@ -883,14 +876,14 @@ impl<'a> Compiler<'a> {
     /// use [`compile_function_body`](Self::compile_function_body) (implicit
     /// `return None` tail), while a class body uses
     /// [`compile_class_body`](Self::compile_class_body) (assemble-namespace +
-    /// return-class tail). It receives the interner, the moved-out `functions`
-    /// vector, and this body's namespace size; it returns the compiled body code
-    /// and the (possibly extended) `functions` vector.
+    /// return-class tail). It receives the interner, the shared `functions`
+    /// vector (nested functions are appended to it first, so they get lower
+    /// ids), and this body's namespace size; it returns the compiled body code.
     fn emit_make_callable(
         &mut self,
         func_def: &PreparedFunctionDef,
         what: &'static str,
-        compile_body: impl FnOnce(&Interns, Vec<Function>, u16) -> Result<(Code, Vec<Function>), CompileError>,
+        compile_body: impl FnOnce(&InternerBuilder, &mut Vec<Function>, u16) -> Result<Code, CompileError>,
     ) -> Result<(), CompileError> {
         let func_pos = func_def.name.position;
 
@@ -900,13 +893,11 @@ impl<'a> Compiler<'a> {
         let cell_count = check_call_args_u8(func_def.free_var_enclosing_slots.len(), "closure variables", func_pos)?;
 
         // 1. Compile the body recursively.
-        // Take ownership of functions for the recursive compile, then restore.
-        let functions = mem::take(&mut self.functions);
         let namespace_size = check_namespace_size_u16(func_def.namespace_size, what)?;
-        let (body_code, mut functions) = compile_body(self.interns, functions, namespace_size)?;
+        let body_code = compile_body(self.interns, self.functions, namespace_size)?;
 
         // 2. Create the compiled Function and add to the vector
-        let func_id = functions.len();
+        let func_id = self.functions.len();
         // `Function` retains the legacy numeric source metadata for serialized-code
         // compatibility, although closure construction is fully emitted here.
         let enclosing_slot_metadata = func_def
@@ -931,10 +922,7 @@ impl<'a> Compiler<'a> {
             func_def.is_async,
             body_code,
         );
-        functions.push(function);
-
-        // Restore functions to self
-        self.functions = functions;
+        self.functions.push(function);
 
         // 3. Compile and push default values (evaluated at definition time)
         for default_expr in &func_def.default_exprs {
@@ -1057,11 +1045,11 @@ impl<'a> Compiler<'a> {
         members: &[Identifier],
         class_name: &Identifier,
         position: CodeRange,
-        interns: &Interns,
-        functions: Vec<Function>,
+        interns: &InternerBuilder,
+        functions: &mut Vec<Function>,
         num_locals: u16,
         assert_message_annotations: bool,
-    ) -> Result<(Code, Vec<Function>), CompileError> {
+    ) -> Result<Code, CompileError> {
         let mut compiler = Compiler::new(interns, functions, false, num_locals, assert_message_annotations);
         compiler.compile_block(body)?;
 
@@ -1089,7 +1077,7 @@ impl<'a> Compiler<'a> {
             .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok((compiler.code.build(num_locals), compiler.functions))
+        Ok(compiler.code.build(num_locals))
     }
 
     /// Compiles an import statement.

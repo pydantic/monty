@@ -19,6 +19,8 @@ from ._monty import (
     FunctionSnapshot,
     FutureSnapshot,
     Monty,
+    MontyClassProxy,
+    MontyClassTypeProxy,
     MontyComplete,
     MontyConversionError,
     MontyCrashedError,
@@ -33,7 +35,9 @@ from ._monty import (
     MountDir,
     NameLookupSnapshot,
     __version__,
+    _install_telemetry,
 )
+from .class_instance import ClassInstance, ClassType
 from .os_access import (
     AbstractFile,
     AbstractOS,
@@ -59,6 +63,10 @@ __all__ = (
     'OsHandler',
     'SyncSnapshot',
     'AsyncSnapshot',
+    'instrument_telemetry',
+    # class_instance
+    'ClassInstance',
+    'ClassType',
     # _monty
     '__version__',
     'AsyncMonty',
@@ -68,6 +76,8 @@ __all__ = (
     'CollectString',
     'Frame',
     'Monty',
+    'MontyClassProxy',
+    'MontyClassTypeProxy',
     'MontyConversionError',
     'MontyCrashedError',
     'MontyDisconnectError',
@@ -99,12 +109,23 @@ __all__ = (
 )
 
 
+def instrument_telemetry(*, tracer: Any | None = None, meter: Any | None = None, logger: Any | None = None) -> None:
+    """Instrument Monty with standard Python OpenTelemetry components.
+
+    Installation is process-wide and can happen only once. Each signal can be
+    enabled independently by supplying its component.
+    """
+    _install_telemetry(tracer, meter, logger)
+
+
 class ResourceLimits(TypedDict, total=False):
     """
     Configuration for resource limits during code execution.
 
     All limits are optional. Omit a key — or set it to `None` explicitly —
-    to disable that limit.
+    to disable that limit, with two exceptions: `max_recursion_depth` and
+    `max_suspensions` cannot be disabled, and omitting either leaves its
+    1000 default in place.
     """
 
     max_duration_secs: float | None
@@ -118,6 +139,12 @@ class ResourceLimits(TypedDict, total=False):
 
     max_recursion_depth: int | None
     """Maximum function call stack depth (default: 1000)."""
+
+    max_suspensions: int | None
+    """Maximum external calls, `os` callbacks, name lookups and future resolutions per checkout (default: 1000).
+
+    The pool aborts an over-budget feed with an uncatchable `RuntimeError`; the
+    session remains usable. Restoring a dump resets the count."""
 
 
 class ExternalReturnValue(TypedDict):
@@ -170,14 +197,16 @@ ExcType = Literal[
     'TimeoutError',
     'TypeError',
     're.PatternError',
+    'binascii.Error',
+    'binascii.Incomplete',
 ]
 """String names of Python exception types that Monty understands.
 
 Used by `ExternalExceptionData` to identify an exception by name rather than
 passing a concrete Python exception instance. Names match Python's built-in
-exception classes, except for `json.JSONDecodeError` and `re.PatternError`
-which are dotted to disambiguate from their `ValueError` / `Exception`
-parents.
+exception classes, except for `json.JSONDecodeError`, `re.PatternError`,
+`binascii.Error` and `binascii.Incomplete`, which are dotted to disambiguate
+from their `ValueError` / `Exception` parents.
 """
 
 

@@ -9,7 +9,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use strum::{Display, EnumString, IntoStaticStr};
+use strum::{Display, EnumString, IntoStaticStr, VariantNames};
 
 use crate::format::StringRepr;
 
@@ -239,9 +239,28 @@ fn frames_are_identical(a: &StackFrame, b: &StackFrame) -> bool {
 /// Python exception types supported by the interpreter.
 ///
 /// Uses strum derives for automatic `Display`, `FromStr`, and `Into<&'static str>` implementations.
-/// The string representation matches the variant name exactly (e.g., `ValueError` -> "ValueError").
+/// The string representation matches the variant name exactly (e.g., `ValueError` -> "ValueError"),
+/// except where a `serialize` attribute gives a dotted name to disambiguate a stdlib subclass from
+/// its builtin parent (`binascii.Error` from `ValueError`, say).
+///
+/// `ExcType::VARIANTS` is the canonical list of those names, and the host bridges mirror it:
+/// `PYTHON_EXC_NAMES` in `crates/monty-js/ts/errors.ts` and the `ExcType` literal in
+/// `pydantic_monty/__init__.py`. Both are hand-written, so `monty-proto`'s `exc_type_bridges` test
+/// reads them and pins them here — adding a variant without wiring the bridges fails that test.
 #[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Display, EnumString, IntoStaticStr, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    Display,
+    EnumString,
+    IntoStaticStr,
+    VariantNames,
+    Serialize,
+    Deserialize,
 )]
 pub enum ExcType {
     /// primary exception class - matches any exception in isinstance checks.
@@ -355,6 +374,21 @@ pub enum ExcType {
     /// representations into the required attributes.
     #[strum(serialize = "re.PatternError")]
     RePatternError,
+
+    // --- binascii module ---
+    /// `binascii.Error` - raised by the `base64` codecs for malformed input.
+    ///
+    /// A `ValueError` subclass in CPython, so `except ValueError:` catches it.
+    #[strum(serialize = "binascii.Error")]
+    BinasciiError,
+
+    /// `binascii.Incomplete` - a direct `Exception` subclass, not a `ValueError`.
+    ///
+    /// Nothing raises it: the `a2b_hqx` family it belonged to left CPython in
+    /// 3.11, so the class survives only for `except binascii.Incomplete:` in
+    /// older code. Monty exposes it for the same reason.
+    #[strum(serialize = "binascii.Incomplete")]
+    BinasciiIncomplete,
 }
 impl ExcType {
     /// Checks if this exception type is a subclass of another exception type.
@@ -386,13 +420,14 @@ impl ExcType {
             Self::AttributeError => matches!(self, Self::FrozenInstanceError),
             // NameError catches UnboundLocalError
             Self::NameError => matches!(self, Self::UnboundLocalError),
-            // ValueError catches UnicodeDecodeError, UnicodeEncodeError, json.JSONDecodeError,
-            // and io.UnsupportedOperation (which in CPython has dual OSError + ValueError parentage)
+            // io.UnsupportedOperation is here because CPython gives it dual
+            // OSError + ValueError parentage
             Self::ValueError => matches!(
                 self,
                 Self::UnicodeDecodeError
                     | Self::UnicodeEncodeError
                     | Self::JsonDecodeError
+                    | Self::BinasciiError
                     | Self::UnsupportedOperation
             ),
             // ImportError catches ModuleNotFoundError

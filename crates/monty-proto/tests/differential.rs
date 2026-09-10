@@ -18,8 +18,8 @@
 use monty::MontyRun;
 use monty_proto::{WireFunctionCall, WireObject, pb};
 use monty_types::{
-    CompileOptions, DictPairs, ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta,
-    MontyTimeZone, MontyType,
+    CompileOptions, DictPairs, ExcType, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle,
+    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
 };
 use num_bigint::{BigInt, Sign};
 use prost::Message;
@@ -99,6 +99,35 @@ fn corpus() -> Vec<MontyObject> {
             offset_seconds: None,
             timezone_name: None,
         }),
+        // every field at its implicit-presence default: nothing but the
+        // submessage key should reach the wire
+        MontyObject::Time(MontyTime {
+            hour: 0,
+            minute: 0,
+            second: 0,
+            microsecond: 0,
+            offset_seconds: None,
+            timezone_name: None,
+            fold: 0,
+        }),
+        MontyObject::Time(MontyTime {
+            hour: 23,
+            minute: 59,
+            second: 59,
+            microsecond: 999_999,
+            offset_seconds: Some(0),
+            timezone_name: Some(String::new()),
+            fold: 1,
+        }),
+        MontyObject::Time(MontyTime {
+            hour: 1,
+            minute: 2,
+            second: 3,
+            microsecond: 4,
+            offset_seconds: Some(-3600),
+            timezone_name: Some("MINUS1".to_owned()),
+            fold: 0,
+        }),
         // explicit-presence edge: offset of exactly 0 and an empty name must
         // still encode (proto3 `optional`), unlike implicit-presence fields
         MontyObject::DateTime(MontyDateTime {
@@ -140,7 +169,27 @@ fn corpus() -> Vec<MontyObject> {
         },
         MontyObject::Type(MontyType::Int),
         MontyObject::Type(MontyType::Exception(ExcType::KeyError)),
-        MontyObject::Type(MontyType::Instance("Foo".to_owned())),
+        MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
+            name: "Foo".to_owned(),
+            id: MontyUuid::from_u128(0xF00),
+            host_defined: false,
+            is_dataclass: false,
+            attrs: DictPairs::default(),
+        }))),
+        MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
+            name: "Child".to_owned(),
+            id: MontyUuid::from_u128(0xF01),
+            host_defined: true,
+            is_dataclass: true,
+            attrs: vec![
+                (MontyObject::String("SIDES".to_owned()), MontyObject::Int(4)),
+                (
+                    MontyObject::String("KIND".to_owned()),
+                    MontyObject::String("polygon".to_owned()),
+                ),
+            ]
+            .into(),
+        }))),
         MontyObject::builtin_function_from_name("len").expect("len is a builtin"),
         MontyObject::Path(String::new()),
         MontyObject::Path("/mnt/data/file.txt".to_owned()),
@@ -149,23 +198,47 @@ fn corpus() -> Vec<MontyObject> {
             mode: "rb".parse().unwrap(),
             position: 0,
         }),
-        MontyObject::Dataclass {
-            name: String::new(),
-            type_id: 0,
-            field_names: vec![],
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
+            class_type: MontyClassType {
+                name: String::new(),
+                id: MontyUuid::from_u128(0),
+                host_defined: false,
+                is_dataclass: false,
+                attrs: DictPairs::default(),
+            },
+            instance_id: MontyUuid::from_u128(0),
             attrs: DictPairs::from(Vec::new()),
-            frozen: false,
-        },
-        MontyObject::Dataclass {
-            name: "Point".to_owned(),
-            type_id: 0xDEAD_BEEF,
-            field_names: vec!["x".to_owned(), "y".to_owned()],
+        })),
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
+            class_type: MontyClassType {
+                name: "Point".to_owned(),
+                id: MontyUuid::from_u128(0xDEAD_BEEF),
+                host_defined: true,
+                is_dataclass: true,
+                attrs: DictPairs::default(),
+            },
+            instance_id: MontyUuid::from_u128(0xFEED_FACE),
             attrs: DictPairs::from(vec![
                 (MontyObject::String("x".to_owned()), MontyObject::Int(1)),
                 (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
             ]),
-            frozen: true,
-        },
+        })),
+        // an instance whose class branch carries eager class attrs
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
+            class_type: MontyClassType {
+                name: "Square".to_owned(),
+                id: MontyUuid::from_u128(0xF02),
+                host_defined: true,
+                is_dataclass: false,
+                attrs: vec![
+                    (MontyObject::String("SIDES".to_owned()), MontyObject::Int(4)),
+                    (MontyObject::String(String::new()), MontyObject::None),
+                ]
+                .into(),
+            },
+            instance_id: MontyUuid::from_u128(0xF03),
+            attrs: DictPairs::from(vec![(MontyObject::String("size".to_owned()), MontyObject::Int(3))]),
+        })),
         MontyObject::Function {
             name: "f".to_owned(),
             docstring: None,
@@ -231,6 +304,15 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
             offset_seconds: dt.offset_seconds,
             timezone_name: dt.timezone_name.clone(),
         }),
+        MontyObject::Time(t) => Kind::Time(oracle::Time {
+            hour: u32::from(t.hour),
+            minute: u32::from(t.minute),
+            second: u32::from(t.second),
+            microsecond: t.microsecond,
+            offset_seconds: t.offset_seconds,
+            timezone_name: t.timezone_name.clone(),
+            fold: u32::from(t.fold),
+        }),
         MontyObject::TimeDelta(td) => Kind::Timedelta(oracle::TimeDelta {
             days: td.days,
             seconds: td.seconds,
@@ -244,8 +326,7 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
             exc_type: exc_type.to_string(),
             arg: arg.clone(),
         }),
-        MontyObject::Type(MontyType::Instance(name)) => Kind::InstanceType(name.clone()),
-        MontyObject::Type(t) => Kind::Type(t.to_string()),
+        MontyObject::Type(t) => Kind::Type(oracle_type(t)),
         MontyObject::BuiltinFunction(bf) => Kind::BuiltinFunction(bf.to_string()),
         MontyObject::Path(p) => Kind::Path(p.clone()),
         MontyObject::FileHandle(fh) => Kind::FileHandle(oracle::FileHandle {
@@ -253,18 +334,10 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
             mode: fh.mode.as_str().to_owned(),
             position: fh.position,
         }),
-        MontyObject::Dataclass {
-            name,
-            type_id,
-            field_names,
-            attrs,
-            frozen,
-        } => Kind::Dataclass(oracle::Dataclass {
-            name: name.clone(),
-            type_id: *type_id,
-            field_names: field_names.clone(),
-            attrs: Some(oracle_dict(attrs)),
-            frozen: *frozen,
+        MontyObject::ClassInstance(instance) => Kind::ClassInstance(oracle::ClassInstance {
+            r#type: Some(oracle_class_type(&instance.class_type)),
+            instance_id: Some(oracle_uuid(&instance.instance_id)),
+            attrs: Some(oracle_dict(&instance.attrs)),
         }),
         MontyObject::Function { name, docstring } => Kind::Function(oracle::Function {
             name: name.clone(),
@@ -277,6 +350,46 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
         }),
     };
     oracle::MontyObject { kind: Some(kind) }
+}
+
+/// Oracle mirror of a `MontyType` as the wire `Type` message.
+fn oracle_type(t: &MontyType) -> oracle::Type {
+    match t {
+        MontyType::Instance(class_type) => oracle_class_type(class_type),
+        other => oracle::Type {
+            name: other.to_string(),
+            origin: oracle::TypeOrigin::Builtin as i32,
+            ..oracle::Type::default()
+        },
+    }
+}
+
+/// Oracle mirror of a `MontyClassType`.
+fn oracle_class_type(class_type: &MontyClassType) -> oracle::Type {
+    let origin = if class_type.host_defined {
+        oracle::TypeOrigin::Host
+    } else {
+        oracle::TypeOrigin::Sandbox
+    };
+    let attrs = if class_type.attrs.is_empty() {
+        None
+    } else {
+        Some(oracle_dict(&class_type.attrs))
+    };
+    oracle::Type {
+        name: class_type.name.clone(),
+        id: Some(oracle_uuid(&class_type.id)),
+        origin: origin as i32,
+        is_dataclass: class_type.is_dataclass,
+        attrs,
+    }
+}
+
+/// Oracle mirror of a `MontyUuid`.
+fn oracle_uuid(uuid: &MontyUuid) -> oracle::Uuid {
+    oracle::Uuid {
+        data: uuid.as_bytes().to_vec(),
+    }
 }
 
 fn oracle_list(items: &[MontyObject]) -> oracle::ObjectList {
@@ -356,31 +469,38 @@ fn hand_call_payloads_match_generated_encoding() {
         (MontyObject::String("count".to_owned()), MontyObject::Int(3)),
     ];
 
-    let hand_call = WireFunctionCall {
-        function_name: "external".to_owned(),
-        args: args.clone(),
-        kwargs: kwargs.clone(),
-        call_id: 42,
-        method_call: true,
-    };
-    let generated_call = oracle::FunctionCall {
-        function_name: "external".to_owned(),
-        args: args.iter().map(to_oracle).collect(),
-        kwargs: oracle_pairs(&kwargs),
-        call_id: 42,
-        method_call: true,
-    };
-    assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
-    assert_eq!(
-        WireFunctionCall::decode(generated_call.encode_to_vec().as_slice()).expect("generated function call decodes"),
-        hand_call
-    );
-    assert_eq!(
-        oracle::FunctionCall::decode(hand_call.encode_to_vec().as_slice())
-            .expect("hand function call decodes")
-            .encode_to_vec(),
-        generated_call.encode_to_vec()
-    );
+    // Both receiver states: a routed call (method / `__call__`) and a plain
+    // external call (absent field).
+    let receivers = [Some(MontyUuid::from_u128(7)), None];
+    for object_id in receivers {
+        let oracle_object_id = object_id.map(|uuid| oracle_uuid(&uuid));
+        let hand_call = WireFunctionCall {
+            function_name: "external".to_owned(),
+            args: args.clone(),
+            kwargs: kwargs.clone(),
+            call_id: 42,
+            object_id,
+        };
+        let generated_call = oracle::FunctionCall {
+            function_name: "external".to_owned(),
+            args: args.iter().map(to_oracle).collect(),
+            kwargs: oracle_pairs(&kwargs),
+            call_id: 42,
+            object_id: oracle_object_id,
+        };
+        assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
+        assert_eq!(
+            WireFunctionCall::decode(generated_call.encode_to_vec().as_slice())
+                .expect("generated function call decodes"),
+            hand_call
+        );
+        assert_eq!(
+            oracle::FunctionCall::decode(hand_call.encode_to_vec().as_slice())
+                .expect("hand function call decodes")
+                .encode_to_vec(),
+            generated_call.encode_to_vec()
+        );
+    }
 
     // `OsCall` is fully generated, but its `Getenv.default` field embeds the
     // hand-written `WireObject` — check the embedding agrees with the oracle
@@ -471,8 +591,111 @@ fn invalid_values_are_rejected_during_decode() {
         "failed to decode Protobuf message: unknown exception type \"NotARealError\""
     );
     assert_eq!(
-        rejected(Kind::Type("NotAType".to_owned())),
+        rejected(Kind::Type(oracle::Type {
+            name: "NotAType".to_owned(),
+            origin: oracle::TypeOrigin::Builtin as i32,
+            ..oracle::Type::default()
+        })),
         "failed to decode Protobuf message: unknown type name \"NotAType\""
+    );
+    // origin must be specified
+    assert_eq!(
+        rejected(Kind::Type(oracle::Type {
+            name: "int".to_owned(),
+            ..oracle::Type::default()
+        })),
+        "failed to decode Protobuf message: invalid value for Type: origin must be specified"
+    );
+    // a builtin must not carry an id
+    assert_eq!(
+        rejected(Kind::Type(oracle::Type {
+            name: "int".to_owned(),
+            origin: oracle::TypeOrigin::Builtin as i32,
+            id: Some(oracle::Uuid { data: vec![0; 16] }),
+            ..oracle::Type::default()
+        })),
+        "failed to decode Protobuf message: invalid value for Type: a builtin type must not carry an id"
+    );
+    assert_eq!(
+        rejected(Kind::Type(oracle::Type {
+            name: "int".to_owned(),
+            origin: oracle::TypeOrigin::Builtin as i32,
+            attrs: Some(oracle::Dict::default()),
+            ..oracle::Type::default()
+        })),
+        "failed to decode Protobuf message: invalid value for Type: a builtin type must not carry attrs"
+    );
+    // a class type must carry an id
+    assert_eq!(
+        rejected(Kind::Type(oracle::Type {
+            name: "Foo".to_owned(),
+            origin: oracle::TypeOrigin::Host as i32,
+            ..oracle::Type::default()
+        })),
+        "failed to decode Protobuf message: invalid value for Type: a class type must carry an id"
+    );
+    // a uuid must be exactly 16 bytes
+    assert_eq!(
+        rejected(Kind::Type(oracle::Type {
+            name: "Foo".to_owned(),
+            origin: oracle::TypeOrigin::Sandbox as i32,
+            id: Some(oracle::Uuid { data: vec![0; 5] }),
+            ..oracle::Type::default()
+        })),
+        "failed to decode Protobuf message: invalid value for Type.id: uuid must be 16 bytes, got 5"
+    );
+    // a class instance's type must not be a builtin
+    assert_eq!(
+        rejected(Kind::ClassInstance(oracle::ClassInstance {
+            r#type: Some(oracle::Type {
+                name: "int".to_owned(),
+                origin: oracle::TypeOrigin::Builtin as i32,
+                ..oracle::Type::default()
+            }),
+            instance_id: Some(oracle::Uuid { data: vec![0; 16] }),
+            attrs: Some(oracle::Dict::default()),
+        })),
+        "failed to decode Protobuf message: invalid value for ClassInstance.type: must be a class type, not a builtin"
+    );
+    // instance_id is required
+    assert_eq!(
+        rejected(Kind::ClassInstance(oracle::ClassInstance {
+            r#type: Some(oracle::Type {
+                name: "Foo".to_owned(),
+                origin: oracle::TypeOrigin::Sandbox as i32,
+                id: Some(oracle::Uuid { data: vec![7; 16] }),
+                ..oracle::Type::default()
+            }),
+            instance_id: None,
+            attrs: Some(oracle::Dict::default()),
+        })),
+        "failed to decode Protobuf message: missing required field ClassInstance.instance_id"
+    );
+    // attrs is required, even when empty
+    assert_eq!(
+        rejected(Kind::ClassInstance(oracle::ClassInstance {
+            r#type: Some(class_type("Foo")),
+            instance_id: Some(oracle::Uuid { data: vec![7; 16] }),
+            attrs: None,
+        })),
+        "failed to decode Protobuf message: missing required field ClassInstance.attrs"
+    );
+    // the instance uuid must be exactly 16 bytes
+    assert_eq!(
+        rejected(Kind::ClassInstance(oracle::ClassInstance {
+            r#type: Some(class_type("Foo")),
+            instance_id: Some(oracle::Uuid { data: vec![7; 17] }),
+            attrs: Some(oracle::Dict::default()),
+        })),
+        "failed to decode Protobuf message: invalid value for ClassInstance.instance_id: uuid must be 16 bytes, got 17"
+    );
+    // an origin outside the enum is rejected rather than defaulted
+    assert_eq!(
+        rejected(Kind::Type(oracle::Type {
+            origin: 99,
+            ..class_type("Foo")
+        })),
+        "failed to decode Protobuf message: invalid value for Type.origin: unknown origin 99"
     );
     assert_eq!(
         rejected(Kind::BuiltinFunction("not_a_builtin".to_owned())),
@@ -502,12 +725,69 @@ fn invalid_values_are_rejected_during_decode() {
         })),
         "failed to decode Protobuf message: invalid value for DateTime.timezone_name: timezone_name requires offset_seconds"
     );
+    // the uuid arm is declared in the schema but not yet implemented: the
+    // hand-written decoder skips it like any unknown tag, leaving no kind
+    assert_eq!(
+        rejected(Kind::Uuid(oracle::Uuid { data: vec![7; 16] })),
+        "missing required field MontyObject.kind"
+    );
     // an absent kind decodes (it is a valid empty message) but cannot be
     // unwrapped into a value
     let empty = oracle::MontyObject { kind: None }.encode_to_vec();
     assert_eq!(
         decode_wire(&empty).expect_err("empty kind must be rejected"),
         "missing required field MontyObject.kind"
+    );
+}
+
+/// A sandbox-origin `Foo` class type with a fixed id and no attrs.
+fn class_type(name: &str) -> oracle::Type {
+    oracle::Type {
+        name: name.to_owned(),
+        origin: oracle::TypeOrigin::Sandbox as i32,
+        id: Some(oracle::Uuid { data: vec![7; 16] }),
+        ..oracle::Type::default()
+    }
+}
+
+/// The hand encoder emits eager class attrs only when non-empty, but a peer
+/// may send the field present and empty: that decodes to the same value.
+#[test]
+fn present_but_empty_class_attrs_decode_as_absent() {
+    let expected = MontyClassType {
+        name: "Foo".to_owned(),
+        id: MontyUuid::from_u128(0x0707_0707_0707_0707_0707_0707_0707_0707),
+        host_defined: false,
+        is_dataclass: false,
+        attrs: DictPairs::default(),
+    };
+    let with_empty_attrs = oracle::Type {
+        attrs: Some(oracle::Dict::default()),
+        ..class_type("Foo")
+    };
+    let bytes = oracle::MontyObject {
+        kind: Some(Kind::Type(with_empty_attrs.clone())),
+    }
+    .encode_to_vec();
+    assert_eq!(
+        decode_wire(&bytes).unwrap(),
+        MontyObject::Type(MontyType::Instance(Box::new(expected.clone())))
+    );
+    let bytes = oracle::MontyObject {
+        kind: Some(Kind::ClassInstance(oracle::ClassInstance {
+            r#type: Some(with_empty_attrs),
+            instance_id: Some(oracle::Uuid { data: vec![7; 16] }),
+            attrs: Some(oracle::Dict::default()),
+        })),
+    }
+    .encode_to_vec();
+    assert_eq!(
+        decode_wire(&bytes).unwrap(),
+        MontyObject::ClassInstance(Box::new(MontyClassInstance {
+            class_type: expected,
+            instance_id: MontyUuid::from_u128(0x0707_0707_0707_0707_0707_0707_0707_0707),
+            attrs: DictPairs::default(),
+        }))
     );
 }
 
@@ -549,6 +829,23 @@ fn out_of_range_temporal_values_are_rejected() {
     assert!(rejected_field(datetime(0, 0, 60, 0), "DateTime.second"));
     assert!(rejected_field(datetime(0, 0, 0, 1_000_000), "DateTime.microsecond"));
 
+    let time = |hour, minute, second, microsecond, fold| {
+        Kind::Time(oracle::Time {
+            hour,
+            minute,
+            second,
+            microsecond,
+            offset_seconds: None,
+            timezone_name: None,
+            fold,
+        })
+    };
+    assert!(rejected_field(time(24, 0, 0, 0, 0), "Time.hour"));
+    assert!(rejected_field(time(0, 60, 0, 0, 0), "Time.minute"));
+    assert!(rejected_field(time(0, 0, 60, 0, 0), "Time.second"));
+    assert!(rejected_field(time(0, 0, 0, 1_000_000, 0), "Time.microsecond"));
+    assert!(rejected_field(time(0, 0, 0, 0, 2), "Time.fold"));
+
     let timedelta = |seconds, microseconds| {
         Kind::Timedelta(oracle::TimeDelta {
             days: 1,
@@ -560,6 +857,43 @@ fn out_of_range_temporal_values_are_rejected() {
     assert!(rejected_field(timedelta(86_400, 0), "TimeDelta.seconds"));
     assert!(rejected_field(timedelta(0, -1), "TimeDelta.microseconds"));
     assert!(rejected_field(timedelta(0, 1_000_000), "TimeDelta.microseconds"));
+
+    // an offset must be strictly inside ±24 hours, as `datetime.timezone` requires
+    let aware_datetime = |offset_seconds| {
+        Kind::Datetime(oracle::DateTime {
+            year: 2026,
+            month: 1,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            microsecond: 0,
+            offset_seconds: Some(offset_seconds),
+            timezone_name: None,
+        })
+    };
+    let aware_time = |offset_seconds| {
+        Kind::Time(oracle::Time {
+            hour: 0,
+            minute: 0,
+            second: 0,
+            microsecond: 0,
+            offset_seconds: Some(offset_seconds),
+            timezone_name: None,
+            fold: 0,
+        })
+    };
+    assert!(rejected_field(aware_datetime(86_400), "DateTime.offset_seconds"));
+    assert!(rejected_field(aware_datetime(-86_400), "DateTime.offset_seconds"));
+    assert!(rejected_field(aware_time(86_400), "Time.offset_seconds"));
+    assert!(rejected_field(aware_time(-86_400), "Time.offset_seconds"));
+    assert_eq!(
+        rejected(Kind::Timezone(oracle::TimeZone {
+            offset_seconds: 86_400,
+            name: None,
+        })),
+        "failed to decode Protobuf message: invalid value for TimeZone.offset_seconds: 86400 is outside the range -86399..=86399"
+    );
 }
 
 // ============================================================================

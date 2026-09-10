@@ -20,6 +20,8 @@ use num_bigint::BigInt;
 use strum::IntoEnumIterator;
 use strum::{EnumCount, EnumIter, EnumString, FromRepr, IntoStaticStr};
 
+#[cfg(feature = "test-hooks")]
+use crate::function::FunctionMetadataFault;
 use crate::{
     function::Function,
     hash::{ASCII_HASHES, HashValue, STATIC_HASHES, WithHash, hash_python_str},
@@ -99,7 +101,8 @@ pub(crate) static ASCII_STRS: [&str; 128] = const {
 /// Static string values which are known at compile time and don't need to be interned.
 ///
 /// Discriminant starts from STATIC_STRING_ID_OFFSET to make conversion to/from stringid
-/// cheap when within bounds.
+/// cheap when within bounds. Discriminants are serialized `StringId`s, so append new
+/// variants at the end — inserting one shifts every later id.
 #[repr(u16)]
 #[derive(
     Debug,
@@ -935,6 +938,272 @@ pub enum StaticStrings {
     /// Python's `NotImplemented` singleton representation.
     #[strum(serialize = "NotImplemented")]
     NotImplementedRepr,
+    /// The `__dataclass_params__` class attribute `@dataclass` writes: the
+    /// options the class was decorated with.
+    #[strum(serialize = "__dataclass_params__")]
+    DataclassParams,
+    // `@dataclass(...)` keyword options. Recognised even where unimplemented,
+    // so an unsupported option reports itself rather than looking misspelled.
+    /// `@dataclass(init=...)`.
+    Init,
+    /// `@dataclass(eq=...)`.
+    Eq,
+    /// `@dataclass(repr=...)`.
+    Repr,
+    /// `@dataclass(order=...)`.
+    Order,
+    /// `@dataclass(unsafe_hash=...)`.
+    UnsafeHash,
+    /// `@dataclass(frozen=...)`.
+    Frozen,
+    /// `@dataclass(match_args=...)`.
+    MatchArgs,
+    /// `@dataclass(kw_only=...)`.
+    KwOnly,
+    /// `@dataclass(slots=...)`.
+    Slots,
+    /// `@dataclass(weakref_slot=...)`.
+    WeakrefSlot,
+    /// `dataclasses.FrozenInstanceError` exception.
+    #[strum(serialize = "FrozenInstanceError")]
+    FrozenInstanceError,
+    /// The class parameter of the decorator `@dataclass(...)` returns, which
+    /// CPython spells `def wrap(cls)` and so accepts by keyword.
+    Cls,
+    /// `itertools.takewhile()` function.
+    Takewhile,
+    /// `itertools.dropwhile()` function.
+    Dropwhile,
+    /// `itertools.filterfalse()` function.
+    Filterfalse,
+    /// `itertools.starmap()` function.
+    Starmap,
+
+    // ==========================
+    // functools module strings
+    // Appended, per the "new variants go at the end" rule above.
+    /// Module name for `import functools`.
+    Functools,
+    /// `functools.reduce()` function.
+    Reduce,
+    /// `initial` keyword argument of `functools.reduce()` and
+    /// `itertools.accumulate()`.
+    Initial,
+
+    // ==========================
+    // base64 and binascii module strings
+    // Each spells its text out: snake_case would split the digits (`b64_encode`).
+    /// Module name for `import base64`.
+    #[strum(serialize = "base64")]
+    Base64,
+    /// `base64.b64encode()` function.
+    #[strum(serialize = "b64encode")]
+    B64Encode,
+    /// `base64.b64decode()` function.
+    #[strum(serialize = "b64decode")]
+    B64Decode,
+    /// `base64.standard_b64encode()` function.
+    #[strum(serialize = "standard_b64encode")]
+    StandardB64Encode,
+    /// `base64.standard_b64decode()` function.
+    #[strum(serialize = "standard_b64decode")]
+    StandardB64Decode,
+    /// `base64.urlsafe_b64encode()` function.
+    #[strum(serialize = "urlsafe_b64encode")]
+    UrlsafeB64Encode,
+    /// `base64.urlsafe_b64decode()` function.
+    #[strum(serialize = "urlsafe_b64decode")]
+    UrlsafeB64Decode,
+    /// `base64.b32encode()` function.
+    #[strum(serialize = "b32encode")]
+    B32Encode,
+    /// `base64.b32decode()` function.
+    #[strum(serialize = "b32decode")]
+    B32Decode,
+    /// `base64.b32hexencode()` function.
+    #[strum(serialize = "b32hexencode")]
+    B32HexEncode,
+    /// `base64.b32hexdecode()` function.
+    #[strum(serialize = "b32hexdecode")]
+    B32HexDecode,
+    /// `base64.b16encode()` function.
+    #[strum(serialize = "b16encode")]
+    B16Encode,
+    /// `base64.b16decode()` function.
+    #[strum(serialize = "b16decode")]
+    B16Decode,
+    /// `base64.encodebytes()` function.
+    #[strum(serialize = "encodebytes")]
+    Encodebytes,
+    /// `base64.decodebytes()` function.
+    #[strum(serialize = "decodebytes")]
+    Decodebytes,
+    /// `altchars` parameter of `base64.b64encode()` / `b64decode()`.
+    #[strum(serialize = "altchars")]
+    Altchars,
+    /// `validate` parameter of `base64.b64decode()`.
+    #[strum(serialize = "validate")]
+    Validate,
+    /// `map01` parameter of `base64.b32decode()`.
+    #[strum(serialize = "map01")]
+    Map01,
+    /// Module name for `import binascii`.
+    #[strum(serialize = "binascii")]
+    Binascii,
+    /// `binascii.Error` exception class — distinct from [`Self::Error`], which
+    /// is the lowercase `re.error` alias.
+    #[strum(serialize = "Error")]
+    ErrorClass,
+    /// `base64.MAXBINSIZE` module constant.
+    #[strum(serialize = "MAXBINSIZE")]
+    MaxBinSize,
+    /// `base64.MAXLINESIZE` module constant.
+    #[strum(serialize = "MAXLINESIZE")]
+    MaxLineSize,
+    /// `base64.b85encode()` function.
+    #[strum(serialize = "b85encode")]
+    B85Encode,
+    /// `base64.b85decode()` function.
+    #[strum(serialize = "b85decode")]
+    B85Decode,
+    /// `base64.z85encode()` function.
+    #[strum(serialize = "z85encode")]
+    Z85Encode,
+    /// `base64.z85decode()` function.
+    #[strum(serialize = "z85decode")]
+    Z85Decode,
+    /// `binascii.hexlify()` function.
+    #[strum(serialize = "hexlify")]
+    Hexlify,
+    /// `binascii.unhexlify()` function.
+    #[strum(serialize = "unhexlify")]
+    Unhexlify,
+    /// `binascii.b2a_hex()` function, an alias of `hexlify`.
+    #[strum(serialize = "b2a_hex")]
+    B2aHex,
+    /// `binascii.a2b_hex()` function, an alias of `unhexlify`.
+    #[strum(serialize = "a2b_hex")]
+    A2bHex,
+    /// `binascii.b2a_base64()` function.
+    #[strum(serialize = "b2a_base64")]
+    B2aBase64,
+    /// `binascii.a2b_base64()` function.
+    #[strum(serialize = "a2b_base64")]
+    A2bBase64,
+    /// `binascii.crc32()` function.
+    #[strum(serialize = "crc32")]
+    Crc32,
+    /// `pad` parameter of `base64.b85encode()`.
+    #[strum(serialize = "pad")]
+    Pad,
+    /// `bytes_per_sep` parameter of `binascii.hexlify()`.
+    #[strum(serialize = "bytes_per_sep")]
+    BytesPerSep,
+    /// `strict_mode` parameter of `binascii.a2b_base64()`.
+    #[strum(serialize = "strict_mode")]
+    StrictMode,
+    /// `crc` parameter of `binascii.crc32()`.
+    #[strum(serialize = "crc")]
+    Crc,
+    /// `hexstr` parameter of `binascii.unhexlify()`.
+    #[strum(serialize = "hexstr")]
+    Hexstr,
+
+    /// `datetime.time` class name. Appended rather than filed with the other
+    /// datetime strings so existing discriminants — which dumps encode by
+    /// value — keep their numbering.
+    Time,
+    /// `datetime.timetz` method name.
+    Timetz,
+    /// `utcoffset()` method of `time`, `datetime` and `timezone`.
+    Utcoffset,
+    /// `tzname()` method of `time`, `datetime` and `timezone`. (`dst()` reuses
+    /// the `Dst` variant already interned for the `os` kwarg of the same name.)
+    Tzname,
+    /// `timespec` keyword of `time.isoformat()`.
+    Timespec,
+    /// `functools.partial` type.
+    Partial,
+    /// `partial.func` attribute, and the `accumulate(func=...)` keyword.
+    Func,
+    /// `partial.keywords` attribute.
+    Keywords,
+    /// `base64.a85encode()` function.
+    #[strum(serialize = "a85encode")]
+    A85Encode,
+    /// `base64.a85decode()` function.
+    #[strum(serialize = "a85decode")]
+    A85Decode,
+    /// `foldspaces` parameter of `base64.a85encode()` / `a85decode()`.
+    #[strum(serialize = "foldspaces")]
+    Foldspaces,
+    /// `wrapcol` parameter of `base64.a85encode()`.
+    #[strum(serialize = "wrapcol")]
+    Wrapcol,
+    /// `adobe` parameter of `base64.a85encode()` / `a85decode()`.
+    #[strum(serialize = "adobe")]
+    Adobe,
+    /// `ignorechars` parameter of `base64.a85decode()`.
+    #[strum(serialize = "ignorechars")]
+    Ignorechars,
+
+    // ==========================
+    // Batch-three itertools module strings. Appended at the enum end like every
+    // block before it: inserting beside the earlier itertools variants would
+    // shift every later serialized `StringId`.
+    /// `itertools.accumulate()` function.
+    Accumulate,
+    /// `zip_longest(fillvalue=...)` keyword.
+    Fillvalue,
+    /// `itertools.batched()` function.
+    Batched,
+    /// `itertools.zip_longest()` function.
+    ZipLongest,
+
+    // ==========================
+    // math summation and product functions. Appended at the enum end rather
+    // than beside the other math names: discriminants are serialized
+    // `StringId`s, so mid-enum insertion would shift every later id.
+    Hypot,
+    Dist,
+    Fsum,
+    Prod,
+    Sumprod,
+    Fma,
+
+    // ==========================
+    // The rest of `binascii`, appended after the math block for the same
+    // reason: those discriminants already ship, so these take fresh ids.
+    /// `binascii.crc_hqx()` function.
+    #[strum(serialize = "crc_hqx")]
+    CrcHqx,
+    /// `binascii.b2a_uu()` function.
+    #[strum(serialize = "b2a_uu")]
+    B2aUu,
+    /// `binascii.a2b_uu()` function.
+    #[strum(serialize = "a2b_uu")]
+    A2bUu,
+    /// `binascii.b2a_qp()` function.
+    #[strum(serialize = "b2a_qp")]
+    B2aQp,
+    /// `binascii.a2b_qp()` function.
+    #[strum(serialize = "a2b_qp")]
+    A2bQp,
+    /// `binascii.Incomplete` exception class.
+    #[strum(serialize = "Incomplete")]
+    IncompleteClass,
+    /// `backtick` parameter of `binascii.b2a_uu()`.
+    #[strum(serialize = "backtick")]
+    Backtick,
+    /// `quotetabs` parameter of `binascii.b2a_qp()`.
+    #[strum(serialize = "quotetabs")]
+    Quotetabs,
+    /// `istext` parameter of `binascii.b2a_qp()`.
+    #[strum(serialize = "istext")]
+    Istext,
+    /// `header` parameter of the `binascii` quoted-printable pair.
+    #[strum(serialize = "header")]
+    Header,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.
@@ -1111,30 +1380,6 @@ impl InternerBuilder {
         }
     }
 
-    /// Creates a builder pre-seeded from an existing [`Interns`] table.
-    ///
-    /// This is used by REPL incremental compilation: previously compiled interned
-    /// values keep stable IDs, and newly interned values are appended.
-    pub(crate) fn from_interns(interns: &Interns, code: &str) -> Self {
-        let mut builder = Self::new(code);
-        builder.strings.clone_from(&interns.strings);
-        builder.bytes.clone_from(&interns.bytes);
-        builder.long_ints.clone_from(&interns.long_ints);
-
-        builder.string_map = builder
-            .strings
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| {
-                let id = StringId(
-                    u32::try_from(INTERN_STRING_ID_OFFSET + index).expect("StringId overflow while seeding interner"),
-                );
-                (entry.value().clone(), id)
-            })
-            .collect();
-        builder
-    }
-
     /// Interns a string, returning its `StringId`.
     ///
     /// * If the string is ascii, return the pre-interned string id
@@ -1142,18 +1387,15 @@ impl InternerBuilder {
     /// * If the string was already interned, returns the existing string id
     /// * Otherwise, stores the string and returns a new string id
     pub fn intern(&mut self, s: &str) -> StringId {
-        if s.len() == 1 {
-            StringId::from_ascii(s.as_bytes()[0])
-        } else if let Ok(ss) = StaticStrings::from_str(s) {
-            ss.into()
-        } else {
-            *self.string_map.entry(s.to_owned()).or_insert_with(|| {
-                let string_id = self.strings.len() + INTERN_STRING_ID_OFFSET;
-                let id = StringId(string_id.try_into().expect("StringId overflow"));
-                self.strings.push(WithHash::for_str(s.to_owned()));
-                id
-            })
-        }
+        intern_str(&mut self.string_map, &mut self.strings, s)
+    }
+
+    /// Looks up the `StringId` for a string already interned (or ascii/static).
+    ///
+    /// Mirrors [`Interns::get_string_id_by_name`] so the compiler can resolve
+    /// builtin names before the runtime table is built.
+    pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
+        get_string_id_by_name(&self.string_map, s)
     }
 
     /// Interns bytes, returning its `BytesId`.
@@ -1181,6 +1423,41 @@ impl InternerBuilder {
     }
 }
 
+/// Interns `s` into a `string_map`/`strings` pair, shared by [`InternerBuilder`]
+/// and [`Interns`] so both tables allocate ids identically.
+///
+/// Single-ASCII and [`StaticStrings`] values resolve to their reserved ids
+/// without touching the pool; everything else is deduplicated via `string_map`.
+fn intern_str(string_map: &mut AHashMap<String, StringId>, strings: &mut Vec<WithHash<String>>, s: &str) -> StringId {
+    if s.len() == 1 {
+        StringId::from_ascii(s.as_bytes()[0])
+    } else if let Ok(ss) = StaticStrings::from_str(s) {
+        ss.into()
+    } else {
+        *string_map.entry(s.to_owned()).or_insert_with(|| {
+            let string_id = strings.len() + INTERN_STRING_ID_OFFSET;
+            let id = StringId(string_id.try_into().expect("StringId overflow"));
+            strings.push(WithHash::for_str(s.to_owned()));
+            id
+        })
+    }
+}
+
+/// Reverse of [`get_str`]: the `StringId` for `s`, or `None` if never interned.
+///
+/// Single ASCII char and [`StaticStrings`] ids live in reserved slot ranges
+/// below [`INTERN_STRING_ID_OFFSET`], never in `string_map` — the cheap
+/// branches come first.
+fn get_string_id_by_name(string_map: &AHashMap<String, StringId>, s: &str) -> Option<StringId> {
+    if s.len() == 1 {
+        Some(StringId::from_ascii(s.as_bytes()[0]))
+    } else if let Ok(ss) = StaticStrings::from_str(s) {
+        Some(ss.into())
+    } else {
+        string_map.get(s).copied()
+    }
+}
+
 /// Looks up a string by its `StringId`.
 ///
 /// # Panics
@@ -1197,9 +1474,16 @@ fn get_str(strings: &[WithHash<String>], id: StringId) -> &str {
     }
 }
 
-/// Read-only storage for interned strings, bytes, and long integers.
+/// Storage for interned strings, bytes, long integers and compiled functions.
 ///
 /// This provides lookup by `StringId`, `BytesId`, `LongIntId` and `FunctionId` for interned literals and functions.
+///
+/// # Append-only ownership in the REPL
+///
+/// Ids are stable and only ever appended, so a REPL session never copies this
+/// table: it hands it to each snippet via [`into_builder`](Self::into_builder)
+/// (or extends it in place with [`intern`](Self::intern)) and takes the extended
+/// table back afterwards — whether the snippet succeeded or not.
 ///
 /// # Hash tables
 ///
@@ -1218,7 +1502,7 @@ fn get_str(strings: &[WithHash<String>], id: StringId) -> &str {
 /// and [`MontyRepl::has_function`](crate::MontyRepl::has_function) call this
 /// per host-supplied name, so the lookup must be O(1) — not the previous
 /// linear scan over `strings`.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(from = "InternsWire")]
 pub(crate) struct Interns {
     strings: Vec<WithHash<String>>,
@@ -1291,6 +1575,8 @@ fn build_string_id_by_name(strings: &[WithHash<String>]) -> AHashMap<String, Str
 }
 
 impl Interns {
+    /// Builds the runtime table from a finished parse/prepare interner and the
+    /// functions compiled against it.
     pub fn new(interner: InternerBuilder, functions: Vec<Function>) -> Self {
         // `InternerBuilder` already maintains the `String → StringId` map
         // during the parse/prepare phase to deduplicate `intern` calls;
@@ -1303,6 +1589,28 @@ impl Interns {
             functions,
             string_id_by_name: interner.string_map,
         }
+    }
+
+    /// Inverse of [`new`](Self::new): moves the tables back into a builder so
+    /// the next REPL snippet can parse against them, with the function table
+    /// alongside for the compiler to extend. Nothing is copied or rehashed.
+    pub(crate) fn into_builder(self) -> (InternerBuilder, Vec<Function>) {
+        let builder = InternerBuilder {
+            string_map: self.string_id_by_name,
+            strings: self.strings,
+            bytes: self.bytes,
+            long_ints: self.long_ints,
+        };
+        (builder, self.functions)
+    }
+
+    /// Interns a string directly into the runtime table.
+    ///
+    /// For synthetic REPL inputs that need a couple of ids (a filename, a
+    /// slot name) without going through a parse; same rules as
+    /// [`InternerBuilder::intern`].
+    pub(crate) fn intern(&mut self, s: &str) -> StringId {
+        intern_str(&mut self.string_id_by_name, &mut self.strings, s)
     }
 
     /// Looks up a string by its `StringId`.
@@ -1343,6 +1651,17 @@ impl Interns {
     #[inline]
     pub fn get_function(&self, id: FunctionId) -> &Function {
         self.functions.get(id.index()).expect("Function not found")
+    }
+
+    /// Injects `fault` into the named function's metadata.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn corrupt_function_metadata_for_tests(&mut self, name: &str, fault: FunctionMetadataFault) {
+        let index = self
+            .functions
+            .iter()
+            .position(|function| self.get_str(function.name.name_id) == name)
+            .unwrap_or_else(|| panic!("test function '{name}' not found"));
+        self.functions[index].corrupt_metadata_for_tests(fault);
     }
 
     /// Returns the Python hash for an interned string.
@@ -1424,30 +1743,6 @@ impl Interns {
     ///
     /// Returns `None` if the string was never interned.
     pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
-        // Single ASCII char and `StaticStrings` ids live in reserved slot
-        // ranges below `INTERN_STRING_ID_OFFSET`, never in the interned
-        // pool — keep the cheap branches at the top.
-        if s.len() == 1 {
-            return Some(StringId::from_ascii(s.as_bytes()[0]));
-        }
-        if let Ok(ss) = StaticStrings::from_str(s) {
-            return Some(ss.into());
-        }
-        self.string_id_by_name.get(s).copied()
-    }
-
-    /// Sets the compiled functions.
-    ///
-    /// This is called after compilation to populate the functions that were
-    /// compiled from `PreparedFunctionDef` nodes.
-    pub fn set_functions(&mut self, functions: Vec<Function>) {
-        self.functions = functions;
-    }
-
-    /// Returns a clone of the compiled function table.
-    ///
-    /// Used by REPL incremental compilation to preserve existing function IDs.
-    pub(crate) fn functions_clone(&self) -> Vec<Function> {
-        self.functions.clone()
+        get_string_id_by_name(&self.string_id_by_name, s)
     }
 }

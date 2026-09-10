@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import collections
 import datetime
+import itertools
 import pathlib
 import re
+import sys
 import zoneinfo
 from typing import NamedTuple
 
@@ -137,7 +139,7 @@ from collections import deque
 [
     int, str, type, type(None), type(...), type(iter([])), type(iter(lambda: 0, 0)),
     type(Path('/x')), Path,
-    datetime.datetime, datetime.date, datetime.timedelta, datetime.timezone,
+    datetime.datetime, datetime.date, datetime.time, datetime.timedelta, datetime.timezone,
     type(re.compile('a')), type(re.match('a', 'a')),
     type(deque()),
 ]
@@ -155,6 +157,7 @@ from collections import deque
         pathlib.PurePosixPath,
         datetime.datetime,
         datetime.date,
+        datetime.time,
         datetime.timedelta,
         datetime.timezone,
         re.Pattern,
@@ -177,6 +180,7 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         type(iter(lambda: 0, 0)),
         datetime.datetime,
         datetime.date,
+        datetime.time,
         datetime.timedelta,
         datetime.timezone,
         pathlib.PurePosixPath,
@@ -191,6 +195,54 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         # re-emerges as PurePosixPath; everything else round-trips by identity.
         expected: type[object] = pathlib.PurePosixPath if issubclass(ty, pathlib.PurePath) else ty
         assert monty_run('x', inputs={'x': ty}) is expected
+
+
+@pytest.mark.skipif(sys.version_info >= (3, 12), reason='batched round-trips like the rest from 3.12')
+def test_itertools_batched_type_on_older_host(monty_run: RunMonty):
+    """The sandbox can still build a `batched` on a host too old to have one, so its
+    type object crossing out names the type it cannot supply rather than raising a bare
+    `AttributeError` from the import behind it."""
+    with pytest.raises(TypeError) as exc_info:
+        monty_run('import itertools\ntype(itertools.batched([1, 2], 1))')
+    assert exc_info.value.args[0] == 'Cannot convert itertools.batched to a host type: this Python does not define it'
+
+
+# Every `itertools` adaptor Monty models, paired with the expression that builds
+# one inside the sandbox. `batched` is 3.12+, so on an older host it is neither
+# importable here nor present in the round-trip table.
+ITERTOOLS_TYPES: list[tuple[type[object], str]] = [
+    (itertools.accumulate, 'itertools.accumulate([1, 2])'),
+    (itertools.chain, 'itertools.chain([1], [2])'),
+    (itertools.compress, 'itertools.compress([1, 2], [1, 0])'),
+    (itertools.count, 'itertools.count()'),
+    (itertools.cycle, 'itertools.cycle([1, 2])'),
+    (itertools.dropwhile, 'itertools.dropwhile(bool, [1, 2])'),
+    (itertools.filterfalse, 'itertools.filterfalse(bool, [1, 2])'),
+    (itertools.islice, 'itertools.islice([1, 2], 1)'),
+    (itertools.pairwise, 'itertools.pairwise([1, 2])'),
+    (itertools.repeat, 'itertools.repeat(1)'),
+    (itertools.starmap, 'itertools.starmap(max, [(1, 2)])'),
+    (itertools.takewhile, 'itertools.takewhile(bool, [1, 2])'),
+    (itertools.zip_longest, 'itertools.zip_longest([1], [2])'),
+]
+if sys.version_info >= (3, 12):
+    ITERTOOLS_TYPES.append((itertools.batched, 'itertools.batched([1, 2], 1)'))
+
+
+@pytest.mark.parametrize(('ty', 'build'), ITERTOOLS_TYPES, ids=[ty.__name__ for ty, _ in ITERTOOLS_TYPES])
+def test_itertools_type_object_roundtrip(monty_run: RunMonty, ty: type[object], build: str):
+    """Each adaptor's type object survives both directions: recognised by identity
+    on the way in, and rebuilt as the same host class on the way out."""
+    assert monty_run('x', inputs={'x': ty}) is ty
+    assert monty_run(f'import itertools\ntype({build})') is ty
+
+
+@pytest.mark.parametrize(('ty', 'build'), ITERTOOLS_TYPES, ids=[ty.__name__ for ty, _ in ITERTOOLS_TYPES])
+def test_itertools_type_object_isinstance(monty_run: RunMonty, ty: type[object], build: str):
+    """An adaptor type passed in is usable against an instance built in the sandbox,
+    which is what identity recognition is actually for."""
+    code = f'import itertools\nisinstance({build}, t)'
+    assert monty_run(code, inputs={'t': ty}) is True
 
 
 def test_type_object_input_isinstance(monty_run: RunMonty):
@@ -245,6 +297,52 @@ def test_aware_datetime_input_roundtrip(monty_run: RunMonty):
     assert (type(result).__name__, repr(result)) == snapshot(
         ('datetime', 'datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc)')
     )
+
+
+def test_time_input_roundtrip(monty_run: RunMonty):
+    result = monty_run('x', inputs={'x': datetime.time(10, 30, 5, 123456)})
+    assert (type(result).__name__, repr(result)) == snapshot(('time', 'datetime.time(10, 30, 5, 123456)'))
+
+
+def test_aware_time_input_roundtrip(monty_run: RunMonty):
+    result = monty_run('x', inputs={'x': datetime.time(10, 30, tzinfo=datetime.timezone.utc)})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('time', 'datetime.time(10, 30, tzinfo=datetime.timezone.utc)')
+    )
+
+
+def test_named_tz_time_input_roundtrip(monty_run: RunMonty):
+    tz = datetime.timezone(datetime.timedelta(hours=2), 'PLUS2')
+    result = monty_run('x', inputs={'x': datetime.time(1, 2, tzinfo=tz)})
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('time', "datetime.time(1, 2, tzinfo=datetime.timezone(datetime.timedelta(seconds=7200), 'PLUS2'))")
+    )
+
+
+def test_time_fold_survives_roundtrip(monty_run: RunMonty):
+    """`fold` is carried across the boundary rather than silently reset to 0."""
+    result = monty_run('x', inputs={'x': datetime.time(1, 2, fold=1)})
+    assert (repr(result), result.fold) == snapshot(('datetime.time(1, 2, fold=1)', 1))
+
+
+def test_time_output_from_sandbox(monty_run: RunMonty):
+    """A `time` built inside the sandbox comes back as a real `datetime.time`."""
+    result = monty_run('import datetime\ndatetime.time(23, 59, 59, 999999)')
+    assert (type(result).__name__, repr(result)) == snapshot(('time', 'datetime.time(23, 59, 59, 999999)'))
+
+
+def test_aware_time_output_from_sandbox(monty_run: RunMonty):
+    code = 'import datetime\ndatetime.time(6, 7, tzinfo=datetime.timezone(datetime.timedelta(hours=-5)))'
+    result = monty_run(code)
+    assert (type(result).__name__, repr(result)) == snapshot(
+        ('time', 'datetime.time(6, 7, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=68400)))')
+    )
+
+
+def test_time_in_container_roundtrip(monty_run: RunMonty):
+    """Nested `time` values convert like any other temporal type."""
+    result = monty_run('x', inputs={'x': {'t': [datetime.time(1, 2)]}})
+    assert result == snapshot({'t': [datetime.time(1, 2)]})
 
 
 def test_timedelta_input_roundtrip(monty_run: RunMonty):

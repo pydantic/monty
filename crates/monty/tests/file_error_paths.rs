@@ -190,6 +190,39 @@ f.read(5)
     assert_eq!(result, MontyObject::Bytes(Vec::new()));
 }
 
+#[test]
+fn rejected_read_suspension_catchable_inside_key_fn() {
+    let code = r"
+f = open('/x.txt')
+caught = []
+
+def key_fn(x):
+    try:
+        f.read(5)
+    except NotImplementedError as e:
+        caught.append(str(e))
+    return x
+
+sorted([1], key=key_fn)
+caught[0]
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let open_call = progress.into_os_call().expect("expected Open OsCall");
+    let progress = open_call
+        .resume(MontyObject::FileHandle(file_handle("/x.txt", "r")), PrintWriter::Stdout)
+        .unwrap();
+    let result = progress.into_complete().expect("expected Complete");
+    assert_eq!(
+        result,
+        MontyObject::String(
+            "sorted() key argument: OS function 'Path.read_text' is not yet supported in this context".to_owned()
+        )
+    );
+}
+
 // ---------------------------------------------------------------------------
 // apply_write_position: a host that returns a non-int (or negative) byte
 // count must surface as a clean Python error rather than panic. The

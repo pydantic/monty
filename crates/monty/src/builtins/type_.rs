@@ -53,8 +53,10 @@ pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// The 1-arg `type(obj)` form.
 ///
 /// For an instance of a user-defined class the type *is* the class object
-/// itself, so `type(x) is Foo` holds via reference identity; for everything
-/// else it returns the builtin `Type` marker.
+/// itself, so `type(x) is Foo` holds via reference identity; a host class
+/// instance returns the `HostClassType` entry it owns (one per host class, so
+/// identity holds there too); everything else returns the builtin `Type`
+/// marker.
 fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
     defer_drop!(value, vm);
     if let Value::Ref(id) = &value
@@ -70,6 +72,12 @@ fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
         // A factory-made namedtuple's type is its class object, so
         // `type(p) is Point` holds by identity (self-describing internal named
         // tuples like `sys.version_info` have no class and fall through).
+        vm.heap.inc_ref(class_id);
+        Value::Ref(class_id)
+    } else if let Value::Ref(id) = &value
+        && let HeapData::HostClass(hc) = vm.heap.get(*id)
+    {
+        let class_id = hc.class_id();
         vm.heap.inc_ref(class_id);
         Value::Ref(class_id)
     } else {

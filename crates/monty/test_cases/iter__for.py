@@ -19,6 +19,11 @@ assert type(iter({}.values())).__name__ == 'dict_valueiterator'
 assert type(iter(set())).__name__ == 'set_iterator'
 assert type(iter(frozenset())).__name__ == 'set_iterator'
 
+list_iterator = iter([])
+list_iterator_repr = repr(list_iterator)
+assert list_iterator_repr.startswith('<list_iterator object at 0x')
+assert int(list_iterator_repr.rsplit(' at ', 1)[1][:-1], 16) == id(list_iterator)
+
 # list with mixed types
 result = []
 for x in [1, 'a', True]:

@@ -277,8 +277,9 @@ fn parse_json_object(
     {
         let (dict, vm) = dict_guard.as_parts_mut();
         loop {
-            let key_value = allocate_cached_string(key, cache, vm.heap);
-            let value = parse_json_value(jiter, depth + 1, cache, vm)?;
+            let mut key_guard = DropGuard::new(allocate_cached_string(key, cache, vm.heap), &mut *vm);
+            let value = parse_json_value(jiter, depth + 1, cache, key_guard.ctx())?;
+            let (key_value, vm) = key_guard.into_parts();
             if let Some(old_value) = dict.set_json_string_key(key_value, value, vm)? {
                 old_value.drop_with(vm);
             }

@@ -46,10 +46,14 @@ def raise_error(exc_type: str, message: str) -> None:
     raise exc_types[exc_type](message)
 
 
-@dataclass(frozen=True)
+@dataclass
 class Point:
     x: int
     y: int
+
+    # Class attribute (not a field): CPython resolves it via class lookup,
+    # Monty via a lazy instance NameLookup answered by the Rust runner.
+    dimensions = 2
 
     def sum(self) -> int:
         return self.x + self.y
@@ -73,6 +77,9 @@ class MutablePoint:
     x: int
     y: int
 
+    # Class attribute (not a field), see Point.dimensions.
+    dimensions = 2
+
     def sum(self) -> int:
         return self.x + self.y
 
@@ -80,12 +87,17 @@ class MutablePoint:
         self.x += dx
         self.y += dy
 
+    @property
+    def boom(self) -> int:
+        """Lazy attribute whose host-side read raises (not AttributeError)."""
+        raise KeyError('boom')
+
 
 def make_mutable_point() -> MutablePoint:
     return MutablePoint(x=1, y=2)
 
 
-@dataclass(frozen=True)
+@dataclass
 class User:
     name: str
     active: bool = True

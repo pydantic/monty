@@ -53,6 +53,11 @@ fn split_turn(bytes: &[u8]) -> (Vec<pb::Print>, pb::child_event::Kind) {
 }
 
 fn create_repl(child: &mut Child) {
+    create_repl_with_flush_interval(child, None);
+}
+
+/// `create_repl`, naming the print flush interval the session runs with.
+fn create_repl_with_flush_interval(child: &mut Child, print_flush_interval_ms: Option<u32>) {
     let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: "main.py".to_owned(),
         limits: None,
@@ -61,6 +66,7 @@ fn create_repl(child: &mut Child) {
         assert_message_annotations: None,
         monty_version: MONTY_VERSION.to_owned(),
         protocol_version: PROTOCOL_VERSION,
+        print_flush_interval_ms,
         ..Default::default()
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
@@ -80,6 +86,21 @@ fn feed(child: &mut Child, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind
     let (bytes, outcome) = dispatch_frame(child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     split_turn(&bytes)
+}
+
+/// The runs each `Print` event carried, as `(stream, text)` per event, so a
+/// test can assert both what was batched together and in what order.
+fn segments_per_event(prints: &[pb::Print]) -> Vec<Vec<(pb::PrintStream, &str)>> {
+    prints
+        .iter()
+        .map(|print| {
+            print
+                .segments
+                .iter()
+                .map(|segment| (segment.stream(), segment.text.as_str()))
+                .collect()
+        })
+        .collect()
 }
 
 fn expect_complete(event: pb::child_event::Kind) -> MontyObject {
@@ -120,9 +141,78 @@ fn print_output_is_streamed_before_the_terminator() {
     create_repl(&mut child);
 
     let (prints, event) = feed(&mut child, "print('hello'); print('world')");
-    let streamed: String = prints.into_iter().map(|print| print.text).collect();
+    let streamed: String = prints
+        .into_iter()
+        .flat_map(|print| print.segments)
+        .map(|segment| segment.text)
+        .collect();
     assert_eq!(streamed, "hello\nworld\n");
     assert_eq!(expect_complete(event), MontyObject::None);
+}
+
+/// Output alternating between the streams batches into one event, holding a
+/// segment per run: the worker never has to flush to change stream, so the
+/// debounce applies to mixed output as much as to plain stdout.
+#[test]
+fn alternating_streams_batch_into_one_event() {
+    let mut child = Child::default();
+    // an interval no test will wait out leaves the flush to `drain`, so this
+    // asserts how output is segmented rather than how the timer fires
+    create_repl_with_flush_interval(&mut child, Some(60_000));
+
+    let (prints, event) = feed(
+        &mut child,
+        "import sys\nprint('a')\nprint('b', file=sys.stderr)\nprint('c')",
+    );
+    assert_eq!(expect_complete(event), MontyObject::None);
+    assert_eq!(
+        segments_per_event(&prints),
+        vec![vec![
+            (pb::PrintStream::Stdout, "a\n"),
+            (pb::PrintStream::Stderr, "b\n"),
+            (pb::PrintStream::Stdout, "c\n"),
+        ]]
+    );
+}
+
+/// With the timer off, a completed line still ends the event whichever stream
+/// wrote it, so a host that asked for line buffering gets one event per line.
+#[test]
+fn line_buffering_gives_each_line_its_own_event() {
+    let mut child = Child::default();
+    create_repl_with_flush_interval(&mut child, Some(0));
+
+    let (prints, event) = feed(&mut child, "import sys\nprint('a')\nprint('b', file=sys.stderr)");
+    assert_eq!(expect_complete(event), MontyObject::None);
+    assert_eq!(
+        segments_per_event(&prints),
+        vec![
+            vec![(pb::PrintStream::Stdout, "a\n")],
+            vec![(pb::PrintStream::Stderr, "b\n")],
+        ]
+    );
+}
+
+/// A line the sandbox wrote across both streams is one line, so line buffering
+/// ships the runs it spans in one event rather than cutting at the switch. The
+/// trailing partial line waits for the drain at the end of the turn.
+#[test]
+fn line_buffering_keeps_a_line_spanning_the_streams_together() {
+    let mut child = Child::default();
+    create_repl_with_flush_interval(&mut child, Some(0));
+
+    let (prints, event) = feed(
+        &mut child,
+        "import sys\nprint('out', end='')\nprint('err', file=sys.stderr)\nprint('next', end='')",
+    );
+    assert_eq!(expect_complete(event), MontyObject::None);
+    assert_eq!(
+        segments_per_event(&prints),
+        vec![
+            vec![(pb::PrintStream::Stdout, "out"), (pb::PrintStream::Stderr, "err\n")],
+            vec![(pb::PrintStream::Stdout, "next")],
+        ]
+    );
 }
 
 #[test]
@@ -234,4 +324,108 @@ fn load_rejects_dump_with_over_deep_suspension_args() {
     // the rejected load adopted nothing: the child is still fresh and usable
     let (_, event) = feed(&mut child, "1 + 1");
     assert_eq!(expect_complete(event), MontyObject::Int(2));
+}
+
+/// Decodes complete events, including their session budget fields.
+fn decode_full_events(bytes: &[u8]) -> Vec<pb::ChildEvent> {
+    let mut reader = FrameReader::new(bytes);
+    let mut events = Vec::new();
+    while let Some(event) = reader.read::<pb::ChildEvent>().expect("reply frames decode") {
+        events.push(event);
+    }
+    events
+}
+
+/// `AbortFeed` raises the supplied error uncatchably and leaves the session usable.
+#[test]
+fn abort_feed_ends_a_suspended_feed_uncatchably() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let (_, event) = feed(
+        &mut child,
+        "x = 41\ntry:\n    fetch('x')\nexcept Exception:\n    x = 0\n",
+    );
+    let pb::child_event::Kind::FunctionCall(_) = event else {
+        panic!("expected FunctionCall, got {event:?}");
+    };
+    let request = frame_request(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
+        exception: Some(pb::RaisedException {
+            exc_type: "RuntimeError".to_owned(),
+            message: Some("suspension limit 3 exceeded".to_owned()),
+            traceback: vec![],
+            data: None,
+        }),
+    }));
+    let (bytes, outcome) = dispatch_frame(&mut child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    let (_, event) = split_turn(&bytes);
+    let pb::child_event::Kind::Error(error) = event else {
+        panic!("expected Error, got {event:?}");
+    };
+    let exception = error.exception.expect("error carries the exception");
+    assert_eq!(exception.exc_type, "RuntimeError");
+    assert_eq!(exception.message.as_deref(), Some("suspension limit 3 exceeded"));
+    // raised where the feed stopped: the traceback names the call's line
+    assert_eq!(exception.traceback.len(), 1);
+    assert_eq!(exception.traceback[0].start.map(|loc| loc.line), Some(3));
+    // the session survives with the globals from before the suspension
+    let (_, event) = feed(&mut child, "x");
+    assert_eq!(expect_complete(event), MontyObject::Int(41));
+}
+
+/// `AbortFeed` is only meaningful while a feed is suspended.
+#[test]
+fn abort_feed_without_a_suspension_is_a_protocol_violation() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let request = frame_request(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
+        exception: Some(pb::RaisedException {
+            exc_type: "RuntimeError".to_owned(),
+            message: None,
+            traceback: vec![],
+            data: None,
+        }),
+    }));
+    let (bytes, outcome) = dispatch_frame(&mut child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    let (_, event) = split_turn(&bytes);
+    let pb::child_event::Kind::Error(error) = event else {
+        panic!("expected Error, got {event:?}");
+    };
+    let exception = error.exception.expect("error carries the exception");
+    assert_eq!(
+        exception.message.as_deref(),
+        Some("protocol violation: AbortFeed without a suspended feed")
+    );
+    // the session is untouched
+    let (_, event) = feed(&mut child, "1 + 1");
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
+}
+
+/// The child echoes the session's `max_suspensions` on every turn-ending
+/// event, so a parent restoring a dump learns the budget it must enforce.
+#[test]
+fn turn_events_carry_the_suspension_budget() {
+    let mut child = Child::default();
+    let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: Some(pb::ResourceLimits {
+            max_suspensions: Some(3),
+            ..Default::default()
+        }),
+        monty_version: MONTY_VERSION.to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        ..Default::default()
+    }));
+    let (_, outcome) = dispatch_frame(&mut child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
+        code: "1 + 1".to_owned(),
+        inputs: vec![],
+        skip_type_check: false,
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    let events = decode_full_events(&bytes);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].max_suspensions, Some(3));
 }

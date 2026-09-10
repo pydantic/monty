@@ -11,6 +11,7 @@
 
 mod async_dispatch;
 mod build;
+mod callback_context;
 pub mod exceptions;
 mod external;
 mod limits;
@@ -79,6 +80,14 @@ mod _monty {
     // `MontyFileHandle` is produced by the value-conversion layer (in
     // `monty_proto`) whenever a `MontyObject::FileHandle` crosses the
     // boundary; export it as part of the `pydantic_monty` surface.
+    // `MontyClassProxy` / `MontyClassTypeProxy` are the read-only proxies the
+    // conversion layer builds for class instances and classes with no original
+    // host object (sandbox-defined, or returned after a session restore into a
+    // fresh session).
+    #[pymodule_export]
+    use monty_proto::python::PyMontyClassProxy as MontyClassProxy;
+    #[pymodule_export]
+    use monty_proto::python::PyMontyClassTypeProxy as MontyClassTypeProxy;
     #[pymodule_export]
     use monty_proto::python::PyMontyFileHandle as MontyFileHandle;
     use pyo3::prelude::*;
@@ -132,7 +141,7 @@ mod _monty {
     #[pymodule_export]
     use super::PyNameLookupSnapshot as NameLookupSnapshot;
     #[pymodule_export]
-    use super::telemetry::_install_telemetry_adapter;
+    use super::telemetry::_install_telemetry;
     use super::{get_not_handled, get_version};
 
     #[pymodule_init]

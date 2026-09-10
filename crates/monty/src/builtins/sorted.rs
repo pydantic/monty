@@ -39,7 +39,7 @@ pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     } else {
         ArgValues::Kwargs(kwargs)
     };
-    parse_and_sort(items, sort_args, vm)?;
+    parse_and_sort("sorted() key argument", items, sort_args, vm)?;
 
     let (items, vm) = items_guard.into_parts();
     let heap_id = vm.heap.allocate(HeapData::List(List::new(items)));

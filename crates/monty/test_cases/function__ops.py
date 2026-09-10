@@ -292,3 +292,33 @@ def double(x):
 
 
 assert double(x) == 10
+
+
+# === Exact positional calls ===
+def exact_heap_args(first, second, /):
+    local = [first, second]
+    return local
+
+
+first = [1]
+second = {'value': 2}
+exact_result = exact_heap_args(first, second)
+assert exact_result[0] is first
+assert exact_result[1] is second
+
+try:
+    exact_heap_args(first)
+    assert False, 'expected TypeError for missing positional argument'
+except TypeError as exc:
+    assert str(exc) == "exact_heap_args() missing 1 required positional argument: 'second'"
+
+
+# A parameter captured by an inner function requires the regular cell setup path.
+def exact_call_with_cell(value):
+    def read():
+        return value
+
+    return read()
+
+
+assert exact_call_with_cell(42) == 42

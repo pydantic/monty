@@ -3,7 +3,10 @@ import { defineConfig } from 'vitest/config'
 const nodeBuiltinsStub = new URL('./test-support/node-builtins-stub.ts', import.meta.url).pathname
 
 export default defineConfig({
-  optimizeDeps: { exclude: ['@pydantic/monty'] },
+  optimizeDeps: {
+    include: ['@bytecodealliance/preview2-shim/instantiation'],
+    exclude: ['@pydantic/monty'],
+  },
   resolve: {
     alias: {
       '@pydantic/monty/node': new URL('./test-support/node-stubs.ts', import.meta.url).pathname,

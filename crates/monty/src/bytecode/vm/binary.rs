@@ -12,13 +12,13 @@ use crate::{
 impl VM<'_> {
     /// Unary minus (`-x`).
     pub(super) fn unary_neg(&mut self) -> Result<(), RunError> {
-        self.unary_op(|value, vm| value.py_neg_impl(vm, value.ref_id()), "-")
+        self.unary_op(PyTrait::py_neg_impl, "-")
     }
 
     /// Unary plus (`+x`) — an identity for numbers, but not for `bool`
     /// (`+True` is `1`) or a `Counter` (which drops its non-positive counts).
     pub(super) fn unary_pos(&mut self) -> Result<(), RunError> {
-        self.unary_op(|value, vm| value.py_pos_impl(vm, value.ref_id()), "+")
+        self.unary_op(PyTrait::py_pos_impl, "+")
     }
 
     /// Binary addition.
@@ -89,46 +89,34 @@ impl VM<'_> {
     /// the update; immutable ones fall back to ordinary addition. Uses lazy type
     /// capture: only calls `py_type()` in error paths.
     pub(super) fn inplace_add(&mut self) -> Result<(), RunError> {
-        self.inplace_op(
-            |lhs, rhs, vm| lhs.py_iadd_impl(rhs, vm, lhs.ref_id()),
-            |lhs, rhs, vm| {
-                if let Some(value) = lhs.py_add_result(rhs, vm)? {
-                    Ok(value)
-                } else {
-                    let lhs_type = lhs.py_type(vm);
-                    Err(ExcType::binary_type_error(
-                        "+=",
-                        lhs_type,
-                        lhs.py_type_name(vm),
-                        rhs.py_type_name(vm),
-                    ))
-                }
-            },
-        )
+        self.inplace_op(PyTrait::py_iadd_impl, |lhs, rhs, vm| {
+            if let Some(value) = lhs.py_add_result(rhs, vm)? {
+                Ok(value)
+            } else {
+                let lhs_type = lhs.py_type(vm);
+                Err(ExcType::binary_type_error(
+                    "+=",
+                    lhs_type,
+                    lhs.py_type_name(vm),
+                    rhs.py_type_name(vm),
+                ))
+            }
+        })
     }
 
     /// `-=` — an in-place mutation (a `Counter` subtracts counts), or binary `-`.
     pub(super) fn inplace_sub(&mut self) -> Result<(), RunError> {
-        self.inplace_op(
-            |lhs, rhs, vm| lhs.py_isub_impl(rhs, vm, lhs.ref_id()),
-            |lhs, rhs, vm| lhs.py_sub(rhs, vm),
-        )
+        self.inplace_op(PyTrait::py_isub_impl, |lhs, rhs, vm| lhs.py_sub(rhs, vm))
     }
 
     /// `&=` — an in-place mutation (a `Counter` intersects counts), or binary `&`.
     pub(super) fn inplace_and(&mut self) -> Result<(), RunError> {
-        self.inplace_op(
-            |lhs, rhs, vm| lhs.py_iand_impl(rhs, vm, lhs.ref_id()),
-            |lhs, rhs, vm| lhs.py_and(rhs, vm),
-        )
+        self.inplace_op(PyTrait::py_iand_impl, |lhs, rhs, vm| lhs.py_and(rhs, vm))
     }
 
     /// `|=` — an in-place mutation (a `Counter` unions counts), or binary `|`.
     pub(super) fn inplace_or(&mut self) -> Result<(), RunError> {
-        self.inplace_op(
-            |lhs, rhs, vm| lhs.py_ior_impl(rhs, vm, lhs.ref_id()),
-            |lhs, rhs, vm| lhs.py_or(rhs, vm),
-        )
+        self.inplace_op(PyTrait::py_ior_impl, |lhs, rhs, vm| lhs.py_or(rhs, vm))
     }
 
     /// Binary matrix multiplication (`@` operator).

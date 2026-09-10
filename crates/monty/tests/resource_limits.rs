@@ -505,12 +505,80 @@ fn timeout_in_sum_builtin() {
     assert_timeout_in_builtin("sum(range(10**18))", "sum(range(10**18))");
 }
 
+/// Math aggregations must interrupt infinite iterators while inside one native call.
+#[test]
+fn timeout_in_math_aggregations() {
+    for expression in [
+        "math.prod(itertools.repeat(1))",
+        "math.fsum(itertools.repeat(1.0))",
+        "math.dist(itertools.repeat(0), [])",
+        "math.dist([], itertools.repeat(0))",
+        "math.sumprod(itertools.repeat(1), itertools.repeat(1))",
+        "math.sumprod(itertools.repeat(1.0), itertools.repeat(1.0))",
+    ] {
+        assert_timeout_in_builtin(&format!("import math\nimport itertools\n{expression}"), expression);
+    }
+}
+
 /// Test that `list(range(huge))` respects the time limit.
 ///
 /// The `list()` constructor drains its concrete Python iterator.
 #[test]
 fn timeout_in_list_constructor() {
     assert_timeout_in_builtin("list(range(10**18))", "list(range(10**18))");
+}
+
+/// Calibrate parsing separately so this measures traversal polling, not host speed.
+#[test]
+fn timeout_in_str_format_field_access_chain() {
+    let pause_at_interrupt = |code: &str| {
+        let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let progress = run
+            .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap();
+        let call = resolve_name_lookups(progress)
+            .unwrap()
+            .into_function_call()
+            .expect("interrupt call");
+        assert_eq!(call.function_name, "interrupt");
+        call
+    };
+
+    let scan_code = r"
+template = '{missing' + '.x' * 1_500_000 + '}'
+interrupt()
+template.format()
+";
+    let scan_call = pause_at_interrupt(scan_code);
+    let scan_started = Instant::now();
+    let scan_result = scan_call.resume(MontyObject::None, PrintWriter::Stdout);
+    let scan_elapsed = scan_started.elapsed();
+    assert_eq!(scan_result.unwrap_err().exc_type(), ExcType::KeyError);
+    let traversal_budget = scan_elapsed.saturating_mul(3);
+
+    let code = r"
+class Value:
+    pass
+
+value = Value()
+value.x = value
+template = '{0' + '.x' * 1_500_000 + '}'
+interrupt()
+template.format(value)
+";
+    let mut call = pause_at_interrupt(code);
+
+    call.tracker_mut().set_max_duration(traversal_budget);
+    let started = Instant::now();
+    let result = call.resume(MontyObject::None, PrintWriter::Stdout);
+    let elapsed = started.elapsed();
+
+    let exc = result.expect_err("field traversal should exceed the time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < traversal_budget.saturating_mul(4),
+        "field traversal should terminate promptly, took {elapsed:?}"
+    );
 }
 
 /// Covers all four substring scanners; `index`/`rindex` share theirs with
@@ -745,6 +813,112 @@ a == b
     assert_timeout_in_builtin(code, "dict equality");
 }
 
+/// Test that a dict/set probe restarted by a mutating `__eq__` respects the
+/// time limit.
+///
+/// Every comparison adds another colliding key whose own `__eq__` does the
+/// same, so the probe never runs out of new candidates (CPython, walking the
+/// live chain, hangs on this too). Re-entering the VM for the callback restarts
+/// the dispatch countdown, so only the probe's own `check_time()` can end it.
+#[test]
+fn timeout_in_mutating_lookup_probe() {
+    let template = r"
+busy = False
+
+
+class Mutator:
+    def __hash__(self):
+        return 1
+
+    def __eq__(self, other):
+        global busy
+        if not busy:
+            busy = True
+            ADD_MUTATOR
+            busy = False
+        return False
+
+
+container = MAKE_CONTAINER
+Mutator() in container
+";
+    let dict = template
+        .replace("ADD_MUTATOR", "container[Mutator()] = 0")
+        .replace("MAKE_CONTAINER", "{Mutator(): 0}");
+    let set = template
+        .replace("ADD_MUTATOR", "container.add(Mutator())")
+        .replace("MAKE_CONTAINER", "{Mutator()}");
+    assert_timeout_in_builtin(&dict, "dict probe restarted by __eq__");
+    assert_timeout_in_builtin(&set, "set probe restarted by __eq__");
+}
+
+/// Missing lookups in a fully colliding container must not rescan their
+/// already-compared candidates quadratically.
+///
+/// `H` instances hash constant and are never `eq_is_native`, so a missing
+/// probe hands all N entries to the mutation-aware continuation, whose
+/// seen-check must be O(1) — a linear scan makes each miss Θ(N²), and that
+/// pass reaches no limit poll. Found lookups walk the same candidate chain
+/// but never reach the continuation, so timing misses against finds on the
+/// same container isolates exactly the continuation's cost — the ratio is
+/// independent of machine speed, coverage instrumentation, and feature
+/// flags. Measured: healthy ~1.2x, the old linear seen-scan ~4.2x. The 3x
+/// threshold therefore sits closer to the regression than to a false alarm —
+/// raise it and the test stops catching the bug.
+#[test]
+fn colliding_lookup_is_not_quadratic() {
+    let build_template = r"
+class H:
+    def __hash__(self):
+        return 1
+
+
+container = MAKE_CONTAINER
+for _ in range(800):
+    ADD_ENTRY
+";
+    // 800 found lookups: same per-candidate machinery as the misses below
+    // (every comparison still dispatches through the guarded snapshot loop),
+    // but the probe ends at its match, before the continuation.
+    let found_lookups = r"
+for k in list(container):
+    assert k in container
+";
+    // 400 misses, each comparing all 800 candidates and then entering the
+    // continuation — in total the same number of comparisons as the finds.
+    let missing_lookups = r"
+probe = H()
+for _ in range(400):
+    assert probe not in container
+";
+    for (label, make_container, add_entry) in [
+        ("dict", "{}", "container[H()] = 0"),
+        ("set", "set()", "container.add(H())"),
+    ] {
+        let build = build_template
+            .replace("MAKE_CONTAINER", make_container)
+            .replace("ADD_ENTRY", add_entry);
+        let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+        repl.feed_run(&build, vec![], PrintWriter::Stdout)
+            .unwrap_or_else(|e| panic!("{label}: build failed: {e}"));
+
+        let start = Instant::now();
+        repl.feed_run(found_lookups, vec![], PrintWriter::Stdout)
+            .unwrap_or_else(|e| panic!("{label}: found lookups failed: {e}"));
+        let found_elapsed = start.elapsed();
+
+        let start = Instant::now();
+        repl.feed_run(missing_lookups, vec![], PrintWriter::Stdout)
+            .unwrap_or_else(|e| panic!("{label}: missing lookups failed: {e}"));
+        let missing_elapsed = start.elapsed();
+
+        assert!(
+            missing_elapsed < found_elapsed * 3,
+            "{label}: misses took {missing_elapsed:?} vs finds {found_elapsed:?}, expected linear seen-checks"
+        );
+    }
+}
+
 /// Test that `str.splitlines()` on a large string respects the time limit.
 ///
 /// `str_splitlines()` scans the entire string for line endings in a while loop
@@ -756,6 +930,126 @@ s = 'a\n' * 5_000_000
 s.splitlines()
 ";
     assert_timeout_in_builtin(code, "str.splitlines()");
+}
+
+#[test]
+fn timeout_in_str_format_parser() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("template = '{' + 'x' * 20_000_000", vec![], PrintWriter::Stdout)
+        .unwrap();
+
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("template.format()", vec![], PrintWriter::Stdout)
+        .expect_err("an unterminated field must fail without a time limit");
+    let full_scan = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::ValueError);
+
+    repl.tracker_mut().set_max_duration(full_scan / 10);
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("template.format()", vec![], PrintWriter::Stdout)
+        .expect_err("the format-string parser must hit the time limit");
+    let elapsed = start.elapsed();
+
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < full_scan / 2,
+        "str.format() should stop during the scan; full scan {full_scan:?}, timed scan {elapsed:?}"
+    );
+}
+
+/// Copying the receiver is only a few milliseconds of work, so this compares
+/// the tracker's execution clock rather than wall time: compiling the feed and
+/// tearing down the 20 MB buffer would otherwise be a large share of both runs.
+#[test]
+fn timeout_in_str_format_receiver_snapshot() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("template = '{missing}' + 'x' * 20_000_000", vec![], PrintWriter::Stdout)
+        .unwrap();
+
+    let before = repl.tracker().elapsed();
+    let exc = repl
+        .feed_run("template.format()", vec![], PrintWriter::Stdout)
+        .expect_err("the missing field must fail after snapshotting the receiver");
+    let full_snapshot = repl.tracker().elapsed().saturating_sub(before);
+    assert_eq!(exc.exc_type(), ExcType::KeyError);
+
+    // resets the execution clock, so the next feed's elapsed time starts at zero
+    repl.tracker_mut().set_max_duration(full_snapshot / 10);
+    let exc = repl
+        .feed_run("template.format()", vec![], PrintWriter::Stdout)
+        .expect_err("the receiver snapshot must hit the time limit before field lookup");
+    let elapsed = repl.tracker().elapsed();
+
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < full_snapshot / 2,
+        "str.format() should stop while copying the receiver; full snapshot {full_snapshot:?}, timed snapshot {elapsed:?}"
+    );
+}
+
+#[test]
+fn timeout_in_str_format_escaped_braces() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("template = '{{' * 5_000_000", vec![], PrintWriter::Stdout)
+        .unwrap();
+
+    let start = Instant::now();
+    repl.feed_run("template.format()", vec![], PrintWriter::Stdout).unwrap();
+    let full_scan = start.elapsed();
+
+    repl.tracker_mut().set_max_duration(full_scan / 10);
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("template.format()", vec![], PrintWriter::Stdout)
+        .expect_err("escaped braces must not bypass the time limit");
+    let elapsed = start.elapsed();
+
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < full_scan / 2,
+        "str.format() should stop during the scan; full scan {full_scan:?}, timed scan {elapsed:?}"
+    );
+}
+
+#[test]
+fn timeout_in_str_format_grouped_padding() {
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_duration(Duration::from_millis(10)));
+    let mut repl = MontyRepl::new("test.py", tracker, CompileOptions::default());
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("'{:09223372036854775807,}'.format(1)", vec![], PrintWriter::Stdout)
+        .expect_err("grouped padding must hit the time limit before allocating the full width");
+    let elapsed = start.elapsed();
+
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "str.format() should terminate promptly, took {elapsed:?}"
+    );
+}
+
+/// A str field above the large-result threshold is walked in polled steps, so a
+/// deadline armed before the call fires inside the format rather than after it.
+#[test]
+fn timeout_in_str_format_large_str_field() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("s = 'x' * 20_000_000", vec![], PrintWriter::Stdout)
+        .unwrap();
+
+    repl.tracker_mut().set_max_duration(Duration::from_millis(5));
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("'{0:<1}'.format(s)", vec![], PrintWriter::Stdout)
+        .expect_err("a large str field must observe the time limit");
+    let elapsed = start.elapsed();
+
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "str.format() should stop inside the format, took {elapsed:?}"
+    );
 }
 
 /// Test that `bytes.splitlines()` on large bytes respects the time limit.
@@ -990,14 +1284,36 @@ repr(x)
     assert_repr_timeout(code, "dict repr");
 }
 
+/// Test that `repr()` of a widely bound `functools.partial` respects the time
+/// limit.
+///
+/// The bound arguments and keywords are formatted in one native loop, so
+/// without the shared `repr_check_time` counter the repr runs to completion
+/// before any checkpoint — 500k arguments overshoot the deadline by more than
+/// an order of magnitude over the bound asserted here.
+#[test]
+fn timeout_truncation_in_partial_repr() {
+    let code = r"
+import functools
+def target(*args, **kwargs):
+    return 0
+p = functools.partial(target, *(['abcdefghij'] * 500_000))
+interrupt()
+repr(p)
+";
+    assert_repr_timeout(code, "partial repr");
+}
+
 /// Test that `repr(large_set)` respects the time limit.
 ///
-/// Uses a set of 100K unique strings so that repr formatting is slow enough
-/// to trigger the timeout.
+/// The elements are ints rather than strings so that the promptness bound
+/// measures the timeout and not the teardown: freeing 300K distinct heap
+/// strings after the truncated repr costs more than the whole time budget on
+/// a loaded CI machine.
 #[test]
 fn timeout_truncation_in_set_repr() {
     let code = r"
-x = {str(i) for i in range(100_000)}
+x = {i for i in range(300_000)}
 interrupt()
 repr(x)
 ";
@@ -1084,6 +1400,49 @@ list(source)
     );
 }
 
+/// Third companion: the level is owed by the delegation, so an adaptor that
+/// answers from its own state must not cost one. `accumulate` yields its
+/// `initial` without touching its source, so the same nest over it has to fit
+/// in the same depth as one over a plain iterator — it needed one more while
+/// `ItertoolsIter::py_next` charged before dispatching, and a spent `batched`
+/// or a latched `takewhile` in that position was charged the same way.
+#[test]
+fn itertools_adaptors_charge_recursion_only_when_they_delegate() {
+    // The shallowest limit that runs a fixed nest, found rather than pinned:
+    // what matters is the difference between the two innermost iterators, not
+    // the absolute depth the surrounding frames happen to use.
+    let min_depth = |inner: &str| {
+        let code = format!(
+            r"
+import itertools
+source = {inner}
+for _ in range(20):
+    source = itertools.islice(source, 0, None)
+next(source)
+"
+        );
+        let ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        (1..=64)
+            .find(|&depth| {
+                let limits = ResourceLimits::default().max_recursion_depth(depth);
+                match ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout) {
+                    Ok(value) => {
+                        assert_eq!(value, MontyObject::Int(1), "inner: {inner}");
+                        true
+                    }
+                    Err(_) => false,
+                }
+            })
+            .unwrap_or_else(|| panic!("no depth up to 64 ran the nest over {inner}"))
+    };
+
+    assert_eq!(
+        min_depth("itertools.accumulate([], initial=1)"),
+        min_depth("iter([1])"),
+        "answering from adaptor state should cost no recursion level"
+    );
+}
+
 /// Ordering deeply nested namedtuples must raise `RecursionError`, not overflow
 /// the native stack. Ordering compares detached item vecs via `cmp_item_seqs`
 /// rather than a token-bearing iterator, so it charges its own recursion level;
@@ -1111,4 +1470,49 @@ a < b
         let exc = result.expect_err("nested namedtuple ordering should exceed the recursion limit");
         assert_eq!(exc.exc_type(), ExcType::RecursionError, "build: {build}");
     }
+}
+
+/// Every `itertools` adaptor whose `next` can loop natively without yielding.
+///
+/// Each pairs a discarding or draining adaptor with an infinite source, so the
+/// loop never returns to the VM. `dropwhile` appears twice because a builtin
+/// predicate and a short user-defined one fail the same way: the dispatch
+/// checkpoint is per-`run()`, so a callback under `CHECK_INTERVAL`
+/// instructions restarts the countdown instead of reaching it.
+const ITERTOOLS_INFINITE_LOOPS: &[&str] = &[
+    "next(itertools.dropwhile(bool, itertools.count(1)))",
+    "def always(x):\n    return True\nnext(itertools.dropwhile(always, itertools.count(1)))",
+    "next(itertools.filterfalse(bool, itertools.count(1)))",
+    "next(itertools.compress(itertools.count(1), itertools.repeat(0)))",
+    "next(itertools.islice(itertools.count(1), 10**18, None))",
+    "next(itertools.starmap(max, itertools.repeat(itertools.count(1))))",
+    "next(itertools.batched(itertools.count(1), 10**18))",
+];
+
+/// Test that adaptors discarding items from an infinite source still time out.
+///
+/// These loops sit inside one bytecode instruction and drive native sources, so
+/// nothing returns to the dispatch checkpoint; each must poll the tracker
+/// itself or `max_duration` is unenforceable.
+#[test]
+fn timeout_in_itertools_adaptor_loops() {
+    for expr in ITERTOOLS_INFINITE_LOOPS {
+        assert_timeout_in_builtin(&format!("import itertools\n{expr}"), expr);
+    }
+}
+
+/// Test that `a85decode` respects the time limit when `ignorechars` is large.
+///
+/// Every byte that is no Ascii85 digit reaches `x in ignorechars`, a linear
+/// scan for `bytes`, so the decode is quadratic in the two lengths while
+/// allocating nothing — a deadline problem no allocation preflight would catch.
+/// The lengths are set so that running to completion takes far longer than the
+/// promptness bound: without a poll in the loop the builtin returns to the VM's
+/// checkpoint only after tens of seconds.
+#[test]
+fn timeout_in_a85decode_ignorechars() {
+    assert_timeout_in_builtin(
+        "import base64\ndata = b'\\0' * 1000000\nignore = b'\\xff' * 1000000 + b'\\0'\nbase64.a85decode(data, ignorechars=ignore)",
+        "a85decode with large ignorechars",
+    );
 }

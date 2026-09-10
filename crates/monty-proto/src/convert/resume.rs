@@ -51,6 +51,7 @@ impl TryFrom<pb::ResumeNameLookup> for NameLookupResult {
         match kind {
             pb::resume_name_lookup::Kind::Value(value) => Ok(Self::Value(value.into_object()?)),
             pb::resume_name_lookup::Kind::Undefined(_) => Ok(Self::Undefined),
+            pb::resume_name_lookup::Kind::Error(err) => Ok(Self::Error(MontyException::try_from(err)?)),
         }
     }
 }

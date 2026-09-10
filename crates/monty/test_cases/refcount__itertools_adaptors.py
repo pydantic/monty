@@ -120,5 +120,171 @@ try:
 except TypeError as exc:
     assert str(exc) == "'int' object is not iterable"
 
+
+# The predicate-driven adaptors own a CALLABLE as well as a source, so each has
+# a second trace edge. A closure is used deliberately: a plain `def` is an
+# immediate `Value`, not a heap ref, so it would exercise no hook at all.
+def make_shorter_than(limit):
+    bound = list(range(limit))
+
+    def shorter(x):
+        return len(x) < len(bound)
+
+    return shorter
+
+
+def make_adder():
+    bound = [1]
+
+    def add(a, b=0):
+        return a + b + len(bound)
+
+    return add
+
+
+def make_concat():
+    bound = []
+
+    def concat(a, b):
+        return a + b + bound
+
+    return concat
+
+
+def make_boom():
+    bound = [1]
+
+    def boom(*args):
+        raise ValueError('boom' + str(len(bound)))
+
+    return boom
+
+
+# Each closure is passed inline and never named, so the adaptor's callable
+# field is its only referrer; the items are lists for the same reason.
+take_live = itertools.takewhile(make_shorter_than(3), [[1], [2]])
+next(take_live)
+drop_live = itertools.dropwhile(make_shorter_than(0), [[1], [2]])
+next(drop_live)
+filter_live = itertools.filterfalse(make_shorter_than(0), [[1], [2]])
+next(filter_live)
+star_live = itertools.starmap(make_adder(), [(1,), (2,)])
+next(star_live)
+
+# filterfalse with a None predicate leaves only the source edge, so a hook that
+# traces the callable twice still fails to reach these.
+filter_none = itertools.filterfalse(None, [[1], []])
+
+# The freeing paths: `py_dec_ref_ids` runs only on release, so each of these
+# must be dropped rather than merely held.
+gone_take = itertools.takewhile(make_shorter_than(3), [[1], [2]])
+next(gone_take)
+gone_take = None
+gone_drop = itertools.dropwhile(make_shorter_than(0), [[1], [2]])
+next(gone_drop)
+gone_drop = None
+gone_filter = itertools.filterfalse(make_shorter_than(0), [[1], [2]])
+next(gone_filter)
+gone_filter = None
+gone_star = itertools.starmap(make_adder(), [(1,)])
+next(gone_star)
+gone_star = None
+
+# A rejected item is dropped rather than yielded — the guard path inside `next`.
+rejected = itertools.takewhile(make_shorter_than(0), [[1], [2]])
+assert list(rejected) == []
+
+# A callable that raises leaves `next` through a `?` while the guard still
+# holds the item being tested, and for starmap the arguments already collected.
+pred_erroring = itertools.takewhile(make_boom(), [[1], [2]])
+try:
+    next(pred_erroring)
+except ValueError:
+    pass
+
+star_erroring = itertools.starmap(make_boom(), [(1, 2)])
+try:
+    next(star_erroring)
+except ValueError:
+    pass
+
+
+# Spending an adaptor releases what it can no longer reach, THERE AND THEN
+# rather than at destruction — as `pairwise` and `islice` do above. Each source
+# and callable is named separately, so a count of 1 means the spent adaptor let
+# go of it and 2 means it is still held. The adaptors stay bound so it is the
+# release being measured, not their destruction.
+take_pred = make_shorter_than(0)
+take_source = iter([[1], [2]])
+latched_take = itertools.takewhile(take_pred, take_source)
+assert list(latched_take) == []
+
+# `dropwhile` releases neither: the predicate goes uncalled after the first
+# rejection but stays owned to destruction, as CPython holds `lz->func`, and
+# it never latches, so every later `next` drives the source again.
+drop_pred = make_shorter_than(1)
+drop_source = iter([[], [1]])
+past_drop = itertools.dropwhile(drop_pred, drop_source)
+assert next(past_drop) == [1]
+
+
+# The batch-three adaptors. `accumulate` has THREE edges — source, callable and
+# the running total. Two steps are needed for the total edge: the first stores
+# the source's own item untouched, and only the second folds one in to produce a
+# list the adaptor alone names.
+acc_live = itertools.accumulate([[1], [2]], make_concat())
+next(acc_live)
+next(acc_live)
+bat_live = itertools.batched([[1], [2]], 1)
+next(bat_live)
+zip_live = itertools.zip_longest([[1]], [[2], [3]])
+next(zip_live)
+
+# `zip_longest`'s fillvalue is a second edge, named only through the adaptor,
+# and is reached once a shorter source has run out.
+fill_live = itertools.zip_longest([[1]], [[2], [3]], fillvalue=[9])
+next(fill_live)
+next(fill_live)
+
+# The freeing paths: `py_dec_ref_ids` runs only on release, so each of these
+# must be dropped rather than merely held.
+gone_acc = itertools.accumulate([[1], [2]], make_concat())
+next(gone_acc)
+next(gone_acc)
+gone_acc = None
+gone_bat = itertools.batched([[1], [2]], 1)
+next(gone_bat)
+gone_bat = None
+gone_zip = itertools.zip_longest([[1]], [[2]], fillvalue=[9])
+next(gone_zip)
+gone_zip = None
+
+# Spending releases what can no longer be reached, THERE AND THEN. `batched`
+# clears its source on the empty batch that ends it, and `zip_longest` clears
+# each source as it runs out, so both counts fall to 1 while the adaptor lives.
+bat_source = iter([[1], [2]])
+spent_bat = itertools.batched(bat_source, 2)
+assert list(spent_bat) == [([1], [2])]
+zip_source = iter([[1]])
+spent_zip = itertools.zip_longest(zip_source)
+assert list(spent_zip) == [([1],)]
+
+# Arguments the constructors only inspect are released too. `batched` truth-tests
+# `strict` without storing it, and a heap-backed one is the only shape that shows
+# an over-count — an inline `strict=True` is not a ref at all.
+strict_flag = [1]
+inspected_bat = itertools.batched('AB', 2, strict=strict_flag)
+
+# `zip_longest` resolves every argument eagerly, so a non-iterable part-way along
+# has to release the ones already resolved AND the ones never reached. The bad
+# argument goes in the MIDDLE: put it last and the untouched tail is empty.
+zip_resolved = [1]
+zip_unreached = [2]
+try:
+    itertools.zip_longest(zip_resolved, 5, zip_unreached)
+    assert False, 'expected zip_longest to reject a non-iterable'
+except TypeError:
+    pass
+
 len('done')
-# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1, 'chain_drained_source': 1, 'chain_drained': 1, 'chain_unreached_source': 1, 'chain_failed': 1}
+# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1, 'chain_drained_source': 1, 'chain_drained': 1, 'chain_unreached_source': 1, 'chain_failed': 1, 'take_live': 1, 'drop_live': 1, 'filter_live': 1, 'star_live': 1, 'filter_none': 1, 'rejected': 1, 'pred_erroring': 1, 'star_erroring': 1, 'take_pred': 1, 'take_source': 1, 'latched_take': 1, 'drop_pred': 2, 'drop_source': 2, 'past_drop': 1, 'fill_live': 1, 'zip_live': 1, 'bat_live': 1, 'acc_live': 1, 'bat_source': 1, 'spent_zip': 1, 'spent_bat': 1, 'zip_source': 1, 'strict_flag': 1, 'inspected_bat': 1, 'zip_resolved': 1, 'zip_unreached': 1}

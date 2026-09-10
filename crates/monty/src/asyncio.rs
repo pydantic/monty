@@ -180,6 +180,10 @@ impl ExternalFuture {
 ///   [`DropWithContext`] (and clone via [`Self::clone_with_heap`]) so the
 ///   `gather` ref count stays balanced.
 ///
+/// An awaitable whose downstream has already settled keeps its `Awaiter`
+/// pointing at it; the value is discarded where it is delivered rather than
+/// the link being severed here. See [`GatherState`].
+///
 /// Not `Copy` / `Clone` on purpose — the inc_ref discipline requires every
 /// duplication to go through `clone_with_heap` and every discard to go
 /// through `drop_with`.
@@ -263,6 +267,14 @@ pub(crate) enum GatherState {
     Failed(RunError),
 }
 
+/// Children of a gather that are still in flight → the slots each fills in the
+/// gather's `results`.
+///
+/// Keyed by the child's own `HeapId` (coroutine, external future or nested
+/// gather), which is how every resolution site addresses its parent's slots.
+/// Duplicates from `gather(c, c)` share one entry with several indices.
+pub(crate) type PendingChildren = AHashMap<HeapId, SmallVec<[usize; 1]>>;
+
 /// Per-await bookkeeping for a [`GatherFuture`] in the `Awaited` phase.
 ///
 /// All fields are populated when the gather is first awaited (in
@@ -281,14 +293,11 @@ pub(crate) struct AwaitedGather {
     /// fans into the outer's slot). Single-waiter for now; the multi-waiter
     /// form is a planned follow-up.
     pub awaiter: Awaiter,
-    /// Children → slots they fill in `results`. Keyed by each child's own
-    /// `HeapId` (coroutine or external future). Duplicates from
-    /// `gather(c, c)` produce a single entry whose value is a `SmallVec` of
-    /// multiple indices.
+    /// Children → slots they fill in `results`, see [`PendingChildren`].
     ///
     /// Entries are removed as the corresponding child resolves. The gather
     /// is done when this map is empty.
-    pub pending_children: AHashMap<HeapId, SmallVec<[usize; 1]>>,
+    pub pending_children: PendingChildren,
     /// Results from each gather item, in order. Indices align with
     /// `GatherFuture::items`. Filled as tasks complete and externals resolve.
     pub results: Vec<Option<Value>>,

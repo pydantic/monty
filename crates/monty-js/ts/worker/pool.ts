@@ -7,18 +7,17 @@
 // (whose `terminate()` is the hard-kill watchdog primitive) in the browser.
 //
 // One worker runs one session at a time. Checkout builds a `WorkerTransport`
-// (sending `ReplCreate`) over the worker's dispatch channel and wraps it in a
+// (sending `Configure`) over the worker's dispatch channel and wraps it in a
 // `MontySession`; closing the session `Reset`s the worker and returns it to the
 // idle set, unless it should be recycled (served its checkout quota) or died
 // (returned to the factory for disposal). State never leaks between sessions:
 // `Reset` clears the REPL before reuse.
 //
-// Not yet ported: the per-turn watchdog timeout. Hard preemption needs a real
-// `Worker.terminate()`; with the in-process backend a runaway turn cannot be
-// interrupted, exactly as the plan notes.
+// The message-channel backends enforce the per-turn watchdog by terminating
+// their worker; the in-process fallback cannot preempt a runaway turn.
 
 import { MontySession } from '../session.js'
-import { WasmHost, type Dispatcher, inProcessDispatcher } from './host.js'
+import { type ComponentModules, WasmHost, type Dispatcher, inProcessDispatcher } from './host.js'
 import { WorkerTransport, type WorkerSessionConfig } from './transport.js'
 
 /** `MontySession`'s constructor argument (the structural `NativeSession`). */
@@ -26,7 +25,7 @@ type SessionNative = ConstructorParameters<typeof MontySession>[0]
 
 /** A spawned worker: a dispatch channel plus a hard-kill primitive. */
 export interface PooledWorker {
-  /** Sends one framed request and resolves to the framed reply. */
+  /** Sends one semantic request and resolves to semantic component events. */
   readonly dispatch: Dispatcher
   /** Force-terminates the worker (`Worker.terminate()`; a no-op in-process). */
   terminate(): void
@@ -43,9 +42,9 @@ export type WorkerFactory = () => Promise<PooledWorker>
  * (an in-process instance cannot be force-killed); session isolation still
  * holds via `Reset`, but a runaway turn cannot be preempted.
  */
-export function inProcessFactory(module: WebAssembly.Module): WorkerFactory {
+export function inProcessFactory(modules: ComponentModules): WorkerFactory {
   return async () => {
-    const host = await WasmHost.create(module)
+    const host = await WasmHost.create(modules)
     const dispatch = inProcessDispatcher(host)
     let alive = true
     return {

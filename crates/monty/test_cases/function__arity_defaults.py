@@ -111,3 +111,93 @@ except TypeError as e:
         str(e)
         == 'k3() takes from 1 to 2 positional arguments but 3 positional arguments (and 2 keyword-only arguments) were given'
     ), f'plural kwonly suffix: {e}'
+
+
+# === More than 64 named parameters ===
+def many_params(
+    p00,
+    p01,
+    p02,
+    p03,
+    p04,
+    p05,
+    p06,
+    p07,
+    p08,
+    p09,
+    p10,
+    p11,
+    p12,
+    p13,
+    p14,
+    p15,
+    p16,
+    p17,
+    p18,
+    p19,
+    p20,
+    p21,
+    p22,
+    p23,
+    p24,
+    p25,
+    p26,
+    p27,
+    p28,
+    p29,
+    p30,
+    p31,
+    p32,
+    p33,
+    p34,
+    p35,
+    p36,
+    p37,
+    p38,
+    p39,
+    p40,
+    p41,
+    p42,
+    p43,
+    p44,
+    p45,
+    p46,
+    p47,
+    p48,
+    p49,
+    p50,
+    p51,
+    p52,
+    p53,
+    p54,
+    p55,
+    p56,
+    p57,
+    p58,
+    p59,
+    p60,
+    p61,
+    p62,
+    p63,
+    p64=640,
+    *,
+    flag,
+):
+    return p00, p63, p64, flag
+
+
+assert many_params(*range(64), flag=True) == (0, 63, 640, True)
+assert many_params(*range(64), p64=64, flag=False) == (0, 63, 64, False)
+assert many_params(*range(65), flag=True) == (0, 63, 64, True)
+
+try:
+    many_params(*range(65), p64=65, flag=True)
+    assert False, 'expected duplicate argument error'
+except TypeError as e:
+    assert str(e) == "many_params() got multiple values for argument 'p64'"
+
+try:
+    many_params(*range(65))
+    assert False, 'expected missing keyword-only argument error'
+except TypeError as e:
+    assert str(e) == "many_params() missing 1 required keyword-only argument: 'flag'"

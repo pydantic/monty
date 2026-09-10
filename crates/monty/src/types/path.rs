@@ -21,7 +21,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     os_dispatch::{build_path_os_call, is_path_os_method},
     types::{LazyHeapSet, List, PyTrait, Type, allocate_tuple, str::allocate_string},
@@ -435,7 +435,7 @@ impl Path {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Path
     }
@@ -452,7 +452,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
         Ok(Some(self.get(vm.heap).path == other.get(vm.heap).path))
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let p = self.get(vm.heap);
         if let Some(cached) = p.cached_hash.get() {
             return Ok(Some(cached));
@@ -492,13 +492,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
     /// OS methods (exists, read_text, etc.) are detected via `OsFunction::try_from`
     /// and returned as `CallResult::OsCall` for the VM to yield to the host.
     /// Pure methods (is_absolute, joinpath, etc.) are handled directly.
-    fn py_call_attr(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
@@ -512,7 +506,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
         if is_path_os_method(method) {
             let path = MontyPath::new(self.get(vm.heap).as_str().to_owned());
             // SAFETY: builder owns `args` and is responsible for dropping it
-            // on every error path; `self_id` is a separate heap entry that
+            // on every error path; `self` is a separate heap entry that
             // we don't transfer here.
             return match build_path_os_call(method, path, args, vm)? {
                 Some(call) => Ok(CallResult::OsCall(call)),
@@ -576,8 +570,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
                 // The `inc_ref` is required because the prepended `Value::Ref`
                 // is dropped by `builtin_open` via `defer_drop!` once the path
                 // string has been extracted, balancing the refcount.
-                vm.heap.inc_ref(self_id);
-                let args = args.prepend(Value::Ref(self_id));
+                let args = args.prepend(self.clone_value(vm.heap));
                 return builtin_open(vm, args);
             }
             _ => {

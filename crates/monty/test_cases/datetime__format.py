@@ -88,3 +88,9 @@ _empty = ''
 assert f'{_dt:{_empty}}' == '2024-06-15 10:30:45'
 # a conversion flag converts to a string first, so the spec formats that string
 assert f'{_d!s:>12}' == '  2024-06-15'
+# the format() builtin takes the same path
+assert format(_d, '%Y/%m/%d') == '2024/06/15'
+assert format(_dt, '%H:%M') == '10:30'
+assert format(datetime.time(10, 30, 45), '%H-%M-%S') == '10-30-45'
+assert format(_d) == '2024-06-15'
+assert format(_dt, '') == '2024-06-15 10:30:45'

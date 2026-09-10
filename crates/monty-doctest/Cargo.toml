@@ -1,0 +1,18 @@
+[package]
+name = "monty-doctest"
+version = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = "Doctest harness for Monty's Rust documentation examples"
+publish = false
+
+[dev-dependencies]
+monty = { workspace = true }
+monty-pool = { workspace = true }
+monty-types = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

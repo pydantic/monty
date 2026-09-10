@@ -100,7 +100,7 @@ impl Drop for RecursionGuard<'_, '_> {
 /// Hard cap on native Rust call-stack re-entry, enforced by
 /// [`VM::enter_run_reentry`] and released by [`RunReentryGuard`]. Much smaller
 /// than the 1000-frame Python recursion limit because each level costs a real
-/// nested call to [`VM::run`], not a push onto the heap-allocated `frames` vec.
+/// nested call to [`VM::run`], not a switch of the VM's current frame.
 ///
 /// Tuned conservatively from the smallest native stack observed while fixing
 /// recursive callback crashes. A debug monty-datatest worker with an ~2 MiB

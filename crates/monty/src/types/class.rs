@@ -1,16 +1,47 @@
 use std::fmt::Write;
 
+use monty_types::MontyUuid;
+
 use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
 use crate::{
     args::ArgValues,
+    boundary_uuid::create_uuid,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapRead, heap_read_ref_as_field_mut},
+    heap::{
+        BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapRead,
+        heap_read_ref_as_field_mut,
+    },
     types::str::allocate_string,
     value::{EitherStr, Value},
 };
+
+/// The `@dataclass(...)` options Monty implements.
+///
+/// Small and `Copy`, so it doubles as the payload of the *configured decorator*
+/// (`dataclass(frozen=True)`) without a heap allocation. Every other CPython
+/// flag is rejected at the call, so each is either stored here or known to hold
+/// its default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DataclassOptions {
+    /// Synthesize a field-wise `__eq__` (CPython's `eq`, default `True`).
+    pub eq: bool,
+    /// Reject attribute assignment, and hash by field values when `eq` is also
+    /// set (CPython's `frozen`, default `False`).
+    pub frozen: bool,
+}
+
+impl Default for DataclassOptions {
+    /// CPython's defaults: `eq=True, frozen=False`.
+    fn default() -> Self {
+        Self {
+            eq: true,
+            frozen: false,
+        }
+    }
+}
 
 /// A user-defined class object created by a `class Foo: ...` statement.
 ///
@@ -32,13 +63,53 @@ pub(crate) struct Class {
     name: EitherStr,
     /// Members: method name / class-variable name -> value.
     namespace: Dict,
+    /// The `@dataclass(...)` options this class was decorated with, left at
+    /// CPython's defaults for a class that was not. Stands in for the dunders
+    /// CPython generates and Monty cannot yet install: baked in at decoration
+    /// so `__dataclass_params__` stays a report, not a rewritable control.
+    options: DataclassOptions,
+    /// Boundary identity, generated lazily the first time the class (or one of
+    /// its instances) crosses to the host; dumped with the heap so it stays
+    /// stable across restores.
+    uuid: Option<MontyUuid>,
 }
 
 impl Class {
     /// Creates a new class object from its name and member namespace.
+    ///
+    /// Dataclass options start at their defaults; `@dataclass` sets them with
+    /// [`HeapRead::set_dataclass_options`] once it has built the class.
     #[must_use]
     pub fn new(name: EitherStr, namespace: Dict) -> Self {
-        Self { name, namespace }
+        Self {
+            name,
+            namespace,
+            options: DataclassOptions::default(),
+            uuid: None,
+        }
+    }
+
+    /// Boundary identity of the class, generated and stored on first use so
+    /// repeated crossings (and dump/restore) observe the same id. Only
+    /// `Heap::boundary_uuid` may call this: it also indexes the new id.
+    pub(crate) fn boundary_uuid(&mut self) -> MontyUuid {
+        *self.uuid.get_or_insert_with(create_uuid)
+    }
+
+    /// The boundary identity, if the class (or an instance) has crossed to the host.
+    #[must_use]
+    pub fn uuid(&self) -> Option<MontyUuid> {
+        self.uuid
+    }
+
+    /// The `@dataclass(...)` options in force for this class.
+    ///
+    /// Meaningful only once [`dataclass_options`](crate::modules::dataclasses::dataclass_options)
+    /// has confirmed the class is a dataclass — a plain class reports the
+    /// defaults it was never decorated with.
+    #[must_use]
+    pub fn dataclass_options(&self) -> DataclassOptions {
+        self.options
     }
 
     /// Returns the class name (interned or heap-owned).
@@ -67,9 +138,19 @@ impl<'h> HeapRead<'h, Class> {
     pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.namespace_mut().set(name, value, vm)
     }
+
+    /// Records what `@dataclass(...)` decorated this class with.
+    ///
+    /// Called once per decoration, so re-decorating replaces the options as it
+    /// replaces the fields. Assigning to `__dataclass_params__` afterwards does
+    /// not reach here, which is what makes that object a report rather than a
+    /// control.
+    pub fn set_dataclass_options(&mut self, options: DataclassOptions, vm: &mut VM<'h>) {
+        self.get_mut(vm.heap).options = options;
+    }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         // The type of a class object is `type` (matching `type(Foo) is type`).
         Type::Type
@@ -94,9 +175,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
         Ok(None)
     }
 
-    fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         // Class objects hash by identity (like CPython type objects).
-        Ok(Some(identity_hash(self_id)))
+        Ok(Some(identity_hash(self.id())))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -123,13 +204,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
         }
     }
 
-    fn py_call_attr(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let attr_str = attr.as_str(vm.interns);
         // `__name__` is a synthesized string, not a namespace member (see
         // `py_getattr`), so calling it goes through the normal callable

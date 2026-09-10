@@ -177,7 +177,9 @@ pub struct ParseResult {
 }
 
 pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseError> {
-    parse_with_interner(code, filename, InternerBuilder::new(code))
+    let mut interner = InternerBuilder::new(code);
+    let nodes = parse_with_interner(code, filename, &mut interner)?;
+    Ok(ParseResult { nodes, interner })
 }
 
 /// Builds a [`CodeRange`] from an interned filename and a ruff range.
@@ -192,15 +194,16 @@ fn code_range(filename: StringId, range: TextRange) -> CodeRange {
     }
 }
 
-/// Parses code using a caller-provided interner seed.
+/// Parses code, interning names into the caller's `interner`.
 ///
-/// This enables incremental compilation flows (e.g. REPL) where existing
-/// interned IDs must remain stable across parse invocations.
+/// The interner is borrowed rather than consumed so incremental flows (the
+/// REPL) keep their table — ids appended by a snippet that then fails to parse
+/// are stable and harmless, so nothing needs rolling back.
 pub(crate) fn parse_with_interner(
     code: &str,
     filename: &str,
-    mut interner: InternerBuilder,
-) -> Result<ParseResult, ParseError> {
+    interner: &mut InternerBuilder,
+) -> Result<Vec<ParseNode>, ParseError> {
     // Interned up front so a syntax error can be located without a `Parser`,
     // leaving the parser to be built once, fully populated, after parsing.
     let filename_id = interner.intern(filename);
@@ -214,23 +217,19 @@ pub(crate) fn parse_with_interner(
         .map(Ranged::start)
         .collect();
     let mut parser = Parser::new(code, filename_id, interner, class_keyword_offsets);
-    let nodes = parser.parse_statements(parsed.into_syntax().body)?;
-    Ok(ParseResult {
-        nodes,
-        interner: parser.interner,
-    })
+    parser.parse_statements(parsed.into_syntax().body)
 }
 
 /// Parser for converting ruff AST to Monty's intermediate ParseNode representation.
 ///
-/// Holds references to the source code and owns a string interner for names.
+/// Holds references to the source code and the caller's string interner for names.
 /// The filename is interned once at construction and reused for all CodeRanges.
 pub struct Parser<'a> {
     code: &'a str,
     /// Interned filename ID, used for all CodeRanges created by this parser.
     filename_id: StringId,
     /// String interner for names (variables, functions, etc).
-    pub interner: InternerBuilder,
+    interner: &'a mut InternerBuilder,
     /// Remaining nesting depth budget for recursive structures.
     /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
     /// When it reaches zero, we return a "Source is too deeply nested" syntax error.
@@ -249,7 +248,7 @@ impl<'a> Parser<'a> {
     fn new(
         code: &'a str,
         filename_id: StringId,
-        interner: InternerBuilder,
+        interner: &'a mut InternerBuilder,
         class_keyword_offsets: Vec<TextSize>,
     ) -> Self {
         Self {
@@ -1486,10 +1485,9 @@ impl<'a> Parser<'a> {
                 // Chain comparison: transform to nested And expressions
                 self.parse_chain_comparison(*left, ops_vec, comparators_vec, position)
             }
-            AstExpr::Call(ast::ExprCall {
-                func, arguments, range, ..
-            }) => {
-                let position = self.convert_range(range);
+            AstExpr::Call(call) => {
+                let position = self.convert_range(call.range());
+                let ast::ExprCall { func, arguments, .. } = call;
                 let ast::Arguments { args, keywords, .. } = arguments;
                 let args_vec = args.into_vec();
                 let keywords_vec: Vec<_> = keywords.into_iter().collect();

@@ -16,19 +16,24 @@
 //! the host transport surfaces that; it only ensures every *graceful* turn ends
 //! with exactly one turn-ending event.
 
-use std::{borrow::Cow, mem};
+use std::{
+    borrow::Cow,
+    mem,
+    time::{Duration, Instant},
+};
 
 use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
-    PrintWriter, PrintWriterCallback, ResourceTracker, TypeCheckState, TypeCheckingConfig,
+    PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, TypeCheckState, TypeCheckingConfig,
 };
 
 use super::{
-    FrameError, FrameReader, MAX_FRAME_LEN, WireFunctionCall, check_protocol_version, exceeds_max_frame_len,
-    exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
+    DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError, WireFunctionCall,
+    check_protocol_version, exceeds_max_frame_len, exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
 };
+use crate::wire::uuid_to_pb;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
@@ -150,15 +155,19 @@ fn dispatch_into(child: &mut Child, request_frame: &[u8], sink: &mut VecEventSin
     }
 }
 
-/// The sandbox budget of the child's current session, as a host outside the
-/// interpreter sees it. Both fields describe how much memory the session may
-/// need: the tracked budget, and whether type checking's untracked caches load.
+/// The current sandbox budget visible to an external host.
+///
+/// Hosts use the memory fields to arm their allocator and `max_suspensions` to
+/// restore their accounting.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SessionBudget {
     /// `max_memory` in bytes; `None` when unlimited, or when no session exists.
     pub max_memory: Option<usize>,
     /// Whether the session type checks each fed snippet.
     pub type_check: bool,
+    /// Maximum suspensions the host may service; enforced outside the child.
+    /// `None` only when no session exists.
+    pub max_suspensions: Option<usize>,
 }
 
 /// REPL session state of the child.
@@ -194,6 +203,10 @@ pub struct Child {
     type_checker: TypeChecker,
     /// `Some` when the session was created with `type_check: true`.
     type_check: Option<TypeCheckState>,
+    /// How long [`ProtoPrint`] may hold buffered output, from the session's
+    /// `Configure`. `Duration::ZERO` means line buffering (see the field's
+    /// documentation in the schema).
+    print_flush_interval: Duration,
 }
 
 impl Default for Child {
@@ -203,6 +216,7 @@ impl Default for Child {
             script_name: String::new(),
             type_checker: TypeChecker::default(),
             type_check: None,
+            print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
         }
     }
 }
@@ -244,6 +258,7 @@ impl Child {
             pb::parent_request::Kind::ResumeCall(resume) => self.handle_resume_call(resume, sink),
             pb::parent_request::Kind::ResumeNameLookup(resume) => self.handle_resume_name_lookup(resume, sink),
             pb::parent_request::Kind::ResumeFutures(resume) => self.handle_resume_futures(resume, sink),
+            pb::parent_request::Kind::AbortFeed(abort) => self.handle_abort_feed(abort, sink),
             pb::parent_request::Kind::Dump(_) => self.handle_dump(),
             pb::parent_request::Kind::Load(load) => self.handle_load(&load),
             pb::parent_request::Kind::Reset(_) => match self.reset() {
@@ -263,11 +278,52 @@ impl Child {
                 return Ok(HandleOutcome::Shutdown);
             }
         };
-        self.stamp_execution_time(&mut event);
-        if let Err(err) = sink.send(&event) {
+        self.stamp_session_budget(&mut event);
+        let sent = sink.send(&event);
+        // a suspension announcement was *lent* the payload it announces, so
+        // take it back before anything can observe the stored suspension
+        // without it — on the failed-send path too, since the session may yet
+        // be dumped or answered
+        if let Err(err) = self.reclaim_suspension_payload(&mut event) {
+            sink.send(&self.fatal_event(&format!("suspension payload could not be restored: {err}")))?;
+            return Ok(HandleOutcome::Fatal);
+        }
+        if let Err(err) = sent {
             self.recover_send_error(&event, err, sink)?;
         }
         Ok(HandleOutcome::Continue)
+    }
+
+    /// Moves a suspension announcement's payload back into the suspension it
+    /// announces, undoing the loan taken by [`suspension_event_function_call`]
+    /// / [`suspension_event_os_call`]. A no-op for every other event.
+    ///
+    /// The gap this closes is short by construction: the payload is lent as the
+    /// event is built and reclaimed as soon as [`Self::handle`] has sent it,
+    /// with only timing stamps and print draining in between.
+    ///
+    /// `Err` means the wire arms and [`OsFunctionCall`] have drifted apart —
+    /// the conversion back is total for a payload this child just produced, so
+    /// a failure would leave a suspension the parent's answer can no longer be
+    /// applied to. The caller makes that fatal rather than serving on.
+    fn reclaim_suspension_payload(&mut self, event: &mut pb::ChildEvent) -> Result<(), ProtoConvertError> {
+        let SessionState::Suspended(progress) = &mut self.state else {
+            return Ok(());
+        };
+        match (progress.as_mut(), &mut event.kind) {
+            (ReplProgress::FunctionCall(call), Some(pb::child_event::Kind::FunctionCall(announced))) => {
+                call.args = mem::take(&mut announced.args);
+                call.kwargs = mem::take(&mut announced.kwargs);
+            }
+            (ReplProgress::OsCall(call), Some(pb::child_event::Kind::OsCall(announced))) => {
+                if let Some(announced) = announced.call.take() {
+                    call.function_call = announced.try_into()?;
+                }
+            }
+            // any other pairing is an event that borrowed nothing
+            _ => {}
+        }
+        Ok(())
     }
 
     /// What the session the child is *currently* holding would run under.
@@ -287,6 +343,8 @@ impl Child {
                     .and_then(|limits| limits.max_memory_bytes)
                     .map(|v| usize::try_from(v).unwrap_or(usize::MAX)),
                 type_check: config.type_check,
+                // the wire default applies before the repl exists too
+                max_suspensions: Some(ResourceLimits::from(config.limits.unwrap_or_default()).max_suspensions),
             },
             SessionState::Configured(None) => SessionBudget::default(),
             SessionState::Ready(repl) => self.tracker_budget(repl.tracker()),
@@ -299,6 +357,7 @@ impl Child {
         SessionBudget {
             max_memory: tracker.max_memory(),
             type_check: self.type_check.is_some(),
+            max_suspensions: Some(tracker.max_suspensions()),
         }
     }
 
@@ -310,7 +369,7 @@ impl Child {
         let mut event = fatal_error_event(message);
         // fatal paths bypass `handle`, so stamp timing here to keep the
         // "every turn-ending event carries timing" contract intact
-        self.stamp_execution_time(&mut event);
+        self.stamp_session_budget(&mut event);
         event
     }
 
@@ -344,28 +403,25 @@ impl Child {
                     ExcType::RuntimeError,
                     &format!("result frame of {len} bytes exceeds the maximum of {max} bytes"),
                 );
-                self.stamp_execution_time(&mut event);
+                self.stamp_session_budget(&mut event);
                 sink.send(&event)
             }
             other => Err(other),
         }
     }
 
-    /// Stamps cumulative execution time and the `max_duration` budget onto a
-    /// turn-ending event, making the child the single source of truth for
-    /// timing (the parent's watchdog derives its backstop from these fields).
-    /// Left zero/absent when no session exists.
-    fn stamp_execution_time(&self, event: &mut pb::ChildEvent) {
+    /// Stamps session timing and parent-enforced limits onto an event.
+    ///
+    /// Reported timing drives the parent's backstop. Fields are absent without
+    /// a session.
+    fn stamp_session_budget(&self, event: &mut pb::ChildEvent) {
         let tracker = match &self.state {
             SessionState::Ready(repl) => repl.tracker(),
             SessionState::Suspended(progress) => progress.tracker(),
             // no repl materialized yet → no tracker to report
             SessionState::Configured(_) => return,
         };
-        event.total_execution_micros = u64::try_from(tracker.elapsed().as_micros()).unwrap_or(u64::MAX);
-        event.max_duration_micros = tracker
-            .max_duration()
-            .map(|max| u64::try_from(max.as_micros()).unwrap_or(u64::MAX));
+        stamp_budget(event, tracker);
     }
 
     /// Stores the session config; the repl is built lazily by [`ensure_repl`]
@@ -373,6 +429,14 @@ impl Child {
     /// not-yet-configured worker.
     fn handle_configure(&mut self, configure: pb::Configure) -> pb::ChildEvent {
         if matches!(self.state, SessionState::Configured(None)) {
+            // Applied on arrival rather than in `ensure_repl`, which a `Load`
+            // never reaches: a dump restores the repl directly, and print
+            // pacing is a delivery setting the dump does not carry.
+            // Absent means an older parent, or one with no opinion; both get
+            // the default rather than the line buffering that predates it.
+            self.print_flush_interval = configure
+                .print_flush_interval_ms
+                .map_or(DEFAULT_PRINT_FLUSH_INTERVAL, |ms| Duration::from_millis(u64::from(ms)));
             self.state = SessionState::Configured(Some(Box::new(configure)));
             ok_event()
         } else {
@@ -410,6 +474,8 @@ impl Child {
             protocol_version: _,
             // informational only — never checked
             monty_version: _,
+            // applied when the `Configure` arrived, so a `Load` honors it too
+            print_flush_interval_ms: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;
@@ -463,7 +529,7 @@ impl Child {
         {
             state.pending_snippet = Some(feed.code.clone());
         }
-        let mut print = ProtoPrint::new(sink);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let result = repl.feed_start(&feed.code, inputs, PrintWriter::Callback(&mut print));
         let event = self.drive(result, &mut print);
         print.drain();
@@ -514,7 +580,7 @@ impl Child {
         let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(sink);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let outcome = match *progress {
             ReplProgress::FunctionCall(call) => call.resume(result, PrintWriter::Callback(&mut print)),
             ReplProgress::OsCall(call) => call.resume(result, PrintWriter::Callback(&mut print)),
@@ -544,8 +610,40 @@ impl Child {
         let ReplProgress::NameLookup(lookup) = *progress else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(sink);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let outcome = lookup.resume(result, PrintWriter::Callback(&mut print));
+        let event = self.drive(outcome, &mut print);
+        print.drain();
+        event
+    }
+
+    /// Raises the parent's exception uncatchably at any pending suspension.
+    /// The `Error` reply returns the session to `Ready`.
+    fn handle_abort_feed(&mut self, abort: pb::AbortFeed, sink: &mut dyn EventSink) -> pb::ChildEvent {
+        // Guard against a corrupt `Complete` state instead of crashing.
+        let suspended = matches!(&self.state, SessionState::Suspended(progress)
+            if !matches!(progress.as_ref(), ReplProgress::Complete { .. }));
+        if !suspended {
+            return protocol_violation("AbortFeed without a suspended feed");
+        }
+        let Some(exception) = abort.exception else {
+            return protocol_violation("AbortFeed has no exception");
+        };
+        let exc = match MontyException::try_from(exception) {
+            Ok(exc) => exc,
+            Err(err) => return protocol_violation(&format!("invalid exception: {err}")),
+        };
+        let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
+            unreachable!("checked above");
+        };
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
+        let outcome = match *progress {
+            ReplProgress::FunctionCall(call) => call.abort(exc, PrintWriter::Callback(&mut print)),
+            ReplProgress::OsCall(call) => call.abort(exc, PrintWriter::Callback(&mut print)),
+            ReplProgress::NameLookup(lookup) => lookup.abort(exc, PrintWriter::Callback(&mut print)),
+            ReplProgress::ResolveFutures(state) => state.abort(exc, PrintWriter::Callback(&mut print)),
+            ReplProgress::Complete { .. } => unreachable!("checked above"),
+        };
         let event = self.drive(outcome, &mut print);
         print.drain();
         event
@@ -570,7 +668,7 @@ impl Child {
         let ReplProgress::ResolveFutures(state) = *progress else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(sink);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let outcome = state.resume(results, PrintWriter::Callback(&mut print));
         let event = self.drive(outcome, &mut print);
         print.drain();
@@ -640,11 +738,13 @@ impl Child {
                         complete_event(value)
                     }
                 }
-                progress => {
+                mut progress => {
                     if suspension_args_too_deep(&progress) {
                         protocol_violation("dump suspension arguments exceed the maximum wire depth")
                     } else {
-                        let event = suspension_event(&progress);
+                        let mut event = suspension_event(&mut progress);
+                        // size-checked with the stamps `handle` sends it with
+                        stamp_budget(&mut event, progress.tracker());
                         if let Some(message) = oversize_suspension_error_message(&event) {
                             protocol_violation(&message)
                         } else {
@@ -693,21 +793,25 @@ impl Child {
                     }
                     return complete_event(value);
                 }
-                Ok(ReplProgress::OsCall(call)) => {
+                Ok(ReplProgress::OsCall(mut call)) => {
                     if os_call_args_too_deep(&call) {
                         let err =
                             MontyException::new(ExcType::RuntimeError, Some("Max argument depth exceeded".to_owned()));
                         result = call.resume(ExtFunctionResult::Error(err), PrintWriter::Callback(print));
                         continue;
                     }
-                    let event = suspension_event_os_call(&call);
+                    let mut event = suspension_event_os_call(&mut call);
+                    let progress = ReplProgress::OsCall(call);
+                    // stamped before the size check, so the frame measured is
+                    // the frame `handle` sends
+                    stamp_budget(&mut event, progress.tracker());
                     if let Some(message) = oversize_suspension_error_message(&event) {
-                        return self.abort_feed_with_runtime_error(call.into_repl(), &message);
+                        return self.abort_feed_with_runtime_error(progress.into_repl(), &message);
                     }
-                    self.state = SessionState::Suspended(Box::new(ReplProgress::OsCall(call)));
+                    self.state = SessionState::Suspended(Box::new(progress));
                     return event;
                 }
-                Ok(ReplProgress::FunctionCall(call)) => {
+                Ok(ReplProgress::FunctionCall(mut call)) => {
                     // arguments too deep for the wire resume the call with a
                     // catchable error instead of corrupting the protocol
                     if function_call_args_too_deep(&call) {
@@ -716,15 +820,17 @@ impl Child {
                         result = call.resume(ExtFunctionResult::Error(err), PrintWriter::Callback(print));
                         continue;
                     }
-                    let event = suspension_event_function_call(&call);
+                    let mut event = suspension_event_function_call(&mut call);
+                    let progress = ReplProgress::FunctionCall(call);
+                    stamp_budget(&mut event, progress.tracker());
                     if let Some(message) = oversize_suspension_error_message(&event) {
-                        return self.abort_feed_with_runtime_error(call.into_repl(), &message);
+                        return self.abort_feed_with_runtime_error(progress.into_repl(), &message);
                     }
-                    self.state = SessionState::Suspended(Box::new(ReplProgress::FunctionCall(call)));
+                    self.state = SessionState::Suspended(Box::new(progress));
                     return event;
                 }
-                Ok(progress) => {
-                    let event = suspension_event(&progress);
+                Ok(mut progress) => {
+                    let event = suspension_event(&mut progress);
                     self.state = SessionState::Suspended(Box::new(progress));
                     return event;
                 }
@@ -779,6 +885,7 @@ impl Child {
         self.state = SessionState::Configured(None);
         self.type_check = None;
         self.script_name = String::new();
+        self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;
         self.type_checker.reset()
     }
 }
@@ -839,40 +946,58 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
     }))
 }
 
+/// Stamps `tracker`'s timing and parent-enforced limits onto an event. Called
+/// again by [`Child::handle`] just before sending, so a suspension announcement
+/// is size-checked with the stamps it will carry.
+fn stamp_budget(event: &mut pb::ChildEvent, tracker: &ResourceTracker) {
+    event.total_execution_micros = u64::try_from(tracker.elapsed().as_micros()).unwrap_or(u64::MAX);
+    event.max_duration_micros = tracker
+        .max_duration()
+        .map(|max| u64::try_from(max.as_micros()).unwrap_or(u64::MAX));
+    event.max_suspensions = Some(tracker.max_suspensions() as u64);
+}
+
 /// Describes a suspension announcement that would exceed the wire frame limit.
 ///
 /// The child turns this into a host-visible error before entering the
 /// suspension, because the parent cannot resume a call it never received.
+/// The event must already carry its session stamps (see [`stamp_budget`]).
 fn oversize_suspension_error_message(event: &pb::ChildEvent) -> Option<String> {
     exceeds_max_frame_len(event)
         .map(|len| format!("argument frame of {len} bytes exceeds the maximum of {MAX_FRAME_LEN} bytes"))
 }
 
 /// Builds the suspension event for a `FunctionCall` (depth-checked by the
-/// caller).
+/// caller), **moving** the arguments into it.
 ///
-/// Clones the argument payload: the suspension keeps its args so a `Dump` of
-/// the suspended state (and its replay on `Load`) stays complete.
-fn suspension_event_function_call(call: &monty::ReplFunctionCall) -> pb::ChildEvent {
+/// The suspension keeps its args — a `Dump` of the suspended state (and its
+/// replay on `Load`) needs them — so they come back via
+/// [`Child::reclaim_suspension_payload`] once the event has been sent. They are
+/// lent rather than copied because they are the largest thing a suspension
+/// carries and are already live twice over here (the interpreter's own values,
+/// plus this converted copy): a third copy for the announcement, on top of the
+/// encode buffer, is what used to push a large host-call argument past the
+/// session's memory limit.
+fn suspension_event_function_call(call: &mut monty::ReplFunctionCall) -> pb::ChildEvent {
     event(pb::child_event::Kind::FunctionCall(WireFunctionCall {
         function_name: call.function_name.clone(),
-        args: call.args.clone(),
-        kwargs: call.kwargs.clone(),
+        args: mem::take(&mut call.args),
+        kwargs: mem::take(&mut call.kwargs),
         call_id: call.call_id,
-        method_call: call.method_call,
+        object_id: call.object_id,
     }))
 }
 
-/// Builds the suspension event for an `OsCall` (depth-checked by the caller).
-///
-/// Clones the call payload: the suspension keeps its args so a `Dump` of the
-/// suspended state (and its re-announcement on `Load`) stays complete — a
-/// restored session's parent can service the call from mounts or its `os`
-/// callback exactly like a fresh one.
-fn suspension_event_os_call(call: &monty::ReplOsCall) -> pb::ChildEvent {
+/// Builds the suspension event for an `OsCall` (depth-checked by the caller),
+/// **moving** the call payload into it — see
+/// [`suspension_event_function_call`] for why, and
+/// [`Child::reclaim_suspension_payload`] for how it comes back. `GetEnviron` is
+/// the placeholder left behind: a unit variant, so the swap allocates nothing.
+fn suspension_event_os_call(call: &mut monty::ReplOsCall) -> pb::ChildEvent {
+    let function_call = mem::replace(&mut call.function_call, OsFunctionCall::GetEnviron);
     event(pb::child_event::Kind::OsCall(pb::OsCall {
         call_id: call.call_id,
-        call: Some(call.function_call.clone().into()),
+        call: Some(function_call.into()),
     }))
 }
 
@@ -915,12 +1040,13 @@ fn os_call_args_too_deep(call: &monty::ReplOsCall) -> bool {
 /// `Load` to re-announce a restored suspension; fresh suspensions go through
 /// `drive`, which adds depth/oversize checks before delegating to the same
 /// per-variant builders.
-fn suspension_event(progress: &ReplProgress) -> pb::ChildEvent {
+fn suspension_event(progress: &mut ReplProgress) -> pb::ChildEvent {
     match progress {
         ReplProgress::FunctionCall(call) => suspension_event_function_call(call),
         ReplProgress::OsCall(call) => suspension_event_os_call(call),
         ReplProgress::NameLookup(lookup) => event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: lookup.name.clone(),
+            object_id: lookup.object_id().as_ref().map(uuid_to_pb),
         })),
         ReplProgress::ResolveFutures(state) => event(pb::child_event::Kind::ResolveFutures(pb::ResolveFutures {
             pending_call_ids: state.pending_call_ids().to_vec(),
@@ -948,34 +1074,94 @@ fn named_inputs(inputs: Vec<pb::NamedValue>) -> Result<Vec<(String, MontyObject)
 /// Streams sandbox `print()` output as `Print` events through an
 /// [`EventSink`].
 ///
-/// Line-buffered: a frame is written when the buffer ends with a newline or
-/// exceeds [`Self::FLUSH_BYTES`], and [`Self::drain`] flushes any partial
-/// line before the turn-ending event so ordering is exact.
+/// Debounced: a frame is written once the buffer reaches
+/// [`Self::FLUSH_BYTES`] or its oldest byte has waited out `interval`, so the
+/// number of events a turn produces follows elapsed time and output volume
+/// rather than how many times the program called `print()` — which is what
+/// makes a loop of tiny prints cost the parent (and its telemetry) roughly
+/// what one large print costs. [`Self::drain`] empties the buffer before every
+/// turn-ending event, so ordering against suspensions stays exact.
+///
+/// Output on both streams shares the buffer, held as one segment per run, so
+/// alternating between them batches like any other output and still reaches
+/// the parent in the order the sandbox produced it.
+///
+/// A zero `interval` disables the timer and restores line buffering, one event
+/// per completed line.
 struct ProtoPrint<'a> {
-    buf: String,
+    /// Buffered output, one segment per run on a single stream.
+    segments: Vec<pb::PrintSegment>,
+    /// Text bytes held across `segments`, so the size check stays O(1).
+    buffered_bytes: usize,
     sink: &'a mut dyn EventSink,
+    /// How long the oldest buffered byte may wait; zero means line buffering.
+    interval: Duration,
+    /// When the buffer stopped being empty; `None` while it is empty.
+    buffered_since: Option<Instant>,
 }
 
 impl<'a> ProtoPrint<'a> {
-    /// Flush threshold for output that never produces a newline.
+    /// Flush threshold for output that never reaches the interval.
     const FLUSH_BYTES: usize = 8 * 1024;
 
-    fn new(sink: &'a mut dyn EventSink) -> Self {
+    fn new(sink: &'a mut dyn EventSink, interval: Duration) -> Self {
         Self {
-            buf: String::new(),
+            segments: Vec::new(),
+            buffered_bytes: 0,
             sink,
+            interval,
+            buffered_since: None,
         }
     }
 
-    /// Writes the buffer (if any) as one `Print` event.
+    /// Writes everything buffered (if anything) as one `Print` event.
     fn flush(&mut self) -> Result<(), MontyException> {
-        if self.buf.is_empty() {
+        if self.segments.is_empty() {
             return Ok(());
         }
-        let event = event(pb::child_event::Kind::Print(pb::Print {
-            stream: pb::PrintStream::Stdout.into(),
-            text: mem::take(&mut self.buf),
-        }));
+        self.buffered_since = None;
+        self.buffered_bytes = 0;
+        let segments = mem::take(&mut self.segments);
+        self.send(segments)
+    }
+
+    /// Emits one `Print` event per completed line, leaving any trailing
+    /// partial line buffered. With the timer off the contract is one event per
+    /// completed line, so a single write carrying embedded newlines has to be
+    /// split rather than shipped whole; a line spanning a stream switch keeps
+    /// its runs together in one event.
+    fn flush_lines(&mut self) -> Result<(), MontyException> {
+        while let Some((index, end)) = self.first_line_end() {
+            let mut line: Vec<pb::PrintSegment> = self.segments.drain(..index).collect();
+            let rest = self.segments[0].text.split_off(end);
+            line.push(pb::PrintSegment {
+                stream: self.segments[0].stream,
+                text: mem::replace(&mut self.segments[0].text, rest),
+            });
+            if self.segments[0].text.is_empty() {
+                self.segments.remove(0);
+            }
+            self.buffered_bytes -= line.iter().map(|segment| segment.text.len()).sum::<usize>();
+            self.send(line)?;
+        }
+        if self.segments.is_empty() {
+            self.buffered_since = None;
+        }
+        Ok(())
+    }
+
+    /// Where the first buffered line ends: the segment holding the `\n`, and
+    /// the offset just past it. `None` while no line is complete.
+    fn first_line_end(&self) -> Option<(usize, usize)> {
+        self.segments
+            .iter()
+            .enumerate()
+            .find_map(|(index, segment)| segment.text.find('\n').map(|at| (index, at + 1)))
+    }
+
+    /// Sends `segments` as one `Print` event.
+    fn send(&mut self, segments: Vec<pb::PrintSegment>) -> Result<(), MontyException> {
+        let event = event(pb::child_event::Kind::Print(pb::Print { segments }));
         self.sink.send(&event).map_err(|err| {
             MontyException::new(
                 ExcType::RuntimeError,
@@ -984,47 +1170,120 @@ impl<'a> ProtoPrint<'a> {
         })
     }
 
+    /// Flushes whatever the buffer has earned: complete lines when the timer
+    /// is off, then a frame if it has filled or its oldest byte has waited out
+    /// `interval`.
     fn maybe_flush(&mut self) -> Result<(), MontyException> {
-        if self.buf.ends_with('\n') || self.buf.len() >= Self::FLUSH_BYTES {
+        // Lines leave first so the size threshold below cannot merge a
+        // multi-line write back into one frame.
+        if self.interval.is_zero() {
+            self.flush_lines()?;
+        }
+        if self.buffered_bytes >= Self::FLUSH_BYTES || (!self.interval.is_zero() && self.interval_elapsed()) {
             self.flush()
         } else {
             Ok(())
         }
     }
 
-    /// Flushes any trailing partial line; called before every turn-ending
-    /// event. Errors are ignored — if the sink is broken the turn-ending write
-    /// fails anyway.
+    /// Whether buffered output has waited out `interval`. False when the
+    /// buffer is empty, so an idle writer never reads the clock twice.
+    fn interval_elapsed(&self) -> bool {
+        self.buffered_since
+            .is_some_and(|since| since.elapsed() >= self.interval)
+    }
+
+    /// Starts the interval clock when the buffer leaves the empty state.
+    fn mark_buffered(&mut self) {
+        if self.buffered_since.is_none() {
+            self.buffered_since = Some(Instant::now());
+        }
+    }
+
+    /// Flushes whatever is buffered; called before every turn-ending event.
+    /// Errors are ignored — if the sink is broken the turn-ending write fails
+    /// anyway.
     fn drain(&mut self) {
         let _ = self.flush();
     }
-}
 
-impl PrintWriterCallback for ProtoPrint<'_> {
-    fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
+    /// Buffers `text`, extending the trailing segment while it is on the same
+    /// stream and starting a new one when the stream changes.
+    fn append(&mut self, stream: PrintStream, text: &str) {
+        self.mark_buffered();
+        self.buffered_bytes += text.len();
+        let stream = wire_stream(stream);
+        match self.segments.last_mut() {
+            Some(segment) if segment.stream == stream => segment.text.push_str(text),
+            _ => self.segments.push(pb::PrintSegment {
+                stream,
+                text: text.to_owned(),
+            }),
+        }
+    }
+
+    fn write(&mut self, stream: PrintStream, output: &str) -> Result<(), MontyException> {
         // Append in pieces no larger than the flush threshold so a single huge
         // write cannot inflate the buffer (and the untracked copy it holds)
         // past `FLUSH_BYTES`: each filled chunk is flushed before the next is
         // appended.
-        let mut rest = output.as_ref();
+        let mut rest = output;
         while !rest.is_empty() {
-            let take = floor_char_boundary(rest, Self::FLUSH_BYTES - self.buf.len());
+            let take = floor_char_boundary(rest, Self::FLUSH_BYTES - self.buffered_bytes);
             if take == 0 {
                 // not even one char fits in the remaining room; flush to free
                 // the whole threshold (far larger than any single char)
                 self.flush()?;
                 continue;
             }
-            self.buf.push_str(&rest[..take]);
+            self.append(stream, &rest[..take]);
             rest = &rest[take..];
             self.maybe_flush()?;
         }
         Ok(())
     }
 
-    fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
-        self.buf.push(end);
+    fn push(&mut self, stream: PrintStream, end: char) -> Result<(), MontyException> {
+        self.append(stream, end.encode_utf8(&mut [0; 4]));
         self.maybe_flush()
+    }
+}
+
+/// Maps the interpreter's stream tag onto its wire enum value.
+fn wire_stream(stream: PrintStream) -> i32 {
+    match stream {
+        PrintStream::Stdout => i32::from(pb::PrintStream::Stdout),
+        PrintStream::Stderr => i32::from(pb::PrintStream::Stderr),
+    }
+}
+
+impl PrintWriterCallback for ProtoPrint<'_> {
+    fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
+        self.write(PrintStream::Stdout, &output)
+    }
+
+    fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
+        self.push(PrintStream::Stdout, end)
+    }
+
+    fn stderr_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
+        self.write(PrintStream::Stderr, &output)
+    }
+
+    fn stderr_push(&mut self, end: char) -> Result<(), MontyException> {
+        self.push(PrintStream::Stderr, end)
+    }
+
+    /// Releases output the program stopped writing to: without this a script
+    /// that prints and then computes in silence would hold that line until its
+    /// next print or the end of the turn. A zero `interval` has no timer to
+    /// expire, so line buffering is left to decide flushes on its own.
+    fn poll_flush(&mut self) -> Result<(), MontyException> {
+        if !self.interval.is_zero() && self.interval_elapsed() {
+            self.flush()
+        } else {
+            Ok(())
+        }
     }
 }
 

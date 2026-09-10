@@ -1,7 +1,7 @@
 //! [`BuiltinsFunctions`] — the name-level identity of every interpreter-native
 //! Python builtin, carried by [`MontyObject::BuiltinFunction`](crate::object::MontyObject).
 
-use strum::{Display, EnumString, FromRepr, IntoStaticStr};
+use strum::{Display, EnumString, FromRepr, IntoStaticStr, VariantNames};
 /// Enumerates every interpreter-native Python builtin function.
 ///
 /// Listed alphabetically per <https://docs.python.org/3/library/functions.html>
@@ -19,6 +19,7 @@ use strum::{Display, EnumString, FromRepr, IntoStaticStr};
     EnumString,
     FromRepr,
     IntoStaticStr,
+    VariantNames,
     PartialEq,
     Eq,
     Hash,
@@ -54,7 +55,7 @@ pub enum BuiltinsFunctions {
     // Exec,
     Filter,
     // float - handled by Type enum
-    // Format,
+    // Format - appended below
     // frozenset - handled by Type enum
     Getattr,
     // Globals,
@@ -100,4 +101,18 @@ pub enum BuiltinsFunctions {
     // Vars,
     Zip,
     // __import__ - not planned
+    // Appended out of alphabetical order: the discriminant is emitted as a
+    // bytecode operand, so this list is append-only.
+    /// `object.__setattr__(obj, name, value)` — the write that bypasses a
+    /// class's attribute hooks, reached only through `object`. Its name is not
+    /// an identifier, so it can never resolve as a bare global.
+    ///
+    /// The first variant whose name is not its lowercased identifier, so it
+    /// needs both renames: serde and strum each carry the name across a
+    /// different boundary (JSON vs. `Display`/`FromStr`) and must agree.
+    #[strum(serialize = "object.__setattr__")]
+    #[serde(rename = "object.__setattr__")]
+    ObjectSetattr,
+    /// `format(value, format_spec='')`, appended after [`Self::ObjectSetattr`].
+    Format,
 }

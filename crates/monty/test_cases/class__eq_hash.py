@@ -58,6 +58,25 @@ assert [Eq(1), Eq(2)] == [Eq(1), Eq(2)]
 assert (Eq(1),) == (Eq(1),)
 
 
+# === Exceptions from reentrant comparisons return to the active opcode frame ===
+class ComparisonRaiser:
+    def __eq__(self, other: object) -> bool:
+        raise ValueError('comparison failed')
+
+
+try:
+    ComparisonRaiser() == 0
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'comparison failed'
+
+try:
+    assert ComparisonRaiser() == 0
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'comparison failed'
+
+
 # === __hash__ = None opts out explicitly ===
 class NoHash:
     __hash__ = None

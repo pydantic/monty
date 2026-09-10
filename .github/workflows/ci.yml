@@ -86,6 +86,19 @@ jobs:
       - name: Check vendored typeshed stubs are in sync
         run: make check-typeshed
 
+      # rustdoc JSON is nightly-only and format-unstable, so the API reference
+      # is generated with the exact nightly matching monty-apidoc's pinned
+      # `rustdoc-types` (see crates/monty-apidoc/src/main.rs)
+      - name: Install the nightly pinned for rustdoc JSON
+        run: rustup toolchain install nightly-2026-08-31 --profile minimal
+
+      # the pages are not checked in (publish-docs below pushes them to the
+      # `docs-source` branch); this only proves generation still succeeds
+      - name: Generate the Rust API reference
+        run: make generate-api-docs
+
+      - run: cargo test -p monty-apidoc
+
   # The interpreter itself, under every feature config. Each `--features` flag
   # forces a full rebuild of `monty`, so the three configs are kept together
   # here; the crates layered on top run in parallel in `test-rust-crates`.
@@ -147,9 +160,9 @@ jobs:
           if-no-files-found: error
 
   # The crates layered on top of the interpreter: the type checker (which does
-  # not depend on `monty` at all) and the subprocess stack. Both build `monty`
-  # only with default features, so this job pays no feature-flag rebuilds and
-  # runs in parallel with `test-rust`.
+  # not depend on `monty` at all), the subprocess stack and the docs harness.
+  # They build `monty` only with default features, so this job pays no
+  # feature-flag rebuilds and runs in parallel with `test-rust`.
   test-rust-crates:
     runs-on: ubuntu-latest
 
@@ -189,9 +202,11 @@ jobs:
       # real `monty` binary: build it plainly first (outside the llvm-cov
       # target dir) and point the tests at it explicitly.
       - run: cargo build -p monty-runtime
-      - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool
+      - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/debug/monty
+      - name: Compile Rust documentation examples
+        run: cargo test --doc -p monty-doctest
       # Generating text report:
       - run: cargo llvm-cov report --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
       # Generate codecov report (use `report` subcommand to avoid recompilation)
@@ -250,6 +265,7 @@ jobs:
           eval "$(cargo llvm-cov show-env --export-prefix)"
           cargo llvm-cov clean --workspace
           uv run maturin develop --uv -m crates/monty-python/Cargo.toml
+          cargo test -p pydantic-monty-client --lib
           uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests
           cargo llvm-cov report --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
           cargo llvm-cov report --codecov --output-path=python-rust-coverage.json --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
@@ -311,7 +327,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.14t']
 
     env:
       UV_PYTHON: ${{ matrix.python-version }}
@@ -336,6 +352,9 @@ jobs:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
 
       - run: uv sync --all-packages --only-dev
+      # workaround for https://github.com/PyO3/maturin/pull/3299
+      # (dev-py doesn't invalidate all cache properly)
+      - run: cargo clean -p pyo3-ffi
       - run: make dev-py
       - run: make pytest
         # also test with a release build
@@ -391,12 +410,12 @@ jobs:
       - run: cargo build -p monty-runtime
       - name: Test subprocess crates (Unix)
         if: runner.os != 'Windows'
-        run: cargo test -p monty-proto -p monty-runtime -p monty-pool
+        run: cargo test -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/debug/monty
       - name: Test subprocess crates (Windows)
         if: runner.os == 'Windows'
-        run: cargo test -p monty-proto -p monty-runtime -p monty-pool
+        run: cargo test -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}\target\debug\monty.exe
 
@@ -499,6 +518,8 @@ jobs:
       - test-rust-os
       - test-python
       - test-js
+      - test-js-packages
+      - test-js-browser-package
       - test-browser
       - bench-test
       - fuzz
@@ -508,6 +529,92 @@ jobs:
         uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
         with:
           jobs: ${{ toJSON(needs) }}
+          # Match the full-build condition below; unexpected skips must still fail the check.
+          allowed-skips: >-
+            ${{ (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)) && '[]' || '["test-js-packages", "test-js-browser-package"]' }}
+
+  # Publish the docs source read by pydantic/unified-docs: docs/, mkdocs.yml,
+  # the Python package (for the `::: pydantic_monty` autodoc block) and the
+  # generated Rust API reference, as a single-commit orphan `docs-source`
+  # branch. unified-docs clones that branch instead of `main`, so the Rust
+  # pages never need committing here. The docs-update dispatch then rebuilds
+  # the site; with no source pin it resolves monty to the branch tip.
+  publish-docs:
+    needs: [check, inspect-python-assets]
+    if: success() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    # the branch is force-pushed as a whole, so a slower run for an older
+    # commit must never finish after a newer one
+    concurrency:
+      group: publish-docs
+      cancel-in-progress: true
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: stable
+
+      # rustdoc JSON is nightly-only and format-unstable, see the lint job
+      - name: Install the nightly pinned for rustdoc JSON
+        run: rustup toolchain install nightly-2026-08-31 --profile minimal
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts; it pushes generated markdown only
+          cache-on-failure: true
+          prefix-key: 'v1-rust'
+
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+        with:
+          enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts; it pushes generated markdown only
+
+      - name: Generate the Rust API reference
+        run: make generate-api-docs
+
+      - name: Push the docs-source branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          out="$(mktemp -d)"
+          # keep the same paths as the checkout so unified-docs' sparse list works unchanged
+          for path in docs mkdocs.yml crates/monty-python/python; do
+            mkdir -p "$out/$(dirname "$path")"
+            cp -R "$path" "$out/$path"
+          done
+          cd "$out"
+          git init --initial-branch=docs-source
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit --quiet -m "Docs source for pydantic/monty@${SOURCE_SHA}"
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:docs-source
+
+      - name: Generate app token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ vars.DOCS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DOCS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: unified-docs
+          # repository_dispatch needs contents:write; nothing else is granted
+          permission-contents: write
+
+      - name: Trigger unified-docs deployment
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh api repos/pydantic/unified-docs/dispatches --method POST -f event_type=docs-update
 
   # Build source distribution
   build-sdist:
@@ -570,7 +677,7 @@ jobs:
           name: pypi_files-meta
           path: packages/pydantic-monty/dist
 
-  # Build wheels for exotic architectures (non-PGO)
+  # Build extension wheels and one runtime wheel for every supported platform
   build:
     name: build on ${{ matrix.os }} (${{ matrix.target }} - ${{ matrix.manylinux || 'auto' }})
     # only run on push to main, on tags, or if 'Full Build' label is present
@@ -579,37 +686,50 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux aarch64
+          - os: linux
+            target: x86_64
+            pgo-runtime: true
+            pgo-args: --pgo -i /opt/uv-python/cpython-3.14-linux-x86_64-gnu/bin/python3.14
           - os: linux
             target: aarch64
-          # Linux i686
+            runs-on: ubuntu-24.04-arm
+            pgo-runtime: true
+            pgo-args: --pgo -i /opt/uv-python/cpython-3.14-linux-aarch64-gnu/bin/python3.14
           - os: linux
             target: i686
-          # Linux armv7
+            pgo-runtime: false
           - os: linux
             target: armv7
-          # Linux ppc64le
+            pgo-runtime: false
           - os: linux
             target: ppc64le
-          # Linux s390x
+            pgo-runtime: false
           - os: linux
             target: s390x
-          # Linux x86_64 musl
+            pgo-runtime: false
           - os: linux
             target: x86_64
             manylinux: musllinux_1_1
-          # Linux aarch64 musl
+            pgo-runtime: false
           - os: linux
             target: aarch64
             manylinux: musllinux_1_1
-          # macOS x86_64 (Intel)
+            pgo-runtime: false
+          - os: macos
+            target: aarch64
+            pgo-runtime: true
+            pgo-args: --pgo -i python
           - os: macos
             target: x86_64
-          # Windows i686
+            pgo-runtime: false
+          - os: windows
+            target: x86_64
+            pgo-runtime: false
           - os: windows
             target: i686
+            pgo-runtime: false
 
-    runs-on: ${{ (matrix.os == 'linux' && 'ubuntu-latest') || (matrix.os == 'macos' && 'macos-latest') || (matrix.os == 'windows' && 'windows-latest') }}
+    runs-on: ${{ matrix.runs-on || (matrix.os == 'linux' && 'ubuntu-latest') || (matrix.os == 'macos' && 'macos-latest') || (matrix.os == 'windows' && 'windows-latest') }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -617,113 +737,48 @@ jobs:
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.12'
+          python-version: '3.14t'
 
-      - name: build wheels
+      - name: build Python wheels
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'manylinux_2_28' }}
-          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
+          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14 3.14t
           rust-toolchain: stable
           docker-options: -e CI
           working-directory: crates/monty-python
 
-      # the pydantic-monty-runtime wheel ships the `monty` worker binary
-      # (bin bindings, one py3-none wheel per platform). `-i` is required so
-      # maturin can find a Python to read pyproject.toml — the produced wheel
-      # is `py3-none-<plat>` and doesn't depend on a specific Python version.
-      - name: build cli wheel
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: pypi_files-python-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
+          path: crates/monty-python/dist
+
+      # Maturin performs one PGO cycle for bin bindings for all versions (runtime is not
+      # tied to the Python ABI).
+      - name: build runtime wheel
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'manylinux_2_28' }}
-          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
+          # `uv` provides Python 3.14 inside the manylinux container. Maturin
+          # needs its full path; the `3.14` selector does not search uv installs.
+          before-script-linux: |
+            if [[ "$PGO_RUNTIME" == 'true' ]]; then
+              curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL=/usr/local/bin sh
+              UV_PYTHON_INSTALL_DIR=/opt/uv-python uv python install 3.14
+            fi
+          args: --release ${{ matrix.pgo-args }} --out dist
           rust-toolchain: stable
-          docker-options: -e CI
-          working-directory: crates/monty-runtime
-
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: pypi_files-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
-          path: crates/monty-python/dist
-
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: pypi_files-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}-cli
-          path: crates/monty-runtime/dist
-
-  # PGO-optimized builds for main platforms
-  build-pgo:
-    name: build pgo on ${{ matrix.os }}
-    # only run on push to main, on tags, or if 'Full Build' label is present
-    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Linux x86_64 (manylinux)
-          - os: linux
-            runs-on: ubuntu-latest
-            interpreter: 3.10 3.11 3.12 3.13 3.14
-          # Windows x86_64
-          - os: windows
-            runs-on: windows-latest
-            interpreter: 3.10 3.11 3.12 3.13 3.14
-          # macOS aarch64 (Apple Silicon)
-          - os: macos
-            runs-on: macos-latest
-            interpreter: 3.10 3.11 3.12 3.13 3.14
-
-    runs-on: ${{ matrix.runs-on }}
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: '3.12'
-
-      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
-        with:
-          toolchain: stable
-          components: llvm-tools
-
-      - name: build PGO wheel
-        id: pgo
-        uses: ./.github/actions/build-pgo-wheel
-        with:
-          interpreter: ${{ matrix.interpreter }}
-          rust-toolchain: stable
-
-      # the PGO-optimized cli wheel for the main platforms — reuses the
-      # merged profile data from the build-pgo-wheel action above (which
-      # exercised an instrumented monty binary via `exercise.py`).
-      # `-i` is required so maturin can find a Python to read pyproject.toml
-      # inside the manylinux docker container; the produced wheel is
-      # `py3-none-<plat>` and doesn't depend on a specific Python version.
-      - name: build cli wheel
-        uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
-        with:
-          manylinux: manylinux_2_28
-          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
-          rust-toolchain: stable
-          docker-options: -e CI
+          rustup-components: ${{ matrix.pgo-runtime && 'llvm-tools-preview' || '' }}
+          docker-options: -e CI -e UV_PYTHON -e PGO_RUNTIME
           working-directory: crates/monty-runtime
         env:
-          RUSTFLAGS: '-Cprofile-use=${{ github.workspace }}/merged.profdata'
+          PGO_RUNTIME: ${{ matrix.pgo-runtime }}
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: pypi_files-${{ matrix.os }}-pgo
-          path: ${{ steps.pgo.outputs.wheel-dir }}
-
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: pypi_files-${{ matrix.os }}-pgo-cli
+          name: pypi_files-runtime-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
           path: crates/monty-runtime/dist
 
   # Test wheels on exotic architectures via QEMU
@@ -744,7 +799,7 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: pypi_files-linux-${{ matrix.target }}-*
+          pattern: pypi_files-*-linux-${{ matrix.target }}-*
           merge-multiple: true
           path: dist
 
@@ -775,7 +830,7 @@ jobs:
   # Test wheels on main OS platforms
   test-builds-os:
     name: test build on ${{ matrix.os }}
-    needs: [build, build-pgo]
+    needs: [build]
     runs-on: ${{ matrix.runs-on }}
 
     strategy:
@@ -800,7 +855,7 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: pypi_files-${{ matrix.os }}-*
+          pattern: pypi_files-*-${{ matrix.os }}-*
           merge-multiple: true
           path: dist
 
@@ -832,7 +887,7 @@ jobs:
 
   # Inspect built artifacts
   inspect-python-assets:
-    needs: [build, build-pgo, build-sdist]
+    needs: [build, build-sdist]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -845,7 +900,7 @@ jobs:
         run: |
           ls -lhR dist/
           ls -1 dist/ | wc -l
-          echo "Expected ~64 files (5 Python versions × 10 platform variants + 12 cli wheels + sdists + metapackage)"
+          echo "Expected 88 files (6 Python variants × 12 platforms + 12 runtime wheels + 2 sdists + 2 metapackage files)"
 
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
         with:
@@ -1092,14 +1147,14 @@ jobs:
         run: npm install
         working-directory: crates/monty-js
 
-      - name: Build wasm package assets
-        run: make build-wasm
+      - name: Build wasm package assets and verify generated declarations
+        run: make check-wasm-types
 
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: wasm-bindings
-          path: crates/monty-js/dist/worker/monty_wasm_runtime.wasm
+          path: crates/monty-js/dist/worker/component
           if-no-files-found: error
     env:
       CARGO_INCREMENTAL: '1'
@@ -1129,11 +1184,11 @@ jobs:
         run: npm run build:ts
         working-directory: crates/monty-js
 
-      - name: Download wasm module
+      - name: Download wasm component
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: wasm-bindings
-          path: crates/monty-js/dist/worker
+          path: crates/monty-js/dist/worker/component
 
       # the wasm specs are node-only, and this is the job that has the module
       - name: Test wasm module in node
@@ -1148,7 +1203,6 @@ jobs:
     name: assemble JS packages
     needs:
       - build
-      - build-pgo
       - build-js-binaries
       - build-wasm
     runs-on: ubuntu-latest
@@ -1186,14 +1240,14 @@ jobs:
       - name: Download runtime wheel artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: pypi_files-*-cli
+          pattern: pypi_files-runtime-*
           path: crates/monty-js/artifacts
 
-      - name: Download wasm artifact
+      - name: Download wasm component
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: wasm-bindings
-          path: crates/monty-js/dist/worker
+          path: crates/monty-js/dist/worker/component
 
       - name: Assemble, validate, and pack
         run: npm run assemble-packages
@@ -1247,8 +1301,38 @@ jobs:
         run: npm install ../package-tarballs/monty-main.tgz ../package-tarballs/monty-${{ matrix.platform.triple }}.tgz --force --no-save --no-package-lock
         working-directory: crates/monty-js/smoke-test
 
-      - name: Import package and run a worker
-        run: node package-smoke.mjs
+      - name: Exercise the packed Node package
+        run: npm run test:node
+        working-directory: crates/monty-js/smoke-test
+
+  test-js-browser-package:
+    name: test packed JS package in browser
+    needs:
+      - assemble-js-packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup node
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Download package tarballs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: js-package-tarballs
+          path: crates/monty-js/package-tarballs
+
+      - name: Install packed package
+        run: npm install ../package-tarballs/monty-main.tgz --omit=optional --force --no-save --no-package-lock
+        working-directory: crates/monty-js/smoke-test
+
+      - name: Exercise the packed browser package
+        run: npx playwright install --with-deps chromium && npm run test:browser
         working-directory: crates/monty-js/smoke-test
 
   release-js:
@@ -1258,6 +1342,7 @@ jobs:
       - check
       - test-js
       - test-js-packages
+      - test-js-browser-package
       - test-browser
       - release-python
     if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))

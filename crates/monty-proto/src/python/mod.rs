@@ -10,10 +10,10 @@
 //! the top-level crate decides how libpython is linked (e.g. maturin enables
 //! it for wheels).
 
+mod class_instance;
 mod convert;
-mod dataclass;
 mod exceptions;
 
+pub use class_instance::{InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy, uuid_to_py};
 pub use convert::{PyMontyFileHandle, monty_to_py, py_to_monty, py_to_monty_value};
-pub use dataclass::{DcRegistry, PyUnknownDataclass};
 pub use exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_object};

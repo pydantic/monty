@@ -50,7 +50,9 @@ def test_input_value_unconvertible_raises_conversion_error(monty_run: RunMonty):
     with pytest.raises(pydantic_monty.MontyConversionError) as exc_info:
         monty_run('x', inputs=bad_inputs)
     assert isinstance(exc_info.value, MontyError)
-    assert str(exc_info.value) == snapshot('Cannot convert builtins.object to Monty value')
+    assert str(exc_info.value) == snapshot(
+        'Cannot convert builtins.object to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+    )
     assert isinstance(exc_info.value.exception(), TypeError)
 
 

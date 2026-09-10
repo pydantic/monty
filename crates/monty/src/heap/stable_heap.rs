@@ -133,21 +133,15 @@ impl<T> StableHeap<T> {
     /// Takes `&self` instead of `&mut self`, enabling allocation while holding shared
     /// borrows to other heap entries. This is the core operation that makes
     /// `Heap::allocate(&self)` possible.
-    ///
-    /// # Safety contract (enforced by caller structure, not runtime checks)
-    ///
-    /// - No `&mut` reference to `pages` or `free_list` exists. Guaranteed because
-    ///   all `&mut self` methods on `HeapEntries` require exclusive access, and the
-    ///   borrow checker prevents calling this `&self` method while any `&mut self`
-    ///   method is active.
-    /// - **New slots** (at index `len`) have never been initialized — no existing
-    ///   reference can point to them, because `get()` requires `index < len`.
-    /// - **Reused slots** (from free list) were freed via `dec_ref` and have no
-    ///   active borrows — the slot was `.take()`n and its ID added to the free list.
-    /// - **Vec growth** (`pages.push(new_page)`) reallocates the page pointer array,
-    ///   not the page contents. Any existing `&T` reference points into a
-    ///   `Box`'s heap allocation, not into the `Vec`'s buffer.
     pub fn allocate(&self, value: T) -> HeapId {
+        self.allocate_with_slot(value).0
+    }
+
+    /// Allocates a value and also returns its stable arena slot.
+    ///
+    /// The slot lets the heap immediately project a newly allocated payload
+    /// without repeating the page and slot lookup.
+    pub fn allocate_with_slot(&self, value: T) -> (HeapId, &Option<T>) {
         // SAFETY: [DH]
         // - This is the only `&self` method which uses `pages.get()` to create a mutable reference to `pages`.
         // - This method is not re-entrant, and not `Sync`, so cannot have a global `StableHeap` where
@@ -180,9 +174,9 @@ impl<T> StableHeap<T> {
         // Write to the new slot. No need to worry about initializedness / the destructor - either the slot was
         // free (in which case the slot is `None` and has no meaningful destructor), or the slot is not
         // initialized yet.
-        slot.write(Some(value));
+        let slot = slot.write(Some(value));
 
-        id
+        (id, slot)
     }
 
     /// Iterates the live values
@@ -223,7 +217,6 @@ impl<T> StableHeap<T> {
 }
 
 /// Allocates a new page of uninitialized slots directly on the heap.
-#[expect(clippy::unnecessary_box_returns, reason = "entire intent is to heap-allocate")]
 fn create_page<T>() -> Box<[Slot<T>; PAGE_SIZE]> {
     let raw = Box::into_raw(Box::<[Slot<T>]>::new_uninit_slice(PAGE_SIZE)).cast();
     // SAFETY: [DH] - allocation is known to be exactly PAGE_SIZE slots, so

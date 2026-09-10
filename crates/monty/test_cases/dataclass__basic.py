@@ -1,7 +1,7 @@
 # call-external
 # === Basic dataclass tests ===
 
-# Get immutable dataclass from external function
+# Get dataclass instance from external function
 point = make_point()
 
 # === repr and str ===
@@ -12,32 +12,18 @@ assert str(point) == 'Point(x=1, y=2)'
 # Dataclasses are always truthy (like Python class instances)
 assert bool(point)
 
-# === Hash for immutable dataclass ===
-# Immutable (frozen) dataclasses are hashable
-h1 = hash(point)
-assert h1 != 0
-
-# Hash is consistent - same object hashes to same value
-h2 = hash(point)
-assert h1 == h2
-
-# Equal frozen dataclasses hash to same value
+# === Host instances are unhashable ===
+# A dataclass with eq (the default) and no frozen=True defines __eq__ without
+# __hash__, so instances are unhashable — in CPython and in the sandbox.
 point2 = make_point()
-assert hash(point) == hash(point2)
+try:
+    hash(point)
+    assert False, 'expected TypeError from hash()'
+except TypeError as e:
+    assert str(e) == "unhashable type: 'Point'"
 
-# Frozen dataclass can be used as dict key
-d = {point: 'first'}
-assert d[point] == 'first'
-assert d[point2] == 'first'
-
-# Frozen dataclass can be added to set
-s = {point, point2}
-assert len(s) == 1
-
-# Different field values produce different hash
 alice = make_user('Alice')
 bob = make_user('Bob')
-assert hash(alice) != hash(bob)
 
 # === Equality ===
 assert point == point2
@@ -85,9 +71,11 @@ assert mut_point.y == 20
 assert repr(mut_point) == 'MutablePoint(x=10, y=20)', f'repr after attribute update {mut_point=!r}'
 
 # === set other attributes
+# NOTE: repr is deliberately not asserted here — Monty shows all eager attrs
+# (including z), CPython's dataclass repr shows declared fields only
+# (see limitations/classes.md).
 mut_point.z = 30
 assert mut_point.z == 30
-assert repr(mut_point) == 'MutablePoint(x=10, y=20)'
 
 # === Augmented attribute assignment (+=, -=, etc.) ===
 aug_point = make_mutable_point()
@@ -205,15 +193,12 @@ empty = make_empty()
 assert repr(empty) == 'Empty()'
 assert str(empty) == 'Empty()'
 
-# === FrozenInstanceError is subclass of AttributeError ===
-# Catching AttributeError should also catch FrozenInstanceError
-frozen_point = make_point()
-caught = False
-try:
-    frozen_point.x = 10
-except AttributeError:
-    caught = True
-assert caught
+# === setattr mutates the sandbox copy only ===
+copy_point = make_point()
+copy_point.x = 10
+assert copy_point.x == 10
+# a fresh instance from the host is unaffected
+assert make_point().x == 1
 
 # === Error: accessing non-existent attribute ===
 try:
@@ -320,3 +305,117 @@ try:
     assert False, 'should have raised AttributeError for missing method on User'
 except AttributeError as e:
     assert str(e) == "'User' object has no attribute 'missing'", f'wrong message: {e}'
+
+# === type() of host class instances names the real class ===
+# NOTE: repr(type(x)) is deliberately not asserted — CPython qualifies it with
+# the defining module ("<class 'test_fixtures.Point'>"), Monty shows the bare
+# class name (see limitations/classes.md).
+type_pt = make_point()
+type_pt2 = make_point()
+type_mut = make_mutable_point()
+assert type(type_pt).__name__ == 'Point'
+assert type(type_pt) == type(type_pt2)
+assert type(type_pt) != type(type_mut)
+# equal type objects collide in sets (hash consistent with eq)
+assert len({type(type_pt), type(type_pt2)}) == 1
+assert len({type(type_pt), type(type_mut)}) == 2
+
+# === Error messages name the real class, not a placeholder ===
+try:
+    hash(type_mut)
+    assert False, 'should have raised TypeError for unhashable mutable instance'
+except TypeError as e:
+    assert str(e) == "unhashable type: 'MutablePoint'", f'wrong message: {e}'
+
+# === Lazy attribute lookups (class attributes served by the host) ===
+# `dimensions` is a class attribute, not a field: CPython resolves it via
+# class lookup, Monty suspends a NameLookup routed by instance_id.
+assert point.dimensions == 2
+assert mut_point.dimensions == 2
+# repeated access re-consults the host (no caching) and stays consistent
+assert point.dimensions == 2
+# lazy attrs are not part of repr or equality
+assert repr(point) == 'Point(x=1, y=2)'
+# a locally mutated instance still allows lazy attribute reads
+assert copy_point.dimensions == 2
+
+# === Lazy lookup answered Undefined raises AttributeError ===
+try:
+    alice2.dimensions
+    assert False, 'should have raised AttributeError for lazy attr on User'
+except AttributeError as e:
+    assert str(e) == "'User' object has no attribute 'dimensions'", f'wrong message: {e}'
+
+# === getattr()/hasattr() consult the host like obj.attr ===
+assert hasattr(point, 'dimensions') is True
+assert getattr(point, 'dimensions') == 2
+assert getattr(point, 'dimensions', 99) == 2
+assert hasattr(alice2, 'dimensions') is False
+assert getattr(alice2, 'dimensions', 99) == 99
+try:
+    getattr(alice2, 'dimensions')
+    assert False, 'should have raised AttributeError for getattr of a lazy attr on User'
+except AttributeError as e:
+    assert str(e) == "'User' object has no attribute 'dimensions'", f'wrong message: {e}'
+
+# === Default protocol errors name the real class, not 'HostClass' ===
+proto_point = make_mutable_point()
+try:
+    proto_point[0]
+    assert False, 'expected subscript to fail'
+except TypeError as e:
+    assert str(e) == "'MutablePoint' object is not subscriptable"
+try:
+    proto_point[0] = 1
+    assert False, 'expected item assignment to fail'
+except TypeError as e:
+    assert str(e) == "'MutablePoint' object does not support item assignment"
+try:
+    for _ in proto_point:
+        pass
+    assert False, 'expected iteration to fail'
+except TypeError as e:
+    assert str(e) == "'MutablePoint' object is not iterable"
+try:
+    next(proto_point)
+    assert False, 'expected next() to fail'
+except TypeError as e:
+    assert str(e) == "'MutablePoint' object is not an iterator"
+try:
+    proto_point()
+    assert False, 'expected call to fail'
+except TypeError as e:
+    assert str(e) == "'MutablePoint' object is not callable"
+
+# === A callable set on the sandbox copy is called as-is ===
+proto_point.f = lambda: 42
+assert proto_point.f() == 42
+proto_point.g = lambda a, b=1: a + b
+assert proto_point.g(2) == 3
+assert proto_point.g(2, b=5) == 7
+try:
+    proto_point.x()
+    assert False, 'expected calling a data attribute to fail'
+except TypeError as e:
+    assert str(e) == "'int' object is not callable"
+
+# === Lazy attribute errors propagate ===
+# `MutablePoint.boom` is a property that raises KeyError on the host. Only
+# AttributeError means "absent": anything else is raised in the sandbox as-is,
+# so hasattr() does not swallow it and getattr() does not fall back to its
+# default — exactly as CPython treats a raising property.
+try:
+    mut_point.boom
+    assert False, 'expected KeyError from the boom property'
+except KeyError as e:
+    assert str(e) == "'boom'"
+try:
+    hasattr(mut_point, 'boom')
+    assert False, 'expected hasattr() to propagate KeyError'
+except KeyError as e:
+    assert str(e) == "'boom'"
+try:
+    getattr(mut_point, 'boom', 1)
+    assert False, 'expected getattr() with a default to propagate KeyError'
+except KeyError as e:
+    assert str(e) == "'boom'"

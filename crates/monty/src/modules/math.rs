@@ -17,6 +17,7 @@
 //! **Integer math**: `factorial`, `gcd`, `lcm`, `comb`, `perm`
 //! **Modular**: `fmod`, `remainder`, `modf`, `frexp`, `ldexp`
 //! **Special**: `gamma`, `lgamma`, `erf`, `erfc`
+//! **Summation & products**: `hypot`, `dist`, `fsum`, `prod`, `sumprod`, `fma`
 //!
 //! ## Constants
 //!
@@ -25,6 +26,7 @@
 use std::f64::consts;
 
 use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use smallvec::smallvec;
 
 use crate::{
@@ -38,6 +40,8 @@ use crate::{
     types::{LongInt, Module, allocate_tuple},
     value::Value,
 };
+
+mod aggregate;
 
 // ==========================
 // Shared constants and error helpers
@@ -167,6 +171,13 @@ pub(crate) enum MathFunctions {
     Lgamma,
     Erf,
     Erfc,
+    // Summation and products (append to preserve serialized variant indices).
+    Hypot,
+    Dist,
+    Fsum,
+    Prod,
+    Sumprod,
+    Fma,
 }
 
 /// Creates the `math` module and allocates it on the heap.
@@ -258,6 +269,13 @@ const MATH_FUNCTIONS: &[(StaticStrings, MathFunctions)] = &[
     (StaticStrings::Lgamma, MathFunctions::Lgamma),
     (StaticStrings::Erf, MathFunctions::Erf),
     (StaticStrings::Erfc, MathFunctions::Erfc),
+    // Summation and products
+    (StaticStrings::Hypot, MathFunctions::Hypot),
+    (StaticStrings::Dist, MathFunctions::Dist),
+    (StaticStrings::Fsum, MathFunctions::Fsum),
+    (StaticStrings::Prod, MathFunctions::Prod),
+    (StaticStrings::Sumprod, MathFunctions::Sumprod),
+    (StaticStrings::Fma, MathFunctions::Fma),
 ];
 
 /// Dispatches a call to a math module function.
@@ -326,6 +344,12 @@ pub(super) fn call(vm: &mut VM<'_>, function: MathFunctions, args: ArgValues) ->
         MathFunctions::Lgamma => math_lgamma(vm, args),
         MathFunctions::Erf => math_erf(vm, args),
         MathFunctions::Erfc => math_erfc(vm, args),
+        MathFunctions::Hypot => aggregate::hypot(vm, args),
+        MathFunctions::Dist => aggregate::dist(vm, args),
+        MathFunctions::Fsum => aggregate::fsum(vm, args),
+        MathFunctions::Prod => aggregate::prod(vm, args),
+        MathFunctions::Sumprod => aggregate::sumprod(vm, args),
+        MathFunctions::Fma => aggregate::fma(vm, args),
     }
 }
 
@@ -342,7 +366,7 @@ fn math_floor(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
 
     match value {
-        Value::Float(f) => float_to_int_checked(f.floor(), *f, vm.heap),
+        Value::Float(f) => LongInt::value_from_f64(f.floor(), vm.heap),
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         _ => Err(ExcType::type_error(format!(
@@ -361,7 +385,7 @@ fn math_ceil(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
 
     match value {
-        Value::Float(f) => float_to_int_checked(f.ceil(), *f, vm.heap),
+        Value::Float(f) => LongInt::value_from_f64(f.ceil(), vm.heap),
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         _ => Err(ExcType::type_error(format!(
@@ -379,7 +403,7 @@ fn math_trunc(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
 
     match value {
-        Value::Float(f) => float_to_int_checked(f.trunc(), *f, vm.heap),
+        Value::Float(f) => LongInt::value_from_f64(f.trunc(), vm.heap),
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         _ => Err(ExcType::type_error(format!(
@@ -1305,43 +1329,9 @@ fn math_erfc(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 // Helper functions
 // ==========================
 
-/// Converts a rounded float to an integer `Value`, checking for infinity/NaN.
-///
-/// `rounded` is the already-rounded float value (e.g., from `floor()`, `ceil()`, `trunc()`).
-/// `original` is the original input float, used only to determine the error type:
-/// infinity produces `OverflowError`, NaN produces `ValueError`.
-///
-/// For finite values outside the i64 range, promotes to `LongInt` to match CPython's
-/// behavior of returning arbitrary-precision integers from `math.floor`/`ceil`/`trunc`.
-fn float_to_int_checked(rounded: f64, original: f64, heap: &mut Heap) -> RunResult<Value> {
-    if original.is_infinite() {
-        Err(SimpleException::new_msg(ExcType::OverflowError, "cannot convert float infinity to integer").into())
-    } else if original.is_nan() {
-        Err(SimpleException::new_msg(ExcType::ValueError, "cannot convert float NaN to integer").into())
-    } else if rounded >= i64::MIN as f64 && rounded < i64::MAX as f64 {
-        // Note: `i64::MAX as f64` rounds up to 2^63 (9223372036854775808.0), so we use
-        // strict less-than to exclude that value. `i64::MIN as f64` is exact (-2^63).
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "intentional: value is within i64 range after bounds check"
-        )]
-        let result = rounded as i64;
-        Ok(Value::Int(result))
-    } else {
-        // Value exceeds i64 range — promote to LongInt.
-        // Format with no decimal places and parse as BigInt. This is correct because
-        // `rounded` is already an integer-valued float from floor/ceil/trunc.
-        let s = format!("{rounded:.0}");
-        let bi = s
-            .parse::<BigInt>()
-            .map_err(|_| SimpleException::new_msg(ExcType::ValueError, "float too large to convert to integer"))?;
-        Ok(LongInt::new(bi).into_value(heap))
-    }
-}
-
 /// Converts a `Value` to `f64`, raising `TypeError` if the value is not numeric.
 ///
-/// Accepts `Float`, `Int`, and `Bool` values. For other types, raises a `TypeError`
+/// Accepts floats, integers (including big integers), and booleans. Other types raise a `TypeError`
 /// with a message matching CPython's format: "must be real number, not <type>".
 #[expect(
     clippy::cast_precision_loss,
@@ -1352,6 +1342,16 @@ fn value_to_float(value: &Value, vm: &VM<'_>) -> RunResult<f64> {
         Value::Float(f) => Ok(*f),
         Value::Int(n) => Ok(*n as f64),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
+        Value::InternLongInt(id) => vm
+            .interns
+            .get_long_int(*id)
+            .to_f64()
+            .filter(|f| f.is_finite())
+            .ok_or_else(ExcType::overflow_int_to_float),
+        Value::Ref(id) if let HeapData::LongInt(integer) = vm.heap.get(*id) => integer
+            .to_f64()
+            .filter(|f| f.is_finite())
+            .ok_or_else(ExcType::overflow_int_to_float),
         _ => Err(ExcType::type_error(format!(
             "must be real number, not {}",
             value.py_type_name(vm)

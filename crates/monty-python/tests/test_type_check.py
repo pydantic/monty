@@ -44,7 +44,6 @@ error[unsupported-operator]: Unsupported `+` operation
   | |         |
   | |         Has type `Literal[1]`
   | Has type `Literal["hello"]`
-  |
 
 """)
 
@@ -118,13 +117,12 @@ def foo() -> int:
         tc_session.feed_run(code)
     assert str(exc_info.value) == snapshot("""\
 error[invalid-return-type]: Return type does not match returned value
- --> main.py:2:14
+ --> main.py:3:12
   |
 2 | def foo() -> int:
   |              --- Expected `int` because of return type
 3 |     return "not an int"
   |            ^^^^^^^^^^^^ expected `int`, found `Literal["not an int"]`
-  |
 
 """)
 
@@ -139,7 +137,6 @@ error[unresolved-reference]: Name `undefined_var` used when not defined
   |
 1 | print(undefined_var)
   |       ^^^^^^^^^^^^^
-  |
 
 """)
 
@@ -198,7 +195,6 @@ MontyTypingError(error[unsupported-operator]: Unsupported `+` operation
   | |         |
   | |         Has type `Literal[1]`
   | Has type `Literal["hello"]`
-  |
 
 )\
 """)
@@ -330,7 +326,6 @@ error[invalid-argument-type]: Argument to function `fetch` is incorrect
   |
 1 | fetch(123)
   |       ^^^ Expected `str`, found `Literal[123]`
-  |
 info: Function defined here
  --> repl_type_stubs.pyi:1:5
   |
@@ -356,7 +351,6 @@ error[unsupported-operator]: Unsupported `+` operation
   |               |   |
   |               |   Has type `Literal[1]`
   |               Has type `Literal["hello"]`
-  |
 
 """)
 
@@ -426,7 +420,6 @@ error[invalid-argument-type]: Argument to function `call_llm` is incorrect
   |
 1 | await call_llm(prompt, 42)
   |                        ^^ Expected `list[dict[str, Any]]`, found `Literal[42]`
-  |
 info: Function defined here
  --> repl_type_stubs.pyi:5:11
   |
@@ -465,13 +458,12 @@ def test_type_check_accumulated_catches_type_mismatch(tc_session: MontySession):
         tc_session.feed_run('y: str = x')
     assert str(exc_info.value) == snapshot("""\
 error[invalid-assignment]: Object of type `int` is not assignable to `str`
- --> main.py:1:4
+ --> main.py:1:10
   |
 1 | y: str = x
   |    ---   ^ Incompatible value of type `int`
   |    |
   |    Declared type
-  |
 
 """)
 
@@ -491,7 +483,6 @@ error[unsupported-operator]: Unsupported `+` operation
   | |         |
   | |         Has type `Literal[1]`
   | Has type `Literal["hello"]`
-  |
 
 """)
 
@@ -513,7 +504,6 @@ error[unsupported-operator]: Unsupported `+` operation
   |     |      |
   |     |      Has type `Literal[1]`
   |     Has type `Literal["hi"]`
-  |
 
 """)
 
@@ -549,7 +539,6 @@ error[invalid-argument-type]: Argument to function `greet` is incorrect
   |
 1 | greet(42)
   |       ^^ Expected `str`, found `Literal[42]`
-  |
 info: Function defined here
  --> repl_type_stubs.pyi:2:5
   |
@@ -574,13 +563,12 @@ def get_count() -> int:
         tc_session.feed_run('y: str = get_count()')
     assert str(exc_info.value) == snapshot("""\
 error[invalid-assignment]: Object of type `int` is not assignable to `str`
- --> main.py:1:4
+ --> main.py:1:10
   |
 1 | y: str = get_count()
   |    ---   ^^^^^^^^^^^ Incompatible value of type `int`
   |    |
   |    Declared type
-  |
 
 """)
 
@@ -626,7 +614,6 @@ error[invalid-argument-type]: Argument to function `transform` is incorrect
   |
 1 | transform(42)
   |           ^^ Expected `str`, found `Literal[42]`
-  |
 info: Function defined here
  --> repl_type_stubs.pyi:6:5
   |
@@ -724,7 +711,6 @@ error[unsupported-operator]: Unsupported `+` operation
   | |         |
   | |         Has type `Literal[1]`
   | Has type `Literal["hello"]`
-  |
 
 """)
 
@@ -755,7 +741,6 @@ error[unresolved-reference]: Name `x` used when not defined
   |
 1 | x + 1
   | ^
-  |
 
 """)
 
@@ -777,6 +762,5 @@ error[unresolved-reference]: Name `foo` used when not defined
   |
 1 | foo("x")
   | ^^^
-  |
 
 """)

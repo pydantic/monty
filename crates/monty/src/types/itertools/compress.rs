@@ -7,7 +7,10 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::{DropGuard, HeapId, HeapRead},
-    types::{PyTrait, itertools::ItertoolsIter},
+    types::{
+        PyTrait,
+        itertools::{ItertoolsIter, step::next_source},
+    },
     value::Value,
 };
 
@@ -52,7 +55,14 @@ impl Compress {
 /// Pulls one item from each side per step, yielding the datum when its selector
 /// is truthy and stopping as soon as *either* side runs out.
 pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    let mut steps = 0usize;
     loop {
+        // Native loop: the VM's dispatch checkpoint is per-`run()`, so a
+        // discarding pass over an infinite source reaches none. Poll the
+        // tracker so `max_duration` still bites (see `VM::run`'s
+        // `CHECK_INTERVAL`).
+        vm.heap.tracker.check_time_every(steps)?;
+        steps += 1;
         let ItertoolsIter::Compress(compress) = iter.get(vm.heap) else {
             unreachable!("dispatched on Kind::Compress")
         };
@@ -89,11 +99,7 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
 /// Advances one side, latching `done` when it runs out so a `None` outcome
 /// means the whole adaptor is spent rather than just this step.
 fn step<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, source: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-    let item = {
-        let mut read = source.read(vm);
-        read.py_next(vm)
-    };
-    if let Some(item) = item? {
+    if let Some(item) = next_source(source, vm)? {
         Ok(Some(item))
     } else {
         let ItertoolsIter::Compress(compress) = iter.get_mut(vm.heap) else {

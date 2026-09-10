@@ -7,11 +7,11 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const artifacts = resolve(process.argv[2] ?? join(root, 'artifacts'))
 const output = resolve(process.argv[3] ?? join(root, 'package-tarballs'))
 const runtimeArtifacts = {
-  'darwin-x64': 'pypi_files-macos-x86_64-manylinux-cli',
-  'darwin-arm64': 'pypi_files-macos-pgo-cli',
-  'linux-x64-gnu': 'pypi_files-linux-pgo-cli',
-  'linux-arm64-gnu': 'pypi_files-linux-aarch64-manylinux-cli',
-  'win32-x64-msvc': 'pypi_files-windows-pgo-cli',
+  'darwin-x64': 'pypi_files-runtime-macos-x86_64-manylinux',
+  'darwin-arm64': 'pypi_files-runtime-macos-aarch64-manylinux',
+  'linux-x64-gnu': 'pypi_files-runtime-linux-x86_64-manylinux',
+  'linux-arm64-gnu': 'pypi_files-runtime-linux-aarch64-manylinux',
+  'win32-x64-msvc': 'pypi_files-runtime-windows-x86_64-manylinux',
 }
 const triples = Object.keys(runtimeArtifacts)
 
@@ -33,10 +33,9 @@ function findArtifact(name, directory = artifacts) {
 /** Extracts the worker executable from a `pydantic-monty-runtime` wheel. */
 function extractRuntime(triple, destination) {
   const wheelDirectory = join(artifacts, runtimeArtifacts[triple])
-  // FIXME: maturin currently emits one identical runtime wheel per requested Python version.
-  const wheels = readdirSync(wheelDirectory).filter((name) => /-cp310-.*\.whl$/.test(name))
+  const wheels = readdirSync(wheelDirectory).filter((name) => /-py3-none-.*\.whl$/.test(name))
   if (wheels.length !== 1)
-    throw new Error(`expected one CPython 3.10 runtime wheel in ${wheelDirectory}, found ${wheels.length}`)
+    throw new Error(`expected one Python-independent runtime wheel in ${wheelDirectory}, found ${wheels.length}`)
   const script = `
 import sys, zipfile
 wheel, binary, destination = sys.argv[1:]
@@ -82,15 +81,19 @@ for (const triple of triples) {
   packAndValidate(platformDirectory, `monty-${triple}.tgz`, ['package.json', `monty.${triple}.node`, binary])
 }
 
-const wasm = join(root, 'dist', 'worker', 'monty_wasm_runtime.wasm')
-if (!existsSync(wasm)) throw new Error(`missing wasm runtime: ${wasm}`)
+const component = join(root, 'dist', 'worker', 'component', 'monty.component.js')
+if (!existsSync(component)) throw new Error(`missing wasm component bindings: ${component}`)
 packAndValidate(root, 'monty-main.tgz', [
   'dist/index.js',
   'dist/node.js',
   'dist/worker/index.js',
   'dist/worker/index.node.js',
   'dist/worker/index.browser.js',
-  'dist/worker/monty_wasm_runtime.wasm',
+  'dist/worker/component/monty.component.js',
+  'dist/worker/component/monty.component.core.wasm',
+  'dist/worker/component/monty.component.core2.wasm',
+  'dist/worker/component/monty.component.core3.wasm',
+  'dist/worker/component/monty.component.core4.wasm',
   'native-addon.js',
   'native-addon.d.ts',
 ])

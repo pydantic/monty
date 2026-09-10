@@ -5,6 +5,7 @@ paths = (
     'packages/pydantic-monty/README.md',
     'crates/monty-python/README.md',
     'README.md',
+    'docs',
 )
 
 

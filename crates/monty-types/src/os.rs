@@ -5,7 +5,7 @@
 //! these; the host (a `MountTable`, an `os` callback) decides whether to
 //! permit it. The interpreter itself never performs I/O.
 //!
-//! The fs/ layer matches on the enum directly (no `MontyObject` introspection);
+//! The fs/ layer matches on the enum directly (no [`MontyObject`](crate::MontyObject) introspection);
 //! host bindings get a generic `(positional, keyword)` view via
 //! [`OsFunctionCall::to_args`].
 
@@ -25,7 +25,7 @@ use crate::{
 /// Tagged dispatch value for OS-level operations.
 ///
 /// Each variant carries the strongly-typed args/kwargs the corresponding OS
-/// call needs. The fs/ layer matches on this enum directly (no `MontyObject`
+/// call needs. The fs/ layer matches on this enum directly (no [`MontyObject`](crate::MontyObject)
 /// introspection); host bindings get a generic `(positional, keyword)` view
 /// via [`OsFunctionCall::to_args`].
 ///
@@ -123,7 +123,7 @@ impl OsFunctionCall {
         self.into()
     }
 
-    /// Projects this call's args into `(positional, keyword)` `MontyObject`
+    /// Projects this call's args into `(positional, keyword)` [`MontyObject`](crate::MontyObject)
     /// vectors for delivery to a host callback.
     #[must_use]
     pub fn to_args(self) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
@@ -298,8 +298,8 @@ pub struct PathBytesDataArgs {
 }
 
 /// `open(path, mode)` shape. The mode is parsed into [`FileMode`] before
-/// construction so the fs/ backend doesn't re-parse; `ToArgs` re-serialises
-/// it back to a `MontyObject::String` for the host.
+/// construction so the fs/ backend doesn't re-parse; [`ToArgs`](crate::args::ToArgs) re-serialises
+/// it back to a [`MontyObject::String`](crate::MontyObject::String) for the host.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct OpenCallArgs {
     pub path: MontyPath,
@@ -307,7 +307,7 @@ pub struct OpenCallArgs {
 }
 
 /// `mkdir(path, parents=False, exist_ok=False)` shape. `parents`/`exist_ok`
-/// are kw-only so `ToArgs` emits them as kwargs (matching CPython).
+/// are kw-only so [`ToArgs`](crate::args::ToArgs) emits them as kwargs (matching CPython).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct MkdirCallArgs {
     pub path: MontyPath,
@@ -338,7 +338,7 @@ pub struct GetenvArgs {
 
 /// Owned virtual (sandbox) path carried by OS-call args.
 ///
-/// `String` newtype: derefs to `&str` for fs/ routing, and `ToMontyObject`
+/// `String` newtype: derefs to `&str` for fs/ routing, and [`ToMontyObject`](crate::args::ToMontyObject)
 /// projects it back to [`MontyObject::Path`] at the host boundary. Constructed
 /// at the producer site after the source `Value` has been validated as a
 /// path/string — never from raw input.

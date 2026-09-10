@@ -1,0 +1,125 @@
+site_name: Monty
+site_description: A sandboxed Python interpreter, written in Rust, for code written by AI.
+
+theme:
+  name: 'material'
+  palette:
+    - scheme: 'default'
+      media: '(prefers-color-scheme: light)'
+      primary: 'blue'
+      toggle:
+        icon: 'material/lightbulb'
+        name: 'Switch to dark mode'
+    - scheme: 'slate'
+      media: '(prefers-color-scheme: dark)'
+      primary: 'blue'
+      toggle:
+        icon: 'material/lightbulb-outline'
+        name: 'Switch to light mode'
+
+repo_name: pydantic/monty
+repo_url: https://github.com/pydantic/monty/
+edit_uri: ''
+
+nav:
+  - Introduction: 'index.md'
+  - Commercial support: 'server.md'
+  - Getting Started:
+      - Python: 'quickstart/python.md'
+      - JavaScript: 'quickstart/javascript.md'
+      - Rust: 'quickstart/rust.md'
+  - Concepts:
+      - Security Model: 'security.md'
+      - Host Functions: 'host-functions.md'
+      - Host Objects: 'host-objects.md'
+      - Resource Limits: 'resource-limits.md'
+      - Filesystem Access: 'filesystem.md'
+      - Snapshots: 'snapshots.md'
+      - Type Checking: 'type-checking.md'
+  - Reference:
+      - Comparison to Alternatives: 'alternatives.md'
+      - Examples: 'examples.md'
+      - Command Line: 'cli.md'
+  - Limitations:
+      - Overview: 'limitations/index.md'
+      - Python language / parser: 'limitations/language.md'
+      - Built-in functions: 'limitations/builtins.md'
+      - Classes: 'limitations/classes.md'
+      - dataclasses: 'limitations/dataclasses.md'
+      - Named tuples: 'limitations/namedtuple.md'
+      - Exceptions: 'limitations/exceptions.md'
+      - iter() and iterators: 'limitations/iter.md'
+      - Comprehensions: 'limitations/comprehensions.md'
+      - with statement: 'limitations/with.md'
+      - assert: 'limitations/assert.md'
+      - print(): 'limitations/print.md'
+      - Format mini-language: 'limitations/format.md'
+      - str.encode() / bytes.decode(): 'limitations/encoding.md'
+      - typing: 'limitations/typing.md'
+      - asyncio: 'limitations/asyncio.md'
+      - Standard library modules: 'limitations/modules.md'
+      - base64: 'limitations/base64.md'
+      - collections: 'limitations/collections.md'
+      - datetime: 'limitations/datetime.md'
+      - functools: 'limitations/functools.md'
+      - itertools: 'limitations/itertools.md'
+      - json: 'limitations/json.md'
+      - math: 'limitations/math.md'
+      - os: 'limitations/os.md'
+      - pathlib: 'limitations/pathlib.md'
+      - re: 'limitations/re.md'
+      - sys: 'limitations/sys.md'
+      - unicodedata: 'limitations/unicodedata.md'
+      - open() and file objects: 'limitations/open.md'
+      - Filesystem and sandbox boundary: 'limitations/filesystem.md'
+      - Resource limits: 'limitations/resource_limits.md'
+      - Worker execution: 'limitations/pool-architecture.md'
+  - API Docs:
+      - Python:
+          - Pools: 'api/python/pools.md'
+          - Websocket Client: 'api/python/websocket.md'
+          - Suspend & Resume: 'api/python/suspend_resume.md'
+          - Host Objects: 'api/python/host_objects.md'
+          - Filesystem & OS: 'api/python/os.md'
+          - Errors: 'api/python/errors.md'
+      - Rust:
+          - monty: 'api/rust/monty.md'
+          - monty-pool: 'api/rust/monty-pool.md'
+          - monty-types: 'api/rust/monty-types.md'
+          - monty-fs: 'api/rust/monty-fs.md'
+          - monty-proto: 'api/rust/monty-proto.md'
+          - monty-type-checking: 'api/rust/monty-type-checking.md'
+
+# contributor notes for docs/limitations/, not a page
+exclude_docs: |
+  limitations/AGENTS.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - pymdownx.highlight:
+      use_pygments: true
+      pygments_lang_class: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+# The `::: pydantic_monty` block in docs/api/python.md is expanded by
+# mkdocstrings here and by the pydantic.dev docs pipeline, which reads the
+# handler options below from this file — keep them in this file only.
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [crates/monty-python/python]
+          options:
+            members_order: source
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            group_by_category: false
+            heading_level: 3
+            docstring_options:
+              warn_unknown_params: false

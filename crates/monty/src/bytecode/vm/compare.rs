@@ -69,7 +69,7 @@ impl VM<'_> {
         // a multiset) answers the operator itself. Hooked in here rather than at
         // the opcode so the fused-assert path, which calls `cmp_values` directly,
         // gets the same semantics.
-        if let Some(result) = lhs.py_cmp_op(rhs, op, self, lhs.ref_id())? {
+        if let Some(result) = lhs.py_cmp_op(rhs, op, self)? {
             return Ok(result);
         }
         match lhs.py_cmp(rhs, self)? {

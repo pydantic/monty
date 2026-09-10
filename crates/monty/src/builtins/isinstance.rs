@@ -29,6 +29,8 @@ pub fn builtin_isinstance(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 /// - Exception types and their hierarchy: `isinstance(err, LookupError)`
 /// - User-defined classes: `isinstance(obj, Foo)` (identity of the instance's
 ///   class; there is no inheritance chain to walk yet)
+/// - Host classes: `isinstance(obj, Point)` for a `HostClassType` (exact class
+///   id; the host sends no bases)
 /// - Tuples (possibly nested) of the above
 fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
     match classinfo {
@@ -42,11 +44,20 @@ fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResul
         Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::NamedTupleClass(_)) => {
             Ok(instance_of_namedtuple_class(obj, *id, vm))
         }
+        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::HostClassType(_)) => {
+            Ok(instance_of_host_class(obj, *id, vm))
+        }
         Value::Ref(id) if let HeapReadOutput::Tuple(tuple) = vm.heap.read(*id) => {
             isinstance_check_tuple(obj, &tuple, vm)
         }
         _ => Err(ExcType::isinstance_arg2_error()),
     }
+}
+
+/// Whether `obj` is a host instance whose class entry is `class_id` (exact
+/// class only: the host never sends bases, so subclasses are unknown).
+fn instance_of_host_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
+    matches!(obj, Value::Ref(obj_id) if matches!(vm.heap.get(*obj_id), HeapData::HostClass(hc) if hc.class_id() == class_id))
 }
 
 /// Whether `obj` is an instance whose class object is `class_id`.
@@ -86,6 +97,11 @@ fn isinstance_check_tuple<'h>(obj: &Value, tuple: &HeapRead<'h, Tuple>, vm: &mut
             }
             Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::NamedTupleClass(_)) => {
                 if instance_of_namedtuple_class(obj, *id, vm) {
+                    return Ok(true);
+                }
+            }
+            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::HostClassType(_)) => {
+                if instance_of_host_class(obj, *id, vm) {
                     return Ok(true);
                 }
             }

@@ -10,38 +10,57 @@
 //! - `py_next` cannot hold the state borrow: adaptors re-enter the VM, so each
 //!   per-type function takes the `HeapRead` and re-projects under short borrows.
 
+pub mod accumulate;
+pub mod batched;
 pub mod chain;
 pub mod compress;
 pub mod count;
 pub mod cycle;
+pub mod dropwhile;
+pub mod filterfalse;
 pub mod islice;
 pub mod pairwise;
 pub mod repeat;
+pub mod starmap;
+mod step;
+pub mod takewhile;
+pub mod zip_longest;
 
 use std::fmt::Write;
 
+pub(crate) use accumulate::Accumulate;
+pub(crate) use batched::Batched;
 pub(crate) use chain::Chain;
 pub(crate) use compress::Compress;
 pub(crate) use count::Count;
 pub(crate) use cycle::Cycle;
+pub(crate) use dropwhile::DropWhile;
+pub(crate) use filterfalse::FilterFalse;
 pub(crate) use islice::Islice;
 pub(crate) use pairwise::Pairwise;
 pub(crate) use repeat::Repeat;
 use serde::{Deserialize, Serialize};
+pub(crate) use starmap::StarMap;
+pub(crate) use takewhile::TakeWhile;
+pub(crate) use zip_longest::ZipLongest;
 
+// Only the 64-bit size budget below needs it.
+#[cfg(target_pointer_width = "64")]
+use crate::types::Dict;
 use crate::{
     bytecode::VM,
     exception_private::RunResult,
-    heap::{HeapId, HeapItem, HeapRead},
+    heap::{HeapId, HeapItem, HeapObjectRead},
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
 };
 
 /// The state of one `itertools` iterator, whichever adaptor produced it.
 ///
-/// Held inline: `HeapData` is 160 bytes and the widest adaptor needs 56. If one
-/// ever exceeds that, box it in its variant here — never at the `HeapData`
-/// boundary, where `heap_read_boxed` is only sound for reads.
+/// Held inline, so this width is memcpy'd on every heap allocate and free along
+/// with the rest of `HeapData` — which #636 shrank to 80 bytes, asserted in
+/// `heap_data.rs`. The budget below keeps the family from becoming what sets
+/// that size.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum ItertoolsIter {
     Count(Count),
@@ -51,7 +70,32 @@ pub(crate) enum ItertoolsIter {
     Islice(Islice),
     Chain(Chain),
     Cycle(Cycle),
+    TakeWhile(TakeWhile),
+    DropWhile(DropWhile),
+    FilterFalse(FilterFalse),
+    StarMap(StarMap),
+    /// Boxed: three `Value`s make it 56 bytes, wide enough to set `HeapData`'s
+    /// size on 32-bit. See the budget below.
+    Accumulate(Box<Accumulate>),
+    Batched(Batched),
+    ZipLongest(ZipLongest),
 }
+
+// `Dict` is the widest `HeapData` payload on 64-bit hosts, so it — not a
+// literal — is the budget: staying under it keeps this family from setting
+// `HeapData`'s size. Only there: on 32-bit (the wasm worker) `Dict` halves
+// while the adaptors' `i64` fields do not, and other variants set the size.
+// TODO: when this fails, box the offending variant (`GroupBy(Box<GroupBy>)`),
+// not the enum and not at the `HeapData` boundary.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(size_of::<ItertoolsIter>() <= size_of::<Dict>());
+
+// On 32-bit `Dict` is 36 bytes while these adaptors, built from `Value`s that
+// stay 16 bytes either way, do not shrink — so this family *is* what sets
+// `HeapData`'s size and no other variant can serve as the budget. 48 is the
+// width already paid; every byte past it costs `PAGE_SIZE` more per heap page.
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(size_of::<ItertoolsIter>() <= 48);
 
 /// Which adaptor an [`ItertoolsIter`] is, without borrowing it.
 ///
@@ -67,6 +111,13 @@ pub(crate) enum Kind {
     Islice,
     Chain,
     Cycle,
+    TakeWhile,
+    DropWhile,
+    FilterFalse,
+    StarMap,
+    Accumulate,
+    Batched,
+    ZipLongest,
 }
 
 impl ItertoolsIter {
@@ -80,6 +131,13 @@ impl ItertoolsIter {
             Self::Islice(_) => Kind::Islice,
             Self::Chain(_) => Kind::Chain,
             Self::Cycle(_) => Kind::Cycle,
+            Self::TakeWhile(_) => Kind::TakeWhile,
+            Self::DropWhile(_) => Kind::DropWhile,
+            Self::FilterFalse(_) => Kind::FilterFalse,
+            Self::StarMap(_) => Kind::StarMap,
+            Self::Accumulate(_) => Kind::Accumulate,
+            Self::Batched(_) => Kind::Batched,
+            Self::ZipLongest(_) => Kind::ZipLongest,
         }
     }
 
@@ -93,6 +151,13 @@ impl ItertoolsIter {
             Self::Islice(_) => Type::ItertoolsIslice,
             Self::Chain(_) => Type::ItertoolsChain,
             Self::Cycle(_) => Type::ItertoolsCycle,
+            Self::TakeWhile(_) => Type::ItertoolsTakeWhile,
+            Self::DropWhile(_) => Type::ItertoolsDropWhile,
+            Self::FilterFalse(_) => Type::ItertoolsFilterFalse,
+            Self::StarMap(_) => Type::ItertoolsStarMap,
+            Self::Accumulate(_) => Type::ItertoolsAccumulate,
+            Self::Batched(_) => Type::ItertoolsBatched,
+            Self::ZipLongest(_) => Type::ItertoolsZipLongest,
         }
     }
 
@@ -108,7 +173,14 @@ impl ItertoolsIter {
             | Self::Compress(_)
             | Self::Islice(_)
             | Self::Chain(_)
-            | Self::Cycle(_) => true,
+            | Self::Cycle(_)
+            | Self::TakeWhile(_)
+            | Self::DropWhile(_)
+            | Self::FilterFalse(_)
+            | Self::StarMap(_)
+            | Self::Accumulate(_)
+            | Self::Batched(_)
+            | Self::ZipLongest(_) => true,
         }
     }
 
@@ -123,7 +195,14 @@ impl ItertoolsIter {
             | Self::Compress(_)
             | Self::Islice(_)
             | Self::Chain(_)
-            | Self::Cycle(_) => 0,
+            | Self::Cycle(_)
+            | Self::TakeWhile(_)
+            | Self::DropWhile(_)
+            | Self::FilterFalse(_)
+            | Self::StarMap(_)
+            | Self::Accumulate(_)
+            | Self::Batched(_)
+            | Self::ZipLongest(_) => 0,
             Self::Repeat(repeat) => repeat.size_hint(),
         }
     }
@@ -138,6 +217,13 @@ impl ItertoolsIter {
             Self::Islice(islice) => islice.for_each_child_id(on_child),
             Self::Chain(chain) => chain.for_each_child_id(on_child),
             Self::Cycle(cycle) => cycle.for_each_child_id(on_child),
+            Self::TakeWhile(take) => take.for_each_child_id(on_child),
+            Self::DropWhile(drop_while) => drop_while.for_each_child_id(on_child),
+            Self::FilterFalse(filter) => filter.for_each_child_id(on_child),
+            Self::StarMap(starmap) => starmap.for_each_child_id(on_child),
+            Self::Accumulate(accumulate) => accumulate.for_each_child_id(on_child),
+            Self::Batched(batched) => batched.for_each_child_id(on_child),
+            Self::ZipLongest(zip) => zip.for_each_child_id(on_child),
         }
     }
 }
@@ -153,11 +239,18 @@ impl HeapItem for ItertoolsIter {
             Self::Islice(islice) => islice.py_dec_ref_ids(stack),
             Self::Chain(chain) => chain.py_dec_ref_ids(stack),
             Self::Cycle(cycle) => cycle.py_dec_ref_ids(stack),
+            Self::TakeWhile(take) => take.py_dec_ref_ids(stack),
+            Self::DropWhile(drop_while) => drop_while.py_dec_ref_ids(stack),
+            Self::FilterFalse(filter) => filter.py_dec_ref_ids(stack),
+            Self::StarMap(starmap) => starmap.py_dec_ref_ids(stack),
+            Self::Accumulate(accumulate) => accumulate.py_dec_ref_ids(stack),
+            Self::Batched(batched) => batched.py_dec_ref_ids(stack),
+            Self::ZipLongest(zip) => zip.py_dec_ref_ids(stack),
         }
     }
 }
 
-impl<'h> PyTrait<'h> for HeapRead<'h, ItertoolsIter> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
     fn py_is_iterator(&self, _: &VM<'h>) -> bool {
         true
     }
@@ -180,47 +273,52 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ItertoolsIter> {
         Ok(None)
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        let self_id = self_id.expect("heap values have an id");
-        vm.heap.inc_ref(self_id);
-        Ok(Value::Ref(self_id))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(self.clone_value(vm.heap))
     }
 
-    fn py_next(&mut self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let kind = self.get(vm.heap).kind();
-        match kind {
-            // Self-contained adaptors: neither drives a wrapped iterator.
+    /// Recursion is charged by [`step::next_source`], not here: the level is
+    /// owed by re-entering a wrapped iterator on the native Rust stack, and an
+    /// adaptor that answers from its own state never does. Charging it up front
+    /// made a spent `batched`, a latched `takewhile` or an `accumulate` yielding
+    /// its `initial` cost a level it never spent.
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        match self.get(vm.heap).kind() {
             Kind::Count => count::next(self, vm),
             Kind::Repeat => repeat::next(self, vm),
-            // Source-driving adaptors re-enter `py_next` on their wrapped
-            // iterator, recursing on the native Rust stack; charge a recursion
-            // level so deep nesting raises `RecursionError`, not a stack overflow.
-            Kind::Pairwise | Kind::Compress | Kind::Islice | Kind::Chain | Kind::Cycle => {
-                let mut guard = vm.recursion_guard()?;
-                let vm = &mut *guard;
-                match kind {
-                    Kind::Pairwise => pairwise::next(self, vm),
-                    Kind::Compress => compress::next(self, vm),
-                    Kind::Islice => islice::next(self, vm),
-                    Kind::Chain => chain::next(self, vm),
-                    Kind::Cycle => cycle::next(self, vm),
-                    Kind::Count | Kind::Repeat => unreachable!("handled above"),
-                }
-            }
+            Kind::Pairwise => pairwise::next(self, vm),
+            Kind::Compress => compress::next(self, vm),
+            Kind::Islice => islice::next(self, vm),
+            Kind::Chain => chain::next(self, vm),
+            Kind::Cycle => cycle::next(self, vm),
+            Kind::TakeWhile => takewhile::next(self, vm),
+            Kind::DropWhile => dropwhile::next(self, vm),
+            Kind::FilterFalse => filterfalse::next(self, vm),
+            Kind::StarMap => starmap::next(self, vm),
+            Kind::Accumulate => accumulate::next(self, vm),
+            Kind::Batched => batched::next(self, vm),
+            Kind::ZipLongest => zip_longest::next(self, vm),
         }
     }
 
     /// Only `count` and `repeat` carry a custom `repr`; every other adaptor
-    /// uses CPython's default `<itertools.name object>` form, which is what the
-    /// `PyTrait` default writes.
+    /// uses Python's identity-bearing default object representation.
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         match self.get(vm.heap).kind() {
             Kind::Count => count::repr_fmt(self, f, vm, heap_ids),
             Kind::Repeat => repeat::repr_fmt(self, f, vm, heap_ids),
-            Kind::Pairwise | Kind::Compress | Kind::Islice | Kind::Chain | Kind::Cycle => {
-                let type_name = self.py_type(vm).name(vm.heap, vm.interns);
-                Ok(write!(f, "<{type_name} object>")?)
-            }
+            Kind::Pairwise
+            | Kind::Compress
+            | Kind::Islice
+            | Kind::Chain
+            | Kind::Cycle
+            | Kind::TakeWhile
+            | Kind::DropWhile
+            | Kind::FilterFalse
+            | Kind::StarMap
+            | Kind::Accumulate
+            | Kind::Batched
+            | Kind::ZipLongest => self.py_default_repr_fmt(f, vm),
         }
     }
 }
