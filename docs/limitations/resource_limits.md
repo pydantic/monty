@@ -44,8 +44,12 @@ Snippets rejected before execution retain none of their compilation products (se
     container, and string formatting with dynamic width or precision, for
     f-strings (`f"{v:>{w}}"`, `f"{v:.{p}f}"`), `str.format()`
     (`"{0:>{1}}".format(v, w)`, `"{0:.{1}f}".format(v, p)`) and `%`
-    formatting (`"%*d" % (w, v)`, `"%.*f" % (p, v)`). The pre-check
-    threshold is 100 KB:
+    formatting (`"%*d" % (w, v)`, `"%.*f" % (p, v)`), and every `binascii` and
+    `base64` conversion that can outgrow its input — including `base64.a85decode`,
+    where Ascii85's `z` (and `y` with `foldspaces=True`) stands for a whole
+    four-byte word. Each of these reserves what it pre-checked, so the buffer
+    never grows past it.
+    The pre-check threshold is 100 KB:
     estimates above that are checked against the remaining budget and rejected
     with `MemoryError` before allocation when they would exceed it.
 - `bigint.pow(base, exp)` estimates result size as `bits(base) * exp` with
