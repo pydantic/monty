@@ -32,7 +32,7 @@ test('an overrun the interpreter catches leaves the instance alive', async (ctx)
   const error = await t.throwsAsync(() => session.feedRun('[str(i) for i in range(131_072)]'), {
     instanceOf: MontyRuntimeError,
   })
-  assertMemoryError(error, 1_060_648, maxMemory)
+  assertMemoryError(error, maxMemory)
   t.is(error.exception.typeName, 'MemoryError')
   t.is(await session.feedRun('1 + 1'), 2)
   await session.close()

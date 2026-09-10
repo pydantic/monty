@@ -1,9 +1,6 @@
 use std::{cell::Cell, fmt::Write, ops};
 
-/// Python string type, wrapping a Rust `String`.
-///
-/// This type provides Python string semantics. Currently supports basic
-/// operations like length and equality comparison.
+use compact_str::CompactString;
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use ruff_python_stdlib::{identifiers::is_identifier, keyword::is_keyword};
@@ -33,16 +30,13 @@ use crate::{
     value::{EitherStr, Value, eq_str},
 };
 
-/// Python string value stored on the heap.
+/// Python string with a cached hash and inline storage for short contents.
 ///
-/// Wraps a Rust `String` and provides Python-compatible operations.
-/// `len()` returns the number of Unicode codepoints (characters), matching Python semantics.
-///
-/// Carries an inline `cached_hash` field so a `Str` only computes its Python
-/// hash once.
+/// Up to 24 UTF-8 bytes fit inline on 64-bit targets (12 on 32-bit targets).
+/// Longer strings own a buffer; all non-interned strings still have a heap ID.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
-pub(crate) struct Str(Box<str>, #[serde(skip)] Cell<Option<HashValue>>);
+pub(crate) struct Str(CompactString, #[serde(skip)] Cell<Option<HashValue>>);
 
 impl PartialEq for Str {
     /// Compares only the string content — the `cached_hash` field is a pure
@@ -53,11 +47,11 @@ impl PartialEq for Str {
 }
 
 impl Str {
-    /// Creates a new Str from anything convertible into a `Box<str>`.
+    /// Stores short contents inline; long buffers are reused on 64-bit targets.
     ///
-    /// Private — use [`allocate_string`] or [`allocate_string_no_interning`] instead.
+    /// Use [`allocate_string`] or [`allocate_string_no_interning`] instead.
     #[must_use]
-    fn new(s: impl Into<Box<str>>) -> Self {
+    fn new(s: impl Into<CompactString>) -> Self {
         Self(s.into(), Cell::new(None))
     }
 
@@ -162,26 +156,11 @@ fn ctor_str_arg<'a>(arg: Option<&'a Value>, default: &'a str, vm: &'a VM<'_>) ->
     }
 }
 
-/// Allocates a string, using interned versions when possible.
+/// Interns empty and single-ASCII strings; other strings get a heap entry.
 ///
-/// Optimizations:
-/// - Empty strings return the pre-interned `StaticStrings::EmptyString`
-/// - Single ASCII characters return pre-interned ASCII strings
-/// - Other strings are allocated on the heap
-///
-/// This avoids heap allocation for common cases like results from `strip()`,
-/// `split()`, string iteration, etc. Prefer this over manual `Str` construction
-/// so callsites consistently benefit from interning. When the caller can prove
-/// the string is longer than one byte, [`allocate_string_no_interning`] avoids
-/// the length branch.
-///
-/// The dual bound `AsRef<str> + Into<Box<str>>` lets the function peek the
-/// length via the borrow before committing to a conversion. Callers with an
-/// owned `String`/`Box<str>` move the value in (consumed only on the heap
-/// path), and borrowed `&str` callers avoid an upfront `to_owned()` —
-/// allocation happens only when the string actually needs heap storage.
-///
-pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Value {
+/// Converts directly to compact storage, avoiding a temporary allocation for
+/// borrowed short strings.
+pub fn allocate_string(s: impl AsRef<str> + Into<CompactString>, heap: &Heap) -> Value {
     let bytes = s.as_ref().as_bytes();
     match bytes.len() {
         0 => Value::InternString(StaticStrings::EmptyString.into()),
@@ -190,14 +169,10 @@ pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Valu
     }
 }
 
-/// Allocates a string directly on the heap, skipping the intern check.
+/// Allocates a string without checking for an interned empty or ASCII value.
 ///
-/// Use this only when the caller can guarantee the string is longer than one
-/// byte (e.g. always contains a fixed prefix like `"0x"`, `"0o"`, or a
-/// formatted date). For inputs of unknown length, use [`allocate_string`].
-///
-/// Accepts `impl Into<Box<str>>` for the same reasons as [`allocate_string`].
-pub fn allocate_string_no_interning(s: impl Into<Box<str>>, heap: &Heap) -> Value {
+/// Use when the string is known to exceed one UTF-8 byte; otherwise use [`allocate_string`].
+pub fn allocate_string_no_interning(s: impl Into<CompactString>, heap: &Heap) -> Value {
     let heap_id = heap.allocate(HeapData::Str(Str::new(s)));
     Value::Ref(heap_id)
 }
@@ -218,8 +193,9 @@ pub fn allocate_char(c: char, heap: &Heap) -> Value {
     if c.is_ascii() {
         Value::InternString(StringId::from_ascii(c as u8))
     } else {
-        let heap_id = heap.allocate(HeapData::Str(Str::new(c.to_string())));
-        Value::Ref(heap_id)
+        let mut buffer = [0; 4];
+        let s: &str = c.encode_utf8(&mut buffer);
+        allocate_string_no_interning(s, heap)
     }
 }
 
@@ -377,7 +353,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
         };
 
         let s = heap_read_ref_as_field!(self, Str, 0);
-        let s = s.as_box_value(vm.heap);
+        let s = s.as_deref(vm.heap);
         call_str_method_impl(&s, method, args, vm).map(CallResult::Value)
     }
 }

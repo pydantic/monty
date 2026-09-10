@@ -28,6 +28,7 @@ ruff_text_size = { workspace = true }
 ahash = { workspace = true }
 indexmap = { workspace = true }
 itoa = { workspace = true }
+compact_str = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
 strum = { workspace = true }

@@ -183,6 +183,66 @@ fn run_progress_round_trip_at_external_call() {
     assert_eq!(result.into_complete().unwrap(), MontyObject::Int(101)); // 100 + 1
 }
 
+/// String contents, aliases and dictionary keys survive both inline-storage boundaries.
+#[test]
+fn run_progress_round_trip_preserves_short_and_long_strings() {
+    let samples = MontyObject::List(
+        [
+            String::new(),
+            "x".to_owned(),
+            "x".repeat(11),
+            "x".repeat(12),
+            "x".repeat(13),
+            "x".repeat(23),
+            "x".repeat(24),
+            "x".repeat(25),
+            "x".repeat(128),
+            "é".repeat(6),
+            "é".repeat(12),
+            "é".repeat(13),
+            "\u{10000}".repeat(6),
+            "\u{10000}".repeat(7),
+            "a\0b".to_owned(),
+        ]
+        .into_iter()
+        .map(MontyObject::String)
+        .collect(),
+    );
+    let code = r"
+values = [s[:] for s in samples]
+aliases = [str(s) for s in values]
+indices = {s: i for i, s in enumerate(values)}
+pause()
+for i, s in enumerate(values):
+    assert aliases[i] is s
+    assert str(s) is s
+    assert indices[s.encode().decode()] == i
+values
+";
+    let runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["samples".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(vec![samples.clone()], ResourceTracker::default(), PrintWriter::Disabled)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded = round_trip_progress(&progress);
+    for progress in [progress, loaded] {
+        let result = progress
+            .into_function_call()
+            .unwrap()
+            .resume(MontyObject::None, PrintWriter::Disabled)
+            .unwrap()
+            .into_complete()
+            .unwrap();
+        assert_eq!(result, samples);
+    }
+}
+
 #[test]
 fn run_progress_round_trip_multiple_calls() {
     // Test multiple external calls with a round-trip between each

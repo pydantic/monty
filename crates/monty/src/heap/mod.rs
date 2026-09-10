@@ -502,11 +502,12 @@ impl<'a, T> HeapRead<'a, Vec<T>> {
     }
 }
 
-impl<'a, T: ?Sized> HeapRead<'a, Box<T>> {
-    pub fn as_box_value(&self, reader: &HeapReader<'a>) -> BorrowedHeapRead<'_, 'a, T> {
+impl<'a, T: Deref> HeapRead<'a, T> {
+    /// Projects through `Deref` while keeping the original read handle borrowed.
+    pub fn as_deref(&self, reader: &HeapReader<'a>) -> BorrowedHeapRead<'_, 'a, T::Target> {
         BorrowedHeapRead {
             inner: ManuallyDrop::new(HeapRead {
-                value: NonNull::from(self.get(reader).as_ref()),
+                value: NonNull::from(self.get(reader).deref()),
                 readers: NonNull::dangling(),
                 borrow: PhantomData,
             }),

@@ -757,6 +757,7 @@ dependencies = [
  "castaway",
  "cfg-if",
  "itoa",
+ "serde",
  "static_assertions",
  "zmij",
 ]
@@ -2410,6 +2411,7 @@ version = "0.0.23"
 dependencies = [
  "ahash",
  "chrono",
+ "compact_str",
  "fancy-regex 0.17.0",
  "getrandom 0.3.4",
  "hashbrown 0.16.1",

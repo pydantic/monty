@@ -1015,7 +1015,7 @@ async fn one_huge_write_is_split_at_the_size_threshold() {
     let pool = Pool::new(config()).await.unwrap();
     // an interval nothing will reach, so only the size threshold can flush
     let repl = ReplConfig {
-        print_flush_interval: Some(Duration::from_secs(600)),
+        print_flush_interval: Some(Duration::from_mins(10)),
         ..ReplConfig::default()
     };
     let mut session = pool.checkout(&repl).await.unwrap();

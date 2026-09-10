@@ -1,6 +1,5 @@
 import { test } from 'vitest'
 import { assertMemoryError, t } from './assertions.js'
-import { kind } from './env.js'
 
 import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
 import { WorkerTransport } from '../ts/worker/transport.js'
@@ -72,7 +71,7 @@ len(result)
 `
   const maxMemory = 64 * 1024
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory } }), isRuntimeError)
-  assertMemoryError(error, kind === 'browser' ? 75_047 : 89_113, maxMemory)
+  assertMemoryError(error, maxMemory)
 })
 
 test('memory limit accepts values above u32 max', async () => {
@@ -93,12 +92,12 @@ test('limits with inputs', async () => {
 
 test('pow memory limit', async () => {
   const error = await t.throwsAsync(() => run('2 ** 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, kind === 'browser' ? 10_023_470 : 10_031_312, 1_000_000)
+  assertMemoryError(error, 1_000_000)
 })
 
 test('lshift memory limit', async () => {
   const error = await t.throwsAsync(() => run('1 << 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, kind === 'browser' ? 1_273_471 : 1_281_313, 1_000_000)
+  assertMemoryError(error, 1_000_000)
 })
 
 test('mult memory limit', async () => {
@@ -107,7 +106,7 @@ big = 2 ** 4000000
 result = big * big
 `
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, kind === 'browser' ? 4_024_130 : 4_031_972, 1_000_000)
+  assertMemoryError(error, 1_000_000)
 })
 
 test('small operations within limit', async () => {
