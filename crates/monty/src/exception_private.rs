@@ -848,6 +848,20 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Creates a TypeError for the `dt` argument of `timezone.utcoffset()`,
+    /// `timezone.tzname()` and `timezone.dst()`.
+    ///
+    /// CPython names the method without a class prefix here:
+    /// `utcoffset(dt) argument must be a datetime instance or None, not int`.
+    #[must_use]
+    fn type_error_tzinfo_dt_arg(method: &str, ty: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{method}(dt) argument must be a datetime instance or None, not {ty}"),
+        )
+        .into()
+    }
+
     /// Creates a simple TypeError with a custom message.
     #[must_use]
     fn type_error(msg: impl fmt::Display) -> RunError {

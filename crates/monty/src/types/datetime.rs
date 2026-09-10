@@ -15,10 +15,10 @@ use chrono::{
 use monty_types::{MontyTimeZone, OsFunctionCall};
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
@@ -26,7 +26,8 @@ use crate::{
         AttrCallResult, CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
         date::{self, StrftimeArgs},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
-        time, timedelta, timezone,
+        time::{self, Time, TimeSpec},
+        timedelta, timezone,
     },
     value::{EitherStr, Value},
 };
@@ -150,6 +151,28 @@ pub(crate) fn from_components(
 
     attach_or_allocate_tzinfo_ref(&mut datetime, tzinfo_ref, heap);
     Ok(datetime)
+}
+
+/// Allocates a naive `datetime` from already-in-range components.
+///
+/// For the `datetime.min` / `datetime.max` class constants; anything derived
+/// from user input must go through [`from_components`] to be validated. Takes
+/// `&mut Heap`, unlike its siblings, because that shared path may allocate a
+/// timezone.
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn allocate_naive(
+    year: i32,
+    month: i32,
+    day: i32,
+    hour: i32,
+    minute: i32,
+    second: i32,
+    microsecond: i32,
+    heap: &mut Heap,
+) -> Value {
+    let datetime = from_components(year, month, day, hour, minute, second, microsecond, None, None, heap)
+        .expect("caller guarantees in-range datetime components");
+    Value::Ref(heap.allocate(HeapData::DateTime(datetime)))
 }
 
 /// Returns true when this is an aware datetime.
@@ -338,6 +361,116 @@ pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &In
         .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("Invalid isoformat string: '{s}'")))?;
 
     Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))))
+}
+
+/// `datetime.combine(date, time, tzinfo=self.tzinfo)`.
+///
+/// The `date` argument may itself be a `datetime` (CPython makes `datetime` a
+/// `date` subclass), in which case only its date part is used. The result takes
+/// the time's timezone unless a third argument overrides it; passing `None`
+/// explicitly is how CPython drops an aware time's zone.
+pub(crate) fn class_combine(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let CombineArgs { date, time, tzinfo } = CombineArgs::from_args(args, vm)?;
+    defer_drop!(date, vm);
+    defer_drop!(time, vm);
+    // Guarded before the two type checks below, since both can fail while
+    // holding the caller's `tzinfo` reference.
+    defer_drop!(tzinfo, vm);
+
+    let date_part = combine_date_part(date, vm)?;
+    let time_part = combine_time_part(time, vm)?;
+
+    // Absent keeps the time's zone; present (including `None`) replaces it.
+    // Either way the zone is borrowed, so the guard above has to outlive
+    // `combine_allocate` — which takes its own ref via `from_components`.
+    match tzinfo.as_ref() {
+        None => {
+            let tz = (time::attached_timezone(&time_part, vm.heap), time_part.tzinfo_ref());
+            combine_allocate(vm, date_part, &time_part, tz)
+        }
+        Some(tzinfo) => {
+            let tz = tzinfo_from_value(tzinfo, vm.heap, vm.interns)?;
+            combine_allocate(vm, date_part, &time_part, tz)
+        }
+    }
+}
+
+/// Allocates the `datetime` `combine` returns, given its resolved parts.
+fn combine_allocate(
+    vm: &mut VM<'_>,
+    (year, month, day): (i32, i32, i32),
+    time: &Time,
+    (tz, tz_ref): (Option<TimeZone>, Option<HeapId>),
+) -> RunResult<Value> {
+    let (hour, minute, second, microsecond) = time.components_i32();
+    let combined = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, vm.heap)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(combined))))
+}
+
+/// Argument shape for `datetime.combine(date, time, tzinfo=self.tzinfo)`.
+///
+/// Every field stays a raw [`Value`] so the type checks run in the body with
+/// CPython's own wording (`combine() argument 1 must be datetime.date, not
+/// str`, and the shared `tzinfo argument must be ...` message).
+#[derive(FromArgs)]
+#[from_args(name = "combine", style = c_named, at_most_total)]
+struct CombineArgs {
+    date: Value,
+    time: Value,
+    // `Option<Value>` keeps "omitted" (inherit the time's zone) distinct from an
+    // explicit `tzinfo=None` (make the result naive).
+    #[from_args(default)]
+    tzinfo: Option<Value>,
+}
+
+/// Extracts `(year, month, day)` from `combine`'s first argument.
+fn combine_date_part(date: &Value, vm: &mut VM<'_>) -> RunResult<(i32, i32, i32)> {
+    let naive = match date {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Date(d) => Some(d.0),
+            HeapData::DateTime(dt) => Some(dt.naive.date()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let naive = naive.ok_or_else(|| {
+        ExcType::type_error_bad_arg_pos(
+            "combine",
+            1,
+            "datetime.date",
+            date.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.interns),
+        )
+    })?;
+    Ok((
+        naive.year(),
+        i32::try_from(naive.month()).expect("month in 1..12"),
+        i32::try_from(naive.day()).expect("day in 1..31"),
+    ))
+}
+
+/// Extracts the `Time` from `combine`'s second argument.
+///
+/// The clone shares the original's `tzinfo_ref` without taking a reference to
+/// it, so it is only safe while the caller's guard keeps the source `time`
+/// alive — which is exactly how long [`class_combine`] uses it.
+fn combine_time_part(time: &Value, vm: &mut VM<'_>) -> RunResult<Time> {
+    match time {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Time(t) => Ok(t.clone()),
+            _ => Err(combine_bad_time_arg(time, vm)),
+        },
+        _ => Err(combine_bad_time_arg(time, vm)),
+    }
+}
+
+/// The `combine() argument 2 must be datetime.time, not X` error.
+fn combine_bad_time_arg(time: &Value, vm: &VM<'_>) -> RunError {
+    ExcType::type_error_bad_arg_pos(
+        "combine",
+        2,
+        "datetime.time",
+        time.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.interns),
+    )
 }
 
 /// Parses an ISO 8601 datetime string into a `DateTime`.
@@ -647,25 +780,72 @@ fn year_in_python_range(year: i32) -> bool {
 /// passed through verbatim to match glibc/Linux CPython (see
 /// [`date::format_date_strftime`]).
 pub(crate) fn format_datetime_strftime(dt: &DateTime, format: &str) -> RunResult<String> {
-    date::render_strftime(dt.naive.format_with_items(StrftimeItems::new_lenient(format)))
+    let format = date::rewrite_microsecond_directive(format);
+    date::render_strftime(dt.naive.format_with_items(StrftimeItems::new_lenient(&format)))
         .ok_or_else(date::invalid_strftime_error)
 }
 
-/// Formats a datetime as an ISO 8601 string with the given separator.
+/// Formats a datetime as an ISO 8601 string with the given separator, at the
+/// clock precision `spec` asks for.
 ///
-/// Matches CPython's `datetime.isoformat(sep='T')`.
-fn format_isoformat(dt: &DateTime, sep: char) -> String {
+/// Matches CPython's `datetime.isoformat(sep='T', timespec='auto')`.
+fn format_isoformat(dt: &DateTime, sep: char, spec: TimeSpec) -> String {
     let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
         return "<out of range>".to_owned();
     };
-    let mut s = format!("{year:04}-{month:02}-{day:02}{sep}{hour:02}:{minute:02}:{second:02}");
-    if microsecond != 0 {
-        write!(s, ".{microsecond:06}").expect("writing to String cannot fail");
-    }
+    let mut s = format!("{year:04}-{month:02}-{day:02}{sep}");
+    spec.write_clock(
+        &mut s,
+        u32::from(hour),
+        u32::from(minute),
+        u32::from(second),
+        microsecond,
+    );
     if let Some(offset) = offset_seconds(dt) {
         s.push_str(&timezone::format_offset_hms(offset));
     }
     s
+}
+
+/// Argument shape for `datetime.isoformat(sep='T', timespec='auto')`.
+///
+/// `sep` stays a raw [`Value`] because CPython's `C` converter has wording no
+/// `FromValue` impl produces — it reports the *length* of a rejected string
+/// (`not a string of length 2`) — so [`isoformat_separator`] checks it in the
+/// body. `bad_arg` still covers `timespec`.
+#[derive(FromArgs)]
+#[from_args(name = "isoformat", style = c_named, at_most_total, bad_arg)]
+struct IsoformatArgs {
+    #[from_args(default)]
+    sep: Option<Value>,
+    #[from_args(default)]
+    timespec: Option<StrArg>,
+}
+
+/// Validates `isoformat`'s `sep` argument: any single character, `'T'` by default.
+///
+/// CPython takes it through the `C` format unit, which accepts one character
+/// (not one byte — `dt.isoformat('日')` is fine) and rejects everything else
+/// with the argument's length rather than its type.
+fn isoformat_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<char> {
+    let Some(sep) = sep else { return Ok('T') };
+    // `to_str_heap`'s own message is the generic `expected string, not X`, so
+    // only its success is used and the rejection is reworded here.
+    match sep.to_str_heap(vm.heap, vm.interns).ok() {
+        Some(s) if s.chars().count() == 1 => Ok(s.chars().next().expect("just counted one char")),
+        Some(s) => Err(ExcType::type_error_bad_arg_pos(
+            "isoformat",
+            1,
+            "a unicode character",
+            format_args!("a string of length {}", s.chars().count()),
+        )),
+        None => Err(ExcType::type_error_bad_arg_pos(
+            "isoformat",
+            1,
+            "a unicode character",
+            sep.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.interns),
+        )),
+    }
 }
 
 /// Computes the POSIX timestamp for a datetime.
@@ -821,8 +1001,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         let dt = self.get(vm.heap).clone();
         match attr.string_id() {
             Some(id) if id == StaticStrings::Isoformat => {
-                args.check_zero_args("datetime.isoformat", vm.heap)?;
-                let s = format_isoformat(&dt, 'T');
+                let IsoformatArgs { sep, timespec } = IsoformatArgs::from_args(args, vm)?;
+                defer_drop!(sep, vm);
+                defer_drop!(timespec, vm);
+                let separator = isoformat_separator(sep.as_ref(), vm)?;
+                let spec = match timespec {
+                    Some(timespec) => TimeSpec::parse(timespec.as_str(vm))?,
+                    None => TimeSpec::Auto,
+                };
+                let s = format_isoformat(&dt, separator, spec);
                 Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)))
             }
             Some(id) if id == StaticStrings::Strftime => {
@@ -879,6 +1066,23 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
                 args.check_zero_args("datetime.timestamp", vm.heap)?;
                 let ts = compute_timestamp(&dt);
                 Ok(CallResult::Value(Value::Float(ts)))
+            }
+            Some(id) if id == StaticStrings::Utcoffset => {
+                args.check_zero_args("datetime.utcoffset", vm.heap)?;
+                Ok(CallResult::Value(timezone::utcoffset_value(dt.offset_seconds, vm.heap)))
+            }
+            Some(id) if id == StaticStrings::Tzname => {
+                args.check_zero_args("datetime.tzname", vm.heap)?;
+                let Some(offset_seconds) = dt.offset_seconds else {
+                    return Ok(CallResult::Value(Value::None));
+                };
+                let name = timezone::tzname_string(offset_seconds, dt.timezone_name.as_deref());
+                Ok(CallResult::Value(allocate_string(name, vm.heap)))
+            }
+            Some(id) if id == StaticStrings::Dst => {
+                args.check_zero_args("datetime.dst", vm.heap)?;
+                // Only fixed-offset zones exist, and none of them observes DST.
+                Ok(CallResult::Value(Value::None))
             }
             _ => Err(ExcType::attribute_error_method(Type::DateTime, attr, args, vm)),
         }

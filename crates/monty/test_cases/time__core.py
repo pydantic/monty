@@ -366,6 +366,15 @@ try:
 except TypeError as e:
     assert str(e) == 'time.dst() takes no arguments (1 given)'
 
+# === min / max / resolution ===
+assert time.min == time(0, 0)
+assert time.max == time(23, 59, 59, 999999)
+assert time.resolution == timedelta(microseconds=1)
+assert repr(time.min) == 'datetime.time(0, 0)'
+assert repr(time.max) == 'datetime.time(23, 59, 59, 999999)'
+assert time.min.tzinfo is None
+assert time.min < time.max
+
 # === built from a datetime ===
 # `time()` drops the timezone, `timetz()` keeps the same object
 dt_naive = datetime(2020, 1, 2, 3, 4, 5, 678901)
