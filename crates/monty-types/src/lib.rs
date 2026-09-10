@@ -49,3 +49,6 @@ pub use crate::{
     type_checking::{TypeCheckState, TypeCheckingConfig, TypeCheckingFormat},
     uuid::MontyUuid,
 };
+
+#[cfg(feature = "test-hooks")]
+pub use resource::{clock_polls, reset_clock_polls};

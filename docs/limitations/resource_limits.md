@@ -35,8 +35,11 @@ WebAssembly runtimes do.
     container, and string formatting with dynamic width or precision, for
     f-strings (`f"{v:>{w}}"`, `f"{v:.{p}f}"`), `str.format()`
     (`"{0:>{1}}".format(v, w)`, `"{0:.{1}f}".format(v, p)`) and `%`
-    formatting (`"%*d" % (w, v)`, `"%.*f" % (p, v)`). The pre-check
-    threshold is 100 KB:
+    formatting (`"%*d" % (w, v)`, `"%.*f" % (p, v)`), and every `binascii` and
+    `base64` conversion that can outgrow its input — including `base64.a85decode`,
+    where Ascii85's `z` and `y` each stand for a whole four-byte word. Each of
+    these reserves what it pre-checked, so the buffer never grows past it.
+    The pre-check threshold is 100 KB:
     estimates above that are checked against the remaining budget and rejected
     with `MemoryError` before allocation when they would exceed it.
 - `bigint.pow(base, exp)` estimates result size as `bits(base) * exp` with
@@ -199,10 +202,14 @@ indistinguishable from a stack overflow.
     **not** polled and run to completion however large the input: `in` with an
     integer probe (a single-byte scan) and `split()`/`rsplit()` left to their
     default `sep=None` (whitespace splitting).
-- `base64.a85decode()` polls the clock every 64th byte that matches no
-    Ascii85 digit and so reaches `ignorechars`. Each of those bytes is one
-    `in` test against the container, so a large explicit `ignorechars`
-    overshoots `max_duration` in proportion to its length.
+- Every `binascii` and `base64` conversion polls the clock once per 4KiB of
+    input rather than once per byte, so the overshoot is bounded at a window of
+    work rather than a whole buffer.
+    That covers `base64.a85decode()`, whose `ignorechars` arm costs an `in`
+    test against a Python container per byte, and so buys the most per window.
+    `binascii.b2a_qp()` and `binascii.a2b_qp()` step a byte at a time instead,
+    because a soft break can consume a whole line at once; they poll every
+    4096 steps.
 - The budget covers cumulative **execution time**, not wall-clock time:
     the clock runs only while the interpreter executes bytecode, and is
     paused while execution is suspended waiting on the host (external
