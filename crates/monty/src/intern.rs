@@ -15,11 +15,11 @@
 //! retain a [`StaticStrings`] tag for dispatch, while snapshots serialize only
 //! their text so another build can load an unknown static string as owned text.
 
-use std::{cell::Cell, mem, ops::Index, slice::from_ref, str::FromStr, sync::LazyLock};
+use std::{cell::RefCell, mem, ops::Index, slice::from_ref, str::FromStr, sync::LazyLock};
 
 use ahash::AHashMap;
 use num_bigint::BigInt;
-use strum::{EnumCount, EnumString, IntoStaticStr};
+use strum::{EnumString, FromRepr, IntoStaticStr};
 
 #[cfg(feature = "test-hooks")]
 use crate::function::FunctionMetadataFault;
@@ -105,13 +105,397 @@ pub(crate) static ASCII_STRS: [&str; 128] = const {
 
 /// Static string values known at compile time.
 ///
-/// The discriminant is an in-process dispatch detail, never a `StringId` or
-/// snapshot identity. Interner entries serialize as text and recover this tag
-/// only when the loading build recognizes that text.
+/// ASCII variants use their character codes, matching reserved ASCII IDs.
+/// Other discriminants are runtime-only: interner entries serialize as text
+/// and recover a tag only when the loading build recognizes that text.
 #[repr(u16)]
-#[derive(Debug, Clone, Copy, EnumCount, EnumString, IntoStaticStr, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, EnumString, FromRepr, IntoStaticStr, PartialEq, Eq, Hash)]
 #[strum(serialize_all = "snake_case")]
 pub enum StaticStrings {
+    /// ASCII character 0x00.
+    #[strum(serialize = "\x00")]
+    AsciiNull = 0,
+    /// ASCII character 0x01.
+    #[strum(serialize = "\x01")]
+    AsciiStartOfHeading = 1,
+    /// ASCII character 0x02.
+    #[strum(serialize = "\x02")]
+    AsciiStartOfText = 2,
+    /// ASCII character 0x03.
+    #[strum(serialize = "\x03")]
+    AsciiEndOfText = 3,
+    /// ASCII character 0x04.
+    #[strum(serialize = "\x04")]
+    AsciiEndOfTransmission = 4,
+    /// ASCII character 0x05.
+    #[strum(serialize = "\x05")]
+    AsciiEnquiry = 5,
+    /// ASCII character 0x06.
+    #[strum(serialize = "\x06")]
+    AsciiAcknowledge = 6,
+    /// ASCII character 0x07.
+    #[strum(serialize = "\x07")]
+    AsciiBell = 7,
+    /// ASCII character 0x08.
+    #[strum(serialize = "\x08")]
+    AsciiBackspace = 8,
+    /// ASCII character 0x09.
+    #[strum(serialize = "\x09")]
+    AsciiTab = 9,
+    /// ASCII character 0x0a.
+    #[strum(serialize = "\x0a")]
+    AsciiLineFeed = 10,
+    /// ASCII character 0x0b.
+    #[strum(serialize = "\x0b")]
+    AsciiVerticalTab = 11,
+    /// ASCII character 0x0c.
+    #[strum(serialize = "\x0c")]
+    AsciiFormFeed = 12,
+    /// ASCII character 0x0d.
+    #[strum(serialize = "\x0d")]
+    AsciiCarriageReturn = 13,
+    /// ASCII character 0x0e.
+    #[strum(serialize = "\x0e")]
+    AsciiShiftOut = 14,
+    /// ASCII character 0x0f.
+    #[strum(serialize = "\x0f")]
+    AsciiShiftIn = 15,
+    /// ASCII character 0x10.
+    #[strum(serialize = "\x10")]
+    AsciiDataLinkEscape = 16,
+    /// ASCII character 0x11.
+    #[strum(serialize = "\x11")]
+    AsciiDeviceControl1 = 17,
+    /// ASCII character 0x12.
+    #[strum(serialize = "\x12")]
+    AsciiDeviceControl2 = 18,
+    /// ASCII character 0x13.
+    #[strum(serialize = "\x13")]
+    AsciiDeviceControl3 = 19,
+    /// ASCII character 0x14.
+    #[strum(serialize = "\x14")]
+    AsciiDeviceControl4 = 20,
+    /// ASCII character 0x15.
+    #[strum(serialize = "\x15")]
+    AsciiNegativeAcknowledge = 21,
+    /// ASCII character 0x16.
+    #[strum(serialize = "\x16")]
+    AsciiSynchronousIdle = 22,
+    /// ASCII character 0x17.
+    #[strum(serialize = "\x17")]
+    AsciiEndOfTransmissionBlock = 23,
+    /// ASCII character 0x18.
+    #[strum(serialize = "\x18")]
+    AsciiCancel = 24,
+    /// ASCII character 0x19.
+    #[strum(serialize = "\x19")]
+    AsciiEndOfMedium = 25,
+    /// ASCII character 0x1a.
+    #[strum(serialize = "\x1a")]
+    AsciiSubstitute = 26,
+    /// ASCII character 0x1b.
+    #[strum(serialize = "\x1b")]
+    AsciiEscape = 27,
+    /// ASCII character 0x1c.
+    #[strum(serialize = "\x1c")]
+    AsciiFileSeparator = 28,
+    /// ASCII character 0x1d.
+    #[strum(serialize = "\x1d")]
+    AsciiGroupSeparator = 29,
+    /// ASCII character 0x1e.
+    #[strum(serialize = "\x1e")]
+    AsciiRecordSeparator = 30,
+    /// ASCII character 0x1f.
+    #[strum(serialize = "\x1f")]
+    AsciiUnitSeparator = 31,
+    /// ASCII character 0x20.
+    #[strum(serialize = "\x20")]
+    AsciiSpace = 32,
+    /// ASCII character 0x21.
+    #[strum(serialize = "\x21")]
+    AsciiExclamationMark = 33,
+    /// ASCII character 0x22.
+    #[strum(serialize = "\x22")]
+    AsciiDoubleQuote = 34,
+    /// ASCII character 0x23.
+    #[strum(serialize = "\x23")]
+    AsciiHash = 35,
+    /// ASCII character 0x24.
+    #[strum(serialize = "\x24")]
+    AsciiDollar = 36,
+    /// ASCII character 0x25.
+    #[strum(serialize = "\x25")]
+    AsciiPercent = 37,
+    /// ASCII character 0x26.
+    #[strum(serialize = "\x26")]
+    AsciiAmpersand = 38,
+    /// ASCII character 0x27.
+    #[strum(serialize = "\x27")]
+    AsciiSingleQuote = 39,
+    /// ASCII character 0x28.
+    #[strum(serialize = "\x28")]
+    AsciiLeftParen = 40,
+    /// ASCII character 0x29.
+    #[strum(serialize = "\x29")]
+    AsciiRightParen = 41,
+    /// ASCII character 0x2a.
+    #[strum(serialize = "\x2a")]
+    AsciiAsterisk = 42,
+    /// ASCII character 0x2b.
+    #[strum(serialize = "\x2b")]
+    AsciiPlus = 43,
+    /// ASCII character 0x2c.
+    #[strum(serialize = "\x2c")]
+    AsciiComma = 44,
+    /// ASCII character 0x2d.
+    #[strum(serialize = "\x2d")]
+    AsciiHyphen = 45,
+    /// ASCII character 0x2e.
+    #[strum(serialize = "\x2e")]
+    AsciiDot = 46,
+    /// ASCII character 0x2f.
+    #[strum(serialize = "\x2f")]
+    AsciiSlash = 47,
+    /// ASCII character 0x30.
+    #[strum(serialize = "\x30")]
+    AsciiDigit0 = 48,
+    /// ASCII character 0x31.
+    #[strum(serialize = "\x31")]
+    AsciiDigit1 = 49,
+    /// ASCII character 0x32.
+    #[strum(serialize = "\x32")]
+    AsciiDigit2 = 50,
+    /// ASCII character 0x33.
+    #[strum(serialize = "\x33")]
+    AsciiDigit3 = 51,
+    /// ASCII character 0x34.
+    #[strum(serialize = "\x34")]
+    AsciiDigit4 = 52,
+    /// ASCII character 0x35.
+    #[strum(serialize = "\x35")]
+    AsciiDigit5 = 53,
+    /// ASCII character 0x36.
+    #[strum(serialize = "\x36")]
+    AsciiDigit6 = 54,
+    /// ASCII character 0x37.
+    #[strum(serialize = "\x37")]
+    AsciiDigit7 = 55,
+    /// ASCII character 0x38.
+    #[strum(serialize = "\x38")]
+    AsciiDigit8 = 56,
+    /// ASCII character 0x39.
+    #[strum(serialize = "\x39")]
+    AsciiDigit9 = 57,
+    /// ASCII character 0x3a.
+    #[strum(serialize = "\x3a")]
+    AsciiColon = 58,
+    /// ASCII character 0x3b.
+    #[strum(serialize = "\x3b")]
+    AsciiSemicolon = 59,
+    /// ASCII character 0x3c.
+    #[strum(serialize = "\x3c")]
+    AsciiLessThan = 60,
+    /// ASCII character 0x3d.
+    #[strum(serialize = "\x3d")]
+    AsciiEquals = 61,
+    /// ASCII character 0x3e.
+    #[strum(serialize = "\x3e")]
+    AsciiGreaterThan = 62,
+    /// ASCII character 0x3f.
+    #[strum(serialize = "\x3f")]
+    AsciiQuestionMark = 63,
+    /// ASCII character 0x40.
+    #[strum(serialize = "\x40")]
+    AsciiAt = 64,
+    /// ASCII character 0x41.
+    #[strum(serialize = "\x41")]
+    AsciiA = 65,
+    /// ASCII character 0x42.
+    #[strum(serialize = "\x42")]
+    AsciiB = 66,
+    /// ASCII character 0x43.
+    #[strum(serialize = "\x43")]
+    AsciiC = 67,
+    /// ASCII character 0x44.
+    #[strum(serialize = "\x44")]
+    AsciiD = 68,
+    /// ASCII character 0x45.
+    #[strum(serialize = "\x45")]
+    AsciiE = 69,
+    /// ASCII character 0x46.
+    #[strum(serialize = "\x46")]
+    AsciiF = 70,
+    /// ASCII character 0x47.
+    #[strum(serialize = "\x47")]
+    AsciiG = 71,
+    /// ASCII character 0x48.
+    #[strum(serialize = "\x48")]
+    AsciiH = 72,
+    /// ASCII character 0x49.
+    #[strum(serialize = "\x49")]
+    AsciiI = 73,
+    /// ASCII character 0x4a.
+    #[strum(serialize = "\x4a")]
+    AsciiJ = 74,
+    /// ASCII character 0x4b.
+    #[strum(serialize = "\x4b")]
+    AsciiK = 75,
+    /// ASCII character 0x4c.
+    #[strum(serialize = "\x4c")]
+    AsciiL = 76,
+    /// ASCII character 0x4d.
+    #[strum(serialize = "\x4d")]
+    AsciiM = 77,
+    /// ASCII character 0x4e.
+    #[strum(serialize = "\x4e")]
+    AsciiN = 78,
+    /// ASCII character 0x4f.
+    #[strum(serialize = "\x4f")]
+    AsciiO = 79,
+    /// ASCII character 0x50.
+    #[strum(serialize = "\x50")]
+    AsciiP = 80,
+    /// ASCII character 0x51.
+    #[strum(serialize = "\x51")]
+    AsciiQ = 81,
+    /// ASCII character 0x52.
+    #[strum(serialize = "\x52")]
+    AsciiR = 82,
+    /// ASCII character 0x53.
+    #[strum(serialize = "\x53")]
+    AsciiS = 83,
+    /// ASCII character 0x54.
+    #[strum(serialize = "\x54")]
+    AsciiT = 84,
+    /// ASCII character 0x55.
+    #[strum(serialize = "\x55")]
+    AsciiU = 85,
+    /// ASCII character 0x56.
+    #[strum(serialize = "\x56")]
+    AsciiV = 86,
+    /// ASCII character 0x57.
+    #[strum(serialize = "\x57")]
+    AsciiW = 87,
+    /// ASCII character 0x58.
+    #[strum(serialize = "\x58")]
+    AsciiX = 88,
+    /// ASCII character 0x59.
+    #[strum(serialize = "\x59")]
+    AsciiY = 89,
+    /// ASCII character 0x5a.
+    #[strum(serialize = "\x5a")]
+    AsciiZ = 90,
+    /// ASCII character 0x5b.
+    #[strum(serialize = "\x5b")]
+    AsciiLeftBracket = 91,
+    /// ASCII character 0x5c.
+    #[strum(serialize = "\x5c")]
+    AsciiBackslash = 92,
+    /// ASCII character 0x5d.
+    #[strum(serialize = "\x5d")]
+    AsciiRightBracket = 93,
+    /// ASCII character 0x5e.
+    #[strum(serialize = "\x5e")]
+    AsciiCaret = 94,
+    /// ASCII character 0x5f.
+    #[strum(serialize = "\x5f")]
+    AsciiUnderscore = 95,
+    /// ASCII character 0x60.
+    #[strum(serialize = "\x60")]
+    AsciiBacktick = 96,
+    /// ASCII character 0x61.
+    #[strum(serialize = "\x61")]
+    AsciiLowerA = 97,
+    /// ASCII character 0x62.
+    #[strum(serialize = "\x62")]
+    AsciiLowerB = 98,
+    /// ASCII character 0x63.
+    #[strum(serialize = "\x63")]
+    AsciiLowerC = 99,
+    /// ASCII character 0x64.
+    #[strum(serialize = "\x64")]
+    AsciiLowerD = 100,
+    /// ASCII character 0x65.
+    #[strum(serialize = "\x65")]
+    AsciiLowerE = 101,
+    /// ASCII character 0x66.
+    #[strum(serialize = "\x66")]
+    AsciiLowerF = 102,
+    /// ASCII character 0x67.
+    #[strum(serialize = "\x67")]
+    AsciiLowerG = 103,
+    /// ASCII character 0x68.
+    #[strum(serialize = "\x68")]
+    AsciiLowerH = 104,
+    /// ASCII character 0x69.
+    #[strum(serialize = "\x69")]
+    AsciiLowerI = 105,
+    /// ASCII character 0x6a.
+    #[strum(serialize = "\x6a")]
+    AsciiLowerJ = 106,
+    /// ASCII character 0x6b.
+    #[strum(serialize = "\x6b")]
+    AsciiLowerK = 107,
+    /// ASCII character 0x6c.
+    #[strum(serialize = "\x6c")]
+    AsciiLowerL = 108,
+    /// ASCII character 0x6d.
+    #[strum(serialize = "\x6d")]
+    AsciiLowerM = 109,
+    /// ASCII character 0x6e.
+    #[strum(serialize = "\x6e")]
+    AsciiLowerN = 110,
+    /// ASCII character 0x6f.
+    #[strum(serialize = "\x6f")]
+    AsciiLowerO = 111,
+    /// ASCII character 0x70.
+    #[strum(serialize = "\x70")]
+    AsciiLowerP = 112,
+    /// ASCII character 0x71.
+    #[strum(serialize = "\x71")]
+    AsciiLowerQ = 113,
+    /// ASCII character 0x72.
+    #[strum(serialize = "\x72")]
+    AsciiLowerR = 114,
+    /// ASCII character 0x73.
+    #[strum(serialize = "\x73")]
+    AsciiLowerS = 115,
+    /// ASCII character 0x74.
+    #[strum(serialize = "\x74")]
+    AsciiLowerT = 116,
+    /// ASCII character 0x75.
+    #[strum(serialize = "\x75")]
+    AsciiLowerU = 117,
+    /// ASCII character 0x76.
+    #[strum(serialize = "\x76")]
+    AsciiLowerV = 118,
+    /// ASCII character 0x77.
+    #[strum(serialize = "\x77")]
+    AsciiLowerW = 119,
+    /// ASCII character 0x78.
+    #[strum(serialize = "\x78")]
+    AsciiLowerX = 120,
+    /// ASCII character 0x79.
+    #[strum(serialize = "\x79")]
+    AsciiLowerY = 121,
+    /// ASCII character 0x7a.
+    #[strum(serialize = "\x7a")]
+    AsciiLowerZ = 122,
+    /// ASCII character 0x7b.
+    #[strum(serialize = "\x7b")]
+    AsciiLeftBrace = 123,
+    /// ASCII character 0x7c.
+    #[strum(serialize = "\x7c")]
+    AsciiPipe = 124,
+    /// ASCII character 0x7d.
+    #[strum(serialize = "\x7d")]
+    AsciiRightBrace = 125,
+    /// ASCII character 0x7e.
+    #[strum(serialize = "\x7e")]
+    AsciiTilde = 126,
+    /// ASCII character 0x7f.
+    #[strum(serialize = "\x7f")]
+    AsciiDelete = 127,
     #[strum(serialize = "")]
     EmptyString,
     #[strum(serialize = "<module>")]
@@ -503,9 +887,6 @@ pub enum StaticStrings {
     // Constants
     /// `math.pi` constant
     Pi,
-    /// `math.e` constant
-    #[strum(serialize = "e")]
-    MathE,
     /// `math.tau` constant
     Tau,
     /// `math.inf` constant
@@ -626,30 +1007,18 @@ pub enum StaticStrings {
     /// `re.IGNORECASE` flag
     #[strum(serialize = "IGNORECASE")]
     Ignorecase,
-    /// `re.I` flag, alias
-    #[strum(serialize = "I")]
-    I,
     /// `re.MULTILINE` flag
     #[strum(serialize = "MULTILINE")]
     MultilineFlag,
-    /// `re.M` flag, alias
-    #[strum(serialize = "M")]
-    M,
     /// `re.DOTALL` flag
     #[strum(serialize = "DOTALL")]
     DotallFlag,
-    /// `re.S` flag, alias
-    #[strum(serialize = "S")]
-    S,
     /// `re.NOFLAG` flag
     #[strum(serialize = "NOFLAG")]
     NoFlag,
     /// `re.ASCII` flag
     #[strum(serialize = "ASCII")]
     AsciiFlag,
-    /// `re.A` flag, alias
-    #[strum(serialize = "A")]
-    A,
     /// `re.PatternError` exception
     #[strum(serialize = "PatternError")]
     PatternError,
@@ -1138,52 +1507,64 @@ pub enum StaticStrings {
     ZipLongest,
 }
 
-/// One executor-local interned string and its precomputed Python hash.
-///
-/// Static entries borrow their text through [`StaticStrings`]; owned entries
-/// retain source/runtime text unknown to the static registry. Both serialize as
-/// plain text, making the tag an optimization rather than snapshot identity.
+/// One immutable interned string with directly accessible dispatch metadata.
+/// Snapshots store only text; loading reconstructs the tag and cached hash.
 #[derive(Debug, Clone)]
-enum InternedString {
-    /// Text recognized by this build's static registry.
-    Static(WithHash<StaticStrings>),
-    /// Text owned by this executor's interner.
-    Owned(WithHash<Box<str>>),
+struct InternedString {
+    /// Runtime classification, independent of the string's executor-local ID.
+    static_tag: Option<StaticStrings>,
+    /// Text and its eagerly computed Python hash.
+    text: WithHash<InternedText>,
+}
+
+/// Ownership of interned text, independent of its dispatch metadata.
+#[derive(Debug, Clone)]
+enum InternedText {
+    /// Text recognized by this build, requiring no owned allocation.
+    Static(&'static str),
+    /// Source or snapshot text unknown to the static registry.
+    Owned(Box<str>),
+}
+
+impl AsRef<str> for InternedText {
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::Static(text) => text,
+            Self::Owned(text) => text,
+        }
+    }
 }
 
 impl InternedString {
     /// Creates an entry for compile-time-known text.
     fn static_string(value: StaticStrings) -> Self {
-        Self::Static(WithHash::for_static_str(value))
+        Self {
+            static_tag: Some(value),
+            text: WithHash::for_str(InternedText::Static(value.into())),
+        }
     }
 
     /// Creates an entry owning text not present in the static registry.
     fn owned(value: String) -> Self {
-        Self::Owned(WithHash::for_boxed_str(value.into_boxed_str()))
+        Self {
+            static_tag: None,
+            text: WithHash::for_str(InternedText::Owned(value.into_boxed_str())),
+        }
     }
 
     /// Returns the interned text.
     fn as_str(&self) -> &str {
-        match self {
-            Self::Static(value) => (*value.value()).into(),
-            Self::Owned(value) => value.value(),
-        }
+        self.text.value().as_ref()
     }
 
     /// Returns the cached Python hash.
     fn hash(&self) -> HashValue {
-        match self {
-            Self::Static(value) => value.hash(),
-            Self::Owned(value) => value.hash(),
-        }
+        self.text.hash()
     }
 
     /// Returns the static tag when this build recognizes the text.
     fn static_value(&self) -> Option<StaticStrings> {
-        match self {
-            Self::Static(value) => Some(*value.value()),
-            Self::Owned(_) => None,
-        }
+        self.static_tag
     }
 }
 
@@ -1342,8 +1723,8 @@ impl<'de> serde::Deserialize<'de> for StringEntries {
 pub struct InternerBuilder {
     /// Maps owned strings to their executor-local IDs.
     string_map: AHashMap<String, StringId>,
-    /// Maps static tags to the executor-local IDs allocated on first use.
-    static_string_ids: Vec<Cell<Option<StringId>>>,
+    /// Sparse static-tag cache, allocated only when a tag is interned.
+    static_string_ids: RefCell<AHashMap<StaticStrings, StringId>>,
     /// Storage for all non-ASCII interned strings, indexed by `StringId`.
     strings: StringEntries,
     /// Storage for interned bytes literals, indexed by `BytesId`. Each
@@ -1372,22 +1753,26 @@ impl InternerBuilder {
     pub fn new(code: &str) -> Self {
         // Rough guess: count quotes and divide by 2 (open+close per string).
         let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
-        let interner = Self::empty(capacity + CORE_STATIC_STRINGS.len());
+        let interner = Self::empty(capacity);
+        interner
+            .static_string_ids
+            .borrow_mut()
+            .reserve(CORE_STATIC_STRINGS.len());
         for entry in CORE_ENTRIES.iter() {
             let value = entry.static_value().expect("core entries are static");
             let id = next_string_id(interner.strings.len());
             interner.strings.push(entry.clone());
-            interner.static_string_ids[value as usize].set(Some(id));
+            interner.static_string_ids.borrow_mut().insert(value, id);
         }
         interner
     }
 
-    /// Creates an unseeded interner with room for `string_capacity` entries.
+    /// Reserves room for core entries and estimated source strings.
     fn empty(string_capacity: usize) -> Self {
         Self {
             string_map: AHashMap::with_capacity(string_capacity),
-            static_string_ids: vec![Cell::new(None); StaticStrings::COUNT],
-            strings: StringEntries::with_capacity(string_capacity),
+            static_string_ids: RefCell::new(AHashMap::new()),
+            strings: StringEntries::with_capacity(string_capacity + CORE_STATIC_STRINGS.len()),
             bytes: Vec::new(),
             long_ints: Vec::new(),
         }
@@ -1442,7 +1827,7 @@ impl InternerBuilder {
 /// encoding the tag in its `StringId`.
 fn intern_str(
     string_map: &mut AHashMap<String, StringId>,
-    static_string_ids: &[Cell<Option<StringId>>],
+    static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
     strings: &StringEntries,
     s: &str,
 ) -> StringId {
@@ -1461,11 +1846,12 @@ fn intern_str(
 
 /// Interns a static tag into an append-only executor-local table.
 fn intern_static(
-    static_string_ids: &[Cell<Option<StringId>>],
+    static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
     strings: &StringEntries,
     value: StaticStrings,
 ) -> StringId {
-    if let Some(id) = static_string_ids[value as usize].get() {
+    let existing = static_string_ids.borrow().get(&value).copied();
+    if let Some(id) = existing {
         id
     } else {
         let text: &'static str = value.into();
@@ -1476,7 +1862,7 @@ fn intern_static(
             strings.push(InternedString::static_string(value));
             id
         };
-        static_string_ids[value as usize].set(Some(id));
+        static_string_ids.borrow_mut().insert(value, id);
         id
     }
 }
@@ -1490,13 +1876,13 @@ fn next_string_id(strings_len: usize) -> StringId {
 /// Reverse of [`get_str`]: the `StringId` for `s`, or `None` if never interned.
 fn get_string_id_by_name(
     string_map: &AHashMap<String, StringId>,
-    static_string_ids: &[Cell<Option<StringId>>],
+    static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
     s: &str,
 ) -> Option<StringId> {
     if s.len() == 1 {
         Some(StringId::from_ascii(s.as_bytes()[0]))
     } else if let Ok(value) = StaticStrings::from_str(s) {
-        static_string_ids[value as usize].get()
+        static_string_ids.borrow().get(&value).copied()
     } else {
         string_map.get(s).copied()
     }
@@ -1516,13 +1902,12 @@ fn get_str(strings: &StringEntries, id: StringId) -> &str {
 }
 
 /// Returns the static tag stored at `id`, if any.
+#[inline]
 fn get_static_string(strings: &StringEntries, id: StringId) -> Option<StaticStrings> {
-    if let Some(text) = ASCII_STRS.get(id.index()) {
-        StaticStrings::from_str(text).ok()
+    if id.index() < INTERN_STRING_ID_OFFSET {
+        StaticStrings::from_repr(u16::try_from(id.index()).expect("ASCII ID fits u16"))
     } else {
-        strings
-            .get(id.index() - INTERN_STRING_ID_OFFSET)
-            .and_then(InternedString::static_value)
+        strings[id.index() - INTERN_STRING_ID_OFFSET].static_tag
     }
 }
 
@@ -1547,7 +1932,7 @@ fn get_static_string(strings: &StringEntries, id: StringId) -> Option<StaticStri
 ///
 /// [`get_string_id_by_name`](Self::get_string_id_by_name) returns the
 /// `StringId` for a host-supplied `&str`. Owned text uses an in-memory reverse
-/// map; static tags use a compact parallel ID table. Both are rebuilt
+/// map; static tags use a sparse reverse map. Both are rebuilt
 /// deterministically after deserialization. REPL hot paths
 /// such as [`MontyRepl::call_function`](crate::MontyRepl::call_function)
 /// and [`MontyRepl::has_function`](crate::MontyRepl::has_function) call this
@@ -1565,7 +1950,7 @@ pub(crate) struct Interns {
     string_id_by_name: AHashMap<String, StringId>,
     /// Static-tag reverse lookup, rebuilt from `strings` after loading.
     #[serde(skip)]
-    static_string_ids: Vec<Cell<Option<StringId>>>,
+    static_string_ids: RefCell<AHashMap<StaticStrings, StringId>>,
 }
 
 impl Default for Interns {
@@ -1612,7 +1997,7 @@ impl TryFrom<InternsWire> for Interns {
 }
 
 /// Reverse maps rebuilt from the serialized ordered string table.
-type StringMaps = (AHashMap<String, StringId>, Vec<Cell<Option<StringId>>>);
+type StringMaps = (AHashMap<String, StringId>, RefCell<AHashMap<StaticStrings, StringId>>);
 
 /// Rebuilds both reverse maps from the canonical ordered string table.
 ///
@@ -1621,14 +2006,14 @@ type StringMaps = (AHashMap<String, StringId>, Vec<Cell<Option<StringId>>>);
 fn build_string_maps(strings: &StringEntries) -> Result<StringMaps, String> {
     let mut seen = AHashMap::with_capacity(strings.len());
     let mut string_id_by_name = AHashMap::new();
-    let static_string_ids = vec![Cell::new(None); StaticStrings::COUNT];
+    let static_string_ids = RefCell::new(AHashMap::new());
     for (index, entry) in strings.iter().enumerate() {
         let id = next_string_id(index);
         if seen.insert(entry.as_str(), id).is_some() {
             return Err(format!("duplicate interned string {:?}", entry.as_str()));
         }
         if let Some(value) = entry.static_value() {
-            static_string_ids[value as usize].set(Some(id));
+            static_string_ids.borrow_mut().insert(value, id);
         } else {
             string_id_by_name.insert(entry.as_str().to_owned(), id);
         }
@@ -1653,7 +2038,7 @@ impl Interns {
             long_ints: Vec::new(),
             functions: Vec::new(),
             string_id_by_name: AHashMap::new(),
-            static_string_ids: Vec::new(),
+            static_string_ids: RefCell::new(AHashMap::new()),
         }
     }
 

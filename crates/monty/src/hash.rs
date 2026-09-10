@@ -32,7 +32,7 @@ use std::{
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
-use crate::{heap::HeapId, intern::StaticStrings};
+use crate::heap::HeapId;
 
 /// A verified Python hash value.
 ///
@@ -226,30 +226,11 @@ impl<T> WithHash<T> {
     }
 }
 
-impl WithHash<String> {
-    /// Construct from an owned `String`, hashing via [`hash_python_str`].
+impl<T: AsRef<str>> WithHash<T> {
+    /// Caches the Python hash for owned or borrowed string storage.
     #[inline]
-    pub fn for_str(value: String) -> Self {
-        let hash = hash_python_str(&value);
-        Self { value, hash }
-    }
-}
-
-impl WithHash<Box<str>> {
-    /// Constructs an owned intern entry from boxed text.
-    #[inline]
-    pub fn for_boxed_str(value: Box<str>) -> Self {
-        let hash = hash_python_str(&value);
-        Self { value, hash }
-    }
-}
-
-impl WithHash<StaticStrings> {
-    /// Constructs a static-string entry and computes its Python hash once.
-    #[inline]
-    pub fn for_static_str(value: StaticStrings) -> Self {
-        let text: &'static str = value.into();
-        let hash = hash_python_str(text);
+    pub fn for_str(value: T) -> Self {
+        let hash = hash_python_str(value.as_ref());
         Self { value, hash }
     }
 }
@@ -291,7 +272,7 @@ impl<'de> serde::Deserialize<'de> for WithHash<String> {
 
 impl<'de> serde::Deserialize<'de> for WithHash<Box<str>> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self::for_boxed_str(Box::<str>::deserialize(deserializer)?))
+        Ok(Self::for_str(Box::<str>::deserialize(deserializer)?))
     }
 }
 

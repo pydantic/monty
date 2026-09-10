@@ -143,13 +143,13 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     // Flag constants
     module.set_attr(StaticStrings::NoFlag, Value::Int(i64::from(NOFLAG)), vm);
     module.set_attr(StaticStrings::Ignorecase, Value::Int(i64::from(IGNORECASE)), vm);
-    module.set_attr(StaticStrings::I, Value::Int(i64::from(IGNORECASE)), vm);
+    module.set_attr(StaticStrings::AsciiI, Value::Int(i64::from(IGNORECASE)), vm);
     module.set_attr(StaticStrings::MultilineFlag, Value::Int(i64::from(MULTILINE)), vm);
-    module.set_attr(StaticStrings::M, Value::Int(i64::from(MULTILINE)), vm);
+    module.set_attr(StaticStrings::AsciiM, Value::Int(i64::from(MULTILINE)), vm);
     module.set_attr(StaticStrings::DotallFlag, Value::Int(i64::from(DOTALL)), vm);
-    module.set_attr(StaticStrings::S, Value::Int(i64::from(DOTALL)), vm);
+    module.set_attr(StaticStrings::AsciiS, Value::Int(i64::from(DOTALL)), vm);
     module.set_attr(StaticStrings::AsciiFlag, Value::Int(i64::from(ASCII)), vm);
-    module.set_attr(StaticStrings::A, Value::Int(i64::from(ASCII)), vm);
+    module.set_attr(StaticStrings::AsciiA, Value::Int(i64::from(ASCII)), vm);
 
     // Exception types
     module.set_attr(

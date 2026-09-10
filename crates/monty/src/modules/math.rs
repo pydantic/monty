@@ -184,7 +184,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 
     // Constants
     module.set_attr(StaticStrings::Pi, Value::Float(consts::PI), vm);
-    module.set_attr(StaticStrings::MathE, Value::Float(consts::E), vm);
+    module.set_attr(StaticStrings::AsciiLowerE, Value::Float(consts::E), vm);
     module.set_attr(StaticStrings::Tau, Value::Float(consts::TAU), vm);
     module.set_attr(StaticStrings::MathInf, Value::Float(f64::INFINITY), vm);
     module.set_attr(StaticStrings::MathNan, Value::Float(f64::NAN), vm);

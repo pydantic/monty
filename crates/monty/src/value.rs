@@ -2435,7 +2435,7 @@ impl EitherStr {
         }
     }
 
-    /// Returns the `StaticStrings` if this is an interned attribute from `StaticStrings`s.
+    /// Returns the static classification of this name, if recognized.
     #[inline]
     pub fn static_string(&self, interns: &Interns) -> Option<StaticStrings> {
         match self {
