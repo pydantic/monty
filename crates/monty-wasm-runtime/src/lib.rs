@@ -12,7 +12,9 @@ use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, exceeds_max_frame_len, pb,
     worker::{Child, EventSink, HandleOutcome, protocol_violation},
 };
-use monty_types::{ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid, OsFunctionCall};
+use monty_types::{
+    ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid, OsFunctionCall, memory_limit_with_headroom,
+};
 
 #[expect(
     clippy::same_length_and_capacity,
@@ -50,7 +52,8 @@ impl Guest for Component {
             let mut result = dispatch(child, request);
             let budget = child.session_budget();
             result.max_suspensions = budget.max_suspensions.map(|limit| limit as u64);
-            let allocator_ready = monty_alloc::set_limit(budget.max_memory, budget.type_check);
+            let hard_memory_limit = memory_limit_with_headroom(budget.max_memory, budget.type_check);
+            let allocator_ready = monty_alloc::set_hard_limit(hard_memory_limit);
             (result, allocator_ready)
         });
         if let Err(error) = allocator_ready {
