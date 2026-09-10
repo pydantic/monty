@@ -20,6 +20,8 @@ use monty_types::{
     AssertMessageAnnotations, DEFAULT_MAX_SUSPENSIONS, ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid,
     NameLookupResult, OsFunctionCall, PrintStream, ResourceLimits, TypeCheckingConfig,
 };
+#[cfg(feature = "telemetry")]
+use opentelemetry::trace::{FutureExt, TraceContextExt};
 use tokio::{task::spawn_blocking, time::timeout};
 
 #[cfg(feature = "telemetry")]
@@ -1214,6 +1216,14 @@ impl Checkout {
         }
     }
 
+    /// The innermost telemetry context for host callbacks answering this checkout.
+    #[cfg(feature = "telemetry")]
+    pub fn callback_context(&self) -> opentelemetry::Context {
+        self.worker
+            .as_ref()
+            .map_or_else(opentelemetry::Context::new, Worker::callback_context)
+    }
+
     /// One request/reply exchange: send the request, stream prints, classify
     /// the turn-ending event. All failure paths discard the worker except
     /// `Runtime` / `Typing`, which are sandbox-level outcomes.
@@ -1263,11 +1273,29 @@ impl Checkout {
             }
             match event.kind {
                 Some(pb::child_event::Kind::Print(print)) => {
-                    let stream = match print.stream() {
-                        pb::PrintStream::Stderr => PrintStream::Stderr,
-                        pb::PrintStream::Stdout | pb::PrintStream::Unspecified => PrintStream::Stdout,
-                    };
-                    on_print(stream, &print.text).await;
+                    #[cfg(feature = "telemetry")]
+                    let context = self.callback_context();
+                    // One event can carry several runs: hand each to the host
+                    // in order, so the callback shape stays per-stream.
+                    for segment in &print.segments {
+                        let stream = match segment.stream() {
+                            pb::PrintStream::Stderr => PrintStream::Stderr,
+                            pb::PrintStream::Stdout | pb::PrintStream::Unspecified => PrintStream::Stdout,
+                        };
+                        let future = {
+                            #[cfg(feature = "telemetry")]
+                            let _context = context.has_active_span().then(|| context.clone().attach());
+                            on_print(stream, &segment.text)
+                        };
+                        #[cfg(feature = "telemetry")]
+                        if context.has_active_span() {
+                            future.with_context(context.clone()).await;
+                        } else {
+                            future.await;
+                        }
+                        #[cfg(not(feature = "telemetry"))]
+                        future.await;
+                    }
                 }
                 Some(pb::child_event::Kind::FunctionCall(call)) => {
                     self.pending = Some(Pending::Call {

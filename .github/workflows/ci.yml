@@ -265,6 +265,7 @@ jobs:
           eval "$(cargo llvm-cov show-env --export-prefix)"
           cargo llvm-cov clean --workspace
           uv run maturin develop --uv -m crates/monty-python/Cargo.toml
+          cargo test -p pydantic-monty-client --lib
           uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests
           cargo llvm-cov report --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
           cargo llvm-cov report --codecov --output-path=python-rust-coverage.json --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
@@ -326,7 +327,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.14t']
 
     env:
       UV_PYTHON: ${{ matrix.python-version }}
@@ -351,6 +352,9 @@ jobs:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
 
       - run: uv sync --all-packages --only-dev
+      # workaround for https://github.com/PyO3/maturin/pull/3299
+      # (dev-py doesn't invalidate all cache properly)
+      - run: cargo clean -p pyo3-ffi
       - run: make dev-py
       - run: make pytest
         # also test with a release build
@@ -728,14 +732,14 @@ jobs:
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.14'
+          python-version: '3.14t'
 
       - name: build Python wheels
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'manylinux_2_28' }}
-          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
+          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14 3.14t
           rust-toolchain: stable
           docker-options: -e CI
           working-directory: crates/monty-python
@@ -891,7 +895,7 @@ jobs:
         run: |
           ls -lhR dist/
           ls -1 dist/ | wc -l
-          echo "Expected 76 files (5 Python versions × 12 platform variants + 12 runtime wheels + 2 sdists + 2 metapackage files)"
+          echo "Expected 88 files (6 Python variants × 12 platforms + 12 runtime wheels + 2 sdists + 2 metapackage files)"
 
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
         with:

@@ -505,6 +505,21 @@ fn timeout_in_sum_builtin() {
     assert_timeout_in_builtin("sum(range(10**18))", "sum(range(10**18))");
 }
 
+/// Math aggregations must interrupt infinite iterators while inside one native call.
+#[test]
+fn timeout_in_math_aggregations() {
+    for expression in [
+        "math.prod(itertools.repeat(1))",
+        "math.fsum(itertools.repeat(1.0))",
+        "math.dist(itertools.repeat(0), [])",
+        "math.dist([], itertools.repeat(0))",
+        "math.sumprod(itertools.repeat(1), itertools.repeat(1))",
+        "math.sumprod(itertools.repeat(1.0), itertools.repeat(1.0))",
+    ] {
+        assert_timeout_in_builtin(&format!("import math\nimport itertools\n{expression}"), expression);
+    }
+}
+
 /// Test that `list(range(huge))` respects the time limit.
 ///
 /// The `list()` constructor drains its concrete Python iterator.

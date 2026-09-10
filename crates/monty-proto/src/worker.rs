@@ -26,7 +26,7 @@ use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, 
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
-    PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, TypeCheckState, TypeCheckingConfig,
+    PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, TypeCheckState, TypeCheckingConfig,
 };
 
 use super::{
@@ -1082,10 +1082,17 @@ fn named_inputs(inputs: Vec<pb::NamedValue>) -> Result<Vec<(String, MontyObject)
 /// what one large print costs. [`Self::drain`] empties the buffer before every
 /// turn-ending event, so ordering against suspensions stays exact.
 ///
+/// Output on both streams shares the buffer, held as one segment per run, so
+/// alternating between them batches like any other output and still reaches
+/// the parent in the order the sandbox produced it.
+///
 /// A zero `interval` disables the timer and restores line buffering, one event
 /// per completed line.
 struct ProtoPrint<'a> {
-    buf: String,
+    /// Buffered output, one segment per run on a single stream.
+    segments: Vec<pb::PrintSegment>,
+    /// Text bytes held across `segments`, so the size check stays O(1).
+    buffered_bytes: usize,
     sink: &'a mut dyn EventSink,
     /// How long the oldest buffered byte may wait; zero means line buffering.
     interval: Duration,
@@ -1099,45 +1106,62 @@ impl<'a> ProtoPrint<'a> {
 
     fn new(sink: &'a mut dyn EventSink, interval: Duration) -> Self {
         Self {
-            buf: String::new(),
+            segments: Vec::new(),
+            buffered_bytes: 0,
             sink,
             interval,
             buffered_since: None,
         }
     }
 
-    /// Writes the buffer (if any) as one `Print` event.
+    /// Writes everything buffered (if anything) as one `Print` event.
     fn flush(&mut self) -> Result<(), MontyException> {
-        if self.buf.is_empty() {
+        if self.segments.is_empty() {
             return Ok(());
         }
         self.buffered_since = None;
-        let text = mem::take(&mut self.buf);
-        self.send(text)
+        self.buffered_bytes = 0;
+        let segments = mem::take(&mut self.segments);
+        self.send(segments)
     }
 
     /// Emits one `Print` event per completed line, leaving any trailing
     /// partial line buffered. With the timer off the contract is one event per
     /// completed line, so a single write carrying embedded newlines has to be
-    /// split rather than shipped whole.
+    /// split rather than shipped whole; a line spanning a stream switch keeps
+    /// its runs together in one event.
     fn flush_lines(&mut self) -> Result<(), MontyException> {
-        while let Some(end) = self.buf.find('\n') {
-            let rest = self.buf.split_off(end + 1);
-            let line = mem::replace(&mut self.buf, rest);
+        while let Some((index, end)) = self.first_line_end() {
+            let mut line: Vec<pb::PrintSegment> = self.segments.drain(..index).collect();
+            let rest = self.segments[0].text.split_off(end);
+            line.push(pb::PrintSegment {
+                stream: self.segments[0].stream,
+                text: mem::replace(&mut self.segments[0].text, rest),
+            });
+            if self.segments[0].text.is_empty() {
+                self.segments.remove(0);
+            }
+            self.buffered_bytes -= line.iter().map(|segment| segment.text.len()).sum::<usize>();
             self.send(line)?;
         }
-        if self.buf.is_empty() {
+        if self.segments.is_empty() {
             self.buffered_since = None;
         }
         Ok(())
     }
 
-    /// Sends `text` as one `Print` event.
-    fn send(&mut self, text: String) -> Result<(), MontyException> {
-        let event = event(pb::child_event::Kind::Print(pb::Print {
-            stream: pb::PrintStream::Stdout.into(),
-            text,
-        }));
+    /// Where the first buffered line ends: the segment holding the `\n`, and
+    /// the offset just past it. `None` while no line is complete.
+    fn first_line_end(&self) -> Option<(usize, usize)> {
+        self.segments
+            .iter()
+            .enumerate()
+            .find_map(|(index, segment)| segment.text.find('\n').map(|at| (index, at + 1)))
+    }
+
+    /// Sends `segments` as one `Print` event.
+    fn send(&mut self, segments: Vec<pb::PrintSegment>) -> Result<(), MontyException> {
+        let event = event(pb::child_event::Kind::Print(pb::Print { segments }));
         self.sink.send(&event).map_err(|err| {
             MontyException::new(
                 ExcType::RuntimeError,
@@ -1155,7 +1179,7 @@ impl<'a> ProtoPrint<'a> {
         if self.interval.is_zero() {
             self.flush_lines()?;
         }
-        if self.buf.len() >= Self::FLUSH_BYTES || (!self.interval.is_zero() && self.interval_elapsed()) {
+        if self.buffered_bytes >= Self::FLUSH_BYTES || (!self.interval.is_zero() && self.interval_elapsed()) {
             self.flush()
         } else {
             Ok(())
@@ -1182,35 +1206,72 @@ impl<'a> ProtoPrint<'a> {
     fn drain(&mut self) {
         let _ = self.flush();
     }
-}
 
-impl PrintWriterCallback for ProtoPrint<'_> {
-    fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
+    /// Buffers `text`, extending the trailing segment while it is on the same
+    /// stream and starting a new one when the stream changes.
+    fn append(&mut self, stream: PrintStream, text: &str) {
+        self.mark_buffered();
+        self.buffered_bytes += text.len();
+        let stream = wire_stream(stream);
+        match self.segments.last_mut() {
+            Some(segment) if segment.stream == stream => segment.text.push_str(text),
+            _ => self.segments.push(pb::PrintSegment {
+                stream,
+                text: text.to_owned(),
+            }),
+        }
+    }
+
+    fn write(&mut self, stream: PrintStream, output: &str) -> Result<(), MontyException> {
         // Append in pieces no larger than the flush threshold so a single huge
         // write cannot inflate the buffer (and the untracked copy it holds)
         // past `FLUSH_BYTES`: each filled chunk is flushed before the next is
         // appended.
-        let mut rest = output.as_ref();
+        let mut rest = output;
         while !rest.is_empty() {
-            let take = floor_char_boundary(rest, Self::FLUSH_BYTES - self.buf.len());
+            let take = floor_char_boundary(rest, Self::FLUSH_BYTES - self.buffered_bytes);
             if take == 0 {
                 // not even one char fits in the remaining room; flush to free
                 // the whole threshold (far larger than any single char)
                 self.flush()?;
                 continue;
             }
-            self.mark_buffered();
-            self.buf.push_str(&rest[..take]);
+            self.append(stream, &rest[..take]);
             rest = &rest[take..];
             self.maybe_flush()?;
         }
         Ok(())
     }
 
-    fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
-        self.mark_buffered();
-        self.buf.push(end);
+    fn push(&mut self, stream: PrintStream, end: char) -> Result<(), MontyException> {
+        self.append(stream, end.encode_utf8(&mut [0; 4]));
         self.maybe_flush()
+    }
+}
+
+/// Maps the interpreter's stream tag onto its wire enum value.
+fn wire_stream(stream: PrintStream) -> i32 {
+    match stream {
+        PrintStream::Stdout => i32::from(pb::PrintStream::Stdout),
+        PrintStream::Stderr => i32::from(pb::PrintStream::Stderr),
+    }
+}
+
+impl PrintWriterCallback for ProtoPrint<'_> {
+    fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
+        self.write(PrintStream::Stdout, &output)
+    }
+
+    fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
+        self.push(PrintStream::Stdout, end)
+    }
+
+    fn stderr_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
+        self.write(PrintStream::Stderr, &output)
+    }
+
+    fn stderr_push(&mut self, end: char) -> Result<(), MontyException> {
+        self.push(PrintStream::Stderr, end)
     }
 
     /// Releases output the program stopped writing to: without this a script

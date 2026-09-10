@@ -47,6 +47,7 @@ use napi::{
     Env, Error, Result,
 };
 use napi_derive::napi;
+use opentelemetry::{trace::TraceContextExt, Context};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
@@ -71,7 +72,14 @@ type SharedPool = Arc<Mutex<Option<Arc<Pool>>>>;
 type SharedCheckout = Arc<AsyncMutex<Option<Checkout>>>;
 /// The per-turn JS print callback, reached from the turn future through a
 /// threadsafe function.
-type PrintCallback<'env> = Function<'env, FnArgs<(String, String)>, UnknownReturnValue>;
+type PrintCallback<'env> = Function<'env, FnArgs<(String, String, Option<String>)>, UnknownReturnValue>;
+
+fn callback_span_key(context: &Context) -> Option<String> {
+    let span = context.span();
+    let span = span.span_context();
+    span.is_valid()
+        .then(|| format!("{}:{}", span.trace_id(), span.span_id()))
+}
 
 /// The boxed future a turn closure returns: one computation borrowing the
 /// locked checkout and the per-turn print callback.
@@ -734,8 +742,9 @@ impl NativeSession {
             async move {
                 let mut guard = slot.lock().await;
                 let Some(checkout) = guard.as_mut() else {
-                    return Ok(TurnOutcome::Protocol(
-                        "the session is closed — check out a new one".to_owned(),
+                    return Ok((
+                        TurnOutcome::Protocol("the session is closed — check out a new one".to_owned()),
+                        None,
                     ));
                 };
                 // Forward each print to JS and *await the callback having
@@ -750,12 +759,17 @@ impl NativeSession {
                         PrintStream::Stderr => "stderr",
                     };
                     let tsfn = Arc::clone(&tsfn);
-                    let args = FnArgs::from((stream.to_owned(), text.to_owned()));
+                    let args = FnArgs::from((
+                        stream.to_owned(),
+                        text.to_owned(),
+                        callback_span_key(&Context::current()),
+                    ));
                     Box::pin(async move {
                         let _ = tsfn.call_async(args).await;
                     })
                 };
-                Ok(compute(checkout, &mut on_print).await)
+                let outcome = compute(checkout, &mut on_print).await;
+                Ok((outcome, callback_span_key(&checkout.callback_context())))
             },
             turn_to_js,
         )
@@ -829,8 +843,11 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
 /// `ts/session.ts`. All keys are fixed strings; sandbox-controlled data only
 /// ever appears in *values* (kwargs cross as `[key, value]` pairs so the
 /// TypeScript layer can build a null-prototype record safely).
-fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
+fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> Result<Object<'_>> {
     let mut obj = Object::new(env)?;
+    if let Some(context) = context {
+        obj.set("callbackSpanKey", context)?;
+    }
     match outcome {
         TurnOutcome::Event(TurnEvent::Complete(value)) => {
             obj.set("kind", "complete")?;

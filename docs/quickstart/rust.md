@@ -159,7 +159,8 @@ assert_eq!(result, MontyObject::Int(55));
 ```
 
 Errors come back as [`MontyException`](../api/rust/monty-types.md#montyexception), with a traceback matching what CPython would produce.
-[`PrintWriter`](../api/rust/monty-types.md#printwriter) controls where `print()` output goes: `Stdout`, `Disabled`, or collected into a `String` or `(stream, text)` tuples.
+[`PrintWriter`](../api/rust/monty-types.md#printwriter) controls where `print()` output goes: `Stdout`, `Disabled`, or collected — into a `String`, or into a
+`CollectedStreams` buffer whose `entries()` label each run `stdout` or `stderr`.
 
 ### Resource limits
 
@@ -179,6 +180,27 @@ let runner = MontyRun::new("while True: pass".to_owned(), "spin.py", vec![], Com
 let err = runner.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout).unwrap_err();
 assert!(err.to_string().contains("time limit exceeded"));
 ```
+
+### Reading the clock
+
+`run` has no host to ask, so it answers `date.today()` and `datetime.now()` from a clock of its own — this machine's,
+unless you choose otherwise:
+
+```rust
+use monty::MontyRun;
+use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
+
+let code = "from datetime import date\ndate.today().year";
+let runner = MontyRun::new(code.to_owned(), "today.py", vec![], CompileOptions::default()).unwrap();
+let year = runner.run(vec![], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
+assert!(matches!(year, MontyObject::Int(y) if y >= 2026));
+```
+
+`with_host_clock` changes that: `HostClock::Denied` takes the clock away, for embedders who would rather sandboxed code
+could not read their wall time at all, and `HostClock::Fixed` freezes an instant, for runs that have to be reproducible.
+
+`start` ignores this: there the call pauses and the host answers it, like any other OS call, and the same is true of
+every pool session (see [the clock](../security.md#the-clock)).
 
 ### Host functions and pausing
 

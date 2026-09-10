@@ -1,8 +1,8 @@
 # `print()`
 
 Output always goes to the host via a print callback (`vm.print_writer`). The
-host decides where it ends up; there is no real `sys.stdout` underneath (see
-[sys.md](sys.md)).
+host decides where it ends up; there is no real `sys.stdout` or `sys.stderr`
+underneath (see [sys.md](sys.md)).
 
 ## Supported keyword arguments
 
@@ -13,9 +13,12 @@ host decides where it ends up; there is no real `sys.stdout` underneath (see
 
 ## Rejected / ignored
 
-- `file=...` — rejected with `TypeError: "print() 'file' argument is not supported"`. Code that does
-    `print(..., file=sys.stderr)` will not work;
-    `sys.stderr` is an opaque marker (see [sys.md](sys.md)).
+- `file=...` — only `sys.stdout` and `sys.stderr` are accepted; both are
+    opaque markers matched by identity (see [sys.md](sys.md)). Anything else
+    raises `TypeError: "print() 'file' argument must be sys.stdout or sys.stderr, not {type}"`,
+    including an object defining `write()`, which CPython would call. CPython
+    instead raises `AttributeError: '{type}' object has no attribute 'write'`
+    for an object without one.
 - `flush=...` — accepted and ignored. Output is delivered to the host through
     the subprocess protocol on its own schedule (see "Chunk boundaries" below);
     a `print()` cannot make it arrive sooner.
@@ -27,6 +30,9 @@ host decides where it ends up; there is no real `sys.stdout` underneath (see
     before being written.
 - The host callback receives formatted chunks. There is no atomicity guarantee
     across multiple `print()` calls if the host interleaves with other output.
+- Stderr output is delivered through the same callback with `stream='stderr'`.
+    `CollectString` keeps no labels and interleaves both streams in one buffer;
+    `CollectStreams` labels each entry.
 
 ## Chunk boundaries
 
@@ -48,8 +54,12 @@ out the flush interval (5 ms by default), so:
     buffer is still drained before the next host call and at the end of the
     turn, so a host that needs liveness here can set the interval to 0 and get a
     callback as each line is written.
-- Ordering is exact, and the buffer is always drained before a host call or the
-    end of a run, so output cannot arrive after the event it preceded.
+- Both streams share that one buffer, so output alternating between them is
+    batched like any other; the callback is still called once per run, so a
+    chunk never mixes the two.
+- Ordering is exact, between the streams as well, and the buffer is always
+    drained before a host call or the end of a run, so output cannot arrive
+    after the event it preceded.
 - Buffered output is lost if the worker dies *hard*: the pool killing it on
     `request_timeout`, the allocator ending the process at its hard memory
     ceiling, or a crash. A graceful turn drains first, so this only affects a
@@ -95,18 +105,22 @@ buffers. That growth is **not** covered by `ResourceLimits.max_memory`
         check is its own TypeScript implementation
         (`crates/monty-js/ts/print.ts`), not the Rust `PrintWriter`.
 - Pass `max_bytes=None` to disable the cap (trusted hosts only).
-- Python `CollectStreams` also charges a fixed per-entry overhead toward the
-    cap, since many tiny fragments would otherwise OOM the host before payload
-    bytes hit the limit. Rust `PrintWriter::CollectStreams` merges consecutive
-    same-stream fragments, so entry count stays small for normal `print()`.
+- Every `CollectStreams` also charges a fixed **64 bytes** per retained entry
+    toward the cap, since a retained entry costs vector and `String` bookkeeping
+    that is not text: without it, output alternating between the streams would
+    hold roughly 64x the host memory the cap accounts for. So the cap bounds
+    entries as well as payload, and a run collects less text than `max_bytes`
+    suggests — a fragment per entry caps out at `max_bytes / 65` of them.
+    Rust `PrintWriter::CollectStreams` merges consecutive same-stream fragments,
+    so an ordinary `print()` pays the overhead once.
 - Entries follow the chunk boundaries above, not `print()` calls: several
     prints usually collect into one entry. Set `print_flush_interval=0` to get
     one entry per completed line.
 - JS (`@pydantic/monty`): `CollectString` / `CollectStreams` accept `maxBytes`
     (camelCase), same 10 MiB default and message; `CollectStreams` charges the
-    same **64-byte** per-entry overhead as the Python host path and does **not**
-    merge consecutive same-stream fragments (unlike Rust in-process
-    `PrintWriter::CollectStreams`). Output entries are `{ stream, text }` objects
+    same **64-byte** per-entry overhead and does **not** merge consecutive
+    same-stream fragments (unlike Rust in-process
+    `PrintWriter::CollectStreams`), so it charges one per fragment. Output entries are `{ stream, text }` objects
     rather than Python tuples. The cap is a **logical UTF-8 charge**, not a hard
     V8/host-RSS bound: JS stores strings as UTF-16, so host RSS can exceed the
     stated cap.

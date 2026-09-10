@@ -163,7 +163,7 @@ def test_standard_components_receive_session_tree():
             'logfire.json_schema': '{"type":"object","properties":{"stream":{},"text":{},"length_limit_exceeded":{}}}',
             'thread.id': 1,
             'code.file.path': 'crates/monty-pool/src/telemetry/tracing.rs',
-            'code.line.number': 272,
+            'code.line.number': 275,
             'code.module.name': 'monty_pool::telemetry::tracing',
             'logfire.null_args': ('length_limit_exceeded',),
         }
