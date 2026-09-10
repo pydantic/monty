@@ -9,12 +9,13 @@
 // `WasmHost`, so they are queued until the dispatch handler is ready.
 
 import type { DispatchRequest } from './channel.js'
+import type { ComponentModules } from './host.js'
 import { serveDispatch } from './serve.js'
 
 /** The init message that delivers the compiled module to the worker. */
 interface InitMessage {
   init: true
-  module: WebAssembly.Module
+  modules: ComponentModules
 }
 
 const queue: DispatchRequest[] = []
@@ -24,7 +25,7 @@ self.onmessage = (event: MessageEvent<InitMessage | DispatchRequest>) => {
   const data = event.data
   if ('init' in data) {
     void serveDispatch(
-      data.module,
+      data.modules,
       (reply) => self.postMessage(reply),
       (handler) => {
         dispatch = handler

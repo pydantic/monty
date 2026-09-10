@@ -7,10 +7,12 @@ edition = { workspace = true }
 authors = { workspace = true }
 description = "Datatest harness for Monty — runs test cases against both Monty and CPython"
 publish = false
+default-run = "monty-datatest"
 
 [dependencies]
 monty = { workspace = true, features = ["test-hooks"] }
 monty-fs = { workspace = true }
+monty-pool = { workspace = true }
 monty-types = { workspace = true }
 pyo3 = { workspace = true, features = ["auto-initialize"] }
 ahash = { workspace = true }
@@ -18,6 +20,7 @@ chrono = { workspace = true }
 datatest-stable = "0.2"
 similar = "2.7.0"
 tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [build-dependencies]
 pyo3-build-config = { workspace = true }

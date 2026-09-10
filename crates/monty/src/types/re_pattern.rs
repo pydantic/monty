@@ -448,9 +448,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
                 let text = arg.to_str(vm)?;
                 self.get(vm.heap).finditer(arg, text, vm.heap)
             }
-            _ => {
-                return Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns)));
-            }
+            _ => return Err(ExcType::attribute_error_method(Type::RePattern, attr, args, vm)),
         }?;
         Ok(CallResult::Value(result))
     }

@@ -203,6 +203,17 @@ nested_2 = asyncio.gather(nested_1, nested_1)
 assert await nested_2 == [[1, 1], [1, 1]]  # pyright: ignore
 
 
+# === Nested gather that settles before its parent finishes its items ===
+# An empty gather has nothing to wait for, so it settles while the outer gather
+# is still working through its items; the result must land in the outer's slot
+# rather than leaving the outer waiting on it.
+assert await asyncio.gather(asyncio.gather()) == [[]]  # pyright: ignore
+assert await asyncio.gather(asyncio.gather(asyncio.gather())) == [[[]]]  # pyright: ignore
+
+settled = asyncio.gather()
+assert await asyncio.gather(settled, task1(), settled) == [[], 1, []]  # pyright: ignore
+
+
 # === Sibling failure while blocked on a gather of gathers ===
 # The failing sibling settles the gather that a task blocked on
 # `gather(gather(...))` was a child of, whose inner gather owns a task of its

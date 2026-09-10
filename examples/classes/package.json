@@ -1,0 +1,19 @@
+{
+  "name": "monty-class-examples",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@pydantic/monty": "file:../../crates/monty-js"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.9",
+    "typescript": "^5.9.2"
+  },
+  "prettier": {
+    "printWidth": 120,
+    "semi": false,
+    "trailingComma": "all",
+    "singleQuote": true,
+    "arrowParens": "always"
+  }
+}

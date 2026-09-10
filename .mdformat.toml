@@ -1,0 +1,10 @@
+# Markdown style for `make format-md` / `make lint-md`; the file list comes from
+# `git ls-files` in the Makefile. mdformat reads only this file, not pyproject.toml.
+# One sentence per line is the house style, so never rewrap prose.
+wrap = "keep"
+end_of_line = "lf"
+
+# `[text][pydantic_monty.Name]` cross-references are resolved by mkdocs-autorefs
+# at build time, so do not escape them as missing link definitions.
+[plugin.mkdocs]
+ignore_missing_references = true

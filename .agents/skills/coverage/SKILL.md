@@ -28,15 +28,16 @@ uv run scripts/codecov_diff.py 123
 ## Output
 
 The script outputs:
+
 - PR title and state
 - HEAD coverage (overall coverage on the branch)
 - Patch coverage (coverage of changed lines only)
 - Coverage change (+/- percentage)
 - Per-file breakdown with:
-  - Missed line count
-  - Patch coverage percentage
-  - Specific uncovered line numbers (as ranges like `45-48, 52, 60-65`)
-  - Partial coverage line numbers
+    - Missed line count
+    - Patch coverage percentage
+    - Specific uncovered line numbers (as ranges like `45-48, 52, 60-65`)
+    - Partial coverage line numbers
 
 ## Requirements
 

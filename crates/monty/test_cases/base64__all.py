@@ -362,6 +362,143 @@ try:
 except ValueError as exc:
     assert str(exc) == 'z85 overflow in hunk starting at byte 0'
 
+# === a85encode / a85decode ===
+assert base64.a85encode(b'') == b''
+assert base64.a85encode(b'hello world') == b'BOu!rD]j7BEbo7'
+assert base64.a85encode(b'abcd') == b'@:E_W'
+# a short final group is zero-padded, then the digits that padding made are cut
+assert base64.a85encode(b'abc') == b'@:E^'
+assert base64.a85encode(b'abc', pad=True) == b'@:E^H'
+# an all-zero word folds to `z`, which is expanded again when it must be trimmed
+assert base64.a85encode(b'\x00\x00\x00\x00') == b'z'
+assert base64.a85encode(b'\x00') == b'!!'
+assert base64.a85encode(b'\x00\x00\x00\x00\x00') == b'z!!'
+assert base64.a85encode(b'\xff\xff\xff\xff') == b's8W-!'
+# `y` for four spaces is btoa's extension, off unless asked for
+assert base64.a85encode(b'    ') == b'+<VdL'
+assert base64.a85encode(b'    ', foldspaces=True) == b'y'
+assert base64.a85decode(b'BOu!rD]j7BEbo7') == b'hello world'
+assert base64.a85decode('BOu!rD]j7BEbo7') == b'hello world'
+assert base64.a85decode(b'z') == b'\x00\x00\x00\x00'
+assert base64.a85decode(b'y', foldspaces=True) == b'    '
+assert base64.a85decode(b='!!!!!') == b'\x00\x00\x00\x00'
+assert base64.a85decode(base64.a85encode(every_byte)) == every_byte
+
+# whitespace between digits is ignored, other characters are not
+assert base64.a85decode(b'BOu!r D]j7B\nEbo7') == b'hello world'
+# ignorechars is only consulted for bytes no digit rule matched, so `*` — a
+# digit itself — is decoded rather than skipped, while `~` is skipped
+assert base64.a85decode(b'BOu!r~D]j7B~Ebo7', ignorechars=b'~') == b'hello world'
+assert base64.a85decode(b'BOu!r*D]j7B') == b'hell\x1dOZO'
+
+# === a85 Adobe framing ===
+assert base64.a85encode(b'hello world', adobe=True) == b'<~BOu!rD]j7BEbo7~>'
+assert base64.a85encode(b'', adobe=True) == b'<~~>'
+assert base64.a85decode(b'<~BOu!rD]j7BEbo7~>', adobe=True) == b'hello world'
+# only the terminator is required, so a PDF stream without `<~` still decodes
+assert base64.a85decode(b'BOu!rD]j7BEbo7~>', adobe=True) == b'hello world'
+assert base64.a85decode(b'<~~>', adobe=True) == b''
+
+# === a85 line wrapping ===
+assert base64.a85encode(b'hello world foo bar', wrapcol=5) == b'BOu!r\nD]j7B\nEbo8/\nAoDT1\n@UX9'
+# a width below one (or below two with the framing) is raised to that floor
+assert base64.a85encode(b'hello', wrapcol=-5) == b'B\nO\nu\n!\nr\nD\nZ'
+# `~>` must fit on the last line, so a full line gets an empty one after it
+assert base64.a85encode(b'hi', wrapcol=1, adobe=True) == b'<~\nBP\n@\n~>'
+assert base64.a85encode(b'hello world foo bar', wrapcol=6, adobe=True) == b'<~BOu!\nrD]j7B\nEbo8/A\noDT1@U\nX9~>'
+assert base64.a85decode(base64.a85encode(every_byte, adobe=True, wrapcol=13), adobe=True) == every_byte
+
+# === a85 errors ===
+try:
+    base64.a85encode('abc')
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "memoryview: a bytes-like object is required, not 'str'"
+
+try:
+    base64.a85decode(5)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "argument should be a bytes-like object or ASCII string, not 'int'"
+
+try:
+    base64.a85encode(b'hello', wrapcol=3.0)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'float' object cannot be interpreted as an integer"
+
+# a width that loses the `max` is never converted, so a float below the floor is fine
+assert base64.a85encode(b'hello', wrapcol=0.5) == b'B\nO\nu\n!\nr\nD\nZ'
+
+try:
+    base64.a85encode(b'hello', wrapcol='x')
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'>' not supported between instances of 'str' and 'int'"
+
+try:
+    base64.a85decode(b'!!!!~')
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'Non-Ascii85 digit found: ~'
+
+# `y` is not a digit at all unless foldspaces is set
+try:
+    base64.a85decode(b'y')
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'Non-Ascii85 digit found: y'
+
+try:
+    base64.a85decode(b'!z')
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'z inside Ascii85 5-tuple'
+
+try:
+    base64.a85decode(b'!y', foldspaces=True)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'y inside Ascii85 5-tuple'
+
+# five digits reach 85**5 - 1, half again as much as the four bytes they fill
+try:
+    base64.a85decode(b'uuuuu')
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'Ascii85 overflow'
+
+try:
+    base64.a85decode(b'BOu!rD]j7BEbo7', adobe=True)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == "Ascii85 encoded byte sequences must end with b'~>'"
+
+# an explicit ignorechars is tested with `in`, so a str rejects the byte probe
+try:
+    base64.a85decode(b'BOu!r D]j7B', ignorechars=' ')
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'in <string>' requires string as left operand, not int"
+
+try:
+    base64.a85decode(b'BOu!r D]j7B', ignorechars=None)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "argument of type 'NoneType' is not a container or iterable"
+
+try:
+    base64.a85encode(b'x', True)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'a85encode() takes 1 positional argument but 2 were given'
+
+try:
+    base64.a85decode(b'x', nope=1)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "a85decode() got an unexpected keyword argument 'nope'"
+
 # === encodebytes / decodebytes ===
 assert base64.encodebytes(b'') == b''
 assert base64.encodebytes(b'abc') == b'YWJj\n'

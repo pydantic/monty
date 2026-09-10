@@ -4,11 +4,11 @@
 [![crates.io](https://img.shields.io/crates/v/monty.svg)](https://crates.io/crates/monty)
 [![license](https://img.shields.io/github/license/pydantic/monty.svg?v=2)](https://github.com/pydantic/monty/blob/main/LICENSE)
 
-The core interpreter crate of [Monty](https://github.com/pydantic/monty) — a minimal, secure Python interpreter written in Rust for use by AI.
+The core interpreter crate of [Monty](https://github.com/pydantic/monty) — a sandboxed Python interpreter written in Rust for code written by AI.
 
-**Experimental** — this project is still in development, and not ready for prime time.
+Monty runs Python code written by an LLM without the cost, latency and complexity of a container based sandbox. It parses Python with [Ruff](https://github.com/astral-sh/ruff)'s parser and executes it on its own bytecode VM — no CPython, no FFI, no C dependencies. Startup takes microseconds, not hundreds of milliseconds.
 
-Monty lets you safely run Python code written by an LLM inside your own process, without the cost, latency and complexity of a container based sandbox. It parses Python with [Ruff](https://github.com/astral-sh/ruff)'s parser and executes it on its own bytecode VM — no CPython, no FFI, no C dependencies. Startup takes microseconds, not hundreds of milliseconds.
+This crate runs the interpreter in your own process, so an abort inside it (a stack overflow, an allocator failure) takes your process with it. For untrusted code use [`monty-pool`](https://crates.io/crates/monty-pool), which runs the interpreter in worker subprocesses and replaces one that crashes.
 
 The sandbox has no ambient access to the host: filesystem, environment and network are only reachable through external function calls and mounts that you explicitly provide.
 
@@ -18,7 +18,7 @@ This crate is the pure-Rust core. Most users want one of the bindings built on t
 - **JavaScript/TypeScript**: [`@pydantic/monty`](https://www.npmjs.com/package/@pydantic/monty)
 - **CLI**: the `monty` binary from the [`monty-runtime`](https://crates.io/crates/monty-runtime) crate
 
-See the [project README](https://github.com/pydantic/monty) for the full feature matrix, motivation, and supported Python subset.
+See the [documentation](https://pydantic.dev/docs/monty/) for the motivation, latency measurements, comparison to alternatives and the supported Python subset.
 
 ## Basic usage
 
@@ -42,11 +42,13 @@ let result = runner.run(vec![MontyObject::Int(10)], ResourceTracker::default(), 
 assert_eq!(result, MontyObject::Int(55));
 ```
 
-Errors are returned as `MontyException`, with a traceback matching what CPython would produce. `PrintWriter` controls where `print()` output goes: `Stdout`, `Disabled`, or collected into a `String` / `(stream, text)` tuples for the host to inspect.
+Errors are returned as `MontyException`, with a traceback matching what CPython would produce. `PrintWriter` controls where `print()` output goes: `Stdout`, `Disabled`, or collected for the host to inspect — into a `String`, or into a `CollectedStreams` buffer whose `entries()` label each run `stdout` or `stderr`.
 
 ## Resource limits
 
-Untrusted code shouldn't be able to hog the host. `ResourceTracker` enforces execution-time and recursion limits and configures GC scheduling. Memory limits additionally require `monty-alloc` as the executable's global allocator:
+Untrusted code shouldn't be able to hog the host. `ResourceTracker` enforces execution-time and recursion limits and configures GC scheduling. Memory limits additionally require `monty-alloc` as the executable's global allocator.
+
+Hosts enforce `max_suspensions`: count answered suspensions, then call `abort` on `FunctionCall`, `OsCall`, `NameLookup`, or `ResolveFutures` at the first excess. The supplied exception bypasses sandbox exception handlers:
 
 ```rust
 use std::time::Duration;
@@ -116,6 +118,8 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
 - `MontyRepl` — a REPL-style interface: feed code snippet by snippet with state persisting between snippets.
 - `fs` module — mount real host directories into the sandbox at virtual paths (read-write, read-only, or copy-on-write in-memory overlay), with path resolution hardened against escapes.
 - `RunProgress::OsCall` — filesystem and other `os`-level operations the host can intercept or delegate.
+- `FunctionCall::object_id` and `NameLookup::object_id` — `Some(uuid)` when the suspension is a method call or lazy attribute lookup on a host object sent as `MontyObject::ClassInstance` / `MontyObject::Type`; the receiver is not in `args`.
+- `MontyRun::with_host_clock` / `MontyRepl::with_host_clock` — choose what `date.today()` and `datetime.now()` read on the non-suspending paths, which have no host to ask. `HostClock::System` (this machine's clock) unless changed; `Denied` takes it away, `Fixed` freezes an instant for reproducible runs.
 
 ## Monty crates
 

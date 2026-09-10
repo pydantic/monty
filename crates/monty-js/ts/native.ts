@@ -34,8 +34,13 @@ export interface CompleteTurn {
   value: unknown
 }
 
+interface CallbackTurn {
+  /** Host-generated native span identity, resolved by the telemetry bridge. */
+  callbackSpanKey?: string
+}
+
 /** The sandbox called an external function — answer with a `resume*` call. */
-export interface FunctionCallTurn {
+export interface FunctionCallTurn extends CallbackTurn {
   kind: 'functionCall'
   functionName: string
   /** Positional arguments, already converted to JS values. */
@@ -46,11 +51,15 @@ export interface FunctionCallTurn {
    */
   kwargs: [unknown, unknown][]
   callId: number
-  methodCall: boolean
+  /** Set for host-routed calls: the uuid of the receiver in the session's
+   *  `InstanceStore` — a class instance, or a class type (a classmethod, or
+   *  `__call__` construction). The receiver is NOT in `args`; null/absent
+   *  for plain external calls. */
+  objectId?: string | null
 }
 
 /** The sandbox performed an OS operation no mount handled. */
-export interface OsCallTurn {
+export interface OsCallTurn extends CallbackTurn {
   kind: 'osCall'
   functionName: string
   args: unknown[]
@@ -59,13 +68,18 @@ export interface OsCallTurn {
 }
 
 /** The sandbox read an undefined name — answer with `resumeNameLookup`. */
-export interface NameLookupTurn {
+export interface NameLookupTurn extends CallbackTurn {
   kind: 'nameLookup'
   name: string
+  /** Set for lazy attribute lookups on a host-backed object (a class
+   *  instance, or a class type): the receiver's uuid. Answering
+   *  `resumeNameLookup(null, null, ...)` then makes the sandbox raise
+   *  `AttributeError` (not `NameError`). */
+  objectId?: string | null
 }
 
 /** Every sandbox task is blocked on external futures. */
-export interface ResolveFuturesTurn {
+export interface ResolveFuturesTurn extends CallbackTurn {
   kind: 'resolveFutures'
   pendingCallIds: number[]
 }

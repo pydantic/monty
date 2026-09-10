@@ -238,6 +238,7 @@ const exceptionTypes: Array<[string, string]> = [
   ['json.JSONDecodeError', 'json.JSONDecodeError'],
   ['re.PatternError', 're.PatternError'],
   ['binascii.Error', 'binascii.Error'],
+  ['binascii.Incomplete', 'binascii.Incomplete'],
   ['SomeCustomError', 'RuntimeError'],
 ]
 
@@ -302,6 +303,7 @@ caught
 // and an `except <module>.<Name>:` handler silently misses.
 const dottedTypes: Array<[string, string, string]> = [
   ['binascii.Error', 'binascii', 'ValueError'],
+  ['binascii.Incomplete', 'binascii', 'Exception'],
   ['json.JSONDecodeError', 'json', 'ValueError'],
   ['re.PatternError', 're', 'Exception'],
 ]
@@ -399,11 +401,12 @@ except TypeError as exc:
     caught = str(exc)
 caught
 `
-  // a Dataclass marker without its fieldNames array
-  const bad = () => ({ __monty_type__: 'Dataclass', name: 'Broken' })
+  // a raw ClassInstance marker is rejected by `prepare` before it can reach
+  // the native codec — identity markers are internal, never host data
+  const bad = () => ({ __monty_type__: 'ClassInstance', name: 'Broken' })
   t.is(
     await run(code, { externalLookup: { bad } }),
-    "Object property 'typeId' type mismatch. Expect value to be BigInt, but received Undefined",
+    'raw ClassInstance markers are not accepted — wrap the object in ClassInstance(...)',
   )
 })
 
@@ -506,6 +509,12 @@ test('stale proxy TypeError names tuple-marked and __monty_type__ values', async
       instanceOf: MontyRuntimeError,
     })
     t.is(markedError.message, "TypeError: 'datetime' object is not callable")
+    // a class instance marker is named by its class, like the converted value
+    const instance = { __monty_type__: 'ClassInstance', type: { name: 'Point' }, instanceId: '', attrs: [] }
+    const instanceError = await t.throwsAsync(() => session.feedRun('f()', { externalLookup: { fn: instance } }), {
+      instanceOf: MontyRuntimeError,
+    })
+    t.is(instanceError.message, "TypeError: 'Point' object is not callable")
   } finally {
     await session.close()
   }

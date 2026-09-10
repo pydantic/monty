@@ -101,17 +101,7 @@ pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                 // Round to `d` decimal places using banker's rounding.
                 Ok(Value::Float(round_float_to_digits(*f, d)))
             } else {
-                // No digits: round to nearest integer and return int (banker's rounding)
-                if f.is_nan() {
-                    Err(SimpleException::new_msg(ExcType::ValueError, "cannot convert float NaN to integer").into())
-                } else if f.is_infinite() {
-                    Err(
-                        SimpleException::new_msg(ExcType::OverflowError, "cannot convert float infinity to integer")
-                            .into(),
-                    )
-                } else {
-                    Ok(Value::Int(f64_to_i64(bankers_round(*f))))
-                }
+                LongInt::value_from_f64(bankers_round(*f), vm.heap)
             }
         }
         _ => {
@@ -137,9 +127,10 @@ fn bankers_round(value: f64) -> f64 {
         floor
     } else if frac > 0.5 {
         floor + 1.0
+    } else if floor % 2.0 == 0.0 {
+        floor
     } else {
-        // Exactly 0.5 - round to even
-        if f64_to_i64(floor) % 2 == 0 { floor } else { floor + 1.0 }
+        floor + 1.0
     }
 }
 
@@ -185,21 +176,4 @@ fn round_float_to_digits(value: f64, digits: i64) -> f64 {
     } else {
         rounded
     }
-}
-
-/// Converts `f64` to `i64` using saturating float-to-int casting.
-///
-/// Monty uses `i64` for integer values, so float-to-int conversion must pick a
-/// bounded representation:
-/// - Values outside the `i64` range saturate to `i64::MIN`/`i64::MAX`
-/// - `NaN` converts to `0`
-///
-/// This behavior is provided by Rust's `as` casting rules for float-to-int.
-fn f64_to_i64(value: f64) -> i64 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "intentional truncation; float-to-int casts saturate and map NaN to 0"
-    )]
-    let result = value as i64;
-    result
 }

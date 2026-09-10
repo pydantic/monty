@@ -2,23 +2,24 @@
 
 mod checkout;
 mod pool;
-#[cfg(feature = "telemetry-adapter")]
-mod telemetry;
-#[cfg(feature = "telemetry-adapter")]
-pub mod telemetry_adapter;
-#[cfg(feature = "telemetry-adapter")]
-mod telemetry_json;
+#[cfg(feature = "telemetry")]
+pub mod telemetry;
+/// Compatibility alias for the former public module name.
+#[cfg(feature = "telemetry")]
+pub use telemetry as telemetry_adapter;
 mod worker;
 
 use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
 
-pub use monty_proto::{MAX_VALUE_DEPTH, exceeds_max_value_depth};
+pub use monty_proto::{DEFAULT_PRINT_FLUSH_INTERVAL, MAX_VALUE_DEPTH, exceeds_max_value_depth};
 use monty_types::MontyException;
 
+#[cfg(feature = "telemetry")]
+use crate::telemetry::Metrics;
 pub use crate::{
     checkout::{
-        Checkout, MountSpec, MountSpecMode, OnPrint, OnRawEvent, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
-        on_print_sync,
+        Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, PrintFuture, ReplConfig, ResumeValue,
+        TurnEvent, on_print_sync,
     },
     pool::Pool,
 };
@@ -79,6 +80,13 @@ pub struct PoolConfig {
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child.
     pub max_checkouts_per_worker: Option<u32>,
+    /// Where pool and turn metrics are recorded, from
+    /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).
+    /// `None` records nothing at all. Independent of tracing: metrics cover
+    /// every checkout, traced or not. Worker up/down counters total over all
+    /// pools that record into the same host meter.
+    #[cfg(feature = "telemetry")]
+    pub metrics: Option<Metrics>,
 }
 
 impl PoolConfig {
@@ -107,6 +115,8 @@ impl PoolConfig {
             request_timeout: None,
             duration_limit_grace: Some(Duration::from_secs(1)),
             max_checkouts_per_worker: None,
+            #[cfg(feature = "telemetry")]
+            metrics: None,
         }
     }
 }

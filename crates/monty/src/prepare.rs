@@ -75,20 +75,27 @@ pub struct PrepareResult {
 /// At module level, the local namespace IS the global namespace.
 pub(crate) fn prepare(parse_result: ParseResult, input_names: Vec<String>) -> Result<PrepareResult, ParseError> {
     let ParseResult { nodes, mut interner } = parse_result;
-    let globals = build_initial_globals(input_names, &mut interner)?;
-    prepare_with_existing_names(ParseResult { nodes, interner }, globals)
+    let mut globals = build_initial_globals(input_names, &mut interner)?;
+    let nodes = prepare_with_existing_names(nodes, &interner, &mut globals)?;
+    Ok(PrepareResult {
+        globals,
+        nodes,
+        interner,
+    })
 }
 
 /// Prepares parsed nodes for REPL-style incremental compilation using an existing global namespace.
 ///
 /// Existing bindings keep their original namespace slots; any new names are appended with new slots.
 /// This ensures snippets can be compiled independently while sharing one persistent global namespace.
+/// `globals` is borrowed so a snippet that fails here leaves the session's map intact
+/// (plus any slots already appended, which are stable and harmless).
 pub(crate) fn prepare_with_existing_names(
-    parse_result: ParseResult,
-    mut globals: NameMap,
-) -> Result<PrepareResult, ParseError> {
-    let ParseResult { nodes, interner } = parse_result;
-    let mut prepared_nodes = Prepare::new_module(&mut globals, &interner).prepare_nodes(nodes)?;
+    nodes: Vec<ParseNode>,
+    interner: &InternerBuilder,
+    globals: &mut NameMap,
+) -> Result<Vec<PreparedNode>, ParseError> {
+    let mut prepared_nodes = Prepare::new_module(globals, interner).prepare_nodes(nodes)?;
 
     // In the root frame, the last expression is implicitly returned if it
     // is not `None`. This matches Python REPL behavior where the last
@@ -101,11 +108,7 @@ pub(crate) fn prepare_with_existing_names(
         prepared_nodes.push(Node::Return(Some(new_expr_loc)));
     }
 
-    Ok(PrepareResult {
-        globals,
-        nodes: prepared_nodes,
-        interner,
-    })
+    Ok(prepared_nodes)
 }
 
 /// Builds the module's initial `NameMap` from the embedder-supplied `input_names`.

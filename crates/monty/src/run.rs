@@ -1,16 +1,21 @@
 //! Public interface for running Monty code.
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    mem,
+    ops::ControlFlow,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
-pub use monty_types::CompileOptions;
+pub use monty_types::{CompileOptions, HostClock};
 use monty_types::{ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker};
 use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
     bytecode::{Code, CodeBuilder, Compiler, FrameExit, Opcode, VM},
-    exception_private::{ExcTypeExt, RunResult},
+    exception_private::{ExcTypeExt, RunError, RunResult},
+    function::Function,
     heap::{DropWithContext, Heap, HeapReader},
     intern::{InternerBuilder, Interns, StringId},
     name_map::NameMap,
@@ -18,16 +23,18 @@ use crate::{
     object_bridge::MontyObjectExt,
     parse::{CodeRange, parse, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
-    run_progress::{RunProgress, build_run_progress, check_snapshot_from_converted, convert_frame_exit},
+    run_progress::{
+        RunProgress, answer_unserved_lookups, build_run_progress, check_snapshot_from_converted, convert_frame_exit,
+    },
     types::str::StringRepr,
     value::Value,
 };
 
 /// Primary interface for running Monty code.
 ///
-/// `MontyRun` supports two execution modes:
-/// - **Simple execution**: Use `run()` or `run_no_limits()` to run code to completion
-/// - **Iterative execution**: Use `start()` to start execution which will pause at external function calls and
+/// [`MontyRun`] supports two execution modes:
+/// - **Simple execution**: Use [`run`](Self::run) or [`run_no_limits`](Self::run_no_limits) to run code to completion
+/// - **Iterative execution**: Use [`start`](Self::start) to start execution which will pause at external function calls and
 ///   can be resumed later
 ///
 /// # Example
@@ -55,7 +62,7 @@ impl MontyRun {
     /// Creates a new run snapshot by parsing the given code.
     ///
     /// This only parses and prepares the code - no heap or namespaces are created yet.
-    /// Call `run_snapshot()` with inputs to start execution.
+    /// Call [`run`](Self::run) or [`start`](Self::start) with inputs to execute it.
     ///
     /// # Arguments
     /// * `code` - The Python code to execute
@@ -64,7 +71,7 @@ impl MontyRun {
     /// * `options` - [`CompileOptions`] controlling CPython divergences; usually `CompileOptions::default()`
     ///
     /// # Errors
-    /// Returns `MontyException` if the code cannot be parsed.
+    /// Returns [`MontyException`] if the code cannot be parsed.
     pub fn new(
         code: String,
         script_name: &str,
@@ -78,6 +85,33 @@ impl MontyRun {
     #[must_use]
     pub fn code(&self) -> &str {
         &self.executor.code
+    }
+
+    /// Chooses what `date.today()` and `datetime.now()` read, replacing the
+    /// [`System`](HostClock::System) clock a runner starts with.
+    ///
+    /// Only [`run`](Self::run) and [`run_no_limits`](Self::run_no_limits)
+    /// consult it: they have no host to suspend to. Under
+    /// [`start`](Self::start) the host answers both calls itself, so a clock
+    /// set here is ignored.
+    ///
+    /// [`Denied`](HostClock::Denied) takes the clock away; [`Fixed`](HostClock::Fixed)
+    /// freezes an instant, for runs that have to be reproducible. Reading the
+    /// wall clock is a weak but real capability — see `docs/security.md`.
+    ///
+    /// ```
+    /// use monty::MontyRun;
+    /// use monty_types::{CompileOptions, HostClock, MontyObject};
+    ///
+    /// let code = "from datetime import date\ndate.today().year".to_owned();
+    /// let clock = HostClock::Fixed { unix_seconds: 1_700_000_000, microsecond: 0, local_offset_seconds: 0 };
+    /// let runner = MontyRun::new(code, "today.py", vec![], CompileOptions::default()).unwrap().with_host_clock(clock);
+    /// assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::Int(2023));
+    /// ```
+    #[must_use]
+    pub fn with_host_clock(mut self, clock: HostClock) -> Self {
+        self.executor = self.executor.with_clock(clock);
+        self
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
@@ -124,22 +158,22 @@ impl MontyRun {
     ///
     /// Creates the heap and namespaces, then begins execution.
     ///
-    /// For iterative execution, `start()` consumes self and returns a `RunProgress`:
-    /// - `RunProgress::FunctionCall(call)` - external function call, call `call.resume(return_value)` to resume
-    /// - `RunProgress::Complete(value)` - execution finished
+    /// For iterative execution, [`start`](Self::start) consumes self and returns a [`RunProgress`]:
+    /// - [`RunProgress::FunctionCall`] - external function call, call [`FunctionCall::resume`](crate::FunctionCall::resume) to resume
+    /// - [`RunProgress::Complete`] - execution finished
     ///
     /// This enables snapshotting execution state and returning control to the host
     /// application during long-running computations.
     ///
     /// # Arguments
-    /// * `inputs` - Initial input values (must match length of `input_names` from `new()`)
+    /// * `inputs` - Initial input values (must match length of `input_names` from [`new`](Self::new))
     /// * `resource_tracker` - Resource tracker for the execution
     /// * `print` - Writer for print output
     ///
     /// # Errors
-    /// Returns `MontyException` if:
+    /// Returns [`MontyException`] if:
     /// - The number of inputs doesn't match the expected count
-    /// - An input value is invalid (e.g., `MontyObject::Repr`)
+    /// - An input value is invalid (e.g., [`MontyObject::Repr`])
     /// - A runtime error occurs during execution
     ///
     /// # Panics
@@ -205,6 +239,10 @@ pub(crate) struct Executor {
     /// UTF-8 byte cap for each operand repr in introspected assert messages.
     /// Stored with the compiled program and passed to every VM.
     pub(crate) assert_repr_max_bytes: u32,
+    /// Clock serving `date.today()` / `datetime.now()` on the non-suspending
+    /// path; `System` unless the embedder chose otherwise.
+    #[serde(default = "default_clock")]
+    pub(crate) clock: HostClock,
     /// Estimated heap capacity for pre-allocation on subsequent runs.
     /// Uses AtomicUsize for thread-safety (required by PyO3's Sync bound).
     heap_capacity: AtomicUsize,
@@ -219,6 +257,7 @@ impl Clone for Executor {
             code: self.code.clone(),
             input_slots: self.input_slots.clone(),
             assert_repr_max_bytes: self.assert_repr_max_bytes,
+            clock: self.clock,
             heap_capacity: AtomicUsize::new(self.heap_capacity.load(Ordering::Relaxed)),
         }
     }
@@ -236,26 +275,28 @@ impl Executor {
         let parse_result = parse(&code, script_name).map_err(|e| e.into_python_exc(script_name, &code))?;
         let prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
 
-        // Create interns with empty functions (functions will be set after compilation)
-        let mut interns = Interns::new(prepared.interner, Vec::new());
-
         // Compile the module to bytecode, which also compiles all nested functions.
         // The compiler enforces the bytecode-format namespace-size limit and reports
         // it as a `SyntaxError` rather than panicking on the `u16` cast.
         let namespace_size = prepared.globals.len();
-        let compile_result = Compiler::compile_module(&prepared.nodes, &interns, &prepared.globals, options)
-            .map_err(|e| e.into_python_exc(script_name, &code))?;
-
-        // Set the compiled functions in the interns
-        interns.set_functions(compile_result.functions);
+        let mut functions = Vec::new();
+        let module_code = Compiler::compile_module(
+            &prepared.nodes,
+            &prepared.interner,
+            &prepared.globals,
+            &mut functions,
+            options,
+        )
+        .map_err(|e| e.into_python_exc(script_name, &code))?;
 
         Ok(Self {
             globals: prepared.globals,
-            module_code: Arc::new(compile_result.code),
-            interns,
+            module_code: Arc::new(module_code),
+            interns: Interns::new(prepared.interner, functions),
             code,
             input_slots: Vec::new(),
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+            clock: default_clock(),
             heap_capacity: AtomicUsize::new(namespace_size),
         })
     }
@@ -266,13 +307,26 @@ impl Executor {
         self.globals.len()
     }
 
-    /// Compiles one REPL snippet against existing session metadata.
+    /// Replaces the clock serving `date.today()` / `datetime.now()`, so a
+    /// REPL snippet runs under its session's clock rather than the default.
+    pub(crate) fn with_clock(mut self, clock: HostClock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Compiles one REPL snippet against the session's compiler tables.
     ///
-    /// This differs from [`new`](Self::new) in three ways required for true
-    /// no-replay REPL execution:
-    /// - Seeds parsing from `existing_interns` so old `StringId` values stay stable.
-    /// - Seeds compilation with existing functions so old `FunctionId` values remain valid.
-    /// - Reuses `existing_globals` and appends new global names only.
+    /// This differs from [`new`](Self::new) in that it *extends* the session's
+    /// `NameMap` and [`Interns`] rather than building fresh ones, so old
+    /// `StringId`/`FunctionId` values and global slots stay stable and the
+    /// snippet runs without replaying earlier code.
+    ///
+    /// The tables are moved into the returned executor (nothing is cloned — this
+    /// is what keeps feed cost independent of session size) and must be handed
+    /// back to the session once the snippet is finished with. On failure they
+    /// are left in place: the name slots and functions the rejected snippet
+    /// appended are rolled back so they can't eat into the `u16` id spaces,
+    /// while its interned strings stay (u32 ids, harmless and stable).
     ///
     /// `input_names` are pre-registered in the globals map before preparation so
     /// they receive stable namespace slots that the REPL input-injection logic
@@ -280,55 +334,42 @@ impl Executor {
     pub(crate) fn new_repl_snippet(
         code: String,
         script_name: &str,
-        mut existing_globals: NameMap,
-        existing_interns: &Interns,
+        globals: &mut NameMap,
+        interns: &mut Interns,
         input_names: &[String],
         options: CompileOptions,
     ) -> Result<Self, MontyException> {
         check_identifier(input_names)?;
 
-        let mut seeded_interner = InternerBuilder::from_interns(existing_interns, &code);
-        // Pre-register input names so they get stable slots before
-        // preparation, and capture each input's slot index so injection
-        // doesn't have to perform an O(N-interns) name→StringId scan at
-        // call time (one slot per input value, in order).
-        //
-        // Surfaced via the standard parse/prepare error path; if the
-        // embedder hands over more than `u16::MAX + 1` names the bytecode
-        // encoding can't represent them all.
-        let mut input_slots = Vec::with_capacity(input_names.len());
-        for name in input_names {
-            let name_id = seeded_interner.intern(name);
-            let slot = existing_globals
-                .ensure_slot(name_id, CodeRange::default())
-                .map_err(|e| e.into_python_exc(script_name, &code))?;
-            input_slots.push(slot);
-        }
-
-        let parse_result = parse_with_interner(&code, script_name, seeded_interner)
-            .map_err(|e| e.into_python_exc(script_name, &code))?;
-        let prepared = prepare_with_existing_names(parse_result, existing_globals)
-            .map_err(|e| e.into_python_exc(script_name, &code))?;
-
-        let existing_functions = existing_interns.functions_clone();
-        let mut interns = Interns::new(prepared.interner, Vec::new());
-        let compile_result = Compiler::compile_module_with_functions(
-            &prepared.nodes,
-            &interns,
-            &prepared.globals,
-            existing_functions,
+        let globals_len = globals.len();
+        let (mut interner, mut functions) = mem::take(interns).into_builder();
+        let compiled = compile_repl_snippet(
+            &code,
+            script_name,
+            globals,
+            &mut interner,
+            &mut functions,
+            input_names,
             options,
-        )
-        .map_err(|e| e.into_python_exc(script_name, &code))?;
-        interns.set_functions(compile_result.functions);
+        );
+        // Whether or not compilation succeeded, the extended tables are the
+        // session's tables from here on (`compile_module` has already rolled
+        // back `functions` on failure).
+        *interns = Interns::new(interner, functions);
+        if compiled.is_err() {
+            globals.truncate(globals_len);
+        }
+        let (module_code, input_slots) = compiled?;
 
         Ok(Self {
-            globals: prepared.globals,
-            module_code: Arc::new(compile_result.code),
-            interns,
+            globals: mem::take(globals),
+            module_code: Arc::new(module_code),
+            interns: mem::take(interns),
             code,
             input_slots,
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+            // Fail-closed placeholder; the owning `MontyRepl` overwrites it via `with_clock`.
+            clock: HostClock::Denied,
             heap_capacity: AtomicUsize::new(0),
         })
     }
@@ -336,7 +377,9 @@ impl Executor {
     /// Builds a synthetic REPL input that calls one existing global with host arguments.
     ///
     /// The argument tuple occupies a temporary namespace slot whose name mapping
-    /// must not be committed; appended interns remain valid session metadata.
+    /// must not be committed, so `existing_globals` is a throwaway copy. The
+    /// session's [`Interns`] are extended in place (two ids, no parse) and moved
+    /// into the executor on success; on failure they stay with the caller.
     #[expect(
         clippy::too_many_arguments,
         reason = "synthetic calls combine existing REPL and call-site metadata"
@@ -348,7 +391,7 @@ impl Executor {
         arg_count: usize,
         script_name: &str,
         mut existing_globals: NameMap,
-        existing_interns: &Interns,
+        interns: &mut Interns,
         options: CompileOptions,
     ) -> Result<Self, MontyException> {
         const CALL_ARGS_NAME: &str = "<monty-call-args>";
@@ -358,14 +401,13 @@ impl Executor {
         } else {
             format!("{name}(...)")
         };
-        let mut interner = InternerBuilder::from_interns(existing_interns, &code);
-        let filename = interner.intern(script_name);
+        let filename = interns.intern(script_name);
         let range = CodeRange {
             filename,
             start_byte: 0,
             end_byte: u32::try_from(code.len()).unwrap_or(u32::MAX),
         };
-        let args_name_id = interner.intern(CALL_ARGS_NAME);
+        let args_name_id = interns.intern(CALL_ARGS_NAME);
         let args_slot = existing_globals
             .ensure_slot(args_name_id, range)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
@@ -386,15 +428,15 @@ impl Executor {
             .emit(Opcode::ReturnValue)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
-        let functions = existing_interns.functions_clone();
-        let interns = Interns::new(interner, functions);
         Ok(Self {
             globals: existing_globals,
             module_code: Arc::new(builder.build(0)),
-            interns,
+            interns: mem::take(interns),
             code,
             input_slots: vec![args_slot],
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+            // Fail-closed placeholder; the owning `MontyRepl` overwrites it via `with_clock`.
+            clock: HostClock::Denied,
             heap_capacity: AtomicUsize::new(0),
         })
     }
@@ -444,25 +486,22 @@ impl Executor {
 
     /// Runs module code on an already-configured VM to completion.
     ///
-    /// Executes [`VM::run_module`], then handles `NameLookup` and `ExternalCall`
-    /// exits by raising `NameError` through the VM so tracebacks are properly
-    /// captured. Finally converts the result via [`frame_exit_to_object`].
+    /// Executes [`VM::run_module`], then answers the lookup and `ExternalCall`
+    /// exits no host will serve by raising `NameError` / `AttributeError`
+    /// through the VM so tracebacks are properly captured, and answers the
+    /// clock OS calls from [`Executor::clock`]. Finally converts the result via
+    /// [`frame_exit_to_object`].
     ///
     /// This is the shared non-iterative execution core used by both the standard
     /// `run` path and the REPL's `feed_run` path.
     pub(crate) fn run_to_completion<'h>(&'h self, vm: &mut VM<'h>) -> RunResult<MontyObject> {
         let mut frame_exit_result = vm.run_module();
 
-        // Handle NameLookup and ExternalCall exits by raising NameError through the VM
-        // so that traceback information is properly captured. In the non-iterative path,
-        // there's no host to resolve names or external functions, so these become NameErrors.
+        // In the non-iterative path there's no host to resolve names, lazy
+        // attributes or external functions, so lookups are answered `Undefined`
+        // and a called external function is an undefined name.
         loop {
-            match frame_exit_result {
-                Ok(FrameExit::NameLookup { name_id, .. }) => {
-                    let name = self.interns.get_str(name_id);
-                    let err = ExcType::name_error(name);
-                    frame_exit_result = vm.resume_with_exception(err.into());
-                }
+            match answer_unserved_lookups(frame_exit_result, vm) {
                 Ok(FrameExit::ExternalCall {
                     function_name,
                     args,
@@ -481,8 +520,47 @@ impl Executor {
                     let err = ExcType::name_error(name);
                     frame_exit_result = vm.resume_with_exception(err.into());
                 }
-                other => return frame_exit_to_object(other, vm),
+                // `date.today()` / `datetime.now()` with a clock granted are
+                // answered in-process; every other exit converts as before.
+                Ok(exit) => match self.resolve_clock_call(vm, exit) {
+                    ControlFlow::Continue(resumed) => frame_exit_result = resumed,
+                    ControlFlow::Break(exit) => return frame_exit_to_object(Ok(exit), vm),
+                },
+                err => return frame_exit_to_object(err, vm),
             }
+        }
+    }
+
+    /// Answers `date.today()` / `datetime.now()` from [`Executor::clock`], for
+    /// the execution paths that have no host loop to suspend to.
+    ///
+    /// `Continue` carries the exit the VM reached after resuming with the time.
+    /// `Break` hands back everything else: every non-`OsCall` exit, every OS
+    /// call that is not a clock call, and a clock call carrying a
+    /// `PendingOsEffect`, which these two never do. Callers handle those
+    /// themselves, differently in `run` and `MontyRepl::call_function`.
+    pub(crate) fn resolve_clock_call(
+        &self,
+        vm: &mut VM<'_>,
+        exit: FrameExit,
+    ) -> ControlFlow<FrameExit, RunResult<FrameExit>> {
+        match exit {
+            FrameExit::OsCall {
+                function_call,
+                call_id,
+                effect: None,
+            } => match self.clock.resolve(&function_call) {
+                Some(result) => {
+                    function_call.drop_with(vm);
+                    ControlFlow::Continue(vm.resume(result))
+                }
+                None => ControlFlow::Break(FrameExit::OsCall {
+                    function_call,
+                    call_id,
+                    effect: None,
+                }),
+            },
+            other => ControlFlow::Break(other),
         }
     }
 
@@ -524,7 +602,9 @@ impl Executor {
                 executor.assert_repr_max_bytes,
             );
             executor.populate_inputs(inputs, &mut vm)?;
-            let frame_exit_result = vm.run_module();
+            // Lookups are answered before the globals are taken below: an
+            // armed `hasattr()` / `getattr()` effect runs the module on.
+            let frame_exit_result = answer_unserved_lookups(vm.run_module(), &mut vm);
 
             // Tasks the module left running (a sibling detached from a failed
             // gather, say) hold real references, and are not reachable from
@@ -614,39 +694,55 @@ impl Executor {
     }
 }
 
+/// The clock a runner or REPL session starts with: the host's own.
+///
+/// Standard execution has no host loop to ask, so denying it by default would
+/// make ordinary date-handling scripts raise — which is the whole of
+/// [#330](https://github.com/pydantic/monty/issues/330). Embedders that do not
+/// want sandboxed code reading their wall clock pass
+/// [`HostClock::Denied`](monty_types::HostClock::Denied) explicitly.
+pub(crate) fn default_clock() -> HostClock {
+    HostClock::System
+}
+
 /// Converts module/frame exit results into plain `MontyObject` outputs.
 ///
-/// Used by non-iterative execution paths where suspendable outcomes (external calls,
-/// name lookups) are not supported and should produce errors.
+/// Used by non-iterative execution paths: lookups are answered as no host
+/// would (see [`answer_unserved_lookups`]) and the remaining suspendable
+/// outcomes (external calls, futures) produce errors.
 pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: &mut VM<'_>) -> RunResult<MontyObject> {
     // Suspensions this path cannot service. The error is built from a borrow
     // so one `drop_with` releases whatever the exit owns, fields added later
     // included.
-    let exit = match frame_exit_result? {
+    let exit = match answer_unserved_lookups(frame_exit_result, vm)? {
         FrameExit::Return(return_value) => return Ok(MontyObject::new(return_value, vm)),
         exit => exit,
     };
-    let error = match &exit {
+    let error: RunError = match &exit {
         FrameExit::Return(_) => unreachable!("returns are handled above"),
         FrameExit::ExternalCall { function_name, .. } => {
             let function_name = function_name.as_str(vm.interns);
             ExcType::not_implemented(format!(
                 "External function '{function_name}' not implemented with standard execution"
             ))
+            .into()
         }
         FrameExit::OsCall { function_call, .. } => ExcType::not_implemented(format!(
             "OS function '{}' not implemented with standard execution",
             function_call.name()
-        )),
+        ))
+        .into(),
         FrameExit::MethodCall { method_name, .. } => {
             let name = method_name.as_str(vm.interns);
-            ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))
+            ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution")).into()
         }
-        FrameExit::ResolveFutures(_) => ExcType::not_implemented("async futures not supported by standard execution."),
-        FrameExit::NameLookup { name_id, .. } => ExcType::name_error(vm.interns.get_str(*name_id)),
+        FrameExit::ResolveFutures(_) => {
+            ExcType::not_implemented("async futures not supported by standard execution.").into()
+        }
+        FrameExit::NameLookup { .. } | FrameExit::AttrLookup { .. } => unreachable!("lookups are answered above"),
     };
     exit.drop_with(vm);
-    Err(error.into())
+    Err(error)
 }
 
 /// Output from `run_ref_counts` containing reference count and heap information.
@@ -670,6 +766,45 @@ pub struct RefCountOutput {
     /// the configured `gc_interval` to verify GC fired at the expected
     /// cadence.
     pub allocations_since_gc: u32,
+}
+
+/// Parse → prepare → compile pipeline for one REPL snippet, extending the
+/// session tables in place.
+///
+/// Split out of [`Executor::new_repl_snippet`] so every stage works on borrowed
+/// tables and any `?` early-return leaves them with the caller. Returns the
+/// module code and the namespace slot of each input, in order.
+fn compile_repl_snippet(
+    code: &str,
+    script_name: &str,
+    globals: &mut NameMap,
+    interner: &mut InternerBuilder,
+    functions: &mut Vec<Function>,
+    input_names: &[String],
+    options: CompileOptions,
+) -> Result<(Code, Vec<NamespaceId>), MontyException> {
+    // Pre-register input names so they get stable slots before preparation,
+    // and capture each input's slot index so injection doesn't have to do a
+    // name→StringId lookup at call time (one slot per input value, in order).
+    //
+    // Surfaced via the standard parse/prepare error path; if the embedder
+    // hands over more than `u16::MAX + 1` names the bytecode encoding can't
+    // represent them all.
+    let mut input_slots = Vec::with_capacity(input_names.len());
+    for name in input_names {
+        let name_id = interner.intern(name);
+        let slot = globals
+            .ensure_slot(name_id, CodeRange::default())
+            .map_err(|e| e.into_python_exc(script_name, code))?;
+        input_slots.push(slot);
+    }
+
+    let nodes = parse_with_interner(code, script_name, interner).map_err(|e| e.into_python_exc(script_name, code))?;
+    let nodes =
+        prepare_with_existing_names(nodes, interner, globals).map_err(|e| e.into_python_exc(script_name, code))?;
+    let module_code = Compiler::compile_module(&nodes, interner, globals, functions, options)
+        .map_err(|e| e.into_python_exc(script_name, code))?;
+    Ok((module_code, input_slots))
 }
 
 /// Check if input names are valid Python identifiers.

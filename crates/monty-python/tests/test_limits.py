@@ -17,11 +17,13 @@ def test_resource_limits_typed_dict():
         max_memory=1024,
         gc_interval=10,
         max_recursion_depth=500,
+        max_suspensions=20,
     )
     assert limits.get('max_duration_secs') == snapshot(5.0)
     assert limits.get('max_memory') == snapshot(1024)
     assert limits.get('gc_interval') == snapshot(10)
     assert limits.get('max_recursion_depth') == snapshot(500)
+    assert limits.get('max_suspensions') == snapshot(20)
 
 
 def test_resource_limits_repr():
@@ -98,6 +100,49 @@ def test_session_exhausted_after_resource_error_but_worker_reusable(pool: Monty)
         assert session.feed_run('1 + 1') == snapshot(2)
 
 
+def test_suspension_limit(pool: Monty):
+    code = """
+n = 0
+while True:
+    try:
+        fetch('x')
+    except Exception:
+        n += 1
+"""
+
+    def fetch(url: str) -> None:
+        raise ValueError('refused')
+
+    with pool.checkout(limits={'max_suspensions': 3}) as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run(code, external_lookup={'fetch': fetch})
+        assert isinstance(exc_info.value.exception(), RuntimeError)
+        assert exc_info.value.display(format='type-msg') == snapshot('RuntimeError: suspension limit 3 exceeded')
+        assert session.feed_run('n') == snapshot(3)
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('fetch("y")', external_lookup={'fetch': fetch})
+        assert exc_info.value.display(format='type-msg') == snapshot('RuntimeError: suspension limit 3 exceeded')
+
+
+def test_suspension_limit_defaults_to_one_thousand(pool: Monty):
+    """A checkout with no limits still stops a sandbox looping on host calls."""
+    code = """
+n = 0
+while True:
+    fetch('x')
+    n += 1
+"""
+
+    def fetch(url: str) -> None:
+        return None
+
+    with pool.checkout() as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run(code, external_lookup={'fetch': fetch})
+        assert exc_info.value.display(format='type-msg') == snapshot('RuntimeError: suspension limit 1000 exceeded')
+        assert session.feed_run('n') == snapshot(1000)
+
+
 def test_limits_with_inputs(monty_run: RunMonty):
     assert monty_run('x * 2', inputs={'x': 21}, limits={'max_duration_secs': 5.0}) == snapshot(42)
 
@@ -114,7 +159,7 @@ def test_limits_unknown_key_raises_error(pool: Monty):
             pass
     assert exc_info.value.args[0] == snapshot(
         "unknown limits key 'max_memroy'; accepted keys are 'max_duration_secs', 'max_memory', "
-        "'gc_interval', 'max_recursion_depth'"
+        "'gc_interval', 'max_recursion_depth', 'max_suspensions'"
     )
 
 
@@ -124,7 +169,7 @@ def test_limits_non_string_key_raises_error(pool: Monty):
             pass
     assert exc_info.value.args[0] == snapshot(
         "unknown limits key 1; accepted keys are 'max_duration_secs', 'max_memory', "
-        "'gc_interval', 'max_recursion_depth'"
+        "'gc_interval', 'max_recursion_depth', 'max_suspensions'"
     )
 
 
@@ -138,7 +183,7 @@ def test_limits_unprintable_key_still_raises_value_error(pool: Monty):
             pass
     assert exc_info.value.args[0] == snapshot(
         "unknown limits key <unprintable key>; accepted keys are 'max_duration_secs', 'max_memory', "
-        "'gc_interval', 'max_recursion_depth'"
+        "'gc_interval', 'max_recursion_depth', 'max_suspensions'"
     )
 
 

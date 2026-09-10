@@ -1,13 +1,17 @@
 /// <reference lib="dom" />
-// Loads the bundled wasm module via fetch + streaming compile — browsers.
-// Selected by the `browser` condition of the `@pydantic/monty/wasm` export.
-//
-// `new URL('./monty_wasm_runtime.wasm', import.meta.url)` is the asset-reference
-// pattern Vite/webpack/esbuild recognize to emit and resolve the `.wasm`; in a
-// raw-ESM browser it resolves relative to this module. Bundlers/runtimes that
-// don't support it can load the module themselves and call `createWorkerPool`.
+// Fetches and compiles the core modules generated from the Monty component.
 
-export async function loadModule(): Promise<WebAssembly.Module> {
-  const url = new URL('./monty_wasm_runtime.wasm', import.meta.url)
-  return WebAssembly.compileStreaming(fetch(url))
+import { COMPONENT_MODULE_NAMES } from './componentModules.js'
+import type { ComponentModules } from './host.js'
+
+/** Loads every core module needed to instantiate the bundled component. */
+export async function loadModule(): Promise<ComponentModules> {
+  // Keep each URL literal so Vite and webpack emit all component assets.
+  const modules = await Promise.all([
+    WebAssembly.compileStreaming(fetch(new URL('./component/monty.component.core.wasm', import.meta.url))),
+    WebAssembly.compileStreaming(fetch(new URL('./component/monty.component.core2.wasm', import.meta.url))),
+    WebAssembly.compileStreaming(fetch(new URL('./component/monty.component.core3.wasm', import.meta.url))),
+    WebAssembly.compileStreaming(fetch(new URL('./component/monty.component.core4.wasm', import.meta.url))),
+  ])
+  return Object.fromEntries(COMPONENT_MODULE_NAMES.map((name, index) => [name, modules[index]]))
 }

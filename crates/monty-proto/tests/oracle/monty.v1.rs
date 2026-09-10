@@ -34,77 +34,74 @@ pub mod monty_object {
         Ellipsis(super::Unit),
         #[prost(message, tag = "2")]
         None(super::Unit),
-        #[prost(bool, tag = "3")]
+        #[prost(message, tag = "3")]
+        NotImplemented(super::Unit),
+        #[prost(bool, tag = "4")]
         Boolean(bool),
         /// Python int fitting in 64 bits.
-        #[prost(sint64, tag = "4")]
+        #[prost(sint64, tag = "5")]
         Int(i64),
         /// Python int wider than 64 bits.
-        #[prost(message, tag = "5")]
+        #[prost(message, tag = "6")]
         Bigint(super::BigInt),
-        #[prost(double, tag = "6")]
+        #[prost(double, tag = "7")]
         Float(f64),
-        #[prost(string, tag = "7")]
+        #[prost(string, tag = "8")]
         Str(::prost::alloc::string::String),
-        #[prost(bytes, tag = "8")]
+        #[prost(bytes, tag = "9")]
         Bytes(::prost::alloc::vec::Vec<u8>),
-        #[prost(message, tag = "9")]
-        List(super::ObjectList),
+        /// A uuid.UUID value. Declared so the tag is settled, but NOT YET
+        /// IMPLEMENTED: monty has no uuid module, so neither end produces or
+        /// accepts this arm (it decodes like any unknown kind — rejected).
         #[prost(message, tag = "10")]
-        Tuple(super::ObjectList),
+        Uuid(super::Uuid),
         #[prost(message, tag = "11")]
-        NamedTuple(super::NamedTuple),
+        List(super::ObjectList),
         #[prost(message, tag = "12")]
-        Dict(super::Dict),
+        Tuple(super::ObjectList),
         #[prost(message, tag = "13")]
-        Set(super::ObjectList),
+        NamedTuple(super::NamedTuple),
         #[prost(message, tag = "14")]
-        FrozenSet(super::ObjectList),
+        Dict(super::Dict),
         #[prost(message, tag = "15")]
-        Date(super::Date),
+        Set(super::ObjectList),
         #[prost(message, tag = "16")]
-        Datetime(super::DateTime),
+        FrozenSet(super::ObjectList),
         #[prost(message, tag = "17")]
-        Timedelta(super::TimeDelta),
+        Date(super::Date),
         #[prost(message, tag = "18")]
+        Time(super::Time),
+        #[prost(message, tag = "19")]
+        Datetime(super::DateTime),
+        #[prost(message, tag = "20")]
+        Timedelta(super::TimeDelta),
+        #[prost(message, tag = "21")]
         Timezone(super::TimeZone),
         /// A simple exception VALUE (no traceback) — e.g. an exception stored in a
         /// variable. Errors that terminate execution use `RaisedException` instead.
-        #[prost(message, tag = "19")]
+        #[prost(message, tag = "22")]
         Exception(super::Exception),
-        /// A Python type object, named by monty's `Type` Display string, e.g.
-        /// "int", "str", "datetime.datetime", "ValueError".
-        #[prost(string, tag = "20")]
-        Type(::prost::alloc::string::String),
-        /// A builtin function, named by its Python name, e.g. "len", "print".
-        #[prost(string, tag = "21")]
-        BuiltinFunction(::prost::alloc::string::String),
-        /// A pathlib.Path value (always a virtual POSIX path, never a host path).
-        #[prost(string, tag = "22")]
-        Path(::prost::alloc::string::String),
+        /// A Python type object — builtin, sandbox class, or host class.
         #[prost(message, tag = "23")]
-        FileHandle(super::FileHandle),
+        Type(super::Type),
         #[prost(message, tag = "24")]
-        Dataclass(super::Dataclass),
+        ClassInstance(super::ClassInstance),
         #[prost(message, tag = "25")]
         Function(super::Function),
-        /// OUTPUT-ONLY fallback: repr() of a value with no other representation.
+        /// A builtin function, named by its Python name, e.g. "len", "print".
         #[prost(string, tag = "26")]
+        BuiltinFunction(::prost::alloc::string::String),
+        /// A pathlib.Path value (always a virtual POSIX path, never a host path).
+        #[prost(string, tag = "27")]
+        Path(::prost::alloc::string::String),
+        #[prost(message, tag = "28")]
+        FileHandle(super::FileHandle),
+        /// OUTPUT-ONLY fallback: repr() of a value with no other representation.
+        #[prost(string, tag = "29")]
         Repr(::prost::alloc::string::String),
         /// OUTPUT-ONLY marker breaking reference cycles in container output.
-        #[prost(message, tag = "27")]
-        Cycle(super::Cycle),
-        /// The type object of a sandbox-defined class, named by its class name,
-        /// e.g. "Foo". Kept separate from `type` so a class shadowing a builtin
-        /// name ("int") cannot be confused with the builtin type. Accepted by the
-        /// decoder but rejected as an execution input (the class binding cannot be
-        /// reconstructed from a name).
-        #[prost(string, tag = "28")]
-        InstanceType(::prost::alloc::string::String),
-        #[prost(message, tag = "29")]
-        NotImplemented(super::Unit),
         #[prost(message, tag = "30")]
-        Time(super::Time),
+        Cycle(super::Cycle),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -247,22 +244,53 @@ pub struct FileHandle {
     #[prost(uint64, tag = "3")]
     pub position: u64,
 }
+/// A 16-byte UUID (uuid4). Exactly 16 bytes; validated on decode. Class and
+/// instance ids are generated by whichever side defined the object, so they never
+/// encode a memory address and cannot be reused the way CPython reuses `id()`.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Uuid {
+    #[prost(bytes = "vec", tag = "1")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+}
+/// A Python type object crossing the sandbox boundary.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Dataclass {
-    /// Class name, e.g. "Point".
+pub struct Type {
+    /// Python-visible name: builtin Display name ("int", "datetime.datetime")
+    /// or class name ("Point").
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    /// Host-side identity of the class, from `id(type(dc))`.
-    #[prost(uint64, tag = "2")]
-    pub type_id: u64,
-    /// Declared field names in definition order.
-    #[prost(string, repeated, tag = "3")]
-    pub field_names: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// All attributes (fields and extras), in order.
-    #[prost(message, optional, tag = "4")]
+    /// Identity of the class; absent iff origin == TYPE_ORIGIN_BUILTIN.
+    #[prost(message, optional, tag = "2")]
+    pub id: ::core::option::Option<Uuid>,
+    /// Where the type was defined (builtin, sandbox, or host).
+    #[prost(enumeration = "TypeOrigin", tag = "3")]
+    pub origin: i32,
+    /// Whether `dataclasses.is_dataclass` is true for the class.
+    #[prost(bool, tag = "4")]
+    pub is_dataclass: bool,
+    /// Class attributes sent eagerly with the type object (class constants, per
+    /// the sending wrapper's policy), as a class value or as the `type` field of
+    /// a ClassInstance. The sandbox keeps one type object per class id: a
+    /// non-empty set replaces its attrs, an empty set leaves them unchanged. The
+    /// worker sends an empty set for the `type` field of an instance.
+    #[prost(message, optional, tag = "5")]
     pub attrs: ::core::option::Option<Dict>,
-    #[prost(bool, tag = "5")]
-    pub frozen: bool,
+}
+/// A class instance crossing the sandbox boundary. Host-backed instances route
+/// method calls and lazy attribute lookups back to the real object by uuid
+/// (`FunctionCall.object_id` / `NameLookup.object_id`); sandbox-defined
+/// instances carry a worker-generated uuid instead.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ClassInstance {
+    /// The instance's class; origin SANDBOX or HOST (never BUILTIN).
+    #[prost(message, optional, tag = "1")]
+    pub r#type: ::core::option::Option<Type>,
+    /// Identity of the instance, generated by whichever side defined it.
+    #[prost(message, optional, tag = "2")]
+    pub instance_id: ::core::option::Option<Uuid>,
+    /// Eagerly-sent attributes, in order.
+    #[prost(message, optional, tag = "3")]
+    pub attrs: ::core::option::Option<Dict>,
 }
 /// An external (host-provided) function value, usually supplied by the parent
 /// in response to a `NameLookup` event.
@@ -403,9 +431,10 @@ pub struct StackFrame {
     #[prost(bool, tag = "7")]
     pub hide_frame_name: bool,
 }
-/// Sandbox resource limits, enforced inside the child. Absent fields mean
-/// "unlimited" except recursion depth, which defaults to monty's standard
-/// limit (1000) when absent.
+/// Sandbox resource limits. Absent fields are unlimited except recursion depth
+/// and `max_suspensions`, which both default to 1000. The parent enforces
+/// `max_suspensions`; the child only retains it for dumps and echoes it on
+/// `ChildEvent`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResourceLimits {
     #[prost(uint64, optional, tag = "1")]
@@ -416,6 +445,8 @@ pub struct ResourceLimits {
     pub gc_interval: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "4")]
     pub max_recursion_depth: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    pub max_suspensions: ::core::option::Option<u64>,
 }
 /// Outcome of an external function / OS call, decided by the parent. Mirrors
 /// monty's `ExtFunctionResult`, plus `not_handled` (which only the child can
@@ -478,7 +509,7 @@ pub struct ParentRequest {
     /// not depend on it, and it is absent whenever the parent is not tracing.
     #[prost(string, optional, tag = "20")]
     pub trace_parent: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
+    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
     pub kind: ::core::option::Option<parent_request::Kind>,
 }
 /// Nested message and enum types in `ParentRequest`.
@@ -505,6 +536,8 @@ pub mod parent_request {
         Reset(super::Reset),
         #[prost(message, tag = "10")]
         Shutdown(super::Shutdown),
+        #[prost(message, tag = "11")]
+        AbortFeed(super::AbortFeed),
     }
 }
 /// Configures the REPL session this child will serve until `Reset`, sent once
@@ -556,6 +589,16 @@ pub struct Configure {
     /// in-band negotiation, so an undeclared peer cannot be assumed compatible.
     #[prost(uint32, tag = "9")]
     pub protocol_version: u32,
+    /// How long the child may hold buffered `print()` output before emitting it
+    /// as a `Print` event, in milliseconds. Absent means the child's default
+    /// (`DEFAULT_PRINT_FLUSH_INTERVAL`). 0 disables the timer and restores line
+    /// buffering — one event per completed line, as before this field existed —
+    /// for a host that wants each `print()` delivered on its own.
+    ///
+    /// Output is always flushed before a turn-ending event whatever this says, so
+    /// the field trades streaming latency for event volume and nothing else.
+    #[prost(uint32, optional, tag = "10")]
+    pub print_flush_interval_ms: ::core::option::Option<u32>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -569,6 +612,14 @@ pub struct Feed {
     #[prost(bool, tag = "3")]
     pub skip_type_check: bool,
 }
+/// Ends a pending suspension by raising `exception` uncatchably at its site.
+/// The session returns ready in an `Error` event. Hosts use this to stop a feed,
+/// including when `max_suspensions` is exceeded.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AbortFeed {
+    #[prost(message, optional, tag = "1")]
+    pub exception: ::core::option::Option<RaisedException>,
+}
 /// Answers a `FunctionCall` or `OsCall` suspension. `call_id` must match the
 /// suspension event.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -581,7 +632,7 @@ pub struct ResumeCall {
 /// Answers a `NameLookup` suspension.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResumeNameLookup {
-    #[prost(oneof = "resume_name_lookup::Kind", tags = "1, 2")]
+    #[prost(oneof = "resume_name_lookup::Kind", tags = "1, 2, 3")]
     pub kind: ::core::option::Option<resume_name_lookup::Kind>,
 }
 /// Nested message and enum types in `ResumeNameLookup`.
@@ -591,9 +642,15 @@ pub mod resume_name_lookup {
         /// The name resolves to this value.
         #[prost(message, tag = "1")]
         Value(super::MontyObject),
-        /// The name is undefined — the child raises NameError.
+        /// The name is undefined — the child raises NameError (AttributeError for
+        /// a lazy attribute lookup).
         #[prost(message, tag = "2")]
         Undefined(super::Unit),
+        /// Resolving the name raised on the parent — the child raises this
+        /// exception where the lookup suspended, bypassing hasattr()/getattr()
+        /// defaults.
+        #[prost(message, tag = "3")]
+        Error(super::RaisedException),
     }
 }
 /// Answers a `ResolveFutures` suspension with results for some or all pending
@@ -663,6 +720,10 @@ pub struct ChildEvent {
     /// state bytes) still learns the budget.
     #[prost(uint64, optional, tag = "21")]
     pub max_duration_micros: ::core::option::Option<u64>,
+    /// Echoes the parent-enforced budget so a host restoring an opaque dump can
+    /// recover it.
+    #[prost(uint64, optional, tag = "23")]
+    pub max_suspensions: ::core::option::Option<u64>,
     /// The session's script name, surfaced on a `Load` reply so a parent that
     /// restored a session (whose script name, like the limits above, travels
     /// inside the opaque dump bytes) learns it without parsing the dump. Set only
@@ -702,18 +763,30 @@ pub mod child_event {
         Shutdown(super::ShutdownDump),
     }
 }
-/// Streamed sandbox print() output. Zero or more of these precede each
-/// turn-ending event; text is flushed at line granularity.
+/// One run of print() output on a single stream, as one `Print` event may
+/// carry several.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Print {
+pub struct PrintSegment {
     #[prost(enumeration = "PrintStream", tag = "1")]
     pub stream: i32,
     #[prost(string, tag = "2")]
     pub text: ::prost::alloc::string::String,
 }
-/// Suspension: the sandbox called an external function (or a dataclass method
-/// when `method_call` is true — the instance is then the first arg). Answer
-/// with `ResumeCall`.
+/// Streamed sandbox print() output. Zero or more of these precede each
+/// turn-ending event, and each carries the runs the worker had buffered, in
+/// the order the sandbox produced them — so output alternating between the
+/// streams batches into one event without losing that order.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Print {
+    #[prost(message, repeated, tag = "3")]
+    pub segments: ::prost::alloc::vec::Vec<PrintSegment>,
+}
+/// Suspension: the sandbox called an external function, or — when `object_id`
+/// is set — a method on a host-backed object (the receiver is NOT included in
+/// `args`; the host routes by uuid). The receiver may be a class instance or a
+/// class type: calling a host class arrives as a `__call__` method call on the
+/// class's uuid, and the host's own policy decides whether construction is
+/// allowed. Answer with `ResumeCall`.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FunctionCall {
     #[prost(string, tag = "1")]
@@ -724,8 +797,9 @@ pub struct FunctionCall {
     pub kwargs: ::prost::alloc::vec::Vec<Pair>,
     #[prost(uint32, tag = "4")]
     pub call_id: u32,
-    #[prost(bool, tag = "5")]
-    pub method_call: bool,
+    /// The uuid of the receiver; absent for plain external function calls.
+    #[prost(message, optional, tag = "5")]
+    pub object_id: ::core::option::Option<Uuid>,
 }
 /// Suspension: the sandbox performed an OS operation, surfaced for the parent
 /// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
@@ -882,11 +956,18 @@ pub mod os_call {
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
-/// the parent provides an external function. Answer with `ResumeNameLookup`.
+/// the parent provides an external function — or, when `object_id` is set, a
+/// lazy attribute lookup on a host-backed object. Answer with
+/// `ResumeNameLookup`; for attribute lookups an `undefined` answer raises
+/// AttributeError (not NameError) inside the sandbox.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NameLookup {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
+    /// Set for attribute lookups on a host-backed object — a class instance, or
+    /// a class type (a lazy class attribute): the uuid of the receiver.
+    #[prost(message, optional, tag = "2")]
+    pub object_id: ::core::option::Option<Uuid>,
 }
 /// Suspension: every sandbox task is blocked on external futures previously
 /// registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
@@ -951,6 +1032,48 @@ pub struct ShutdownDump {
     /// when there was no session yet or the dump itself failed.
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+}
+/// Where a `Type` comes from — drives id presence and input validation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum TypeOrigin {
+    /// Rejected on decode.
+    Unspecified = 0,
+    /// `name` must parse as a known builtin type name ("int", "ValueError");
+    /// valid as an execution input. `id` must be absent. Kept distinct from
+    /// SANDBOX so a sandbox class shadowing a builtin name ("int") cannot be
+    /// confused with the builtin type.
+    Builtin = 1,
+    /// A sandbox-defined class; `id` required. Accepted by the decoder but
+    /// rejected as an execution input (the class binding cannot be
+    /// reconstructed host-side).
+    Sandbox = 2,
+    /// A host-defined class; `id` required.
+    Host = 3,
+}
+impl TypeOrigin {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "TYPE_ORIGIN_UNSPECIFIED",
+            Self::Builtin => "TYPE_ORIGIN_BUILTIN",
+            Self::Sandbox => "TYPE_ORIGIN_SANDBOX",
+            Self::Host => "TYPE_ORIGIN_HOST",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "TYPE_ORIGIN_UNSPECIFIED" => Some(Self::Unspecified),
+            "TYPE_ORIGIN_BUILTIN" => Some(Self::Builtin),
+            "TYPE_ORIGIN_SANDBOX" => Some(Self::Sandbox),
+            "TYPE_ORIGIN_HOST" => Some(Self::Host),
+            _ => None,
+        }
+    }
 }
 /// Rendering of the typing diagnostics a `TypingError` carries; mirrors ty's
 /// `DiagnosticFormat`.

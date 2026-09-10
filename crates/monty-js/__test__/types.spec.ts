@@ -2,6 +2,7 @@ import { test } from 'vitest'
 import { t } from './assertions.js'
 
 import { setupPool } from './helpers.js'
+import { encodeValue } from '../ts/worker/value.js'
 
 const { run } = setupPool()
 
@@ -266,6 +267,38 @@ test('tuple containing set', async () => {
 })
 
 // =============================================================================
+// Datetime tests
+// =============================================================================
+
+test('datetime input preserves timezone presence', () => {
+  const datetime = {
+    __monty_type__: 'DateTime',
+    year: 2020,
+    month: 1,
+    day: 2,
+    hour: 3,
+    minute: 4,
+    second: 5,
+    microsecond: 6,
+  }
+  const expected = {
+    root: 0,
+    nodes: [
+      {
+        tag: 'datetime',
+        val: { year: 2020, month: 1, day: 2, hour: 3, minute: 4, second: 5, microsecond: 6 },
+      },
+    ],
+  }
+  t.deepEqual(encodeValue({ ...datetime, offsetSeconds: null }), expected)
+  t.deepEqual(encodeValue(datetime), expected)
+  t.throws(() => encodeValue({ ...datetime, timezoneName: 'orphaned' }), {
+    instanceOf: TypeError,
+    message: 'MontyDateTime timezoneName requires offsetSeconds',
+  })
+})
+
+// =============================================================================
 // BigInt tests
 // =============================================================================
 
@@ -349,9 +382,7 @@ test('time input round-trips', async () => {
 
 test('time input is a real sandbox time', async () => {
   const time = { __monty_type__: 'Time', hour: 10, minute: 20, second: 0, microsecond: 0 }
-  // `__name__` is the qualified spelling, as it is for `datetime` — see
-  // limitations/datetime.md
-  t.is(await run('type(x).__name__', { inputs: { x: time } }), 'datetime.time')
+  t.is(await run('type(x).__name__', { inputs: { x: time } }), 'time')
   t.is(await run('x.hour * 60 + x.minute', { inputs: { x: time } }), 620)
   t.is(await run('x.isoformat()', { inputs: { x: time } }), '10:20:00')
 })

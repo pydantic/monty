@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import functools
 import json
 import os
 import re
@@ -605,6 +606,11 @@ for x_it in iter([1, 2, 3]):
     assert_type(x_it, int)
 # two-argument iter(callable, sentinel)
 assert_type(list(iter(lambda: 0, 0)), list[int])
+
+# Guards the `Generic[_T]` base on Monty's stripped `functools.pyi`: without it
+# this annotation is a `not-subscriptable` error. ty models `partial` calls
+# itself, so the return type is not the stub's to get wrong.
+partial_ann: functools.partial[list[int]] = functools.partial(get_list_int)
 
 # Loop variables keep their element type for every iterable, not just lists
 for x_list in get_list_int():

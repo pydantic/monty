@@ -84,6 +84,25 @@ impl LongInt {
         }
     }
 
+    /// Truncates a float into its most compact Python integer representation.
+    ///
+    /// Finite values outside the immediate range become arbitrary-precision integers;
+    /// infinity and NaN raise the exceptions required by Python.
+    pub(crate) fn value_from_f64(value: f64, heap: &Heap) -> RunResult<Value> {
+        if value.is_infinite() {
+            Err(ExcType::overflow_float_infinity_to_integer())
+        } else if value.is_nan() {
+            Err(ExcType::value_error_float_nan_to_integer())
+        } else if value >= i64::MIN as f64 && value < i64::MAX as f64 {
+            // `i64::MAX as f64` rounds up to 2**63, so the upper bound is strict.
+            #[expect(clippy::cast_possible_truncation, reason = "finite value is within the i64 range")]
+            Ok(Value::Int(value as i64))
+        } else {
+            let value = BigInt::from_f64(value).expect("finite f64 converts to BigInt");
+            Ok(Self::new(value).into_value(heap))
+        }
+    }
+
     /// Converts to a `Value`, demoting to i64 if it fits.
     ///
     /// For performance, we want to keep values as `Value::Int(i64)` whenever possible.

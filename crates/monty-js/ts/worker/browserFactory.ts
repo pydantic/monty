@@ -9,11 +9,12 @@
 // pass `workerUrl` to override.
 
 import { WorkerChannel, type WorkerChannelOptions, type WorkerLike } from './channel.js'
+import type { ComponentModules } from './host.js'
 import type { WorkerFactory } from './pool.js'
 
-/** Spawns browser Web Workers that serve `module`. */
+/** Spawns browser Web Workers that instantiate and serve `modules`. */
 export function browserWorkerFactory(
-  module: WebAssembly.Module,
+  modules: ComponentModules,
   options: WorkerChannelOptions = {},
   workerUrl?: string | URL,
 ): WorkerFactory {
@@ -25,7 +26,7 @@ export function browserWorkerFactory(
     const worker = workerUrl
       ? new Worker(workerUrl, { type: 'module' })
       : new Worker(new URL('./browserWorkerEntry.js', import.meta.url), { type: 'module' })
-    worker.postMessage({ init: true, module })
+    worker.postMessage({ init: true, modules })
     const like: WorkerLike = {
       post: (message) => worker.postMessage(message),
       onMessage: (handler) => worker.addEventListener('message', (event) => handler(event.data)),

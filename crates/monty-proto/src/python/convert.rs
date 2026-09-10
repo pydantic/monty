@@ -20,7 +20,9 @@ use pyo3::{
 };
 
 use super::{
-    dataclass::{DcRegistry, dataclass_to_monty, dataclass_to_py, is_dataclass},
+    class_instance::{
+        InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy, is_class_instance_wrapper, is_class_type_wrapper,
+    },
     exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_object},
 };
 use crate::MAX_VALUE_DEPTH;
@@ -30,7 +32,7 @@ use crate::MAX_VALUE_DEPTH;
 /// checking here gives the caller a clean `Max input depth exceeded` error
 /// before anything is sent to a worker.
 #[expect(clippy::cast_possible_truncation, reason = "MAX_VALUE_DEPTH is 48")]
-const MAX_INPUT_DEPTH: u8 = MAX_VALUE_DEPTH as u8;
+pub(super) const MAX_INPUT_DEPTH: u8 = MAX_VALUE_DEPTH as u8;
 /// Depth limit when converting sandbox values back to Python objects; values
 /// arriving over the wire are already bounded well below this, so it is a
 /// pure defence-in-depth backstop.
@@ -43,20 +45,24 @@ const MAX_DEPTH: u8 = 200;
 /// wrap the `MontyException` as they see fit — `MontyError::new_err(py, e)` for
 /// Python-API returns, or `ExtFunctionResult::Error(e)` for mid-execution
 /// dispatch — so raw PyO3 errors like `UnicodeEncodeError` never escape.
-pub fn py_to_monty_value(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> Result<MontyObject, MontyException> {
-    py_to_monty(obj, dc_registry, 0).map_err(|e| exc_py_to_monty(obj.py(), &e))
+pub fn py_to_monty_value(obj: &Bound<'_, PyAny>, store: &InstanceStore) -> Result<MontyObject, MontyException> {
+    py_to_monty(obj, store, 0).map_err(|e| exc_py_to_monty(obj.py(), &e))
 }
 
 /// Converts a Python object to Monty's `MontyObject` representation; unsupported
 /// types raise `TypeError`.
 ///
-/// Dataclasses (including nested ones) are auto-registered in `dc_registry` so
-/// the original Python type can be reconstructed on output (enabling
-/// `isinstance()`).
+/// Class instances cross the boundary only when explicitly wrapped in
+/// `pydantic_monty.ClassInstance` — the wrapper (including nested ones inside
+/// eager attrs) registers in `store` so method calls, lazy attribute lookups,
+/// and round-tripped returns resolve to the original object. A bare
+/// non-callable class instance falls through to the "wrap class instances"
+/// `TypeError`; a callable one converts as a host function like any other
+/// callable input.
 ///
 /// Match order matters: `bool` before `int` (subclass), and the generic
 /// callable check is last since many types (classes, etc.) are callable.
-pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: u8) -> PyResult<MontyObject> {
+pub fn py_to_monty(obj: &Bound<'_, PyAny>, store: &InstanceStore, mut depth: u8) -> PyResult<MontyObject> {
     depth += 1;
     if depth > MAX_INPUT_DEPTH {
         Err(PyRuntimeError::new_err("Max input depth exceeded"))
@@ -81,8 +87,7 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
     } else if let Ok(bytes) = obj.cast::<PyBytes>() {
         Ok(MontyObject::Bytes(bytes.extract()?))
     } else if let Ok(list) = obj.cast::<PyList>() {
-        let items: PyResult<Vec<MontyObject>> =
-            list.iter().map(|item| py_to_monty(&item, dc_registry, depth)).collect();
+        let items: PyResult<Vec<MontyObject>> = list.iter().map(|item| py_to_monty(&item, store, depth)).collect();
         Ok(MontyObject::List(items?))
     } else if let Ok(tuple) = obj.cast::<PyTuple>() {
         // namedtuples (detected by their `_fields` attribute) carry their type
@@ -101,42 +106,29 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
                 format!("{module}.{simple_name}")
             };
             let field_names: PyResult<Vec<String>> = fields_tuple.iter().map(|f| f.extract::<String>()).collect();
-            let values: PyResult<Vec<MontyObject>> = tuple
-                .iter()
-                .map(|item| py_to_monty(&item, dc_registry, depth))
-                .collect();
+            let values: PyResult<Vec<MontyObject>> =
+                tuple.iter().map(|item| py_to_monty(&item, store, depth)).collect();
             return Ok(MontyObject::NamedTuple {
                 type_name,
                 field_names: field_names?,
                 values: values?,
             });
         }
-        let items: PyResult<Vec<MontyObject>> = tuple
-            .iter()
-            .map(|item| py_to_monty(&item, dc_registry, depth))
-            .collect();
+        let items: PyResult<Vec<MontyObject>> = tuple.iter().map(|item| py_to_monty(&item, store, depth)).collect();
         Ok(MontyObject::Tuple(items?))
     } else if let Ok(dict) = obj.cast::<PyDict>() {
         // in theory we could provide a way of passing the iterator direct to the internal MontyObject construct
         // it's probably not worth it right now
         Ok(MontyObject::dict(
             dict.iter()
-                .map(|(k, v)| {
-                    Ok((
-                        py_to_monty(&k, dc_registry, depth)?,
-                        py_to_monty(&v, dc_registry, depth)?,
-                    ))
-                })
+                .map(|(k, v)| Ok((py_to_monty(&k, store, depth)?, py_to_monty(&v, store, depth)?)))
                 .collect::<PyResult<Vec<(MontyObject, MontyObject)>>>()?,
         ))
     } else if let Ok(set) = obj.cast::<PySet>() {
-        let items: PyResult<Vec<MontyObject>> = set.iter().map(|item| py_to_monty(&item, dc_registry, depth)).collect();
+        let items: PyResult<Vec<MontyObject>> = set.iter().map(|item| py_to_monty(&item, store, depth)).collect();
         Ok(MontyObject::Set(items?))
     } else if let Ok(frozenset) = obj.cast::<PyFrozenSet>() {
-        let items: PyResult<Vec<MontyObject>> = frozenset
-            .iter()
-            .map(|item| py_to_monty(&item, dc_registry, depth))
-            .collect();
+        let items: PyResult<Vec<MontyObject>> = frozenset.iter().map(|item| py_to_monty(&item, store, depth)).collect();
         Ok(MontyObject::FrozenSet(items?))
     } else if obj.is(obj.py().Ellipsis()) {
         Ok(MontyObject::Ellipsis)
@@ -158,10 +150,28 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
         py_timezone_to_monty(obj).map(MontyObject::TimeZone)
     } else if let Ok(exc) = obj.cast::<PyBaseException>() {
         Ok(exc_to_monty_object(exc))
-    } else if is_dataclass(obj) {
-        // Auto-register the dataclass type so it can be reconstructed on output
-        dc_registry.insert(&obj.get_type())?;
-        dataclass_to_monty(obj, dc_registry, depth)
+    } else if is_class_type_wrapper(obj)? {
+        // `ClassType` and `ClassInstance` are sibling `BaseWrapper`s; the
+        // class check simply comes first.
+        store
+            .class_type_to_monty(obj, depth)
+            .map(|class_type| MontyObject::Type(MontyType::Instance(Box::new(class_type))))
+    } else if is_class_instance_wrapper(obj)? {
+        store
+            .class_instance_to_monty(obj, depth)
+            .map(|instance| MontyObject::ClassInstance(Box::new(instance)))
+    } else if let Ok(proxy) = obj.cast::<PyMontyClassProxy>() {
+        // A proxy crosses back with the ids it arrived with, so the sandbox
+        // hands over its original object.
+        proxy
+            .get()
+            .to_monty(obj.py(), store, depth)
+            .map(|instance| MontyObject::ClassInstance(Box::new(instance)))
+    } else if let Ok(proxy) = obj.cast::<PyMontyClassTypeProxy>() {
+        proxy
+            .get()
+            .to_monty(obj.py(), store, depth)
+            .map(|class_type| MontyObject::Type(MontyType::Instance(Box::new(class_type))))
     } else if obj.is_instance(get_pure_posix_path(obj.py())?)? {
         // Handle pathlib.PurePosixPath and thereby pathlib.PosixPath objects
         let path_str: String = obj.str()?.extract()?;
@@ -180,12 +190,14 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
             None => Ok(callable_to_monty_function(obj)),
         }
     } else if obj.is_callable() {
-        // Callable check is last since many Python types (classes, etc.) are technically callable,
-        // and we want to match more specific types first (e.g. dataclasses).
+        // Callable check is last since many Python types (classes, wrappers,
+        // etc.) are technically callable and must match their specific branch.
         Ok(callable_to_monty_function(obj))
     } else if let Ok(name) = obj.get_type().qualname() {
         let msg = match obj.get_type().module() {
-            Ok(module) => format!("Cannot convert {module}.{name} to Monty value"),
+            Ok(module) => format!(
+                "Cannot convert {module}.{name} to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)"
+            ),
             Err(_) => format!("Cannot convert {name} to Monty value"),
         };
         Err(PyTypeError::new_err(msg))
@@ -201,7 +213,7 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
 /// report `pathlib._local` on 3.13). Every `pathlib` path class collapses to
 /// [`MontyType::Path`]. Returns `None` for classes Monty does not model, which the
 /// caller then represents as a [`MontyObject::Function`].
-fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option<MontyType>> {
+pub(super) fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option<MontyType>> {
     let py = ty.py();
     for (obj, t) in round_trip_type_table(py)? {
         if ty.is(obj) {
@@ -217,6 +229,9 @@ fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option<MontyType>
 /// [`MontyType`]. Built once and cached. Identities are taken from [`type_object_to_py`]
 /// so the two directions stay in lock-step. [`MontyType::Path`] is handled separately
 /// (by subclass check) since pathlib exposes several concrete path classes.
+///
+/// The whole table is built in one go, so an entry the host cannot resolve would
+/// fail every lookup, not just its own — [`host_has_type`] keeps those out.
 fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, MontyType)>> {
     static TABLE: PyOnceLock<Vec<(Py<PyAny>, MontyType)>> = PyOnceLock::new();
     TABLE.get_or_try_init(py, || {
@@ -235,6 +250,7 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::Generator,
             MontyType::ItertoolsCount,
             MontyType::ItertoolsRepeat,
+            MontyType::Partial,
             MontyType::ItertoolsPairwise,
             MontyType::ItertoolsCompress,
             MontyType::ItertoolsIslice,
@@ -244,6 +260,9 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::ItertoolsDropWhile,
             MontyType::ItertoolsFilterFalse,
             MontyType::ItertoolsStarMap,
+            MontyType::ItertoolsAccumulate,
+            MontyType::ItertoolsBatched,
+            MontyType::ItertoolsZipLongest,
             MontyType::Tuple,
             MontyType::Dict,
             MontyType::Set,
@@ -266,9 +285,26 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::SpecialForm,
         ]
         .into_iter()
+        .filter(|t| host_has_type(py, t))
         .map(|t| Ok((type_object_to_py(py, t.clone())?, t)))
         .collect()
     })
+}
+
+/// Whether this host's Python is new enough to define `t`'s type object.
+///
+/// A type the host does not have can never be the class being looked up, so it
+/// is left out of [`round_trip_type_table`] rather than failing the build of it.
+/// Outbound it is the guard in [`type_object_to_py`], which has a real value to
+/// reject rather than a table entry to skip.
+/// Runtime version check (not `cfg!(Py_3_12)`): this crate has no
+/// pyo3-build-config build script, so the version cfgs don't exist.
+fn host_has_type(py: Python<'_>, t: &MontyType) -> bool {
+    match t {
+        // `itertools.batched` is 3.12+, below the packages' 3.10 floor.
+        MontyType::ItertoolsBatched => py.version_info() >= (3, 12),
+        _ => true,
+    }
 }
 
 /// Represents a host callable with no richer Monty mapping as a
@@ -281,11 +317,11 @@ fn callable_to_monty_function(obj: &Bound<'_, PyAny>) -> MontyObject {
     }
 }
 
-/// Converts Monty's `MontyObject` to a native Python object. A dataclass found
-/// in `dc_registry` reconstructs the original Python type (so `isinstance()`
-/// works), otherwise it falls back to `PyMontyDataclass`.
-pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) -> PyResult<Py<PyAny>> {
-    monty_to_py_inner(py, obj, dc_registry, 0)
+/// Converts Monty's `MontyObject` to a native Python object. A class instance
+/// found in `store` resolves to the ORIGINAL wrapped object (identity
+/// preserved); otherwise it becomes a read-only `MontyClassProxy` proxy.
+pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, store: &InstanceStore) -> PyResult<Py<PyAny>> {
+    monty_to_py_inner(py, obj, store, 0)
 }
 
 /// Recursive worker for [`monty_to_py`] that threads a native-stack depth counter.
@@ -298,7 +334,7 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
 pub(crate) fn monty_to_py_inner(
     py: Python<'_>,
     obj: &MontyObject,
-    dc_registry: &DcRegistry,
+    store: &InstanceStore,
     mut depth: u8,
 ) -> PyResult<Py<PyAny>> {
     depth += 1;
@@ -318,14 +354,14 @@ pub(crate) fn monty_to_py_inner(
         MontyObject::List(items) => {
             let py_items: PyResult<Vec<Py<PyAny>>> = items
                 .iter()
-                .map(|item| monty_to_py_inner(py, item, dc_registry, depth))
+                .map(|item| monty_to_py_inner(py, item, store, depth))
                 .collect();
             Ok(PyList::new(py, py_items?)?.into_any().unbind())
         }
         MontyObject::Tuple(items) => {
             let py_items: PyResult<Vec<Py<PyAny>>> = items
                 .iter()
-                .map(|item| monty_to_py_inner(py, item, dc_registry, depth))
+                .map(|item| monty_to_py_inner(py, item, store, depth))
                 .collect();
             Ok(PyTuple::new(py, py_items?)?.into_any().unbind())
         }
@@ -356,7 +392,7 @@ pub(crate) fn monty_to_py_inner(
             // `_make` is a public documented method despite the leading underscore.
             let py_values: PyResult<Vec<Py<PyAny>>> = values
                 .iter()
-                .map(|item| monty_to_py_inner(py, item, dc_registry, depth))
+                .map(|item| monty_to_py_inner(py, item, store, depth))
                 .collect();
             let instance = nt_type.call_method1("_make", (py_values?,))?;
             Ok(instance.into_any().unbind())
@@ -365,8 +401,8 @@ pub(crate) fn monty_to_py_inner(
             let dict = PyDict::new(py);
             for (k, v) in map {
                 dict.set_item(
-                    monty_to_py_inner(py, k, dc_registry, depth)?,
-                    monty_to_py_inner(py, v, dc_registry, depth)?,
+                    monty_to_py_inner(py, k, store, depth)?,
+                    monty_to_py_inner(py, v, store, depth)?,
                 )?;
             }
             Ok(dict.into_any().unbind())
@@ -374,14 +410,14 @@ pub(crate) fn monty_to_py_inner(
         MontyObject::Set(items) => {
             let set = PySet::empty(py)?;
             for item in items {
-                set.add(monty_to_py_inner(py, item, dc_registry, depth)?)?;
+                set.add(monty_to_py_inner(py, item, store, depth)?)?;
             }
             Ok(set.into_any().unbind())
         }
         MontyObject::FrozenSet(items) => {
             let py_items: PyResult<Vec<Py<PyAny>>> = items
                 .iter()
-                .map(|item| monty_to_py_inner(py, item, dc_registry, depth))
+                .map(|item| monty_to_py_inner(py, item, store, depth))
                 .collect();
             Ok(PyFrozenSet::new(py, &py_items?)?.into_any().unbind())
         }
@@ -399,17 +435,14 @@ pub(crate) fn monty_to_py_inner(
             .map(Bound::into_any)
             .map(Bound::unbind),
         MontyObject::TimeZone(timezone) => monty_timezone_to_py(py, timezone),
-        // Return the host Python type object the sandbox type maps to.
+        // A registered host class resolves to the original class object,
+        // anything else to a read-only `MontyClassTypeProxy`.
+        MontyObject::Type(MontyType::Instance(class_type)) => store.class_type_to_py(py, class_type, depth),
         MontyObject::Type(t) => type_object_to_py(py, t.clone()),
         MontyObject::BuiltinFunction(f) => builtin_function_to_py(py, &f.to_string()),
-        // Dataclass - use registry to reconstruct original type if available
-        MontyObject::Dataclass {
-            name,
-            type_id,
-            field_names,
-            attrs,
-            frozen,
-        } => dataclass_to_py(py, name, *type_id, field_names, attrs, *frozen, dc_registry, depth),
+        // Class instance — resolve the original object from the store when
+        // host-backed, else build a read-only proxy.
+        MontyObject::ClassInstance(instance) => store.class_instance_to_py(py, instance, depth),
         // Path - convert to Python pathlib.Path
         MontyObject::Path(p) => {
             let pure_posix_path = get_pure_posix_path(py)?;
@@ -458,6 +491,16 @@ pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
 /// live in `io`). Unmodeled types fall through to `builtins` and raise `AttributeError`.
 /// Each modeled type's host class is cached in its own `PyOnceLock` (imported once).
 fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
+    // A type this host's Python is too old to define has no object to hand back.
+    // Say which type that was, rather than leaving the arm's import to raise a
+    // bare `AttributeError` naming neither. Same predicate as the filter in
+    // `round_trip_type_table`, so both directions agree on what this host holds.
+    if !host_has_type(py, &t) {
+        return Err(PyTypeError::new_err(format!(
+            "Cannot convert {t} to a host type: this Python does not define it"
+        )));
+    }
+
     // Each expansion gets a distinct hygienic `LOCK` static, so every arm caches
     // its own resolved type object. `PyOnceLock::import` imports + getattrs once.
     macro_rules! cached {
@@ -478,6 +521,7 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         MontyType::Generator => cached!("types", "GeneratorType"),
         MontyType::ItertoolsCount => cached!("itertools", "count"),
         MontyType::ItertoolsRepeat => cached!("itertools", "repeat"),
+        MontyType::Partial => cached!("functools", "partial"),
         MontyType::ItertoolsPairwise => cached!("itertools", "pairwise"),
         MontyType::ItertoolsCompress => cached!("itertools", "compress"),
         MontyType::ItertoolsIslice => cached!("itertools", "islice"),
@@ -487,6 +531,9 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         MontyType::ItertoolsDropWhile => cached!("itertools", "dropwhile"),
         MontyType::ItertoolsFilterFalse => cached!("itertools", "filterfalse"),
         MontyType::ItertoolsStarMap => cached!("itertools", "starmap"),
+        MontyType::ItertoolsAccumulate => cached!("itertools", "accumulate"),
+        MontyType::ItertoolsBatched => cached!("itertools", "batched"),
+        MontyType::ItertoolsZipLongest => cached!("itertools", "zip_longest"),
         // Consistent with the Path *instance* arm, which marshals as PurePosixPath
         // and is instantiable on every host OS (unlike PosixPath on Windows).
         MontyType::Path => get_pure_posix_path(py).map(|b| b.clone().unbind()),
@@ -502,9 +549,11 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         // the singletons (`type(None)` / `type(...)`).
         MontyType::NoneType => Ok(py.None().bind(py).get_type().into_any().unbind()),
         MontyType::Ellipsis => Ok(py.Ellipsis().bind(py).get_type().into_any().unbind()),
-        // A sandbox-defined class has no host type object to map to.
-        MontyType::Instance(name) => Err(PyValueError::new_err(format!(
-            "cannot convert sandbox-defined class '{name}' to a host type object"
+        // A class type reaching here was not resolvable through the store
+        // (`monty_to_py` handles the registered-host-class path first).
+        MontyType::Instance(class_type) => Err(PyValueError::new_err(format!(
+            "cannot convert class '{}' to a host type object",
+            class_type.name
         ))),
         _ => import_builtins(py)?.getattr(py, t.to_string()),
     }

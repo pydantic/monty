@@ -7,7 +7,7 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::{DropWithContext, HeapId, HeapRead},
-    types::itertools::ItertoolsIter,
+    types::itertools::{ItertoolsIter, step::next_source},
     value::Value,
 };
 
@@ -67,11 +67,7 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
 
     if let Some(source) = cycle.source.as_ref().map(|s| s.clone_with_heap(vm.heap)) {
         defer_drop!(source, vm);
-        let item = {
-            let mut read = source.read(vm);
-            read.py_next(vm)
-        };
-        if let Some(item) = item? {
+        if let Some(item) = next_source(source, vm)? {
             // Saved AND yielded, so the buffer holds its own reference.
             let retained = item.clone_with_heap(vm.heap);
             let ItertoolsIter::Cycle(cycle) = iter.get_mut(vm.heap) else {

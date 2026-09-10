@@ -4,7 +4,7 @@ use monty_types::ExcType;
 
 use crate::{
     args::ArgValues,
-    bytecode::{CallResult, VM},
+    bytecode::{CallResult, PendingLookupEffect, VM},
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::DropWithContext,
@@ -19,7 +19,9 @@ use crate::{
 /// Signature: `hasattr(object, name)`
 ///
 /// Note: This is implemented by calling getattr(object, name) and returning
-/// True if it succeeds, False if it raises an exception.
+/// True if it succeeds, False if it raises an exception. A lazy attribute on a
+/// host-backed object suspends to the host like `obj.attr` does, with a
+/// [`PendingLookupEffect::HasAttr`] turning the answer into the bool.
 ///
 /// Examples:
 /// ```python
@@ -27,7 +29,7 @@ use crate::{
 /// hasattr(slice(1, 10), 'start') # True - slice has start attribute
 /// hasattr(42, 'nonexistent')    # False - int has no such attribute
 /// ```
-pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let positional = args.into_pos_only("hasattr", vm.heap)?;
     defer_drop!(positional, vm);
 
@@ -36,7 +38,7 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         other => return Err(ExcType::type_error_arg_count("hasattr", 2, other.len())),
     };
 
-    let Some(name) = name.as_either_str(vm.heap) else {
+    let Some(name) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("attribute name must be string, not '{}'", name.py_type_name(vm)),
@@ -49,6 +51,21 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         Ok(CallResult::Value(value)) => {
             value.drop_with(vm);
             true
+        }
+        Ok(CallResult::AttrLookup {
+            name,
+            class_name,
+            object_id,
+            type_object,
+            effect: _,
+        }) => {
+            return Ok(CallResult::AttrLookup {
+                name,
+                class_name,
+                object_id,
+                type_object,
+                effect: Some(PendingLookupEffect::HasAttr),
+            });
         }
         Ok(other) => {
             other.drop_with(vm);
@@ -64,5 +81,5 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         Err(e) => return Err(e),
     };
 
-    Ok(Value::Bool(has_attr))
+    Ok(CallResult::Value(Value::Bool(has_attr)))
 }

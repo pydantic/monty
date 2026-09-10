@@ -16,18 +16,20 @@ git diff origin/main...HEAD
 ```
 
 1. For each feature the branch touches, list the idioms a model reaches for first — the
-   obvious method, argument form, combination with another builtin. Include ones the
-   branch does *not* handle; that's where the gaps are.
-2. Write real test files in `playground/` (see `python-playground`), named recognisably.
-3. Run each under both and diff:
+    obvious method, argument form, combination with another builtin. Include ones the
+    branch does *not* handle; that's where the gaps are.
 
-   ```bash
-   uv run playground/test_thing.py        # CPython
-   cargo run -- playground/test_thing.py  # Monty
-   ```
+1. Write real test files in `playground/` (see `python-playground`), named recognisably.
 
-4. Prioritise **silent divergence** — same code, different result — over a clean
-   `AttributeError`. A missing feature that raises is recoverable; a wrong answer isn't.
+1. Run each under both and diff:
+
+    ```bash
+    uv run playground/test_thing.py        # CPython
+    cargo run -- playground/test_thing.py  # Monty
+    ```
+
+1. Prioritise **silent divergence** — same code, different result — over a clean
+    `AttributeError`. A missing feature that raises is recoverable; a wrong answer isn't.
 
 An undocumented divergence is also a `./limitations/` finding.
 

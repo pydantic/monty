@@ -1,5 +1,7 @@
+use std::mem;
+
 use monty::MontyRun;
-use monty_types::{CompileOptions, MontyObject};
+use monty_types::{CompileOptions, DictPairs, ExcType, MontyClassInstance, MontyClassType, MontyObject, MontyUuid};
 
 /// Test we can reuse exec without borrow checker issues.
 #[test]
@@ -28,22 +30,43 @@ fn test_get_interned_string() {
     assert_eq!(int_value, "foobar");
 }
 
-/// Test that calling a method on a dataclass in standard execution mode
-/// (without iter/external function support) returns a NotImplementedError.
+/// Replacement fields are synchronous, so an OS-backed attribute cannot yield
+/// to the host and must fail before the call escapes the formatter.
+#[test]
+fn str_format_os_attribute_reports_suspension_limit() {
+    let ex = MontyRun::new(
+        "import os\n'{0.environ}'.format(os)".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_eq!(err.message(), Some("str.format attribute access cannot suspend"));
+}
+
+/// Test that calling a method on a host class instance in standard execution
+/// mode (without iter/external function support) returns a NotImplementedError.
 /// This exercises the `FrameExit::MethodCall` path in `frame_exit_to_object`.
 #[test]
-fn dataclass_method_call_in_standard_mode_errors() {
-    let point = MontyObject::Dataclass {
-        name: "Point".to_string(),
-        type_id: 0,
-        field_names: vec!["x".to_string(), "y".to_string()],
+fn class_instance_method_call_in_standard_mode_errors() {
+    let point = MontyObject::ClassInstance(Box::new(MontyClassInstance {
+        class_type: MontyClassType {
+            name: "Point".to_string(),
+            id: MontyUuid::from_u128(1),
+            host_defined: true,
+            is_dataclass: true,
+            attrs: DictPairs::default(),
+        },
+        instance_id: MontyUuid::from_u128(2),
         attrs: vec![
             (MontyObject::String("x".to_string()), MontyObject::Int(1)),
             (MontyObject::String("y".to_string()), MontyObject::Int(2)),
         ]
         .into(),
-        frozen: true,
-    };
+    }));
 
     let ex = MontyRun::new(
         "point.sum()".to_owned(),
@@ -157,9 +180,10 @@ fn external_function_in_reduce_raises_not_implemented() {
 
 /// A user `__next__` calling an external function cannot suspend: like
 /// `__repr__`/`__str__` it runs synchronously via `evaluate_function`, so the
-/// call raises `NotImplementedError` (see `limitations/classes.md`). Rust-side
-/// for the same reason as `external_function_as_init_raises_not_implemented`:
-/// on CPython the external is a real function and the loop would succeed.
+/// call raises `NotImplementedError` at the `ext_fn()` call site inside
+/// `__next__` (see `limitations/classes.md`). Rust-side for the same reason as
+/// `external_function_as_init_raises_not_implemented`: on CPython the external
+/// is a real function and the loop would succeed.
 #[test]
 fn external_function_in_next_raises_not_implemented() {
     let code = "class Foo:\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        return ext_fn()\n\nfor _x in Foo():\n    pass";
@@ -178,7 +202,104 @@ fn external_function_in_next_raises_not_implemented() {
         .unwrap_err();
     assert_eq!(
         err.to_string(),
-        "Traceback (most recent call last):\n  File \"test.py\", line 8, in <module>\n    for _x in Foo():\n              ~~~~~\nNotImplementedError: __next__: external function 'ext_fn' is not yet supported in this context"
+        "Traceback (most recent call last):\n  File \"test.py\", line 6, in __next__\n    return ext_fn()\n           ~~~~~~~~\nNotImplementedError: __next__: external function 'ext_fn' is not yet supported in this context"
+    );
+}
+
+/// Rejected suspensions are raised inside the key function's frame, where an
+/// ordinary `try`/`except` can catch them and let the sort complete.
+#[test]
+fn not_implemented_in_sort_key_catchable_inside_key_fn() {
+    let code = "
+def key_fn(x):
+    try:
+        ext_fn()
+    except NotImplementedError:
+        return -x
+    return 0
+
+sorted([1, 2, 3], key=key_fn)
+";
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let result = ex
+        .run_no_limits(vec![MontyObject::Function {
+            name: "ext_fn".to_owned(),
+            docstring: None,
+        }])
+        .unwrap();
+    assert_eq!(
+        result,
+        MontyObject::List(vec![MontyObject::Int(3), MontyObject::Int(2), MontyObject::Int(1)])
+    );
+}
+
+/// An uncaught key-function error returns to the sorting call before an outer
+/// handler runs, preserving the synchronous evaluation boundary.
+#[test]
+fn not_implemented_in_sort_key_catchable_outside_key_fn() {
+    let code = "
+seen = []
+
+def key_fn(x):
+    seen.append(x)
+    ext_fn()
+
+try:
+    sorted([1, 2], key=key_fn)
+except NotImplementedError:
+    seen.append('caught')
+seen.append('after')
+seen
+";
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let result = ex
+        .run_no_limits(vec![MontyObject::Function {
+            name: "ext_fn".to_owned(),
+            docstring: None,
+        }])
+        .unwrap();
+    assert_eq!(
+        result,
+        MontyObject::List(vec![
+            MontyObject::Int(1),
+            MontyObject::String("caught".to_owned()),
+            MontyObject::String("after".to_owned()),
+        ])
+    );
+}
+
+/// Rejected-suspension errors identify `list.sort()` rather than `sorted()`.
+#[test]
+fn not_implemented_in_list_sort_key_names_sort() {
+    let code = "[1, 2].sort(key=lambda x: ext_fn())";
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let err = ex
+        .run_no_limits(vec![MontyObject::Function {
+            name: "ext_fn".to_owned(),
+            docstring: None,
+        }])
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <lambda>\n    [1, 2].sort(key=lambda x: ext_fn())\n                              ~~~~~~~~\nNotImplementedError: sort() key argument: external function 'ext_fn' is not yet supported in this context"
     );
 }
 
@@ -188,14 +309,16 @@ fn external_function_in_next_raises_not_implemented() {
 /// the same reason as the tests above: on CPython the external is an ordinary
 /// function and the call would succeed.
 ///
-/// Both call sites are covered — the predicate helper shared by `takewhile`,
-/// `dropwhile` and `filterfalse`, and `starmap`, which calls its function
-/// itself and so names itself in the error separately.
+/// Every call site is covered — the predicate helper shared by `takewhile`,
+/// `dropwhile` and `filterfalse`, plus `starmap` and `accumulate`, which each
+/// call their callable themselves and so name themselves in the error.
+/// `accumulate` needs two items, since the first is yielded untouched.
 #[test]
 fn external_function_as_itertools_callable_raises_not_implemented() {
     for (call, adaptor) in [
         ("itertools.takewhile(ext_fn, [1])", "takewhile"),
         ("itertools.starmap(ext_fn, [(1,)])", "starmap"),
+        ("itertools.accumulate([1, 2], ext_fn)", "accumulate"),
     ] {
         let expr = format!("list({call})");
         let code = format!("import itertools\n\n{expr}");
@@ -248,13 +371,70 @@ fn dynamic_type_with_non_string_key_raises_type_error() {
     );
 }
 
-// === Result-conversion reentrancy tests ===
-// Converting a result to `MontyObject` can run a user `__repr__` on nested
-// instances; a `__repr__` that mutates the containing collection must not
-// panic the conversion (children are snapshotted before recursing).
+// === Instance output-conversion tests ===
+// Sandbox-defined class instances convert structurally to `ClassInstance`
+// values: a user `__repr__` never runs during conversion, so it cannot mutate
+// the containing collection. These containers keep all elements, and
+// `Evil.__repr__` never fires.
+
+/// Structured `ClassInstance` a sandbox `Evil()` instance converts to.
+fn evil_instance() -> MontyObject {
+    MontyObject::ClassInstance(Box::new(MontyClassInstance {
+        class_type: MontyClassType {
+            name: "Evil".to_owned(),
+            id: MontyUuid::from_u128(0xE0),
+            host_defined: false,
+            is_dataclass: false,
+            attrs: DictPairs::default(),
+        },
+        instance_id: MontyUuid::from_u128(0xE1),
+        attrs: vec![].into(),
+    }))
+}
+
+/// Replaces the worker-generated (random) class/instance uuids in `obj` with the
+/// deterministic ids [`evil_instance`] uses, so structural comparison works.
+fn normalize_instance_uuids(obj: &mut MontyObject) {
+    match obj {
+        MontyObject::ClassInstance(instance) => {
+            let MontyClassInstance {
+                class_type,
+                instance_id,
+                attrs,
+            } = instance.as_mut();
+            class_type.id = MontyUuid::from_u128(0xE0);
+            *instance_id = MontyUuid::from_u128(0xE1);
+            let pairs = mem::replace(attrs, DictPairs::from(vec![]))
+                .into_iter()
+                .map(|(mut key, mut value)| {
+                    normalize_instance_uuids(&mut key);
+                    normalize_instance_uuids(&mut value);
+                    (key, value)
+                })
+                .collect::<Vec<_>>();
+            *attrs = pairs.into();
+        }
+        MontyObject::List(items)
+        | MontyObject::Tuple(items)
+        | MontyObject::Set(items)
+        | MontyObject::FrozenSet(items) => items.iter_mut().for_each(normalize_instance_uuids),
+        MontyObject::Dict(pairs) => {
+            let normalized = mem::replace(pairs, DictPairs::from(vec![]))
+                .into_iter()
+                .map(|(mut key, mut value)| {
+                    normalize_instance_uuids(&mut key);
+                    normalize_instance_uuids(&mut value);
+                    (key, value)
+                })
+                .collect::<Vec<_>>();
+            *pairs = normalized.into();
+        }
+        _ => {}
+    }
+}
 
 #[test]
-fn output_list_mutated_by_nested_repr() {
+fn output_list_with_nested_instance() {
     let code = "\
 class Evil:
     def __repr__(self):
@@ -264,19 +444,16 @@ class Evil:
 lst = [Evil(), 1, 2]
 lst";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let mut result = ex.run_no_limits(vec![]).unwrap();
+    normalize_instance_uuids(&mut result);
     assert_eq!(
         result,
-        MontyObject::List(vec![
-            MontyObject::Repr("evil".to_owned()),
-            MontyObject::Int(1),
-            MontyObject::Int(2),
-        ])
+        MontyObject::List(vec![evil_instance(), MontyObject::Int(1), MontyObject::Int(2)])
     );
 }
 
 #[test]
-fn output_dict_mutated_by_nested_repr() {
+fn output_dict_with_nested_instance() {
     let code = "\
 class Evil:
     def __repr__(self):
@@ -286,15 +463,13 @@ class Evil:
 d = {'k': Evil(), 'a': 1}
 d";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let mut result = ex.run_no_limits(vec![]).unwrap();
+    normalize_instance_uuids(&mut result);
     assert_eq!(
         result,
         MontyObject::Dict(
             vec![
-                (
-                    MontyObject::String("k".to_owned()),
-                    MontyObject::Repr("evil".to_owned())
-                ),
+                (MontyObject::String("k".to_owned()), evil_instance()),
                 (MontyObject::String("a".to_owned()), MontyObject::Int(1)),
             ]
             .into()
@@ -303,7 +478,7 @@ d";
 }
 
 #[test]
-fn output_deque_mutated_by_nested_repr() {
+fn output_deque_with_nested_instance() {
     let code = "\
 from collections import deque
 
@@ -315,13 +490,10 @@ class Evil:
 d = deque([Evil(), 1, 2])
 d";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let mut result = ex.run_no_limits(vec![]).unwrap();
+    normalize_instance_uuids(&mut result);
     assert_eq!(
         result,
-        MontyObject::List(vec![
-            MontyObject::Repr("evil".to_owned()),
-            MontyObject::Int(1),
-            MontyObject::Int(2),
-        ])
+        MontyObject::List(vec![evil_instance(), MontyObject::Int(1), MontyObject::Int(2)])
     );
 }

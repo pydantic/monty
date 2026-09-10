@@ -6,9 +6,9 @@
 
 use std::mem;
 
-use monty_types::OsFunctionCall;
+use monty_types::{MontyUuid, OsFunctionCall};
 
-use super::{CallFrame, VM, recursion::RunReentryGuard};
+use super::{CallFrame, VM, attr::PendingLookupEffect, recursion::RunReentryGuard};
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
@@ -24,7 +24,7 @@ use crate::{
     os_dispatch::{PendingOsEffect, release_pending_effect},
     types::{
         Dict, Instance, PyTrait, Type, bytes::call_bytes_method, construct_namedtuple, instance::class_name,
-        str::call_str_method,
+        partial::partial_call_args, str::call_str_method,
     },
     value::{EitherStr, Value},
 };
@@ -51,13 +51,41 @@ pub(crate) enum CallResult {
     /// The [`OsFunctionCall`] is a tagged enum whose variants carry their own
     /// typed args, so no separate `ArgValues` is needed at this layer.
     OsCall(OsFunctionCall),
-    /// Dataclass method call requested - VM should yield `FrameExit::MethodCall` to host.
+    /// Host-routed call requested - VM should yield `FrameExit::MethodCall`
+    /// to host: a method call on a host-backed instance, or on a host class
+    /// type — a classmethod, or construction, which is spelled `__call__`.
     ///
-    /// The method name (e.g. `"distance"`) and the args include the dataclass instance
-    /// as the first argument (`self`). Unlike `External`, this uses an `EitherStr` instead
-    /// of `StringId` because method names are only known at runtime when dataclass
-    /// inputs are provided.
-    MethodCall(EitherStr, ArgValues),
+    /// The receiver is NOT included in `args`: the host routes the call by
+    /// `object_id`, the receiver's uuid (stored on the [`HostClass`] /
+    /// [`HostClassType`]). Unlike `External`, `name` is an `EitherStr`
+    /// because method names are only known at runtime.
+    ///
+    /// [`HostClass`]: crate::types::HostClass
+    /// [`HostClassType`]: crate::types::HostClassType
+    MethodCall {
+        name: EitherStr,
+        args: ArgValues,
+        object_id: MontyUuid,
+    },
+    /// Lazy attribute lookup on a host-backed object - VM should yield
+    /// `FrameExit::AttrLookup` to host.
+    ///
+    /// Produced by `obj.attr` (or `Type.attr` when `type_object` is true)
+    /// and by `getattr()` / `hasattr()` when `attr` is public and missing
+    /// from the eager attrs. `class_name` is captured at suspension so the
+    /// resume-undefined AttributeError names the real class without touching
+    /// the heap.
+    AttrLookup {
+        name: EitherStr,
+        class_name: String,
+        object_id: MontyUuid,
+        /// True for a lookup on a class type object — selects CPython's
+        /// `type object '...' has no attribute ...` message on failure.
+        type_object: bool,
+        /// How `getattr()` / `hasattr()` consume the answer; `None` for
+        /// `obj.attr`. The only heap reference this variant can carry.
+        effect: Option<PendingLookupEffect>,
+    },
     /// The call returned a value that should be implicitly awaited.
     ///
     /// Used by `asyncio.run()` to execute a coroutine without an explicit `await`.
@@ -80,10 +108,11 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
     fn drop_with(self, heap: &mut C) {
         match self {
             Self::Value(value) | Self::AwaitValue(value) => value.drop_with(heap),
-            Self::External(_, args) | Self::MethodCall(_, args) => {
+            Self::External(_, args) | Self::MethodCall { args, .. } => {
                 args.drop_with(heap);
             }
             Self::OsCall(call) => call.drop_with(heap),
+            Self::AttrLookup { effect, .. } => effect.drop_with(heap),
             Self::FramePushed => {}
             Self::OsCallWithEffect { call, effect } => {
                 call.drop_with(heap);
@@ -371,6 +400,8 @@ impl VM<'_> {
     /// User-defined functions run until their frame returns. An unresolved name raises
     /// `NameError`; external, OS, method, and future suspensions raise a variant-specific
     /// `NotImplementedError` because this context cannot preserve and resume its state.
+    /// These are raised at the suspension point inside the callee's frames, so the
+    /// callee can catch them with an ordinary `try`/`except` like any other exception.
     ///
     /// The nested `self.run()` below recurses on the native Rust stack, so
     /// re-entry is bounded via [`enter_run_reentry`](Self::enter_run_reentry)
@@ -391,30 +422,44 @@ impl VM<'_> {
         let mut guard = RunReentryGuard::new(self);
         let this = &mut *guard;
 
-        let exit = match this.call_function(callable, args)? {
-            CallResult::Value(v) => return Ok(v),
+        match this.call_function(callable, args)? {
+            CallResult::Value(v) => Ok(v),
+            // No host can answer inside a synchronous call, so the lookup is
+            // `Undefined`: `hasattr()` is False, `getattr()` yields its default.
+            CallResult::AttrLookup {
+                effect: Some(effect), ..
+            } => Ok(effect.apply(None, this)),
             CallResult::FramePushed => {
                 // A new frame was pushed for a defined function call - we need to run it
                 // to completion.
-                let stack_depth = this.suspended_frames.len();
                 // Mark the frame as an exit point from the `run()` loop
                 this.current_frame_mut().should_return = true;
-                match this.run()? {
-                    FrameExit::Return(v) => return Ok(v),
-                    exit => {
-                        // Pop frames off the stack from this failed evaluation
-                        // (including the one just pushed)
-                        while this.suspended_frames.len() >= stack_depth {
-                            this.pop_frame();
+                loop {
+                    match this.run()? {
+                        FrameExit::Return(v) => return Ok(v),
+                        // As above: the callee's `hasattr()` / `getattr()`
+                        // sees `Undefined` and continues.
+                        FrameExit::AttrLookup {
+                            effect: Some(effect), ..
+                        } => {
+                            let value = effect.apply(None, this);
+                            this.push(value);
                         }
-                        exit
+                        exit => {
+                            // Raise unsupported suspensions inside the callee so its
+                            // exception handlers can observe them.
+                            let error = this.unsupported_frame_exit(ctx, exit);
+                            // The `should_return` frame stops unwinding before an
+                            // outer handler can consume this error.
+                            if let Some(error) = this.handle_exception(error) {
+                                return Err(error);
+                            }
+                        }
                     }
                 }
             }
-            unsupported => return Err(this.unsupported_call_result(ctx, unsupported)),
-        };
-
-        Err(this.unsupported_frame_exit(ctx, exit))
+            unsupported => Err(this.unsupported_call_result(ctx, unsupported)),
+        }
     }
 
     /// Converts a direct call suspension into a specific synchronous-context error.
@@ -433,10 +478,28 @@ impl VM<'_> {
                 "{ctx}: OS function '{}' is not yet supported in this context",
                 call.name()
             )),
-            CallResult::MethodCall(method_name, _) => ExcType::not_implemented(format!(
+            CallResult::MethodCall { name, .. } => ExcType::not_implemented(format!(
                 "{ctx}: method call '{}' is not yet supported in this context",
-                method_name.as_str(self.interns)
+                name.as_str(self.interns)
             )),
+            // A lazy attribute lookup cannot suspend in a synchronous nested
+            // context; report the attribute as missing rather than a
+            // NotImplementedError, matching what an unanswered lookup raises
+            // (an `effect` was consumed by the caller before reaching here).
+            CallResult::AttrLookup {
+                name,
+                class_name,
+                type_object,
+                ..
+            } => {
+                let error = if *type_object {
+                    ExcType::attribute_error_type(class_name, name.as_str(self.interns))
+                } else {
+                    ExcType::attribute_error(class_name, name.as_str(self.interns))
+                };
+                result.drop_with(self);
+                return error;
+            }
             CallResult::AwaitValue(_) => {
                 ExcType::not_implemented(format!("{ctx}: awaiting a value is not yet supported in this context"))
             }
@@ -463,6 +526,21 @@ impl VM<'_> {
                 "{ctx}: method call '{}' is not yet supported in this context",
                 method_name.as_str(self.interns)
             )),
+            // Same as the `CallResult::AttrLookup` arm above.
+            FrameExit::AttrLookup {
+                name,
+                class_name,
+                type_object,
+                ..
+            } => {
+                let error = if *type_object {
+                    ExcType::attribute_error_type(class_name, name.as_str(self.interns))
+                } else {
+                    ExcType::attribute_error(class_name, name.as_str(self.interns))
+                };
+                exit.drop_with(self);
+                return error;
+            }
             FrameExit::ResolveFutures(_) => ExcType::not_implemented(format!(
                 "{ctx}: resolving async futures is not yet supported in this context"
             )),
@@ -514,6 +592,16 @@ impl VM<'_> {
 
         let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Class(_) => return self.instantiate_class(heap_id, args),
+            // Calling a host class type suspends to the host as a `__call__`
+            // method call on the class's uuid; the host's own policy decides
+            // whether construction is allowed.
+            HeapData::HostClassType(ty) => {
+                return Ok(CallResult::MethodCall {
+                    name: EitherStr::Heap("__call__".to_owned()),
+                    args,
+                    object_id: ty.type_id(),
+                });
+            }
             // Calling a namedtuple class constructs a `NamedTuple` instance.
             HeapData::NamedTupleClass(_) => {
                 return construct_namedtuple(heap_id, self, args).map(CallResult::Value);
@@ -538,6 +626,40 @@ impl VM<'_> {
                 let name = function.clone_name();
                 return Ok(CallResult::External(name, args));
             }
+            // The bound arguments are lifted out and the heap borrow released
+            // before dispatching, so the wrapped callable may reach this same
+            // partial again.
+            HeapData::Partial(partial) => {
+                let parts = partial.clone_parts(self);
+                let (func, bound_args, bound_keywords) = match parts {
+                    Ok(parts) => parts,
+                    Err(err) => {
+                        // The preflight rejected the per-call clone before
+                        // anything was lifted out, so only the call's own
+                        // arguments still need releasing.
+                        args.drop_with(self);
+                        return Err(err);
+                    }
+                };
+                // A partial stored as a class attribute binds as a `BoundMethod`
+                // whose `__func__` is a partial, so this dispatch nests on the
+                // native stack without ever pushing a VM frame. Charge it against
+                // the native re-entry budget, which is what keeps such a chain
+                // bounded by `RecursionError` rather than a stack overflow.
+                if let Err(err) = self.enter_run_reentry() {
+                    // Bailing before `partial_call_args` takes ownership, so
+                    // reclaim what was lifted out of the partial as well as the
+                    // call's own arguments.
+                    (func, (bound_args, bound_keywords)).drop_with(self);
+                    args.drop_with(self);
+                    return Err(err.into());
+                }
+                let mut guard = RunReentryGuard::new(self);
+                let this = &mut *guard;
+                defer_drop!(func, this);
+                let args = partial_call_args(bound_args, bound_keywords, args, this);
+                return this.call_function(func, args);
+            }
             _ => {
                 // Coupling check: dispatch rejected this Ref, so the heap-side
                 // callability predicate must agree (see `HeapData::is_callable`).
@@ -546,7 +668,7 @@ impl VM<'_> {
                     "HeapData::is_callable accepts a heap value call_heap_callable rejects — the two drifted"
                 );
                 args.drop_with(self);
-                let type_name = self.heap.get(heap_id).py_type().name(self.heap, self.interns);
+                let type_name = self.heap.read(heap_id).py_type_name(self);
                 return Err(ExcType::type_error_not_callable_object(&type_name));
             }
         };

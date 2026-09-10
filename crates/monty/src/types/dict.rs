@@ -379,7 +379,7 @@ fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap, interns: &Inter
 impl<'h> HeapRead<'h, Dict> {
     /// Element-wise equality against another dict (matching keys and values).
     ///
-    /// Shared by `Dict::py_eq_impl` and `Dataclass::py_eq_impl` (which compares
+    /// Shared by `Dict::py_eq_impl` and `HostClass::py_eq_impl` (which compares
     /// the dataclasses' attribute dicts).
     pub(crate) fn eq_dict(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<bool> {
         if self.get(vm.heap).len() != other.get(vm.heap).len() {

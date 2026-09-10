@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -63,8 +64,12 @@ macro_rules! heap_payloads {
             Slice(inline $crate::types::Slice),
             /// An exception instance such as `ValueError('message')`.
             Exception(inline $crate::exception_private::SimpleException),
-            /// A dataclass instance with fields and method references.
-            Dataclass(boxed $crate::types::Dataclass),
+            /// A host-backed class instance (the heap form of the wire `ClassInstance`).
+            HostClass(boxed $crate::types::HostClass),
+            /// The lightweight type object `type(x)` materializes for a `HostClass`
+            /// instance — the real class lives on the host, so this is a named
+            /// stand-in (see `HostClassType`).
+            HostClassType(boxed $crate::types::HostClassType),
             /// A user-defined class object created by a `class` statement.
             Class(boxed $crate::types::Class),
             /// An instance of a user-defined class.
@@ -134,6 +139,8 @@ macro_rules! heap_payloads {
             /// Appended here rather than beside `DateTime` because this list is
             /// append-only (see the note above).
             Time(inline $crate::types::time::Time),
+            /// A `functools.partial` object.
+            Partial(boxed $crate::types::Partial),
             /// A lazy generator-expression iterator with a saved synthetic frame.
             Generator(inline $crate::types::Generator),
         }
@@ -193,7 +200,8 @@ impl HeapData {
             | Self::Closure(_)
             | Self::FunctionDefaults(_)
             | Self::Cell(_)
-            | Self::Dataclass(_)
+            | Self::HostClass(_)
+            | Self::HostClassType(_)
             | Self::Class(_)
             | Self::Instance(_)
             | Self::BoundMethod(_)
@@ -210,6 +218,7 @@ impl HeapData {
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
             | Self::ExternalFuture(_)
+            | Self::Partial(_)
             | Self::Generator(_) => true,
             // Leaf types, plus iterators whose heap refs only point at leaves and so
             // cannot close a cycle. Move one up if it gains a container-valued field.
@@ -244,7 +253,12 @@ impl HeapData {
     pub(crate) fn is_callable(&self) -> bool {
         matches!(
             self,
-            Self::Class(_) | Self::BoundMethod(_) | Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_)
+            Self::Class(_)
+                | Self::BoundMethod(_)
+                | Self::Closure(_)
+                | Self::FunctionDefaults(_)
+                | Self::ExtFunction(_)
+                | Self::Partial(_)
         )
     }
 
@@ -263,6 +277,7 @@ impl HeapData {
             Self::Tuple(_) | Self::NamedTuple(_) => Type::Tuple,
             Self::NamedTupleClass(_) => Type::Type,
             Self::Dict(_) => Type::Dict,
+            Self::Partial(_) => Type::Partial,
             Self::DictKeysView(_) => Type::DictKeys,
             Self::DictItemsView(_) => Type::DictItems,
             Self::DictValuesView(_) => Type::DictValues,
@@ -273,7 +288,8 @@ impl HeapData {
             Self::Range(_) => Type::Range,
             Self::Slice(_) => Type::Slice,
             Self::Exception(e) => Type::Exception(e.exc_type()),
-            Self::Dataclass(_) => Type::Dataclass,
+            Self::HostClass(_) => Type::HostClass,
+            Self::HostClassType(_) => Type::Type,
             // A class object's type is `type`; an instance's carries its class id.
             Self::Class(_) => Type::Type,
             Self::Instance(instance) => Type::Instance(instance.class()),
@@ -463,6 +479,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::SetIterator($value) => $body,
             Self::CallableIterator($value) => $body,
             Self::Itertools($value) => $body,
+            Self::Partial($value) => $body,
             Self::Tuple($value) => $body,
             Self::NamedTuple($value) => $body,
             Self::NamedTupleClass($value) => $body,
@@ -474,7 +491,8 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::FrozenSet($value) => $body,
             Self::Range($value) => $body,
             Self::Slice($value) => $body,
-            Self::Dataclass($value) => $body,
+            Self::HostClass($value) => $body,
+            Self::HostClassType($value) => $body,
             Self::Class($value) => $body,
             Self::Instance($value) => $body,
             Self::BoundMethod($value) => $body,
@@ -521,6 +539,15 @@ pub(crate) fn heap_subscript<'h>(value: HeapReadOutput<'h>, key: &Value, vm: &mu
 }
 
 impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
+    /// Forwards so host class instances and named tuples name their real class.
+    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
+        heap_read_output_py_trait_forward!(
+            self,
+            |value| value.py_type_name(vm),
+            else self.py_type(vm).name(vm.heap, vm.interns)
+        )
+    }
+
     /// Delegates to the types defining their own `in`; the rest keep the trait
     /// default (`None`), leaving `Value::py_contains` to iterate or raise.
     fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
@@ -649,7 +676,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 |value| Ok(value.py_call_attr(vm, attr, args)?),
                 else {
                     args.drop_with(vm);
-                    let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+                    let type_name = self.py_type_name(vm);
                     Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
                 }
             )
@@ -686,7 +713,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_enter(vm),
-            else { Err(ExcType::attribute_error(self.py_type(vm).name(vm.heap, vm.interns), "__enter__")) }
+            else { Err(ExcType::attribute_error(self.py_type_name(vm), "__enter__")) }
         )
     }
 
@@ -694,7 +721,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_exit(vm, exc),
-            else { Err(ExcType::attribute_error(self.py_type(vm).name(vm.heap, vm.interns), "__exit__")) }
+            else { Err(ExcType::attribute_error(self.py_type_name(vm), "__exit__")) }
         )
     }
 
@@ -878,7 +905,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_getitem(key, vm),
-            else { Err(ExcType::type_error_not_sub(&self.py_type(vm).name(vm.heap, vm.interns))) }
+            else { Err(ExcType::type_error_not_sub(&self.py_type_name(vm))) }
         )
     }
 
@@ -890,7 +917,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 key.drop_with(vm);
                 value.drop_with(vm);
                 Err(ExcType::type_error_not_sub_assignment(
-                    &self.py_type(vm).name(vm.heap, vm.interns),
+                    &self.py_type_name(vm),
                 ))
             }
         )
@@ -902,7 +929,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             |item| item.py_set_attr(name, value, vm),
             else {
                 value.drop_with(vm);
-                let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+                let type_name = self.py_type_name(vm);
                 Err(ExcType::attribute_error_no_setattr(
                     &type_name,
                     name.as_str(vm.interns),
@@ -953,7 +980,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::FrozenSet(value) => value.py_iter(vm),
             Self::Range(value) => value.py_iter(vm),
             Self::Slice(value) => value.py_iter(vm),
-            Self::Dataclass(value) => value.py_iter(vm),
+            Self::HostClass(value) => value.py_iter(vm),
+            Self::HostClassType(value) => value.py_iter(vm),
             Self::Class(value) => value.py_iter(vm),
             Self::Instance(value) => value.py_iter(vm),
             Self::BoundMethod(value) => value.py_iter(vm),
@@ -973,15 +1001,14 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::Closure(_)
             | Self::FunctionDefaults(_)
             | Self::ExtFunction(_)
+            | Self::Partial(_)
             | Self::Cell(_)
             | Self::Exception(_)
             | Self::LongInt(_)
             | Self::Module(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
-            | Self::ExternalFuture(_) => Err(ExcType::type_error_not_iterable(
-                &self.py_type(vm).name(vm.heap, vm.interns),
-            )),
+            | Self::ExternalFuture(_) => Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))),
         }
     }
 
@@ -1012,7 +1039,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::FrozenSet(value) => value.py_next(vm),
             Self::Range(value) => value.py_next(vm),
             Self::Slice(value) => value.py_next(vm),
-            Self::Dataclass(value) => value.py_next(vm),
+            Self::HostClass(value) => value.py_next(vm),
+            Self::HostClassType(value) => value.py_next(vm),
             Self::Class(value) => value.py_next(vm),
             Self::Instance(value) => value.py_next(vm),
             Self::BoundMethod(value) => value.py_next(vm),
@@ -1028,9 +1056,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Time(value) => value.py_next(vm),
             Self::TimeDelta(value) => value.py_next(vm),
             Self::TimeZone(value) => value.py_next(vm),
-            other => Err(ExcType::type_error_not_iterator(
-                &other.py_type(vm).name(vm.heap, vm.interns),
-            )),
+            other => Err(ExcType::type_error_not_iterator(&other.py_type_name(vm))),
         }
     }
 }

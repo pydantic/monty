@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 # licence the same way, from the Cargo workspace's `license` field
 license = "MIT"
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
@@ -33,11 +33,14 @@ classifiers = [
 ]
 # version and both pins are rewritten from the Cargo workspace version by
 # `crates/monty-python/build.rs` — don't edit them by hand
-version = "0.0.21"
+version = "0.0.23"
 dependencies = [
-    "pydantic-monty-client==0.0.21",
-    "pydantic-monty-runtime==0.0.21",
+    "pydantic-monty-client==0.0.23",
+    "pydantic-monty-runtime==0.0.23",
 ]
+
+[project.optional-dependencies]
+opentelemetry = ["pydantic-monty-client[opentelemetry]"]
 
 [project.scripts]
 # the `monty` binary comes from `pydantic-monty-runtime`, so without this the

@@ -267,6 +267,53 @@ ext_fn(0)
     assert_eq!(from_loaded.into_complete().unwrap(), expected);
 }
 
+/// A live `functools.partial` on the heap survives a round-trip with its bound
+/// callable, positionals and keywords intact — the only coverage that carries
+/// `HeapData::Partial` through postcard.
+#[test]
+fn run_progress_round_trip_preserves_partial() {
+    let code = r"
+import functools
+
+
+def target(a, b, c=0):
+    return a * 100 + b * 10 + c
+
+
+p = functools.partial(target, 1, c=3)
+ext_fn(0)
+[p(2), p.args, p.keywords, repr(p.func is target)]
+"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+
+    // Suspend at `ext_fn` with the partial built and still live.
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded: RunProgress = round_trip_progress(&progress);
+
+    // The wrapped function is reached by id, so it still resolves to the same
+    // object after a reload rather than to a copy.
+    let expected = MontyObject::List(vec![
+        MontyObject::Int(123),
+        MontyObject::Tuple(vec![MontyObject::Int(1)]),
+        MontyObject::Dict(vec![(MontyObject::String("c".to_owned()), MontyObject::Int(3))].into()),
+        MontyObject::String("True".to_owned()),
+    ]);
+
+    // Both are resumed for the reason given in the itertools round-trip above.
+    let original = progress.into_function_call().expect("should be at function call");
+    assert_eq!(original.function_name, "ext_fn");
+    let from_original = original.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_original.into_complete().unwrap(), expected);
+
+    let call = loaded.into_function_call().expect("should be at function call");
+    let from_loaded = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_loaded.into_complete().unwrap(), expected);
+}
+
 #[test]
 fn run_progress_complete_round_trip() {
     // When execution completes, we can still dump/load the Complete variant

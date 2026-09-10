@@ -1,13 +1,16 @@
 //! Implementation of the print() builtin function.
 
+use monty_types::PrintStream;
+
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
+    intern::StaticStrings,
     types::PyTrait,
-    value::Value,
+    value::{Marker, Value},
 };
 
 /// Implementation of the print() builtin function.
@@ -15,12 +18,10 @@ use crate::{
 /// Supports the following keyword arguments:
 /// - `sep`: separator between values (default: " ")
 /// - `end`: string appended after the last value (default: "\n")
+/// - `file`: `sys.stdout` (the default) or `sys.stderr`; anything else raises
+///   `TypeError`, since Monty has no file objects to write into
 /// - `flush`: whether to flush the stream (accepted but ignored — Monty
 ///   doesn't buffer stdout)
-///
-/// The `file` keyword is recognised so it can produce a *specific* error
-/// (`"print() 'file' argument is not supported"`) rather than the generic
-/// "unexpected keyword" produced by leaving it off the struct.
 pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let PrintArgs {
         objects,
@@ -34,45 +35,63 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(end, vm);
     defer_drop!(file, vm);
 
-    if !matches!(file, Value::None) {
-        return Err(SimpleException::new_msg(ExcType::TypeError, "print() 'file' argument is not supported").into());
-    }
-
+    // `sep` and `end` are checked before `file` because CPython reports them in
+    // that order: `print(x, sep=1, file=3)` raises about `sep`, not the file.
     let sep_str = extract_string_kwarg(sep, "sep", vm)?;
     let end_str = extract_string_kwarg(end, "end", vm)?;
+    let stream = print_stream(file, vm)?;
 
     let mut first = true;
     for value in objects.as_slice() {
         if first {
             first = false;
         } else if let Some(sep) = &sep_str {
-            vm.print_writer.stdout_write(sep.as_str().into())?;
+            vm.print_writer.write(stream, sep.as_str().into())?;
         } else {
-            vm.print_writer.stdout_push(' ')?;
+            vm.print_writer.push(stream, ' ')?;
         }
         let s = value.py_str(vm)?;
         defer_drop!(s, vm);
         // Resolve the `str` `Value` against the heap/interns tables directly so
         // the `&str` borrow stays disjoint from the `&mut vm.print_writer` write.
         vm.print_writer
-            .stdout_write(s.to_str_heap(vm.heap, vm.interns)?.into())?;
+            .write(stream, s.to_str_heap(vm.heap, vm.interns)?.into())?;
     }
 
     if let Some(end) = end_str {
-        vm.print_writer.stdout_write(end.into())?;
+        vm.print_writer.write(stream, end.into())?;
     } else {
-        vm.print_writer.stdout_push('\n')?;
+        vm.print_writer.push(stream, '\n')?;
     }
 
     Ok(Value::None)
+}
+
+/// Resolves the `file` kwarg to the stream `print()` should write to.
+///
+/// `sys.stdout` and `sys.stderr` are opaque markers rather than file objects
+/// (see `limitations/sys.md`), so they are matched by identity. Any other
+/// value, including a class defining `write()`, has nothing to write into.
+fn print_stream(file: &Value, vm: &VM<'_>) -> RunResult<PrintStream> {
+    match file {
+        Value::None | Value::Marker(Marker(StaticStrings::Stdout)) => Ok(PrintStream::Stdout),
+        Value::Marker(Marker(StaticStrings::Stderr)) => Ok(PrintStream::Stderr),
+        _ => Err(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!(
+                "print() 'file' argument must be sys.stdout or sys.stderr, not {}",
+                file.py_type_name(vm)
+            ),
+        )
+        .into()),
+    }
 }
 
 /// Argument shape for `print(*objects, sep=' ', end='\n', file=sys.stdout, flush=False)`.
 ///
 /// Every kwarg is held as a raw `Value` so the caller can do the
 /// "must be None or str" coercion inline, and so `flush` can be accepted
-/// without forcing a type check. Explicit `file` rejection lives in
-/// `builtin_print`.
+/// without forcing a type check. `file` is resolved by `print_stream`.
 #[derive(FromArgs)]
 #[from_args(name = "print")]
 struct PrintArgs {

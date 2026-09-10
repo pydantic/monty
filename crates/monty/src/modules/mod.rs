@@ -66,7 +66,7 @@ pub(crate) enum StandardLib {
     /// The `collections` module providing container datatypes: `deque`,
     /// `namedtuple`, `defaultdict`, and `Counter`.
     Collections,
-    /// The `functools` module providing `reduce`.
+    /// The `functools` module providing `reduce` and `partial`.
     Functools,
     /// The `base64` module providing the base64/base32/base16 codecs.
     Base64,

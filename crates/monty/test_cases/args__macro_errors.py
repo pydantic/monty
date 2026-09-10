@@ -14,11 +14,43 @@ import base64
 import binascii
 import datetime
 import json
+import math
 import re
 import sys
 import unicodedata
 
 is_monty = sys.platform == 'monty'
+
+# === Math aggregations: positional-only calls and keyword-only start ===
+for function, args, kwargs, message in [
+    (math.hypot, (), {'x': 1}, 'math.hypot() takes no keyword arguments'),
+    (math.hypot, ('bad',), {'x': 1}, 'math.hypot() takes no keyword arguments'),
+    (math.fsum, (), {}, 'math.fsum() takes exactly one argument (0 given)'),
+    (math.fsum, ([], []), {}, 'math.fsum() takes exactly one argument (2 given)'),
+    (math.fsum, (), {'seq': []}, 'math.fsum() takes no keyword arguments'),
+    (math.dist, (), {}, 'dist expected 2 arguments, got 0'),
+    (math.dist, ([], [], []), {}, 'dist expected 2 arguments, got 3'),
+    (math.dist, (), {'p': [], 'q': []}, 'math.dist() takes no keyword arguments'),
+    (math.sumprod, ([],), {}, 'sumprod expected 2 arguments, got 1'),
+    (math.sumprod, ([], [], []), {}, 'sumprod expected 2 arguments, got 3'),
+    (math.sumprod, (), {'p': [], 'q': []}, 'math.sumprod() takes no keyword arguments'),
+    (math.prod, (), {}, 'prod() takes exactly 1 positional argument (0 given)'),
+    (math.prod, ([], 2), {}, 'prod() takes exactly 1 positional argument (2 given)'),
+    (math.prod, (), {'iterable': []}, 'prod() takes exactly 1 positional argument (0 given)'),
+    (math.prod, ([],), {'bogus': 1}, "prod() got an unexpected keyword argument 'bogus'"),
+    (math.prod, (1,), {'bogus': 1}, "prod() got an unexpected keyword argument 'bogus'"),
+    (math.prod, ([], 2), {'bogus': 1}, 'prod() takes at most 2 arguments (3 given)'),
+    (math.prod, ([],), {'start': 1, 'bogus': 1}, 'prod() takes at most 2 arguments (3 given)'),
+    (math.fma, (), {}, 'fma expected 3 arguments, got 0'),
+    (math.fma, (1, 2, 3, 4), {}, 'fma expected 3 arguments, got 4'),
+    (math.fma, (), {'x': 1, 'y': 2, 'z': 3}, 'math.fma() takes no keyword arguments'),
+    (math.fma, ('bad', 2, 3), {'x': 1}, 'math.fma() takes no keyword arguments'),
+]:
+    try:
+        function(*args, **kwargs)
+        assert False, 'invalid math arguments must fail'
+    except TypeError as e:
+        assert str(e) == message, (str(e), message)
 
 # =====================================================================
 # === Clinic style (the default — plus `def` for pure-Python targets) ===
@@ -747,6 +779,22 @@ try:
 except TypeError as e:
     assert str(e) == "b32decode() missing 1 required positional argument: 's'"
 
+# keyword-only parameters do not widen the positional maximum, and supplying
+# any of them changes how the overflow counts what it was given
+try:
+    base64.a85encode(b'a', True)
+    assert False, 'a85encode() with 2 positionals should raise'
+except TypeError as e:
+    assert str(e) == 'a85encode() takes 1 positional argument but 2 were given'
+
+try:
+    base64.a85encode(b'a', True, foldspaces=True)
+    assert False, 'a85encode() with 2 positionals and a keyword should raise'
+except TypeError as e:
+    assert str(e) == (
+        'a85encode() takes 1 positional argument but 2 positional arguments (and 1 keyword-only argument) were given'
+    )
+
 # =====================================================================
 # === binascii: the C parser families base64's pure Python delegates to ===
 # =====================================================================
@@ -834,3 +882,24 @@ try:
     assert False, 'crc32() with a keyword should raise'
 except TypeError as e:
     assert str(e) == 'binascii.crc32() takes no keyword arguments'
+
+# === check_zero_args: keywords are reported before the positional count ===
+# CPython's `PyArg_NoKeywords` runs first, so a lone keyword never reports
+# `(0 given)`, and a keyword alongside positionals still wins.
+try:
+    datetime.date(2020, 1, 1).isoformat(timespec='minutes')
+    assert False, 'isoformat(timespec=) should raise'
+except TypeError as e:
+    assert str(e) == 'date.isoformat() takes no keyword arguments'
+
+try:
+    datetime.date(2020, 1, 1).isoformat(1, bogus=2)
+    assert False, 'isoformat(1, bogus=) should raise'
+except TypeError as e:
+    assert str(e) == 'date.isoformat() takes no keyword arguments'
+
+try:
+    datetime.date(2020, 1, 1).isoformat(1)
+    assert False, 'isoformat(1) should raise'
+except TypeError as e:
+    assert str(e) == 'date.isoformat() takes no arguments (1 given)'

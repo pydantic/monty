@@ -7,24 +7,21 @@ license = { workspace = true }
 rust-version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
-description = "Lean wasip1 worker module: drives a Monty protocol child one turn per call, over WASI stdio."
+description = "WebAssembly component that drives a Monty protocol child one turn per call."
 keywords = { workspace = true }
 categories = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]
-# A WASI reactor (no `main`): the host calls the exported `monty_dispatch_turn`
-# once per protocol turn and keeps the instance (and its session state) alive
-# between turns.
+# A component whose instance retains one protocol child across exported calls.
 crate-type = ["cdylib"]
 
 [dependencies]
 monty-alloc = { workspace = true }
 monty-proto = { workspace = true, features = ["worker"] }
-prost = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
+monty-types = { workspace = true }
+wit-bindgen = "0.46"
 
 [lints]
 workspace = true

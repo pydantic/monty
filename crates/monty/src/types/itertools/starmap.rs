@@ -8,7 +8,10 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::{HeapId, HeapRead},
-    types::{iter::collect_owned_iterable, itertools::ItertoolsIter},
+    types::{
+        iter::collect_owned_iterable,
+        itertools::{ItertoolsIter, step::next_source},
+    },
     value::Value,
 };
 
@@ -55,11 +58,7 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
     defer_drop!(function, vm);
     defer_drop!(source, vm);
 
-    let item = {
-        let mut read = source.read(vm);
-        read.py_next(vm)
-    };
-    let Some(item) = item? else {
+    let Some(item) = next_source(source, vm)? else {
         return Ok(None);
     };
     // `collect_owned_iterable` consumes `item` on both paths, raising here for

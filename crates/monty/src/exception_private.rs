@@ -11,7 +11,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     fstring::{FormatError, ascii_escape},
-    heap::{HeapData, HeapRead},
+    heap::{DropWithContext, HeapData, HeapRead},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     source_map::{SourceMap, StackFrameExt},
@@ -53,6 +53,19 @@ pub(crate) trait ExcTypeExt: Sized {
             frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
         })
+    }
+
+    /// Creates an AttributeError for an unknown *method*, releasing the
+    /// arguments the call has already evaluated.
+    ///
+    /// Prefer this over [`attribute_error`](Self::attribute_error) anywhere the
+    /// arguments are already owned: that one releases nothing, so calling it from
+    /// a `py_call_attr` fall-through leaks a reference per call — something
+    /// sandboxed code can repeat in a loop.
+    #[must_use]
+    fn attribute_error_method(type_name: impl Display, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunError {
+        args.drop_with(vm);
+        Self::attribute_error(type_name, attr.as_str(vm.interns))
     }
 
     /// Creates an AttributeError for a missing attribute on a class object.
@@ -935,6 +948,19 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::value_error("Indices for islice() must be None or an integer: 0 <= x <= sys.maxsize.")
     }
 
+    /// Creates the ValueError `itertools.batched` raises when `n` is below one.
+    #[must_use]
+    fn batched_bad_n() -> RunError {
+        Self::value_error("n must be at least one")
+    }
+
+    /// Creates the ValueError `itertools.batched(..., strict=True)` raises when
+    /// the source runs out part-way through a batch.
+    #[must_use]
+    fn batched_incomplete() -> RunError {
+        Self::value_error("batched(): incomplete batch")
+    }
+
     /// Creates the ValueError `itertools.islice` raises for a non-positive or
     /// non-integer `step`.
     #[must_use]
@@ -954,6 +980,20 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn reduce_not_iterable() -> RunError {
         Self::type_error("reduce() arg 2 must support iteration")
+    }
+
+    /// Creates the TypeError `functools.partial()` raises when called with no
+    /// positional argument, so there is no callable to wrap.
+    #[must_use]
+    fn partial_needs_argument() -> RunError {
+        Self::type_error("type 'partial' takes at least one argument")
+    }
+
+    /// Creates the TypeError `functools.partial()` raises for a first argument
+    /// that is not callable.
+    #[must_use]
+    fn partial_not_callable() -> RunError {
+        Self::type_error("the first argument must be callable")
     }
 
     /// Creates a TypeError for the right operand of `in` / `not in` supporting
@@ -1127,7 +1167,10 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates a TypeError for functions that don't accept keyword arguments.
     ///
-    /// Matches CPython's format: `TypeError: {name}() takes no keyword arguments`
+    /// Matches CPython's `PyArg_NoKeywords` format: `TypeError: {name}() takes
+    /// no keyword arguments`. CPython checks keywords before the positional
+    /// count, so a no-argument method given only a kwarg reports this rather
+    /// than `(0 given)`.
     #[must_use]
     fn type_error_no_kwargs(name: &str) -> RunError {
         SimpleException::new_msg(ExcType::TypeError, format!("{name}() takes no keyword arguments")).into()
@@ -1199,28 +1242,19 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::IndexError, "no such group").into()
     }
 
-    /// Creates a TypeError for non-integer sequence indices (getitem).
+    /// Creates a TypeError for subscripting a sequence with a non-integer key.
     ///
-    /// Matches CPython's format: `TypeError('{type}' indices must be integers, not '{index_type}')`
+    /// CPython words this per type: `list indices must be integers or slices, not str`
+    /// for `list`, `tuple` and `range`, the same with `byte` for `bytes`, and
+    /// `string indices must be integers, not 'str'` for `str`.
     #[must_use]
-    fn type_error_indices(type_str: Type, index_type: &str) -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{type_str} indices must be integers, not '{index_type}'"),
-        )
-        .into()
-    }
-
-    /// Creates a TypeError for non-integer list indices (setitem/assignment).
-    ///
-    /// Matches CPython's format: `TypeError('list indices must be integers or slices, not {index_type}')`
-    #[must_use]
-    fn type_error_list_assignment_indices(index_type: &str) -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("list indices must be integers or slices, not {index_type}"),
-        )
-        .into()
+    fn type_error_indices(container: Type, index_type: &str) -> RunError {
+        let message = match container {
+            Type::Str => format!("string indices must be integers, not '{index_type}'"),
+            Type::Bytes => format!("byte indices must be integers or slices, not {index_type}"),
+            _ => format!("{container} indices must be integers or slices, not {index_type}"),
+        };
+        SimpleException::new_msg(ExcType::TypeError, message).into()
     }
 
     /// Creates a NameError for accessing a free variable (nonlocal/closure) before it's assigned.
@@ -1512,6 +1546,18 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn overflow_int_to_float() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "int too large to convert to float").into()
+    }
+
+    /// Creates the OverflowError raised when converting an infinite float to an integer.
+    #[must_use]
+    fn overflow_float_infinity_to_integer() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "cannot convert float infinity to integer").into()
+    }
+
+    /// Creates the ValueError raised when converting NaN to an integer.
+    #[must_use]
+    fn value_error_float_nan_to_integer() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "cannot convert float NaN to integer").into()
     }
 
     /// Creates a ValueError for a zero modulus passed to `pow`.
@@ -2400,7 +2446,7 @@ impl RawStackFrame {
 /// Three variants:
 /// - `Internal`: Bug in interpreter implementation (static message)
 /// - `Exc`: Python exception that can be caught by try/except (when implemented)
-/// - `UncatchableExc`: Python exception from resource limits that CANNOT be caught
+/// - `UncatchableExc`: Python exception from a resource limit or host abort
 ///
 /// `Clone` is implemented so an error can be cached for later re-raising
 /// (e.g. a failed `GatherFuture` replaying the same exception on every
@@ -2412,11 +2458,9 @@ pub(crate) enum RunError {
     Internal(Cow<'static, str>),
     /// Catchable Python exception (e.g., ValueError, TypeError).
     Exc(ExceptionRaise),
-    /// Uncatchable Python exception from resource limits (MemoryError, TimeoutError).
+    /// Uncatchable Python exception from a resource limit or host abort.
     ///
-    /// These exceptions display with proper tracebacks like normal Python exceptions,
-    /// but cannot be caught by try/except blocks. This prevents untrusted code from
-    /// suppressing resource limit violations.
+    /// Displays a normal traceback but bypasses `try`/`except` blocks.
     UncatchableExc(ExceptionRaise),
 }
 
@@ -2461,15 +2505,16 @@ impl From<fmt::Error> for RunError {
 }
 
 impl RunError {
-    /// Whether this is a catchable `StopIteration`, i.e. a `__next__` reporting
-    /// exhaustion.
+    /// Whether this is a catchable `StopIteration` from `__next__`.
     ///
-    /// Excluding `UncatchableExc` is defensive — it is only ever built from a
-    /// `ResourceError` — but spelled out so a future uncatchable variant cannot
-    /// read as "the iterator finished", letting sandboxed code absorb its own
-    /// limit breach.
+    /// Matching only `Exc` prevents uncatchable errors being mistaken for exhaustion.
     pub(crate) fn is_stop_iteration(&self) -> bool {
         matches!(self, Self::Exc(raise) if matches!(raise.exc.exc_type(), ExcType::StopIteration))
+    }
+
+    /// Wraps a host exception so it builds a traceback but bypasses `except`.
+    pub(crate) fn uncatchable(exc: MontyException) -> Self {
+        Self::UncatchableExc(exc.into())
     }
 
     /// Converts this runtime error to a `MontyException` for the public API.

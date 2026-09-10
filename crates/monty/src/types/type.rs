@@ -12,8 +12,8 @@ use crate::{
     intern::{Interns, StaticStrings, StringId},
     modules::collections,
     types::{
-        AttrCallResult, Bytes, Deque, Dict, FrozenSet, List, LongInt, Path, PyTrait, Range, Set, Slice, Str, TimeZone,
-        Tuple,
+        AttrCallResult, Bytes, Deque, Dict, FrozenSet, List, LongInt, Partial, Path, PyTrait, Range, Set, Slice, Str,
+        TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         date, datetime,
         dict::{DictKind, dict_fromkeys},
@@ -61,10 +61,17 @@ pub enum Type {
     Float,
     Range,
     Slice,
+    /// The four `datetime` classes are qualified like `collections.deque`:
+    /// this is the `tp_name` CPython gives these C types, so it is the
+    /// spelling its reprs and type-naming error messages use. `__name__`
+    /// reports the bare name, see `dunder_name`.
+    #[strum(serialize = "datetime.date")]
     Date,
     #[strum(serialize = "datetime.datetime")]
     DateTime,
+    #[strum(serialize = "datetime.timedelta")]
     TimeDelta,
+    #[strum(serialize = "datetime.timezone")]
     TimeZone,
     Str,
     Bytes,
@@ -87,7 +94,13 @@ pub enum Type {
     DictValues,
     Set,
     FrozenSet,
-    Dataclass,
+    /// The type of a host-backed class instance ([`HeapData::HostClass`]),
+    /// for internal dispatch only: `type(x)` materializes a `HostClassType`
+    /// instead, so it never reaches Python code or the host boundary.
+    ///
+    /// [`HeapData::HostClass`]: crate::heap::HeapData::HostClass
+    #[strum(serialize = "HostClass")]
+    HostClass,
     /// An instance of a user-defined class (`class Foo: ...`), carrying the
     /// `HeapId` of its class object so the real class name can be resolved
     /// (via [`Type::name`]) for error messages and reprs. The class
@@ -178,8 +191,8 @@ pub enum Type {
     #[strum(serialize = "Field")]
     DataclassField,
     /// `collections.deque` — qualified like `datetime.datetime`/`re.Pattern` so
-    /// the name matches CPython's `repr` and error messages; only `__name__`
-    /// diverges from CPython's bare `'deque'`. See `limitations/collections.md`.
+    /// the name matches CPython's `repr` and error messages; `__name__` reports
+    /// the bare `'deque'`, see `dunder_name`.
     #[strum(serialize = "collections.deque")]
     Deque,
     /// `iter(deque(...))` — CPython's `_collections._deque_iterator`.
@@ -213,6 +226,16 @@ pub enum Type {
     Object,
     #[strum(serialize = "datetime.time")]
     Time,
+    /// `functools.partial` — qualified like `collections.deque`, so
+    /// `type(p)` reads `<class 'functools.partial'>`.
+    #[strum(serialize = "functools.partial")]
+    Partial,
+    #[strum(serialize = "itertools.accumulate")]
+    ItertoolsAccumulate,
+    #[strum(serialize = "itertools.batched")]
+    ItertoolsBatched,
+    #[strum(serialize = "itertools.zip_longest")]
+    ItertoolsZipLongest,
     /// Iterator produced by a generator expression.
     Generator,
 }
@@ -256,6 +279,19 @@ impl Type {
             Self::Instance(class_id) => class_name(class_id, heap, interns),
             Self::Exception(exc_type) => Cow::Borrowed(exc_type.into()),
             other => Cow::Borrowed(other.into()),
+        }
+    }
+
+    /// The name CPython's `__name__` reports: [`name`](Self::name) with any
+    /// module qualifier stripped (`datetime.date` → `date`). CPython keeps one
+    /// dotted `tp_name` per C type and derives the bare `__name__` from it, so
+    /// reprs and error messages qualify where `__name__` does not. Sandbox
+    /// class names ([`Instance`](Self::Instance)) are identifiers, so
+    /// stripping is a no-op for them.
+    pub(crate) fn dunder_name<'i>(self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
+        match self.name(heap, interns) {
+            Cow::Borrowed(name) => Cow::Borrowed(name.rsplit_once('.').map_or(name, |(_, bare)| bare)),
+            owned @ Cow::Owned(_) => owned,
         }
     }
 
@@ -359,6 +395,9 @@ impl Type {
                 | Self::ItertoolsFilterFalse
                 | Self::ItertoolsStarMap
                 | Self::Generator
+                | Self::ItertoolsAccumulate
+                | Self::ItertoolsBatched
+                | Self::ItertoolsZipLongest
         )
     }
 
@@ -523,6 +562,7 @@ impl Type {
             Self::TimeZone => TimeZone::init(vm, args),
             Self::Iterator => super::iter::init(vm, args),
             Self::Path => Path::init(vm, args),
+            Self::Partial => Partial::init(vm, args),
 
             // Primitive types - inline implementation
             Self::Int => int_init(vm, args),
@@ -557,27 +597,6 @@ impl Type {
             // Non-callable types - raise TypeError
             _ => Err(ExcType::type_error_not_callable(&self.name(vm.heap, vm.interns))),
         }
-    }
-}
-
-/// Truncates f64 to i64 with clamping for out-of-range values.
-///
-/// Python's `int(float)` truncates toward zero. For values outside i64 range,
-/// we clamp to i64::MAX/MIN (Python would use arbitrary precision ints, which
-/// we don't support).
-fn f64_to_i64_truncate(value: f64) -> i64 {
-    // trunc() rounds toward zero, matching Python's int(float) behavior
-    let truncated = value.trunc();
-    if truncated >= i64::MAX as f64 {
-        i64::MAX
-    } else if truncated <= i64::MIN as f64 {
-        i64::MIN
-    } else {
-        // SAFETY for clippy: truncated is guaranteed to be in (i64::MIN, i64::MAX)
-        // after the bounds checks above, so truncation cannot overflow
-        #[expect(clippy::cast_possible_truncation, reason = "bounds checked above")]
-        let result = truncated as i64;
-        result
     }
 }
 
@@ -671,7 +690,7 @@ fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let interns = vm.interns;
     match x {
         Value::Int(i) => Ok(Value::Int(*i)),
-        Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
+        Value::Float(f) => LongInt::value_from_f64(*f, vm.heap),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), 10, vm.heap),
         Value::InternBytes(bytes_id) => parse_int_from_bytes(interns.get_bytes(*bytes_id), 10, vm.heap),

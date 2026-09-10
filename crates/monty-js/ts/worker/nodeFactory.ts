@@ -10,18 +10,15 @@ import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 
 import { WorkerChannel, type WorkerChannelOptions, type WorkerLike } from './channel.js'
+import type { ComponentModules } from './host.js'
 import type { WorkerFactory } from './pool.js'
 
-const entryPath = join(dirname(fileURLToPath(import.meta.url)), 'nodeWorkerEntry.ts')
+const entryPath = join(dirname(fileURLToPath(import.meta.url)), 'nodeWorkerEntry.js')
 
-/** Spawns workers that serve `module` in a worker thread. */
-export function nodeWorkerFactory(module: WebAssembly.Module, options: WorkerChannelOptions = {}): WorkerFactory {
+/** Spawns worker threads that instantiate and serve `modules`. */
+export function nodeWorkerFactory(modules: ComponentModules, options: WorkerChannelOptions = {}): WorkerFactory {
   return () => {
-    const worker = new Worker(entryPath, {
-      // run the .ts entry through the same loader the tests use
-      execArgv: ['--import', '@oxc-node/core/register'],
-      workerData: { module },
-    })
+    const worker = new Worker(entryPath, { workerData: { modules } })
     const like: WorkerLike = {
       post: (message) => worker.postMessage(message),
       onMessage: (handler) => worker.on('message', handler),

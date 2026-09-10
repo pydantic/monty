@@ -22,10 +22,12 @@ use crate::{
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
+    percent_format::{copy_bytes_template, percent_format, percent_format_bytes},
     resource_checks::check_pow_size,
     types::{
         Bytes, BytesIterator, CmpOrder, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
         bytes::{bytes_contains, bytes_repr_fmt, concat_bytes, get_byte_at_index, repeat_bytes},
+        host_class_type,
         instance::{instance_dataclass_eq, instance_getattr, instance_str, instance_user_eq},
         long_int::{
             bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, check_bits_str_digits_limit, i64_cmp_f64,
@@ -34,8 +36,8 @@ use crate::{
         namedtuple::cmp_item_seqs,
         slice::slice_collect_iterator,
         str::{
-            allocate_char, allocate_string, concat_allocate_str, get_char_at_index, repeat_str, str_contains,
-            string_repr_fmt,
+            allocate_char, allocate_string, concat_allocate_str, copy_format_template, get_char_at_index, repeat_str,
+            str_contains, string_repr_fmt,
         },
     },
 };
@@ -235,6 +237,12 @@ impl From<bool> for Value {
 }
 
 impl<'h> PyTrait<'h> for Value {
+    /// Forwards to the inherent [`Value::py_type_name`], so generic `PyTrait`
+    /// callers also see the real class name of a named tuple or host instance.
+    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
+        Self::py_type_name(self, vm)
+    }
+
     fn py_type(&self, vm: &VM<'_>) -> Type {
         match self {
             Self::Undefined => panic!("Cannot get type of undefined value"),
@@ -970,6 +978,15 @@ impl<'h> PyTrait<'h> for Value {
                     Ok(Some(Self::Float(py_float_mod(*v1 as f64, *v2))))
                 }
             }
+            // `str % args` and `bytes % args` are printf-style formatting; heap values reach it via `HeapRead`.
+            (Self::InternString(id), _) => {
+                let template = copy_format_template(vm.interns.get_str(*id), &vm.heap.tracker)?;
+                percent_format(&template, other, vm).map(Some)
+            }
+            (Self::InternBytes(id), _) => {
+                let template = copy_bytes_template(vm.interns.get_bytes(*id), &vm.heap.tracker)?;
+                percent_format_bytes(&template, other, vm).map(Some)
+            }
             (Self::Ref(id), _) => vm.heap.read(*id).py_mod_impl(other, vm),
             _ => Ok(None),
         }
@@ -1383,14 +1400,14 @@ impl Value {
     }
 
     /// Resolved display name of this value's type for error messages and
-    /// reprs — user-class instances render as their real class name rather
-    /// than the generic `"object"`.
+    /// reprs — user-class instances, named tuples, and host class instances
+    /// render as their real class name rather than a generic placeholder.
     ///
     /// The result borrows only `vm.interns` (never the heap), so it can be
     /// captured before `drop_with` cleanup and formatted after.
     #[must_use]
     pub(crate) fn py_type_name<'h>(&self, vm: &VM<'h>) -> Cow<'h, str> {
-        self.namedtuple_class_name(vm.heap, vm.interns)
+        self.dynamic_class_name(vm.heap, vm.interns)
             .unwrap_or_else(|| self.py_type(vm).name(vm.heap, vm.interns))
     }
 
@@ -1399,29 +1416,31 @@ impl Value {
     /// `heap` + `interns` instead (mirrors [`py_type_heap`](Self::py_type_heap)).
     #[must_use]
     pub(crate) fn py_type_name_heap<'i>(&self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
-        self.namedtuple_class_name(heap, interns)
+        self.dynamic_class_name(heap, interns)
             .unwrap_or_else(|| self.py_type_heap(heap).name(heap, interns))
     }
 
-    /// Class name of a named tuple, if this value is one.
+    /// Class name of a named tuple or host class instance, if this value is
+    /// one.
     ///
-    /// Named tuples keep their class name in the heap entry rather than in
-    /// [`Type`], which carries no identity for them. Error messages therefore
-    /// have to reach for it here to name the class (`'P'`) rather than the
-    /// generic `'namedtuple'`, matching CPython — including for structseqs,
-    /// whose stored name is already the qualified `sys.version_info`.
+    /// Both keep their class name in the heap entry rather than in [`Type`],
+    /// which carries no identity for them (unlike `Type::Instance`, whose
+    /// payload is the refcounted class object). Error messages therefore
+    /// reach for it here to name the class (`'P'`, `'Point'`) rather than the
+    /// generic `'namedtuple'` / `'HostClass'`, matching CPython — including
+    /// for structseqs, whose stored name is already the qualified
+    /// `sys.version_info`.
     #[must_use]
-    fn namedtuple_class_name<'i>(&self, heap: &Heap, interns: &'i Interns) -> Option<Cow<'i, str>> {
-        if let Self::Ref(heap_id) = self
-            && let HeapData::NamedTuple(nt) = heap.get(*heap_id)
-        {
-            Some(match nt.name_either() {
-                EitherStr::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
-                EitherStr::Heap(s) => Cow::Owned(s.clone()),
-            })
-        } else {
-            None
-        }
+    fn dynamic_class_name<'i>(&self, heap: &Heap, interns: &'i Interns) -> Option<Cow<'i, str>> {
+        let Self::Ref(heap_id) = self else {
+            return None;
+        };
+        let name = match heap.get(*heap_id) {
+            HeapData::NamedTuple(nt) => nt.name_either(),
+            HeapData::HostClass(hc) => host_class_type(heap, hc.class_id()).name_either(),
+            _ => return None,
+        };
+        Some(name.to_cow(interns))
     }
 
     /// Returns the Python `Type` for immediate (non-heap) values without VM access.
@@ -1741,7 +1760,10 @@ impl Value {
                     |ss| ss == StaticStrings::DunderName,
                 );
                 if is_dunder_name {
-                    return Ok(CallResult::Value(allocate_string(t.name(vm.heap, vm.interns), vm.heap)));
+                    return Ok(CallResult::Value(allocate_string(
+                        t.dunder_name(vm.heap, vm.interns),
+                        vm.heap,
+                    )));
                 }
                 if *t == Type::TimeZone && attr.as_str(vm.interns) == "utc" {
                     return Ok(CallResult::Value(vm.heap.get_timezone_utc()));
@@ -2332,7 +2354,7 @@ pub(crate) fn eq_bytes(b: &[u8], other: &Value, vm: &VM<'_>) -> Option<bool> {
 ///
 /// Used when a string value can come from either the intern table (for known
 /// static strings and keywords) or from a heap-allocated Python string object.
-#[derive(Debug, Clone, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum EitherStr {
     /// Interned string identifier (cheap comparisons and no allocation).
     Interned(StringId),
@@ -2369,6 +2391,34 @@ impl EitherStr {
         match self {
             Self::Interned(id) => interns.get_str(*id),
             Self::Heap(s) => s.as_str(),
+        }
+    }
+
+    /// The text as a `Cow` borrowing only `interns`, so it outlives heap
+    /// borrows — error messages format the name after `drop_with` cleanup.
+    pub fn to_cow<'i>(&self, interns: &'i Interns) -> Cow<'i, str> {
+        match self {
+            Self::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
+            Self::Heap(s) => Cow::Owned(s.clone()),
+        }
+    }
+
+    /// Re-resolves a heap string to its interned id when the interner already
+    /// knows the text.
+    ///
+    /// Builtin attribute dispatch matches on `StringId`, so a name computed at
+    /// runtime (`getattr(x, 'up' + 'per')`) arrives as [`Heap`](Self::Heap) and
+    /// misses every builtin attribute — while still resolving on instances and
+    /// modules, which compare by text. Interning is a lookup, never an insert,
+    /// so sandboxed code cannot grow the interner by guessing names.
+    #[must_use]
+    pub fn resolve_interned(self, interns: &Interns) -> Self {
+        match self {
+            Self::Heap(s) => match interns.get_string_id_by_name(&s) {
+                Some(id) => Self::Interned(id),
+                None => Self::Heap(s),
+            },
+            already @ Self::Interned(_) => already,
         }
     }
 
