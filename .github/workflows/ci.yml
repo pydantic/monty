@@ -501,6 +501,8 @@ jobs:
       - test-rust-os
       - test-python
       - test-js
+      - test-js-packages
+      - test-js-browser-package
       - test-browser
       - bench-test
       - fuzz
@@ -510,6 +512,9 @@ jobs:
         uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
         with:
           jobs: ${{ toJSON(needs) }}
+          # Match the full-build condition below; unexpected skips must still fail the check.
+          allowed-skips: >-
+            ${{ (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)) && '[]' || '["test-js-packages", "test-js-browser-package"]' }}
 
   # Build source distribution
   build-sdist:
