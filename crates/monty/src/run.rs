@@ -11,12 +11,13 @@ use ruff_python_stdlib::identifiers::is_identifier;
 use crate::{
     bytecode::{Code, CodeBuilder, Compiler, FrameExit, Opcode, VM},
     exception_private::{ExcTypeExt, RunError, RunResult},
+    frozen,
     heap::{DropWithContext, Heap, HeapReader},
     intern::{InternerBuilder, Interns, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     object_bridge::MontyObjectExt,
-    parse::{CodeRange, parse, parse_with_interner},
+    parse::{CodeRange, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
     run_progress::{
         RunProgress, answer_unserved_lookups, build_run_progress, check_snapshot_from_converted, convert_frame_exit,
@@ -235,7 +236,9 @@ impl Executor {
         options: CompileOptions,
     ) -> Result<Self, MontyException> {
         check_identifier(&input_names)?;
-        let parse_result = parse(&code, script_name).map_err(|e| e.into_python_exc(script_name, &code))?;
+        let interner = frozen::seed_interner(&code);
+        let parse_result =
+            parse_with_interner(&code, script_name, interner).map_err(|e| e.into_python_exc(script_name, &code))?;
         let prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
 
         // Create interns with empty functions (functions will be set after compilation)
@@ -248,8 +251,10 @@ impl Executor {
         let compile_result = Compiler::compile_module(&prepared.nodes, &interns, &prepared.globals, options)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
-        // Set the compiled functions in the interns
+        // Capture both function tables so suspended dumps resume against the
+        // exact frozen bytecode with which they started.
         interns.set_functions(compile_result.functions);
+        interns.set_frozen_functions(frozen::functions());
 
         Ok(Self {
             globals: prepared.globals,
@@ -313,6 +318,7 @@ impl Executor {
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
         let existing_functions = existing_interns.functions_clone();
+        let frozen_functions = existing_interns.frozen_functions_clone();
         let mut interns = Interns::new(prepared.interner, Vec::new());
         let compile_result = Compiler::compile_module_with_functions(
             &prepared.nodes,
@@ -323,6 +329,7 @@ impl Executor {
         )
         .map_err(|e| e.into_python_exc(script_name, &code))?;
         interns.set_functions(compile_result.functions);
+        interns.set_frozen_functions(frozen_functions);
 
         Ok(Self {
             globals: prepared.globals,
@@ -389,7 +396,8 @@ impl Executor {
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
         let functions = existing_interns.functions_clone();
-        let interns = Interns::new(interner, functions);
+        let mut interns = Interns::new(interner, functions);
+        interns.set_frozen_functions(existing_interns.frozen_functions_clone());
         Ok(Self {
             globals: existing_globals,
             module_code: Arc::new(builder.build(0)),

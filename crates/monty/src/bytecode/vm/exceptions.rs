@@ -2,7 +2,7 @@
 
 use std::fmt::{self, Write};
 
-use super::VM;
+use super::{FrameFunction, VM};
 use crate::{
     builtins::Builtins,
     defer_drop,
@@ -28,8 +28,9 @@ enum ExceptionHandlingResult {
 impl VM<'_> {
     /// Returns the current function name, or `<module>` outside a function.
     fn current_frame_name(&self) -> StringId {
-        match self.current_frame().function_id {
-            Some(func_id) => self.interns.get_function(func_id).name.name_id,
+        match self.current_frame().function {
+            Some(FrameFunction::User(function)) => self.interns.get_function(function).name.name_id,
+            Some(FrameFunction::Frozen(function)) => self.interns.get_frozen_function(function).function().name.name_id,
             None => StaticStrings::Module.into(),
         }
     }
@@ -39,6 +40,11 @@ impl VM<'_> {
     /// Used when raising exceptions to capture traceback information.
     fn make_stack_frame(&self) -> RawStackFrame {
         RawStackFrame::new(self.current_position(), self.current_frame_name(), None)
+    }
+
+    /// Returns whether the active frame implements a builtin in frozen Python.
+    fn current_frame_is_frozen(&self) -> bool {
+        matches!(self.current_frame().function, Some(FrameFunction::Frozen(_)))
     }
 
     /// Attaches initial frame information to an error if it doesn't have any.
@@ -52,7 +58,7 @@ impl VM<'_> {
     fn attach_frame_to_error(&self, error: RunError) -> RunError {
         match error {
             RunError::Exc(mut exc) => {
-                if exc.frame.is_none() {
+                if exc.frame.is_none() && !self.current_frame_is_frozen() {
                     let mut frame = self.make_stack_frame();
                     // Use the hide_caret flag from the error (set by error creators)
                     frame.hide_caret = exc.hide_caret;
@@ -61,7 +67,7 @@ impl VM<'_> {
                 RunError::Exc(exc)
             }
             RunError::UncatchableExc(mut exc) => {
-                if exc.frame.is_none() {
+                if exc.frame.is_none() && !self.current_frame_is_frozen() {
                     let mut frame = self.make_stack_frame();
                     frame.hide_caret = exc.hide_caret;
                     exc.frame = Some(frame);
@@ -372,7 +378,9 @@ impl VM<'_> {
             // Add caller frame info to traceback (if we have a call site).
             // Resolve the offset now — against the caller, which is the current
             // frame after the pop above.
-            if let Some(off) = call_offset {
+            if let Some(off) = call_offset
+                && !this.current_frame_is_frozen()
+            {
                 let pos = this.resolve_offset(off);
                 let frame_name = this.current_frame_name();
                 match &mut error {
@@ -399,7 +407,9 @@ impl VM<'_> {
 
             // Add caller frame info to traceback. Resolve the offset against the
             // caller, which is the current frame after the pop above.
-            if let Some(off) = call_offset {
+            if let Some(off) = call_offset
+                && !self.current_frame_is_frozen()
+            {
                 let pos = self.resolve_offset(off);
                 let frame_name = self.current_frame_name();
                 match &mut error {

@@ -11,7 +11,7 @@ use std::{mem, task::Poll};
 use monty_types::{MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
-use super::{AwaitResult, CallFrame, FrameExit, VM};
+use super::{AwaitResult, CallFrame, FrameExit, FrameFunction, VM};
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
@@ -587,7 +587,7 @@ impl<'h> VM<'h> {
             .suspended_frames
             .drain(..)
             .map(|f| SerializedTaskFrame {
-                function_id: f.function_id,
+                function: f.function,
                 ip: f.ip,
                 stack_base: f.stack_base,
                 locals_count: f.locals_count,
@@ -598,7 +598,7 @@ impl<'h> VM<'h> {
             .collect();
         let current = &self.current_frame;
         frames.push(SerializedTaskFrame {
-            function_id: current.function_id,
+            function: current.function,
             ip: current.ip,
             stack_base: current.stack_base,
             locals_count: current.locals_count,
@@ -651,8 +651,11 @@ impl<'h> VM<'h> {
             let mut frames: Vec<_> = frames
                 .into_iter()
                 .map(|sf| {
-                    let code = match sf.function_id {
-                        Some(func_id) => &self.interns.get_function(func_id).code,
+                    let code = match sf.function {
+                        Some(FrameFunction::User(function)) => &self.interns.get_function(function).code,
+                        Some(FrameFunction::Frozen(function)) => {
+                            &self.interns.get_frozen_function(function).function().code
+                        }
                         None => {
                             // This happens for the main task's module-level code
                             self.module_code.expect("module_code not set for main task frame")
@@ -665,7 +668,7 @@ impl<'h> VM<'h> {
                         stack_base: sf.stack_base,
                         locals_count: sf.locals_count,
                         exception_stack_base: sf.exception_stack_base,
-                        function_id: sf.function_id,
+                        function: sf.function,
                         call_offset: sf.call_offset,
                         should_return: false,
                         is_parked: false,

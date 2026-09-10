@@ -16,6 +16,7 @@ use crate::{
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError},
+    frozen::FrozenFunction,
     function::{ExactPositionalCall, Function},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     heap_data::CellValue,
@@ -931,6 +932,43 @@ impl VM<'_> {
         let coroutine = Coroutine::new(func_id, namespace);
         let coroutine_id = self.heap.allocate(HeapData::Coroutine(coroutine));
         CallResult::Value(Value::Ref(coroutine_id))
+    }
+
+    /// Enters a frozen implementation after its native wrapper has prepared locals.
+    ///
+    /// The native wrapper owns argument validation and iterator setup, so this
+    /// path bypasses Python binding and starts with that iterator on the operand stack.
+    pub(crate) fn call_frozen_exact(
+        &mut self,
+        function: FrozenFunction,
+        args: [Value; 3],
+    ) -> Result<CallResult, RunError> {
+        let call_offset = self.current_offset();
+        let stack_base = self.stack.len();
+        let frozen = self.interns.get_frozen_function(function);
+        let func = frozen.function();
+        let namespace_size = func.namespace_size;
+        let locals_count = u16::try_from(namespace_size).expect("frozen function namespace exceeds u16");
+        assert!(namespace_size >= args.len(), "frozen function has too few local slots");
+
+        let iterator_slot = usize::from(frozen.iterator_slot());
+        let iterator = args[iterator_slot].clone_with_heap(self.heap);
+        self.stack.extend(args);
+        self.stack.resize_with(stack_base + namespace_size, || Value::Undefined);
+        self.stack.push(iterator);
+
+        let exc_stack_base = self.exception_stack.len();
+        self.push_frame(CallFrame::new_frozen(
+            &func.code,
+            stack_base,
+            locals_count,
+            exc_stack_base,
+            function,
+            call_offset,
+            frozen.entry_ip(),
+        ))?;
+
+        Ok(CallResult::FramePushed)
     }
 
     /// Calls a defined function by pushing a new frame or creating a coroutine.

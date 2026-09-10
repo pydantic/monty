@@ -21,13 +21,6 @@ These names are absent from the module namespace rather than stubbed, so they ar
 
 ## Behavioural divergences
 
-- **`reduce()` cannot call a host function.** The reduction function runs through the same synchronous path as
-  `map()`'s, which cannot suspend the VM. An external function raises `NotImplementedError: reduce(): external
-  function 'f' is not yet supported in this context`; one that touches the filesystem raises the same error naming
-  the OS function it maps to, e.g. `reduce(): OS function 'Path.iterdir' is not yet supported in this context` for
-  `os.listdir()`.
-  This covers a `partial` that wraps one.
-  Calling a `partial` anywhere else is unaffected, since that goes through the ordinary call path.
 - **Calling a `partial` charges the native re-entry budget.** A partial stored as a class attribute binds as a bound
   method whose `__func__` is another partial, so a chain of them nests on the interpreter's own call stack without
   pushing a Python frame. Monty bounds that chain at the fixed native re-entry depth (see

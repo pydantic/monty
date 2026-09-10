@@ -12,6 +12,7 @@ mod codecs;
 mod dump_format;
 mod exception_private;
 mod expressions;
+mod frozen;
 mod fstring;
 mod function;
 mod hash;

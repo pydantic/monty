@@ -1,7 +1,10 @@
 use std::mem;
 
-use monty::MontyRun;
-use monty_types::{CompileOptions, DictPairs, MontyClassInstance, MontyClassType, MontyObject, MontyUuid};
+use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
+use monty_types::{
+    CompileOptions, DictPairs, ExcType, ExtFunctionResult, MontyClassInstance, MontyClassType, MontyException,
+    MontyObject, MontyUuid, PrintWriter, ResourceTracker,
+};
 
 /// Test we can reuse exec without borrow checker issues.
 #[test]
@@ -134,31 +137,91 @@ fn external_function_as_init_raises_not_implemented() {
     );
 }
 
-/// `functools.reduce` calls its function through `evaluate_function`, which
-/// cannot suspend, so an external one raises `NotImplementedError` (documented
-/// in `limitations/functools.md`). Rust-side for the same reason as
-/// `external_function_as_init_raises_not_implemented`: on CPython the external
-/// is a real function and the reduction would succeed.
+/// `functools.reduce` runs its callback from a frozen Python frame, allowing
+/// every reduction step to suspend and round-trip through a VM snapshot.
 #[test]
-fn external_function_in_reduce_raises_not_implemented() {
+fn external_function_in_reduce_suspends() {
     let code = "import functools\n\nfunctools.reduce(ext_fn, [1, 2, 3])";
-    let ex = MontyRun::new(
+    let runner = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let err = ex
-        .run_no_limits(vec![MontyObject::Function {
-            name: "ext_fn".to_owned(),
-            docstring: None,
-        }])
+    let progress = runner
+        .start(
+            vec![MontyObject::Function {
+                name: "ext_fn".to_owned(),
+                docstring: None,
+            }],
+            ResourceTracker::default(),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    let bytes = dump("test.py", None, SessionRef::Running(&progress)).unwrap();
+    let Session::Running(restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected running dump")
+    };
+
+    assert_eq!(complete_external_reduce(progress), MontyObject::Int(6));
+    assert_eq!(complete_external_reduce(*restored), MontyObject::Int(6));
+}
+
+/// Resumes both external calls expected from the three-item reduce fixture.
+fn complete_external_reduce(mut progress: RunProgress) -> MontyObject {
+    for (expected_args, result) in [([1, 2], 3), ([3, 3], 6)] {
+        let RunProgress::FunctionCall(call) = progress else {
+            panic!("expected reduce callback, got {progress:?}")
+        };
+        assert_eq!(call.function_name, "ext_fn");
+        assert_eq!(
+            call.args,
+            expected_args.into_iter().map(MontyObject::Int).collect::<Vec<_>>()
+        );
+        progress = call.resume(MontyObject::Int(result), PrintWriter::Stdout).unwrap();
+    }
+    progress.into_complete().expect("expected Complete")
+}
+
+/// The frozen implementation is an interpreter detail and must not appear in
+/// tracebacks when a suspended callback fails in the host.
+#[test]
+fn frozen_reduce_frame_is_hidden_from_traceback() {
+    let code = "import functools\n\nfunctools.reduce(ext_fn, [1, 2])";
+    let runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(
+            vec![MontyObject::Function {
+                name: "ext_fn".to_owned(),
+                docstring: None,
+            }],
+            ResourceTracker::default(),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let RunProgress::FunctionCall(call) = progress else {
+        panic!("expected reduce callback, got {progress:?}")
+    };
+    let error = MontyException::new(ExcType::ValueError, Some("callback failed".to_owned()));
+    let error = call
+        .resume(ExtFunctionResult::Error(error), PrintWriter::Stdout)
         .unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Traceback (most recent call last):\n  File \"test.py\", line 3, in <module>\n    functools.reduce(ext_fn, [1, 2, 3])\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nNotImplementedError: reduce(): external function 'ext_fn' is not yet supported in this context"
-    );
+
+    insta::assert_snapshot!(error, @r#"
+    Traceback (most recent call last):
+      File "test.py", line 3, in <module>
+        functools.reduce(ext_fn, [1, 2])
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ValueError: callback failed
+    "#);
 }
 
 /// A user `__next__` calling an external function cannot suspend: like

@@ -175,6 +175,15 @@ for i in range(1_000):
 len(v)
 ";
 
+const REDUCE: &str = "
+import functools
+
+def add(a, b):
+    return a + b
+
+functools.reduce(add, range(10_000))
+";
+
 /// Comprehensive benchmark exercising most supported Python features.
 /// Code is shared with test_cases/bench__kitchen_sink.py
 const KITCHEN_SINK: &str = include_str!("../../monty/test_cases/bench__kitchen_sink.py");
@@ -496,6 +505,10 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("loop_mod_13_limits__monty", |b| run_monty_limits(b, LOOP_MOD_13, 77));
     #[cfg(not(codspeed))]
     c.bench_function("loop_mod_13__cpython", |b| run_cpython(b, LOOP_MOD_13, 77));
+
+    c.bench_function("reduce__monty", |b| run_monty(b, REDUCE, 49_995_000));
+    #[cfg(not(codspeed))]
+    c.bench_function("reduce__cpython", |b| run_cpython(b, REDUCE, 49_995_000));
 
     c.bench_function("end_to_end__monty", end_to_end_monty);
     c.bench_function("parse_1k_assigns__monty", parse_1k_assigns);

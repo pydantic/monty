@@ -5,14 +5,12 @@
 //! names are absent from the namespace rather than stubbed, so they raise
 //! `AttributeError` up front.
 
-use std::mem;
-
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::Builtins,
-    bytecode::VM,
-    defer_drop,
+    bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    frozen::FrozenFunction,
     heap::{DropGuard, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
@@ -52,7 +50,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 }
 
 /// Dispatches a call to a `functools` module function.
-pub(super) fn call(vm: &mut VM<'_>, function: FunctoolsFunctions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call(vm: &mut VM<'_>, function: FunctoolsFunctions, args: ArgValues) -> RunResult<CallResult> {
     match function {
         FunctoolsFunctions::Reduce => call_reduce(vm, args),
     }
@@ -78,47 +76,38 @@ struct ReduceArgs {
 /// `functools.reduce(function, iterable, /[, initial])` — fold `function` over
 /// `iterable` from the left.
 ///
-/// `function` is called through [`VM::evaluate_function`], which cannot suspend
-/// to the host, so an external function or `os` callback used here raises
-/// `NotImplementedError` as it does under `map()`.
-fn call_reduce(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+/// Native setup preserves CPython's argument and empty-iterator errors, then a
+/// frozen Python frame owns the suspendable callback loop.
+fn call_reduce(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let ReduceArgs {
         function,
         iterable,
         initial,
     } = ReduceArgs::from_args(args, vm)?;
-    defer_drop!(function, vm);
 
-    // `into_py_iter` consumes `iterable`, so `initial` is guarded across the
-    // conversion and reclaimed once it succeeds.
-    let mut guard = DropGuard::new(initial, vm);
-    let iter = iterable.into_py_iter(guard.ctx()).map_err(not_iterable_error)?;
-    let (initial, vm) = guard.into_parts();
-    defer_drop!(iter, vm);
-    let mut iter = iter.read(vm);
+    // Guard values not consumed by iterator conversion, then transfer them
+    // into one setup state once conversion succeeds.
+    let mut guard = DropGuard::new((function, initial), vm);
+    let iterator = iterable.into_py_iter(guard.ctx()).map_err(not_iterable_error)?;
+    let (function, initial) = guard.into_inner();
+    let mut guard = DropGuard::new((function, (iterator, initial)), vm);
+    let ((_, (iterator, initial)), vm) = guard.as_parts_mut();
 
-    let accumulator = match initial {
-        Some(initial) => initial,
+    let accumulator = if let Some(initial) = initial.take() {
+        initial
+    } else {
         // Without `initial` the first item seeds the fold, so a one-item
         // iterable returns that item without ever calling `function`.
-        None => match iter.py_next(vm)? {
+        let mut iterator_read = iterator.read(vm);
+        match iterator_read.py_next(vm)? {
             Some(first) => first,
             None => return Err(ExcType::reduce_empty_iterable()),
-        },
+        }
     };
 
-    let mut acc_guard = DropGuard::new(accumulator, vm);
-    {
-        let (accumulator, vm) = acc_guard.as_parts_mut();
-        while let Some(item) = iter.py_next(vm)? {
-            // Move the accumulator into the call rather than cloning it: on
-            // error `evaluate_function` releases the arguments, and the
-            // placeholder left behind needs no cleanup.
-            let previous = mem::replace(accumulator, Value::None);
-            *accumulator = vm.evaluate_function("reduce()", function, ArgValues::Two(previous, item))?;
-        }
-    }
-    Ok(acc_guard.into_inner())
+    let ((function, (iterator, initial)), vm) = guard.into_parts();
+    debug_assert!(initial.is_none());
+    vm.call_frozen_exact(FrozenFunction::FunctoolsReduce, [function, iterator, accumulator])
 }
 
 /// Rewrites the `TypeError` from a second argument that is not iterable.

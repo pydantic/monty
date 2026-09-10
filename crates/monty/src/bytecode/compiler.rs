@@ -1788,6 +1788,10 @@ impl<'a> Compiler<'a> {
     ///
     /// The `call_pos` is the position of the full call expression for proper traceback caret.
     fn compile_call(&mut self, callable: &Callable, args: &ArgExprs, call_pos: CodeRange) -> Result<(), CompileError> {
+        if self.compile_local_call2(callable, args, call_pos)? {
+            return Ok(());
+        }
+
         // Check if we can use the optimized CallBuiltinFunction path:
         // - Callable must be a builtin function (known at compile time)
         // - Arguments must be positional-only (Empty, One, Two, or Args)
@@ -1948,6 +1952,40 @@ impl<'a> Compiler<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Fuses a local callable and two local arguments into one dispatch.
+    ///
+    /// Only u8-addressable ordinary locals qualify. Operand-byte source
+    /// locations preserve the errors produced by the three removed loads.
+    fn compile_local_call2(
+        &mut self,
+        callable: &Callable,
+        args: &ArgExprs,
+        call_pos: CodeRange,
+    ) -> Result<bool, CompileError> {
+        let (Callable::Name(callable), ArgExprs::Two(arg1, arg2)) = (callable, args) else {
+            return Ok(false);
+        };
+        let (Expr::Name(arg1_name), Expr::Name(arg2_name)) = (&arg1.expr, &arg2.expr) else {
+            return Ok(false);
+        };
+        let names = [*callable, *arg1_name, *arg2_name];
+        if self.is_module_scope || names.iter().any(|name| name.scope != NameScope::Local) {
+            Ok(false)
+        } else if let [Ok(callable_slot), Ok(arg1_slot), Ok(arg2_slot)] =
+            names.map(|name| u8::try_from(name.namespace_id().as_u16()))
+        {
+            let slots = [callable_slot, arg1_slot, arg2_slot];
+            for (name, slot) in names.into_iter().zip(slots) {
+                self.code.register_local_name(u16::from(slot), name.name_id);
+            }
+            self.code
+                .emit_call_local2(slots, [callable.position, arg1.position, arg2.position], call_pos)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     /// Compiles function call arguments and emits the call instruction.

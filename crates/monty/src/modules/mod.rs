@@ -212,7 +212,7 @@ impl ModuleFunctions {
             Self::Unicodedata(functions) => unicodedata::call(vm, functions, args).map(CallResult::Value),
             Self::Itertools(functions) => itertools::call(vm, functions, args).map(CallResult::Value),
             Self::Dataclasses(functions) => dataclasses::call(vm, functions, args).map(CallResult::Value),
-            Self::Functools(functions) => functools::call(vm, functions, args).map(CallResult::Value),
+            Self::Functools(functions) => functools::call(vm, functions, args),
             Self::Base64(functions) => base64::call(vm, functions, args).map(CallResult::Value),
             Self::Binascii(functions) => binascii::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

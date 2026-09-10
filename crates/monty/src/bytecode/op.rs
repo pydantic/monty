@@ -359,6 +359,9 @@ pub enum Opcode {
     ///
     /// Used for method calls with `*args` and/or `**kwargs` unpacking.
     CallAttrExtended = 87,
+    /// Load a local callable and two local arguments, then call it.
+    /// Operands: u8 callable_slot, u8 arg1_slot, u8 arg2_slot.
+    CallLocal2 = 122,
 
     // === Control Flow ===
     /// Unconditional relative jump. Operand: i16 offset.
@@ -578,6 +581,7 @@ enum OperandShape {
     U16U8U8 = 8,
     CallKw = 9,
     CallAttrKw = 10,
+    U8U8U8 = 11,
 }
 
 impl Opcode {
@@ -697,6 +701,7 @@ impl Opcode {
             | Self::JumpIfFalseOrPop
             | Self::ForIter => OperandShape::Offset,
             Self::CallBuiltinFunction | Self::CallBuiltinType | Self::UnpackEx => OperandShape::U8U8,
+            Self::CallLocal2 => OperandShape::U8U8U8,
             Self::CallAttr | Self::CallAttrExtended | Self::MakeFunction => OperandShape::U16U8,
             Self::LoadGlobalCallable => OperandShape::U16U16,
             Self::MakeClosure => OperandShape::U16U8U8,
@@ -726,15 +731,7 @@ pub enum Operand<'a> {
     I8(i8),
     /// Single u16 operand, little-endian (e.g. `LoadConst`, `BuildList`).
     U16(u16),
-    /// Absolute jump target. `emit_with_operand` computes the signed i16
-    /// relative offset (`target - (jump_start + 3)`) and writes it to bytecode
-    /// as a little-endian i16. Required for jump opcodes: `Jump`, `JumpIfTrue`,
-    /// `JumpIfFalse`, `JumpIfTrueOrPop`, `JumpIfFalseOrPop`, `ForIter`.
-    ///
-    /// Forward jumps pass `current_offset()` as a self-referential placeholder
-    /// (yielding a -3 relative offset); `patch_jump` overwrites it once the
-    /// real target is known. The placeholder is harmless because `#[must_use]`
-    /// on `JumpLabel` catches the "forgot to patch" case at compile time.
+    /// Relative jump offset encoded as a little-endian i16.
     Offset(RelativeOffset),
     /// Two u8 operands (e.g. `UnpackEx`, `CallBuiltinFunction`).
     U8U8(u8, u8),
@@ -744,6 +741,8 @@ pub enum Operand<'a> {
     U16U16(u16, u16),
     /// u16 then two u8s (e.g. `MakeClosure`).
     U16U8U8(u16, u8, u8),
+    /// Three u8 operands (e.g. `CallLocal2`).
+    U8U8U8(u8, u8, u8),
     /// `CallFunctionKw` shape: pos_count (u8), kw_count (u8), kw_count * name_id (u16 each).
     CallKw { pos_count: u8, kwname_ids: &'a [u16] },
     /// `CallAttrKw` shape: attr_name_id (u16), pos_count (u8), kw_count (u8), kw_count * name_id (u16 each).
@@ -767,6 +766,7 @@ impl Operand<'_> {
             Self::U16U8(..) => OperandShape::U16U8,
             Self::U16U16(..) => OperandShape::U16U16,
             Self::U16U8U8(..) => OperandShape::U16U8U8,
+            Self::U8U8U8(..) => OperandShape::U8U8U8,
             Self::CallKw { .. } => OperandShape::CallKw,
             Self::CallAttrKw { .. } => OperandShape::CallAttrKw,
         }
@@ -853,6 +853,10 @@ impl Opcode {
             // MakeClosure: pops `cell_count` cells AND `defaults_count` defaults,
             // pushes the closure → 1 - defaults - cells.
             (MakeClosure, Operand::U16U8U8(_, defaults, cells)) => 1 - i32::from(defaults) - i32::from(cells),
+
+            // === Fixed-effect: U8U8U8 operand ===
+            // Loads three locals, then consumes the callable and two arguments.
+            (CallLocal2, Operand::U8U8U8(..)) => 1,
 
             // === Variable-effect: variable-length kw operands ===
             // pops callable + pos_args + kw_args, pushes result → -(pos_count + kw_count).
@@ -960,7 +964,7 @@ impl Opcode {
             (Jump, Operand::Offset(_)) => 0,
             // Conditional jumps pop the condition on either path, so the tracker absorbs the pop immediately.
             (JumpIfTrue | JumpIfFalse | JumpIfTrueOrPop | JumpIfFalseOrPop, Operand::Offset(_)) => -1,
-            // `ForIter` adds the the value yielded by the iterator to the stack.
+            // `ForIter` adds the value yielded by the iterator to the stack.
             (ForIter, Operand::Offset(_)) => 1,
 
             // Catch-all: opcode emitted with the wrong operand variant, or a

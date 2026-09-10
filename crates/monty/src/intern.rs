@@ -23,6 +23,7 @@ use strum::{EnumCount, EnumIter, EnumString, FromRepr, IntoStaticStr};
 #[cfg(feature = "test-hooks")]
 use crate::function::FunctionMetadataFault;
 use crate::{
+    frozen::{FrozenFunction, FrozenFunctionCode},
     function::Function,
     hash::{ASCII_HASHES, HashValue, STATIC_HASHES, WithHash, hash_python_str},
     value::Value,
@@ -1417,6 +1418,8 @@ pub(crate) struct Interns {
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Function>,
+    /// Frozen function bytecode pinned to this compiled program and its dumps.
+    frozen_functions: Vec<FrozenFunctionCode>,
     /// `String → StringId` reverse lookup for [`Self::get_string_id_by_name`].
     ///
     /// Built from `strings` at construction and after deserialization, so
@@ -1435,6 +1438,8 @@ struct InternsWire {
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Function>,
+    /// Frozen function bytecode captured when this program was compiled.
+    frozen_functions: Vec<FrozenFunctionCode>,
 }
 
 impl From<Interns> for InternsWire {
@@ -1444,6 +1449,7 @@ impl From<Interns> for InternsWire {
             bytes: interns.bytes,
             long_ints: interns.long_ints,
             functions: interns.functions,
+            frozen_functions: interns.frozen_functions,
         }
     }
 }
@@ -1456,6 +1462,7 @@ impl From<InternsWire> for Interns {
             bytes: wire.bytes,
             long_ints: wire.long_ints,
             functions: wire.functions,
+            frozen_functions: wire.frozen_functions,
             string_id_by_name,
         }
     }
@@ -1493,6 +1500,7 @@ impl Interns {
             bytes: interner.bytes,
             long_ints: interner.long_ints,
             functions,
+            frozen_functions: Vec::new(),
             string_id_by_name: interner.string_map,
         }
     }
@@ -1639,12 +1647,29 @@ impl Interns {
         self.string_id_by_name.get(s).copied()
     }
 
-    /// Sets the compiled functions.
+    /// Sets the compiled user functions.
     ///
     /// This is called after compilation to populate the functions that were
     /// compiled from `PreparedFunctionDef` nodes.
     pub fn set_functions(&mut self, functions: Vec<Function>) {
         self.functions = functions;
+    }
+
+    /// Returns the frozen function selected by its stable identity.
+    pub(crate) fn get_frozen_function(&self, function: FrozenFunction) -> &FrozenFunctionCode {
+        self.frozen_functions
+            .get(function.index())
+            .expect("Frozen function not found")
+    }
+
+    /// Replaces the frozen bytecode captured by this compiled program.
+    pub(crate) fn set_frozen_functions(&mut self, functions: Vec<FrozenFunctionCode>) {
+        self.frozen_functions = functions;
+    }
+
+    /// Returns a clone of the frozen functions for incremental compilation.
+    pub(crate) fn frozen_functions_clone(&self) -> Vec<FrozenFunctionCode> {
+        self.frozen_functions.clone()
     }
 
     /// Returns a clone of the compiled function table.

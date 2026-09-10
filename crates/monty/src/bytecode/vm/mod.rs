@@ -33,6 +33,7 @@ use crate::{
     },
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    frozen::FrozenFunction,
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
@@ -347,6 +348,18 @@ impl<C: ContainsHeap> DropWithContext<C> for FrameExit {
     }
 }
 
+/// Identifies the code backing a non-module frame.
+///
+/// Frozen identities select bytecode captured in the executor, so a dump keeps
+/// running the implementation from the release that created it.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub(crate) enum FrameFunction {
+    /// A function compiled from sandbox source.
+    User(FunctionId),
+    /// An interpreter function implemented in frozen Python.
+    Frozen(FrozenFunction),
+}
+
 /// A single function activation record.
 ///
 /// Each frame represents one level in the call stack and owns its own
@@ -381,8 +394,8 @@ pub struct CallFrame<'code> {
     /// exceptions intact when abandoned handlers are unwound.
     exception_stack_base: usize,
 
-    /// Function ID (for tracebacks). None for module-level code.
-    function_id: Option<FunctionId>,
+    /// Function identity for code lookup and tracebacks; `None` at module level.
+    function: Option<FrameFunction>,
 
     /// Caller's bytecode offset at the call site (for tracebacks). Stored raw
     /// and resolved to a `CodeRange` lazily on unwind (see `resolve_offset`) to
@@ -419,7 +432,7 @@ impl<'code> CallFrame<'code> {
             stack_base: 0,
             locals_count: 0,
             exception_stack_base,
-            function_id: None,
+            function: None,
             call_offset: None,
             should_return: false,
             is_parked: false,
@@ -450,14 +463,56 @@ impl<'code> CallFrame<'code> {
         function_id: FunctionId,
         call_offset: Option<u32>,
     ) -> Self {
-        Self {
+        Self::new_with_function(
             code,
-            bytecode: code.bytecode(),
-            ip: 0,
             stack_base,
             locals_count,
             exception_stack_base,
-            function_id: Some(function_id),
+            FrameFunction::User(function_id),
+            call_offset,
+            0,
+        )
+    }
+
+    /// Creates a frozen frame at its post-native-setup entry point.
+    pub fn new_frozen(
+        code: &'code Code,
+        stack_base: usize,
+        locals_count: u16,
+        exception_stack_base: usize,
+        function: FrozenFunction,
+        call_offset: Option<u32>,
+        entry_ip: usize,
+    ) -> Self {
+        Self::new_with_function(
+            code,
+            stack_base,
+            locals_count,
+            exception_stack_base,
+            FrameFunction::Frozen(function),
+            call_offset,
+            entry_ip,
+        )
+    }
+
+    /// Creates a function frame with an explicit code identity and entry point.
+    fn new_with_function(
+        code: &'code Code,
+        stack_base: usize,
+        locals_count: u16,
+        exception_stack_base: usize,
+        function: FrameFunction,
+        call_offset: Option<u32>,
+        ip: usize,
+    ) -> Self {
+        Self {
+            code,
+            bytecode: code.bytecode(),
+            ip,
+            stack_base,
+            locals_count,
+            exception_stack_base,
+            function: Some(function),
             call_offset,
             should_return: false,
             is_parked: false,
@@ -515,6 +570,13 @@ impl CallFrame<'_> {
         (a, b)
     }
 
+    /// Fetches three consecutive `u8` operands in a single bounds check.
+    #[inline]
+    fn fetch_u8_u8_u8(&mut self) -> (u8, u8, u8) {
+        let [a, b, c] = self.fetch_array();
+        (a, b, c)
+    }
+
     /// Fetches a little-endian `u16` followed by a `u8`, in a single bounds check.
     ///
     /// Mirrors `CodeBuilder::emit_u16_u8` on the encode side.
@@ -545,12 +607,12 @@ impl CallFrame<'_> {
 
 /// Serializable representation of a call frame.
 ///
-/// Cannot store `&Code` (a reference) — instead stores `FunctionId` to look up
-/// the pre-compiled Code object on resume. Module-level code uses `None`.
+/// Cannot store `&Code` (a reference), so it stores a function identity and
+/// resolves code captured by the executor on resume. Module code uses `None`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SerializedFrame {
-    /// Which function's code this frame executes (None = module-level).
-    function_id: Option<FunctionId>,
+    /// Which function's code this frame executes (`None` = module-level).
+    function: Option<FrameFunction>,
 
     /// Instruction pointer within this frame's bytecode.
     ip: usize,
@@ -588,7 +650,7 @@ impl CallFrame<'_> {
             "cannot serialize frame marked for return - not yet supported"
         );
         SerializedFrame {
-            function_id: self.function_id,
+            function: self.function,
             ip: self.ip,
             stack_base: self.stack_base,
             locals_count: self.locals_count,
@@ -746,8 +808,8 @@ pub struct VM<'h> {
 
     /// Module-level code (for restoring main task frames).
     ///
-    /// Stored here because the main task's frames have `function_id: None` and
-    /// need a reference to the module code when being restored after task switching.
+    /// Stored here because the main task's module frame has no function identity
+    /// and needs its code restored after task switching.
     module_code: Option<&'h Code>,
 
     /// Bytecode IP of the most recent `LoadGlobalCallable` that
@@ -873,13 +935,12 @@ impl<'h> VM<'h> {
 
     /// Reconstructs a VM from a snapshot.
     ///
-    /// The heap must already be deserialized. `FunctionId` values
-    /// in frames are used to look up pre-compiled `Code` objects from the `Interns`.
-    /// The `module_code` is used for frames with `function_id = None`.
+    /// The heap must already be deserialized. Frame identities resolve user or
+    /// captured frozen `Code` through `Interns`; `None` selects `module_code`.
     ///
     /// # Arguments
     /// * `snapshot` - The VM snapshot to restore
-    /// * `module_code` - Compiled module code (for frames with function_id = None)
+    /// * `module_code` - Compiled module code for frames without a function identity
     /// * `heap` - The deserialized heap
     /// * `interns` - Interns for looking up function code
     /// * `print_writer` - Writer for print output
@@ -897,8 +958,9 @@ impl<'h> VM<'h> {
             .frames
             .into_iter()
             .map(|sf| {
-                let code = match sf.function_id {
-                    Some(func_id) => &interns.get_function(func_id).code,
+                let code = match sf.function {
+                    Some(FrameFunction::User(function)) => &interns.get_function(function).code,
+                    Some(FrameFunction::Frozen(function)) => &interns.get_frozen_function(function).function().code,
                     None => module_code,
                 };
                 CallFrame {
@@ -908,7 +970,7 @@ impl<'h> VM<'h> {
                     stack_base: sf.stack_base,
                     locals_count: sf.locals_count,
                     exception_stack_base: sf.exception_stack_base,
-                    function_id: sf.function_id,
+                    function: sf.function,
                     call_offset: sf.call_offset,
                     should_return: false,
                     is_parked: false,
@@ -1581,6 +1643,19 @@ impl<'h> VM<'h> {
                     let arg_count = self.current_frame.fetch_u8() as usize;
                     handle_call_result!(self, self.exec_call_function(arg_count));
                 }
+                Opcode::CallLocal2 => {
+                    let call_ip = self.instruction_ip;
+                    let (callable, arg1, arg2) = self.current_frame.fetch_u8_u8_u8();
+                    if let Err(error) = self.load_fused_call_locals(call_ip, [callable, arg1, arg2]) {
+                        if let Some(result) = self.handle_exception(error) {
+                            return Err(result);
+                        }
+                        yield_if_parked!(self);
+                        continue;
+                    }
+                    self.instruction_ip = call_ip;
+                    handle_call_result!(self, self.exec_call_function(2));
+                }
                 Opcode::CallBuiltinFunction => {
                     let (builtin_id, arg_count) = self.current_frame.fetch_u8_u8();
                     let result = self.exec_call_builtin_function(builtin_id, arg_count as usize);
@@ -2213,6 +2288,18 @@ impl<'h> VM<'h> {
     // Variable Operations
     // ========================================================================
 
+    /// Loads the local operands of a fused two-argument call.
+    ///
+    /// Each operand byte carries the source location of its removed load, so
+    /// failures retain the unfused traceback location.
+    fn load_fused_call_locals(&mut self, call_ip: usize, slots: [u8; 3]) -> RunResult<()> {
+        for (index, slot) in slots.into_iter().enumerate() {
+            self.instruction_ip = call_ip + index + 1;
+            self.load_local(u16::from(slot))?;
+        }
+        Ok(())
+    }
+
     /// Loads a local variable and pushes it onto the stack.
     ///
     /// Raises `UnboundLocalError` if the slot holds `Undefined` — every reachable
@@ -2451,17 +2538,18 @@ impl<'h> VM<'h> {
     }
 
     /// Whether `slot` holds a cell captured from an enclosing function (a
-    /// free variable), as opposed to a cell this frame owns. Module frames
-    /// (`function_id: None`) own all their cells — the only module-level
-    /// cells are inlined-comprehension captures.
+    /// free variable), as opposed to a cell this frame owns. Module and frozen
+    /// frames own all their cells; module cells are inlined-comprehension captures.
     fn is_free_var_slot(&self, slot: u16) -> bool {
-        self.current_frame().function_id.is_some_and(|id| {
-            self.interns
-                .get_function(id)
+        match self.current_frame().function {
+            Some(FrameFunction::User(function)) => self
+                .interns
+                .get_function(function)
                 .free_var_slots
                 .iter()
-                .any(|s| s.as_u16() == slot)
-        })
+                .any(|s| s.as_u16() == slot),
+            Some(FrameFunction::Frozen(_)) | None => false,
+        }
     }
 
     /// Creates a NameError for an unbound free variable.

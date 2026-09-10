@@ -141,6 +141,29 @@ impl CodeBuilder {
         self.emit_with_operand(Opcode::CallBuiltinFunction, Operand::U8U8(builtin_id, arg_count))
     }
 
+    /// Emits `CallLocal2` with source positions for each fused local load.
+    ///
+    /// Operand-byte locations retain precise unbound-local tracebacks even
+    /// though dispatch treats the complete load/load/load/call sequence as one.
+    pub fn emit_call_local2(
+        &mut self,
+        slots: [u8; 3],
+        local_positions: [CodeRange; 3],
+        call_position: CodeRange,
+    ) -> Result<(), CompileError> {
+        if self.is_dead() {
+            return Ok(());
+        }
+        self.set_location(call_position, None);
+        let start = u32::try_from(self.bytecode.len()).map_err(|_| self.bytecode_too_large())?;
+        self.emit_with_operand(Opcode::CallLocal2, Operand::U8U8U8(slots[0], slots[1], slots[2]))?;
+        for (index, position) in local_positions.into_iter().enumerate() {
+            let offset = start + u32::try_from(index + 1).expect("CallLocal2 operand offset exceeds u32");
+            self.location_table.push(LocationEntry::new(offset, position, None));
+        }
+        Ok(())
+    }
+
     /// Emits `CallBuiltinType` instruction.
     ///
     /// Operands: type_id (u8) + arg_count (u8)
@@ -546,6 +569,9 @@ impl CodeBuilder {
                 self.bytecode.extend(w.to_le_bytes());
                 self.bytecode.push(b1);
                 self.bytecode.push(b2);
+            }
+            Operand::U8U8U8(b1, b2, b3) => {
+                self.bytecode.extend([b1, b2, b3]);
             }
             Operand::CallKw { pos_count, kwname_ids } => {
                 let kw_count = u8::try_from(kwname_ids.len()).map_err(|_| self.kw_count_too_large())?;
