@@ -29,7 +29,6 @@ use crate::{
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
     intern::{InternerBuilder, StringId},
-    modules::StandardLib,
     name_map::NameMap,
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try},
@@ -1080,36 +1079,17 @@ impl<'a> Compiler<'a> {
         Ok(compiler.code.build(num_locals))
     }
 
-    /// Compiles an import statement.
-    ///
-    /// Emits `LoadModule` to create the module, then stores it to the binding name.
-    /// If the module is unknown, emits `RaiseImportError` to defer the error to runtime.
-    /// This allows imports inside `if TYPE_CHECKING:` blocks to compile successfully.
+    /// Compiles an import, resolving the module only when execution reaches it.
     fn compile_import(&mut self, module_name: StringId, binding: &Identifier) -> Result<(), CompileError> {
         let position = binding.position;
         self.code.set_location(position, None);
-
-        // Look up the module by name
-        if let Some(builtin_module) = StandardLib::from_string_id(module_name) {
-            // Known module - emit LoadModule
-            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8)?;
-            // Store to the binding (respects Local/Global/Cell scope)
-            self.compile_store(binding)?;
-        } else {
-            // Unknown module - defer error to runtime with RaiseImportError
-            // This allows TYPE_CHECKING imports to compile without error
-            let name_const = self.code.add_const(Value::InternString(module_name))?;
-            self.code.emit_u16(Opcode::RaiseImportError, name_const)?;
-        }
-        Ok(())
+        self.code
+            .emit_u16(Opcode::LoadModule, check_name_index_u16(module_name, position)?)?;
+        self.compile_store(binding)
     }
 
-    /// Compiles a `from module import name, ...` statement.
-    ///
-    /// Creates the module once, then loads each attribute and stores to the binding.
-    /// Invalid attribute names will raise `AttributeError` at runtime.
-    /// If the module is unknown, emits `RaiseImportError` to defer the error to runtime.
-    /// This allows imports inside `if TYPE_CHECKING:` blocks to compile successfully.
+    /// Creates the module once, then loads and binds each imported attribute.
+    /// Missing modules and attributes raise only when execution reaches the import.
     fn compile_import_from(
         &mut self,
         module_name: StringId,
@@ -1117,31 +1097,16 @@ impl<'a> Compiler<'a> {
         position: CodeRange,
     ) -> Result<(), CompileError> {
         self.code.set_location(position, None);
-
-        // Look up the module
-        if let Some(builtin_module) = StandardLib::from_string_id(module_name) {
-            // Known module - emit LoadModule
-            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8)?;
-
-            // For each name to import
-            for (i, (import_name, binding)) in names.iter().enumerate() {
-                // Dup the module if this isn't the last import (last one consumes the module)
-                if i < names.len() - 1 {
-                    self.code.emit(Opcode::Dup)?;
-                }
-
-                // Load the attribute from the module (raises ImportError if not found)
-                let name_idx = check_name_index_u16(*import_name, position)?;
-                self.code.emit_u16(Opcode::LoadAttrImport, name_idx)?;
-
-                // Store to the binding
-                self.compile_store(binding)?;
+        self.code
+            .emit_u16(Opcode::LoadModule, check_name_index_u16(module_name, position)?)?;
+        for (i, (import_name, binding)) in names.iter().enumerate() {
+            // Preserve the module for subsequent attributes; the last load consumes it.
+            if i < names.len() - 1 {
+                self.code.emit(Opcode::Dup)?;
             }
-        } else {
-            // Unknown module - defer error to runtime with RaiseImportError
-            // This allows TYPE_CHECKING imports to compile without error
-            let name_const = self.code.add_const(Value::InternString(module_name))?;
-            self.code.emit_u16(Opcode::RaiseImportError, name_const)?;
+            let name_idx = check_name_index_u16(*import_name, position)?;
+            self.code.emit_u16(Opcode::LoadAttrImport, name_idx)?;
+            self.compile_store(binding)?;
         }
         Ok(())
     }

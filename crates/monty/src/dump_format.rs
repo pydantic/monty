@@ -178,10 +178,7 @@ mod tests {
     use strum::VariantNames;
 
     use super::DUMP_VERSION;
-    use crate::{
-        bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint,
-        intern::static_strings_fingerprint, types::Type,
-    };
+    use crate::{bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, types::Type};
 
     /// If a component changes incompatibly, bump `DUMP_VERSION` before updating its
     /// expected fingerprint. Compatible changes only require a fingerprint update.
@@ -192,13 +189,8 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0x0d57_34dd_be07_19ac,
+            0xc121_c3a3_9312_15ad,
             "opcodes changed for dump version {DUMP_VERSION}"
-        );
-        assert_eq!(
-            static_strings_fingerprint(),
-            0x6ef2_6279_a467_3927,
-            "static strings changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(
             comparison_operators_fingerprint(),

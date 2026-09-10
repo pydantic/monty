@@ -8,24 +8,25 @@
 //! During execution, lookups are needed only for error messages and repr output.
 //!
 //! StringIds are laid out as follows:
-//! * 0 to 128 - single character strings for all 128 ASCII characters
-//! * 1000 to count(StaticStrings) - strings StaticStrings
-//! * 10_000+ - strings interned per executor
+//! * 0 to 127 - single character strings for all 128 ASCII characters
+//! * 128+ - strings interned per executor
+//!
+//! Static strings occupy ordinary executor-local slots. Their interner entries
+//! retain a [`StaticStrings`] tag for dispatch, while snapshots serialize only
+//! their text so another build can load an unknown static string as owned text.
 
-use std::{slice::from_ref, str::FromStr};
+use std::{cell::RefCell, mem, ops::Index, slice::from_ref, str::FromStr, sync::LazyLock};
 
 use ahash::AHashMap;
 use num_bigint::BigInt;
-#[cfg(test)]
-use strum::IntoEnumIterator;
-use strum::{EnumCount, EnumIter, EnumString, FromRepr, IntoStaticStr};
+use strum::{EnumString, FromRepr, IntoStaticStr};
 
 #[cfg(feature = "test-hooks")]
 use crate::function::FunctionMetadataFault;
 use crate::{
     function::Function,
-    hash::{ASCII_HASHES, HashValue, STATIC_HASHES, WithHash, hash_python_str},
-    value::Value,
+    hash::{ASCII_HASHES, HashValue, WithHash, hash_python_str},
+    heap::{HeapId, StableHeap},
 };
 
 /// Index into the string interner's storage.
@@ -56,19 +57,23 @@ impl StringId {
     pub const fn from_ascii(byte: u8) -> Self {
         Self(byte as u32)
     }
-
-    /// Const equivalent of `StringId::from(StaticStrings)`, for building
-    /// `static` tables (e.g. the `ParamSpec`s emitted by `derive(FromArgs)`)
-    /// where trait-based `From` conversions cannot be used.
-    #[must_use]
-    pub const fn from_static(value: StaticStrings) -> Self {
-        Self(value as u32)
-    }
 }
 
-/// StringId offsets
-const STATIC_STRING_ID_OFFSET: u16 = 1000;
-const INTERN_STRING_ID_OFFSET: usize = 10_000;
+/// Executor-local intern IDs follow the globally reserved ASCII IDs.
+const INTERN_STRING_ID_OFFSET: usize = ASCII_STRS.len();
+
+/// Strings runtime paths can materialize without a corresponding source name.
+const CORE_STATIC_STRINGS: &[StaticStrings] = &[
+    StaticStrings::EmptyString,
+    StaticStrings::Module,
+    StaticStrings::NoneRepr,
+    StaticStrings::TrueRepr,
+    StaticStrings::FalseRepr,
+    StaticStrings::EllipsisRepr,
+    StaticStrings::NotImplementedRepr,
+    StaticStrings::DunderMain,
+    StaticStrings::DunderDoc,
+];
 
 /// Static strings for all 128 ASCII characters.
 ///
@@ -98,31 +103,401 @@ pub(crate) static ASCII_STRS: [&str; 128] = const {
     strs
 };
 
-/// Static string values which are known at compile time and don't need to be interned.
+/// Static string values known at compile time.
 ///
-/// Discriminant starts from STATIC_STRING_ID_OFFSET to make conversion to/from stringid
-/// cheap when within bounds. Discriminants are serialized `StringId`s, so append new
-/// variants at the end — inserting one shifts every later id.
+/// ASCII variants use their character codes, matching reserved ASCII IDs.
+/// Other discriminants are runtime-only: interner entries serialize as text
+/// and recover a tag only when the loading build recognizes that text.
 #[repr(u16)]
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    FromRepr,
-    EnumCount,
-    EnumIter,
-    EnumString,
-    IntoStaticStr,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, EnumString, FromRepr, IntoStaticStr, PartialEq, Eq, Hash)]
 #[strum(serialize_all = "snake_case")]
 pub enum StaticStrings {
+    /// ASCII character 0x00.
+    #[strum(serialize = "\x00")]
+    AsciiNull = 0,
+    /// ASCII character 0x01.
+    #[strum(serialize = "\x01")]
+    AsciiStartOfHeading = 1,
+    /// ASCII character 0x02.
+    #[strum(serialize = "\x02")]
+    AsciiStartOfText = 2,
+    /// ASCII character 0x03.
+    #[strum(serialize = "\x03")]
+    AsciiEndOfText = 3,
+    /// ASCII character 0x04.
+    #[strum(serialize = "\x04")]
+    AsciiEndOfTransmission = 4,
+    /// ASCII character 0x05.
+    #[strum(serialize = "\x05")]
+    AsciiEnquiry = 5,
+    /// ASCII character 0x06.
+    #[strum(serialize = "\x06")]
+    AsciiAcknowledge = 6,
+    /// ASCII character 0x07.
+    #[strum(serialize = "\x07")]
+    AsciiBell = 7,
+    /// ASCII character 0x08.
+    #[strum(serialize = "\x08")]
+    AsciiBackspace = 8,
+    /// ASCII character 0x09.
+    #[strum(serialize = "\x09")]
+    AsciiTab = 9,
+    /// ASCII character 0x0a.
+    #[strum(serialize = "\x0a")]
+    AsciiLineFeed = 10,
+    /// ASCII character 0x0b.
+    #[strum(serialize = "\x0b")]
+    AsciiVerticalTab = 11,
+    /// ASCII character 0x0c.
+    #[strum(serialize = "\x0c")]
+    AsciiFormFeed = 12,
+    /// ASCII character 0x0d.
+    #[strum(serialize = "\x0d")]
+    AsciiCarriageReturn = 13,
+    /// ASCII character 0x0e.
+    #[strum(serialize = "\x0e")]
+    AsciiShiftOut = 14,
+    /// ASCII character 0x0f.
+    #[strum(serialize = "\x0f")]
+    AsciiShiftIn = 15,
+    /// ASCII character 0x10.
+    #[strum(serialize = "\x10")]
+    AsciiDataLinkEscape = 16,
+    /// ASCII character 0x11.
+    #[strum(serialize = "\x11")]
+    AsciiDeviceControl1 = 17,
+    /// ASCII character 0x12.
+    #[strum(serialize = "\x12")]
+    AsciiDeviceControl2 = 18,
+    /// ASCII character 0x13.
+    #[strum(serialize = "\x13")]
+    AsciiDeviceControl3 = 19,
+    /// ASCII character 0x14.
+    #[strum(serialize = "\x14")]
+    AsciiDeviceControl4 = 20,
+    /// ASCII character 0x15.
+    #[strum(serialize = "\x15")]
+    AsciiNegativeAcknowledge = 21,
+    /// ASCII character 0x16.
+    #[strum(serialize = "\x16")]
+    AsciiSynchronousIdle = 22,
+    /// ASCII character 0x17.
+    #[strum(serialize = "\x17")]
+    AsciiEndOfTransmissionBlock = 23,
+    /// ASCII character 0x18.
+    #[strum(serialize = "\x18")]
+    AsciiCancel = 24,
+    /// ASCII character 0x19.
+    #[strum(serialize = "\x19")]
+    AsciiEndOfMedium = 25,
+    /// ASCII character 0x1a.
+    #[strum(serialize = "\x1a")]
+    AsciiSubstitute = 26,
+    /// ASCII character 0x1b.
+    #[strum(serialize = "\x1b")]
+    AsciiEscape = 27,
+    /// ASCII character 0x1c.
+    #[strum(serialize = "\x1c")]
+    AsciiFileSeparator = 28,
+    /// ASCII character 0x1d.
+    #[strum(serialize = "\x1d")]
+    AsciiGroupSeparator = 29,
+    /// ASCII character 0x1e.
+    #[strum(serialize = "\x1e")]
+    AsciiRecordSeparator = 30,
+    /// ASCII character 0x1f.
+    #[strum(serialize = "\x1f")]
+    AsciiUnitSeparator = 31,
+    /// ASCII character 0x20.
+    #[strum(serialize = "\x20")]
+    AsciiSpace = 32,
+    /// ASCII character 0x21.
+    #[strum(serialize = "\x21")]
+    AsciiExclamationMark = 33,
+    /// ASCII character 0x22.
+    #[strum(serialize = "\x22")]
+    AsciiDoubleQuote = 34,
+    /// ASCII character 0x23.
+    #[strum(serialize = "\x23")]
+    AsciiHash = 35,
+    /// ASCII character 0x24.
+    #[strum(serialize = "\x24")]
+    AsciiDollar = 36,
+    /// ASCII character 0x25.
+    #[strum(serialize = "\x25")]
+    AsciiPercent = 37,
+    /// ASCII character 0x26.
+    #[strum(serialize = "\x26")]
+    AsciiAmpersand = 38,
+    /// ASCII character 0x27.
+    #[strum(serialize = "\x27")]
+    AsciiSingleQuote = 39,
+    /// ASCII character 0x28.
+    #[strum(serialize = "\x28")]
+    AsciiLeftParen = 40,
+    /// ASCII character 0x29.
+    #[strum(serialize = "\x29")]
+    AsciiRightParen = 41,
+    /// ASCII character 0x2a.
+    #[strum(serialize = "\x2a")]
+    AsciiAsterisk = 42,
+    /// ASCII character 0x2b.
+    #[strum(serialize = "\x2b")]
+    AsciiPlus = 43,
+    /// ASCII character 0x2c.
+    #[strum(serialize = "\x2c")]
+    AsciiComma = 44,
+    /// ASCII character 0x2d.
+    #[strum(serialize = "\x2d")]
+    AsciiHyphen = 45,
+    /// ASCII character 0x2e.
+    #[strum(serialize = "\x2e")]
+    AsciiDot = 46,
+    /// ASCII character 0x2f.
+    #[strum(serialize = "\x2f")]
+    AsciiSlash = 47,
+    /// ASCII character 0x30.
+    #[strum(serialize = "\x30")]
+    AsciiDigit0 = 48,
+    /// ASCII character 0x31.
+    #[strum(serialize = "\x31")]
+    AsciiDigit1 = 49,
+    /// ASCII character 0x32.
+    #[strum(serialize = "\x32")]
+    AsciiDigit2 = 50,
+    /// ASCII character 0x33.
+    #[strum(serialize = "\x33")]
+    AsciiDigit3 = 51,
+    /// ASCII character 0x34.
+    #[strum(serialize = "\x34")]
+    AsciiDigit4 = 52,
+    /// ASCII character 0x35.
+    #[strum(serialize = "\x35")]
+    AsciiDigit5 = 53,
+    /// ASCII character 0x36.
+    #[strum(serialize = "\x36")]
+    AsciiDigit6 = 54,
+    /// ASCII character 0x37.
+    #[strum(serialize = "\x37")]
+    AsciiDigit7 = 55,
+    /// ASCII character 0x38.
+    #[strum(serialize = "\x38")]
+    AsciiDigit8 = 56,
+    /// ASCII character 0x39.
+    #[strum(serialize = "\x39")]
+    AsciiDigit9 = 57,
+    /// ASCII character 0x3a.
+    #[strum(serialize = "\x3a")]
+    AsciiColon = 58,
+    /// ASCII character 0x3b.
+    #[strum(serialize = "\x3b")]
+    AsciiSemicolon = 59,
+    /// ASCII character 0x3c.
+    #[strum(serialize = "\x3c")]
+    AsciiLessThan = 60,
+    /// ASCII character 0x3d.
+    #[strum(serialize = "\x3d")]
+    AsciiEquals = 61,
+    /// ASCII character 0x3e.
+    #[strum(serialize = "\x3e")]
+    AsciiGreaterThan = 62,
+    /// ASCII character 0x3f.
+    #[strum(serialize = "\x3f")]
+    AsciiQuestionMark = 63,
+    /// ASCII character 0x40.
+    #[strum(serialize = "\x40")]
+    AsciiAt = 64,
+    /// ASCII character 0x41.
+    #[strum(serialize = "\x41")]
+    AsciiA = 65,
+    /// ASCII character 0x42.
+    #[strum(serialize = "\x42")]
+    AsciiB = 66,
+    /// ASCII character 0x43.
+    #[strum(serialize = "\x43")]
+    AsciiC = 67,
+    /// ASCII character 0x44.
+    #[strum(serialize = "\x44")]
+    AsciiD = 68,
+    /// ASCII character 0x45.
+    #[strum(serialize = "\x45")]
+    AsciiE = 69,
+    /// ASCII character 0x46.
+    #[strum(serialize = "\x46")]
+    AsciiF = 70,
+    /// ASCII character 0x47.
+    #[strum(serialize = "\x47")]
+    AsciiG = 71,
+    /// ASCII character 0x48.
+    #[strum(serialize = "\x48")]
+    AsciiH = 72,
+    /// ASCII character 0x49.
+    #[strum(serialize = "\x49")]
+    AsciiI = 73,
+    /// ASCII character 0x4a.
+    #[strum(serialize = "\x4a")]
+    AsciiJ = 74,
+    /// ASCII character 0x4b.
+    #[strum(serialize = "\x4b")]
+    AsciiK = 75,
+    /// ASCII character 0x4c.
+    #[strum(serialize = "\x4c")]
+    AsciiL = 76,
+    /// ASCII character 0x4d.
+    #[strum(serialize = "\x4d")]
+    AsciiM = 77,
+    /// ASCII character 0x4e.
+    #[strum(serialize = "\x4e")]
+    AsciiN = 78,
+    /// ASCII character 0x4f.
+    #[strum(serialize = "\x4f")]
+    AsciiO = 79,
+    /// ASCII character 0x50.
+    #[strum(serialize = "\x50")]
+    AsciiP = 80,
+    /// ASCII character 0x51.
+    #[strum(serialize = "\x51")]
+    AsciiQ = 81,
+    /// ASCII character 0x52.
+    #[strum(serialize = "\x52")]
+    AsciiR = 82,
+    /// ASCII character 0x53.
+    #[strum(serialize = "\x53")]
+    AsciiS = 83,
+    /// ASCII character 0x54.
+    #[strum(serialize = "\x54")]
+    AsciiT = 84,
+    /// ASCII character 0x55.
+    #[strum(serialize = "\x55")]
+    AsciiU = 85,
+    /// ASCII character 0x56.
+    #[strum(serialize = "\x56")]
+    AsciiV = 86,
+    /// ASCII character 0x57.
+    #[strum(serialize = "\x57")]
+    AsciiW = 87,
+    /// ASCII character 0x58.
+    #[strum(serialize = "\x58")]
+    AsciiX = 88,
+    /// ASCII character 0x59.
+    #[strum(serialize = "\x59")]
+    AsciiY = 89,
+    /// ASCII character 0x5a.
+    #[strum(serialize = "\x5a")]
+    AsciiZ = 90,
+    /// ASCII character 0x5b.
+    #[strum(serialize = "\x5b")]
+    AsciiLeftBracket = 91,
+    /// ASCII character 0x5c.
+    #[strum(serialize = "\x5c")]
+    AsciiBackslash = 92,
+    /// ASCII character 0x5d.
+    #[strum(serialize = "\x5d")]
+    AsciiRightBracket = 93,
+    /// ASCII character 0x5e.
+    #[strum(serialize = "\x5e")]
+    AsciiCaret = 94,
+    /// ASCII character 0x5f.
+    #[strum(serialize = "\x5f")]
+    AsciiUnderscore = 95,
+    /// ASCII character 0x60.
+    #[strum(serialize = "\x60")]
+    AsciiBacktick = 96,
+    /// ASCII character 0x61.
+    #[strum(serialize = "\x61")]
+    AsciiLowerA = 97,
+    /// ASCII character 0x62.
+    #[strum(serialize = "\x62")]
+    AsciiLowerB = 98,
+    /// ASCII character 0x63.
+    #[strum(serialize = "\x63")]
+    AsciiLowerC = 99,
+    /// ASCII character 0x64.
+    #[strum(serialize = "\x64")]
+    AsciiLowerD = 100,
+    /// ASCII character 0x65.
+    #[strum(serialize = "\x65")]
+    AsciiLowerE = 101,
+    /// ASCII character 0x66.
+    #[strum(serialize = "\x66")]
+    AsciiLowerF = 102,
+    /// ASCII character 0x67.
+    #[strum(serialize = "\x67")]
+    AsciiLowerG = 103,
+    /// ASCII character 0x68.
+    #[strum(serialize = "\x68")]
+    AsciiLowerH = 104,
+    /// ASCII character 0x69.
+    #[strum(serialize = "\x69")]
+    AsciiLowerI = 105,
+    /// ASCII character 0x6a.
+    #[strum(serialize = "\x6a")]
+    AsciiLowerJ = 106,
+    /// ASCII character 0x6b.
+    #[strum(serialize = "\x6b")]
+    AsciiLowerK = 107,
+    /// ASCII character 0x6c.
+    #[strum(serialize = "\x6c")]
+    AsciiLowerL = 108,
+    /// ASCII character 0x6d.
+    #[strum(serialize = "\x6d")]
+    AsciiLowerM = 109,
+    /// ASCII character 0x6e.
+    #[strum(serialize = "\x6e")]
+    AsciiLowerN = 110,
+    /// ASCII character 0x6f.
+    #[strum(serialize = "\x6f")]
+    AsciiLowerO = 111,
+    /// ASCII character 0x70.
+    #[strum(serialize = "\x70")]
+    AsciiLowerP = 112,
+    /// ASCII character 0x71.
+    #[strum(serialize = "\x71")]
+    AsciiLowerQ = 113,
+    /// ASCII character 0x72.
+    #[strum(serialize = "\x72")]
+    AsciiLowerR = 114,
+    /// ASCII character 0x73.
+    #[strum(serialize = "\x73")]
+    AsciiLowerS = 115,
+    /// ASCII character 0x74.
+    #[strum(serialize = "\x74")]
+    AsciiLowerT = 116,
+    /// ASCII character 0x75.
+    #[strum(serialize = "\x75")]
+    AsciiLowerU = 117,
+    /// ASCII character 0x76.
+    #[strum(serialize = "\x76")]
+    AsciiLowerV = 118,
+    /// ASCII character 0x77.
+    #[strum(serialize = "\x77")]
+    AsciiLowerW = 119,
+    /// ASCII character 0x78.
+    #[strum(serialize = "\x78")]
+    AsciiLowerX = 120,
+    /// ASCII character 0x79.
+    #[strum(serialize = "\x79")]
+    AsciiLowerY = 121,
+    /// ASCII character 0x7a.
+    #[strum(serialize = "\x7a")]
+    AsciiLowerZ = 122,
+    /// ASCII character 0x7b.
+    #[strum(serialize = "\x7b")]
+    AsciiLeftBrace = 123,
+    /// ASCII character 0x7c.
+    #[strum(serialize = "\x7c")]
+    AsciiPipe = 124,
+    /// ASCII character 0x7d.
+    #[strum(serialize = "\x7d")]
+    AsciiRightBrace = 125,
+    /// ASCII character 0x7e.
+    #[strum(serialize = "\x7e")]
+    AsciiTilde = 126,
+    /// ASCII character 0x7f.
+    #[strum(serialize = "\x7f")]
+    AsciiDelete = 127,
     #[strum(serialize = "")]
-    EmptyString = STATIC_STRING_ID_OFFSET,
+    EmptyString,
     #[strum(serialize = "<module>")]
     Module,
     // ==========================
@@ -512,9 +887,6 @@ pub enum StaticStrings {
     // Constants
     /// `math.pi` constant
     Pi,
-    /// `math.e` constant
-    #[strum(serialize = "e")]
-    MathE,
     /// `math.tau` constant
     Tau,
     /// `math.inf` constant
@@ -635,30 +1007,18 @@ pub enum StaticStrings {
     /// `re.IGNORECASE` flag
     #[strum(serialize = "IGNORECASE")]
     Ignorecase,
-    /// `re.I` flag, alias
-    #[strum(serialize = "I")]
-    I,
     /// `re.MULTILINE` flag
     #[strum(serialize = "MULTILINE")]
     MultilineFlag,
-    /// `re.M` flag, alias
-    #[strum(serialize = "M")]
-    M,
     /// `re.DOTALL` flag
     #[strum(serialize = "DOTALL")]
     DotallFlag,
-    /// `re.S` flag, alias
-    #[strum(serialize = "S")]
-    S,
     /// `re.NOFLAG` flag
     #[strum(serialize = "NOFLAG")]
     NoFlag,
     /// `re.ASCII` flag
     #[strum(serialize = "ASCII")]
     AsciiFlag,
-    /// `re.A` flag, alias
-    #[strum(serialize = "A")]
-    A,
     /// `re.PatternError` exception
     #[strum(serialize = "PatternError")]
     PatternError,
@@ -745,10 +1105,7 @@ pub enum StaticStrings {
     // ==========================
     // Class dunder attributes.
     /// `__doc__` — synthesized into the namespace of classes created by the
-    /// 3-arg `type()` builtin when the caller's dict omits it (compiled
-    /// `class` bodies get theirs from the parser). Appended at the enum end:
-    /// StaticStrings discriminants are serialized `StringId`s, so mid-enum
-    /// insertion would shift every later id.
+    /// 3-arg `type()` builtin when the caller's dict omits it.
     #[strum(serialize = "__doc__")]
     DunderDoc,
 
@@ -756,8 +1113,6 @@ pub enum StaticStrings {
     // Singleton `repr()`/`str()` values. Interned so `str(None)`, `repr(True)`,
     // `f"{...}"`, `print(False)` etc. resolve to an existing `StringId` instead
     // of allocating a fresh heap string each time — see `Value::py_repr`.
-    // Appended at the enum end: discriminants are serialized `StringId`s, so
-    // mid-enum insertion would shift every later id.
     #[strum(serialize = "None")]
     NoneRepr,
     #[strum(serialize = "True")]
@@ -768,9 +1123,7 @@ pub enum StaticStrings {
     EllipsisRepr,
 
     // ==========================
-    // os module function/constant names. Appended at the enum end:
-    // discriminants are serialized `StringId`s, so mid-enum insertion would
-    // shift every later id. Constants reuse existing variants where the text
+    // os module function/constant names. Constants reuse existing variants where the text
     // already exists (`Sep` in the kwarg section, `Name`, single-char ASCII
     // ids for `/`, `.`, `\n`).
     /// `os.listdir()` function.
@@ -816,7 +1169,7 @@ pub enum StaticStrings {
     DstDirFd,
 
     // itertools module strings; `count`, `start`, `step` and `object` reuse the
-    // existing variants of the same name. Appended, per the rule above.
+    // existing variants of the same name.
     /// Module name for `import itertools`.
     Itertools,
     /// `itertools.repeat()` function.
@@ -825,8 +1178,7 @@ pub enum StaticStrings {
     Times,
 
     // ==========================
-    // dataclasses module strings. Appended at the enum end: discriminants are
-    // serialized `StringId`s, so mid-enum insertion would shift every later id.
+    // dataclasses module strings.
     /// Module name for `import dataclasses`.
     Dataclasses,
     /// `dataclasses.dataclass` decorator.
@@ -839,8 +1191,7 @@ pub enum StaticStrings {
     DataclassFields,
 
     // ==========================
-    // collections module strings. Appended at the enum end: discriminants are
-    // serialized `StringId`s, so mid-enum insertion would shift every later id.
+    // collections module strings.
     /// Module name for `import collections`.
     Collections,
     /// The `collections.deque` type.
@@ -918,9 +1269,7 @@ pub enum StaticStrings {
     DunderQualname,
 
     // ==========================
-    // More itertools module strings. Appended at the enum end rather than
-    // beside the earlier itertools block: discriminants are serialized
-    // `StringId`s, so inserting there would shift every later id.
+    // More itertools module strings.
     /// `itertools.pairwise()` function.
     Pairwise,
     /// `itertools.compress()` function.
@@ -980,8 +1329,7 @@ pub enum StaticStrings {
     Starmap,
 
     // ==========================
-    // functools module strings
-    // Appended, per the "new variants go at the end" rule above.
+    // functools module strings.
     /// Module name for `import functools`.
     Functools,
     /// `functools.reduce()` function.
@@ -1109,9 +1457,7 @@ pub enum StaticStrings {
     #[strum(serialize = "hexstr")]
     Hexstr,
 
-    /// `datetime.time` class name. Appended rather than filed with the other
-    /// datetime strings so existing discriminants — which dumps encode by
-    /// value — keep their numbering.
+    /// `datetime.time` class name.
     Time,
     /// `datetime.timetz` method name.
     Timetz,
@@ -1206,72 +1552,80 @@ pub enum StaticStrings {
     Header,
 }
 
-/// Computes an FNV-1a hash over static-string identities and serialization.
-#[cfg(test)]
-pub(crate) fn static_strings_fingerprint() -> u64 {
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0100_0000_01b3;
+/// One immutable interned string with directly accessible dispatch metadata.
+/// Snapshots store only text; loading reconstructs the tag and cached hash.
+#[derive(Debug, Clone)]
+struct InternedString {
+    /// Runtime classification, independent of the string's executor-local ID.
+    static_tag: Option<StaticStrings>,
+    /// Text and its eagerly computed Python hash.
+    text: WithHash<InternedText>,
+}
 
-    fn update(hash: &mut u64, bytes: &[u8]) {
-        for byte in u32::try_from(bytes.len())
-            .expect("fingerprint field length fits u32")
-            .to_le_bytes()
-        {
-            *hash ^= u64::from(byte);
-            *hash = hash.wrapping_mul(PRIME);
+/// Ownership of interned text, independent of its dispatch metadata.
+#[derive(Debug, Clone)]
+enum InternedText {
+    /// Text recognized by this build, requiring no owned allocation.
+    Static(&'static str),
+    /// Source or snapshot text unknown to the static registry.
+    Owned(Box<str>),
+}
+
+impl AsRef<str> for InternedText {
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::Static(text) => text,
+            Self::Owned(text) => text,
         }
-        for byte in bytes {
-            *hash ^= u64::from(*byte);
-            *hash = hash.wrapping_mul(PRIME);
+    }
+}
+
+impl InternedString {
+    /// Creates an entry for compile-time-known text.
+    fn static_string(value: StaticStrings) -> Self {
+        Self {
+            static_tag: Some(value),
+            text: WithHash::for_str(InternedText::Static(value.into())),
         }
     }
 
-    let mut hash = OFFSET_BASIS;
-    for value in StaticStrings::iter() {
-        update(&mut hash, &(value as u16).to_le_bytes());
-        update(&mut hash, format!("{value:?}").as_bytes());
-        let string: &'static str = value.into();
-        update(&mut hash, string.as_bytes());
-        update(
-            &mut hash,
-            &postcard::to_allocvec(&value).expect("StaticStrings serialization cannot fail"),
-        );
+    /// Creates an entry owning text not present in the static registry.
+    fn owned(value: String) -> Self {
+        Self {
+            static_tag: None,
+            text: WithHash::for_str(InternedText::Owned(value.into_boxed_str())),
+        }
     }
-    hash
-}
 
-impl StaticStrings {
-    /// Attempts to convert a `StringId` back to a `StaticStrings` variant.
-    ///
-    /// Returns `None` if the `StringId` doesn't correspond to a static string
-    /// (e.g., it's an ASCII char or a dynamically interned string).
-    pub fn from_string_id(id: StringId) -> Option<Self> {
-        u16::try_from(id.0).ok().and_then(Self::from_repr)
+    /// Returns the interned text.
+    fn as_str(&self) -> &str {
+        self.text.value().as_ref()
     }
-}
 
-/// Converts this static string variant to its corresponding `StringId`.
-impl From<StaticStrings> for StringId {
-    fn from(value: StaticStrings) -> Self {
-        Self(value as u32)
+    /// Returns the cached Python hash.
+    fn hash(&self) -> HashValue {
+        self.text.hash()
+    }
+
+    /// Returns the static tag when this build recognizes the text.
+    fn static_value(&self) -> Option<StaticStrings> {
+        self.static_tag
     }
 }
 
-impl From<StaticStrings> for Value {
-    fn from(value: StaticStrings) -> Self {
-        Self::InternString(value.into())
+impl serde::Serialize for InternedString {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(self.as_str(), serializer)
     }
 }
 
-impl PartialEq<StaticStrings> for StringId {
-    fn eq(&self, other: &StaticStrings) -> bool {
-        *self == Self::from(*other)
-    }
-}
-
-impl PartialEq<StringId> for StaticStrings {
-    fn eq(&self, other: &StringId) -> bool {
-        StringId::from(*self) == *other
+impl<'de> serde::Deserialize<'de> for InternedString {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(match StaticStrings::from_str(&value) {
+            Ok(static_string) => Self::static_string(static_string),
+            Err(_) => Self::owned(value),
+        })
     }
 }
 
@@ -1325,6 +1679,81 @@ impl FunctionId {
     }
 }
 
+/// Prehashed core strings reused when constructing independent interners.
+static CORE_ENTRIES: LazyLock<Vec<InternedString>> = LazyLock::new(|| {
+    CORE_STATIC_STRINGS
+        .iter()
+        .copied()
+        .map(InternedString::static_string)
+        .collect()
+});
+
+/// Append-only storage: existing references remain valid across insertion.
+/// No API exposes the underlying arena's removal or mutation operations.
+#[derive(Debug)]
+struct StringEntries(StableHeap<InternedString>);
+
+impl StringEntries {
+    /// Reserves stable slots for a new interner.
+    fn with_capacity(capacity: usize) -> Self {
+        Self(StableHeap::with_capacity(capacity))
+    }
+
+    /// Returns the number of assigned executor-local slots.
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Appends an immutable entry without invalidating borrowed text.
+    fn push(&self, entry: InternedString) {
+        self.0.allocate(entry);
+    }
+
+    /// Looks up an existing slot without exposing arena IDs to callers.
+    fn get(&self, index: usize) -> Option<&InternedString> {
+        (index < self.len()).then(|| self.0.get(HeapId::from_index(index)))
+    }
+
+    /// Visits entries in ID order for cloning and snapshots.
+    fn iter(&self) -> impl Iterator<Item = &InternedString> {
+        (0..self.len()).map(|index| &self[index])
+    }
+}
+
+impl Index<usize> for StringEntries {
+    type Output = InternedString;
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index).expect("invalid string slot")
+    }
+}
+
+impl Clone for StringEntries {
+    fn clone(&self) -> Self {
+        let entries = Self::with_capacity(self.len());
+        for entry in self.iter() {
+            entries.push(entry.clone());
+        }
+        entries
+    }
+}
+
+impl serde::Serialize for StringEntries {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.iter())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for StringEntries {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let values = <Vec<InternedString> as serde::Deserialize>::deserialize(deserializer)?;
+        let entries = Self::with_capacity(values.len());
+        for value in values {
+            entries.push(value);
+        }
+        Ok(entries)
+    }
+}
+
 /// A string, bytes, and long integer interner that stores unique values and returns indices for lookup.
 ///
 /// Interns are deduplicated on insertion - interning the same string twice returns
@@ -1333,16 +1762,16 @@ impl FunctionId {
 ///
 /// # Thread Safety
 ///
-/// The interner is not thread-safe. It's designed to be used single-threaded during
-/// parsing/preparation, then the values are accessed read-only during execution.
-#[derive(Debug, Default, Clone)]
+/// The interner is single-threaded. Entries are immutable, but new static strings
+/// may be appended through shared references during execution.
+#[derive(Debug, Clone)]
 pub struct InternerBuilder {
-    /// Maps strings to their indices for deduplication during interning.
+    /// Maps owned strings to their executor-local IDs.
     string_map: AHashMap<String, StringId>,
-    /// Storage for interned strings, indexed by `StringId`. Each entry pairs
-    /// the string with its precomputed [`HashValue`] (see [`WithHash`]) so
-    /// `str_hash(id)` is a plain index lookup at runtime.
-    strings: Vec<WithHash<String>>,
+    /// Sparse static-tag cache, allocated only when a tag is interned.
+    static_string_ids: RefCell<AHashMap<StaticStrings, StringId>>,
+    /// Storage for all non-ASCII interned strings, indexed by `StringId`.
+    strings: StringEntries,
     /// Storage for interned bytes literals, indexed by `BytesId`. Each
     /// entry carries its precomputed [`HashValue`].
     /// Not deduplicated since bytes literals are rare.
@@ -1353,28 +1782,42 @@ pub struct InternerBuilder {
     long_ints: Vec<WithHash<BigInt>>,
 }
 
+impl Default for InternerBuilder {
+    fn default() -> Self {
+        Self::new("")
+    }
+}
+
 impl InternerBuilder {
-    /// Creates a new string interner with pre-interned strings.
+    /// Creates an interner containing the small set of strings any execution
+    /// may materialize without an explicit source reference.
     ///
-    /// Clones from a lazily-initialized base interner that contains all pre-interned
-    /// strings (`<module>`, attribute names, ASCII chars). This avoids rebuilding
-    /// the base set on every call.
-    ///
-    /// # Arguments
-    /// * `code` - The code being parsed, used for a very rough guess at how many
-    ///   additional strings will be interned beyond the base set.
-    ///
-    /// Pre-interns (via `BASE_INTERNER`):
-    /// - Index 0: `"<module>"` for module-level code
-    /// - Indices 1-MAX_ATTR_ID: Known attribute names (append, insert, get, join, etc.)
-    /// - Indices MAX_ATTR_ID+1..: ASCII single-character strings
+    /// Other static strings receive ordinary slots only when parsing encounters
+    /// them or an imported module materializes its attributes.
+    /// `code` supplies a rough capacity estimate for additional literals.
     pub fn new(code: &str) -> Self {
-        // Reserve capacity for code-specific strings
-        // Rough guess: count quotes and divide by 2 (open+close per string)
+        // Rough guess: count quotes and divide by 2 (open+close per string).
         let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
+        let interner = Self::empty(capacity);
+        interner
+            .static_string_ids
+            .borrow_mut()
+            .reserve(CORE_STATIC_STRINGS.len());
+        for entry in CORE_ENTRIES.iter() {
+            let value = entry.static_value().expect("core entries are static");
+            let id = next_string_id(interner.strings.len());
+            interner.strings.push(entry.clone());
+            interner.static_string_ids.borrow_mut().insert(value, id);
+        }
+        interner
+    }
+
+    /// Reserves room for core entries and estimated source strings.
+    fn empty(string_capacity: usize) -> Self {
         Self {
-            string_map: AHashMap::with_capacity(capacity),
-            strings: Vec::with_capacity(capacity),
+            string_map: AHashMap::with_capacity(string_capacity),
+            static_string_ids: RefCell::new(AHashMap::new()),
+            strings: StringEntries::with_capacity(string_capacity + CORE_STATIC_STRINGS.len()),
             bytes: Vec::new(),
             long_ints: Vec::new(),
         }
@@ -1382,20 +1825,19 @@ impl InternerBuilder {
 
     /// Interns a string, returning its `StringId`.
     ///
-    /// * If the string is ascii, return the pre-interned string id
-    /// * If the string is a known static string, return the pre-interned string id
-    /// * If the string was already interned, returns the existing string id
-    /// * Otherwise, stores the string and returns a new string id
+    /// ASCII characters use their reserved IDs. All other strings are
+    /// deduplicated in the executor-local table; recognized static text stores
+    /// a compact tag rather than an owned allocation.
     pub fn intern(&mut self, s: &str) -> StringId {
-        intern_str(&mut self.string_map, &mut self.strings, s)
+        intern_str(&mut self.string_map, &self.static_string_ids, &self.strings, s)
     }
 
-    /// Looks up the `StringId` for a string already interned (or ascii/static).
+    /// Looks up the `StringId` for an ASCII character or previously interned string.
     ///
     /// Mirrors [`Interns::get_string_id_by_name`] so the compiler can resolve
     /// builtin names before the runtime table is built.
     pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
-        get_string_id_by_name(&self.string_map, s)
+        get_string_id_by_name(&self.string_map, &self.static_string_ids, s)
     }
 
     /// Interns bytes, returning its `BytesId`.
@@ -1423,36 +1865,69 @@ impl InternerBuilder {
     }
 }
 
-/// Interns `s` into a `string_map`/`strings` pair, shared by [`InternerBuilder`]
-/// and [`Interns`] so both tables allocate ids identically.
+/// Interns `s` into the executor-local string table.
 ///
-/// Single-ASCII and [`StaticStrings`] values resolve to their reserved ids
-/// without touching the pool; everything else is deduplicated via `string_map`.
-fn intern_str(string_map: &mut AHashMap<String, StringId>, strings: &mut Vec<WithHash<String>>, s: &str) -> StringId {
+/// ASCII remains globally addressable; every other string receives an ordinary
+/// dense interner slot. Static text retains a tag in that slot rather than
+/// encoding the tag in its `StringId`.
+fn intern_str(
+    string_map: &mut AHashMap<String, StringId>,
+    static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
+    strings: &StringEntries,
+    s: &str,
+) -> StringId {
     if s.len() == 1 {
         StringId::from_ascii(s.as_bytes()[0])
-    } else if let Ok(ss) = StaticStrings::from_str(s) {
-        ss.into()
+    } else if let Ok(value) = StaticStrings::from_str(s) {
+        intern_static(static_string_ids, strings, value)
     } else {
         *string_map.entry(s.to_owned()).or_insert_with(|| {
-            let string_id = strings.len() + INTERN_STRING_ID_OFFSET;
-            let id = StringId(string_id.try_into().expect("StringId overflow"));
-            strings.push(WithHash::for_str(s.to_owned()));
+            let id = next_string_id(strings.len());
+            strings.push(InternedString::owned(s.to_owned()));
             id
         })
     }
 }
 
+/// Interns a static tag into an append-only executor-local table.
+fn intern_static(
+    static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
+    strings: &StringEntries,
+    value: StaticStrings,
+) -> StringId {
+    let existing = static_string_ids.borrow().get(&value).copied();
+    if let Some(id) = existing {
+        id
+    } else {
+        let text: &'static str = value.into();
+        let id = if text.len() == 1 {
+            StringId::from_ascii(text.as_bytes()[0])
+        } else {
+            let id = next_string_id(strings.len());
+            strings.push(InternedString::static_string(value));
+            id
+        };
+        static_string_ids.borrow_mut().insert(value, id);
+        id
+    }
+}
+
+/// Returns the next dense executor-local string ID.
+fn next_string_id(strings_len: usize) -> StringId {
+    let index = strings_len + INTERN_STRING_ID_OFFSET;
+    StringId(index.try_into().expect("StringId overflow"))
+}
+
 /// Reverse of [`get_str`]: the `StringId` for `s`, or `None` if never interned.
-///
-/// Single ASCII char and [`StaticStrings`] ids live in reserved slot ranges
-/// below [`INTERN_STRING_ID_OFFSET`], never in `string_map` — the cheap
-/// branches come first.
-fn get_string_id_by_name(string_map: &AHashMap<String, StringId>, s: &str) -> Option<StringId> {
+fn get_string_id_by_name(
+    string_map: &AHashMap<String, StringId>,
+    static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
+    s: &str,
+) -> Option<StringId> {
     if s.len() == 1 {
         Some(StringId::from_ascii(s.as_bytes()[0]))
-    } else if let Ok(ss) = StaticStrings::from_str(s) {
-        Some(ss.into())
+    } else if let Ok(value) = StaticStrings::from_str(s) {
+        static_string_ids.borrow().get(&value).copied()
     } else {
         string_map.get(s).copied()
     }
@@ -1462,15 +1937,22 @@ fn get_string_id_by_name(string_map: &AHashMap<String, StringId>, s: &str) -> Op
 ///
 /// # Panics
 ///
-/// Panics if the `StringId` is invalid - not from this interner or ascii chars or StaticStrings.
-fn get_str(strings: &[WithHash<String>], id: StringId) -> &str {
+/// Panics if the ID is neither ASCII nor a slot in this interner.
+fn get_str(strings: &StringEntries, id: StringId) -> &str {
     if let Some(ascii_str) = ASCII_STRS.get(id.index()) {
         ascii_str
-    } else if let Some(intern_index) = id.index().checked_sub(INTERN_STRING_ID_OFFSET) {
-        strings[intern_index].value()
     } else {
-        let static_str = StaticStrings::from_string_id(id).expect("Invalid static string ID");
-        static_str.into()
+        strings[id.index() - INTERN_STRING_ID_OFFSET].as_str()
+    }
+}
+
+/// Returns the static tag stored at `id`, if any.
+#[inline]
+fn get_static_string(strings: &StringEntries, id: StringId) -> Option<StaticStrings> {
+    if id.index() < INTERN_STRING_ID_OFFSET {
+        StaticStrings::from_repr(u16::try_from(id.index()).expect("ASCII ID fits u16"))
+    } else {
+        strings[id.index() - INTERN_STRING_ID_OFFSET].static_tag
     }
 }
 
@@ -1487,43 +1969,45 @@ fn get_str(strings: &[WithHash<String>], id: StringId) -> &str {
 ///
 /// # Hash tables
 ///
-/// Each entry in `strings`/`bytes`/`long_ints` is a [`WithHash`] pairing
-/// the value with its precomputed [`HashValue`] — populated eagerly at
-/// intern time by [`InternerBuilder`]. `str_hash` / `bytes_hash` /
-/// `long_int_hash` are plain index lookups.
+/// String entries wrap either a static tag or owned text in [`WithHash`]; bytes
+/// and long integers use `WithHash` directly. Hashes are populated eagerly at
+/// intern/load time, making the runtime hash methods plain index lookups.
 ///
 /// # Reverse string lookup
 ///
 /// [`get_string_id_by_name`](Self::get_string_id_by_name) returns the
-/// `StringId` for a host-supplied `&str`. It is backed by an in-memory
-/// `String → StringId` map that is rebuilt deterministically at construction
-/// time (and after deserialization, via [`InternsWire`]). REPL hot paths
+/// `StringId` for a host-supplied `&str`. Owned text uses an in-memory reverse
+/// map; static tags use a sparse reverse map. Both are rebuilt
+/// deterministically after deserialization. REPL hot paths
 /// such as [`MontyRepl::call_function`](crate::MontyRepl::call_function)
 /// and [`MontyRepl::has_function`](crate::MontyRepl::has_function) call this
 /// per host-supplied name, so the lookup must be O(1) — not the previous
 /// linear scan over `strings`.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-#[serde(from = "InternsWire")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "InternsWire")]
 pub(crate) struct Interns {
-    strings: Vec<WithHash<String>>,
+    strings: StringEntries,
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Function>,
-    /// `String → StringId` reverse lookup for [`Self::get_string_id_by_name`].
-    ///
-    /// Built from `strings` at construction and after deserialization, so
-    /// the structure is purely additive on the wire (`InternsWire` carries
-    /// no reverse map). Single-ASCII and `StaticStrings` ids are NOT stored
-    /// here — those are resolved by the cheap branches at the top of
-    /// `get_string_id_by_name`.
+    /// Owned-text reverse lookup for [`Self::get_string_id_by_name`].
     #[serde(skip)]
     string_id_by_name: AHashMap<String, StringId>,
+    /// Static-tag reverse lookup, rebuilt from `strings` after loading.
+    #[serde(skip)]
+    static_string_ids: RefCell<AHashMap<StaticStrings, StringId>>,
+}
+
+impl Default for Interns {
+    fn default() -> Self {
+        Self::new(InternerBuilder::default(), Vec::new())
+    }
 }
 
 /// Serialized form of [`Interns`]
 #[derive(serde::Deserialize)]
 struct InternsWire {
-    strings: Vec<WithHash<String>>,
+    strings: StringEntries,
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Function>,
@@ -1540,41 +2024,69 @@ impl From<Interns> for InternsWire {
     }
 }
 
-impl From<InternsWire> for Interns {
-    fn from(wire: InternsWire) -> Self {
-        let string_id_by_name = build_string_id_by_name(&wire.strings);
-        Self {
+impl TryFrom<InternsWire> for Interns {
+    type Error = String;
+
+    fn try_from(wire: InternsWire) -> Result<Self, Self::Error> {
+        let (string_id_by_name, static_string_ids) = build_string_maps(&wire.strings)?;
+        let interns = Self {
             strings: wire.strings,
             bytes: wire.bytes,
             long_ints: wire.long_ints,
             functions: wire.functions,
             string_id_by_name,
-        }
+            static_string_ids,
+        };
+        Ok(interns)
     }
 }
 
-/// Builds the `String → StringId` reverse map from the `strings` vector.
+/// Reverse maps rebuilt from the serialized ordered string table.
+type StringMaps = (AHashMap<String, StringId>, RefCell<AHashMap<StaticStrings, StringId>>);
+
+/// Rebuilds both reverse maps from the canonical ordered string table.
 ///
-/// Used both at fresh [`Interns::new`] time and after deserialization. The
-/// ids start at [`INTERN_STRING_ID_OFFSET`] because slots `< OFFSET` are
-/// reserved for ASCII single-character strings and the [`StaticStrings`]
-/// table — those are handled by the cheap branches at the top of
-/// [`Interns::get_string_id_by_name`] and never enter this map.
-fn build_string_id_by_name(strings: &[WithHash<String>]) -> AHashMap<String, StringId> {
-    strings
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| {
-            let id = StringId(
-                u32::try_from(INTERN_STRING_ID_OFFSET + index)
-                    .expect("StringId overflow while building reverse interns map"),
-            );
-            (entry.value().clone(), id)
-        })
-        .collect()
+/// Duplicate text is rejected because distinct IDs for equal interned strings
+/// would invalidate the ID-equality fast path used by Python string equality.
+fn build_string_maps(strings: &StringEntries) -> Result<StringMaps, String> {
+    let mut seen = AHashMap::with_capacity(strings.len());
+    let mut string_id_by_name = AHashMap::new();
+    let static_string_ids = RefCell::new(AHashMap::new());
+    for (index, entry) in strings.iter().enumerate() {
+        let id = next_string_id(index);
+        if seen.insert(entry.as_str(), id).is_some() {
+            return Err(format!("duplicate interned string {:?}", entry.as_str()));
+        }
+        if let Some(value) = entry.static_value() {
+            static_string_ids.borrow_mut().insert(value, id);
+        } else {
+            string_id_by_name.insert(entry.as_str().to_owned(), id);
+        }
+    }
+    Ok((string_id_by_name, static_string_ids))
 }
 
 impl Interns {
+    /// Moves this table out while leaving a cheap, intentionally unusable placeholder.
+    ///
+    /// REPL compilation replaces the placeholder before exposing the session
+    /// again, avoiding full interner initialization on every feed.
+    pub(crate) fn take(&mut self) -> Self {
+        mem::replace(self, Self::placeholder())
+    }
+
+    /// Creates the temporary value used only while an interner is moved out.
+    fn placeholder() -> Self {
+        Self {
+            strings: StringEntries::with_capacity(0),
+            bytes: Vec::new(),
+            long_ints: Vec::new(),
+            functions: Vec::new(),
+            string_id_by_name: AHashMap::new(),
+            static_string_ids: RefCell::new(AHashMap::new()),
+        }
+    }
+
     /// Builds the runtime table from a finished parse/prepare interner and the
     /// functions compiled against it.
     pub fn new(interner: InternerBuilder, functions: Vec<Function>) -> Self {
@@ -1588,6 +2100,7 @@ impl Interns {
             long_ints: interner.long_ints,
             functions,
             string_id_by_name: interner.string_map,
+            static_string_ids: interner.static_string_ids,
         }
     }
 
@@ -1597,6 +2110,7 @@ impl Interns {
     pub(crate) fn into_builder(self) -> (InternerBuilder, Vec<Function>) {
         let builder = InternerBuilder {
             string_map: self.string_id_by_name,
+            static_string_ids: self.static_string_ids,
             strings: self.strings,
             bytes: self.bytes,
             long_ints: self.long_ints,
@@ -1606,11 +2120,15 @@ impl Interns {
 
     /// Interns a string directly into the runtime table.
     ///
-    /// For synthetic REPL inputs that need a couple of ids (a filename, a
-    /// slot name) without going through a parse; same rules as
-    /// [`InternerBuilder::intern`].
+    /// Used by synthetic REPL inputs and lazily created runtime objects; IDs
+    /// remain stable because the table is append-only.
     pub(crate) fn intern(&mut self, s: &str) -> StringId {
-        intern_str(&mut self.string_id_by_name, &mut self.strings, s)
+        intern_str(&mut self.string_id_by_name, &self.static_string_ids, &self.strings, s)
+    }
+
+    /// Interns compile-time-known text directly into the append-only table.
+    pub(crate) fn intern_static(&self, value: StaticStrings) -> StringId {
+        intern_static(&self.static_string_ids, &self.strings, value)
     }
 
     /// Looks up a string by its `StringId`.
@@ -1621,6 +2139,11 @@ impl Interns {
     #[inline]
     pub fn get_str(&self, id: StringId) -> &str {
         get_str(&self.strings, id)
+    }
+
+    /// Returns the static tag stored in an executor-local string slot.
+    pub(crate) fn static_string(&self, id: StringId) -> Option<StaticStrings> {
+        get_static_string(&self.strings, id)
     }
 
     /// Looks up bytes by their `BytesId`.
@@ -1666,15 +2189,8 @@ impl Interns {
 
     /// Returns the Python hash for an interned string.
     ///
-    /// Dispatches by id range:
-    /// * ASCII (`id < 128`): looks up [`ASCII_HASHES`] (per-slot lazy);
-    ///   computes via [`hash_python_str`] on first use of that byte.
-    /// * Static (`id < INTERN_STRING_ID_OFFSET`): looks up [`STATIC_HASHES`]
-    ///   (per-slot lazy); computes from the variant's `&'static str` on
-    ///   first use of that variant.
-    /// * Interned (`id >= INTERN_STRING_ID_OFFSET`): reads the [`HashValue`]
-    ///   from the corresponding [`WithHash`] entry — populated eagerly at
-    ///   intern time.
+    /// ASCII hashes remain globally lazy. Every executor-local entry, static
+    /// or owned, computes and stores its hash once when interned or loaded.
     ///
     /// All three paths must agree with [`hash_python_str`] applied to the
     /// underlying `&str` — interned and heap strings with equal contents
@@ -1687,13 +2203,8 @@ impl Interns {
     pub fn str_hash(&self, id: StringId) -> HashValue {
         if id.index() < ASCII_STRS.len() {
             ASCII_HASHES.get_or_compute(id.index(), || hash_python_str(ASCII_STRS[id.index()]))
-        } else if let Some(intern_index) = id.index().checked_sub(INTERN_STRING_ID_OFFSET) {
-            self.strings[intern_index].hash()
         } else {
-            let static_str = StaticStrings::from_string_id(id).expect("Invalid static string ID");
-            STATIC_HASHES.get_or_compute((static_str as usize) - STATIC_STRING_ID_OFFSET as usize, || {
-                hash_python_str(static_str.into())
-            })
+            self.strings[id.index() - INTERN_STRING_ID_OFFSET].hash()
         }
     }
 
@@ -1728,7 +2239,7 @@ impl Interns {
         self.long_ints[id.index()].hash()
     }
 
-    /// Looks up the `StringId` for a string, checking ASCII, static strings, and interned strings.
+    /// Looks up the executor-local `StringId` for previously interned text.
     ///
     /// This is the reverse of [`Self::get_str`]: given a string, find its
     /// `StringId`. The interned-string branch is O(1) via the
@@ -1743,6 +2254,6 @@ impl Interns {
     ///
     /// Returns `None` if the string was never interned.
     pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
-        get_string_id_by_name(&self.string_id_by_name, s)
+        get_string_id_by_name(&self.string_id_by_name, &self.static_string_ids, s)
     }
 }

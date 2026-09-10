@@ -5,14 +5,12 @@
 
 use std::fmt::{self, Write};
 
-use strum::FromRepr;
-
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::RunResult,
     heap::HeapId,
-    intern::{StaticStrings, StringId},
+    intern::StaticStrings,
 };
 
 pub(crate) mod asyncio;
@@ -35,8 +33,7 @@ pub(crate) mod typing;
 pub(crate) mod unicodedata;
 
 /// Built-in modules that can be imported.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StandardLib {
     /// The `sys` module providing system-specific parameters and functions.
     Sys,
@@ -76,18 +73,14 @@ pub(crate) enum StandardLib {
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
-    /// Gated variants go last because theirs are the only ids allowed to move:
-    /// ungated ids are baked into dumps as the `LoadModule` operand, while a
-    /// `test-hooks` dump never leaves the build that wrote it. Append new
-    /// modules ahead of this block; appending after ties their id to the feature.
     #[cfg(feature = "test-hooks")]
     Gc,
 }
 
 impl StandardLib {
-    /// Get the module from a string ID.
-    pub fn from_string_id(string_id: StringId) -> Option<Self> {
-        match StaticStrings::from_string_id(string_id)? {
+    /// Resolves a module name without depending on enum discriminant order.
+    pub fn from_static(name: StaticStrings) -> Option<Self> {
+        match name {
             StaticStrings::Sys => Some(Self::Sys),
             StaticStrings::Typing => Some(Self::Typing),
             StaticStrings::Asyncio => Some(Self::Asyncio),
@@ -112,9 +105,6 @@ impl StandardLib {
 
     /// Creates a new instance of this module on the heap.
     ///
-    /// # Panics
-    ///
-    /// Panics if the required strings have not been pre-interned during prepare phase.
     pub fn create(self, vm: &mut VM<'_>) -> HeapId {
         match self {
             Self::Sys => sys::create_module(vm),

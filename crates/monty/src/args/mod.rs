@@ -4,7 +4,7 @@ mod from_value;
 
 use std::{mem, slice, vec::IntoIter};
 
-pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
+pub(crate) use bind_native::{Bound, ErrorFamily, KeywordName, Param, ParamKind, ParamSpec, bind};
 pub(crate) use bind_python::Signature;
 #[cfg(feature = "test-hooks")]
 pub(crate) use bind_python::SignatureMetadataFault;

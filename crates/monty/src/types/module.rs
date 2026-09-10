@@ -6,7 +6,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, HeapId, HeapItem, HeapRead},
-    intern::StringId,
+    intern::{Interns, StaticStrings, StringId},
     types::Dict,
     value::{EitherStr, Value},
 };
@@ -27,14 +27,10 @@ pub(crate) struct Module {
 impl Module {
     /// Creates a new module with an empty attributes dictionary.
     ///
-    /// The module name must be pre-interned during the prepare phase.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the module name string has not been pre-interned.
-    pub fn new(name: impl Into<StringId>) -> Self {
+    /// Attribute names are interned lazily when the module materializes them.
+    pub fn new(name: StaticStrings, interns: &Interns) -> Self {
         Self {
-            name: name.into(),
+            name: interns.intern_static(name),
             attrs: Dict::new(),
         }
     }
@@ -51,13 +47,9 @@ impl Module {
 
     /// Sets an attribute in the module's dictionary.
     ///
-    /// The attribute name must be pre-interned during the prepare phase.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the attribute name string has not been pre-interned.
-    pub fn set_attr(&mut self, name: impl Into<StringId>, value: Value, vm: &mut VM<'_>) {
-        let key = Value::InternString(name.into());
+    /// Attribute names are interned lazily when the module materializes them.
+    pub fn set_attr(&mut self, name: StaticStrings, value: Value, vm: &mut VM<'_>) {
+        let key = Value::InternString(vm.interns.intern_static(name));
         // Unwrap is safe because InternString keys are always hashable
         self.attrs.set(key, value, vm).unwrap();
     }

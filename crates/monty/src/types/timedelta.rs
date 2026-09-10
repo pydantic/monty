@@ -454,7 +454,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.string_id() == Some(StaticStrings::TotalSeconds.into()) {
+        if attr.static_string(vm.interns) == Some(StaticStrings::TotalSeconds) {
             // Copy the TimeDelta to release the HeapRead borrow before checking args
             let td = *self.get(vm.heap);
             args.check_zero_args("timedelta.total_seconds", vm.heap)?;
@@ -465,12 +465,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (days, seconds, microseconds) = components(self.get(vm.heap));
-        match attr.string_id() {
-            Some(id) if id == StaticStrings::Days => Ok(Some(CallResult::Value(Value::Int(i64::from(days))))),
-            Some(id) if id == StaticStrings::Seconds => Ok(Some(CallResult::Value(Value::Int(i64::from(seconds))))),
-            Some(id) if id == StaticStrings::Microseconds => {
-                Ok(Some(CallResult::Value(Value::Int(i64::from(microseconds)))))
-            }
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Days) => Ok(Some(CallResult::Value(Value::Int(i64::from(days))))),
+            Some(StaticStrings::Seconds) => Ok(Some(CallResult::Value(Value::Int(i64::from(seconds))))),
+            Some(StaticStrings::Microseconds) => Ok(Some(CallResult::Value(Value::Int(i64::from(microseconds))))),
             _ => Ok(None),
         }
     }

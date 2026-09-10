@@ -342,7 +342,7 @@ impl Executor {
         check_identifier(input_names)?;
 
         let globals_len = globals.len();
-        let (mut interner, mut functions) = mem::take(interns).into_builder();
+        let (mut interner, mut functions) = interns.take().into_builder();
         let compiled = compile_repl_snippet(
             &code,
             script_name,
@@ -364,7 +364,7 @@ impl Executor {
         Ok(Self {
             globals: mem::take(globals),
             module_code: Arc::new(module_code),
-            interns: mem::take(interns),
+            interns: interns.take(),
             code,
             input_slots,
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
@@ -431,7 +431,7 @@ impl Executor {
         Ok(Self {
             globals: existing_globals,
             module_code: Arc::new(builder.build(0)),
-            interns: mem::take(interns),
+            interns: interns.take(),
             code,
             input_slots: vec![args_slot],
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),

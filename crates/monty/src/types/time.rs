@@ -533,8 +533,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.string_id() {
-            Some(id) if id == StaticStrings::Isoformat => {
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Isoformat) => {
                 let IsoformatArgs { timespec } = IsoformatArgs::from_args(args, vm)?;
                 defer_drop!(timespec, vm);
                 let spec = match timespec {
@@ -545,7 +545,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
                 let s = format_isoformat(time, attached_offset(time, vm.heap), spec);
                 Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)))
             }
-            Some(id) if id == StaticStrings::Strftime => {
+            Some(StaticStrings::Strftime) => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
                 defer_drop!(format, vm);
                 // Cloned so the heap borrow ends before `format.as_str(vm)`.
@@ -553,13 +553,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
                 let formatted = format_time_strftime(&time, format.as_str(vm))?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
             }
-            Some(id) if id == StaticStrings::Replace => self.replace(vm, args).map(CallResult::Value),
-            Some(id) if id == StaticStrings::Utcoffset => {
+            Some(StaticStrings::Replace) => self.replace(vm, args).map(CallResult::Value),
+            Some(StaticStrings::Utcoffset) => {
                 args.check_zero_args("time.utcoffset", vm.heap)?;
                 let offset_seconds = attached_offset(self.get(vm.heap), vm.heap);
                 Ok(CallResult::Value(timezone::utcoffset_value(offset_seconds, vm.heap)))
             }
-            Some(id) if id == StaticStrings::Tzname => {
+            Some(StaticStrings::Tzname) => {
                 args.check_zero_args("time.tzname", vm.heap)?;
                 let Some(tz) = attached_timezone(self.get(vm.heap), vm.heap) else {
                     return Ok(CallResult::Value(Value::None));
@@ -567,7 +567,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
                 let name = timezone::tzname_string(tz.offset_seconds, tz.name.as_deref());
                 Ok(CallResult::Value(allocate_string(name, vm.heap)))
             }
-            Some(id) if id == StaticStrings::Dst => {
+            Some(StaticStrings::Dst) => {
                 args.check_zero_args("time.dst", vm.heap)?;
                 // Only fixed-offset zones exist, and none of them observes DST.
                 Ok(CallResult::Value(Value::None))
@@ -580,13 +580,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
         // Read only the field being asked for: cloning the whole `Time` would
         // copy the timezone name's `String` on every `t.hour`.
         let int_attr = |value: u32| Ok(Some(CallResult::Value(Value::Int(i64::from(value)))));
-        match attr.string_id() {
-            Some(id) if id == StaticStrings::Hour => int_attr(u32::from(self.get(vm.heap).hour)),
-            Some(id) if id == StaticStrings::Minute => int_attr(u32::from(self.get(vm.heap).minute)),
-            Some(id) if id == StaticStrings::Second => int_attr(u32::from(self.get(vm.heap).second)),
-            Some(id) if id == StaticStrings::Microsecond => int_attr(self.get(vm.heap).microsecond),
-            Some(id) if id == StaticStrings::Fold => int_attr(u32::from(self.get(vm.heap).fold)),
-            Some(id) if id == StaticStrings::Tzinfo => {
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Hour) => int_attr(u32::from(self.get(vm.heap).hour)),
+            Some(StaticStrings::Minute) => int_attr(u32::from(self.get(vm.heap).minute)),
+            Some(StaticStrings::Second) => int_attr(u32::from(self.get(vm.heap).second)),
+            Some(StaticStrings::Microsecond) => int_attr(self.get(vm.heap).microsecond),
+            Some(StaticStrings::Fold) => int_attr(u32::from(self.get(vm.heap).fold)),
+            Some(StaticStrings::Tzinfo) => {
                 // `HeapId` is `Copy`, so this ends the heap borrow before `inc_ref`.
                 let Some(tzinfo_ref) = self.get(vm.heap).tzinfo_ref() else {
                     return Ok(Some(CallResult::Value(Value::None)));

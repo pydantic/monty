@@ -1327,7 +1327,7 @@ impl<'h> HeapRead<'h, Dict> {
         value: Value,
         vm: &mut VM<'h>,
     ) -> RunResult<Option<Value>> {
-        if self.get(vm.heap).is_defaultdict() && attr.static_string() == Some(StaticStrings::DefaultFactory) {
+        if self.get(vm.heap).is_defaultdict() && attr.static_string(vm.interns) == Some(StaticStrings::DefaultFactory) {
             // Deliberately unvalidated: CPython's setter is a plain member
             // assignment, so a non-callable is stored and only raises
             // `'int' object is not callable` when a missing key finally calls it.
@@ -1492,7 +1492,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // A defaultdict exposes `default_factory`; every other attribute (and all
         // attributes on a plain dict) falls through to the caller's generic error.
-        if self.get(vm.heap).is_defaultdict() && attr.static_string() == Some(StaticStrings::DefaultFactory) {
+        if self.get(vm.heap).is_defaultdict() && attr.static_string(vm.interns) == Some(StaticStrings::DefaultFactory) {
             let factory = self
                 .get(vm.heap)
                 .default_factory()
@@ -1523,7 +1523,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string() else {
+        let Some(method) = attr.static_string(vm.interns) else {
             let type_name = self.py_type(vm).name(vm.heap, vm.interns);
             args.drop_with(vm);
             return Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)));

@@ -1890,20 +1890,8 @@ impl<'h> VM<'h> {
                 }
                 // Module Operations
                 Opcode::LoadModule => {
-                    let module_id = self.current_frame.fetch_u8();
-                    self.load_module(module_id);
-                }
-                Opcode::RaiseImportError => {
-                    // Fetch the module name from the constant pool and raise ModuleNotFoundError
-                    let const_idx = self.current_frame.fetch_u16();
-                    let module_name = self.current_frame.code.constants().get(const_idx);
-                    // The constant should be an InternString from compile_import/compile_import_from
-                    let name_str = match module_name {
-                        Value::InternString(id) => self.interns.get_str(*id),
-                        _ => "<unknown>",
-                    };
-                    let error = ExcType::module_not_found_error(name_str);
-                    catch!(self, error);
+                    let module_id = self.current_frame.fetch_u16();
+                    try_catch!(self, self.load_module(module_id));
                 }
                 // Context Managers
                 Opcode::BeforeWith => {
@@ -1919,13 +1907,16 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// Loads a built-in module and pushes it onto the stack.
-    fn load_module(&mut self, module_id: u8) {
-        let module = StandardLib::from_repr(module_id).expect("unknown module id");
-
-        // Create the module on the heap using pre-interned strings
-        let heap_id = module.create(self);
-        self.push(Value::Ref(heap_id));
+    /// Loads a built-in module, raising `ModuleNotFoundError` for unknown names.
+    fn load_module(&mut self, module_id: u16) -> RunResult<()> {
+        let name_id = StringId::from_index(module_id);
+        if let Some(module) = self.interns.static_string(name_id).and_then(StandardLib::from_static) {
+            let heap_id = module.create(self);
+            self.push(Value::Ref(heap_id));
+            Ok(())
+        } else {
+            Err(ExcType::module_not_found_error(self.interns.get_str(name_id)))
+        }
     }
 
     /// Resumes execution after an external call completes.
@@ -2316,7 +2307,7 @@ impl<'h> VM<'h> {
     /// (`__file__`, `__cached__`, …).
     fn module_dunder(&self, name_id: StringId) -> Option<Value> {
         let value = match self.interns.get_str(name_id) {
-            "__name__" => Value::InternString(StaticStrings::DunderMain.into()),
+            "__name__" => Value::InternString(self.interns.intern_static(StaticStrings::DunderMain)),
             "__debug__" => Value::Bool(true),
             "__annotations__" => Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))),
             "__doc__" | "__spec__" | "__package__" => Value::None,

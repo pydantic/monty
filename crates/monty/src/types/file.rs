@@ -69,7 +69,7 @@ use monty_types::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataAr
 use super::{
     LazyHeapSet, List, PyTrait, Type,
     bytes::Bytes,
-    str::{allocate_string, allocate_string_no_interning},
+    str::{allocate_string_no_interning, allocate_string_with_interns},
 };
 use crate::{
     args::ArgValues,
@@ -330,7 +330,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string() else {
+        let Some(method) = attr.static_string(vm.interns) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(
                 self.py_type(vm).name(vm.heap, vm.interns),
@@ -388,7 +388,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let Some(method) = attr.static_string() else {
+        let Some(method) = attr.static_string(vm.interns) else {
             return Err(ExcType::attribute_error(
                 self.py_type(vm).name(vm.heap, vm.interns),
                 attr.as_str(vm.interns),
@@ -397,10 +397,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
 
         let file = self.get(vm.heap);
         let value = match method {
-            StaticStrings::Name => allocate_string(file.path.clone(), vm.heap),
-            StaticStrings::Mode => allocate_string(file.mode.as_str().to_owned(), vm.heap),
+            StaticStrings::Name => allocate_string_with_interns(file.path.clone(), vm.heap, vm.interns),
+            StaticStrings::Mode => allocate_string_with_interns(file.mode.as_str().to_owned(), vm.heap, vm.interns),
             StaticStrings::Closed => Value::Bool(file.closed),
-            StaticStrings::Encoding if !file.mode.is_binary() => allocate_string("utf-8", vm.heap),
+            StaticStrings::Encoding if !file.mode.is_binary() => {
+                allocate_string_with_interns("utf-8", vm.heap, vm.interns)
+            }
             _ => {
                 return Err(ExcType::attribute_error(
                     self.py_type(vm).name(vm.heap, vm.interns),
@@ -433,7 +435,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
                 }
                 file.mode.is_binary()
             };
-            Ok(CallResult::Value(empty_result(binary, vm.heap)))
+            Ok(CallResult::Value(empty_result(binary, vm)))
         } else {
             self.read_with_spec(vm, spec)
         }
@@ -916,7 +918,7 @@ fn compute_slice_text<'h>(
                     vm.heap.inc_ref(buffer_id);
                     Value::Ref(buffer_id)
                 } else {
-                    allocate_string(tail.to_owned(), vm.heap)
+                    allocate_string_with_interns(tail.to_owned(), vm.heap, vm.interns)
                 };
                 // Preserve `position` if it was already past `buffer_total`
                 // (set there by `seek()`) — CPython's read-at-EOF leaves the
@@ -929,7 +931,7 @@ fn compute_slice_text<'h>(
                 let take = buffer_total.saturating_sub(position).min(n);
                 let bytes_taken = tail.char_indices().nth(take).map_or(tail.len(), |(i, _)| i);
                 let slice = &tail[..bytes_taken];
-                let value = allocate_string(slice.to_owned(), vm.heap);
+                let value = allocate_string_with_interns(slice.to_owned(), vm.heap, vm.interns);
                 let new_pos = position + take;
                 let new_byte_pos = byte_position + bytes_taken;
                 (value, new_pos, new_byte_pos, new_pos >= buffer_total)
@@ -942,7 +944,7 @@ fn compute_slice_text<'h>(
                     }
                     None => (tail, tail.chars().count()),
                 };
-                let value = allocate_string(slice.to_owned(), vm.heap);
+                let value = allocate_string_with_interns(slice.to_owned(), vm.heap, vm.interns);
                 let new_pos = position + chars_consumed;
                 let new_byte_pos = byte_position + slice.len();
                 (value, new_pos, new_byte_pos, new_pos >= buffer_total)
@@ -954,7 +956,7 @@ fn compute_slice_text<'h>(
                     let rest = &tail[start..];
                     let end = rest.find('\n').map_or(rest.len(), |i| i + 1);
                     let line = &rest[..end];
-                    items.push(allocate_string(line.to_owned(), vm.heap));
+                    items.push(allocate_string_with_interns(line.to_owned(), vm.heap, vm.interns));
                     start += end;
                 }
                 let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
@@ -1250,15 +1252,12 @@ fn parse_read_size_arg(size_arg: Option<Value>, vm: &mut VM<'_>) -> RunResult<Re
 
 /// Returns the empty `str` / `bytes` short-circuit result.
 ///
-/// Uses the pre-interned [`StaticStrings::EmptyString`] for the text-mode
-/// path so a hot `read(0)` does not allocate. Binary mode still allocates
-/// a fresh empty `Bytes` because there is no equivalent interned bytes
-/// singleton.
-fn empty_result(binary: bool, heap: &mut Heap) -> Value {
+/// Text mode reuses the canonical empty string without a heap allocation.
+fn empty_result(binary: bool, vm: &VM<'_>) -> Value {
     if binary {
-        Value::Ref(heap.allocate(HeapData::Bytes(Bytes::new(Vec::new()))))
+        Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(Vec::new()))))
     } else {
-        Value::InternString(StaticStrings::EmptyString.into())
+        allocate_string_with_interns("", vm.heap, vm.interns)
     }
 }
 

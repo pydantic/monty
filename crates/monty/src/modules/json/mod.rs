@@ -48,7 +48,7 @@ pub(crate) enum JsonFunctions {
 /// most widely used parts of CPython's `json` module and are sufficient for
 /// common data interchange and round-tripping use cases inside the sandbox.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Json);
+    let mut module = Module::new(StaticStrings::Json, vm.interns);
     module.set_attr(
         StaticStrings::Loads,
         Value::ModuleFunction(ModuleFunctions::Json(JsonFunctions::Loads)),

@@ -244,8 +244,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let date = *self.get(vm.heap);
-        match attr.string_id() {
-            Some(id) if id == StaticStrings::Isoformat => {
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Isoformat) => {
                 args.check_zero_args("date.isoformat", vm.heap)?;
                 let (year, month, day) = to_ymd(date);
                 Ok(CallResult::Value(allocate_string_no_interning(
@@ -253,13 +253,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
                     vm.heap,
                 )))
             }
-            Some(id) if id == StaticStrings::Strftime => {
+            Some(StaticStrings::Strftime) => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
                 defer_drop!(format, vm);
                 let formatted = format_date_strftime(date, format.as_str(vm))?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
             }
-            Some(id) if id == StaticStrings::Replace => {
+            Some(StaticStrings::Replace) => {
                 let (year, month, day) = to_ymd(date);
                 let DateReplaceArgs {
                     year: new_year,
@@ -275,13 +275,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
                     vm.heap.allocate(HeapData::Date(new_date)),
                 )))
             }
-            Some(id) if id == StaticStrings::Weekday => {
+            Some(StaticStrings::Weekday) => {
                 args.check_zero_args("date.weekday", vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     date.0.weekday().num_days_from_monday(),
                 ))))
             }
-            Some(id) if id == StaticStrings::Isoweekday => {
+            Some(StaticStrings::Isoweekday) => {
                 args.check_zero_args("date.isoweekday", vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     date.0.weekday().number_from_monday(),
@@ -293,10 +293,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
-        match attr.string_id() {
-            Some(id) if id == StaticStrings::Year => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),
-            Some(id) if id == StaticStrings::Month => Ok(Some(CallResult::Value(Value::Int(i64::from(month))))),
-            Some(id) if id == StaticStrings::Day => Ok(Some(CallResult::Value(Value::Int(i64::from(day))))),
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Year) => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),
+            Some(StaticStrings::Month) => Ok(Some(CallResult::Value(Value::Int(i64::from(month))))),
+            Some(StaticStrings::Day) => Ok(Some(CallResult::Value(Value::Int(i64::from(day))))),
             _ => Ok(None),
         }
     }

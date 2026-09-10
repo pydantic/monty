@@ -493,7 +493,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
     /// and returned as `CallResult::OsCall` for the VM to yield to the host.
     /// Pure methods (is_absolute, joinpath, etc.) are handled directly.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string() else {
+        let Some(method) = attr.static_string(vm.interns) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
         };
@@ -583,7 +583,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID without string comparison
-        if let Some(ss) = attr.static_string() {
+        if let Some(ss) = attr.static_string(vm.interns) {
             if let Some(v) = self.get(vm.heap).getattr_by_static(ss, vm.heap) {
                 return Ok(Some(CallResult::Value(v)));
             }

@@ -649,15 +649,10 @@ fn render_build_field(field: &Field) -> TokenStream {
 }
 
 impl Field {
-    /// The `Param` literal for the runtime spec. `never_matchable` (the
-    /// struct's `kwargs_not_supported_yet`) forces `kwarg_id: None`.
+    /// The `Param` literal for the runtime spec.
     fn render_param(&self, never_matchable: bool) -> TokenStream {
         let name = self.ident.to_string();
-        let kwarg_id = if never_matchable {
-            quote! { ::std::option::Option::None }
-        } else {
-            self.kwarg_id_expr()
-        };
+        let keyword_name = self.keyword_name_expr(never_matchable);
         let kind = match self.kind {
             FieldKind::PosOnly => quote! { crate::args::ParamKind::PosOnly },
             FieldKind::PosOrKeyword => quote! { crate::args::ParamKind::PosOrKeyword },
@@ -668,37 +663,32 @@ impl Field {
         quote! {
             crate::args::Param {
                 name: #name,
-                kwarg_id: #kwarg_id,
+                keyword_name: #keyword_name,
                 kind: #kind,
                 required: #required,
             }
         }
     }
 
-    /// `Option<StringId>` expression for kwarg matching. Single-char ASCII
-    /// field names use the `StringId::from_ascii` fast path (they aren't
-    /// `StaticStrings` variants); plain `pos_only` fields without a
-    /// `static_string` override get `None` — not matchable by keyword, so a
-    /// kwarg with their name falls through to unknown-kwarg handling rather
-    /// than the "positional-only passed as keyword" error.
-    fn kwarg_id_expr(&self) -> TokenStream {
+    /// Executor-independent tag used to match this parameter by keyword.
+    fn keyword_name_expr(&self, never_matchable: bool) -> TokenStream {
         let name = self.ident.to_string();
-        if matches!(self.kind, FieldKind::PosOnly) && self.static_string.is_none() {
+        if never_matchable || matches!(self.kind, FieldKind::PosOnly) && self.static_string.is_none() {
             quote! { ::std::option::Option::None }
         } else if self.static_string.is_none() && name.len() == 1 && name.is_ascii() {
             let byte = name.as_bytes()[0];
-            quote! { ::std::option::Option::Some(crate::intern::StringId::from_ascii(#byte)) }
+            quote! { ::std::option::Option::Some(crate::args::KeywordName::Ascii(#byte)) }
         } else {
             let variant = self.static_string_variant();
             quote! {
-                ::std::option::Option::Some(crate::intern::StringId::from_static(
+                ::std::option::Option::Some(crate::args::KeywordName::Static(
                     crate::intern::StaticStrings::#variant,
                 ))
             }
         }
     }
 
-    /// `StaticStrings::PascalCase(ident)` — or the override from `static_string = "..."`.
+    /// `StaticStrings::PascalCase(ident)` or the explicit override.
     fn static_string_variant(&self) -> Ident {
         if let Some(explicit) = &self.static_string {
             explicit.clone()
@@ -709,6 +699,7 @@ impl Field {
     }
 }
 
+/// Converts a Rust snake-case field name to its `StaticStrings` variant name.
 fn snake_to_pascal(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut upper = true;

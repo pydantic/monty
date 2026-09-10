@@ -427,20 +427,11 @@ pub enum Opcode {
     Nop = 105,
 
     // === Module Operations ===
-    /// Load a built-in module onto the stack. Operand: u8 module_id.
+    /// Load a built-in module onto the stack. Operand: u16 module-name StringId.
     ///
-    /// The module_id maps to `BuiltinModule` (0=sys, 1=typing).
+    /// The name is resolved through the executor interner at runtime.
     /// Creates the module on the heap and pushes a `Value::Ref` to it.
     LoadModule = 106,
-    /// Raises `ModuleNotFoundError` at runtime. Operand: u16 constant index for module name.
-    ///
-    /// This opcode is emitted when the compiler encounters an import of an unknown module.
-    /// Instead of failing at compile time, the error is deferred to runtime so that
-    /// imports inside `if TYPE_CHECKING:` blocks or other non-executed code paths
-    /// don't cause errors.
-    ///
-    /// The operand is an index into the constant pool where the module name string is stored.
-    RaiseImportError = 107,
     /// Duplicate the top two stack values, preserving order: `[a, b] -> [a, b, a, b]`.
     ///
     Dup2 = 108,
@@ -661,7 +652,6 @@ impl Opcode {
             | Self::DictSetItem
             | Self::CallFunction
             | Self::CallFunctionExtended
-            | Self::LoadModule
             | Self::UnpackSequence
             | Self::DictUpdate
             | Self::SetExtend
@@ -669,7 +659,8 @@ impl Opcode {
             | Self::Assert
             | Self::AssertFailed => OperandShape::U8,
             Self::LoadSmallInt => OperandShape::I8,
-            Self::LoadConst
+            Self::LoadModule
+            | Self::LoadConst
             | Self::LoadLocalW
             | Self::StoreLocalW
             | Self::LoadGlobal
@@ -686,7 +677,6 @@ impl Opcode {
             | Self::LoadAttr
             | Self::LoadAttrImport
             | Self::StoreAttr
-            | Self::RaiseImportError
             | Self::DeleteGlobal
             | Self::RaiseUnboundLocal
             | Self::MethodDictMerge => OperandShape::U16,
@@ -908,7 +898,7 @@ impl Opcode {
             (LoadSmallInt, Operand::I8(_)) => 1,
 
             // === Fixed-effect, U8 operand ===
-            (LoadLocal | LoadModule, Operand::U8(_)) => 1,
+            (LoadLocal, Operand::U8(_)) => 1,
             (StoreLocal, Operand::U8(_)) => -1,
             (DeleteLocal, Operand::U8(_)) => 0,
             // `ListAppend`/`SetAdd`/`DictSetItem` carry a u8 stack-depth operand
@@ -932,7 +922,7 @@ impl Opcode {
             (WithExceptStart, Operand::None) => 1,
 
             // === Fixed-effect, U16 operand ===
-            (LoadConst, Operand::U16(_)) => 1,
+            (LoadConst | LoadModule, Operand::U16(_)) => 1,
             (LoadLocalW | LoadGlobal | LoadCell, Operand::U16(_)) => 1,
             (StoreLocalW | StoreGlobal | StoreCell, Operand::U16(_)) => -1,
             (DeleteGlobal | DeleteCell, Operand::U16(_)) => 0,
@@ -943,8 +933,6 @@ impl Opcode {
             // the stack effect and additionally peeks the receiver under
             // the popped operands to qualify the error wording.
             (DictMerge | MethodDictMerge, Operand::U16(_)) => -1,
-            // `RaiseImportError` takes a u16 const_id naming the missing module.
-            (RaiseImportError, Operand::U16(_)) => 0,
             // `RaiseUnboundLocal(name_id)` always raises — fall-through is dead
             // code, but the tracker absorbs the bytes with effect 0 before the
             // following region starts.

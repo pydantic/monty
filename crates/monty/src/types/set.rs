@@ -1164,7 +1164,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let value = match attr.static_string() {
+        let value = match attr.static_string(vm.interns) {
             Some(StaticStrings::Add) => {
                 let value = args.get_one_arg("set.add", vm.heap)?;
                 self.add(value, vm)?;
@@ -1494,7 +1494,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let value = match attr.static_string() {
+        let value = match attr.static_string(vm.interns) {
             Some(StaticStrings::Copy) => {
                 args.check_zero_args("frozenset.copy", vm.heap)?;
                 let cloned = self.get(vm.heap).storage.clone_with_heap(vm.heap);

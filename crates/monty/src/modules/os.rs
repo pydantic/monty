@@ -54,9 +54,6 @@ pub(crate) enum OsFunctions {
 /// Functions yield to the host via `OsFunction` callbacks (except the pure
 /// `fspath`); constants are fixed POSIX values since the sandbox path model
 /// is always POSIX.
-///
-/// # Panics
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     /// Shorthand for the function-attribute entries in the table below.
     fn function(f: OsFunctions) -> Value {
@@ -86,13 +83,22 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         (StaticStrings::Altsep, Value::None),
         (StaticStrings::Extsep, Value::InternString(StringId::from_ascii(b'.'))),
         (StaticStrings::Curdir, Value::InternString(StringId::from_ascii(b'.'))),
-        (StaticStrings::Pardir, StaticStrings::ParentDirString.into()),
+        (
+            StaticStrings::Pardir,
+            Value::InternString(vm.interns.intern_static(StaticStrings::ParentDirString)),
+        ),
         (StaticStrings::Linesep, Value::InternString(StringId::from_ascii(b'\n'))),
-        (StaticStrings::Name, StaticStrings::Posix.into()),
-        (StaticStrings::Devnull, StaticStrings::DevNullString.into()),
+        (
+            StaticStrings::Name,
+            Value::InternString(vm.interns.intern_static(StaticStrings::Posix)),
+        ),
+        (
+            StaticStrings::Devnull,
+            Value::InternString(vm.interns.intern_static(StaticStrings::DevNullString)),
+        ),
     ];
 
-    let mut module = Module::new(StaticStrings::Os);
+    let mut module = Module::new(StaticStrings::Os, vm.interns);
     for (attr, value) in attrs {
         module.set_attr(attr, value, vm);
     }

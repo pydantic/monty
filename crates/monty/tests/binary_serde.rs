@@ -128,6 +128,87 @@ fn monty_run_round_trip_comprehension_closure() {
     );
 }
 
+/// A static tag is not part of the wire identity: text unknown to the loading
+/// build remains a usable owned interner entry at the same `StringId`.
+#[test]
+fn static_interns_deserialize_as_unknown_text() {
+    let runner = MontyRun::new("'partial'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut bytes = postcard::to_allocvec(&runner).unwrap();
+    let positions: Vec<_> = bytes
+        .windows(b"partial".len())
+        .enumerate()
+        .filter_map(|(index, value)| (value == b"partial").then_some(index))
+        .collect();
+    assert_eq!(positions.len(), 2, "expected interner text and source text");
+    bytes[positions[0]..positions[0] + b"mystery".len()].copy_from_slice(b"mystery");
+
+    let loaded: MontyRun = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(
+        loaded.run_no_limits(vec![]).unwrap(),
+        MontyObject::String("mystery".to_owned()),
+    );
+}
+
+/// Module attributes are absent from compiled snapshots and interned lazily
+/// during execution, including when running the same loaded program twice.
+#[test]
+fn execution_interns_module_static_strings() {
+    let runner = MontyRun::new(
+        "import functools\n1".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let bytes = postcard::to_allocvec(&runner).unwrap();
+    assert_eq!(
+        bytes
+            .windows(b"partial".len())
+            .filter(|text| *text == b"partial")
+            .count(),
+        0
+    );
+    let loaded: MontyRun = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(1));
+    assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(1));
+}
+
+/// Each module can lazily construct its complete namespace after loading,
+/// without source attribute references masking missing interner entries.
+#[test]
+fn module_imports_after_snapshot() {
+    for module in [
+        "sys",
+        "typing",
+        "asyncio",
+        "pathlib",
+        "os",
+        "math",
+        "json",
+        "re",
+        "datetime",
+        "unicodedata",
+        "itertools",
+        "dataclasses",
+        "collections",
+        "functools",
+        "base64",
+        "binascii",
+    ] {
+        let runner = MontyRun::new(
+            format!("import {module}\n42"),
+            "test.py",
+            vec![],
+            CompileOptions::default(),
+        )
+        .unwrap();
+        let loaded = round_trip(&runner);
+        assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(42));
+        let loaded = round_trip(&loaded);
+        assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(42));
+    }
+}
+
 #[test]
 fn monty_run_round_trip_multiple_runs() {
     // A loaded runner can be run multiple times

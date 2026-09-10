@@ -916,10 +916,10 @@ fn module_with_too_many_names_returns_syntax_error() {
 
 #[test]
 fn module_with_too_many_interned_strings_returns_syntax_error() {
-    // 60 000 distinct attribute references push the user-intern pool past its
-    // `u16::MAX - INTERN_STRING_ID_OFFSET` cap.
+    // 66 000 distinct attribute references push the executor-local interner
+    // beyond the bytecode format's `u16` ID range.
     let mut code = "x = None\n".to_owned();
-    for i in 0..60_000 {
+    for i in 0..66_000 {
         writeln!(code, "x.a{i}").unwrap();
     }
     let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());

@@ -8,6 +8,7 @@ use std::{
 
 use num_bigint::{BigInt, Sign};
 use num_traits::{FromPrimitive, ToPrimitive};
+use serde::de::Error as _;
 
 use crate::{
     builtins::{Builtins, BuiltinsFunctions},
@@ -36,8 +37,8 @@ use crate::{
         namedtuple::cmp_item_seqs,
         slice::slice_collect_iterator,
         str::{
-            allocate_char, allocate_string, concat_allocate_str, copy_format_template, get_char_at_index, repeat_str,
-            str_contains, string_repr_fmt,
+            allocate_char, allocate_string, allocate_string_with_interns, concat_allocate_str, copy_format_template,
+            get_char_at_index, repeat_str, str_contains, string_repr_fmt,
         },
     },
 };
@@ -541,11 +542,15 @@ impl<'h> PyTrait<'h> for Value {
     /// of a `str` still needs a buffer for quoting/escaping.
     fn py_repr(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         match self {
-            Self::None => Ok(Self::InternString(StaticStrings::NoneRepr.into())),
-            Self::Bool(true) => Ok(Self::InternString(StaticStrings::TrueRepr.into())),
-            Self::Bool(false) => Ok(Self::InternString(StaticStrings::FalseRepr.into())),
-            Self::Ellipsis => Ok(Self::InternString(StaticStrings::EllipsisRepr.into())),
-            Self::NotImplemented => Ok(Self::InternString(StaticStrings::NotImplementedRepr.into())),
+            Self::None => Ok(Self::InternString(vm.interns.intern_static(StaticStrings::NoneRepr))),
+            Self::Bool(true) => Ok(Self::InternString(vm.interns.intern_static(StaticStrings::TrueRepr))),
+            Self::Bool(false) => Ok(Self::InternString(vm.interns.intern_static(StaticStrings::FalseRepr))),
+            Self::Ellipsis => Ok(Self::InternString(
+                vm.interns.intern_static(StaticStrings::EllipsisRepr),
+            )),
+            Self::NotImplemented => Ok(Self::InternString(
+                vm.interns.intern_static(StaticStrings::NotImplementedRepr),
+            )),
             Self::Int(i) => Ok(allocate_string(itoa::Buffer::new().format(*i), vm.heap)),
             _ => {
                 let mut s = String::new();
@@ -665,10 +670,11 @@ impl<'h> PyTrait<'h> for Value {
                 interns.get_str(*s1),
                 interns.get_str(*s2),
                 vm.heap,
+                interns,
             )?)),
             // for strings we need to account for the fact they might be either interned or not
             (Self::InternString(string_id), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => Ok(Some(
-                concat_allocate_str(interns.get_str(*string_id), s2.as_str(), vm.heap)?,
+                concat_allocate_str(interns.get_str(*string_id), s2.as_str(), vm.heap, interns)?,
             )),
             // same for bytes
             (Self::InternBytes(lhs), Self::InternBytes(rhs)) => Ok(Some(concat_bytes(
@@ -745,7 +751,7 @@ impl<'h> PyTrait<'h> for Value {
                 let Some(count) = repeat_count(count, vm)? else {
                     return Ok(None);
                 };
-                Ok(Some(repeat_str(vm.interns.get_str(*id), count, vm.heap)?))
+                Ok(Some(repeat_str(vm.interns.get_str(*id), count, vm.heap, vm.interns)?))
             }
             (Self::InternBytes(id), count) | (count, Self::InternBytes(id)) => {
                 let Some(count) = repeat_count(count, vm)? else {
@@ -1287,7 +1293,7 @@ impl<'h> PyTrait<'h> for Value {
                 {
                     let s = interns.get_str(*string_id);
                     let result_str: Box<str> = slice_collect_iterator(vm, slice_obj, s.chars(), |c| c)?;
-                    return Ok(allocate_string(result_str, vm.heap));
+                    return Ok(allocate_string_with_interns(result_str, vm.heap, vm.interns));
                 }
 
                 // Shared with the heap-`str` path rather than re-matching here,
@@ -1755,7 +1761,7 @@ impl Value {
             }
             Self::Builtin(Builtins::Type(t)) => {
                 // Handle type object attributes like __name__
-                let is_dunder_name = attr.static_string().map_or_else(
+                let is_dunder_name = attr.static_string(vm.interns).map_or_else(
                     || attr.as_str(vm.interns) == "__name__",
                     |ss| ss == StaticStrings::DunderName,
                 );
@@ -2368,20 +2374,10 @@ impl From<StringId> for EitherStr {
     }
 }
 
-impl From<StaticStrings> for EitherStr {
-    fn from(s: StaticStrings) -> Self {
-        Self::Interned(s.into())
-    }
-}
-
-/// Convert String to EitherStr: use Interned for known static strings,
-/// otherwise use Heap for user-defined field names.
+/// Converts owned text without assuming an executor-local intern ID.
 impl From<String> for EitherStr {
     fn from(s: String) -> Self {
-        match StaticStrings::from_str(&s) {
-            Ok(s) => s.into(),
-            Err(_) => Self::Heap(s),
-        }
+        Self::Heap(s)
     }
 }
 
@@ -2439,12 +2435,12 @@ impl EitherStr {
         }
     }
 
-    /// Returns the `StaticStrings` if this is an interned attribute from `StaticStrings`s.
+    /// Returns the static classification of this name, if recognized.
     #[inline]
-    pub fn static_string(&self) -> Option<StaticStrings> {
+    pub fn static_string(&self, interns: &Interns) -> Option<StaticStrings> {
         match self {
-            Self::Interned(id) => StaticStrings::from_string_id(*id),
-            Self::Heap(_) => None,
+            Self::Interned(id) => interns.static_string(*id),
+            Self::Heap(value) => StaticStrings::from_str(value).ok(),
         }
     }
 
@@ -2469,8 +2465,22 @@ impl EitherStr {
 ///   don't need runtime functionality
 ///
 /// Wraps a `StaticStrings` variant to leverage its string conversion capabilities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct Marker(pub StaticStrings);
+
+impl serde::Serialize for Marker {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let value: &'static str = self.0.into();
+        serde::Serialize::serialize(value, serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Marker {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        StaticStrings::from_str(&value).map(Self).map_err(D::Error::custom)
+    }
+}
 
 impl Marker {
     /// Returns the Python type of this marker.

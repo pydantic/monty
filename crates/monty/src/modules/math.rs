@@ -185,11 +185,8 @@ pub(crate) enum MathFunctions {
 /// Registers all math functions and constants (`pi`, `e`, `tau`, `inf`, `nan`)
 /// matching CPython's `math` module. Functions are registered as
 /// `ModuleFunctions::Math` variants.
-///
-/// # Panics
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Math);
+    let mut module = Module::new(StaticStrings::Math, vm.interns);
 
     // Register all math functions
     for (name, func) in MATH_FUNCTIONS {
@@ -198,7 +195,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 
     // Constants
     module.set_attr(StaticStrings::Pi, Value::Float(consts::PI), vm);
-    module.set_attr(StaticStrings::MathE, Value::Float(consts::E), vm);
+    module.set_attr(StaticStrings::AsciiLowerE, Value::Float(consts::E), vm);
     module.set_attr(StaticStrings::Tau, Value::Float(consts::TAU), vm);
     module.set_attr(StaticStrings::MathInf, Value::Float(f64::INFINITY), vm);
     module.set_attr(StaticStrings::MathNan, Value::Float(f64::NAN), vm);

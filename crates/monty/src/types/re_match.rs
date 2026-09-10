@@ -337,7 +337,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        match attr.static_string() {
+        match attr.static_string(vm.interns) {
             Some(StaticStrings::StringAttr) => {
                 // Hand back the same subject object (CPython's `m.string is s`),
                 // bumping its refcount rather than allocating a fresh copy.
@@ -349,7 +349,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let result = match attr.static_string() {
+        let result = match attr.static_string(vm.interns) {
             Some(StaticStrings::Group) => call_group(self, args, vm)?,
             Some(StaticStrings::Groups) => {
                 args.check_zero_args("re.Match.groups", vm.heap)?;

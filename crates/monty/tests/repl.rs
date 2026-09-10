@@ -80,12 +80,13 @@ fn dump_header_rejects_incompatible_data() {
     wrong_magic[0] = b'X';
     assert_eq!(Dump::load(&wrong_magic).unwrap_err(), DumpError::NotADump);
 
+    let previous_version = DUMP_VERSION - 1;
     let mut wrong_version = bytes.clone();
-    wrong_version[6] = 1;
+    wrong_version[6..8].copy_from_slice(&previous_version.to_le_bytes());
     assert_eq!(
         Dump::load(&wrong_version).unwrap_err(),
         DumpError::VersionMismatch {
-            found: 1,
+            found: previous_version,
             expected: DUMP_VERSION
         }
     );
