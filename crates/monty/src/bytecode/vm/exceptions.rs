@@ -57,18 +57,17 @@ impl VM<'_> {
         }
     }
 
-    /// Adds the generator consumer call site after a nested run boundary unwinds.
+    /// Adds the generator consumer call site after an ordinary nested-run error.
+    ///
+    /// Terminal errors already unwind every frame before returning from `run`,
+    /// so adding their caller here would duplicate the consumer frame.
     pub(super) fn add_generator_caller_frame(&self, error: &mut RunError, call_offset: Option<u32>) {
-        let Some(offset) = call_offset else {
+        let (RunError::Exc(exc), Some(offset)) = (error, call_offset) else {
             return;
         };
         let position = self.resolve_offset(offset);
         let frame_name = self.current_frame_name();
-        match error {
-            RunError::Exc(exc) => exc.add_caller_frame(position, frame_name),
-            RunError::UncatchableExc(exc) => exc.add_caller_frame(position, frame_name),
-            RunError::Internal(_) => {}
-        }
+        exc.add_caller_frame(position, frame_name);
     }
 
     /// Creates a `RawStackFrame` for the current execution point.

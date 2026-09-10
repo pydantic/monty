@@ -2,7 +2,7 @@
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyObject};
+use monty_types::{CompileOptions, ExcType, MontyObject, MontyType};
 
 /// Runs `code` and returns its rendered exception.
 fn run_error(code: &str) -> monty_types::MontyException {
@@ -24,6 +24,20 @@ fn generator_crosses_the_host_boundary_as_repr() {
     .run_no_limits(vec![])
     .expect("generator creation should succeed");
     assert_eq!(result, MontyObject::Repr("<generator object <genexpr>>".to_owned()));
+}
+
+#[test]
+fn generator_type_crosses_the_host_boundary_exactly() {
+    let result = MontyRun::new(
+        "type(x for x in [1])".to_owned(),
+        "generator.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .expect("generator source should compile")
+    .run_no_limits(vec![])
+    .expect("generator type lookup should succeed");
+    assert_eq!(result, MontyObject::Type(MontyType::Generator));
 }
 
 #[test]

@@ -3204,7 +3204,7 @@ impl<'a> Compiler<'a> {
 
         // Recurse or emit body.
         if index + 1 < generators.len() {
-            self.compile_comprehension_generators(generators, index + 1, first_iterator_ready, body_fn)?;
+            self.compile_comprehension_generators(generators, index + 1, false, body_fn)?;
         } else {
             body_fn(self)?;
         }

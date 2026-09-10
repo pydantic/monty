@@ -1,4 +1,4 @@
-use std::mem;
+use std::{iter::once, mem};
 
 use ahash::{AHashMap, AHashSet, RandomState};
 use indexmap::IndexMap;
@@ -1330,6 +1330,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 collect_assigned_names_from_expr(cond, &mut walrus_targets, self.interner);
             }
         }
+        reject_comprehension_target_rebinding(&generators, &walrus_targets, self.interner)?;
+
         // Pre-allocate slots for walrus targets in the enclosing scope.
         // Anchor any namespace-overflow error to the first generator's iter,
         // since the walrus statements themselves can be scattered through the
@@ -1462,6 +1464,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 collect_assigned_names_from_expr(condition, &mut walrus_targets, self.interner);
             }
         }
+        reject_comprehension_target_rebinding(once(&first).chain(&remaining), &walrus_targets, self.interner)?;
         if !self.is_comprehension_scope {
             for &target in &walrus_targets {
                 self.ensure_scope_slot(target, position)?;
@@ -2835,13 +2838,7 @@ fn collect_assigned_names_from_expr(
             }
         }
         Expr::Generator { .. } => unreachable!("prepared generator during scope analysis"),
-        Expr::FString(parts) => {
-            for part in parts {
-                if let FStringPart::Interpolation { expr, .. } = part {
-                    collect_assigned_names_from_expr(expr, assigned_names, interner);
-                }
-            }
-        }
+        Expr::FString(parts) => collect_assigned_names_from_fstring_parts(parts, assigned_names, interner),
         Expr::Slice { lower, upper, step } => {
             if let Some(e) = lower {
                 collect_assigned_names_from_expr(e, assigned_names, interner);
@@ -2857,6 +2854,22 @@ fn collect_assigned_names_from_expr(
         Expr::LambdaRaw { .. } | Expr::Lambda { .. } => {}
         // Leaf expressions don't contain walrus operators
         Expr::Literal(_) | Expr::Builtin(_) | Expr::Name(_) => {}
+    }
+}
+
+/// Collects walrus targets from interpolations and nested dynamic format specs.
+fn collect_assigned_names_from_fstring_parts(
+    parts: &[FStringPart],
+    assigned_names: &mut AHashSet<StringId>,
+    interner: &InternerBuilder,
+) {
+    for part in parts {
+        if let FStringPart::Interpolation { expr, format_spec, .. } = part {
+            collect_assigned_names_from_expr(expr, assigned_names, interner);
+            if let Some(FormatSpec::Dynamic(spec_parts)) = format_spec {
+                collect_assigned_names_from_fstring_parts(spec_parts, assigned_names, interner);
+            }
+        }
     }
 }
 
@@ -2897,10 +2910,7 @@ fn expr_contains_await(expr: &ExprLoc) -> bool {
         Expr::GeneratorRaw { elt, generators, .. } => {
             expr_contains_await(elt) || comprehensions_contain_await(generators)
         }
-        Expr::FString(parts) => parts.iter().any(|part| match part {
-            FStringPart::Interpolation { expr, .. } => expr_contains_await(expr),
-            FStringPart::Literal(_) => false,
-        }),
+        Expr::FString(parts) => fstring_parts_contain_await(parts),
         Expr::Slice { lower, upper, step } => lower
             .iter()
             .chain(upper)
@@ -2911,6 +2921,17 @@ fn expr_contains_await(expr: &ExprLoc) -> bool {
         Expr::Generator { .. } | Expr::Lambda { .. } => unreachable!("prepared expression during await analysis"),
         Expr::Literal(_) | Expr::Builtin(_) | Expr::Name(_) => false,
     }
+}
+
+/// Returns whether f-string expressions or nested dynamic specs contain `await`.
+fn fstring_parts_contain_await(parts: &[FStringPart]) -> bool {
+    parts.iter().any(|part| match part {
+        FStringPart::Interpolation { expr, format_spec, .. } => {
+            expr_contains_await(expr)
+                || matches!(format_spec, Some(FormatSpec::Dynamic(spec_parts)) if fstring_parts_contain_await(spec_parts))
+        }
+        FStringPart::Literal(_) => false,
+    })
 }
 
 /// Returns whether any expression in comprehension clauses contains `await`.
@@ -4005,6 +4026,39 @@ fn collect_referenced_names_from_fstring_parts(
                 collect_referenced_names_from_fstring_parts(spec_parts, referenced, interner);
             }
         }
+    }
+}
+
+/// Rejects assignment expressions that rebind any iteration variable.
+fn reject_comprehension_target_rebinding<'a>(
+    generators: impl IntoIterator<Item = &'a Comprehension>,
+    walrus_targets: &AHashSet<StringId>,
+    interner: &InternerBuilder,
+) -> Result<(), ParseError> {
+    for generator in generators {
+        if let Some(target) = find_rebound_comprehension_target(&generator.target, walrus_targets) {
+            let name = interner.get_str(target.name_id);
+            return Err(ParseError::syntax(
+                format!("assignment expression cannot rebind comprehension iteration variable '{name}'"),
+                target.position,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Finds the first comprehension target also bound by a walrus expression.
+fn find_rebound_comprehension_target<'a>(
+    target: &'a UnpackTarget,
+    walrus_targets: &AHashSet<StringId>,
+) -> Option<&'a Identifier> {
+    match target {
+        UnpackTarget::Name(identifier) | UnpackTarget::Starred(identifier) => {
+            walrus_targets.contains(&identifier.name_id).then_some(identifier)
+        }
+        UnpackTarget::Tuple { targets, .. } => targets
+            .iter()
+            .find_map(|target| find_rebound_comprehension_target(target, walrus_targets)),
     }
 }
 

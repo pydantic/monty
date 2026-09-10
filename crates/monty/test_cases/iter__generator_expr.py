@@ -131,6 +131,17 @@ assert functions[0]() == 2
 assert functions[1]() == 2
 
 # === Walrus targets bind in the nearest real scope ===
+
+
+def dynamic_format_walrus():
+    width = 1
+    generator = (f'{x:{(width := 3)}}' for x in [7])
+    assert next(generator) == '  7'
+    return width
+
+
+assert dynamic_format_walrus() == 3
+
 result = 99
 generators = (((result := x) for x in range(y + 1)) for y in range(2))
 first = next(generators)

@@ -168,6 +168,7 @@ fn corpus() -> Vec<MontyObject> {
             arg: Some(String::new()),
         },
         MontyObject::Type(MontyType::Int),
+        MontyObject::Type(MontyType::Generator),
         MontyObject::Type(MontyType::Exception(ExcType::KeyError)),
         MontyObject::Type(MontyType::Instance("Foo".to_owned())),
         MontyObject::builtin_function_from_name("len").expect("len is a builtin"),

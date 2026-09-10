@@ -220,7 +220,7 @@ mod tests {
         );
         assert_eq!(
             variant_order_fingerprint(MontyType::VARIANTS),
-            0x9acb_9e35_39c5_7020,
+            0xb412_7c16_ae97_06e6,
             "MontyType variants changed for dump version {DUMP_VERSION}"
         );
     }

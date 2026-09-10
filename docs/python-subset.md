@@ -22,7 +22,8 @@ the repository, and that directory — not this page — is the source of truth.
 - Simple classes: instance methods, `__init__`, `__repr__`/`__str__`, `__eq__`/`__hash__`, `__iter__`/`__next__`,
   `__contains__`, class variables
 - `@dataclass`, including the `eq=` and `frozen=` options, and host dataclass instances passed in and out
-- List, dict and set comprehensions
+- List, dict and set comprehensions, and lazy, single-pass generator expressions
+  ([limitations](https://github.com/pydantic/monty/blob/main/limitations/generator_expressions.md))
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
@@ -36,7 +37,6 @@ the repository, and that directory — not this page — is the source of truth.
 - Class inheritance and metaclasses (`class Foo(Bar):`)
 - Decorators on methods — so no `@classmethod`, `@staticmethod`, `@property`
 - `yield` / `yield from` — there are no generator functions.
-  Generator *expressions* parse, but currently materialise to a `list`
 - `match` statements
 - `del`, both `del x` and `del d[k]`
 - `try*` / `except*` exception groups

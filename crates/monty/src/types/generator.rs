@@ -101,6 +101,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Generator> {
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        // This handle keeps the entry alive but holds no `Generator` borrow;
+        // resumption may therefore acquire exclusive payload access through `vm.heap`.
         vm.resume_generator(self.id())
     }
 

@@ -887,6 +887,8 @@ pub enum MontyType {
     Object,
     #[strum(serialize = "datetime.time")]
     Time,
+    /// Iterator type produced by a generator expression.
+    Generator,
 }
 
 impl fmt::Display for MontyType {

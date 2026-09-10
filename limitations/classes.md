@@ -140,8 +140,8 @@ order and error wording, but with these divergences:
   CPython their synthetic scope skips the class scope, so only the *leftmost
   iterable* sees class variables (`[n + offset for n in nums]` referencing a
   class variable `offset` raises `NameError` in CPython but succeeds in Monty).
-  Generator expressions use a synthetic scope and therefore skip class scope
-  like CPython.
+  Generator expressions match CPython: their leftmost iterable sees class
+  variables, while their synthetic lazy body skips class scope.
 - **Same-name collision is rejected, not resolved.** When an enclosing-function
   local and a class variable share a name *and* a method captures the enclosing
   one, CPython keeps the two distinct (a class-dict entry vs. a closure cell).

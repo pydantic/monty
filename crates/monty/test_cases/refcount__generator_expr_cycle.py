@@ -13,4 +13,6 @@ cycle = None
 for _ in range(1100):
     item = []
 
+# The refcount harness also rejects every unreachable heap object, so a leaked
+# holder-generator cycle fails even though only the reachable item is named.
 # ref-counts={'item': 1}

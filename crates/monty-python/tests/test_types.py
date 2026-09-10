@@ -4,6 +4,7 @@ import collections
 import datetime
 import pathlib
 import re
+import types
 import zoneinfo
 from typing import NamedTuple
 
@@ -136,7 +137,7 @@ from pathlib import Path
 from collections import deque
 [
     int, str, type, type(None), type(...), type(iter([])), type(iter(lambda: 0, 0)),
-    type(Path('/x')), Path,
+    type(x for x in []), type(Path('/x')), Path,
     datetime.datetime, datetime.date, datetime.time, datetime.timedelta, datetime.timezone,
     type(re.compile('a')), type(re.match('a', 'a')),
     type(deque()),
@@ -151,6 +152,7 @@ from collections import deque
         type(...),
         type(iter([])),
         type(iter(lambda: 0, 0)),
+        types.GeneratorType,
         pathlib.PurePosixPath,
         pathlib.PurePosixPath,
         datetime.datetime,
@@ -167,7 +169,7 @@ from collections import deque
 def test_type_object_input_roundtrip(monty_run: RunMonty):
     """A type object passed in as an input is preserved as a type (not degraded to
     a callable) and round-trips back out by identity."""
-    types: list[type[object]] = [
+    type_objects: list[type[object]] = [
         int,
         str,
         type,
@@ -176,6 +178,7 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         type(...),
         type(iter([])),
         type(iter(lambda: 0, 0)),
+        types.GeneratorType,
         datetime.datetime,
         datetime.date,
         datetime.time,
@@ -188,7 +191,7 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         re.Match,
         collections.deque,
     ]
-    for ty in types:
+    for ty in type_objects:
         # The pathlib family all collapses to a single Monty path type, which
         # re-emerges as PurePosixPath; everything else round-trips by identity.
         expected: type[object] = pathlib.PurePosixPath if issubclass(ty, pathlib.PurePath) else ty

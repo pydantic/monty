@@ -65,8 +65,10 @@ Monty is that place, without a container or a sandboxing service in the loop.
 - **Class inheritance.** `class Foo(Bar):` is rejected at parse time, and so are method decorators like `@classmethod`,
   `@staticmethod` and `@property`; `super()` raises `NameError`.
   Simple classes without a base class do work.
-- **Generators, `match` statements, `del`, `async with`, `async for`, exception groups, PEP 695 `type` aliases, complex
-  numbers and t-strings.** All are rejected at parse time.
+- **Generator functions, `match` statements, `del`, `async with`, `async for`, exception groups, PEP 695 `type` aliases,
+  complex numbers and t-strings.** All are rejected at parse time.
+  Generator expressions are supported; see their
+  [limitations](https://github.com/pydantic/monty/blob/main/limitations/generator_expressions.md).
 - **User-defined exception classes.** The built-in exception types are a fixed set.
 
 The exhaustive, per-feature list of how Monty diverges from CPython lives in
