@@ -7,6 +7,7 @@ use std::{
 
 use ahash::AHashSet;
 use hashbrown::HashTable;
+use monty_types::{ResourceError, ResourceTracker};
 use serde::ser::SerializeStruct;
 use smallvec::{SmallVec, smallvec};
 
@@ -30,6 +31,7 @@ use crate::{
         },
         defaultdict::defaultdict_missing,
     },
+    resource_checks::check_table_growth,
     types::Type,
     value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };
@@ -149,6 +151,29 @@ struct DictEntry {
     value: Value,
     /// the hash is needed here for correct use of insert_unique
     hash: u64,
+}
+
+/// Whether an insertion preflights the memory limit before growing.
+///
+/// [`GrowthCheck::Skip`] exists for dicts a sandboxed program cannot grow —
+/// module namespaces, built once at import from a fixed set of pre-interned
+/// keys. Preflighting those hands a `MemoryError` to construction paths with no
+/// way to report it (see `Module::set_attr`), and their handful of entries can
+/// never be the allocation that clears the hard-limit headroom.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GrowthCheck {
+    Preflight,
+    Skip,
+}
+
+/// Preflights the growth one insertion would cause in a dict's two buffers.
+///
+/// The dense entry vector and the `HashTable<usize>` beside it double
+/// independently, and either increment can straddle the memory limit — see
+/// [`ResourceTracker::check_growth`] for why that has to be caught up front.
+fn check_dict_growth(dict: &Dict, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+    tracker.check_growth(dict.entries.len(), dict.entries.capacity(), mem::size_of::<DictEntry>())?;
+    check_table_growth(&dict.indices, tracker)
 }
 
 impl Dict {
@@ -324,6 +349,11 @@ impl Dict {
             old_entry.key.drop_with(vm);
             Ok(Some(old_entry.value))
         } else {
+            if let Err(err) = check_dict_growth(self, &vm.heap.tracker) {
+                entry.key.drop_with(vm);
+                entry.value.drop_with(vm);
+                return Err(err.into());
+            }
             let index = self.entries.len();
             self.entries.push(entry);
             self.indices.insert_unique(hash, index, |&i| self.entries[i].hash);
@@ -501,6 +531,12 @@ impl Dict {
     pub fn set(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
         vm.heap.protect_mut(self).set(key, value, vm)
     }
+
+    /// [`Dict::set`] without the memory preflight — see [`GrowthCheck::Skip`]
+    /// for when that is the right call.
+    pub fn set_without_growth_check(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+        vm.heap.protect_mut(self).set_without_growth_check(key, value, vm)
+    }
 }
 
 impl<'h> HeapRead<'h, Dict> {
@@ -515,6 +551,16 @@ impl<'h> HeapRead<'h, Dict> {
     /// Returns Err if key is unhashable or the insertion exceeds the memory limit;
     /// either way `key` and `value` are released, so the caller must not drop them.
     pub fn set(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.set_with(key, value, vm, GrowthCheck::Preflight)
+    }
+
+    /// [`HeapRead::set`] without the memory preflight — see [`GrowthCheck::Skip`]
+    /// for when that is the right call.
+    pub fn set_without_growth_check(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.set_with(key, value, vm, GrowthCheck::Skip)
+    }
+
+    fn set_with(&mut self, key: Value, value: Value, vm: &mut VM<'h>, growth: GrowthCheck) -> RunResult<Option<Value>> {
         // Track if we're adding a reference for GC optimization
         if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
@@ -541,6 +587,13 @@ impl<'h> HeapRead<'h, Dict> {
             // Transfer ownership of the old value to caller (no clone needed)
             Ok(Some(old_entry.value))
         } else {
+            if growth == GrowthCheck::Preflight
+                && let Err(err) = check_dict_growth(self.get(vm.heap), &vm.heap.tracker)
+            {
+                entry.key.drop_with(vm);
+                entry.value.drop_with(vm);
+                return Err(err.into());
+            }
             let this = self.get_mut(vm.heap);
             let index = this.entries.len();
             this.entries.push(entry);

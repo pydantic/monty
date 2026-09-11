@@ -15,18 +15,19 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions, BuiltinsFunctionsExt},
     bytecode::FrameExit,
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunError},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     function::{ExactPositionalCall, Function},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
     modules::dataclasses,
     os_dispatch::{PendingOsEffect, release_pending_effect},
+    resource_checks::check_estimated_size,
     types::{
         Dict, Instance, PyTrait, Type, bytes::call_bytes_method, construct_namedtuple, instance::class_name,
         partial::partial_call_args, str::call_str_method,
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// Result of executing a call or attribute method.
@@ -692,7 +693,7 @@ impl VM<'_> {
         defer_drop!(callable, this);
 
         // Extract positional args from tuple
-        let copied_args = this.extract_args_tuple(args_tuple);
+        let copied_args = this.extract_args_tuple(args_tuple)?;
 
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {
@@ -719,7 +720,7 @@ impl VM<'_> {
         defer_drop!(args_tuple, this);
 
         // Extract positional args from tuple
-        let copied_args = this.extract_args_tuple_for_attr(args_tuple);
+        let copied_args = this.extract_args_tuple_for_attr(args_tuple)?;
 
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {
@@ -737,14 +738,14 @@ impl VM<'_> {
     /// # Panics
     /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
     /// the compiler always emits `ListToTuple` before `CallFunctionExtended`.
-    fn extract_args_tuple(&mut self, args_tuple: &Value) -> Vec<Value> {
+    fn extract_args_tuple(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
         let Value::Ref(id) = args_tuple else {
             unreachable!("CallFunctionExtended: args_tuple must be a Ref")
         };
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
+        clone_args_from_tuple(tuple.as_slice(), self)
     }
 
     /// Builds `ArgValues` with kwargs for `CallFunctionExtended`.
@@ -810,14 +811,14 @@ impl VM<'_> {
     /// # Panics
     /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
     /// the compiler always emits `ListToTuple` before `CallAttrExtended`.
-    fn extract_args_tuple_for_attr(&mut self, args_tuple: &Value) -> Vec<Value> {
+    fn extract_args_tuple_for_attr(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
         let Value::Ref(id) = args_tuple else {
             unreachable!("CallAttrExtended: args_tuple must be a Ref")
         };
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallAttrExtended: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
+        clone_args_from_tuple(tuple.as_slice(), self)
     }
 
     /// Builds `ArgValues` with kwargs for `CallAttrExtended`.
@@ -1239,6 +1240,23 @@ impl VM<'_> {
 /// Shared by [`VM::call_exact_sync_function`] and [`VM::create_exact_coroutine`],
 /// which both remove their callable from the stack after already having
 /// dispatched on its `FunctionId` in [`VM::try_call_exact_def_function`].
+/// Clones a `*args` tuple's contents into the owned buffer a call needs.
+///
+/// Preflighted because the clone is a single allocation the size of the whole
+/// tuple: `f(*t)` on a `t` that fits under the limit doubles live memory, and
+/// past the allocator's hard-limit headroom that one allocation kills the
+/// worker rather than raising `MemoryError`.
+fn clone_args_from_tuple(items: &[Value], vm: &impl ContainsHeap) -> RunResult<Vec<Value>> {
+    // One spare slot so `ArgValues::prepend` can put `self` in front of a bound
+    // method's arguments without reallocating the whole buffer — `collect`
+    // would size it exactly, and that insert has no preflight of its own.
+    let slots = items.len().saturating_add(1);
+    check_estimated_size(slots.saturating_mul(VALUE_SIZE), &vm.heap().tracker)?;
+    let mut args = Vec::with_capacity(slots);
+    args.extend(items.iter().map(|v| v.clone_with_heap(vm)));
+    Ok(args)
+}
+
 fn debug_assert_exact_callable(callable: &Value, func_id: FunctionId) {
     debug_assert!(matches!(callable, Value::DefFunction(id) if *id == func_id));
 }

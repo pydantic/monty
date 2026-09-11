@@ -1092,6 +1092,123 @@ fn small_batched_n_is_not_preflighted() {
     child.shutdown();
 }
 
+/// Containers grown one element at a time must raise `MemoryError` and leave the
+/// session usable, whatever the limit.
+///
+/// A `Vec` doubling charges its whole increment in a single allocation, so a
+/// push that straddles the soft limit used to land past the allocator's hard
+/// ceiling with no checkpoint in between. The two limits here catch the two
+/// halves of that. At 24 MB — the limit reported in #700 — the doubling clears
+/// the fixed headroom, the worker is killed and the follow-up feed EOFs. At
+/// 6 MB the doubling fits the headroom, so the worker survives, but the buffer
+/// is allocated before the checkpoint notices and the session is left over its
+/// limit with the next statement failing too. Refusing the growth up front
+/// fixes both.
+#[test]
+fn incremental_container_growth_stays_graceful() {
+    let cases = [
+        "[x for x in range(10_000_000)]",
+        "l = []\nfor x in range(10_000_000):\n    l.append(x)",
+        "l = []\nfor x in range(10_000_000):\n    l.insert(len(l), x)",
+        "s = set()\nfor x in range(10_000_000):\n    s.add(x)",
+        "d = {}\nfor x in range(10_000_000):\n    d[x] = x",
+        "from collections import deque\nd = deque()\nfor x in range(10_000_000):\n    d.append(x)",
+        "from collections import deque\nd = deque()\nfor x in range(10_000_000):\n    d.appendleft(x)",
+    ];
+
+    for limit_mb in [6, 12, 24] {
+        for code in cases {
+            let mut child = ChildProc::spawn();
+            child.create_repl_with(configure_with_max_memory(limit_mb * 1024 * 1024));
+            let (_, event) = child.feed(code);
+            let error = expect_error(event);
+            assert_eq!(error.exc_type, "MemoryError", "{limit_mb}MB: {code}");
+            // The session outliving the error is the whole point — a worker that
+            // hit the hard limit would be gone by now.
+            assert_eq!(
+                child.feed_complete("1 + 1"),
+                MontyObject::Int(2),
+                "{limit_mb}MB: {code}"
+            );
+            child.shutdown();
+        }
+    }
+}
+
+/// Buffers of interpreter values that native code fills in one call must raise
+/// `MemoryError` rather than kill the worker.
+///
+/// These are the sites where the result is a constant multiple of an
+/// already-tracked input, which used to be reason enough to skip the preflight.
+/// It is not: the increment still clears the allocator's fixed headroom in one
+/// allocation, and each of these killed the worker at the limit named.
+#[test]
+fn native_value_buffers_stay_graceful() {
+    let cases = [
+        // The `*args` clone, then the `SmallVec` the varargs are packed into.
+        ("def f(*a):\n    return len(a)\nt = tuple(range(700_000))\nf(*t)", 48),
+        // The same clone reached through an attribute call rather than a plain one.
+        (
+            "class C:\n    def m(self, *a):\n        return len(a)\nc = C()\nt = tuple(range(700_000))\nc.m(*t)",
+            48,
+        ),
+        // `findall`'s no-capture and one-capture arms build their result lists
+        // differently.
+        ("import re\nlen(re.findall('a', 'a' * 2_000_000))", 24),
+        ("import re\nlen(re.findall('(a)', 'a' * 2_000_000))", 24),
+        ("import json\nlen(json.loads('[' + '0,' * 1_500_000 + '0]'))", 24),
+    ];
+
+    for (code, limit_mb) in cases {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(limit_mb * 1024 * 1024));
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
+        child.shutdown();
+    }
+}
+
+/// Importing under memory pressure must raise `MemoryError` like any other
+/// statement, not kill the worker.
+///
+/// `import` rebuilds a module namespace on every execution, and module
+/// construction has no error channel — `StandardLib::create` and
+/// `VM::load_module` both return infallibly, so `Module::set_attr` can only
+/// panic. Preflighting those inserts would therefore turn a session that merely
+/// ran out of memory into a dead child, which is why they skip the check.
+#[test]
+fn importing_under_memory_pressure_stays_graceful() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(6 * 1024 * 1024));
+    // Grows past the limit in small steps, re-importing each time so an import
+    // lands in the window after usage crosses it but before the next checkpoint.
+    let code = "def f():\n    xs = []\n    for _ in range(1_000_000):\n        xs.append('x' * 1000)\n        import functools\nf()";
+    let (_, event) = child.feed(code);
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    // The session outliving the error is the whole point — a panicking
+    // `set_attr` would have taken the worker with it.
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// The growth preflights must leave ordinary work alone.
+///
+/// Everything here fits the limit several times over, so a check that charged a
+/// growth the buffer will not perform — or ran on every push rather than at a
+/// capacity boundary — would turn a working program into a `MemoryError`. The
+/// refusal tests above cannot catch that: they only assert that a refusal
+/// happens.
+#[test]
+fn container_growth_preflight_leaves_ordinary_work_alone() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(32 * 1024 * 1024));
+    let code = "from collections import deque\nl = []\nd = {}\ns = set()\nq = deque()\nfor x in range(50_000):\n    l.append(x)\n    l.insert(len(l), x)\n    d[x] = x\n    s.add(x)\n    q.append(x)\n    q.appendleft(x)\nlen(l) + len(d) + len(s) + len(q)";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(300_000));
+    child.shutdown();
+}
+
 /// A bounded deque retains at most `maxlen` items, so extending it from a huge
 /// exact-hint iterator (the sliding-window pattern) must not trip the
 /// `deque.extend` preflight — the memory really is capped at `maxlen`.

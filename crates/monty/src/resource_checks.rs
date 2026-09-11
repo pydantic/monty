@@ -1,6 +1,11 @@
+use hashbrown::HashTable;
 use monty_types::{ExcType, LARGE_RESULT_THRESHOLD, ResourceError, ResourceTracker};
 
-use crate::exception_private::{RunError, SimpleException};
+use crate::{
+    bytecode::VM,
+    exception_private::{RunError, RunResult, SimpleException},
+    value::{VALUE_SIZE, Value},
+};
 
 /// Pre-checks that an operation producing `item_len * count` bytes won't exceed resource limits.
 ///
@@ -89,6 +94,46 @@ pub fn check_replace_size(
     };
 
     check_estimated_size(estimated, tracker)
+}
+
+/// Pre-checks the reallocation a push into a full `Value` buffer causes,
+/// dropping `item` if the container cannot grow.
+///
+/// Only called at a capacity boundary, so its cost amortizes away. Without it
+/// the doubling that straddles the soft memory limit lands past the allocator's
+/// hard ceiling in one allocation, killing the worker instead of raising
+/// `MemoryError`. Buffers of anything but `Value` take
+/// [`ResourceTracker::check_growth`] directly, with their own element size.
+#[cold]
+pub(crate) fn check_value_buffer_growth(vm: &mut VM<'_>, len: usize, capacity: usize, item: Value) -> RunResult<Value> {
+    match vm.heap.tracker.check_growth(len, capacity, VALUE_SIZE) {
+        Ok(()) => Ok(item),
+        Err(err) => {
+            item.drop_with(vm);
+            Err(err.into())
+        }
+    }
+}
+
+/// Pre-checks the reallocation an insertion into a full index table would cause.
+///
+/// hashbrown rehashes into a table of roughly double the current allocation and
+/// keeps the old one live until the move finishes, so the increment is about
+/// twice `allocation_size()` — large enough at scale to carry live memory from
+/// below the soft limit past the allocator's hard ceiling in one allocation.
+/// [`ResourceTracker::check_growth`] covers the dense entry vector beside it.
+pub(crate) fn check_table_growth(indices: &HashTable<usize>, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+    let current = indices.allocation_size();
+    // A table that has never allocated reports `allocation_size() == 0` while
+    // also reporting `len == capacity == 0`, so the doubling model has nothing
+    // to work from. Its first table is a few dozen bytes — far too small to
+    // clear the hard-limit headroom this check exists for — and charging zero
+    // would only probe memory to fail once usage is already over the limit.
+    if current == 0 || indices.len() < indices.capacity() {
+        Ok(())
+    } else {
+        tracker.check_allocation(current.saturating_mul(2))
+    }
 }
 
 /// Checks an estimated result size against the resource tracker.
