@@ -267,3 +267,91 @@ assert repr({1} & {1.0}) == '{1.0}'
 assert repr({1.0} & {1}) == '{1}'
 assert repr({1, 2} & {1.0}) == '{1.0}'
 assert repr({1.0} & {1, 2}) == '{1.0}'
+
+# === set-to-set algebra reuses each element's cached hash ===
+# CPython takes the hash stored alongside an entry rather than calling
+# `__hash__` again, so none of these operations run user hash code.
+_hash_calls = []
+
+
+class Counted:
+    def __init__(self, n):
+        self.n = n
+
+    def __hash__(self):
+        _hash_calls.append(self.n)
+        return self.n
+
+    def __eq__(self, other):
+        return isinstance(other, Counted) and self.n == other.n
+
+
+def _counted_pair():
+    a = {Counted(1), Counted(2)}
+    b = {Counted(2), Counted(3)}
+    _hash_calls.clear()
+    return a, b
+
+
+a, b = _counted_pair()
+assert len(a - b) == 1
+assert _hash_calls == []
+
+a, b = _counted_pair()
+assert len(a & b) == 1
+assert _hash_calls == []
+
+a, b = _counted_pair()
+assert len(a | b) == 3
+assert _hash_calls == []
+
+a, b = _counted_pair()
+assert len(a ^ b) == 2
+assert _hash_calls == []
+
+a, b = _counted_pair()
+assert a.issubset(b) is False
+assert a.isdisjoint(b) is False
+assert (a == b) is False
+assert _hash_calls == []
+
+a, b = _counted_pair()
+a.update(b)
+assert len(a) == 3
+assert _hash_calls == []
+
+a, b = _counted_pair()
+assert len(set(a)) == 2
+assert len(frozenset(a)) == 2
+assert len(frozenset(a) - b) == 1
+assert _hash_calls == []
+
+# an arbitrary iterable on the right has no cached hashes, so it is hashed
+a, b = _counted_pair()
+assert len(a.difference(list(b))) == 1
+assert _hash_calls == [2, 3]
+
+
+# === a `__hash__` that mutates the set is never reached by set algebra ===
+# Regression: these walked the left-hand set by index while re-hashing every
+# element, so a `__hash__` clearing the set left the walk indexing past its end.
+_armed = False
+
+
+class Clearing:
+    def __hash__(self):
+        if _armed:
+            clearing.clear()
+        return 0
+
+
+clearing = {Clearing(), Clearing()}
+_armed = True
+assert len(clearing - set()) == 2
+assert len(clearing & clearing) == 2
+assert len(clearing | set()) == 2
+assert len(clearing ^ set()) == 2
+assert len(set(clearing)) == 2
+assert clearing.isdisjoint(set()) is True
+assert clearing.issubset(clearing) is True
+assert len(clearing) == 2
