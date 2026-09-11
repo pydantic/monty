@@ -346,12 +346,20 @@ inside a single builtin call (i.e. before the next instruction checkpoint):
     already handle it; for push-loops that bypass them, a one-shot size-hint
     preflight (see `deque_extend`) — never a per-item poll.
 - Unbounded/amplifying string building: `StringBuilder` (above).
+- Incremental growth of a buffer of interpreter values: `tracker.check_growth`
+    before the push (`List::append`, `parse_json_array`, `re_pattern`'s match
+    loops) — it only reaches the tracker at a capacity boundary. It models one
+    push; a bulk reservation wants `check_allocation` sized for the whole result.
 
 Do NOT add per-iteration `check_time()` polls to Rust-side loops for memory's
 sake, and do NOT preflight results bounded by a constant multiple of an
-already-tracked input (path joins, `*args` tuples, regex match lists, parsed
-JSON) — rare oversized cases there are the hard limit's job. Test each graceful
-path in `large_allocations_are_rejected_before_the_hard_limit`
+already-tracked input (path joins) — rare oversized cases there are the hard
+limit's job. `*args` tuples, regex match lists and parsed JSON arrays were
+listed here too, until each was found to kill the worker on ordinary code.
+`*args`, parsed JSON arrays and `re.findall` with at most one capture group are
+preflighted now; a wider `findall` and `re.finditer` allocate per match between
+the checks and are still open. Test each graceful path in
+`large_allocations_are_rejected_before_the_hard_limit`
 (`crates/monty-runtime/tests/subprocess.rs`) — the interpreter's own tests
 never arm the allocator, so only subprocess tests exercise `max_memory`.
 

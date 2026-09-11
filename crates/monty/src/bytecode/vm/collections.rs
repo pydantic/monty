@@ -401,8 +401,7 @@ impl VM<'_> {
             value.drop_with(self);
             return Err(RunError::internal("ListAppend: expected list on heap"));
         };
-        list.append(self, value);
-        Ok(())
+        list.append(self, value)
     }
 
     /// Adds TOS to set for comprehension.

@@ -81,6 +81,14 @@ threshold, including integer multiplication, division and `divmod`, left shift, 
 an iterator into a container, and f-string, `str.format()` or `%` formatting with a dynamic width or precision.
 So `'x' * 10**12` fails immediately rather than after consuming the machine's memory.
 
+Containers a program grows one element at a time are pre-checked as well, at the point the buffer would reallocate
+rather than on every push: `list.append` and `list.insert`, `deque.append` and `deque.appendleft`, `set.add`, and
+assigning a new dict key.
+So are the value buffers a single call fills: the argument pack behind `f(*args)`, the array `json.loads` parses, and
+the list `re.findall` builds for a pattern with at most one capture group.
+A wider `findall`, and `re.finditer`, allocate an object per match and are not covered — see
+[the limitations note](limitations/resource_limits.md).
+
 A few integer operations carry their own caps regardless of `max_memory`:
 
 - `base ** exp` with an exponent above `u32::MAX` raises `OverflowError`, except for bases 0, 1 and -1.
