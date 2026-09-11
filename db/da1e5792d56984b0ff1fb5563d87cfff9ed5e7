@@ -1,0 +1,19 @@
+.github/workflows/ci.yml
+  s_3c30244a84652d::t_280bc93a95fb2f 1331
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "dbda1e5792d56984b0ff1fb5563d87cfff9ed5e7",
+  "prompts": {},
+  "sessions": {
+    "s_3c30244a84652d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e87bc3b7-4fd8-4c45-bf69-73490cc62621",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
