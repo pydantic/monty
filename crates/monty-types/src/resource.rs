@@ -373,6 +373,32 @@ impl ResourceTracker {
         }
     }
 
+    /// Preflights the reallocation that pushing one more element onto a dense
+    /// buffer causes, given its current `len` and `capacity`.
+    ///
+    /// A `Vec` grows to `max(2 * capacity, len + 1)` and charges the whole
+    /// increment in a single allocation. If that increment carries live memory
+    /// from below the soft limit past the allocator's fixed hard-limit
+    /// headroom, the worker is killed outright — there is no interpreter
+    /// checkpoint in between at which a graceful `MemoryError` could be raised.
+    /// A push that fits the existing capacity allocates nothing, so it is free.
+    ///
+    /// This is the one-element-at-a-time shape only. A bulk reservation must go
+    /// to [`ResourceTracker::check_allocation`] sized for the whole result:
+    /// preflighting something smaller than the final buffer — one operand of a
+    /// merge, say — leaves the same window open.
+    #[inline]
+    pub fn check_growth(&self, len: usize, capacity: usize, elem_size: usize) -> Result<(), ResourceError> {
+        if len < capacity {
+            Ok(())
+        } else {
+            // `max(1)` covers the first push into an empty buffer, whose
+            // capacity would otherwise make the increment zero.
+            let new_capacity = capacity.saturating_mul(2).max(len.saturating_add(1)).max(1);
+            self.check_allocation(new_capacity.saturating_sub(capacity).saturating_mul(elem_size))
+        }
+    }
+
     /// Called before pushing a new call frame to check recursion depth.
     ///
     /// Returns `Ok(())` if within recursion limit, or `Err(ResourceError::Recursion)`

@@ -18,6 +18,7 @@ use crate::{
     },
     identity::Identity,
     intern::StaticStrings,
+    resource_checks::check_table_growth,
     types::{
         LazyHeapSet, Type,
         dict::{ProbeOutcome, eq_is_native, probe_native_eq},
@@ -116,8 +117,12 @@ impl SetStorage {
         if existing.is_some() {
             Ok(false)
         } else {
+            let (value, vm) = value_guard.into_parts();
+            if let Err(err) = check_storage_growth(self, &vm.heap.tracker) {
+                value.drop_with(vm);
+                return Err(err.into());
+            }
             let index = self.entries.len();
-            let value = value_guard.into_inner();
             self.entries.push(SetEntry { value, hash });
             self.indices.insert_unique(hash, index, |&idx| self.entries[idx].hash);
             Ok(true)
@@ -851,6 +856,10 @@ impl<'h> HeapRead<'h, Set> {
 
         // Add new entry
         let (value, vm) = value_guard.into_parts();
+        if let Err(err) = check_storage_growth(&self.get(vm.heap).0, &vm.heap.tracker) {
+            value.drop_with(vm);
+            return Err(err.into());
+        }
         let storage = &mut self.get_mut(vm.heap).0;
         let index = storage.entries.len();
         storage.entries.push(SetEntry { value, hash });
@@ -1729,6 +1738,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
         }
         Ok(item)
     }
+}
+
+/// Preflights the growth one insertion would cause in a set's two buffers.
+///
+/// The dense entry vector and the `HashTable<usize>` beside it double
+/// independently, and either increment can straddle the memory limit — see
+/// [`ResourceTracker::check_growth`] for why that has to be caught up front.
+fn check_storage_growth(storage: &SetStorage, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+    tracker.check_growth(
+        storage.entries.len(),
+        storage.entries.capacity(),
+        mem::size_of::<SetEntry>(),
+    )?;
+    check_table_growth(&storage.indices, tracker)
 }
 
 fn set_element_hash(value: &Value, vm: &mut VM<'_>) -> RunResult<u64> {

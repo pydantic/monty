@@ -14,7 +14,7 @@ use crate::{
         HeapReader,
     },
     intern::StaticStrings,
-    resource_checks::check_repeat_size,
+    resource_checks::{check_repeat_size, check_value_buffer_growth},
     sorting::parse_and_sort,
     types::{
         LazyHeapSet, Type,
@@ -131,15 +131,29 @@ impl<'h> HeapRead<'h, List> {
     /// The caller transfers ownership of `item` to the list. The item's refcount
     /// is NOT incremented here - the caller is responsible for ensuring the refcount
     /// was already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
-    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) {
+    ///
+    /// Fails with a terminal `MemoryError` when the push would grow the buffer
+    /// past the memory limit; `item` is dropped on that path, so the ownership
+    /// transfer holds either way.
+    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
         // Track whether the list now contains heap refs so child-walk fast paths
         // can short-circuit; cycle-collector seeding is handled by `dec_ref`,
         // not at mutation time.
-        if matches!(item, Value::Ref(_)) {
-            self.get_mut(vm.heap).contains_refs = true;
+        let is_ref = matches!(item, Value::Ref(_));
+        let this = self.get_mut(vm.heap);
+        if is_ref {
+            this.contains_refs = true;
         }
         // Ownership transfer - refcount was already handled by caller
-        self.get_mut(vm.heap).items.push(item);
+        let (len, capacity) = (this.items.len(), this.items.capacity());
+        if len < capacity {
+            this.items.push(item);
+            Ok(())
+        } else {
+            let item = check_value_buffer_growth(vm, len, capacity, item)?;
+            self.get_mut(vm.heap).items.push(item);
+            Ok(())
+        }
     }
 
     /// Inserts an element at the specified index.
@@ -151,7 +165,14 @@ impl<'h> HeapRead<'h, List> {
     /// # Arguments
     /// * `index` - The position to insert at (0-based). If index >= len(),
     ///   the item is appended to the end (matching Python semantics).
-    pub fn insert(&mut self, vm: &mut VM<'h>, index: usize, item: Value) {
+    pub fn insert(&mut self, vm: &mut VM<'h>, index: usize, item: Value) -> RunResult<()> {
+        let items = &self.get(vm.heap).items;
+        let (len, capacity) = (items.len(), items.capacity());
+        let item = if len < capacity {
+            item
+        } else {
+            check_value_buffer_growth(vm, len, capacity, item)?
+        };
         // Track whether the list now contains heap refs so child-walk fast paths
         // can short-circuit; cycle-collector seeding is handled by `dec_ref`.
         if matches!(item, Value::Ref(_)) {
@@ -165,6 +186,7 @@ impl<'h> HeapRead<'h, List> {
         } else {
             this.items.insert(index, item);
         }
+        Ok(())
     }
 }
 
@@ -654,7 +676,7 @@ fn call_list_method<'h>(
     match method {
         StaticStrings::Append => {
             let item = args.get_one_arg("list.append", heap)?;
-            list.append(vm, item);
+            list.append(vm, item)?;
             Ok(Value::None)
         }
         StaticStrings::Insert => list_insert(list, args, vm),
@@ -706,7 +728,7 @@ fn list_insert<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'
         usize::try_from(index_i64).unwrap_or(len)
     };
     let (item, heap) = item_guard.into_parts();
-    list.insert(heap, index, item);
+    list.insert(heap, index, item)?;
     Ok(Value::None)
 }
 

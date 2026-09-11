@@ -19,7 +19,7 @@ use crate::{
         long_int::{check_decimal_digit_count, decimal_digit_count_ascii},
         str::allocate_string,
     },
-    value::Value,
+    value::{VALUE_SIZE, Value},
 };
 
 /// Internal error used while building Monty values from streamed JSON.
@@ -235,6 +235,14 @@ fn parse_json_array(
     {
         let (values, vm) = values_guard.as_parts_mut();
         loop {
+            // The array is as long as the input allows and the whole parse runs
+            // inside one native call, so the buffer's doubling is the only thing
+            // between a graceful `MemoryError` and an allocation that clears the
+            // allocator's hard-limit headroom and kills the worker.
+            vm.heap
+                .tracker
+                .check_growth(values.len(), values.capacity(), VALUE_SIZE)
+                .map_err(RunError::from)?;
             values.push(parse_json_value_from_peek(next, jiter, depth + 1, cache, vm)?);
             let Some(array_peek) = jiter.array_step()? else {
                 break;

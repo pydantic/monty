@@ -56,7 +56,14 @@ without one is unlimited.
     limit so exception and traceback machinery can run. Crossing that ceiling
     between checkpoints exits the subprocess with its dedicated OOM status, or
     traps wasm. The pool replaces the worker and the session is lost. Large
-    result operations are pre-checked to avoid this path when their size is known.
+    result operations are pre-checked to avoid this path when their size is known,
+    as is buffer growth a program drives one element at a time — `append`,
+    `insert`, `add` or `d[k] = v` on a list, deque, set or dict, a parsed JSON
+    array — and the argument buffers behind `f(*args)`.
+    `re.findall` is covered only for a pattern with at most one capture group.
+    A wider `findall` builds a tuple per match, and `re.finditer` a match object,
+    and those accumulate between the checks on the result list itself, so a
+    large enough subject still crosses the ceiling and kills the worker.
 - **Work outside Python execution is hard-limit-only.** Request framing, input
     decoding, loading snapshots, and type checking do not reach an interpreter
     checkpoint. A sufficiently large allocation there can cross the hard ceiling

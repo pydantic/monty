@@ -29,7 +29,7 @@ use crate::{
         str::{allocate_string, string_repr_fmt},
         tuple::TupleVec,
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// A compiled regular expression pattern.
@@ -242,6 +242,7 @@ impl RePattern {
             // No capture groups — return list of full match strings
             0 | 1 => {
                 for m in self.compiled.find_iter(text) {
+                    check_results_growth(&results, heap)?;
                     let val = m.map_err(ExcType::re_pattern_error)?.as_str();
                     results.push(allocate_string(val, heap));
                 }
@@ -249,6 +250,7 @@ impl RePattern {
             // One capture group — return list of the group's strings
             2 => {
                 for caps in self.compiled.captures_iter(text) {
+                    check_results_growth(&results, heap)?;
                     let caps = caps.map_err(ExcType::re_pattern_error)?;
                     let val = caps.get(1).map_or("", |m| m.as_str());
                     results.push(allocate_string(val, heap));
@@ -257,6 +259,7 @@ impl RePattern {
             // Multiple capture groups — return list of tuples
             _ => {
                 for caps in self.compiled.captures_iter(text) {
+                    check_results_growth(&results, heap)?;
                     let caps = caps.map_err(ExcType::re_pattern_error)?;
                     let mut elements: TupleVec = SmallVec::with_capacity(cap_count - 1);
                     for cap in caps.iter().skip(1) {
@@ -330,6 +333,7 @@ impl RePattern {
             }
         };
 
+        heap.tracker.check_allocation(pieces.len().saturating_mul(VALUE_SIZE))?;
         let mut results = Vec::with_capacity(pieces.len());
         for piece in pieces {
             results.push(allocate_string(piece, heap));
@@ -350,6 +354,7 @@ impl RePattern {
 
         let mut results = Vec::new();
         for caps in self.compiled.captures_iter(text) {
+            check_results_growth(&results, heap)?;
             let caps = caps.map_err(ExcType::re_pattern_error)?;
             results.push(self.build_match(&caps, subject, all_ascii, heap));
         }
@@ -357,6 +362,18 @@ impl RePattern {
         let list = List::new(results);
         Ok(Value::Ref(heap.allocate(HeapData::List(list))))
     }
+}
+
+/// Preflights the growth one more match result would cause.
+///
+/// A match list is as long as the subject allows, and the whole scan runs inside
+/// one native call, so the buffer's doubling is the only thing between a
+/// graceful `MemoryError` and an allocation that clears the allocator's
+/// hard-limit headroom and kills the worker.
+fn check_results_growth(results: &Vec<Value>, heap: &Heap) -> RunResult<()> {
+    Ok(heap
+        .tracker
+        .check_growth(results.len(), results.capacity(), VALUE_SIZE)?)
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
