@@ -1145,6 +1145,20 @@ impl<'a, 'h> DictIter<'a, 'h> {
         Ok(Some((&self.current_key, &self.current_value)))
     }
 
+    /// Advances the iterator and returns a borrow of the next key.
+    ///
+    /// Prefer this for key-only operations so dictionary values are not cloned.
+    /// The returned reference is valid until the next call that advances the
+    /// iterator, or until the iterator is dropped.
+    pub(crate) fn next_key<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<&'i Value>> {
+        let Some(entry_index) = self.advance(vm)? else {
+            return Ok(None);
+        };
+        let entry = &self.dict.get(vm.heap).entries[entry_index];
+        self.current_key = entry.key.clone_with_heap(vm.heap);
+        Ok(Some(&self.current_key))
+    }
+
     /// Advances the iterator and returns a borrow of the next value.
     ///
     /// Prefer this for value-only operations so dictionary keys are not cloned.

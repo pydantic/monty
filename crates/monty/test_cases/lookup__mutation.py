@@ -645,3 +645,90 @@ assert mixed_calls == []
 # the probe and the user entry runs its own `__eq__`
 assert mixed.get(Colliding('probe'), 'MISS') == 'MISS'
 assert mixed_calls == ['probe', 'stored']
+
+
+# === dict-view equality walks the live dict, so a mutating __hash__ raises ===
+# The membership test on the right-hand side hashes each of the dict's own keys;
+# a `__hash__` that clears the dict used to leave the walk indexing past the end.
+view_d = {}
+view_armed = False
+
+
+class ViewClearer:
+    def __init__(self, n):
+        self.n = n
+
+    def __hash__(self):
+        if view_armed:
+            view_d.clear()
+        return self.n
+
+    def __eq__(self, other):
+        return isinstance(other, ViewClearer) and self.n == other.n
+
+
+# every right-hand operand is built while disarmed, so only the comparison mutates
+members = {ViewClearer(1), ViewClearer(2), ViewClearer(3)}
+frozen_members = frozenset(members)
+other_dict = {ViewClearer(1): 1, ViewClearer(2): 2, ViewClearer(3): 3}
+pairs = {(ViewClearer(1), 1), (ViewClearer(2), 2), (ViewClearer(3), 3)}
+frozen_pairs = frozenset(pairs)
+CHANGED = 'dictionary changed size during iteration'
+
+
+def _armed_dict():
+    global view_d, view_armed
+    view_armed = False
+    view_d = {ViewClearer(1): 1, ViewClearer(2): 2, ViewClearer(3): 3}
+    view_armed = True
+    return view_d
+
+
+d = _armed_dict()
+try:
+    d.keys() == members
+    assert False, 'expected RuntimeError from keys-vs-set'
+except RuntimeError as exc:
+    assert str(exc) == CHANGED
+
+d = _armed_dict()
+try:
+    members == d.keys()
+    assert False, 'expected RuntimeError from the reflected comparison'
+except RuntimeError as exc:
+    assert str(exc) == CHANGED
+
+d = _armed_dict()
+try:
+    d.keys() == frozen_members
+    assert False, 'expected RuntimeError from keys-vs-frozenset'
+except RuntimeError as exc:
+    assert str(exc) == CHANGED
+
+d = _armed_dict()
+try:
+    d.keys() == other_dict.keys()
+    assert False, 'expected RuntimeError from keys-vs-keys'
+except RuntimeError as exc:
+    assert str(exc) == CHANGED
+
+d = _armed_dict()
+try:
+    d.items() == pairs
+    assert False, 'expected RuntimeError from items-vs-set'
+except RuntimeError as exc:
+    assert str(exc) == CHANGED
+
+d = _armed_dict()
+try:
+    d.items() == frozen_pairs
+    assert False, 'expected RuntimeError from items-vs-frozenset'
+except RuntimeError as exc:
+    assert str(exc) == CHANGED
+
+# an unmutated comparison is unaffected
+view_armed = False
+plain = {ViewClearer(1): 1, ViewClearer(2): 2}
+assert plain.keys() == {ViewClearer(1), ViewClearer(2)}
+assert plain.items() == {(ViewClearer(1), 1), (ViewClearer(2), 2)}
+assert plain.keys() != {ViewClearer(1)}

@@ -57,6 +57,29 @@ These raise `NameError`:
     on *every* comparison never finishes in either engine; under `max_duration`
     Monty raises `TimeoutError`. No mutation pattern can panic or corrupt either
     engine.
+- **Set algebra under a mutating `__eq__`** — `-`, `&`, `^` and their method
+    forms walk one of the two sets while user `__eq__` code can run. Monty
+    raises `RuntimeError: Set changed size during iteration` if that code adds
+    or removes an element from the set being walked, where CPython carries on
+    over its live table and returns a result. The operand Monty is not walking
+    is snapshotted before the operation begins, so mutating that one is never
+    observed at all — `s | t` and `t.update(s)` see all of `s`'s original
+    elements even when `__eq__` clears `s` partway through, where CPython's
+    merge stops early.
+- **Dict-view set operators re-hash the view's own keys** — `d.keys() - s`,
+    `|`, `^`, `isdisjoint` and the reflected forms collect those keys through a
+    live, resize-checked walk that calls `__hash__` on each one. CPython probes
+    with each key's stored hash and mostly does not call it at all. So a
+    `__hash__` — or a colliding `__eq__` — that resizes the dict raises
+    `RuntimeError: dictionary changed size during iteration` in Monty where
+    CPython completes, as in `d.keys() - s`; CPython raises too wherever its own
+    walk observes the change, as in `s - d.keys()` and `d.items() - s`.
+    `d.keys() & s` is the exception on both engines, walking the other operand
+    and probing the live dict instead, so the view's keys are never re-hashed.
+    The operand that is *not* the view is snapshotted before the operation
+    begins, so mutating that one is never observed. Absent mutation every result
+    agrees. Set-to-set operators do not re-hash at all, and dict-view equality
+    (`d.keys() == s`) raises exactly where CPython does.
 - **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager, not lazy** —
     each drains its source and returns a `list`, so `type(enumerate(x)).__name__`
     is `'list'` rather than `'enumerate'`. Observable several ways: a

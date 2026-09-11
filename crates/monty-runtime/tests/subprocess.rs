@@ -937,6 +937,31 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
     }
 }
 
+/// `set(s)` and `frozenset(s)` copy a set's storage wholesale rather than
+/// re-hashing element by element, so the whole copy runs between two execution
+/// checkpoints. It has to be charged before it happens: a source set sized as a
+/// *fraction of the limit* is what makes this a regression test rather than one
+/// for an absolute number — uncharged, a source that fits under the soft limit
+/// jumps straight past the allocator's hard ceiling and the worker is killed
+/// where a catchable `MemoryError` belongs.
+#[test]
+fn copying_a_large_set_fails_softly() {
+    for expr in ["set(s)", "frozenset(s)"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
+        // the source fits; its copy is what crosses the limit
+        child.feed_complete("s = set(range(400_000))");
+
+        let (_, event) = child.feed(expr);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{expr}");
+
+        // the session survives, i.e. the copy never reached the hard ceiling
+        assert_eq!(child.feed_complete("len(s)"), MontyObject::Int(400_000), "{expr}");
+        child.shutdown();
+    }
+}
+
 /// `inf` and `nan` print as they are, so a huge float precision costs nothing
 /// and must not be charged against the limit.
 #[test]
