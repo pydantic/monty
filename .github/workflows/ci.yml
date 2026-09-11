@@ -1328,7 +1328,7 @@ jobs:
           path: crates/monty-js/package-tarballs
 
       - name: Install packed package
-        run: npm install ../package-tarballs/monty-main.tgz --omit=optional --force --no-save --no-package-lock
+        run: npm install ../package-tarballs/monty-main.tgz ../package-tarballs/monty-linux-x64-gnu.tgz --force --no-save --no-package-lock
         working-directory: crates/monty-js/smoke-test
 
       - name: Exercise the packed browser package
