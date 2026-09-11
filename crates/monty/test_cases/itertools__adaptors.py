@@ -217,6 +217,99 @@ try:
 except TypeError as exc:
     assert str(exc) == 'chain() takes no keyword arguments'
 
+
+# === chain re-entrancy ===
+# Resolving an argument calls `__iter__`, which runs user code, and that code
+# can call `next()` on the SAME chain. CPython tests its source only at the top
+# of `chain_next`, so an argument resolved in a pass that a re-entrant call
+# ended still yields one item before the chain stops, and a source that call
+# installed is simply overwritten.
+class ReentrantIter:
+    """Calls `next()` on the chain it is an argument of, from `__iter__`."""
+
+    def __init__(self):
+        self.inner = 'unset'
+
+    def __iter__(self):
+        try:
+            self.inner = next(reentrant)
+        except StopIteration:
+            self.inner = 'stopped'
+        return iter([3])
+
+
+# The re-entrant call installs a source of its own, which the outer pass then
+# replaces: 9 is yielded to nobody and 8 is never reached.
+overwriting = ReentrantIter()
+reentrant = itertools.chain([1], overwriting, [9, 8])
+assert list(reentrant) == [1, 3]
+assert overwriting.inner == 9
+
+# The same window, with the re-entrant call ENDING the chain instead. The pass
+# already past the top of the loop still yields its item.
+ending = ReentrantIter()
+reentrant = itertools.chain([1], ending)
+assert list(reentrant) == [1, 3]
+assert ending.inner == 'stopped'
+
+
+# === pairwise / accumulate re-entrancy ===
+# The same window as `chain` above, reached through the SOURCE rather than
+# through `__iter__`: pulling an item runs user code that can step the same
+# adaptor. Both keep state between pulls, and both have to agree with CPython
+# on which state the pass that made the pull then uses.
+class ReentrantCounter:
+    """Steps the adaptor named by `target` from inside one `__next__`."""
+
+    def __init__(self, hook_at, target):
+        self.calls = 0
+        self.hook_at = hook_at
+        self.target = target
+        self.inner = 'unset'
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.calls += 1
+        if self.calls == self.hook_at:
+            try:
+                self.inner = next(self.target())
+            except StopIteration:
+                self.inner = 'stopped'
+        if self.calls > 6:
+            raise StopIteration
+        return self.calls
+
+
+# `pairwise` pairs the item it captured BEFORE the pull, so a re-entrant call
+# that advances the left half does not change what this pass yields — CPython
+# holds its own reference to `old` across the pull.
+pair_src = ReentrantCounter(2, lambda: pair_wise)
+pair_wise = itertools.pairwise(pair_src)
+assert list(pair_wise) == [(1, 3), (3, 4), (4, 5), (5, 6)]
+assert pair_src.inner == (1, 3)
+
+# Hooking the first pull instead, which lands while `previous` is being primed.
+prime_src = ReentrantCounter(1, lambda: prime_wise)
+prime_wise = itertools.pairwise(prime_src)
+assert list(prime_wise) == [(3, 4), (4, 5), (5, 6)]
+assert prime_src.inner == (2, 3)
+
+# `accumulate` folds into the total as it stands AFTER the pull, so a
+# re-entrant call's total is the one the next item is added to — CPython reads
+# `lz->total` at that point, not before.
+acc_src = ReentrantCounter(2, lambda: acc)
+acc = itertools.accumulate(acc_src)
+assert list(acc) == [1, 7, 11, 16, 22]
+assert acc_src.inner == 4
+
+# The same, hooked one pull later.
+acc_late_src = ReentrantCounter(3, lambda: acc_late)
+acc_late = itertools.accumulate(acc_late_src)
+assert list(acc_late) == [1, 3, 11, 16, 22]
+assert acc_late_src.inner == 7
+
 # === cycle ===
 assert list(itertools.islice(itertools.cycle([1, 2, 3]), 7)) == [1, 2, 3, 1, 2, 3, 1]
 assert list(itertools.islice(itertools.cycle('ab'), 5)) == ['a', 'b', 'a', 'b', 'a']

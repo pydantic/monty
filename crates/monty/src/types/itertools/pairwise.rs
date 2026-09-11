@@ -6,7 +6,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropWithContext, HeapId, HeapRead},
+    heap::{DropGuard, DropWithContext, HeapId, HeapRead},
     types::{
         itertools::{ItertoolsIter, step::next_source},
         tuple::allocate_tuple,
@@ -77,19 +77,45 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
         let ItertoolsIter::Pairwise(pairwise) = iter.get_mut(vm.heap) else {
             unreachable!("dispatched on Kind::Pairwise")
         };
-        pairwise.previous = Some(first);
+        // Priming runs the source, which re-enters the VM, so a re-entrant
+        // `next()` on this same pairwise may have primed it too. CPython
+        // `Py_XSETREF`s here; release what that displaces rather than losing
+        // the ref.
+        let displaced = pairwise.previous.replace(first);
+        displaced.drop_with(vm);
     }
 
-    let Some(second) = drive_source(iter, vm)? else {
+    // Cloned BEFORE the source runs, as CPython holds its own reference to
+    // `old` across the pull: a re-entrant `next()` that advances `previous`
+    // does not change which item this pass pairs.
+    let ItertoolsIter::Pairwise(pairwise) = iter.get(vm.heap) else {
+        unreachable!("dispatched on Kind::Pairwise")
+    };
+    let first = pairwise
+        .previous
+        .as_ref()
+        .expect("previous was primed above")
+        .clone_with_heap(vm.heap);
+
+    // Guarded rather than deferred: `first` is handed to the tuple on success,
+    // and released on both the exhausted and the raising path.
+    let mut first_guard = DropGuard::new(first, vm);
+    let (_, this) = first_guard.as_parts_mut();
+    let Some(second) = drive_source(iter, this)? else {
         return Ok(None);
     };
+    let (first, vm) = first_guard.into_parts();
+
     // Cloned before the `&mut`: `clone_with_heap` needs the heap shared, which
     // `get_mut` excludes. `second` is both yielded and retained.
     let retained = second.clone_with_heap(vm.heap);
     let ItertoolsIter::Pairwise(pairwise) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::Pairwise")
     };
-    let first = pairwise.previous.replace(retained).expect("previous was primed above");
+    // Whatever `previous` holds now is released, not carried into the pair:
+    // a re-entrant call may have moved it on since `first` was cloned.
+    let displaced = pairwise.previous.replace(retained);
+    displaced.drop_with(vm);
     Ok(Some(allocate_tuple([first, second].into_iter().collect(), vm.heap)))
 }
 

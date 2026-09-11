@@ -80,7 +80,9 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
             return Ok(None);
         }
 
-        let Some(current) = chain.current.as_ref().map(|c| c.clone_with_heap(vm.heap)) else {
+        let current = if let Some(current) = chain.current.as_ref() {
+            current.clone_with_heap(vm.heap)
+        } else {
             // No live source: resolve the next argument, or finish.
             let Some(raw) = chain.sources.get(chain.started).map(|s| s.clone_with_heap(vm.heap)) else {
                 finish(iter, vm);
@@ -89,8 +91,18 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
             // `into_py_iter` consumes `raw` on both paths, and raises here for a
             // non-iterable argument — matching CPython's lazy rejection.
             let resolved = into_py_iter_tracking(iter, raw, vm)?;
-            chain_mut(iter, vm).current = Some(resolved);
-            continue;
+            let working = resolved.clone_with_heap(vm.heap);
+            // Resolving calls `__iter__`, which re-enters the VM, so a
+            // re-entrant `next()` on this same chain can have installed a
+            // source of its own meanwhile. CPython overwrites its `active`
+            // here; drop what that displaces rather than losing the ref.
+            let displaced = chain_mut(iter, vm).current.replace(resolved);
+            displaced.drop_with(vm);
+            // Drained WITHOUT re-testing `done`: a re-entrant call may also
+            // have ended the chain, and CPython's `chain_next` tests its
+            // source only at the top of the loop, so the argument resolved in
+            // this pass still yields one item before the chain stops.
+            working
         };
 
         defer_drop!(current, vm);
