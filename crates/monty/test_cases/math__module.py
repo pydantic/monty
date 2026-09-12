@@ -1459,9 +1459,25 @@ assert math.pow(big, 2) == 1.393796574908164e42
 assert math.degrees(big) == 6.764291719561731e22
 assert math.ldexp(big, 1) == 2.3611832414348226e21
 assert math.floor(big) == big
+assert math.floor(-big) == -big
 assert math.ceil(-big) == -big
 assert math.trunc(big) == big
-for compute in [lambda: math.sqrt(huge), lambda: math.log1p(huge), lambda: math.pow(huge, 0)]:
+assert math.cbrt(big) == 10568983.798516532
+assert math.exp(-big) == 0.0
+assert math.atan(big) == 1.5707963267948966
+assert math.hypot(big, 1) == 1.1805916207174113e21
+assert math.modf(big) == (0.0, 1.1805916207174113e21)
+assert math.frexp(big) == (0.5, 71)
+assert math.remainder(big, 3) == 1.0
+assert not math.isnan(big)
+for compute in [
+    lambda: math.sqrt(huge),
+    lambda: math.log1p(huge),
+    lambda: math.pow(huge, 0),
+    lambda: math.gamma(huge),
+    lambda: math.sin(huge),
+    lambda: math.isfinite(huge),
+]:
     try:
         compute()
         assert False, 'expected OverflowError'
@@ -1470,8 +1486,11 @@ for compute in [lambda: math.sqrt(huge), lambda: math.log1p(huge), lambda: math.
 
 # === Logarithms of ints beyond the float range ===
 assert math.log(big) == 48.520302639196174
+assert math.log2(big) == 70.0
+assert math.log10(big) == 21.072099696478684
 assert math.log(huge) == 921.0340371976182
 assert math.log(huge, 10) == 399.99999999999994
+assert math.log(huge, 2) == 1328.7712379549448
 assert math.log(huge, huge) == 1.0
 assert math.log(2, huge) == 0.000752574989159953
 assert math.log2(huge) == 1328.771237954945
@@ -1486,7 +1505,30 @@ assert math.log10(2**1100 - 1) == 331.1329952303793
 assert math.log(7**500) == 972.9550745276566
 assert math.log2(3**700) == 1109.4737505048092
 assert math.log10(3**700) == 333.9848783037637
-for compute in [lambda: math.log(-huge), lambda: math.log(10, -huge), lambda: math.log2(-5), lambda: math.log(0)]:
+for compute, message in [
+    (lambda: math.log(), 'log expected at least 1 argument, got 0'),
+    (lambda: math.log(2, 10, 3), 'log expected at most 2 arguments, got 3'),
+    (lambda: math.perm(), 'perm expected at least 1 argument, got 0'),
+    (lambda: math.perm(1, 2, 3), 'perm expected at most 2 arguments, got 3'),
+]:
+    try:
+        compute()
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == message
+for compute in [lambda: math.log(huge, 1), lambda: math.log(huge, True)]:
+    try:
+        compute()
+        assert False, 'expected ZeroDivisionError'
+    except ZeroDivisionError as e:
+        assert str(e) == 'division by zero'
+for compute in [
+    lambda: math.log(-huge),
+    lambda: math.log(10, -huge),
+    lambda: math.log2(-5),
+    lambda: math.log(0),
+    lambda: math.log(False),
+]:
     try:
         compute()
         assert False, 'expected ValueError'
@@ -1511,6 +1553,12 @@ assert math.isqrt(big) == 34359738368
 assert math.isqrt(huge) == 10**200
 assert math.isqrt(huge + 1) == 10**200
 assert math.isqrt(huge - 1) == 10**200 - 1
+# The machine-int fast path ends at 2**63; the big path starts there.
+assert math.isqrt(2**63 - 1) == 3037000499
+assert math.isqrt(2**63) == 3037000499
+assert math.isqrt(2**64) == 4294967296
+assert math.isqrt(2**128 - 1) == 18446744073709551615
+assert math.isqrt(2**200) == 2**100
 try:
     math.isqrt(-big)
     assert False, 'expected ValueError'
@@ -1522,25 +1570,40 @@ assert math.gcd(big * 3, big * 5) == big
 assert math.gcd(big) == big
 assert math.gcd(-big, -big) == big
 assert math.gcd(big, 0) == big
+assert math.gcd(0, big) == big
+try:
+    math.gcd(big, 2.0)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "'float' object cannot be interpreted as an integer"
+assert math.lcm(big) == big
+assert math.lcm(-big) == big
 assert math.lcm(big, 3) == 3541774862152233910272
 assert math.lcm(2**40, 3**30) == 226379693794030958489370624
 assert math.lcm(2**62, 3) == 3 * 2**62
 assert math.lcm(-big, 3) == 3541774862152233910272
 assert math.lcm(big, 0) == 0
-try:
-    math.lcm(0, 2.0)
-    assert False, 'expected TypeError'
-except TypeError as e:
-    assert str(e) == "'float' object cannot be interpreted as an integer"
+for compute in [lambda: math.lcm(0, 2.0), lambda: math.lcm(big, 0, 2.0)]:
+    try:
+        compute()
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == "'float' object cannot be interpreted as an integer"
 
 assert math.factorial(21) == 51090942171709440000
 assert math.factorial(30) == 265252859812191058636308480000000
 assert len(str(math.factorial(1000))) == 2568
-try:
-    math.factorial(big)
-    assert False, 'expected OverflowError'
-except OverflowError as e:
-    assert str(e) == 'factorial() argument should not exceed 9223372036854775807'
+# CPython's limit is C `long`, which is 32 bits on Windows; Monty always uses the 64-bit limit.
+FACTORIAL_LIMIT_MESSAGES = {
+    'factorial() argument should not exceed 9223372036854775807',
+    'factorial() argument should not exceed 2147483647',
+}
+for compute in [lambda: math.factorial(big), lambda: math.factorial(2**63), lambda: math.perm(big)]:
+    try:
+        compute()
+        assert False, 'expected OverflowError'
+    except OverflowError as e:
+        assert str(e) in FACTORIAL_LIMIT_MESSAGES
 try:
     math.factorial(-big)
     assert False, 'expected ValueError'
@@ -1558,8 +1621,9 @@ for compute, exc_type, message in [
     (lambda: math.comb(-big, 1), ValueError, 'n must be a non-negative integer'),
     (lambda: math.comb(5, -big), ValueError, 'k must be a non-negative integer'),
     (lambda: math.perm(big, big // 2), OverflowError, 'k must not exceed 9223372036854775807'),
-    (lambda: math.perm(big), OverflowError, 'factorial() argument should not exceed 9223372036854775807'),
     (lambda: math.perm(-big), ValueError, 'factorial() not defined for negative values'),
+    (lambda: math.comb(3.0, 1), TypeError, "'float' object cannot be interpreted as an integer"),
+    (lambda: math.perm(3, 1.0), TypeError, "'float' object cannot be interpreted as an integer"),
 ]:
     try:
         compute()
@@ -1567,17 +1631,32 @@ for compute, exc_type, message in [
     except exc_type as e:
         assert str(e) == message
 assert math.perm(30) == 265252859812191058636308480000000
+assert math.perm(25) == 15511210043330985984000000
 assert math.perm(30, 20) == 73096577329197271449600000
 assert math.perm(big, 2) == 1393796574908163946344801800419805182820352
 assert math.perm(5, big) == 0
 assert len(str(math.perm(1000, 500))) == 1434
+# Small and boundary arguments on the big-int paths.
+assert math.comb(50, 25) == 126410606437752
+assert math.comb(big, 0) == 1
+assert math.perm(big, 0) == 1
+assert math.perm(big, 1) == big
+assert math.comb(0, 0) == 1
+assert math.comb(True, True) == 1
+assert math.comb(2**63, 1) == 2**63
+assert math.perm(2**63, 1) == 2**63
+assert math.comb(2**63, 2) == 42535295865117307928310139910543638528
+assert math.perm(2**63, 2) == 85070591730234615856620279821087277056
 
 # === ldexp saturates a long int exponent ===
 assert math.ldexp(1.0, -big) == 0.0
+assert math.ldexp(1.0, -(2**31)) == 0.0
 assert math.ldexp(0.0, big) == 0.0
 assert math.ldexp(float('inf'), big) == float('inf')
-try:
-    math.ldexp(1.0, big)
-    assert False, 'expected OverflowError'
-except OverflowError as e:
-    assert str(e) == 'math range error'
+assert math.ldexp(big, -70) == 1.0
+for compute in [lambda: math.ldexp(1.0, big), lambda: math.ldexp(1.0, 2**31), lambda: math.ldexp(True, big)]:
+    try:
+        compute()
+        assert False, 'expected OverflowError'
+    except OverflowError as e:
+        assert str(e) == 'math range error'

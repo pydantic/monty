@@ -53,6 +53,17 @@ assert round(10**400, -400) == 10**400
 assert round(10**400, -401) == 0
 assert round(5 * 10**399, -400) == 0
 assert round(15 * 10**399, -400) == 2 * 10**400
+assert round(-big) == -big
+assert round(big, True) == big
+assert round(big, -1) == 1180591620717411303420
+assert round(big + 5, -1) == 1180591620717411303430
+assert round(big + 15, -1) == 1180591620717411303440
+assert round(-big - 5, -1) == -1180591620717411303430
+assert round(-(10**30) - 15 * 10**10, -11) == -(10**30) - 2 * 10**11
+assert round(10**30, -30) == 10**30
+assert round(5 * 10**29, -30) == 0
+assert round(-5 * 10**29, -30) == 0
+assert round(15 * 10**29, -30) == 2 * 10**30
 try:
     round(big, 2.0)
     assert False, 'expected TypeError'
@@ -232,3 +243,58 @@ try:
 except ZeroDivisionError:
     threw = True
 assert threw
+
+# pow() is the ** operator: every numeric pairing, including long ints and bools
+big = 2**70
+assert pow(2, 100) == 1267650600228229401496703205376
+assert pow(2, 63) == 9223372036854775808
+assert pow(-2, 63) == -9223372036854775808
+assert pow(big, 2) == 1393796574908163946345982392040522594123776
+assert pow(1, big) == 1
+assert pow(-1, big) == 1
+assert pow(-1, big + 1) == -1
+assert pow(0, big) == 0
+assert pow(big, 0) == 1
+assert pow(big, -2) == 7.174648137343064e-43
+assert pow(False, 0) == 1
+assert pow(True, 2.5) == 1.0
+assert pow(2.5, True) == 2.5
+assert pow(2, 3, None) == 8
+
+# modular pow with every integer representation
+assert pow(2, 3, 5) == 3
+assert pow(2, 3, -5) == -2
+assert pow(-2, 3, 5) == 2
+assert pow(big, 2, 7) == 4
+assert pow(2, big, 7) == 2
+assert pow(2, 3, big) == 8
+assert pow(big, big, big - 1) == 1
+assert pow(True, 3, 2) == 1
+try:
+    pow(2, 3, 0)
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'pow() 3rd argument cannot be 0'
+
+# a float anywhere rejects the third argument; other types are an unsupported operand
+for compute in [lambda: pow(2.0, 3, 5), lambda: pow(2, 3.0, 5), lambda: pow(2, 3, 5.0), lambda: pow(2.0, 'a', 3)]:
+    try:
+        compute()
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == 'pow() 3rd argument not allowed unless all arguments are integers'
+for compute, message in [
+    (lambda: pow('a', 2), "unsupported operand type(s) for ** or pow(): 'str' and 'int'"),
+    (lambda: pow(2, 'a'), "unsupported operand type(s) for ** or pow(): 'int' and 'str'"),
+    (lambda: pow('a', 2, 3), "unsupported operand type(s) for ** or pow(): 'str', 'int', 'int'"),
+    (lambda: pow(2, 3, 'a'), "unsupported operand type(s) for ** or pow(): 'int', 'int', 'str'"),
+    (lambda: pow(True, 2, 'a'), "unsupported operand type(s) for ** or pow(): 'bool', 'int', 'str'"),
+    (lambda: pow(2), "pow() missing required argument 'exp' (pos 2)"),
+    (lambda: pow(), "pow() missing required argument 'base' (pos 1)"),
+    (lambda: pow(2, 3, 4, 5), 'pow() takes at most 3 arguments (4 given)'),
+]:
+    try:
+        compute()
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == message

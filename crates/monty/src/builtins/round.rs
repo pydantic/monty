@@ -2,6 +2,7 @@
 
 use num_bigint::BigInt;
 use num_integer::Integer;
+use num_traits::Pow;
 
 use crate::{
     args::{ArgValues, FromArgs, is_long_int},
@@ -127,10 +128,10 @@ pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn round_to_tens(n: &BigInt, k: u64, heap: &Heap) -> Value {
     // `10**k` exceeds `|n|` once `k` passes its decimal digit count, so the result is 0.
     let digit_bound = n.bits().saturating_mul(30_103) / 100_000 + 1;
-    let Some(k) = u32::try_from(k).ok().filter(|k| u64::from(*k) <= digit_bound) else {
+    if k > digit_bound {
         return Value::Int(0);
-    };
-    let factor = BigInt::from(10u8).pow(k);
+    }
+    let factor = Pow::pow(BigInt::from(10u8), k);
     let (quotient, remainder) = n.div_mod_floor(&factor);
     let twice_remainder = remainder << 1u32;
     let quotient = if twice_remainder > factor || (twice_remainder == factor && quotient.is_odd()) {

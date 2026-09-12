@@ -1498,6 +1498,15 @@ pub(crate) trait ExcTypeExt: Sized {
     /// `can only concatenate {type} (not "{other}") to {type}`
     ///
     /// For other cases, uses the generic format:
+    /// `unsupported operand type(s) for ** or pow(): '{base}', '{exp}', '{mod}'` — three-argument
+    /// `pow()` with no float operand and a non-integer among them.
+    #[must_use]
+    fn ternary_pow_type_error(base: impl Display, exp: impl Display, modulus: impl Display) -> RunError {
+        Self::type_error(format!(
+            "unsupported operand type(s) for ** or pow(): '{base}', '{exp}', '{modulus}'"
+        ))
+    }
+
     /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
     #[must_use]
     fn binary_type_error(op: &str, lhs_type: Type, lhs_name: impl Display, rhs_name: impl Display) -> RunError {

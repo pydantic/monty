@@ -6,7 +6,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::HeapData,
     types::long_int::modular_pow,
     value::Value,
@@ -21,27 +21,40 @@ pub fn builtin_pow(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(base, vm);
     defer_drop!(exp, vm);
     defer_drop!(modulus, vm);
-    let base = normalize_bool(base);
-    let exp = normalize_bool(exp);
+    let int_base = normalize_bool(base);
+    let int_exp = normalize_bool(exp);
 
     match modulus {
         // `pow(base, exp)` is `base ** exp`: the operator already covers every numeric pairing.
-        Value::None => base.py_pow(exp, None, vm),
+        Value::None => int_base.py_pow(int_exp, None, vm),
         modulus => {
-            let modulus = normalize_bool(modulus);
-            let result = match base {
-                Value::Int(base) => modular_pow(&BigInt::from(*base), exp, modulus, vm.heap)?,
+            let int_modulus = normalize_bool(modulus);
+            let result = match int_base {
+                Value::Int(base) => modular_pow(&BigInt::from(*base), int_exp, int_modulus, vm.heap)?,
                 Value::Ref(id) if let HeapData::LongInt(base) = vm.heap.get(*id) => {
-                    modular_pow(base.inner(), exp, modulus, vm.heap)?
+                    modular_pow(base.inner(), int_exp, int_modulus, vm.heap)?
                 }
                 _ => None,
             };
             result.ok_or_else(|| {
-                SimpleException::new_msg(
-                    ExcType::TypeError,
-                    "pow() 3rd argument not allowed unless all arguments are integers",
-                )
-                .into()
+                // A float operand refuses the third argument outright, as `float.__pow__` does;
+                // any other mix is reported as an unsupported operand triple.
+                if [base, exp, modulus]
+                    .iter()
+                    .any(|value| matches!(value, Value::Float(_)))
+                {
+                    SimpleException::new_msg(
+                        ExcType::TypeError,
+                        "pow() 3rd argument not allowed unless all arguments are integers",
+                    )
+                    .into()
+                } else {
+                    ExcType::ternary_pow_type_error(
+                        base.py_type_name(vm),
+                        exp.py_type_name(vm),
+                        modulus.py_type_name(vm),
+                    )
+                }
             })
         }
     }
