@@ -379,4 +379,9 @@ try:
     os.system(1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'expected str, bytes or os.PathLike object, not int'
+    # monty always uses the posix converter's wording; windows CPython names
+    # the argument instead (the listdir precedent)
+    if sys.platform == 'win32':
+        assert str(e) == "system() argument 'command' must be str, not int"
+    else:
+        assert str(e) == 'expected str, bytes or os.PathLike object, not int'

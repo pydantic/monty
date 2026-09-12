@@ -126,6 +126,10 @@ whether each call is permitted.
 - **`os.uname()` results print as `uname_result(...)`**, not
     `posix.uname_result(...)` (same named-tuple repr divergence as
     `os.stat` above).
+- **`os.system`'s bad-type error always uses the posix converter's wording**
+    (`expected str, bytes or os.PathLike object, not int`); windows CPython names
+    the argument (`system() argument 'command' must be str, not int`). Same for
+    the `posix.`-prefixed arity errors, which windows CPython prefixes with `nt.`.
 - **`os.system` decodes `bytes` commands lossily.** CPython decodes bytes
     with `surrogateescape`; Monty replaces invalid UTF-8 with U+FFFD, because
     sandbox strings cannot hold surrogates. `os.system` also cannot be called
