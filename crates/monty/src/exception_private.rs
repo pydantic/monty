@@ -1492,6 +1492,15 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "Python int too large to convert to C long").into()
     }
 
+    /// Creates the TypeError for three-argument `pow()` with a non-integer operand and no
+    /// float among them: `unsupported operand type(s) for ** or pow(): '{base}', '{exp}', '{modulus}'`.
+    #[must_use]
+    fn ternary_pow_type_error(base: impl Display, exp: impl Display, modulus: impl Display) -> RunError {
+        Self::type_error(format!(
+            "unsupported operand type(s) for ** or pow(): '{base}', '{exp}', '{modulus}'"
+        ))
+    }
+
     /// Creates a TypeError for unsupported binary operations.
     ///
     /// For `+` or `+=` with str/list on the left side, uses CPython's special format:

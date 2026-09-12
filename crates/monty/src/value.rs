@@ -1899,6 +1899,20 @@ impl Value {
         }
     }
 
+    /// Borrows the arbitrary-precision value of a `LongInt`-valued int (interned
+    /// or heap-allocated). `None` for every other value, `Int`/`Bool` included,
+    /// so callers keep their own fast paths for those.
+    pub(crate) fn as_long_int<'a>(&self, vm: &'a VM<'_>) -> Option<&'a BigInt> {
+        match self {
+            Self::InternLongInt(id) => Some(vm.interns.get_long_int(*id)),
+            Self::Ref(id) => match vm.heap.get(*id) {
+                HeapData::LongInt(li) => Some(li.inner()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Performs Python `+` with reflected-operation fallback.
     pub(crate) fn py_add(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
         if let Some(result) = self.py_add_result(other, vm)? {

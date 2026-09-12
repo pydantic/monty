@@ -30,7 +30,8 @@ WebAssembly runtimes do.
     are **pre-checked** before allocating: integer multiplication, left
     shift, integer power, sequence repeat (`'x' * n`), replacement
     (`str.replace`, `bytes.replace`), `re.sub`, padding (`str.ljust`, `str.center`,
-    `str.zfill`, `bytes.ljust`, …), integer division and `divmod`, deque
+    `str.zfill`, `bytes.ljust`, …), integer division and `divmod`,
+    `math.factorial`, `math.comb` and `math.perm`, deque
     rotation, slicing and repeat, materialising an iterator into a
     container, and string formatting with dynamic width or precision, for
     f-strings (`f"{v:>{w}}"`, `f"{v:.{p}f}"`), `str.format()`
