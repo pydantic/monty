@@ -193,6 +193,10 @@ struct Prepare<'i, 'g> {
     /// variables by bare name. [`Self::child_enclosing_locals`] honours this by
     /// excluding our own (class-member) locals when this flag is set.
     is_class_scope: bool,
+    /// True while preparing the nested portion of a comprehension in a class
+    /// body. The first iterable is evaluated in the class body itself; filters,
+    /// later iterables, and result expressions skip the class namespace.
+    skip_class_scope: bool,
     /// Class members whose binding statement has already been prepared, in
     /// source order (only populated when `is_class_scope`).
     ///
@@ -265,6 +269,8 @@ struct FunctionState {
     locals: NameMap,
     /// Names declared `global` in this function — resolve to module globals.
     global_names: AHashSet<StringId>,
+    /// Names declared `nonlocal` in this function — resolve to enclosing cells.
+    nonlocal_names: AHashSet<StringId>,
     /// Names bound in THIS scope (params + body-assigned, minus globals).
     /// A read of any of these resolves to `NameScope::Local`.
     assigned_names: AHashSet<StringId>,
@@ -522,6 +528,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
             is_class_scope: false,
+            skip_class_scope: false,
             bound_class_members: AHashSet::new(),
         }
     }
@@ -623,6 +630,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             state: PrepareState::Function(Box::new(FunctionState {
                 locals,
                 global_names,
+                nonlocal_names: nonlocal_names.clone(),
                 assigned_names,
                 enclosing_locals,
                 free_var_map,
@@ -633,6 +641,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
             is_class_scope: false,
+            skip_class_scope: false,
             bound_class_members: AHashSet::new(),
         })
     }
@@ -1360,6 +1369,14 @@ impl<'i, 'g> Prepare<'i, 'g> {
             remaining_targets.push(self.prepare_unpack_target_for_comprehension(generator.target.clone())?);
         }
 
+        // Everything after the first iterable executes in the comprehension's
+        // nested lexical scope. In a class body that scope can see comprehension
+        // targets and scopes enclosing the class, but not class members.
+        let saved_skip_class_scope = self.skip_class_scope;
+        if self.is_class_scope {
+            self.skip_class_scope = true;
+        }
+
         // Now prepare the first generator's filters (with full comp scope visible),
         // then the remaining generators' iter + filters, then the body element.
         let first_ifs = first_gen
@@ -1398,6 +1415,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             Some((k, v)) => Some((self.prepare_expression(k)?, self.prepare_expression(v)?)),
             None => None,
         };
+        self.skip_class_scope = saved_skip_class_scope;
 
         // The scope preserves lexical allocation order while keeping each name unique.
         let comp_scope = self.comp_name_scopes.pop().expect("comprehension scope was pushed");
@@ -2100,6 +2118,29 @@ impl<'i, 'g> Prepare<'i, 'g> {
             }
         }
 
+        // The nested portion of a class-body comprehension skips the class
+        // namespace. Captures from a function enclosing the class have already
+        // been registered in `free_var_map` by the scope-analysis pass.
+        if is_read && self.is_class_scope && self.skip_class_scope {
+            let PrepareState::Function(fn_state) = &mut self.state else {
+                unreachable!("a class scope is represented by a function state");
+            };
+            if fn_state.global_names.contains(&name_id) {
+                let slot = self.globals.ensure_slot(name_id, position)?;
+                return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Global));
+            }
+            if let Some(&slot) = fn_state.free_var_map.get(&name_id) {
+                return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Cell));
+            }
+            if fn_state.enclosing_locals.contains(&name_id) {
+                let slot = fn_state.locals.push_aliased_slot(name_id, position)?;
+                fn_state.free_var_map.insert(name_id, slot);
+                return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Cell));
+            }
+            let slot = self.globals.ensure_slot(name_id, position)?;
+            return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Global));
+        }
+
         // In a class body, a READ of a member that has not been bound yet
         // cannot hit its local slot: CPython's `LOAD_NAME` falls back to
         // globals → builtins (never enclosing function locals). The linear
@@ -2139,6 +2180,14 @@ impl<'i, 'g> Prepare<'i, 'g> {
         if fn_state.global_names.contains(&name_id) {
             let slot = self.globals.ensure_slot(name_id, position)?;
             return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Global));
+        }
+
+        // Class-body stores always bind the class namespace, even when a
+        // nested comprehension has already captured the same name. Explicit
+        // `nonlocal` stores remain cell stores, as in CPython.
+        if !is_read && self.is_class_scope && !self.skip_class_scope && !fn_state.nonlocal_names.contains(&name_id) {
+            let slot = fn_state.locals.ensure_slot(name_id, position)?;
+            return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Local));
         }
 
         // 2. Captured from enclosing scope (nonlocal declaration or implicit capture).
