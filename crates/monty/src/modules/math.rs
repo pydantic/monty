@@ -1051,7 +1051,8 @@ fn factorial(n: &BigInt, tracker: &ResourceTracker) -> RunResult<BigInt> {
         .into());
     };
     let n = n.unsigned_abs();
-    check_product_size(n, u64::from(u64::BITS - n.leading_zeros()), tracker)?;
+    // `n!` has fewer than `n * bits(n)` bits.
+    check_product_size(n.saturating_mul(u64::from(u64::BITS - n.leading_zeros())), tracker)?;
     product_range(2, n, &mut 0, tracker)
 }
 
@@ -1108,10 +1109,13 @@ fn math_lcm(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         defer_drop!(arg, vm);
         let n = value_to_bigint(arg, vm)?;
         // A zero anywhere makes the result zero, but every argument is still type-checked.
-        if !result.is_zero() {
-            // `lcm` grows like a product, so it is preflighted like `*`.
-            check_mult_size(result.bits(), n.bits(), &vm.heap.tracker)?;
+        if !result.is_zero() && !n.is_zero() {
+            // `lcm` divides out the gcd, holding a quotient up to `result`'s size, then
+            // multiplies: preflight both like `*`.
+            check_mult_size(result.bits().saturating_mul(2), n.bits(), &vm.heap.tracker)?;
             result = result.lcm(&n);
+        } else {
+            result = BigInt::ZERO;
         }
     }
     Ok(LongInt::new(result).into_value(vm.heap))
@@ -1155,7 +1159,12 @@ fn math_comb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `n * (n - 1) * ... * (n - k + 1)`, the `k`-permutation count; with `binomial` each
 /// step also divides by `i + 1`, so every partial product is the exact `C(n, i + 1)`.
 fn falling_product(n: &BigInt, k: u64, binomial: bool, tracker: &ResourceTracker) -> RunResult<BigInt> {
-    check_product_size(k, n.bits(), tracker)?;
+    // The product has fewer than `k * bits(n)` bits; a binomial is also below `2**n`.
+    let mut result_bits = k.saturating_mul(n.bits());
+    if binomial && let Some(n) = n.to_u64() {
+        result_bits = result_bits.min(n);
+    }
+    check_product_size(result_bits, tracker)?;
     let mut result = BigInt::one();
     for (polls, i) in (0..k).enumerate() {
         // Nothing here returns to the VM's dispatch checkpoint, so the loop polls the clock itself.

@@ -1492,14 +1492,8 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "Python int too large to convert to C long").into()
     }
 
-    /// Creates a TypeError for unsupported binary operations.
-    ///
-    /// For `+` or `+=` with str/list on the left side, uses CPython's special format:
-    /// `can only concatenate {type} (not "{other}") to {type}`
-    ///
-    /// For other cases, uses the generic format:
-    /// `unsupported operand type(s) for ** or pow(): '{base}', '{exp}', '{mod}'` — three-argument
-    /// `pow()` with no float operand and a non-integer among them.
+    /// Creates the TypeError for three-argument `pow()` with a non-integer operand and no
+    /// float among them: `unsupported operand type(s) for ** or pow(): '{base}', '{exp}', '{modulus}'`.
     #[must_use]
     fn ternary_pow_type_error(base: impl Display, exp: impl Display, modulus: impl Display) -> RunError {
         Self::type_error(format!(
@@ -1507,6 +1501,12 @@ pub(crate) trait ExcTypeExt: Sized {
         ))
     }
 
+    /// Creates a TypeError for unsupported binary operations.
+    ///
+    /// For `+` or `+=` with str/list on the left side, uses CPython's special format:
+    /// `can only concatenate {type} (not "{other}") to {type}`
+    ///
+    /// For other cases, uses the generic format:
     /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
     #[must_use]
     fn binary_type_error(op: &str, lhs_type: Type, lhs_name: impl Display, rhs_name: impl Display) -> RunError {

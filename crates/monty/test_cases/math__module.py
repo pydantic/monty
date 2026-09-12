@@ -1462,7 +1462,8 @@ assert math.floor(big) == big
 assert math.floor(-big) == -big
 assert math.ceil(-big) == -big
 assert math.trunc(big) == big
-assert math.cbrt(big) == 10568983.798516532
+# `cbrt` differs across libms in the last bit, so this one is checked with a tolerance.
+assert math.isclose(math.cbrt(big), 10568983.798516532, rel_tol=1e-15)
 assert math.exp(-big) == 0.0
 assert math.atan(big) == 1.5707963267948966
 assert math.hypot(big, 1) == 1.1805916207174113e21
@@ -1583,6 +1584,8 @@ assert math.lcm(2**40, 3**30) == 226379693794030958489370624
 assert math.lcm(2**62, 3) == 3 * 2**62
 assert math.lcm(-big, 3) == 3541774862152233910272
 assert math.lcm(big, 0) == 0
+assert math.lcm(big, 0, big) == 0
+assert math.lcm(huge, 0) == 0
 for compute in [lambda: math.lcm(0, 2.0), lambda: math.lcm(big, 0, 2.0)]:
     try:
         compute()
