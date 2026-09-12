@@ -122,8 +122,8 @@ whether each call is permitted.
     `RuntimeError: 'os.uname' is not supported in this environment` (the
     no-handler error; the FS calls raise `PermissionError` instead). A host
     can present a fully synthetic machine — see
-    [`FakeLinux`][pydantic_monty.FakeLinux] — with no host facts leaking in.
-- **`os.uname()` results print as `UnameResult(...)`**, not
+    a synthetic-OS host — with no host facts leaking in.
+- **`os.uname()` results print as `uname_result(...)`**, not
     `posix.uname_result(...)` (same named-tuple repr divergence as
     `os.stat` above).
 - **`os.system` decodes `bytes` commands lossily.** CPython decodes bytes

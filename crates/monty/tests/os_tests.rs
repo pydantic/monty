@@ -1206,6 +1206,39 @@ fn os_system_passes_command_to_host() {
 }
 
 #[test]
+fn os_identity_calls_fail_closed_with_no_handler() {
+    // the obvious-safety property: a host that declines (not_handled) makes
+    // every new call raise the no-handler error — never a fabricated
+    // success. os.system in particular can never be smuggled into doing
+    // anything by calling it uninvited: declining it is the safe default.
+    let cases = [
+        "import os\nos.uname()",
+        "import os\nos.cpu_count()",
+        "import os\nos.getpid()",
+        "import os\nos.system('ls')",
+    ];
+    for code in cases {
+        let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let progress = runner
+            .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap();
+        let RunProgress::OsCall(call) = progress else {
+            panic!("expected OsCall for {code}");
+        };
+        // the parent's decline: the call's own no-handler exception
+        let decline = call.function_call.on_no_handler();
+        let error = call
+            .resume(ExtFunctionResult::Error(decline), PrintWriter::Stdout)
+            .err()
+            .unwrap_or_else(|| panic!("expected the no-handler error for {code}"));
+        assert!(
+            error.to_string().ends_with("is not supported in this environment"),
+            "{code}: {error}"
+        );
+    }
+}
+
+#[test]
 fn os_system_accepts_bytes_and_pathlike_commands() {
     // CPython's converter takes str/bytes/PathLike; bytes cross as their
     // utf-8 text (lossily decoded — sandbox strings cannot hold surrogates).
