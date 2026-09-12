@@ -1,0 +1,65 @@
+crates/monty-js/__test__/wasm_value_codec.spec.ts
+  s_ef96740ae8813c::t_cd191385abb26d 26-53,20-22,24,13-15,17
+  s_ef96740ae8813c::t_cfa1b35b8d9b95 19,23
+  s_ef96740ae8813c::t_c2a276994e1046 12
+  s_e542eecb29b61f::t_38a59f4395e69f 9-10,16
+crates/monty-js/__test__/helpers.ts
+  s_e542eecb29b61f::t_38a59f4395e69f 7
+crates/monty-js/__test__/os_paths.ts
+  s_e542eecb29b61f::t_38a59f4395e69f 1-95
+crates/monty-js/__test__/mount.spec.ts
+  s_8094673681c2fa::t_23f9a1da680d3a 117-125,168-172,179,182,184-188,197-201,195-196,165-166,128-129,132-133
+  s_8094673681c2fa::t_b9a8cbaf298ec9 173-177
+  s_8094673681c2fa::t_d156c34f7b7141 167,178,180-181,183,191,193-194
+  s_8094673681c2fa::t_a1e83abe37fea9 189-190,192
+  s_ef96740ae8813c::t_cd191385abb26d 134-148,151-161,164
+  s_ef96740ae8813c::t_657ee0f3c94913 149-150,162-163
+  s_ef96740ae8813c::t_cfa1b35b8d9b95 126-127
+  s_ef96740ae8813c::t_eedd9598653eca 695
+  s_ef96740ae8813c::t_c2a276994e1046 130
+  s_e542eecb29b61f::t_38a59f4395e69f 9-10,131
+crates/monty-runtime/tests/subprocess.rs
+  s_8094673681c2fa::t_c1b5b5c602f71b 121,153,1763
+  s_b6cdeabe6326c9::t_ceee534161ce6b 943,945,950,974-976,951-971,973
+  s_e542eecb29b61f::t_dbdffb1b04117d 972
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "baf65898f790d2a5c5275df6a9efac6c1820d796",
+  "prompts": {},
+  "sessions": {
+    "s_8094673681c2fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf9081e0-d46f-481b-8256-a7fe2e23cafe",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_b6cdeabe6326c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b1035f27-e733-4a4a-a423-125c2a168036",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_e542eecb29b61f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c6a4336-82e2-4bec-9790-e94d11043c31",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_ef96740ae8813c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0789b-9e96-7862-b688-40db306bd662",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

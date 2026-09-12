@@ -1,0 +1,39 @@
+crates/monty/tests/os_tests.rs
+  s_8094673681c2fa::t_e6bd602fd7c904 9-10,167,174-181,185-186,191,197-205,217-218,221-225,235-241,244-269,274-277,282-288,290-292,296-315,344-345,350-353,355,358-361,363-372,376-377,387-391,753,756
+  s_8094673681c2fa::t_4c6be6572685da 187-190,206-209,243,270-273,293-295,378-386
+  s_8094673681c2fa::t_190952105245a7 212-214,316-318,320-327,331-333,336-341
+  s_8094673681c2fa::t_8e3fd12f7445e0 278-281
+  s_8094673681c2fa::t_8aae0d81c63422 289,346-349,354,362
+  s_8094673681c2fa::t_a629f0abad8bf7 328-330
+  s_ef96740ae8813c::t_ce39f60e9fe794 342-343,374-375
+  s_8094673681c2fa::t_497d5cc9fa640f 356-357
+  ai_agent 373
+  s_8094673681c2fa::t_af2ba3903bdb95 183,192,195
+crates/monty-js/ts/worker/transport.ts
+  s_8094673681c2fa::t_75f3f6e793ffd5 130,146
+  s_8094673681c2fa::t_e2966a68dd0948 136-139,147,426-427,432-437,439-443,445-453
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a1abf17940266034bbc1da03b933ccf4b7434cf6",
+  "prompts": {},
+  "sessions": {
+    "s_8094673681c2fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf9081e0-d46f-481b-8256-a7fe2e23cafe",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_ef96740ae8813c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0789b-9e96-7862-b688-40db306bd662",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
