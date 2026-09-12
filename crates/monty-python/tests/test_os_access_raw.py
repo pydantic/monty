@@ -7,13 +7,21 @@ interact with through the `os=` callback surface.
 
 import datetime
 from pathlib import PurePosixPath
+from typing import cast
 
 import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
 import pydantic_monty
-from pydantic_monty import NOT_HANDLED, AbstractOS, MontyFileHandle, StatResult
+from pydantic_monty import (
+    NOT_HANDLED,
+    AbstractOS,
+    MontyFileHandle,
+    OsFunction,
+    StatResult,
+    uname_result,
+)
 from pydantic_monty.os_access import path_from_arg
 
 
@@ -614,93 +622,75 @@ def test_identity_hooks_default_not_handled():
     """The new hooks (uname/getcwd/cpu_count/getpid/system) raise
     NotImplementedError by default, which the adapter reports as NOT_HANDLED
     — the sandbox then raises the no-handler RuntimeError."""
-    import os as real_os
-
-    from pydantic_monty import NOT_HANDLED, AbstractOS
 
     class Bare(AbstractOS):
-        # the abstract FS methods are implemented as no-ops: this test only
-        # exercises the default identity hooks
-        def path_exists(self, path):
+        def path_exists(self, path: PurePosixPath) -> bool:
             return False
 
-        def path_is_file(self, path):
+        def path_is_file(self, path: PurePosixPath) -> bool:
             return False
 
-        def path_is_dir(self, path):
+        def path_is_dir(self, path: PurePosixPath) -> bool:
             return False
 
-        def path_is_symlink(self, path):
+        def path_is_symlink(self, path: PurePosixPath) -> bool:
             return False
 
-        def path_read_text(self, path):
+        def path_read_text(self, path: PurePosixPath | MontyFileHandle) -> str:
             raise FileNotFoundError(path)
 
-        def path_read_bytes(self, path):
+        def path_read_bytes(self, path: PurePosixPath | MontyFileHandle) -> bytes:
             raise FileNotFoundError(path)
 
-        def path_write_text(self, path, data):
+        def path_write_text(self, path: PurePosixPath | MontyFileHandle, data: str) -> int:
             raise FileNotFoundError(path)
 
-        def path_write_bytes(self, path, data):
+        def path_write_bytes(self, path: PurePosixPath | MontyFileHandle, data: bytes) -> int:
             raise FileNotFoundError(path)
 
-        def path_mkdir(self, path, parents, exist_ok):
+        def path_mkdir(self, path: PurePosixPath, parents: bool, exist_ok: bool) -> None:
             raise FileNotFoundError(path)
 
-        def path_unlink(self, path):
+        def path_unlink(self, path: PurePosixPath) -> None:
             raise FileNotFoundError(path)
 
-        def path_rmdir(self, path):
+        def path_rmdir(self, path: PurePosixPath) -> None:
             raise FileNotFoundError(path)
 
-        def path_iterdir(self, path):
+        def path_iterdir(self, path: PurePosixPath) -> list[PurePosixPath]:
             raise FileNotFoundError(path)
 
-        def path_stat(self, path):
+        def path_stat(self, path: PurePosixPath) -> StatResult:
             raise FileNotFoundError(path)
 
-        def path_rename(self, path, target):
+        def path_rename(self, path: PurePosixPath, target: PurePosixPath) -> None:
             raise FileNotFoundError(path)
 
-        def path_resolve(self, path):
+        def path_resolve(self, path: PurePosixPath) -> str:
             return str(path)
 
-        def path_absolute(self, path):
+        def path_absolute(self, path: PurePosixPath) -> str:
             return str(path)
 
-        def getenv(self, key, default=None):
+        def getenv(self, key: str, default: str | None = None) -> str | None:
             return default
 
-        def get_environ(self):
+        def get_environ(self) -> dict[str, str]:
             return {}
 
     bare = Bare()
-    for call, args in [
-        ('os.uname', ()),
-        ('os.getcwd', ()),
-        ('os.cpu_count', ()),
-        ('os.getpid', ()),
-        ('os.system', ('ls',)),
-    ]:
-        assert bare(call, args) == NOT_HANDLED, call
+    for call in ('os.uname', 'os.cpu_count', 'os.getpid', 'os.system'):
+        assert bare(cast(OsFunction, call), ()) == NOT_HANDLED, call
+        assert bare(cast(OsFunction, call), ('ls',)) == NOT_HANDLED, call
 
-    # an override answers, and the value crosses into the sandbox
-    class WithUname(Bare):
-        def uname(self):
-            return real_os.__class__ and ('unused')
+    # an override answers, and the value crosses the boundary
+    class WithOverrides(Bare):
+        def uname(self) -> uname_result:
+            return uname_result('Linux', 'test-host', '1.0', '#1', 'x86_64')
 
-    # the proper override: return a plain 5-tuple
-    class WithUname2(Bare):
-        def uname(self):
-            return ('Linux', 'test-host', '1.0', '#1', 'x86_64')
-
-    result = WithUname2()('os.uname', ())
-    assert result == ('Linux', 'test-host', '1.0', '#1', 'x86_64')
-
-    class WithSystem(Bare):
-        def system(self, command):
+        def system(self, command: str) -> int:
             return 7
 
-    assert WithSystem()('os.system', ('cmd',)) == 7
-    assert NOT_HANDLED is not None  # keeps the import meaningful
+    host = WithOverrides()
+    assert host(cast(OsFunction, 'os.uname'), ()) == uname_result('Linux', 'test-host', '1.0', '#1', 'x86_64')
+    assert host(cast(OsFunction, 'os.system'), ('cmd',)) == 7

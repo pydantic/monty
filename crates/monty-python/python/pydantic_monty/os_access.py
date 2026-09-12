@@ -255,8 +255,6 @@ class AbstractOS(ABC):
                 return self.datetime_now(*args)
             case 'os.uname':
                 return self.uname()
-            case 'os.getcwd':
-                return self.getcwd()
             case 'os.cpu_count':
                 return self.cpu_count()
             case 'os.getpid':
