@@ -119,10 +119,6 @@ pub enum OsFunctionCall {
     /// tuple (sysname, nodename, release, version, machine).
     #[strum(serialize = "os.uname")]
     Uname,
-    /// `os.getcwd()` — the sandbox has no working directory of its own; the
-    /// host answers with the virtual path sandbox code should observe.
-    #[strum(serialize = "os.getcwd")]
-    Getcwd,
     /// `os.cpu_count()` — the host answers with the CPU count sandbox code sees.
     #[strum(serialize = "os.cpu_count")]
     CpuCount,
@@ -183,7 +179,7 @@ impl OsFunctionCall {
             // Unit & single-value non-FS variants.
             Self::GetEnviron | Self::DateToday => (vec![], vec![]),
             Self::DateTimeNow(tz) => (vec![tz.map_or(MontyObject::None, MontyObject::TimeZone)], vec![]),
-            Self::Uname | Self::Getcwd | Self::CpuCount | Self::Getpid => (vec![], vec![]),
+            Self::Uname | Self::CpuCount | Self::Getpid => (vec![], vec![]),
             Self::System(a) => a.to_args(),
         }
     }
@@ -284,7 +280,7 @@ impl OsFunctionCall {
             Self::Mkdir(a) => Some(a.path.as_str()),
             Self::Rename(a) => Some(a.src.as_str()),
             Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) => None,
-            Self::Uname | Self::Getcwd | Self::CpuCount | Self::Getpid | Self::System(_) => None,
+            Self::Uname | Self::CpuCount | Self::Getpid | Self::System(_) => None,
         }
     }
 
@@ -414,7 +410,8 @@ pub struct GetenvArgs {
 }
 
 /// `os.system(command)` shape — the command is passed through verbatim; the
-/// host alone decides what (if anything) to do with it.
+/// host alone decides what (if anything) to do with it. Monty never executes
+/// it; a handler that chooses to is acting with its own full host authority.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct SystemCallArgs {
     pub command: String,

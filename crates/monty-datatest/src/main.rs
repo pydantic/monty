@@ -1094,7 +1094,6 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
         OsFunctionCall::Uname => {
             uname_result("Linux", "monty-test", "6.1.0-monty", "#1 SMP PREEMPT_DYNAMIC", "x86_64").into()
         }
-        OsFunctionCall::Getcwd => MontyObject::String("/virtual/cwd".to_owned()).into(),
         OsFunctionCall::CpuCount => MontyObject::Int(4).into(),
         OsFunctionCall::Getpid => MontyObject::Int(4242).into(),
         // The harness executes nothing: every command "succeeds".

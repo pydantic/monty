@@ -241,7 +241,7 @@ handler at all.
 The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`, `open`,
 `Path.read_text`, `Path.read_bytes`, `Path.write_text`, `Path.write_bytes`, `Path.append_text`, `Path.append_bytes`,
 `Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.stat`, `Path.rename`, `Path.resolve`, `Path.absolute`,
-`os.getenv`, `os.environ`, `date.today`, `datetime.now`, `os.uname`, `os.getcwd`, `os.cpu_count`, `os.getpid` and
+`os.getenv`, `os.environ`, `date.today`, `datetime.now`, `os.uname`, `os.cpu_count`, `os.getpid` and
 `os.system`.
 
 `os` callbacks run in your process with your process's authority.
@@ -309,7 +309,7 @@ to real files, and `os.getenv` sees only the `environ` mapping you passed.
 For a complete fake machine rather than a bare filesystem,
 [`FakeLinux`][pydantic_monty.FakeLinux] subclasses `OSAccess` with a deterministic synthetic Linux tree
 (`/etc`, `/proc`, `/dev`, `/home`, ...), a generated `environ`, and answers for the system-identity calls
-(`os.uname()`, `os.getcwd()`, `os.cpu_count()`, `os.getpid()`); `os.system` records what sandboxed code tried to run
+(`os.uname()`, `os.cpu_count()`, `os.getpid()`); `os.system` records what sandboxed code tried to run
 and answers with exit status `0` without executing anything.
 
 === "Python"

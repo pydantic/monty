@@ -1219,8 +1219,6 @@ pub enum StaticStrings {
     // beside the earlier `os` names would shift every later serialized id.
     /// `os.uname()` function.
     Uname,
-    /// `os.getcwd()` function.
-    Getcwd,
     /// `os.cpu_count()` function.
     CpuCount,
     /// `os.getpid()` function.

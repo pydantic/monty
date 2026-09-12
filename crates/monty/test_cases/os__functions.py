@@ -320,10 +320,11 @@ try:
 except TypeError as e:
     assert str(e) == 'replace() takes exactly 2 positional arguments (3 given)'
 
-# === uname / getcwd / cpu_count / getpid / system ===
+# === uname / cpu_count / getpid / system ===
 # The host answers these, so exact values are host-specific; CPython returns
 # its real system values while Monty's host (the test harness) returns its
-# own. Assert the structural contract only.
+# own. Assert the structural contract only. (os.getcwd is #828's territory:
+# the VM owns the working directory there.)
 u = os.uname()
 assert len(u) == 5
 assert u.sysname == u[0]
@@ -332,10 +333,10 @@ assert u.release == u[2]
 assert u.version == u[3]
 assert u.machine == u[4]
 
+# os.cpu_count() may legitimately return None when the count is unknown
 count = os.cpu_count()
-assert count is not None and count >= 1
+assert count is None or (isinstance(count, int) and count >= 1)
 assert os.getpid() > 0
-assert isinstance(os.getcwd(), str)
 # Nothing is ever executed by Monty; CPython runs the (harmless) command.
 if sys.platform != 'win32':
     assert os.system('true') == 0
@@ -353,11 +354,6 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == 'posix.uname() takes no keyword arguments'
-try:
-    os.getcwd(1)
-    assert False, 'expected TypeError'
-except TypeError as e:
-    assert str(e) == 'posix.getcwd() takes no arguments (1 given)'
 try:
     os.cpu_count(1)
     assert False, 'expected TypeError'

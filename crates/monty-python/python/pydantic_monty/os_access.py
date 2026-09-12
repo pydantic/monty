@@ -48,7 +48,6 @@ OsFunction = Literal[
     'date.today',
     'datetime.now',
     'os.uname',
-    'os.getcwd',
     'os.cpu_count',
     'os.getpid',
     'os.system',
@@ -593,14 +592,6 @@ class AbstractOS(ABC):
         Override this to present a synthetic system. The default raises
         `NotImplementedError`, which reports NOT_HANDLED — the sandbox then
         raises `RuntimeError: 'os.uname' is not supported in this environment`.
-        """
-        raise NotImplementedError
-
-    def getcwd(self) -> str:
-        """Return the working directory for Monty's `os.getcwd()` callback.
-
-        Override this when the sandbox should observe a virtual working
-        directory. The default raises `NotImplementedError` (NOT_HANDLED).
         """
         raise NotImplementedError
 

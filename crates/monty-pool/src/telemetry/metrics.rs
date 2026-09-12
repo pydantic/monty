@@ -796,7 +796,6 @@ fn os_call(call: Option<&Call>) -> &'static str {
         Some(Call::DateToday(_)) => "date_today",
         Some(Call::DateTimeNow(_)) => "date_time_now",
         Some(Call::Uname(_)) => "uname",
-        Some(Call::Getcwd(_)) => "getcwd",
         Some(Call::CpuCount(_)) => "cpu_count",
         Some(Call::Getpid(_)) => "getpid",
         Some(Call::System(_)) => "system",

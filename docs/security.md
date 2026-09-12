@@ -202,7 +202,9 @@ anything.
 A separate `os=` callback handles operations no mount covers: the remaining `pathlib` operations, `os.getenv`,
 `os.environ`, `date.today()`, `datetime.now()` and the system-identity calls `os.uname()`, `os.getcwd()`,
 `os.cpu_count()`, `os.getpid()` and `os.system()` — the last of which hands the command string to the host and never
-executes anything itself.
+executes anything itself. `os.system` fails closed: with no handler the sandbox raises
+`RuntimeError` — never a fake success. If your `os` handler chooses to run the command it
+receives, it is acting with your process's full authority — that is a hole you cut, not monty.
 [`AbstractOS`][pydantic_monty.AbstractOS] is the typed form of that callback; [`OSAccess`][pydantic_monty.OSAccess] implements it over in-memory files and an `environ` mapping
 you supply, and overriding one of its methods replaces one operation.
 JavaScript has only the callback form, so the TypeScript tab answers the same three operations by hand:

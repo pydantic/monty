@@ -79,7 +79,6 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
             timezone_name: None,
         }),
         OsFunctionCall::Uname => monty_types::uname_result("Linux", "mock-host", "6.1.0", "#1 SMP", "x86_64"),
-        OsFunctionCall::Getcwd => MontyObject::String("/mock/cwd".to_owned()),
         OsFunctionCall::CpuCount => MontyObject::Int(4),
         OsFunctionCall::Getpid => MontyObject::Int(4242),
         OsFunctionCall::System(_) => MontyObject::Int(0),
@@ -1171,7 +1170,6 @@ fn os_system_identity_calls_suspend_with_no_args() {
     // empty arg projection, like the other non-FS calls.
     for (code, expected_name) in [
         ("import os\nos.uname()", "os.uname"),
-        ("import os\nos.getcwd()", "os.getcwd"),
         ("import os\nos.cpu_count()", "os.cpu_count"),
         ("import os\nos.getpid()", "os.getpid"),
     ] {
@@ -1205,6 +1203,37 @@ fn os_system_passes_command_to_host() {
     assert_eq!(func, "os.system");
     assert_eq!(args, vec![MontyObject::String("apt-get install -y nothing".to_owned())]);
     assert_eq!(result, MontyObject::Int(0));
+}
+
+#[test]
+fn os_system_accepts_bytes_and_pathlike_commands() {
+    // CPython's converter takes str/bytes/PathLike; bytes cross as their
+    // utf-8 text (lossily decoded — sandbox strings cannot hold surrogates).
+    let (func, args, _result) = run_oscall_with_result(
+        "import os\nos.system(b'apt-get update')",
+        MontyObject::Int(0),
+    );
+    assert_eq!(func, "os.system");
+    assert_eq!(args, vec![MontyObject::String("apt-get update".to_owned())]);
+
+    let (func, args, _result) = run_oscall_with_result(
+        "import os\nfrom pathlib import Path\nos.system(Path('/usr/bin/true'))",
+        MontyObject::Int(0),
+    );
+    assert_eq!(func, "os.system");
+    assert_eq!(args, vec![MontyObject::String("/usr/bin/true".to_owned())]);
+}
+
+#[test]
+fn os_system_wordings_match_cpython() {
+    let cases = [
+        ("import os\nos.system()", "TypeError: system() missing required argument 'command' (pos 1)"),
+        ("import os\nos.system('x', foo=1)", "TypeError: system() takes at most 1 argument (2 given)"),
+        ("import os\nos.system('a', 'b')", "TypeError: system() takes at most 1 argument (2 given)"),
+    ];
+    for (code, expected) in cases {
+        assert_eq!(run_to_error(code), expected, "code: {code}");
+    }
 }
 
 #[test]

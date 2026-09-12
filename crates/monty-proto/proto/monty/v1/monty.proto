@@ -713,7 +713,7 @@ message OsCall {
 
     // ---- System identity (host-answered; nothing is ever executed) --------
     Unit uname = 25; // os.uname()
-    Unit getcwd = 26; // os.getcwd()
+    // tag 26 reserved: os.getcwd was dropped for #828's VM-owned cwd
     Unit cpu_count = 27; // os.cpu_count()
     Unit getpid = 28; // os.getpid()
     System system = 29; // os.system

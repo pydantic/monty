@@ -523,13 +523,6 @@ fn uname(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     Ok(CallResult::OsCall(OsFunctionCall::Uname))
 }
 
-/// Implementation of `os.getcwd()` — the sandbox has no working directory of
-/// its own, so the host answers with the virtual path code should observe.
-fn getcwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    args.check_zero_args("posix.getcwd", vm.heap)?;
-    Ok(CallResult::OsCall(OsFunctionCall::Getcwd))
-}
-
 /// Implementation of `os.cpu_count()` — host-answered.
 fn cpu_count(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("posix.cpu_count", vm.heap)?;
@@ -544,17 +537,20 @@ fn getpid(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `os.system(command)` argument shape — clinic-parsed positional-only,
 /// matching CPython's `system() missing required argument 'command' (pos 1)`
-/// wording for the missing-arg case.
+/// and `system() takes at most 1 argument (2 given)` wordings.
 #[derive(FromArgs)]
-#[from_args(name = "system", style = c_named)]
+#[from_args(name = "system", style = c_named, at_most_total)]
 struct SystemArgs {
     command: Value,
 }
 
-/// Implementation of `os.system(command)` — the command string is handed to
-/// the host, which alone decides what to do with it; the interpreter never
-/// executes anything. The host answers with the exit-status int code should
-/// observe.
+/// Implementation of `os.system(command)`.
+///
+/// The command string is handed to the host verbatim and the interpreter
+/// never executes anything: the host alone decides what the command means
+/// and answers with the exit-status int sandbox code should observe. With no
+/// handler this FAILS CLOSED — the sandbox raises the no-handler error,
+/// never a fake success.
 ///
 /// CPython accepts `str`, `bytes` and `os.PathLike` commands (the `U:system`
 /// converter wording has no function prefix); `bytes` are decoded lossily —

@@ -117,7 +117,7 @@ whether each call is permitted.
     `mode` up front, while CPython only fails when it reaches the final
     `mkdir`, after creating parent directories.
 - **The system-identity calls answer whatever the host provides** —
-    `os.uname()`, `os.getcwd()`, `os.cpu_count()`, `os.getpid()` and
+    `os.uname()`, `os.cpu_count()`, `os.getpid()` and
     `os.system()` have no built-in values. With no `os` handler they raise
     `RuntimeError: 'os.uname' is not supported in this environment` (the
     no-handler error; the FS calls raise `PermissionError` instead). A host
