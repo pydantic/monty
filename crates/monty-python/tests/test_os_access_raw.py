@@ -605,3 +605,102 @@ def test_path_py_to_monty(monty_run: RunMonty):
     p = PurePosixPath('/foo/bar/thing.txt')
     result = monty_run('f"type={type(p)} {p=}"', inputs={'p': p})
     assert result == snapshot("type=<class 'PosixPath'> p=PosixPath('/foo/bar/thing.txt')")
+
+
+# === the identity/system hooks: opt-in by default ============================
+
+
+def test_identity_hooks_default_not_handled():
+    """The new hooks (uname/getcwd/cpu_count/getpid/system) raise
+    NotImplementedError by default, which the adapter reports as NOT_HANDLED
+    — the sandbox then raises the no-handler RuntimeError."""
+    import os as real_os
+
+    from pydantic_monty import NOT_HANDLED, AbstractOS
+
+    class Bare(AbstractOS):
+        # the abstract FS methods are implemented as no-ops: this test only
+        # exercises the default identity hooks
+        def path_exists(self, path):
+            return False
+
+        def path_is_file(self, path):
+            return False
+
+        def path_is_dir(self, path):
+            return False
+
+        def path_is_symlink(self, path):
+            return False
+
+        def path_read_text(self, path):
+            raise FileNotFoundError(path)
+
+        def path_read_bytes(self, path):
+            raise FileNotFoundError(path)
+
+        def path_write_text(self, path, data):
+            raise FileNotFoundError(path)
+
+        def path_write_bytes(self, path, data):
+            raise FileNotFoundError(path)
+
+        def path_mkdir(self, path, parents, exist_ok):
+            raise FileNotFoundError(path)
+
+        def path_unlink(self, path):
+            raise FileNotFoundError(path)
+
+        def path_rmdir(self, path):
+            raise FileNotFoundError(path)
+
+        def path_iterdir(self, path):
+            raise FileNotFoundError(path)
+
+        def path_stat(self, path):
+            raise FileNotFoundError(path)
+
+        def path_rename(self, path, target):
+            raise FileNotFoundError(path)
+
+        def path_resolve(self, path):
+            return str(path)
+
+        def path_absolute(self, path):
+            return str(path)
+
+        def getenv(self, key, default=None):
+            return default
+
+        def get_environ(self):
+            return {}
+
+    bare = Bare()
+    for call, args in [
+        ('os.uname', ()),
+        ('os.getcwd', ()),
+        ('os.cpu_count', ()),
+        ('os.getpid', ()),
+        ('os.system', ('ls',)),
+    ]:
+        assert bare(call, args) == NOT_HANDLED, call
+
+    # an override answers, and the value crosses into the sandbox
+    class WithUname(Bare):
+        def uname(self):
+            return real_os.__class__ and ('unused')
+
+    # the proper override: return a plain 5-tuple
+    class WithUname2(Bare):
+        def uname(self):
+            return ('Linux', 'test-host', '1.0', '#1', 'x86_64')
+
+    result = WithUname2()('os.uname', ())
+    assert result == ('Linux', 'test-host', '1.0', '#1', 'x86_64')
+
+    class WithSystem(Bare):
+        def system(self, command):
+            return 7
+
+    assert WithSystem()('os.system', ('cmd',)) == 7
+    assert NOT_HANDLED is not None  # keeps the import meaningful
