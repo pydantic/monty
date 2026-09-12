@@ -709,6 +709,7 @@ All these markers must be at the start of comment lines to be recognized.
 - Run `make lint-py` after adding tests
 - Use `make complete-tests` to fill in blank expectations
 - Regression tests run via `datatest-stable` harness in `crates/monty-datatest/src/main.rs`, use `make test-cases` to run them
+- The CPython side of each case runs under a 30s watchdog (`CpythonWatchdog` in the harness): a hanging case fails on its own instead of stalling the whole run, and one stuck in C code aborts the run naming the test
 
 ### Rust integration tests and `insta` snapshots
 
