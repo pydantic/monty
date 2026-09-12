@@ -777,14 +777,12 @@ fn long_int_pow(base: &LongInt, exponent: &Value, heap: &Heap) -> RunResult<Opti
 
 /// Raises one arbitrary-precision integer to another.
 fn long_int_pow_value(base: &BigInt, exponent: &BigInt, heap: &Heap) -> RunResult<Option<Value>> {
-    if base.is_zero() && exponent.is_negative() {
-        Err(ExcType::zero_negative_power())
-    } else if exponent.is_negative() {
-        let exponent = exponent
-            .to_f64()
-            .filter(|exponent| exponent.is_finite())
-            .ok_or_else(ExcType::overflow_int_to_float)?;
-        Ok(Some(Value::Float(float_pow(bigint_to_f64_checked(base)?, exponent)?)))
+    if exponent.is_negative() {
+        // CPython hands off to `float_pow`, converting both operands before its zero-base check.
+        Ok(Some(Value::Float(float_pow(
+            bigint_to_f64_checked(base)?,
+            bigint_to_f64_checked(exponent)?,
+        )?)))
     } else if exponent.is_zero() || base.is_one() {
         Ok(Some(Value::Int(1)))
     } else if base.is_zero() {
@@ -833,6 +831,9 @@ pub(crate) fn bigint_true_divide(a: &BigInt, b: &BigInt) -> RunResult<f64> {
         return Err(ExcType::zero_division().into());
     }
     let negative = a.is_negative() != b.is_negative();
+    if a.is_zero() {
+        return Ok(if negative { -0.0 } else { 0.0 });
+    }
     let (a, b) = (a.magnitude(), b.magnitude());
     let bits = |value: &BigUint| i64::try_from(value.bits()).unwrap_or(i64::MAX);
     // The quotient lies in `[2^(diff-1), 2^(diff+1))`.

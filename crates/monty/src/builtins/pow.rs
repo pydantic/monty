@@ -141,11 +141,8 @@ fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 /// int ** int with LongInt promotion on overflow.
 fn int_pow_int(b: i64, e: i64, heap: &mut Heap) -> RunResult<Value> {
     if e < 0 {
-        // Negative exponent returns float
-        if b == 0 {
-            return Err(ExcType::zero_negative_power());
-        }
-        Ok(Value::Float((b as f64).powf(e as f64)))
+        // Negative exponent: CPython hands off to `float_pow`
+        Ok(Value::Float(float_pow(b as f64, e as f64)?))
     } else if let Ok(exp_u32) = u32::try_from(e) {
         if let Some(v) = checked_pow_i64(b, exp_u32) {
             Ok(Value::Int(v))
@@ -171,12 +168,9 @@ fn int_pow_int(b: i64, e: i64, heap: &mut Heap) -> RunResult<Value> {
 
 /// int ** LongInt with LongInt result.
 fn int_pow_longint(b: i64, e: &BigInt, heap: &Heap) -> RunResult<Value> {
-    if b == 0 && e.is_negative() {
-        return Err(ExcType::zero_negative_power());
-    }
     if e.is_negative() {
-        // Negative LongInt exponent: return float
-        Ok(Value::Float((b as f64).powf(bigint_to_f64_checked(e)?)))
+        // CPython hands off to `float_pow`, converting the exponent before its zero-base check.
+        Ok(Value::Float(float_pow(b as f64, bigint_to_f64_checked(e)?)?))
     } else if e.is_zero() {
         // x ** 0 = 1 for all x (including 0 ** 0 = 1)
         Ok(Value::Int(1))
@@ -201,12 +195,9 @@ fn int_pow_longint(b: i64, e: &BigInt, heap: &Heap) -> RunResult<Value> {
 
 /// LongInt ** int with LongInt result.
 fn longint_pow_int(b: &BigInt, e: i64, heap: &Heap) -> RunResult<Value> {
-    if b.is_zero() && e < 0 {
-        return Err(ExcType::zero_negative_power());
-    }
     if e < 0 {
-        // Negative exponent: return float
-        Ok(Value::Float(bigint_to_f64_checked(b)?.powf(e as f64)))
+        // Negative exponent: CPython hands off to `float_pow`
+        Ok(Value::Float(float_pow(bigint_to_f64_checked(b)?, e as f64)?))
     } else if let Ok(exp_u32) = u32::try_from(e) {
         // Check size before computing to prevent DoS
         check_pow_size(b.bits(), u64::from(exp_u32), &heap.tracker)?;
@@ -226,12 +217,12 @@ fn longint_pow_int(b: &BigInt, e: i64, heap: &Heap) -> RunResult<Value> {
 
 /// LongInt ** LongInt with LongInt result.
 fn longint_pow_longint(b: &BigInt, e: &BigInt, heap: &Heap) -> RunResult<Value> {
-    if b.is_zero() && e.is_negative() {
-        return Err(ExcType::zero_negative_power());
-    }
     if e.is_negative() {
-        // Negative exponent: return float
-        Ok(Value::Float(bigint_to_f64_checked(b)?.powf(bigint_to_f64_checked(e)?)))
+        // Negative exponent: CPython hands off to `float_pow`
+        Ok(Value::Float(float_pow(
+            bigint_to_f64_checked(b)?,
+            bigint_to_f64_checked(e)?,
+        )?))
     } else if let Some(exp_u32) = e.to_u32() {
         // Check size before computing to prevent DoS
         check_pow_size(b.bits(), u64::from(exp_u32), &heap.tracker)?;

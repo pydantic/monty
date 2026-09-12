@@ -608,3 +608,21 @@ for compute in [lambda: huge / 1, lambda: -huge / 3, lambda: (2**1024 - 2**970) 
         assert False, 'expected OverflowError'
     except OverflowError as e:
         assert str(e) == 'integer division result too large for a float'
+
+# A zero base still converts the exponent first, so an out-of-range exponent overflows
+# before the zero-to-a-negative-power check.
+for compute in [lambda: 0**-huge, lambda: pow(0, -huge), lambda: False**-huge, lambda: pow(False, -huge)]:
+    try:
+        compute()
+        assert False, 'expected OverflowError'
+    except OverflowError as e:
+        assert str(e) == 'int too large to convert to float'
+for compute in [lambda: 0**-big, lambda: pow(0, -big), lambda: False**-big, lambda: (big - big) ** -big]:
+    try:
+        compute()
+        assert False, 'expected ZeroDivisionError'
+    except ZeroDivisionError as e:
+        assert str(e) == 'zero to a negative power'
+assert 0 / big == 0.0
+assert str(0 / -big) == '-0.0'
+assert str(-0.0 // big) == '-0.0'

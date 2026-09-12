@@ -84,3 +84,14 @@ assert 1.1**10 == 2.5937424601000023
 assert (-2.0) ** 3 == -8.0
 assert 9.0**0.5 == 3.0
 assert pow(2.0, -2) == 0.25
+
+# === int ** negative int goes through float pow ===
+# Every spelling calls the same C `pow`, so they agree to the last bit.
+assert 5**-23 == pow(5, -23) == 5.0**-23 == 8.388608e-17
+assert 7**-13 == pow(7, -13) == 7.0**-13
+assert 3**-33 == 1.79886509245143e-16
+assert True**-3 == 1.0
+assert (-3) ** -3 == -0.037037037037037035
+assert (-10) ** -401 == 0.0
+assert str((-10) ** -401) == '-0.0'
+assert (-(2**63)) ** -1 == -1.0842021724855044e-19

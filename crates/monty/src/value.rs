@@ -1019,9 +1019,7 @@ impl<'h> PyTrait<'h> for Value {
         } else {
             match (self, other) {
                 (Self::Int(base), Self::Int(exp)) => {
-                    if *base == 0 && *exp < 0 {
-                        Err(ExcType::zero_negative_power())
-                    } else if *exp >= 0 {
+                    if *exp >= 0 {
                         // Positive exponent: try to return int, promote to LongInt on overflow
                         if let Ok(exp_u32) = u32::try_from(*exp) {
                             if let Some(result) = base.checked_pow(exp_u32) {
@@ -1045,13 +1043,8 @@ impl<'h> PyTrait<'h> for Value {
                             Ok(Some(LongInt::new(bi).into_value(vm.heap)))
                         }
                     } else {
-                        // Negative exponent: return float
-                        // Use powi if exp fits in i32, otherwise use powf
-                        if let Ok(exp_i32) = i32::try_from(*exp) {
-                            Ok(Some(Self::Float((*base as f64).powi(exp_i32))))
-                        } else {
-                            Ok(Some(Self::Float((*base as f64).powf(*exp as f64))))
-                        }
+                        // Negative exponent: CPython hands off to `float_pow`
+                        Ok(Some(Self::Float(float_pow(*base as f64, *exp as f64)?)))
                     }
                 }
                 (Self::Float(base), Self::Float(exp)) => Ok(Some(Self::Float(float_pow(*base, *exp)?))),
@@ -1060,9 +1053,7 @@ impl<'h> PyTrait<'h> for Value {
                 // Bool power operations (True=1, False=0)
                 (Self::Bool(base), Self::Int(exp)) => {
                     let base_int = i64::from(*base);
-                    if base_int == 0 && *exp < 0 {
-                        Err(ExcType::zero_negative_power())
-                    } else if *exp >= 0 {
+                    if *exp >= 0 {
                         // Positive exponent: 1**n=1, 0**n=0 (for n>0), 0**0=1
                         if let Ok(exp_u32) = u32::try_from(*exp) {
                             match base_int.checked_pow(exp_u32) {
@@ -1073,12 +1064,8 @@ impl<'h> PyTrait<'h> for Value {
                             Ok(Some(Self::Float((base_int as f64).powf(*exp as f64))))
                         }
                     } else {
-                        // Negative exponent: return float (1**-n=1.0)
-                        if let Ok(exp_i32) = i32::try_from(*exp) {
-                            Ok(Some(Self::Float((base_int as f64).powi(exp_i32))))
-                        } else {
-                            Ok(Some(Self::Float((base_int as f64).powf(*exp as f64))))
-                        }
+                        // Negative exponent: CPython hands off to `float_pow`
+                        Ok(Some(Self::Float(float_pow(base_int as f64, *exp as f64)?)))
                     }
                 }
                 (Self::Int(base), Self::Bool(exp)) => {
