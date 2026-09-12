@@ -4,6 +4,11 @@ from collections import deque
 # `__eq__` methods that may mutate the container being searched. CPython
 # restarts dict/set probes, clamps `list.remove`, and raises for deque;
 # Monty matches (see issue #729 — these previously panicked the worker).
+#
+# The clearing `__eq__` classes below mutate once per instance. Their refill
+# puts int 1, which shares the key's hash, back in the table, so the restarted
+# probe compares the key again; if that compare mutated too, CPython's restart
+# loop would end only when the rebuilt table reused the freed table's address.
 
 
 # === dict: `in` with a clearing __eq__ restarts the probe (issue #729 repro) ===
@@ -11,13 +16,18 @@ D = {}
 
 
 class DictClearer:
+    def __init__(self):
+        self.cleared = False
+
     def __hash__(self):
         return 1
 
     def __eq__(self, other):
-        D.clear()
-        for i in range(3000):
-            D[i] = i
+        if not self.cleared:
+            self.cleared = True
+            D.clear()
+            for i in range(3000):
+                D[i] = i
         return False
 
 
@@ -33,13 +43,18 @@ D2 = {}
 
 
 class DictClearer2:
+    def __init__(self):
+        self.cleared = False
+
     def __hash__(self):
         return 1
 
     def __eq__(self, other):
-        D2.clear()
-        for i in range(100):
-            D2[i] = i
+        if not self.cleared:
+            self.cleared = True
+            D2.clear()
+            for i in range(100):
+                D2[i] = i
         return False
 
 
@@ -55,13 +70,18 @@ D3 = {}
 
 
 class DictClearer3:
+    def __init__(self):
+        self.cleared = False
+
     def __hash__(self):
         return 1
 
     def __eq__(self, other):
-        D3.clear()
-        for i in range(100):
-            D3[i] = i
+        if not self.cleared:
+            self.cleared = True
+            D3.clear()
+            for i in range(100):
+                D3[i] = i
         return False
 
 
@@ -82,13 +102,18 @@ D4 = {}
 
 
 class DictClearer4:
+    def __init__(self):
+        self.cleared = False
+
     def __hash__(self):
         return 1
 
     def __eq__(self, other):
-        D4.clear()
-        for i in range(100):
-            D4[i] = i
+        if not self.cleared:
+            self.cleared = True
+            D4.clear()
+            for i in range(100):
+                D4[i] = i
         return False
 
 
@@ -266,13 +291,18 @@ S = set()
 
 
 class SetClearer:
+    def __init__(self):
+        self.cleared = False
+
     def __hash__(self):
         return 1
 
     def __eq__(self, other):
-        S.clear()
-        for i in range(100):
-            S.add(i)
+        if not self.cleared:
+            self.cleared = True
+            S.clear()
+            for i in range(100):
+                S.add(i)
         return False
 
 
@@ -292,13 +322,18 @@ S2 = set()
 
 
 class SetClearer2:
+    def __init__(self):
+        self.cleared = False
+
     def __hash__(self):
         return 1
 
     def __eq__(self, other):
-        S2.clear()
-        for i in range(100):
-            S2.add(i)
+        if not self.cleared:
+            self.cleared = True
+            S2.clear()
+            for i in range(100):
+                S2.add(i)
         return False
 
 

@@ -13,7 +13,7 @@ use std::{
     future::ready,
     path::{Path, PathBuf},
     process::Command,
-    sync::{Arc, Mutex, Once},
+    sync::{Arc, Mutex, Once, PoisonError},
     time::Duration,
 };
 
@@ -87,6 +87,18 @@ impl TelemetryAdapter for BatchCapture {
     }
 }
 
+/// Every provider these tests hand to a pool, held for the life of the process.
+///
+/// The pool installs the provider's subscriber with `set_local_logfire` on
+/// every turn, which registers it with tracing-core. tracing-core upgrades that
+/// weak registration inside its dispatcher read lock whenever callsite interest
+/// is rebuilt and drops the temporary handle there; if that were the last
+/// reference, the OpenTelemetry meter provider's destructor would log through
+/// a callsite that takes the same lock again, and with another test's turn
+/// queued for the write lock the whole test binary deadlocks. One extra
+/// reference keeps the drop out of that loop.
+static INSTALLED: Mutex<Vec<Logfire>> = Mutex::new(Vec::new());
+
 impl Capture {
     /// Builds a local provider and its Monty metrics handle.
     fn new() -> (Metrics, Arc<Self>) {
@@ -99,6 +111,10 @@ impl Capture {
             ))
             .finish()
             .unwrap();
+        INSTALLED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(logfire.clone());
         let metrics = Metrics::for_logfire(logfire.clone());
         (metrics, Arc::new(Self { logfire, exporter }))
     }
