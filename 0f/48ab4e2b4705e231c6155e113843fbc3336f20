@@ -1,0 +1,39 @@
+crates/monty-runtime/tests/subprocess.rs
+  s_5e89950999fb3f::t_5802857cc47f54 899
+crates/monty/src/resource_checks.rs
+  s_5e89950999fb3f::t_5802857cc47f54 38-39
+crates/monty/src/builtins/pow.rs
+  s_5e89950999fb3f::t_5802857cc47f54 10-12,17-18,28
+crates/monty/src/value.rs
+  s_5e89950999fb3f::t_5802857cc47f54 1902-1915
+crates/monty/src/builtins/round.rs
+  s_5e89950999fb3f::t_5802857cc47f54 4,11,109-113,125-129,131,134-141
+docs/limitations/resource_limits.md
+  s_5e89950999fb3f::t_5802857cc47f54 33-34
+docs/limitations/math.md
+  s_5e89950999fb3f::t_5802857cc47f54 27-33
+crates/monty/src/modules/math.rs
+  s_5e89950999fb3f::t_5802857cc47f54 28,30-31,39,43,375,395,414,450-456,458-461,463,483,572,575-580,583-646,675,686,1034-1036,1038-1040,1045-1052,1054-1068,1082,1085,1087,1099,1102-1103,1105,1108,1119-1120,1122,1125,1132-1148,1150-1156,1159,1170-1173,1175-1176,1178-1179,1181,1187-1191,1286-1293,1380-1381,1392-1398,1402,1404-1405,1407-1412,1416-1423
+crates/monty/test_cases/math__module.py
+  s_5e89950999fb3f::t_5802857cc47f54 1445-1463,1465-1488,1490-1529,1535-1539,1545-1560,1562-1578
+crates/monty/tests/math_module.rs
+  s_5e89950999fb3f::t_5802857cc47f54 11,14-15
+crates/monty/test_cases/builtin__math_funcs.py
+  s_5e89950999fb3f::t_5802857cc47f54 36-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0f48ab4e2b4705e231c6155e113843fbc3336f20",
+  "prompts": {},
+  "sessions": {
+    "s_5e89950999fb3f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07ad9a4b-1a9c-413d-a26b-11ac6fea773f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
