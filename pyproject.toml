@@ -20,7 +20,7 @@ dev = [
     "httpx2>=2.12.0",
     "websockets>=14",
 ]
-# used only by `examples/`; opt in with `uv run --group examples ...` so CI and `make dev-py` never install them
+# used only by `examples/`; opt in with `uv run --group examples ...`, `make dev-py` skips it, `make lint-py` needs it
 examples = [
     "duckdb>=1.0.0",
     "playwright>=1.58.0",
