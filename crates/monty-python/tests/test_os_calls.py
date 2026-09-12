@@ -115,7 +115,7 @@ from pathlib import Path
         ('open(path)', 'embedded null byte'),
         ('Path(path).read_text()', 'embedded null byte'),
         ('os.stat(path)', 'stat: embedded null character in path'),
-        ('os.chdir(path)', 'stat: embedded null character in path'),
+        ('os.chdir(path)', 'chdir: embedded null character in path'),
         ("os.rename(path, 'dst')", 'rename: embedded null character in src'),
         ("os.rename('src', path)", 'rename: embedded null character in dst'),
     ],
