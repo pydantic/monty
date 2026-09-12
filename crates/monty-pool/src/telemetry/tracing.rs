@@ -962,6 +962,8 @@ fn print_stream(stream: i32) -> &'static str {
 // recording is a side effect of the worker, not part of the pool's public API
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, PoisonError};
+
     use logfire::{Logfire, config::AdvancedOptions, set_local_logfire};
     use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
     use monty_types::MontyObject;
@@ -972,6 +974,17 @@ mod tests {
     };
 
     use super::{ATTR_SIZE_LIMIT, Recorder, bytes_attr, render_ext_result};
+
+    /// Every subscriber these tests install, held for the life of the process.
+    ///
+    /// `set_local_logfire` registers the subscriber with tracing-core, which
+    /// upgrades that weak registration inside its dispatcher read lock whenever
+    /// callsite interest is rebuilt and drops the temporary handle there. If that
+    /// were the last reference, the OpenTelemetry meter provider's destructor
+    /// would log through a callsite that takes the same lock again, and with
+    /// another test's `set_local_logfire` queued for the write lock the whole
+    /// test binary deadlocks. One extra reference keeps the drop out of that loop.
+    static INSTALLED: Mutex<Vec<Logfire>> = Mutex::new(Vec::new());
 
     /// A local logfire capturing spans and logs in memory instead of exporting.
     fn test_logfire() -> (Logfire, InMemorySpanExporter, InMemoryLogExporter) {
@@ -984,6 +997,10 @@ mod tests {
             .with_advanced_options(AdvancedOptions::default().with_log_processor(SimpleLogProcessor::new(logs.clone())))
             .finish()
             .unwrap();
+        INSTALLED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(logfire.clone());
         (logfire, spans, logs)
     }
 
