@@ -357,16 +357,19 @@ if sys.platform != 'win32':
 
 # CPython routes these through the `posix` module, so arity errors carry the
 # 'posix.' prefix; os.system is clinic-parsed without one.
-try:
-    os.cpu_count(1)
-    assert False, 'expected TypeError'
-except TypeError as e:
-    assert str(e) == 'posix.cpu_count() takes no arguments (1 given)'
-try:
-    os.getpid(1)
-    assert False, 'expected TypeError'
-except TypeError as e:
-    assert str(e) == 'posix.getpid() takes no arguments (1 given)'
+# the arity wording names the platform module: posix.* on unix, nt.* on
+# windows — monty always uses the posix form, so this block is unix-only
+if sys.platform != 'win32':
+    try:
+        os.cpu_count(1)
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == 'posix.cpu_count() takes no arguments (1 given)'
+    try:
+        os.getpid(1)
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == 'posix.getpid() takes no arguments (1 given)'
 try:
     os.system()
     assert False, 'expected TypeError'
