@@ -1,0 +1,19 @@
+crates/monty-python/tests/test_os_calls.py
+  s_b1574f442ee6a4::t_df57b7f0227180 118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "14ebbb801d24ed91ee1ec2075fbfa3d245158210",
+  "prompts": {},
+  "sessions": {
+    "s_b1574f442ee6a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1add6492-fcb0-4b98-ba59-e70026a16c3b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
