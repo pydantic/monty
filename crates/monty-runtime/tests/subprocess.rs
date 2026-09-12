@@ -1316,6 +1316,8 @@ fn reset_scrubs_type_check_state_from_the_next_session() {
         ("a.py", "a"),
         ("sub/nested.py", "sub.nested"),
         ("../escape.py", "escape"),
+        ("../../file.py", "file"),
+        ("foo/../bar.py", "bar"),
         ("/abs.py", "abs"),
     ];
     let mut child = ChildProc::spawn();
@@ -1369,6 +1371,29 @@ fn reset_scrubs_type_check_state_from_the_next_session() {
         let pb::child_event::Kind::Ok(_) = child.recv() else {
             panic!("expected Ok for the trailing Reset");
         };
+    }
+    child.shutdown();
+}
+
+/// Parent components in a script path must not discard a worker during reset.
+#[test]
+fn reset_after_unnormalized_script_name_without_stubs() {
+    let mut child = ChildProc::spawn();
+    for script_name in ["../../file.py", "foo/../bar.py", "main.py"] {
+        child.create_repl_with(pb::Configure {
+            script_name: script_name.to_owned(),
+            type_check: true,
+            monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            ..Default::default()
+        });
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
+        let event = child.recv();
+        assert!(
+            matches!(event, pb::child_event::Kind::Ok(_)),
+            "{script_name}: {event:?}"
+        );
     }
     child.shutdown();
 }

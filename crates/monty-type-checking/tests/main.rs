@@ -307,6 +307,40 @@ fn reset_removes_nested_paths() {
     assert_snapshot!(second, @"other.py:1:6: error[unresolved-import] Cannot resolve imported module `sub_dir.leaky`");
 }
 
+/// Path aliases must share one tracked file, including diagnostic rewrites.
+#[test]
+fn reset_removes_aliased_paths() {
+    let mut checker = TypeChecker::default();
+    assert!(
+        checker
+            .run(&SourceFile::new("GOOD: int = 1\n", "main.py"), None, concise())
+            .unwrap()
+            .is_none()
+    );
+    let mut diagnostics = Vec::new();
+    for path in ["../../main.py", "foo/../main.py", "/./main.py", "main.py"] {
+        let diagnostic = checker
+            .run(&SourceFile::new("x: int = GOOD\n", path), None, concise())
+            .unwrap()
+            .expect("the rewritten source no longer defines GOOD")
+            .to_string();
+        diagnostics.push(diagnostic);
+    }
+    assert_snapshot!(diagnostics.join(""), @"
+    main.py:1:10: error[unresolved-reference] Name `GOOD` used when not defined
+    main.py:1:10: error[unresolved-reference] Name `GOOD` used when not defined
+    main.py:1:10: error[unresolved-reference] Name `GOOD` used when not defined
+    main.py:1:10: error[unresolved-reference] Name `GOOD` used when not defined
+    ");
+    checker.reset().unwrap();
+    let diagnostics = checker
+        .run(&SourceFile::new("import main\n", "other.py"), None, concise())
+        .unwrap()
+        .expect("the aliased file was removed")
+        .to_string();
+    assert_snapshot!(diagnostics, @"other.py:1:8: error[unresolved-import] Cannot resolve imported module `main`");
+}
+
 /// Security-critical: checkers hold no shared state, so concurrent sessions
 /// (workers in one process, or just several threads) must never observe each
 /// other's files. Guards against a process-wide cache creeping back in.
