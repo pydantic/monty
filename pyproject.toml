@@ -17,14 +17,16 @@ dev = [
     "mdformat-tables>=1.0.0",
     "mdformat-mkdocs>=5.2.1",
     "mdformat-frontmatter>=2.1.2",
+    "httpx2>=2.12.0",
+    "websockets>=14",
+]
+# used only by `examples/`; a default group so `uv run` installs them, while CI's `--only-dev` skips them
+examples = [
     "duckdb>=1.0.0",
-    "httpx>=0.28.1",
     "playwright>=1.58.0",
     "beautifulsoup4>=4.14.3",
     "logfire>=4.25.0",
-    "devtools>=0.12.2",
     "pydantic-ai-slim[anthropic,openai]>=1.63.0",
-    "websockets>=14",
 ]
 docs = [
     "mkdocs>=1.6.1",
@@ -56,6 +58,7 @@ extend-exclude = [
 [tool.uv]
 # this is a monorepo without a root package
 package = false
+default-groups = ["dev", "examples"]
 # https://docs.astral.sh/uv/reference/settings/#exclude-newer
 # make sure to use relative durations:
 exclude-newer = "7 days"
