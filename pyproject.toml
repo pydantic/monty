@@ -20,7 +20,7 @@ dev = [
     "httpx2>=2.12.0",
     "websockets>=14",
 ]
-# used only by `examples/`; a default group so `uv run` installs them, while CI's `--only-dev` skips them
+# used only by `examples/`; opt in with `uv run --group examples ...` so CI and `make dev-py` never install them
 examples = [
     "duckdb>=1.0.0",
     "playwright>=1.58.0",
@@ -58,7 +58,6 @@ extend-exclude = [
 [tool.uv]
 # this is a monorepo without a root package
 package = false
-default-groups = ["dev", "examples"]
 # https://docs.astral.sh/uv/reference/settings/#exclude-newer
 # make sure to use relative durations:
 exclude-newer = "7 days"
