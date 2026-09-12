@@ -16,6 +16,7 @@ use std::{
     sync::OnceLock,
 };
 
+use monty_types::ResourceTracker;
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{FromPrimitive, One, Signed, ToPrimitive, Zero};
@@ -558,12 +559,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
     fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let lhs = self.get(vm.heap);
         let result = match other {
-            Value::Int(rhs) => bigint_true_divide(lhs.inner(), &BigInt::from(*rhs))?,
-            Value::Bool(rhs) => bigint_true_divide(lhs.inner(), &BigInt::from(*rhs))?,
+            Value::Int(rhs) => bigint_true_divide(lhs.inner(), &BigInt::from(*rhs), &vm.heap.tracker)?,
+            Value::Bool(rhs) => bigint_true_divide(lhs.inner(), &BigInt::from(*rhs), &vm.heap.tracker)?,
             Value::Float(0.0) => return Err(ExcType::zero_division().into()),
             Value::Float(rhs) => lhs.to_f64_checked()? / rhs,
             Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => {
-                bigint_true_divide(lhs.inner(), rhs.inner())?
+                bigint_true_divide(lhs.inner(), rhs.inner(), &vm.heap.tracker)?
             }
             _ => return Ok(None),
         };
@@ -574,8 +575,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         // A long divisor is never zero: zero always fits in `i64`.
         let rhs = self.get(vm.heap);
         let result = match other {
-            Value::Int(lhs) => bigint_true_divide(&BigInt::from(*lhs), rhs.inner())?,
-            Value::Bool(lhs) => bigint_true_divide(&BigInt::from(*lhs), rhs.inner())?,
+            Value::Int(lhs) => bigint_true_divide(&BigInt::from(*lhs), rhs.inner(), &vm.heap.tracker)?,
+            Value::Bool(lhs) => bigint_true_divide(&BigInt::from(*lhs), rhs.inner(), &vm.heap.tracker)?,
             Value::Float(lhs) => lhs / rhs.to_f64_checked()?,
             _ => return Ok(None),
         };
@@ -823,7 +824,10 @@ pub(crate) fn bigint_to_f64_checked(value: &BigInt) -> RunResult<f64> {
 /// Converting each operand to `f64` first rounds twice, and overflows whenever an operand
 /// exceeds the float range even though the quotient fits. Instead the integer quotient is
 /// computed with two extra bits plus a sticky bit and rounded half-to-even exactly once.
-pub(crate) fn bigint_true_divide(a: &BigInt, b: &BigInt) -> RunResult<f64> {
+///
+/// The scaled operand and the remainder are temporaries of about the operands' size, so
+/// they are preflighted against `tracker` like any other division before being allocated.
+pub(crate) fn bigint_true_divide(a: &BigInt, b: &BigInt, tracker: &ResourceTracker) -> RunResult<f64> {
     const MANT_DIG: i64 = f64::MANTISSA_DIGITS as i64;
     const MIN_EXP: i64 = f64::MIN_EXP as i64;
     const MAX_EXP: i64 = f64::MAX_EXP as i64;
@@ -849,6 +853,9 @@ pub(crate) fn bigint_true_divide(a: &BigInt, b: &BigInt) -> RunResult<f64> {
         // Scale so the integer quotient has 55 bits, fewer only when the result is subnormal
         // and the rounding position moves up accordingly.
         let shift = diff.max(MIN_EXP) - MANT_DIG - 2;
+        // Peak temporaries: the shifted operand plus a remainder smaller than the divisor.
+        let shifted_bits = if shift <= 0 { bits(a) + shift.abs() } else { bits(a) };
+        check_div_size((shifted_bits + bits(b)).unsigned_abs(), tracker)?;
         let (quotient, remainder) = if shift <= 0 {
             (a << shift.unsigned_abs()).div_rem(b)
         } else {

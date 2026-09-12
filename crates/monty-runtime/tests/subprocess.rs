@@ -890,6 +890,10 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("[None] * 1_000_000", 16_031_391),
         ("2 ** 10_000_000", 10_031_230),
         ("1 << 10_000_000", 1_281_231),
+        // `int / int` scales one operand before dividing; both shift directions are
+        // preflighted.
+        ("x = 1 << 3_000_000\nx / (x - 1)", 1_531_926),
+        ("x = 1 << 3_000_000\nx / (x >> 100)", 1_531_908),
         ("('a' * 1000).replace('a', 'b' * 2000)", 2_034_769),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.

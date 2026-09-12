@@ -782,6 +782,7 @@ impl<'h> PyTrait<'h> for Value {
                     Ok(Some(Self::Float(bigint_true_divide(
                         &BigInt::from(*a),
                         &BigInt::from(*b),
+                        &vm.heap.tracker,
                     )?)))
                 }
             }
