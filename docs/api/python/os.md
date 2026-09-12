@@ -20,6 +20,8 @@ See [filesystem access](../../filesystem.md) for how these fit together.
             - MemoryFile
             - CallbackFile
             - StatResult
+            - UnameResult
+            - FakeLinux
             - MontyFileHandle
             - OsHandler
             - OsFunction

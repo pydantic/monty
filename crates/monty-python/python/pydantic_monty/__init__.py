@@ -38,6 +38,7 @@ from ._monty import (
     _install_telemetry,
 )
 from .class_instance import ClassInstance, ClassType
+from .fakeos import FakeLinux
 from .os_access import (
     AbstractFile,
     AbstractOS,
@@ -46,6 +47,7 @@ from .os_access import (
     OSAccess,
     OsFunction,
     StatResult,
+    UnameResult,
 )
 
 __all__ = (
@@ -99,6 +101,7 @@ __all__ = (
     'AsyncFutureSnapshot',
     # os_access
     'StatResult',
+    'UnameResult',
     'OsFunction',
     'NOT_HANDLED',
     'AbstractOS',
@@ -106,6 +109,8 @@ __all__ = (
     'MemoryFile',
     'CallbackFile',
     'OSAccess',
+    # fakeos
+    'FakeLinux',
 )
 
 

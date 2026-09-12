@@ -19,6 +19,7 @@ __all__ = (
     'CallbackFile',
     'OSAccess',
     'StatResult',
+    'UnameResult',
     'path_from_arg',
 )
 
@@ -46,6 +47,11 @@ OsFunction = Literal[
     'os.environ',
     'date.today',
     'datetime.now',
+    'os.uname',
+    'os.getcwd',
+    'os.cpu_count',
+    'os.getpid',
+    'os.system',
 ]
 
 
@@ -123,6 +129,32 @@ class StatResult(NamedTuple):
 
     st_ctime: float
     """time of last change"""
+
+
+class UnameResult(NamedTuple):
+    """Equivalent to the named tuple `os.uname()` returns.
+
+    Fields are also accessible by index (e.g. `u[0]`), matching CPython's
+    `posix.uname_result`. Return this from an `uname()` override.
+
+    Note: sandbox-side `repr` shows the type as `UnameResult`, not CPython's
+    `posix.uname_result`.
+    """
+
+    sysname: str
+    """Operating system name (e.g. `'Linux'`)."""
+
+    nodename: str
+    """Hostname."""
+
+    release: str
+    """Operating system release (e.g. `'6.8.0-45-generic'`)."""
+
+    version: str
+    """Kernel build string."""
+
+    machine: str
+    """Hardware identifier (e.g. `'x86_64'`)."""
 
 
 class AbstractOS(ABC):
@@ -223,6 +255,16 @@ class AbstractOS(ABC):
                 return self.date_today()
             case 'datetime.now':
                 return self.datetime_now(*args)
+            case 'os.uname':
+                return self.uname()
+            case 'os.getcwd':
+                return self.getcwd()
+            case 'os.cpu_count':
+                return self.cpu_count()
+            case 'os.getpid':
+                return self.getpid()
+            case 'os.system':
+                return self.system(*args)
             case _:  # pyright: ignore[reportUnnecessaryComparison]
                 raise NotImplementedError(f'Unknown OS function: {function_name}')
 
@@ -544,6 +586,51 @@ class AbstractOS(ABC):
         any provided timezone through to `datetime.datetime.now()`.
         """
         return datetime.datetime.now(tz=tz)
+
+    def uname(self) -> UnameResult:
+        """Return the system identity for Monty's `os.uname()` callback.
+
+        Override this to present a synthetic system. The default raises
+        `NotImplementedError`, which reports NOT_HANDLED — the sandbox then
+        raises `RuntimeError: 'os.uname' is not supported in this environment`.
+        """
+        raise NotImplementedError
+
+    def getcwd(self) -> str:
+        """Return the working directory for Monty's `os.getcwd()` callback.
+
+        Override this when the sandbox should observe a virtual working
+        directory. The default raises `NotImplementedError` (NOT_HANDLED).
+        """
+        raise NotImplementedError
+
+    def cpu_count(self) -> int:
+        """Return the CPU count for Monty's `os.cpu_count()` callback.
+
+        Override this to present a synthetic machine. The default raises
+        `NotImplementedError` (NOT_HANDLED).
+        """
+        raise NotImplementedError
+
+    def getpid(self) -> int:
+        """Return the process ID for Monty's `os.getpid()` callback.
+
+        Override this to present a synthetic process. The default raises
+        `NotImplementedError` (NOT_HANDLED).
+        """
+        raise NotImplementedError
+
+    def system(self, command: str) -> int:
+        """Answer Monty's `os.system(command)` callback.
+
+        Nothing is ever executed by Monty itself — the command string arrives
+        here verbatim and the host alone decides what it means. Return the
+        exit-status int sandbox code should observe; raising an exception
+        surfaces it inside the sandbox. The default raises
+        `NotImplementedError` (NOT_HANDLED), so `os.system` stays unavailable
+        unless the host opts in.
+        """
+        raise NotImplementedError
 
 
 class AbstractFile(Protocol):

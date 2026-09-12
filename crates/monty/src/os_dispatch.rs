@@ -526,7 +526,7 @@ pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Intern
 }
 
 /// Owned `Vec<u8>` if `value` is a `bytes` (interned or heap), else `None`.
-fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns) -> Option<Vec<u8>> {
+pub(crate) fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns) -> Option<Vec<u8>> {
     match value {
         Value::InternBytes(id) => Some(interns.get_bytes(*id).to_owned()),
         Value::Ref(id) => match heap.get(*id) {

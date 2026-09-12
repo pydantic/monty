@@ -113,6 +113,27 @@ pub enum OsFunctionCall {
     /// Carries the timezone argument, `None` for a naive result.
     #[strum(serialize = "datetime.now")]
     DateTimeNow(Option<MontyTimeZone>),
+
+    // ---- System identity --------------------------------------------------
+    /// `os.uname()` — the host answers with a 5-field `uname_result` named
+    /// tuple (sysname, nodename, release, version, machine).
+    #[strum(serialize = "os.uname")]
+    Uname,
+    /// `os.getcwd()` — the sandbox has no working directory of its own; the
+    /// host answers with the virtual path sandbox code should observe.
+    #[strum(serialize = "os.getcwd")]
+    Getcwd,
+    /// `os.cpu_count()` — the host answers with the CPU count sandbox code sees.
+    #[strum(serialize = "os.cpu_count")]
+    CpuCount,
+    /// `os.getpid()` — the host answers with the process ID sandbox code sees.
+    #[strum(serialize = "os.getpid")]
+    Getpid,
+    /// `os.system(command)` — the host receives the command string. The
+    /// interpreter never executes anything; the host answers with the exit
+    /// status int sandbox code should observe.
+    #[strum(serialize = "os.system")]
+    System(SystemCallArgs),
 }
 
 impl OsFunctionCall {
@@ -162,6 +183,8 @@ impl OsFunctionCall {
             // Unit & single-value non-FS variants.
             Self::GetEnviron | Self::DateToday => (vec![], vec![]),
             Self::DateTimeNow(tz) => (vec![tz.map_or(MontyObject::None, MontyObject::TimeZone)], vec![]),
+            Self::Uname | Self::Getcwd | Self::CpuCount | Self::Getpid => (vec![], vec![]),
+            Self::System(a) => a.to_args(),
         }
     }
 
@@ -261,6 +284,7 @@ impl OsFunctionCall {
             Self::Mkdir(a) => Some(a.path.as_str()),
             Self::Rename(a) => Some(a.src.as_str()),
             Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) => None,
+            Self::Uname | Self::Getcwd | Self::CpuCount | Self::Getpid | Self::System(_) => None,
         }
     }
 
@@ -387,6 +411,13 @@ pub struct RenameCallArgs {
 pub struct GetenvArgs {
     pub key: String,
     pub default: MontyObject,
+}
+
+/// `os.system(command)` shape — the command is passed through verbatim; the
+/// host alone decides what (if anything) to do with it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
+pub struct SystemCallArgs {
+    pub command: String,
 }
 
 // =============================================================================
@@ -543,3 +574,29 @@ const STAT_RESULT_TYPE_NAME: &str = "StatResult";
 const STAT_RESULT_FIELDS: &[&str] = &[
     "st_mode", "st_ino", "st_dev", "st_nlink", "st_uid", "st_gid", "st_size", "st_atime", "st_mtime", "st_ctime",
 ];
+
+// =============================================================================
+// uname_result builder — host-side utility for answering `os.uname()`.
+// =============================================================================
+
+/// Creates a `uname_result` with the 5 fields `os.uname()` returns.
+///
+/// This is the host-side builder for answering the [`OsFunctionCall::Uname`]
+/// call; a fake-OS host fills in its synthetic system identity.
+#[must_use]
+pub fn uname_result(sysname: &str, nodename: &str, release: &str, version: &str, machine: &str) -> MontyObject {
+    MontyObject::NamedTuple {
+        type_name: UNAME_RESULT_TYPE_NAME.to_owned(),
+        field_names: UNAME_RESULT_FIELDS.iter().map(|s| (*s).to_owned()).collect(),
+        values: vec![
+            MontyObject::String(sysname.to_owned()),
+            MontyObject::String(nodename.to_owned()),
+            MontyObject::String(release.to_owned()),
+            MontyObject::String(version.to_owned()),
+            MontyObject::String(machine.to_owned()),
+        ],
+    }
+}
+
+const UNAME_RESULT_TYPE_NAME: &str = "uname_result";
+const UNAME_RESULT_FIELDS: &[&str] = &["sysname", "nodename", "release", "version", "machine"];

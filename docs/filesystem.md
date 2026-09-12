@@ -241,7 +241,8 @@ handler at all.
 The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`, `open`,
 `Path.read_text`, `Path.read_bytes`, `Path.write_text`, `Path.write_bytes`, `Path.append_text`, `Path.append_bytes`,
 `Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.stat`, `Path.rename`, `Path.resolve`, `Path.absolute`,
-`os.getenv`, `os.environ`, `date.today` and `datetime.now`.
+`os.getenv`, `os.environ`, `date.today`, `datetime.now`, `os.uname`, `os.getcwd`, `os.cpu_count`, `os.getpid` and
+`os.system`.
 
 `os` callbacks run in your process with your process's authority.
 Everything in [designing a safe tool surface](host-functions.md#designing-a-safe-tool-surface) applies.
@@ -304,6 +305,51 @@ JavaScript has no equivalent class, so the TypeScript tab answers the same opera
 
 [`OSAccess`][pydantic_monty.OSAccess] backed by [`MemoryFile`][pydantic_monty.MemoryFile] objects is fully sandboxed: content lives in host memory, path traversal cannot escape
 to real files, and `os.getenv` sees only the `environ` mapping you passed.
+
+For a complete fake machine rather than a bare filesystem,
+[`FakeLinux`][pydantic_monty.FakeLinux] subclasses `OSAccess` with a deterministic synthetic Linux tree
+(`/etc`, `/proc`, `/dev`, `/home`, ...), a generated `environ`, and answers for the system-identity calls
+(`os.uname()`, `os.getcwd()`, `os.cpu_count()`, `os.getpid()`); `os.system` records what sandboxed code tried to run
+and answers with exit status `0` without executing anything.
+
+=== "Python"
+
+    ```python
+    from pydantic_monty import Monty
+    from pydantic_monty.fakeos import FakeLinux
+
+    fs = FakeLinux(hostname='prod-web-1', distro='debian-12')
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            session.feed_run('import os\nprint(os.uname().nodename)', os=fs)
+            #> prod-web-1
+            print(fs.commands)
+            #> []
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty, NOT_HANDLED } from '@pydantic/monty'
+
+    // FakeLinux ships with the Python binding; in TypeScript the same answers
+    // come from an os callback.
+    const answers: Record<string, unknown> = {
+      'os.uname': ['Linux', 'prod-web-1', '6.8.0-45-generic', '#1 SMP PREEMPT_DYNAMIC', 'x86_64'],
+      'os.getcwd': '/',
+      'os.cpu_count': 8,
+      'os.getpid': 1337,
+    }
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    console.log(
+      await session.feedRun('import os\nos.uname()[1]', {
+        os: (name: string) => answers[name] ?? NOT_HANDLED,
+      }),
+    ) // prod-web-1
+    ```
 
 [`CallbackFile`][pydantic_monty.CallbackFile] read and write callbacks run in the host and can reach real resources.
 That is the point of it, but it means an `OSAccess` containing a `CallbackFile` is exactly as sandboxed as the callback

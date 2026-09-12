@@ -723,6 +723,11 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, pa
                 os_call!("date_time_now")
             }
         }
+        Some(Call::Uname(_)) => os_call!("uname"),
+        Some(Call::Getcwd(_)) => os_call!("getcwd"),
+        Some(Call::CpuCount(_)) => os_call!("cpu_count"),
+        Some(Call::Getpid(_)) => os_call!("getpid"),
+        Some(Call::System(s)) => os_call!("system", args.command = string_arg!(&s.command)),
         None => os_call!(MISSING),
     });
     if args_cut {

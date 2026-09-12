@@ -1,6 +1,7 @@
 # Tests for os module constants, os.fspath, and argument/type errors that
 # raise before any OS access. Filesystem behavior is covered by
 # mount_fs__ops.py; getenv/environ by import__os.py / os__environ.py.
+# call-external
 import os
 import sys
 from pathlib import Path
@@ -318,3 +319,62 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == 'replace() takes exactly 2 positional arguments (3 given)'
+
+# === uname / getcwd / cpu_count / getpid / system ===
+# The host answers these, so exact values are host-specific; CPython returns
+# its real system values while Monty's host (the test harness) returns its
+# own. Assert the structural contract only.
+u = os.uname()
+assert len(u) == 5
+assert u.sysname == u[0]
+assert u.nodename == u[1]
+assert u.release == u[2]
+assert u.version == u[3]
+assert u.machine == u[4]
+
+count = os.cpu_count()
+assert count is not None and count >= 1
+assert os.getpid() > 0
+assert isinstance(os.getcwd(), str)
+# Nothing is ever executed by Monty; CPython runs the (harmless) command.
+if sys.platform != 'win32':
+    assert os.system('true') == 0
+    assert os.system(b'true') == 0
+
+# CPython routes these through the `posix` module, so arity errors carry the
+# 'posix.' prefix; os.system is clinic-parsed without one.
+try:
+    os.uname(1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'posix.uname() takes no arguments (1 given)'
+try:
+    os.uname(foo=1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'posix.uname() takes no keyword arguments'
+try:
+    os.getcwd(1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'posix.getcwd() takes no arguments (1 given)'
+try:
+    os.cpu_count(1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'posix.cpu_count() takes no arguments (1 given)'
+try:
+    os.getpid(1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'posix.getpid() takes no arguments (1 given)'
+try:
+    os.system()
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "system() missing required argument 'command' (pos 1)"
+try:
+    os.system(1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'expected str, bytes or os.PathLike object, not int'

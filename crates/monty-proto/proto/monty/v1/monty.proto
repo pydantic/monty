@@ -710,6 +710,13 @@ message OsCall {
     Unit date_today = 23; // date.today()
     // datetime.now(tz) — the timezone argument (absent for a naive result).
     DateTimeNow date_time_now = 24;
+
+    // ---- System identity (host-answered; nothing is ever executed) --------
+    Unit uname = 25; // os.uname()
+    Unit getcwd = 26; // os.getcwd()
+    Unit cpu_count = 27; // os.cpu_count()
+    Unit getpid = 28; // os.getpid()
+    System system = 29; // os.system
   }
 
   message TextWrite {
@@ -745,6 +752,12 @@ message OsCall {
   message DateTimeNow {
     // Fixed-offset timezone for an aware result; absent for a naive one.
     optional TimeZone tz = 1;
+  }
+  // os.system(command) — the command string passes through verbatim; the
+  // host alone decides what to do with it and answers with the exit-status
+  // int sandbox code should observe.
+  message System {
+    string command = 1;
   }
 }
 

@@ -705,7 +705,7 @@ pub struct OsCall {
     pub call_id: u32,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -765,6 +765,14 @@ pub mod os_call {
         /// Fixed-offset timezone for an aware result; absent for a naive one.
         #[prost(message, optional, tag = "1")]
         pub tz: ::core::option::Option<super::TimeZone>,
+    }
+    /// os.system(command) — the command string passes through verbatim; the
+    /// host alone decides what to do with it and answers with the exit-status
+    /// int sandbox code should observe.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct System {
+        #[prost(string, tag = "1")]
+        pub command: ::prost::alloc::string::String,
     }
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
@@ -840,6 +848,23 @@ pub mod os_call {
         /// datetime.now(tz) — the timezone argument (absent for a naive result).
         #[prost(message, tag = "24")]
         DateTimeNow(DateTimeNow),
+        /// ---- System identity (host-answered; nothing is ever executed) --------
+        ///
+        /// os.uname()
+        #[prost(message, tag = "25")]
+        Uname(super::Unit),
+        /// os.getcwd()
+        #[prost(message, tag = "26")]
+        Getcwd(super::Unit),
+        /// os.cpu_count()
+        #[prost(message, tag = "27")]
+        CpuCount(super::Unit),
+        /// os.getpid()
+        #[prost(message, tag = "28")]
+        Getpid(super::Unit),
+        /// os.system
+        #[prost(message, tag = "29")]
+        System(System),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether

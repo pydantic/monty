@@ -78,6 +78,11 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
             offset_seconds: None,
             timezone_name: None,
         }),
+        OsFunctionCall::Uname => monty_types::uname_result("Linux", "mock-host", "6.1.0", "#1 SMP", "x86_64"),
+        OsFunctionCall::Getcwd => MontyObject::String("/mock/cwd".to_owned()),
+        OsFunctionCall::CpuCount => MontyObject::Int(4),
+        OsFunctionCall::Getpid => MontyObject::Int(4242),
+        OsFunctionCall::System(_) => MontyObject::Int(0),
     }
 }
 
@@ -1158,6 +1163,48 @@ fn os_unsupported_path_kinds() {
     for (code, expected) in cases {
         assert_eq!(run_to_error(code), expected, "code: {code}");
     }
+}
+
+#[test]
+fn os_system_identity_calls_suspend_with_no_args() {
+    // The host-answered identity calls: each yields its own variant with an
+    // empty arg projection, like the other non-FS calls.
+    for (code, expected_name) in [
+        ("import os\nos.uname()", "os.uname"),
+        ("import os\nos.getcwd()", "os.getcwd"),
+        ("import os\nos.cpu_count()", "os.cpu_count"),
+        ("import os\nos.getpid()", "os.getpid"),
+    ] {
+        let (func, args) = run_to_oscall(code);
+        assert_eq!(func, expected_name);
+        assert!(args.is_empty(), "{expected_name}");
+    }
+}
+
+#[test]
+fn os_uname_resume_returns_named_tuple() {
+    // The host's uname_result keeps its field names across the boundary, so
+    // sandbox code gets attribute access (u.sysname), not just indexing.
+    let (func, args, result) = run_oscall_with_result(
+        "import os\nu = os.uname()\nu.sysname",
+        monty_types::uname_result("Linux", "mock-host", "6.1.0", "#1 SMP", "x86_64"),
+    );
+    assert_eq!(func, "os.uname");
+    assert!(args.is_empty());
+    assert_eq!(result, MontyObject::String("Linux".to_owned()));
+}
+
+#[test]
+fn os_system_passes_command_to_host() {
+    // The command string crosses verbatim; the host's int answer becomes the
+    // exit status Python observes. Nothing is executed by the interpreter.
+    let (func, args, result) = run_oscall_with_result(
+        "import os\nos.system('apt-get install -y nothing')",
+        MontyObject::Int(0),
+    );
+    assert_eq!(func, "os.system");
+    assert_eq!(args, vec![MontyObject::String("apt-get install -y nothing".to_owned())]);
+    assert_eq!(result, MontyObject::Int(0));
 }
 
 #[test]

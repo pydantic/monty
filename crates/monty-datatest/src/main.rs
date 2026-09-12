@@ -31,7 +31,7 @@ use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
     CompileOptions, DictPairs, ExcType, ExtFunctionResult, FileMode, MontyClassInstance, MontyClassType, MontyDate,
     MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyTimeZone, MontyUuid, NameLookupResult,
-    OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, dir_stat, file_stat,
+    OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, dir_stat, file_stat, uname_result,
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -1091,6 +1091,14 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                 args.default.clone().into()
             }
         }
+        OsFunctionCall::Uname => {
+            uname_result("Linux", "monty-test", "6.1.0-monty", "#1 SMP PREEMPT_DYNAMIC", "x86_64").into()
+        }
+        OsFunctionCall::Getcwd => MontyObject::String("/virtual/cwd".to_owned()).into(),
+        OsFunctionCall::CpuCount => MontyObject::Int(4).into(),
+        OsFunctionCall::Getpid => MontyObject::Int(4242).into(),
+        // The harness executes nothing: every command "succeeds".
+        OsFunctionCall::System(_) => MontyObject::Int(0).into(),
         OsFunctionCall::WriteText(args) => {
             let path = args.path.as_str().to_owned();
             let text = args.data.clone();

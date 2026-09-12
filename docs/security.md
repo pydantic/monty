@@ -200,7 +200,9 @@ anything.
     ```
 
 A separate `os=` callback handles operations no mount covers: the remaining `pathlib` operations, `os.getenv`,
-`os.environ`, `date.today()` and `datetime.now()`.
+`os.environ`, `date.today()`, `datetime.now()` and the system-identity calls `os.uname()`, `os.getcwd()`,
+`os.cpu_count()`, `os.getpid()` and `os.system()` — the last of which hands the command string to the host and never
+executes anything itself.
 [`AbstractOS`][pydantic_monty.AbstractOS] is the typed form of that callback; [`OSAccess`][pydantic_monty.OSAccess] implements it over in-memory files and an `environ` mapping
 you supply, and overriding one of its methods replaces one operation.
 JavaScript has only the callback form, so the TypeScript tab answers the same three operations by hand:
@@ -370,6 +372,8 @@ Host functions, the methods, lazy attributes and constructors exposed through [`
 callback, and [`CallbackFile`][pydantic_monty.CallbackFile] in the Python [`OSAccess`][pydantic_monty.OSAccess] helper all execute in the host process.
 `OSAccess` backed by [`MemoryFile`][pydantic_monty.MemoryFile] objects is fully sandboxed; `OSAccess` backed by `CallbackFile` is exactly as
 sandboxed as the callback you wrote.
+[`FakeLinux`][pydantic_monty.FakeLinux] is `OSAccess` over `MemoryFile`s, so it is fully sandboxed too — its
+`system_handler` hook is the one exception, running in the host with full authority.
 
 ### In-process execution
 
