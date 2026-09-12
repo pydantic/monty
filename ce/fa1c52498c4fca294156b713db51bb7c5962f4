@@ -1,0 +1,13 @@
+scripts/codecov_diff.py
+  ai_agent 23,181
+uv.lock
+  ai_agent 6-7,586-598,614-639,642,644,646,1273,1288-1294,1301,1316-1322,2398-2404
+pyproject.toml
+  ai_agent 20-24,61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "cefa1c52498c4fca294156b713db51bb7c5962f4",
+  "prompts": {}
+}
