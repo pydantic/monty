@@ -33,8 +33,12 @@ pub fn check_pow_size(base_bits: u64, exponent: u64, tracker: &ResourceTracker) 
 
 /// Pre-checks that a product of `terms` integers of at most `term_bits` bits each won't
 /// exceed resource limits — the bound used by `math.factorial`, `comb` and `perm`.
+///
+/// The estimate is doubled because the last multiplication holds its operands, which
+/// together are about the result's size, alongside the result itself.
 pub fn check_product_size(terms: u64, term_bits: u64, tracker: &ResourceTracker) -> Result<(), ResourceError> {
-    check_estimated_size(estimate_bits_to_bytes(terms.saturating_mul(term_bits)), tracker)
+    let result_bytes = estimate_bits_to_bytes(terms.saturating_mul(term_bits));
+    check_estimated_size(result_bytes.saturating_mul(2), tracker)
 }
 
 /// Pre-checks that an integer multiplication won't exceed resource limits.

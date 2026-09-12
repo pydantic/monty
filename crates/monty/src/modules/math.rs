@@ -39,7 +39,7 @@ use crate::{
     heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    resource_checks::check_product_size,
+    resource_checks::{check_mult_size, check_product_size},
     types::{LongInt, Module, allocate_tuple, long_int::bigint_to_f64_checked},
     value::Value,
 };
@@ -1066,7 +1066,13 @@ fn product_range(lo: u64, hi: u64, polls: &mut usize, tracker: &ResourceTracker)
         Ok((lo..=hi).fold(BigInt::one(), |product, i| product * i))
     } else {
         let mid = lo + (hi - lo) / 2;
-        Ok(product_range(lo, mid, polls, tracker)? * product_range(mid + 1, hi, polls, tracker)?)
+        let (low, high) = (
+            product_range(lo, mid, polls, tracker)?,
+            product_range(mid + 1, hi, polls, tracker)?,
+        );
+        // Combining two halves is where the expensive multiplications are, so each one polls.
+        tracker.check_time()?;
+        Ok(low * high)
     }
 }
 
@@ -1102,6 +1108,8 @@ fn math_lcm(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let n = value_to_bigint(arg, vm)?;
         // A zero anywhere makes the result zero, but every argument is still type-checked.
         if !result.is_zero() {
+            // `lcm` grows like a product, so it is preflighted like `*`.
+            check_mult_size(result.bits(), n.bits(), &vm.heap.tracker)?;
             result = result.lcm(&n);
         }
     }
