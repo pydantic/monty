@@ -1,0 +1,25 @@
+crates/monty/src/value.rs
+  s_34e216fc88bcd9::t_57997049ce0ab7 33-34,777-778,780-785,880,887,894,2523-2545,2573
+  s_34e216fc88bcd9::t_3cc5b8fdc4c828 1057-1059,1092,2546-2549,2554,2556-2564
+  s_34e216fc88bcd9::t_2e2a6545547994 2550-2553,2555
+crates/monty/test_cases/float__pow.py
+  s_34e216fc88bcd9::t_3cc5b8fdc4c828 1,4-21,23-28,30-48,57-86
+  s_34e216fc88bcd9::t_abaf9250d16568 2-3,22,29
+  s_34e216fc88bcd9::t_2e2a6545547994 49-56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9f536d2d77fd8b58572f039be0094b546d71fa33",
+  "prompts": {},
+  "sessions": {
+    "s_34e216fc88bcd9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3aaba303-7081-4f93-bb35-94c0503fa539",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
