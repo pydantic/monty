@@ -1,0 +1,40 @@
+crates/monty/src/run_progress.rs
+  s_b1574f442ee6a4::t_541bdc71b698ce 810,924,951
+  s_b1574f442ee6a4::t_d5effbc8fb690a 21,812
+crates/monty/src/builtins/open.rs
+  s_b1574f442ee6a4::t_d5effbc8fb690a 21,85
+crates/monty/src/os_dispatch.rs
+  s_b1574f442ee6a4::t_a9e34e1c121de2 10,22,26,51-58,60-105,107,110,122-125,127-142,145-167,169-170,174,204
+  s_b1574f442ee6a4::t_d5effbc8fb690a 184,246
+crates/monty/src/types/path.rs
+  s_b1574f442ee6a4::t_d5effbc8fb690a 26,538,540-541
+crates/monty/src/run.rs
+  s_b1574f442ee6a4::t_d5effbc8fb690a 645
+crates/monty/src/bytecode/vm/mod.rs
+  s_b1574f442ee6a4::t_03b43cdf26a6e8 22,41
+  s_b1574f442ee6a4::t_541bdc71b698ce 253,637,639,661,667,778,782,865,941,998,1985,1991,2006,2043,2585
+  s_b1574f442ee6a4::t_d5effbc8fb690a 255,1045,1983-1984,1986,1990,2007-2008,2010-2022,2045,2052,2056,2065
+crates/monty/src/bytecode/vm/call.rs
+  s_b1574f442ee6a4::t_d5effbc8fb690a 24,95,103
+crates/monty/src/modules/os.rs
+  s_b1574f442ee6a4::t_d5effbc8fb690a 13,30,160,179,182-183,226,239
+crates/monty/src/types/file.rs
+  s_b1574f442ee6a4::t_541bdc71b698ce 734
+  s_b1574f442ee6a4::t_d5effbc8fb690a 81,576,632,636-637
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1dcfe125b1cfb767584c0d09b304ccccfcdc2b1c",
+  "prompts": {},
+  "sessions": {
+    "s_b1574f442ee6a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1add6492-fcb0-4b98-ba59-e70026a16c3b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
