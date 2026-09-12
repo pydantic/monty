@@ -89,13 +89,17 @@ pub(crate) enum PendingOsEffect {
 }
 
 impl PendingOsEffect {
-    /// Operations whose result must be postprocessed before execution can continue.
+    /// Operations whose result `VM::resume` must postprocess before execution
+    /// continues, named for the `RuntimeError` a host gets for answering them
+    /// with a future (which bypasses `resume`).
     pub(crate) fn immediate_result_name(&self) -> Option<&'static str> {
         match self {
+            Self::ListdirNames => Some("os.listdir"),
             Self::Chdir { .. } => Some("os.chdir"),
             Self::IterdirPaths { .. } => Some("Path.iterdir"),
             Self::OpenName { .. } => Some("open"),
-            _ => None,
+            // A future strands these instead: the awaited value is the raw host reply.
+            Self::BufferStore { .. } | Self::WritePosition { .. } => None,
         }
     }
 

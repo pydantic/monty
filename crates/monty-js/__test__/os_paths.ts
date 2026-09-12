@@ -72,7 +72,7 @@ p = Path(path)
     [
       'embedded null byte',
       'embedded null byte',
-      'stat: embedded null character in path',
+      'chdir: embedded null character in path',
       'rename: embedded null character in src',
       'rename: embedded null character in dst',
     ],

@@ -429,15 +429,16 @@ function returnValue(value: unknown): CallResult {
  * feed or `os.chdir` changes it — there are no mounts in the browser to
  * default to), an explicit value must be an absolute POSIX path without NUL
  * bytes and loses its trailing slashes. A rejected value is the
- * session-preserving `ValueError` turn the native path produces (quoted
- * as JSON, which matches Rust's `{:?}` for everyday ASCII paths).
+ * session-preserving `ValueError` turn the native path produces, so keep
+ * this in step with `validate_cwd` in `monty-types` (`mount.spec.ts` runs
+ * the same rejected values through both backends).
  */
 function feedCwd(cwd: string | undefined): string | NativeTurn {
   const invalid = (problem: string): NativeTurn => ({
     kind: 'error',
     exception: {
       excType: 'ValueError',
-      message: `cwd ${problem}: ${JSON.stringify(cwd ?? '')}`,
+      message: `cwd ${problem}: ${rustDebugString(cwd ?? '')}`,
       traceback: '',
       frames: [],
     },
@@ -453,6 +454,28 @@ function feedCwd(cwd: string | undefined): string | NativeTurn {
   }
   const trimmed = cwd.replace(/\/+$/, '')
   return trimmed === '' ? '/' : trimmed
+}
+
+/**
+ * Quotes a string the way Rust's `{:?}` does for ASCII (`\0`, `\n`, `\t`,
+ * `\r`, `\\`, `\"`, other control characters as `\u{xx}`), so a wasm-side
+ * `ValueError` matches the native one byte for byte. Non-ASCII passes through,
+ * which Rust also does for printable characters.
+ */
+function rustDebugString(value: string): string {
+  const escapes: Record<string, string> = {
+    '\0': '\\0',
+    '\n': '\\n',
+    '\t': '\\t',
+    '\r': '\\r',
+    '\\': '\\\\',
+    '"': '\\"',
+  }
+  // oxlint-disable-next-line no-control-regex
+  const quoted = value.replace(/[\0\n\t\r\\"\x01-\x1f\x7f]/g, (char) => {
+    return escapes[char] ?? `\\u{${char.charCodeAt(0).toString(16)}}`
+  })
+  return `"${quoted}"`
 }
 
 /** Creates a traceback-free host exception result. */

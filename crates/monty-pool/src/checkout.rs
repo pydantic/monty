@@ -18,7 +18,7 @@ use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState}
 use monty_proto::{FrameError, PROTOCOL_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 use monty_types::{
     AssertMessageAnnotations, DEFAULT_MAX_SUSPENSIONS, ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid,
-    NameLookupResult, OsFunctionCall, PrintStream, ResourceLimits, TypeCheckingConfig,
+    NameLookupResult, OsFunctionCall, PrintStream, ResourceLimits, TypeCheckingConfig, validate_cwd,
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
@@ -662,7 +662,7 @@ impl Checkout {
         }
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
         let cwd = match cwd {
-            Some(cwd) => validate_cwd(cwd)?,
+            Some(cwd) => checked_cwd(cwd)?,
             // An empty wire cwd keeps the worker's current directory.
             None if self.cwd_set => String::new(),
             None => mounts
@@ -1748,28 +1748,10 @@ fn min_deadline(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
         (deadline, None) | (None, deadline) => deadline,
     }
 }
-/// Checks an explicit working directory: absolute, POSIX, no NUL bytes.
-/// Trailing slashes are dropped so `os.getcwd()` never reports `/data/`;
-/// the root itself stays `/`.
-fn validate_cwd(cwd: &str) -> Result<String, PoolError> {
-    let invalid = |msg: &str| {
-        PoolError::Runtime(MontyException::new(
-            ExcType::ValueError,
-            Some(format!("cwd {msg}: {cwd:?}")),
-        ))
-    };
-    if cwd.contains('\0') {
-        Err(invalid("must not contain NUL bytes"))
-    } else if !cwd.starts_with('/') {
-        Err(invalid("must be an absolute POSIX path"))
-    } else {
-        let trimmed = cwd.trim_end_matches('/');
-        Ok(if trimmed.is_empty() {
-            "/".to_owned()
-        } else {
-            trimmed.to_owned()
-        })
-    }
+/// Checks an explicit working directory with [`validate_cwd`], raising its
+/// message as a session-preserving `ValueError`.
+fn checked_cwd(cwd: &str) -> Result<String, PoolError> {
+    validate_cwd(cwd).map_err(|message| PoolError::Runtime(MontyException::new(ExcType::ValueError, Some(message))))
 }
 
 /// Builds the parent-side [`MountTable`] for one feed from its (non-empty)

@@ -141,6 +141,12 @@ try:
             assert str(e) == "[Errno 2] No such file or directory: ''"
     assert Path.cwd().resolve() == resolved_root
     try:
+        os.chdir('sub\0dir')
+        assert False, 'expected ValueError'
+    except ValueError as e:
+        assert str(e) == 'chdir: embedded null character in path'
+    assert Path.cwd().resolve() == resolved_root
+    try:
         os.chdir(1.5)
         assert False, 'expected TypeError'
     except TypeError as e:

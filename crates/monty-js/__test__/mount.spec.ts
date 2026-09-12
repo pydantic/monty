@@ -194,9 +194,19 @@ test('an explicit cwd persists across feeds', async () => {
   t.is(await session.feedRun('os.getcwd()', { cwd: '/' }), '/')
 })
 
-test('a relative cwd is refused', async () => {
-  const error = await t.throwsAsync(() => run('1', { cwd: 'data' }), { instanceOf: MontyRuntimeError })
-  t.is(error.message, 'ValueError: cwd must be an absolute POSIX path: "data"')
+test('an invalid cwd is refused', async () => {
+  // the wasm transport validates in TypeScript, so this pins it to monty-pool's `validate_cwd`
+  for (const [cwd, message] of [
+    ['data', 'cwd must be an absolute POSIX path: "data"'],
+    ['', 'cwd must be an absolute POSIX path: ""'],
+    ['/data\0', 'cwd must not contain NUL bytes: "/data\\0"'],
+  ] as const) {
+    const error = await t.throwsAsync(() => run('1', { cwd }), { instanceOf: MontyRuntimeError })
+    t.is(error.message, `ValueError: ${message}`)
+  }
+  await using session = await pool().checkout()
+  t.is(await session.feedRun('import os\nos.getcwd()', { cwd: '/work//' }), '/work')
+  t.is(await session.feedRun('os.getcwd()', { cwd: '///' }), '/')
 })
 
 test('MountDir repr', (ctx) => {

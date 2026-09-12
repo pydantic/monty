@@ -24,7 +24,7 @@ use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, HostClock, MontyException, MontyObject,
-    NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig,
+    NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig, validate_cwd,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
@@ -163,11 +163,10 @@ fn run_cli(cli: Cli) -> ExitCode {
 }
 
 /// Resolves the sandbox working directory: `--cwd`, else the first `--mount`
-/// virtual path, else `/`. An explicit value must be an absolute virtual path.
+/// virtual path, else `/`. An explicit value goes through the shared [`validate_cwd`].
 fn sandbox_cwd(cwd: Option<&str>, first_mount: Option<String>) -> Result<String, String> {
     match cwd {
-        Some(cwd) if cwd.starts_with('/') => Ok(cwd.to_owned()),
-        Some(cwd) => Err(format!("--cwd must be an absolute virtual path, got {cwd:?}")),
+        Some(cwd) => validate_cwd(cwd).map_err(|message| format!("--{message}")),
         None => Ok(first_mount.unwrap_or_else(|| "/".to_owned())),
     }
 }

@@ -168,6 +168,10 @@ fn chdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         // CPython's `chdir("")` fails with ENOENT; the host would otherwise stat the root.
         return Err(ExcType::file_not_found_error(""));
     }
+    if spelled.contains('\0') {
+        // The VM's generic NUL check names the `Path.stat` call this becomes; CPython names `chdir`.
+        return Err(ExcType::value_error("chdir: embedded null character in path"));
+    }
     // Keep every component until the host validates the target; normalize on success.
     let path = posix_join(&vm.env.cwd, &spelled);
     Ok(CallResult::OsCallWithEffect {

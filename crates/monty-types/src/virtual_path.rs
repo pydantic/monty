@@ -29,6 +29,34 @@ pub fn normalize_virtual_path(path: &str) -> Cow<'_, str> {
     }
 }
 
+/// Checks a host-supplied working directory: absolute, POSIX, no NUL bytes.
+///
+/// Trailing slashes are dropped so `os.getcwd()` never reports `/data/`; the
+/// root itself stays `/`. `.` and `..` are left for the interpreter, which
+/// normalizes the directory when it adopts it. The error is the message of
+/// the `ValueError` hosts raise for it.
+///
+/// ```
+/// use monty_types::validate_cwd;
+///
+/// assert_eq!(validate_cwd("/data/").unwrap(), "/data");
+/// assert_eq!(validate_cwd("data").unwrap_err(), "cwd must be an absolute POSIX path: \"data\"");
+/// ```
+pub fn validate_cwd(cwd: &str) -> Result<String, String> {
+    if cwd.contains('\0') {
+        Err(format!("cwd must not contain NUL bytes: {cwd:?}"))
+    } else if !cwd.starts_with('/') {
+        Err(format!("cwd must be an absolute POSIX path: {cwd:?}"))
+    } else {
+        let trimmed = cwd.trim_end_matches('/');
+        Ok(if trimmed.is_empty() {
+            "/".to_owned()
+        } else {
+            trimmed.to_owned()
+        })
+    }
+}
+
 /// Recognizes paths that can be returned without allocating or rewriting them.
 fn is_normalized(path: &str) -> bool {
     path == "/"

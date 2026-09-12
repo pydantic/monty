@@ -677,10 +677,18 @@ f = open('nested.txt')
     )
 
 
-def test_cwd_must_be_absolute(monty_run: RunMonty):
+@pytest.mark.parametrize(
+    'cwd, message',
+    [
+        pytest.param('data', 'ValueError: cwd must be an absolute POSIX path: "data"', id='relative'),
+        pytest.param('', 'ValueError: cwd must be an absolute POSIX path: ""', id='empty'),
+        pytest.param('/data\0', 'ValueError: cwd must not contain NUL bytes: "/data\\0"', id='nul'),
+    ],
+)
+def test_cwd_is_validated(monty_run: RunMonty, cwd: str, message: str):
     with pytest.raises(MontyRuntimeError) as exc_info:
-        monty_run('1', cwd='data')
-    assert str(exc_info.value) == snapshot('ValueError: cwd must be an absolute POSIX path: "data"')
+        monty_run('1', cwd=cwd)
+    assert str(exc_info.value) == message
 
 
 def test_cwd_persists_across_feeds(pool: Monty, test_dir: Path):

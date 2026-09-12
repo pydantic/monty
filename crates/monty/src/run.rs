@@ -120,11 +120,11 @@ impl MontyRun {
 
     /// Sets the sandbox working directory the run starts in (default `/`).
     ///
-    /// `cwd` is an absolute POSIX virtual path, normalized here (`.`, `..`
-    /// and repeated or trailing slashes collapse) so `os.getcwd()` reports a
-    /// canonical directory: it is what relative paths in `open()` / `os` /
-    /// `pathlib` calls resolve against before reaching the host. Hosts
-    /// typically pass the first mount's virtual path.
+    /// `cwd` is an absolute POSIX virtual path, passed through
+    /// [`normalize_virtual_path`](monty_types::normalize_virtual_path) so
+    /// `os.getcwd()` reports a canonical directory: it is what relative paths
+    /// in `open()` / `os` / `pathlib` calls resolve against before reaching
+    /// the host. Hosts typically pass the first mount's virtual path.
     pub fn set_cwd(&mut self, cwd: &str) {
         self.executor.cwd = canonical_cwd(cwd);
     }

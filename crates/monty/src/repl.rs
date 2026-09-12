@@ -86,7 +86,6 @@ pub struct MontyRepl {
     /// Sandbox working directory the next snippet starts in: what
     /// [`set_cwd`](Self::set_cwd) chose, then whatever `os.chdir` left the
     /// last snippet in — the directory is session state, like the globals.
-    #[serde(default = "default_cwd")]
     cwd: Arc<str>,
     /// Persistent heap across snippets.
     heap: Heap,
@@ -1357,9 +1356,4 @@ fn is_callable(value: &Value, heap: &Heap) -> bool {
         ),
         _ => false,
     }
-}
-
-/// serde default for [`MontyRepl::cwd`], so dumps taken before the field existed load.
-fn default_cwd() -> Arc<str> {
-    Arc::from(DEFAULT_CWD)
 }

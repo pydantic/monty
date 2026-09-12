@@ -49,5 +49,5 @@ pub use crate::{
     run_options::{AssertMessageAnnotations, CompileOptions},
     type_checking::{TypeCheckState, TypeCheckingConfig, TypeCheckingFormat},
     uuid::MontyUuid,
-    virtual_path::normalize_virtual_path,
+    virtual_path::{normalize_virtual_path, validate_cwd},
 };

@@ -2,7 +2,9 @@
 
 use std::borrow::Cow;
 
-use monty_types::{GetenvArgs, MontyObject, MontyPath, OsFunctionCall, PathStringDataArgs, normalize_virtual_path};
+use monty_types::{
+    GetenvArgs, MontyObject, MontyPath, OsFunctionCall, PathStringDataArgs, normalize_virtual_path, validate_cwd,
+};
 
 /// Normalization is POSIX on every host and never climbs above the virtual root.
 #[test]
@@ -23,6 +25,27 @@ fn virtual_paths_normalize_lexically() {
         let normalized = normalize_virtual_path(path);
         assert_eq!(normalized, expected, "{path:?}");
         assert!(matches!(normalize_virtual_path(&normalized), Cow::Borrowed(_)));
+    }
+}
+
+/// A host cwd is trimmed of trailing slashes but otherwise kept; the interpreter normalizes it.
+#[test]
+fn cwd_validation() {
+    for (cwd, expected) in [
+        ("/", "/"),
+        ("///", "/"),
+        ("/data/", "/data"),
+        ("/data/../x/./", "/data/../x/."),
+    ] {
+        assert_eq!(validate_cwd(cwd).unwrap(), expected, "{cwd:?}");
+    }
+    for (cwd, message) in [
+        ("", "cwd must be an absolute POSIX path: \"\""),
+        ("data", "cwd must be an absolute POSIX path: \"data\""),
+        ("data\0", "cwd must not contain NUL bytes: \"data\\0\""),
+        ("/data\0", "cwd must not contain NUL bytes: \"/data\\0\""),
+    ] {
+        assert_eq!(validate_cwd(cwd).unwrap_err(), message, "{cwd:?}");
     }
 }
 

@@ -59,6 +59,8 @@ Mounts are per-feed, and all arguments are keyword-only:
     ```
 
 Pass a list to `mount=` for several at once.
+In JavaScript `MountDir` comes from the `@pydantic/monty/node` subpath and `using` closes it at the end of scope; the
+WebAssembly build rejects mounts outright, because a browser has no host filesystem.
 
 ### Working directory
 
@@ -129,8 +131,6 @@ Use `MountTable` for host filesystem access: normalization and prefix checks alo
 The directory is not checked against the mounts, and `os.chdir()` needs a mount (or `os` callback) to confirm its
 target exists.
 The divergences are in [`limitations/os.md`](limitations/os.md).
-In JavaScript `MountDir` comes from the `@pydantic/monty/node` subpath and `using` closes it at the end of scope; the
-WebAssembly build rejects mounts outright, because a browser has no host filesystem.
 
 ### Modes
 

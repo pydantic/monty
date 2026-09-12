@@ -680,6 +680,7 @@ fn open_name_and_target_survive_chdir() {
 fn filesystem_result_effects_reject_invalid_replies() {
     for (code, operation) in [
         ("open('./file.txt')", "open"),
+        ("import os\nos.listdir('.')", "os.listdir"),
         ("from pathlib import Path\nPath('.').iterdir()", "Path.iterdir"),
     ] {
         let call = run_to_oscall_start(code);
