@@ -374,8 +374,8 @@ Host functions, the methods, lazy attributes and constructors exposed through [`
 callback, and [`CallbackFile`][pydantic_monty.CallbackFile] in the Python [`OSAccess`][pydantic_monty.OSAccess] helper all execute in the host process.
 `OSAccess` backed by [`MemoryFile`][pydantic_monty.MemoryFile] objects is fully sandboxed; `OSAccess` backed by `CallbackFile` is exactly as
 sandboxed as the callback you wrote.
-[`FakeLinux`][pydantic_monty.FakeLinux] is `OSAccess` over `MemoryFile`s, so it is fully sandboxed too — its
-`system_handler` hook is the one exception, running in the host with full authority.
+An `OSAccess` built over `MemoryFile`s only is fully sandboxed; any hook that reaches out
+(`CallbackFile`, a `system_handler`-style command hook) runs in the host with full authority.
 
 ### In-process execution
 

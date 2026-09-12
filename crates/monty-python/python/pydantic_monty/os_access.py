@@ -19,7 +19,7 @@ __all__ = (
     'CallbackFile',
     'OSAccess',
     'StatResult',
-    'UnameResult',
+    'uname_result',
     'path_from_arg',
 )
 
@@ -130,14 +130,13 @@ class StatResult(NamedTuple):
     """time of last change"""
 
 
-class UnameResult(NamedTuple):
+class uname_result(NamedTuple):
     """Equivalent to the named tuple `os.uname()` returns.
 
-    Fields are also accessible by index (e.g. `u[0]`), matching CPython's
-    `posix.uname_result`. Return this from an `uname()` override.
-
-    Note: sandbox-side `repr` shows the type as `UnameResult`, not CPython's
-    `posix.uname_result`.
+    Fields are also accessible by index (e.g. `u[0]`). Return this from an
+    `uname()` override; sandbox-side `repr` shows `uname_result(...)`, and
+    CPython's own is `posix.uname_result(...)` — the same divergence the
+    stat tuple has.
     """
 
     sysname: str
@@ -586,7 +585,7 @@ class AbstractOS(ABC):
         """
         return datetime.datetime.now(tz=tz)
 
-    def uname(self) -> UnameResult:
+    def uname(self) -> uname_result:
         """Return the system identity for Monty's `os.uname()` callback.
 
         Override this to present a synthetic system. The default raises

@@ -1209,10 +1209,7 @@ fn os_system_passes_command_to_host() {
 fn os_system_accepts_bytes_and_pathlike_commands() {
     // CPython's converter takes str/bytes/PathLike; bytes cross as their
     // utf-8 text (lossily decoded — sandbox strings cannot hold surrogates).
-    let (func, args, _result) = run_oscall_with_result(
-        "import os\nos.system(b'apt-get update')",
-        MontyObject::Int(0),
-    );
+    let (func, args, _result) = run_oscall_with_result("import os\nos.system(b'apt-get update')", MontyObject::Int(0));
     assert_eq!(func, "os.system");
     assert_eq!(args, vec![MontyObject::String("apt-get update".to_owned())]);
 
@@ -1227,9 +1224,18 @@ fn os_system_accepts_bytes_and_pathlike_commands() {
 #[test]
 fn os_system_wordings_match_cpython() {
     let cases = [
-        ("import os\nos.system()", "TypeError: system() missing required argument 'command' (pos 1)"),
-        ("import os\nos.system('x', foo=1)", "TypeError: system() takes at most 1 argument (2 given)"),
-        ("import os\nos.system('a', 'b')", "TypeError: system() takes at most 1 argument (2 given)"),
+        (
+            "import os\nos.system()",
+            "TypeError: system() missing required argument 'command' (pos 1)",
+        ),
+        (
+            "import os\nos.system('x', foo=1)",
+            "TypeError: system() takes at most 1 argument (2 given)",
+        ),
+        (
+            "import os\nos.system('a', 'b')",
+            "TypeError: system() takes at most 1 argument (2 given)",
+        ),
     ];
     for (code, expected) in cases {
         assert_eq!(run_to_error(code), expected, "code: {code}");

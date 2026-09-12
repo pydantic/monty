@@ -325,13 +325,26 @@ except TypeError as e:
 # its real system values while Monty's host (the test harness) returns its
 # own. Assert the structural contract only. (os.getcwd is #828's territory:
 # the VM owns the working directory there.)
-u = os.uname()
-assert len(u) == 5
-assert u.sysname == u[0]
-assert u.nodename == u[1]
-assert u.release == u[2]
-assert u.version == u[3]
-assert u.machine == u[4]
+# Windows CPython has no os.uname (posix-only); monty always offers it.
+if sys.platform != 'win32':
+    u = os.uname()
+    assert len(u) == 5
+    assert u.sysname == u[0]
+    assert u.nodename == u[1]
+    assert u.release == u[2]
+    assert u.version == u[3]
+    assert u.machine == u[4]
+
+    try:
+        os.uname(1)
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == 'posix.uname() takes no arguments (1 given)'
+    try:
+        os.uname(foo=1)
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == 'posix.uname() takes no keyword arguments'
 
 # os.cpu_count() may legitimately return None when the count is unknown
 count = os.cpu_count()
@@ -344,16 +357,6 @@ if sys.platform != 'win32':
 
 # CPython routes these through the `posix` module, so arity errors carry the
 # 'posix.' prefix; os.system is clinic-parsed without one.
-try:
-    os.uname(1)
-    assert False, 'expected TypeError'
-except TypeError as e:
-    assert str(e) == 'posix.uname() takes no arguments (1 given)'
-try:
-    os.uname(foo=1)
-    assert False, 'expected TypeError'
-except TypeError as e:
-    assert str(e) == 'posix.uname() takes no keyword arguments'
 try:
     os.cpu_count(1)
     assert False, 'expected TypeError'
