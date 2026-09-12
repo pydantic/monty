@@ -78,7 +78,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
-    os_dispatch::PendingOsEffect,
+    os_dispatch::PostConversionEffect,
     types::str::StringRepr,
     value::{EitherStr, Value},
     virtual_path::posix_join,
@@ -573,7 +573,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         inc_ref_for_pending_oscall(vm, file_id);
         Ok(CallResult::OsCallWithEffect {
             call,
-            effect: PendingOsEffect::BufferStore { file_id },
+            effect: PostConversionEffect::BufferStore { file_id }.into(),
         })
     }
 
@@ -629,11 +629,12 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         inc_ref_for_pending_oscall(vm, file_id);
         // The effect travels with the call and is armed at dispatch, so a
         // call rejected before dispatch cannot leave stale write state.
-        let effect = PendingOsEffect::WritePosition {
+        let effect = PostConversionEffect::WritePosition {
             file_id,
             previous_position: self.get(vm.heap).position,
             previous_length: self.get(vm.heap).file_length,
-        };
+        }
+        .into();
         Ok(CallResult::OsCallWithEffect { call, effect })
     }
 
@@ -730,7 +731,7 @@ impl OpenFile {
 /// `Value::Ref` to the file object, so there is no argument ref to release at
 /// the host boundary. The single pin travels in the returned
 /// `CallResult::OsCallWithEffect` until dispatch arms it on the VM's
-/// `pending_os_effect` slot, and is released by exactly one site per path:
+/// `pending_effect` slot, and is released by exactly one site per path:
 /// [`apply_buffer_store`] / [`apply_write_position`] (success),
 /// `resume_with_exception` (host raised), `VM::drop` (abandoned), or
 /// `CallResult`'s drop (call discarded before dispatch).

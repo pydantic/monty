@@ -19,7 +19,7 @@ use std::{borrow::Cow, mem};
 
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
-use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, normalize_virtual_path};
+use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
 pub(crate) use recursion::{ContainsVM, RecursionToken};
 use scheduler::Scheduler;
 
@@ -38,9 +38,7 @@ use crate::{
     intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
     object_bridge::MontyObjectExt,
-    os_dispatch::{
-        PendingOsEffect, check_chdir_stat, iterdir_paths, listdir_names, release_pending_effect, resolve_call_paths,
-    },
+    os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect, resolve_call_paths},
     parse::CodeRange,
     run::VmEnv,
     types::{
@@ -252,9 +250,9 @@ pub enum FrameExit {
         /// Unique ID for this call, used for async correlation.
         call_id: CallId,
         /// Post-processing for this call's result, armed on
-        /// [`VM::pending_os_effect`] only once the call reaches the host
+        /// [`VM::pending_effect`] only once the call reaches the host
         /// (`convert_frame_exit`); dropping the exit releases it instead.
-        effect: Option<PendingOsEffect>,
+        effect: Option<PendingEffect>,
     },
 
     /// Execution paused for a host-routed call: a method call on a host
@@ -636,9 +634,9 @@ pub struct VMSnapshot {
     scheduler: Scheduler,
 
     /// In-flight resume effect for the paused OS call, if any. See
-    /// [`VM::pending_os_effect`].
+    /// [`VM::pending_effect`].
     #[serde(default)]
-    pending_os_effect: Option<PendingOsEffect>,
+    pending_effect: Option<PendingEffect>,
     /// In-flight resume effect for the paused lazy attribute lookup, if any.
     /// See [`VM::pending_lookup_effect`].
     #[serde(default)]
@@ -660,13 +658,13 @@ impl VMSnapshot {
             globals,
             exception_stack,
             mut scheduler,
-            pending_os_effect,
+            pending_effect,
             pending_lookup_effect,
             cwd,
             ..
         } = self;
         HeapReader::with(heap, &mut (), |heap, ()| {
-            release_pending_effect(pending_os_effect, heap);
+            release_pending_effect(pending_effect, heap);
             pending_lookup_effect.drop_with(heap);
             exception_stack.drop_with(heap);
             stack.drop_with(heap);
@@ -777,11 +775,11 @@ pub struct VM<'h> {
     /// VM is single-threaded and OS calls are strictly request/response — so a
     /// single `Option` is sufficient even with async tasks (which interleave
     /// between OS calls, not within one).
-    pub(crate) pending_os_effect: Option<PendingOsEffect>,
+    pub(crate) pending_effect: Option<PendingEffect>,
 
     /// How the paused lazy attribute lookup's answer is consumed on `resume`
     /// (`hasattr()` / `getattr()` default), armed like
-    /// [`pending_os_effect`](Self::pending_os_effect) once the lookup reaches
+    /// [`pending_effect`](Self::pending_effect) once the lookup reaches
     /// the host; `None` for `obj.attr` and when nothing is in flight.
     pub(crate) pending_lookup_effect: Option<PendingLookupEffect>,
 
@@ -864,7 +862,7 @@ impl<'h> VM<'h> {
             ext_function_load_ip: None, // Set by LoadGlobalCallable
             module_code: None,
             json_string_cache: JsonStringCache::default(),
-            pending_os_effect: None,
+            pending_effect: None,
             pending_lookup_effect: None,
             recursion_depth: 0,
             namespace_scratch: Vec::new(),
@@ -940,7 +938,7 @@ impl<'h> VM<'h> {
             module_code: Some(module_code),
             ext_function_load_ip: None,
             json_string_cache: JsonStringCache::default(),
-            pending_os_effect: snapshot.pending_os_effect,
+            pending_effect: snapshot.pending_effect,
             pending_lookup_effect: snapshot.pending_lookup_effect,
             recursion_depth: current_frame_depth,
             namespace_scratch: Vec::new(),
@@ -997,7 +995,7 @@ impl<'h> VM<'h> {
             exception_stack: mem::take(&mut self.exception_stack),
             instruction_ip: self.instruction_ip,
             scheduler: mem::take(&mut self.scheduler),
-            pending_os_effect: self.pending_os_effect.take(),
+            pending_effect: self.pending_effect.take(),
             pending_lookup_effect: self.pending_lookup_effect.take(),
             // Reset to the starting directory rather than `take` (an empty
             // string), so a later `take_changed_cwd` on this VM stays honest.
@@ -1044,7 +1042,7 @@ impl<'h> VM<'h> {
     fn prepare_os_call(
         &mut self,
         mut call: OsFunctionCall,
-        effect: Option<PendingOsEffect>,
+        effect: Option<PendingEffect>,
     ) -> RunResult<Option<FrameExit>> {
         resolve_call_paths(&mut call, &self.env.cwd);
         if let Err(message) = call.check_path_null_bytes() {
@@ -1982,26 +1980,15 @@ impl<'h> VM<'h> {
     /// through the corresponding helper (file-state update or `os.listdir`
     /// name reduction) before it is pushed back to Python.
     pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
-        // Directory effects reshape the raw host object *before*
-        // heap conversion — plain data in, plain data out, no refcounts involved.
-        let obj = match self.pending_os_effect.take() {
-            Some(PendingOsEffect::ListdirNames) => match listdir_names(obj) {
+        // Pre-conversion effects reshape the raw host object; a post-conversion
+        // effect waits in the slot until the value exists to apply it to.
+        let obj = match self.pending_effect.take() {
+            Some(PendingEffect::Pre(effect)) => match effect.reshape(obj, self) {
                 Ok(obj) => obj,
                 Err(err) => return self.resume_with_exception(err),
             },
-            Some(PendingOsEffect::IterdirPaths { path }) => match iterdir_paths(obj, &path, &self.heap.tracker) {
-                Ok(obj) => obj,
-                Err(err) => return self.resume_with_exception(err),
-            },
-            Some(PendingOsEffect::Chdir { path, spelled }) => match check_chdir_stat(&obj, &spelled) {
-                Ok(()) => {
-                    self.env.cwd = Cow::Owned(normalize_virtual_path(&path).into_owned());
-                    MontyObject::None
-                }
-                Err(err) => return self.resume_with_exception(err),
-            },
-            other => {
-                self.pending_os_effect = other;
+            post => {
+                self.pending_effect = post;
                 obj
             }
         };
@@ -2016,28 +2003,23 @@ impl<'h> VM<'h> {
                 SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {other}"))).into()
             }
         })?;
-        if let Some(effect) = self.pending_os_effect.take() {
-            let result = match effect {
-                PendingOsEffect::BufferStore { file_id } => apply_buffer_store(file_id, value, self),
-                PendingOsEffect::WritePosition { file_id, .. } => apply_write_position(file_id, value, self),
-                PendingOsEffect::OpenName { name } => apply_open_name(name, value, self),
-                // Cleared above, before conversion.
-                PendingOsEffect::ListdirNames
-                | PendingOsEffect::Chdir { .. }
-                | PendingOsEffect::IterdirPaths { .. } => {
-                    unreachable!("directory effects are handled before heap conversion")
-                }
-            };
-            match result {
-                Ok(value) => {
-                    self.push(value);
-                    self.run_external()
-                }
-                Err(err) => self.resume_with_exception(err),
+        let result = match self.pending_effect.take() {
+            Some(PendingEffect::Post(PostConversionEffect::BufferStore { file_id })) => {
+                apply_buffer_store(file_id, value, self)
             }
-        } else {
-            self.push(value);
-            self.run_external()
+            Some(PendingEffect::Post(PostConversionEffect::WritePosition { file_id, .. })) => {
+                apply_write_position(file_id, value, self)
+            }
+            Some(PendingEffect::Post(PostConversionEffect::OpenName { name })) => apply_open_name(name, value, self),
+            // Any pre-conversion effect was consumed above.
+            Some(PendingEffect::Pre(_)) | None => Ok(value),
+        };
+        match result {
+            Ok(value) => {
+                self.push(value);
+                self.run_external()
+            }
+            Err(err) => self.resume_with_exception(err),
         }
     }
 
@@ -2058,20 +2040,20 @@ impl<'h> VM<'h> {
     /// Also clears any pending file effect so user code that catches a
     /// host-side OS exception can retry without stale in-flight state.
     pub fn resume_with_exception(&mut self, error: RunError) -> Result<FrameExit, RunError> {
-        if let Some(effect) = self.pending_os_effect.take() {
+        if let Some(effect) = self.pending_effect.take() {
             match effect {
-                PendingOsEffect::BufferStore { file_id } => {
+                PendingEffect::Post(PostConversionEffect::BufferStore { file_id }) => {
                     if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
                         file.get_mut(self.heap).clear_pending_read();
                         drop(file);
                     }
                     self.heap.dec_ref(file_id);
                 }
-                PendingOsEffect::WritePosition {
+                PendingEffect::Post(PostConversionEffect::WritePosition {
                     file_id,
                     previous_position,
                     previous_length,
-                } => {
+                }) => {
                     if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
                         file.get_mut(self.heap)
                             .rollback_write_position(previous_position, previous_length);
@@ -2080,10 +2062,7 @@ impl<'h> VM<'h> {
                     self.heap.dec_ref(file_id);
                 }
                 // Hold no state or heap references — nothing to roll back.
-                PendingOsEffect::ListdirNames
-                | PendingOsEffect::Chdir { .. }
-                | PendingOsEffect::IterdirPaths { .. }
-                | PendingOsEffect::OpenName { .. } => {}
+                PendingEffect::Pre(_) | PendingEffect::Post(PostConversionEffect::OpenName { .. }) => {}
             }
         }
         // Use the normal exception handling mechanism
@@ -2603,7 +2582,7 @@ impl ContainsHeap for VM<'_> {
 /// `take_globals`) are harmlessly drained as empty.
 impl Drop for VM<'_> {
     fn drop(&mut self) {
-        release_pending_effect(self.pending_os_effect.take(), self.heap);
+        release_pending_effect(self.pending_effect.take(), self.heap);
         self.pending_lookup_effect.take().drop_with(self.heap);
         self.exception_stack.drain(..).drop_with(self.heap);
         self.cleanup_current_task();

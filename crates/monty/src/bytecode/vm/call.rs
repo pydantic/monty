@@ -21,7 +21,7 @@ use crate::{
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
     modules::dataclasses,
-    os_dispatch::{PendingOsEffect, release_pending_effect},
+    os_dispatch::{PendingEffect, release_pending_effect},
     types::{
         Dict, Instance, PyTrait, Type, bytes::call_bytes_method, construct_namedtuple, instance::class_name,
         partial::partial_call_args, str::call_str_method,
@@ -92,7 +92,7 @@ pub(crate) enum CallResult {
     /// The VM will push the value onto the stack and execute `exec_get_awaitable`.
     AwaitValue(Value),
     /// OS call whose result must be post-processed on resume via a
-    /// [`PendingOsEffect`] instead of being pushed onto the operand stack raw.
+    /// [`PendingEffect`] instead of being pushed onto the operand stack raw.
     ///
     /// Used by buffered file reads (`BufferStore`), buffered writes
     /// (`WritePosition`), and `os.listdir` (`ListdirNames`). The effect stays
@@ -100,7 +100,7 @@ pub(crate) enum CallResult {
     /// the way out cannot corrupt the next OS call's resume.
     OsCallWithEffect {
         call: OsFunctionCall,
-        effect: PendingOsEffect,
+        effect: PendingEffect,
     },
 }
 

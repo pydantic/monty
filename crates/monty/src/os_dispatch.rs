@@ -7,7 +7,7 @@
 //! yields [`FrameExit::OsCall`](crate::bytecode::FrameExit::OsCall) so the
 //! host decides whether to permit it. The interpreter itself never performs
 //! I/O. This module keeps the `pathlib.Path` method dispatcher that builds
-//! the calls from VM values, plus [`PendingOsEffect`] — the VM-side hook that
+//! the calls from VM values, plus [`PendingEffect`] — the VM-side hook that
 //! post-processes an OS-call result on resume.
 //!
 //! # Adding a new OS call
@@ -19,11 +19,11 @@
 //! conversions, then wire the new variant into the fs/ dispatcher and any
 //! host backends.
 
-use std::mem;
+use std::{borrow::Cow, mem};
 
 use monty_types::{
     ExcType, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-    RenameCallArgs, ResourceTracker,
+    RenameCallArgs, ResourceTracker, normalize_virtual_path,
 };
 
 use crate::{
@@ -48,13 +48,107 @@ impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
 /// Work the VM must perform on the result of a paused OS call when it
 /// resumes, instead of pushing the raw host value onto the operand stack.
 ///
-/// Rides inside the suspension value — [`CallResult::OsCallWithEffect`],
-/// then [`FrameExit::OsCall`](crate::bytecode::FrameExit) — and is armed on
-/// the VM's single slot (one call in flight per task) only once the call
-/// reaches the host, where a `resume` becomes guaranteed; anything discarding
-/// the suspension calls [`release_pending_effect`] instead.
+/// The two stages are separate types because they run on different data:
+/// [`Pre`](Self::Pre) on the raw [`MontyObject`] before heap conversion,
+/// [`Post`](Self::Post) on the converted [`Value`] after it. Rides inside the
+/// suspension value — [`CallResult::OsCallWithEffect`], then
+/// [`FrameExit::OsCall`](crate::bytecode::FrameExit) — and is armed on the
+/// VM's single slot (one call in flight per task) only once the call reaches
+/// the host, where a `resume` becomes guaranteed; anything discarding the
+/// suspension calls [`release_pending_effect`] instead.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) enum PendingOsEffect {
+pub(crate) enum PendingEffect {
+    /// Reshapes the host's reply before it is converted to a heap value.
+    Pre(PreConversionEffect),
+    /// Applies the converted value to VM state, possibly pinning a file.
+    Post(PostConversionEffect),
+}
+
+impl PendingEffect {
+    /// Operations whose result `VM::resume` must postprocess before execution
+    /// continues, named for the `RuntimeError` a host gets for answering them
+    /// with a future (which bypasses `resume`).
+    pub(crate) fn immediate_result_name(&self) -> Option<&'static str> {
+        match self {
+            Self::Pre(effect) => Some(effect.operation_name()),
+            Self::Post(PostConversionEffect::OpenName { .. }) => Some("open"),
+            // A future strands these instead: the awaited value is the raw host reply.
+            Self::Post(PostConversionEffect::BufferStore { .. } | PostConversionEffect::WritePosition { .. }) => None,
+        }
+    }
+
+    /// The heap entry this effect pins across the host yield, if any, so drop
+    /// and abandon paths release it with `if let Some(id) = effect.pinned_file()`.
+    pub(crate) fn pinned_file(&self) -> Option<HeapId> {
+        match self {
+            Self::Pre(_) => None,
+            Self::Post(effect) => effect.pinned_file(),
+        }
+    }
+}
+
+impl From<PreConversionEffect> for PendingEffect {
+    fn from(effect: PreConversionEffect) -> Self {
+        Self::Pre(effect)
+    }
+}
+
+impl From<PostConversionEffect> for PendingEffect {
+    fn from(effect: PostConversionEffect) -> Self {
+        Self::Post(effect)
+    }
+}
+
+/// Reshapes the raw host reply before heap conversion: plain data in, plain
+/// data out, so no variant holds a heap reference and none needs cleanup.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum PreConversionEffect {
+    /// `os.listdir`: reduce the host's `Iterdir` result (a list of child
+    /// paths) to the list of bare entry names.
+    ListdirNames,
+    /// `os.chdir`: the target was sent to the host as a `Path.stat` call;
+    /// normalize and adopt `path` once the reply proves it is a directory.
+    Chdir {
+        /// Unnormalized absolute target, retained until the host validates it.
+        path: String,
+        /// The path as the caller spelled it, for `NotADirectoryError` (CPython
+        /// reports the argument, not the resolved path).
+        spelled: String,
+    },
+    /// Rebuild directory entries beneath the caller's original `Path`.
+    IterdirPaths { path: String },
+}
+
+impl PreConversionEffect {
+    /// Applies the effect to the host's reply, yielding the object the VM
+    /// converts and pushes; `Chdir` adopts the directory as a side effect.
+    pub(crate) fn reshape(self, obj: MontyObject, vm: &mut VM<'_>) -> Result<MontyObject, RunError> {
+        match self {
+            Self::ListdirNames => listdir_names(obj),
+            Self::IterdirPaths { path } => iterdir_paths(obj, &path, &vm.heap.tracker),
+            Self::Chdir { path, spelled } => {
+                check_chdir_stat(&obj, &spelled)?;
+                vm.env.cwd = Cow::Owned(normalize_virtual_path(&path).into_owned());
+                Ok(MontyObject::None)
+            }
+        }
+    }
+
+    /// The Python operation this effect completes, for error messages.
+    fn operation_name(&self) -> &'static str {
+        match self {
+            Self::ListdirNames => "os.listdir",
+            Self::Chdir { .. } => "os.chdir",
+            Self::IterdirPaths { .. } => "Path.iterdir",
+        }
+    }
+}
+
+/// Applies the converted host value to VM state. The file variants own a
+/// reference to their handle across the host yield (see
+/// `inc_ref_for_pending_oscall`), released exactly once via [`Self::pinned_file`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum PostConversionEffect {
     /// Store a full-file read result into the file buffer, then compute the
     /// pending read/seek slice (see `types/file.rs`).
     BufferStore { file_id: HeapId },
@@ -68,48 +162,16 @@ pub(crate) enum PendingOsEffect {
         /// Known file length before dispatch, restored on host exception.
         previous_length: u64,
     },
-    /// `os.listdir`: reduce the host's `Iterdir` result (a list of child
-    /// paths) to the list of bare entry names before conversion. Holds no
-    /// heap references, so exception/drop cleanup is a no-op.
-    ListdirNames,
-    /// `os.chdir`: the target was sent to the host as a `Path.stat` call;
-    /// normalize and adopt `path` once the reply proves it is a
-    /// directory. Holds no heap references.
-    Chdir {
-        /// Unnormalized absolute target, retained until the host validates it.
-        path: String,
-        /// The path as the caller spelled it, for `NotADirectoryError` (CPython
-        /// reports the argument, not the resolved path).
-        spelled: String,
-    },
-    /// Rebuild directory entries beneath the caller's original `Path`.
-    IterdirPaths { path: String },
     /// Preserve `open()`'s filename while the returned handle supplies the I/O target.
     OpenName { name: FileName },
 }
 
-impl PendingOsEffect {
-    /// Operations whose result `VM::resume` must postprocess before execution
-    /// continues, named for the `RuntimeError` a host gets for answering them
-    /// with a future (which bypasses `resume`).
-    pub(crate) fn immediate_result_name(&self) -> Option<&'static str> {
-        match self {
-            Self::ListdirNames => Some("os.listdir"),
-            Self::Chdir { .. } => Some("os.chdir"),
-            Self::IterdirPaths { .. } => Some("Path.iterdir"),
-            Self::OpenName { .. } => Some("open"),
-            // A future strands these instead: the awaited value is the raw host reply.
-            Self::BufferStore { .. } | Self::WritePosition { .. } => None,
-        }
-    }
-
-    /// The heap entry this effect pins across the host yield, if any — the
-    /// single place that knows which variants carry a refcount, so drop and
-    /// abandon paths release it with `if let Some(id) = effect.pinned_file()`.
+impl PostConversionEffect {
+    /// The pinned file handle, the single place that knows which variants carry a refcount.
     pub(crate) fn pinned_file(&self) -> Option<HeapId> {
         match self {
             Self::BufferStore { file_id } | Self::WritePosition { file_id, .. } => Some(*file_id),
-            Self::ListdirNames | Self::Chdir { .. } | Self::IterdirPaths { .. } | Self::OpenName { .. } => None,
+            Self::OpenName { .. } => None,
         }
     }
 }
@@ -119,7 +181,7 @@ impl PendingOsEffect {
 ///
 /// Reached via the owner's `drop_with`, or `Drop for VM` once the effect is
 /// armed and no owning value remains.
-pub(crate) fn release_pending_effect(effect: Option<PendingOsEffect>, heap: &mut impl ContainsHeap) {
+pub(crate) fn release_pending_effect(effect: Option<PendingEffect>, heap: &mut impl ContainsHeap) {
     if let Some(file_id) = effect.and_then(|effect| effect.pinned_file()) {
         heap.heap_mut().dec_ref(file_id);
     }
@@ -139,7 +201,7 @@ pub(crate) fn resolve_call_paths(call: &mut OsFunctionCall, cwd: &str) {
 }
 
 /// Checks a host `Path.stat` reply for `os.chdir` — the resume half of
-/// [`PendingOsEffect::Chdir`], run on the raw [`MontyObject`] before heap
+/// [`PreConversionEffect::Chdir`], run on the raw [`MontyObject`] before heap
 /// conversion like [`listdir_names`].
 ///
 /// A directory `st_mode` passes and the caller normalizes and adopts the path (`os.chdir`
@@ -181,7 +243,7 @@ pub(crate) fn check_chdir_stat(obj: &MontyObject, spelled: &str) -> Result<(), R
 
 /// Reduces a host `Iterdir` result (list of virtual child paths) to the list
 /// of bare entry names `os.listdir` returns — the resume half of
-/// [`PendingOsEffect::ListdirNames`].
+/// [`PreConversionEffect::ListdirNames`].
 ///
 /// Runs on the raw [`MontyObject`] before heap conversion (see `VM::resume`),
 /// so it needs no refcount handling; entries are renamed in place with no new

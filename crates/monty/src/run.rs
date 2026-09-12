@@ -642,7 +642,7 @@ impl Executor {
     /// `Continue` carries the exit the VM reached after resuming with the time.
     /// `Break` hands back everything else: every non-`OsCall` exit, every OS
     /// call that is not a clock call, and a clock call carrying a
-    /// `PendingOsEffect`, which these two never do. Callers handle those
+    /// `PendingEffect`, which these two never do. Callers handle those
     /// themselves, differently in `run` and `MontyRepl::call_function`.
     pub(crate) fn resolve_clock_call(
         &self,

@@ -18,7 +18,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::HeapData,
-    os_dispatch::PendingOsEffect,
+    os_dispatch::PostConversionEffect,
     types::{
         PyTrait, Type,
         file::{FileMode, FileName},
@@ -82,7 +82,7 @@ pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRe
             path: MontyPath::new(path),
             mode: file_mode,
         }),
-        effect: PendingOsEffect::OpenName { name },
+        effect: PostConversionEffect::OpenName { name }.into(),
     })
 }
 

@@ -23,7 +23,7 @@ use crate::{
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    os_dispatch::{PendingOsEffect, build_path_os_call, is_path_os_method},
+    os_dispatch::{PreConversionEffect, build_path_os_call, is_path_os_method},
     types::{LazyHeapSet, List, PyTrait, Type, allocate_tuple, str::allocate_string},
     value::{EitherStr, Value},
 };
@@ -535,9 +535,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
             // we don't transfer here.
             return match build_path_os_call(method, path, args, vm)? {
                 Some(OsFunctionCall::Iterdir(path)) => Ok(CallResult::OsCallWithEffect {
-                    effect: PendingOsEffect::IterdirPaths {
+                    effect: PreConversionEffect::IterdirPaths {
                         path: path.as_str().to_owned(),
-                    },
+                    }
+                    .into(),
                     call: OsFunctionCall::Iterdir(path),
                 }),
                 Some(call) => Ok(CallResult::OsCall(call)),

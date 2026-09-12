@@ -18,7 +18,7 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
     object_bridge::MontyObjectExt,
-    os_dispatch::{PendingOsEffect, release_pending_effect},
+    os_dispatch::{PendingEffect, release_pending_effect},
     run::Executor,
     value::Value,
 };
@@ -807,9 +807,9 @@ pub(crate) fn resume_with_result(vm: &mut VM<'_>, result: ExtFunctionResult) -> 
         ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
         ExtFunctionResult::Future(raw_call_id) => {
             if let Some(name) = vm
-                .pending_os_effect
+                .pending_effect
                 .as_ref()
-                .and_then(PendingOsEffect::immediate_result_name)
+                .and_then(PendingEffect::immediate_result_name)
             {
                 vm.resume_with_exception(
                     SimpleException::new_msg(
@@ -921,7 +921,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
     // next, so release it here rather than let it reshape an unrelated result
     // (or leak its file pin when the next OS call overwrites the slot).
     // Arming for *this* exit happens below, after the slot is clear.
-    release_pending_effect(vm.pending_os_effect.take(), vm.heap);
+    release_pending_effect(vm.pending_effect.take(), vm.heap);
     vm.pending_lookup_effect.take().drop_with(vm.heap);
     match result {
         Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::new(value, vm)),
@@ -948,7 +948,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
         }) => {
             // The point of no return: the call is the host's, so a matching
             // `resume` is guaranteed. Every other destination drops it.
-            vm.pending_os_effect = effect;
+            vm.pending_effect = effect;
             ConvertedExit::OsCall {
                 function_call,
                 call_id: call_id.raw(),

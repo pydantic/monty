@@ -10,7 +10,7 @@
 //! [`OsFunctionCall`] (the same variants `pathlib.Path` methods use) for the
 //! host to permit or reject. `os.listdir` reuses the `Iterdir` call and
 //! reduces the returned child paths to bare names via
-//! [`PendingOsEffect::ListdirNames`] (see `os_dispatch::listdir_names`).
+//! [`PreConversionEffect::ListdirNames`] (see `os_dispatch::listdir_names`).
 //!
 //! `dir_fd` / `follow_symlinks` keyword arguments are parsed for signature
 //! parity but rejected with the `NotImplementedError` CPython raises on
@@ -27,7 +27,7 @@ use crate::{
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     object_bridge::MontyObjectExt,
-    os_dispatch::{PendingOsEffect, value_to_owned_string},
+    os_dispatch::{PreConversionEffect, value_to_owned_string},
     types::{Bytes, Module, Property, Type, property::ZeroArgOsProperty, str::allocate_string},
     value::Value,
     virtual_path::posix_join,
@@ -157,7 +157,7 @@ struct ChdirArgs {
 ///
 /// The VM owns the working directory, but the target must exist and be a
 /// directory, so the resolved path goes to the host as a `Path.stat` call
-/// with a [`PendingOsEffect::Chdir`] that adopts it on a directory reply.
+/// with a [`PreConversionEffect::Chdir`] that adopts it on a directory reply.
 /// `FileNotFoundError` therefore comes from the host, `NotADirectoryError`
 /// from the resume side.
 fn chdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
@@ -176,10 +176,11 @@ fn chdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let path = posix_join(&vm.env.cwd, &spelled);
     Ok(CallResult::OsCallWithEffect {
         call: OsFunctionCall::Stat(MontyPath::new(path.clone())),
-        effect: PendingOsEffect::Chdir {
+        effect: PreConversionEffect::Chdir {
             path,
             spelled: spelled.into_string(),
-        },
+        }
+        .into(),
     })
 }
 
@@ -222,7 +223,7 @@ struct ListdirArgs {
 /// Implementation of `os.listdir(path=None)`.
 ///
 /// Reuses the `Iterdir` OS call (host returns full child paths) with a
-/// [`PendingOsEffect::ListdirNames`] — armed at dispatch, not here — so the
+/// [`PreConversionEffect::ListdirNames`] — armed at dispatch, not here — so the
 /// resume reduces them to bare entry names. `None` maps to `'.'` like
 /// CPython, which the VM resolves to the working directory on its way out.
 fn listdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
@@ -235,7 +236,7 @@ fn listdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     };
     Ok(CallResult::OsCallWithEffect {
         call: OsFunctionCall::Iterdir(path),
-        effect: PendingOsEffect::ListdirNames,
+        effect: PreConversionEffect::ListdirNames.into(),
     })
 }
 
