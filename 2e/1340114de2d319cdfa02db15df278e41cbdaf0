@@ -1,0 +1,21 @@
+crates/monty-pool/src/telemetry/tracing.rs
+  s_bd2abe9c16d721::t_90974a4dc5a49e 965-966,978-988,1000-1003
+crates/monty-pool/tests/metrics.rs
+  s_bd2abe9c16d721::t_4a6f9c3e0ebf06 16,90-101,114-117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2e1340114de2d319cdfa02db15df278e41cbdaf0",
+  "prompts": {},
+  "sessions": {
+    "s_bd2abe9c16d721": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b95c145f-5004-414a-bc46-24efa0d4aa72",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
