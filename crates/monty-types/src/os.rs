@@ -319,6 +319,7 @@ impl OsFunctionCall {
             Self::Mkdir(a) => (Some(&mut a.path), None),
             Self::Rename(a) => (Some(&mut a.src), Some(&mut a.dst)),
             Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) => (None, None),
+            Self::Uname | Self::CpuCount | Self::Getpid | Self::System(_) => (None, None),
         };
         primary.into_iter().chain(dst)
     }

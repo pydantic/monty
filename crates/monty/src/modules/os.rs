@@ -28,7 +28,7 @@ use crate::{
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     object_bridge::MontyObjectExt,
-    os_dispatch::{PendingOsEffect, PreConversionEffect, value_to_owned_bytes, value_to_owned_string},
+    os_dispatch::{PreConversionEffect, value_to_owned_bytes, value_to_owned_string},
     types::{Bytes, Module, Property, Type, property::ZeroArgOsProperty, str::allocate_string},
     value::Value,
     virtual_path::posix_join,
