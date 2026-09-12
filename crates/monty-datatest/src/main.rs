@@ -16,7 +16,6 @@ use std::{
     process, str,
     sync::{
         Arc, LazyLock, Mutex, OnceLock, PoisonError,
-        atomic::{AtomicBool, Ordering},
         mpsc::{self, RecvTimeoutError},
     },
     thread,
@@ -2046,12 +2045,17 @@ fn wrap_code_for_async(code: &str, need_return_value: bool) -> (String, Option<S
 /// file's globals before execution.
 ///
 /// When `async_mode` is true, code is wrapped in an async context before execution.
-fn run_traceback_script(path: &Path, test_name: &str, iter_mode: bool, async_mode: bool) -> String {
+fn run_traceback_script(
+    path: &Path,
+    test_name: &str,
+    iter_mode: bool,
+    async_mode: bool,
+) -> Result<String, TestFailure> {
     // Serialize CPython work across the whole process; see [`CPYTHON_TEST_LOCK`].
     let _cpython_guard = CPYTHON_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    Python::attach(|py| {
+    let watchdog = CpythonWatchdog::arm(test_name);
+    let traceback = Python::attach(|py| {
         let _recursion_guard = RecursionLimitGuard::new(py);
-        let _watchdog = CpythonWatchdog::arm(py, test_name);
         let run_traceback = import_run_traceback(py);
 
         // Get absolute path for the test file
@@ -2072,7 +2076,8 @@ fn run_traceback_script(path: &Path, test_name: &str, iter_mode: bool, async_mod
                 .extract()
                 .expect("Failed to extract string from return value of run_file_and_get_traceback"),
         }
-    })
+    });
+    watchdog.check(test_name).map(|()| traceback)
 }
 
 fn format_traceback(py: Python<'_>, exc: &PyErr) -> String {
@@ -2110,35 +2115,49 @@ const CPYTHON_SOFT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Extra time an interrupted case gets before the whole run is aborted.
 const CPYTHON_HARD_GRACE: Duration = Duration::from_secs(30);
 
-/// Watchdog for the CPython side of one fixture, armed inside `Python::attach`.
+/// Where a fixture's CPython run stands, shared by its thread and the watchdog.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WatchdogState {
+    /// The fixture is still running.
+    Running,
+    /// The watchdog raised `CPythonTestTimeout` in the fixture's thread.
+    Interrupted,
+    /// The fixture returned; an interrupt must no longer be raised.
+    Finished,
+}
+
+/// Watchdog for the CPython side of one fixture, armed before `Python::attach`.
 ///
 /// CPython cases hold [`CPYTHON_TEST_LOCK`], so one case that never returns
 /// (an unbounded dict-probe restart, say) stalls every worker thread until CI
 /// kills the job without naming a test. Past [`CPYTHON_SOFT_TIMEOUT`] the
 /// watchdog raises `CPythonTestTimeout` in the test thread (delivered at its
-/// next bytecode boundary) so only that case fails; a thread stuck in C code
-/// never gets there, so after [`CPYTHON_HARD_GRACE`] more the process exits,
-/// naming the test.
+/// next bytecode boundary) and the case fails through [`Self::check`] even if
+/// the fixture catches it; a thread stuck in C code never gets there, so after
+/// [`CPYTHON_HARD_GRACE`] more the process exits, naming the test.
 struct CpythonWatchdog {
-    /// Set while still attached, so a late interrupt cannot land on the next
-    /// case run by the same OS thread.
-    finished: Arc<AtomicBool>,
+    /// Checked and advanced under one lock, so an interrupt is never raised
+    /// after the fixture finished and cannot land on this thread's next case.
+    state: Arc<Mutex<WatchdogState>>,
+    /// `threading.get_ident()` of the fixture's thread, the interrupt's target.
+    thread_ident: u64,
     /// Dropping the sender wakes the watchdog thread, which then exits.
     _alive: mpsc::Sender<()>,
 }
 
 impl CpythonWatchdog {
-    /// Start watching the attached thread's run of `test_name`; keep the guard alive until it ends.
-    fn arm(py: Python<'_>, test_name: &str) -> Self {
-        let thread_ident: u64 = py
-            .import("threading")
-            .and_then(|threading| threading.call_method0("get_ident"))
-            .and_then(|ident| ident.extract())
-            .expect("Failed to read threading.get_ident()");
-        let finished = Arc::new(AtomicBool::new(false));
+    /// Start watching the current thread's run of `test_name`; keep the guard alive until it ends.
+    fn arm(test_name: &str) -> Self {
+        let thread_ident: u64 = Python::attach(|py| {
+            py.import("threading")
+                .and_then(|threading| threading.call_method0("get_ident"))
+                .and_then(|ident| ident.extract())
+        })
+        .expect("Failed to read threading.get_ident()");
+        let state = Arc::new(Mutex::new(WatchdogState::Running));
         let (alive, rx) = mpsc::channel::<()>();
         let test_name = test_name.to_owned();
-        let interrupt_flag = Arc::clone(&finished);
+        let interrupt_state = Arc::clone(&state);
         thread::spawn(move || {
             if !matches!(rx.recv_timeout(CPYTHON_SOFT_TIMEOUT), Err(RecvTimeoutError::Timeout)) {
                 return;
@@ -2148,10 +2167,12 @@ impl CpythonWatchdog {
             // interrupt from yet another thread and keep the hard deadline ticking here.
             thread::spawn(move || {
                 Python::attach(|py| {
-                    if !interrupt_flag.load(Ordering::SeqCst) {
+                    let mut state = interrupt_state.lock().unwrap_or_else(PoisonError::into_inner);
+                    if *state == WatchdogState::Running {
                         import_script(py, "cpython_watchdog")
                             .call_method1("interrupt_thread", (thread_ident,))
                             .expect("Failed to call cpython_watchdog.interrupt_thread");
+                        *state = WatchdogState::Interrupted;
                     }
                 });
             });
@@ -2164,15 +2185,37 @@ impl CpythonWatchdog {
             process::exit(1);
         });
         Self {
-            finished,
+            state,
+            thread_ident,
             _alive: alive,
+        }
+    }
+
+    /// Fail the case if the watchdog interrupted the run. Checked once the run
+    /// returns, because a fixture's `except BaseException` can swallow the interrupt.
+    fn check(&self, test_name: &str) -> Result<(), TestFailure> {
+        if *self.state.lock().unwrap_or_else(PoisonError::into_inner) == WatchdogState::Interrupted {
+            Err(TestFailure {
+                test_name: test_name.to_owned(),
+                kind: "CPython watchdog".to_owned(),
+                expected: format!("completion within {CPYTHON_SOFT_TIMEOUT:?}"),
+                actual: "interrupted by the watchdog".to_owned(),
+            })
+        } else {
+            Ok(())
         }
     }
 }
 
 impl Drop for CpythonWatchdog {
     fn drop(&mut self) {
-        self.finished.store(true, Ordering::SeqCst);
+        // Released before attaching: the interrupting thread takes the lock while attached.
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner) = WatchdogState::Finished;
+        // An interrupt raised but not yet delivered would surface in this thread's
+        // next case; if it lands inside this very call, the error is that delivery.
+        Python::attach(|py| {
+            let _ = import_script(py, "cpython_watchdog").call_method1("clear_pending", (self.thread_ident,));
+        });
     }
 }
 
@@ -2218,7 +2261,9 @@ fn import_run_traceback(py: Python<'_>) -> Bound<'_, PyModule> {
 fn import_script<'py>(py: Python<'py>, name: &str) -> Bound<'py, PyModule> {
     let sys = py.import("sys").expect("Failed to import sys");
     let sys_path = sys.getattr("path").expect("Failed to get sys.path");
-    if !sys_path.contains(SCRIPTS_DIR).expect("Failed to search sys.path") {
+    // First, not merely present: a same-named module earlier on the path must not shadow ours.
+    let first: Option<String> = sys_path.get_item(0).ok().and_then(|entry| entry.extract().ok());
+    if first.as_deref() != Some(SCRIPTS_DIR) {
         sys_path
             .call_method1("insert", (0, SCRIPTS_DIR))
             .expect("Failed to add scripts to sys.path");
@@ -2286,7 +2331,7 @@ fn try_run_cpython_test(
 
     // Traceback tests use the external script for reliable caret line support
     if let Expectation::Traceback(expected) = expectation {
-        let result = run_traceback_script(path, &test_name, iter_mode, async_mode);
+        let result = run_traceback_script(path, &test_name, iter_mode, async_mode)?;
         if result != *expected {
             return Err(TestFailure {
                 test_name,
@@ -2327,9 +2372,9 @@ fn try_run_cpython_test(
 
     // Serialize CPython work across the whole process; see [`CPYTHON_TEST_LOCK`].
     let _cpython_guard = CPYTHON_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let watchdog = CpythonWatchdog::arm(&test_name);
     let result: CpythonResult = Python::attach(|py| {
         let _recursion_guard = RecursionLimitGuard::new(py);
-        let _watchdog = CpythonWatchdog::arm(py, &test_name);
         // Execute statements at module level
         let globals = PyDict::new(py);
 
@@ -2449,6 +2494,7 @@ fn try_run_cpython_test(
         }
     });
 
+    watchdog.check(&test_name)?;
     match result {
         CpythonResult::Value(actual) => {
             let expected = expectation.expected_value();

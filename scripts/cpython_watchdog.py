@@ -31,3 +31,8 @@ def interrupt_thread(thread_ident: int) -> bool:
         ctypes.c_ulong(thread_ident), ctypes.py_object(CPythonTestTimeout)
     )
     return found == 1
+
+
+def clear_pending(thread_ident: int) -> None:
+    """Discard an interrupt raised in thread `thread_ident` that it has not delivered yet."""
+    ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(thread_ident), None)
