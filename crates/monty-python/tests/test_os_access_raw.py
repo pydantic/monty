@@ -679,9 +679,11 @@ def test_identity_hooks_default_not_handled():
             return {}
 
     bare = Bare()
-    for call in ('os.uname', 'os.cpu_count', 'os.getpid', 'os.system'):
+    for call in ('os.uname', 'os.cpu_count', 'os.getpid'):
         assert bare(cast(OsFunction, call), ()) == NOT_HANDLED, call
-        assert bare(cast(OsFunction, call), ('ls',)) == NOT_HANDLED, call
+    # os.system takes a required command; monty validates that before the
+    # host ever sees the call, so the hook is only exercised with one
+    assert bare(cast(OsFunction, 'os.system'), ('ls',)) == NOT_HANDLED
 
     # an override answers, and the value crosses the boundary
     class WithOverrides(Bare):
