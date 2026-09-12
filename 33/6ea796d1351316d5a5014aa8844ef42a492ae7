@@ -1,0 +1,19 @@
+crates/monty/src/types/long_int.rs
+  s_5e89950999fb3f::t_26f6174e2a03b3 857-862
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "336ea796d1351316d5a5014aa8844ef42a492ae7",
+  "prompts": {},
+  "sessions": {
+    "s_5e89950999fb3f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07ad9a4b-1a9c-413d-a26b-11ac6fea773f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
