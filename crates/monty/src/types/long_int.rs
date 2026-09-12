@@ -854,8 +854,12 @@ pub(crate) fn bigint_true_divide(a: &BigInt, b: &BigInt, tracker: &ResourceTrack
         // and the rounding position moves up accordingly.
         let shift = diff.max(MIN_EXP) - MANT_DIG - 2;
         // Peak temporaries: the shifted operand plus a remainder smaller than the divisor.
-        let shifted_bits = if shift <= 0 { bits(a) + shift.abs() } else { bits(a) };
-        check_div_size((shifted_bits + bits(b)).unsigned_abs(), tracker)?;
+        let temporary_bits = if shift <= 0 {
+            bits(a) + shift.abs() + bits(b)
+        } else {
+            2 * (bits(b) + shift)
+        };
+        check_div_size(temporary_bits.unsigned_abs(), tracker)?;
         let (quotient, remainder) = if shift <= 0 {
             (a << shift.unsigned_abs()).div_rem(b)
         } else {
