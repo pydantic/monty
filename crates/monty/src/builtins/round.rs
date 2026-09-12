@@ -1,12 +1,14 @@
 //! Implementation of the round() builtin function.
 
 use num_bigint::BigInt;
+use num_integer::Integer;
 
 use crate::{
     args::{ArgValues, FromArgs, is_long_int},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
+    heap::Heap,
     types::LongInt,
     value::Value,
 };
@@ -104,6 +106,11 @@ pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                 LongInt::value_from_f64(bankers_round(*f), vm.heap)
             }
         }
+        _ if let Some(n) = number.as_long_int(vm) => match digits {
+            Some(d) if d < 0 => Ok(round_to_tens(n, d.unsigned_abs(), vm.heap)),
+            // Rounding to a whole number of places leaves an int unchanged.
+            _ => Ok(number.clone_with_heap(vm.heap)),
+        },
         _ => {
             let type_name = number.py_type_name(vm);
             Err(SimpleException::new_msg(
@@ -113,6 +120,25 @@ pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             .into())
         }
     }
+}
+
+/// Rounds an integer to the nearest multiple of `10**k`, half to even, exactly in integers
+/// like CPython's `int.__round__`.
+fn round_to_tens(n: &BigInt, k: u64, heap: &Heap) -> Value {
+    // `10**k` exceeds `|n|` once `k` passes its decimal digit count, so the result is 0.
+    let digit_bound = n.bits().saturating_mul(30_103) / 100_000 + 1;
+    let Some(k) = u32::try_from(k).ok().filter(|k| u64::from(*k) <= digit_bound) else {
+        return Value::Int(0);
+    };
+    let factor = BigInt::from(10u8).pow(k);
+    let (quotient, remainder) = n.div_mod_floor(&factor);
+    let twice_remainder = remainder << 1u32;
+    let quotient = if twice_remainder > factor || (twice_remainder == factor && quotient.is_odd()) {
+        quotient + 1
+    } else {
+        quotient
+    };
+    LongInt::new(quotient * factor).into_value(heap)
 }
 
 /// Implements banker's rounding (round half to even).

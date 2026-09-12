@@ -33,6 +33,31 @@ assert round(number=3.14159, ndigits=2) == 3.14
 assert round(ndigits=2, number=3.14159) == 3.14
 assert repr(round(-0.4, 0)) == '-0.0'
 assert repr(round(-0.5, 0)) == '-0.0'
+
+# round() on a long int rounds exactly, half to even, like `int.__round__`
+big = 2**70
+assert round(big) == big
+assert round(big, 2) == big
+assert round(big, None) == big
+assert round(big, big) == big
+assert round(big, -2) == 1180591620717411303400
+assert round(big, -5) == 1180591620717411300000
+assert round(-big, -5) == -1180591620717411300000
+assert round(big, -21) == 10**21
+assert round(big, -22) == 0
+assert round(10**30 + 5 * 10**10, -11) == 10**30
+assert round(10**30 + 15 * 10**10, -11) == 10**30 + 2 * 10**11
+assert round(-(10**30) - 5 * 10**10, -11) == -(10**30)
+assert round(10**400, -399) == 10**400
+assert round(10**400, -400) == 10**400
+assert round(10**400, -401) == 0
+assert round(5 * 10**399, -400) == 0
+assert round(15 * 10**399, -400) == 2 * 10**400
+try:
+    round(big, 2.0)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "'float' object cannot be interpreted as an integer"
 assert round(1234, -2) == 1200
 assert round(1250, -2) == 1200
 assert round(1350, -2) == 1400

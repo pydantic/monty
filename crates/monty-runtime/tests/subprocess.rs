@@ -896,6 +896,9 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // preflighted.
         ("x = 1 << 3_000_000\nx / (x - 1)", 1_531_926),
         ("x = 1 << 3_000_000\nx / (x >> 100)", 1_531_908),
+        // `math.factorial`, `comb` and `perm` preflight their product's size.
+        ("import math\nmath.factorial(2_000_000)", 5_284_900),
+        ("import math\nmath.comb(4_000_000, 2_000_000)", 5_534_966),
         ("('a' * 1000).replace('a', 'b' * 2000)", 2_034_769),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.

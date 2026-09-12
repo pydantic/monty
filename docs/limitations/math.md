@@ -24,5 +24,10 @@ below.
 
 - Real-number arguments accept floats, integers of any size, and booleans, but do not call user-defined `__float__` or
     `__index__` methods.
-- `factorial`, `comb`, and `perm` raise `OverflowError` for results exceeding the signed 64-bit integer range.
-    `prod` and integer-only `sumprod` support arbitrary-size integer results.
+- `math.log`, `log2` and `log10` of an int beyond the float range compute
+    `log(m) + log(2) * e` from the int's leading bits, as CPython does. Monty
+    never fuses that multiply-add, so the result can differ from CPython by one
+    unit in the last place on builds whose C compiler emits a fused
+    multiply-add (CPython on Apple Silicon does; Linux x86-64 and Windows
+    builds do not). For example `math.log(3**700)` is `769.0286020676768` in
+    Monty and `769.0286020676767` in CPython on macOS arm64.

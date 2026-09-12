@@ -1442,3 +1442,142 @@ assert math.erf(5.0) == 0.9999999999984626
 # erfc in range 3 (1.25 ≤ |x| < 2.857): exercises RA/SA coefficients
 erfc_2 = math.erfc(2.0)
 assert math.isclose(erfc_2, 0.004677734981047266, rel_tol=1e-12)
+
+# ==========================================================
+# Long int arguments
+# ==========================================================
+
+# === Real-number functions convert a long int the way float() does ===
+big = 2**70
+huge = 10**400
+assert math.sqrt(big) == 34359738368.0
+assert math.fabs(-big) == 1.1805916207174113e21
+assert math.copysign(1, -big) == -1.0
+assert math.isclose(big, big + 1)
+assert math.fmod(big, 3.0) == 1.0
+assert math.pow(big, 2) == 1.393796574908164e42
+assert math.degrees(big) == 6.764291719561731e22
+assert math.ldexp(big, 1) == 2.3611832414348226e21
+assert math.floor(big) == big
+assert math.ceil(-big) == -big
+assert math.trunc(big) == big
+for compute in [lambda: math.sqrt(huge), lambda: math.log1p(huge), lambda: math.pow(huge, 0)]:
+    try:
+        compute()
+        assert False, 'expected OverflowError'
+    except OverflowError as e:
+        assert str(e) == 'int too large to convert to float'
+
+# === Logarithms of ints beyond the float range ===
+assert math.log(big) == 48.520302639196174
+assert math.log(huge) == 921.0340371976182
+assert math.log(huge, 10) == 399.99999999999994
+assert math.log(huge, huge) == 1.0
+assert math.log(2, huge) == 0.000752574989159953
+assert math.log2(huge) == 1328.771237954945
+assert math.log10(huge) == 400.0
+assert math.log2(2**1023) == 1023.0
+assert math.log2(2**1024) == 1024.0
+assert math.log2(2**1024 + 1) == 1024.0
+assert math.log2(2**1100 - 1) == 1100.0
+assert math.log(2**1100 - 1) == 762.4618986159398
+assert math.log10(2**1100 - 1) == 331.1329952303793
+# Values chosen so fused and unfused `log(m) + log(2) * e` agree (see limitations/math.md).
+assert math.log(7**500) == 972.9550745276566
+assert math.log2(3**700) == 1109.4737505048092
+assert math.log10(3**700) == 333.9848783037637
+for compute in [lambda: math.log(-huge), lambda: math.log(10, -huge), lambda: math.log2(-5), lambda: math.log(0)]:
+    try:
+        compute()
+        assert False, 'expected ValueError'
+    except ValueError as e:
+        assert str(e) == 'expected a positive input'
+# A float argument names the offending value.
+for compute, message in [
+    (lambda: math.log(0.0), 'expected a positive input, got 0.0'),
+    (lambda: math.log2(0.0), 'expected a positive input, got 0.0'),
+    (lambda: math.log10(-1.0), 'expected a positive input, got -1.0'),
+    (lambda: math.log(float('-inf')), 'expected a positive input, got -inf'),
+    (lambda: math.log(10, 0.0), 'expected a positive input, got 0.0'),
+]:
+    try:
+        compute()
+        assert False, 'expected ValueError'
+    except ValueError as e:
+        assert str(e) == message
+
+# === Integer functions accept and return long ints ===
+assert math.isqrt(big) == 34359738368
+assert math.isqrt(huge) == 10**200
+assert math.isqrt(huge + 1) == 10**200
+assert math.isqrt(huge - 1) == 10**200 - 1
+try:
+    math.isqrt(-big)
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'isqrt() argument must be nonnegative'
+
+assert math.gcd(big, 2**40) == 2**40
+assert math.gcd(big * 3, big * 5) == big
+assert math.gcd(big) == big
+assert math.gcd(-big, -big) == big
+assert math.gcd(big, 0) == big
+assert math.lcm(big, 3) == 3541774862152233910272
+assert math.lcm(2**40, 3**30) == 226379693794030958489370624
+assert math.lcm(2**62, 3) == 3 * 2**62
+assert math.lcm(-big, 3) == 3541774862152233910272
+assert math.lcm(big, 0) == 0
+try:
+    math.lcm(0, 2.0)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "'float' object cannot be interpreted as an integer"
+
+assert math.factorial(21) == 51090942171709440000
+assert math.factorial(30) == 265252859812191058636308480000000
+assert len(str(math.factorial(1000))) == 2568
+try:
+    math.factorial(big)
+    assert False, 'expected OverflowError'
+except OverflowError as e:
+    assert str(e) == 'factorial() argument should not exceed 9223372036854775807'
+try:
+    math.factorial(-big)
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'factorial() not defined for negative values'
+
+assert math.comb(100, 50) == 100891344545564193334812497256
+assert math.comb(big, 2) == 696898287454081973172400900209902591410176
+assert math.comb(big, big) == 1
+assert math.comb(big, big - 1) == big
+assert math.comb(5, big) == 0
+assert len(str(math.comb(1000, 500))) == 300
+for compute, exc_type, message in [
+    (lambda: math.comb(big, big // 2), OverflowError, 'min(n - k, k) must not exceed 9223372036854775807'),
+    (lambda: math.comb(-big, 1), ValueError, 'n must be a non-negative integer'),
+    (lambda: math.comb(5, -big), ValueError, 'k must be a non-negative integer'),
+    (lambda: math.perm(big, big // 2), OverflowError, 'k must not exceed 9223372036854775807'),
+    (lambda: math.perm(big), OverflowError, 'factorial() argument should not exceed 9223372036854775807'),
+    (lambda: math.perm(-big), ValueError, 'factorial() not defined for negative values'),
+]:
+    try:
+        compute()
+        assert False, 'expected an exception'
+    except exc_type as e:
+        assert str(e) == message
+assert math.perm(30) == 265252859812191058636308480000000
+assert math.perm(30, 20) == 73096577329197271449600000
+assert math.perm(big, 2) == 1393796574908163946344801800419805182820352
+assert math.perm(5, big) == 0
+assert len(str(math.perm(1000, 500))) == 1434
+
+# === ldexp saturates a long int exponent ===
+assert math.ldexp(1.0, -big) == 0.0
+assert math.ldexp(0.0, big) == 0.0
+assert math.ldexp(float('inf'), big) == float('inf')
+try:
+    math.ldexp(1.0, big)
+    assert False, 'expected OverflowError'
+except OverflowError as e:
+    assert str(e) == 'math range error'
