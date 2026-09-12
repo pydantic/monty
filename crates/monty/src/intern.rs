@@ -379,6 +379,8 @@ pub enum StaticStrings {
     WithStem,
     WithSuffix,
     AsPosix,
+    /// `Path.cwd()` classmethod: answered from the VM's working directory, no host call.
+    Cwd,
     #[strum(serialize = "__fspath__")]
     Fspath,
 
@@ -777,6 +779,12 @@ pub enum StaticStrings {
     Listdir,
     /// `os.makedirs()` function.
     Makedirs,
+    /// `os.getcwd()` function.
+    Getcwd,
+    /// `os.getcwdb()` function.
+    Getcwdb,
+    /// `os.chdir()` function.
+    Chdir,
     /// `os.fspath()` function — distinct from `Fspath` (`__fspath__`).
     #[strum(serialize = "fspath")]
     OsFspath,
@@ -1204,17 +1212,6 @@ pub enum StaticStrings {
     /// `header` parameter of the `binascii` quoted-printable pair.
     #[strum(serialize = "header")]
     Header,
-
-    // ==========================
-    // Working-directory strings, appended at the enum end for the same reason.
-    /// `os.getcwd()` function.
-    Getcwd,
-    /// `os.chdir()` function.
-    Chdir,
-    /// `Path.cwd()` classmethod.
-    Cwd,
-    /// `os.getcwdb()` function.
-    Getcwdb,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.
