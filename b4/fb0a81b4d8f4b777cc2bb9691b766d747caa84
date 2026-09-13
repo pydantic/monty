@@ -1,0 +1,26 @@
+docs/limitations/builtins.md
+  s_cf82a11b868667::t_46b86675d8bb89 42-45
+crates/monty/src/types/dict.rs
+  s_cf82a11b868667::t_c993e16b558abd 1782-1783,1848-1851,1875,1877,1881-1883
+  s_cf82a11b868667::t_a014c4af8a34ab 1876,1878-1880
+crates/monty-runtime/tests/subprocess.rs
+  s_cf82a11b868667::t_68b089f21afdcf 917
+  s_cf82a11b868667::t_5ad1a5a0deaf63 916
+  s_cf82a11b868667::t_1197b7270c9bb2 918
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b4fb0a81b4d8f4b777cc2bb9691b766d747caa84",
+  "prompts": {},
+  "sessions": {
+    "s_cf82a11b868667": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "28310e93-f46a-4004-a073-06215719db05",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
