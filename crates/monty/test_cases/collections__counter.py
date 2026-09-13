@@ -7,7 +7,7 @@
 # - `del c[key]` (the `del` statement is unimplemented Monty-wide).
 # - `elements()` returns a list rather than a lazy iterator.
 
-from collections import Counter
+from collections import Counter, defaultdict
 
 # === Construction ===
 assert Counter('abracadabra') == {'a': 5, 'b': 2, 'r': 2, 'c': 1, 'd': 1}, 'count characters of a string'
@@ -541,3 +541,14 @@ try:
     assert False, 'expected mutation during iteration to raise'
 except RuntimeError as e:
     assert str(e) == 'dictionary changed size during iteration'
+
+# === `|` with a plain dict merges into a plain dict, as dict.__or__ does ===
+merged = Counter(a=1) | {'a': 2, 'b': 3}
+assert type(merged) is dict
+assert merged == {'a': 2, 'b': 3}
+merged = {'a': 2, 'b': 3} | Counter(a=1)
+assert type(merged) is dict
+assert merged == {'a': 1, 'b': 3}
+merged = Counter(a=1) | defaultdict(int, b=2)
+assert type(merged) is defaultdict
+assert merged == {'a': 1, 'b': 2}

@@ -963,38 +963,13 @@ impl<'h> HeapRead<'h, Dict> {
         defer_drop!(iter, vm);
         let mut iter = iter.read(vm);
 
+        let mut index = 0;
         while let Some(item) = iter.py_next(vm)? {
-            let pair_iter = item.into_py_iter(vm)?;
-            defer_drop!(pair_iter, vm);
-            let mut pair_iter = pair_iter.read(vm);
-
-            let Some(key) = pair_iter.py_next(vm)? else {
-                return Err(ExcType::type_error(
-                    "dictionary update sequence element has length 0; 2 is required",
-                ));
-            };
-            let mut key_guard = DropGuard::new(key, vm);
-
-            let Some(value) = pair_iter.py_next(key_guard.ctx())? else {
-                return Err(ExcType::type_error(
-                    "dictionary update sequence element has length 1; 2 is required",
-                ));
-            };
-            let mut value_guard = DropGuard::new(value, key_guard.ctx());
-
-            if let Some(extra) = pair_iter.py_next(value_guard.ctx())? {
-                extra.drop_with(value_guard.ctx());
-                return Err(ExcType::type_error(
-                    "dictionary update sequence element has length > 2; 2 is required",
-                ));
-            }
-
-            let value = value_guard.into_inner();
-            let key = key_guard.into_inner();
-
+            let (key, value) = unpack_update_pair(item, index, vm)?;
             if let Some(old_value) = self.set(key, value, vm)? {
                 old_value.drop_with(vm);
             }
+            index += 1;
         }
 
         Ok(())
@@ -1440,8 +1415,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         self.counter_binary(other, CounterOp::And, vm)
     }
 
+    /// `Counter | Counter` is the multiset union; any other pair of dicts
+    /// merges (PEP 584), and a non-dict on the right is left to the caller's
+    /// `TypeError`.
     fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.counter_binary(other, CounterOp::Or, vm)
+        match self.counter_binary(other, CounterOp::Or, vm)? {
+            Some(union) => Ok(Some(union)),
+            None => dict_or(self, other, vm),
+        }
     }
 
     fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
@@ -1456,8 +1437,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         self.counter_inplace(other, CounterOp::And, vm)
     }
 
+    /// `d |= other` is `d.update(other)` for a plain dict or defaultdict, so
+    /// it accepts any mapping or iterable of pairs; a Counter keeps its
+    /// multiset union.
     fn py_ior_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
-        self.counter_inplace(other, CounterOp::Or, vm)
+        if !self.counter_inplace(other, CounterOp::Or, vm)? {
+            self.merge_from_value(other.clone_with_heap(vm), vm)?;
+        }
+        Ok(true)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -1778,6 +1765,36 @@ fn dict_copy<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Va
     Ok(Value::Ref(heap_id))
 }
 
+/// `left | right` for two dicts: a new dict of `left`'s pairs updated with
+/// `right`'s, or `None` when `right` is not a dict.
+///
+/// A defaultdict on either side wins the result's kind (its `__or__` and
+/// `__ror__` both build a defaultdict with its own factory, the left one
+/// first); otherwise the result is a plain dict, as `PyDict_Copy` of a
+/// Counter is, so `Counter | dict` and `dict | Counter` are plain dicts.
+fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    let Some(HeapReadOutput::Dict(right_dict)) = right.read_heap(vm) else {
+        return Ok(None);
+    };
+    let pairs = left.clone_all_pairs(vm)?;
+    let merged = Dict::from_pairs(pairs, vm)?;
+    let mut merged_guard = DropGuard::new(merged, vm);
+    let (merged, vm) = merged_guard.as_parts_mut();
+    dict_merge_from_value(merged, right.clone_with_heap(vm), vm)?;
+    let (mut merged, vm) = merged_guard.into_parts();
+    // Cloned after the merge, the only step that can fail, so the factory
+    // reference a defaultdict kind holds needs no guard of its own.
+    let kind = if left.get(vm.heap).is_defaultdict() {
+        left.get(vm.heap).cloned_kind(vm.heap)
+    } else if right_dict.get(vm.heap).is_defaultdict() {
+        right_dict.get(vm.heap).cloned_kind(vm.heap)
+    } else {
+        DictKind::plain()
+    };
+    merged.set_kind(kind);
+    Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Dict(merged)))))
+}
+
 /// Implements Python's `dict.update([other], **kwargs)` method.
 ///
 /// Updates the dict with key-value pairs from `other` and/or `kwargs`.
@@ -1845,49 +1862,59 @@ fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_>) -
 
 /// Merges key-value pairs from an iterable of 2-item iterables.
 ///
-/// Each item from `iterable` is treated as `(key, value)`. Items with length 0, 1,
-/// or greater than 2 raise the same TypeError messages used by `dict.update()`.
+/// Each item from `iterable` is treated as `(key, value)`; see
+/// [`unpack_update_pair`] for the errors a malformed item raises.
 fn dict_merge_from_iterable_pairs(dict: &mut Dict, iterable: Value, vm: &mut VM<'_>) -> RunResult<()> {
     let iter = iterable.into_py_iter(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
+    let mut index = 0;
     while let Some(item) = iter.py_next(vm)? {
-        // Each item should be a pair (iterable of 2 elements).
-        let pair_iter = item.into_py_iter(vm)?;
-        defer_drop!(pair_iter, vm);
-        let mut pair_iter = pair_iter.read(vm);
-
-        let Some(key) = pair_iter.py_next(vm)? else {
-            return Err(ExcType::type_error(
-                "dictionary update sequence element has length 0; 2 is required",
-            ));
-        };
-        let mut key_guard = DropGuard::new(key, vm);
-
-        let Some(value) = pair_iter.py_next(key_guard.ctx())? else {
-            return Err(ExcType::type_error(
-                "dictionary update sequence element has length 1; 2 is required",
-            ));
-        };
-        let mut value_guard = DropGuard::new(value, key_guard.ctx());
-
-        if let Some(extra) = pair_iter.py_next(value_guard.ctx())? {
-            extra.drop_with(value_guard.ctx());
-            return Err(ExcType::type_error(
-                "dictionary update sequence element has length > 2; 2 is required",
-            ));
-        }
-
-        let value = value_guard.into_inner();
-        let key = key_guard.into_inner();
-
+        let (key, value) = unpack_update_pair(item, index, vm)?;
         if let Some(old_value) = dict.set(key, value, vm)? {
             old_value.drop_with(vm);
         }
+        index += 1;
     }
 
     Ok(())
+}
+
+/// Splits the `index`th item of a `dict.update()` sequence into its key and
+/// value, taking ownership of `item`.
+///
+/// An item of the wrong length raises CPython's `ValueError`, which names
+/// the element's full length: an over-long item is drained to count it,
+/// polling the time limit as it goes.
+fn unpack_update_pair(item: Value, index: usize, vm: &mut VM<'_>) -> RunResult<(Value, Value)> {
+    let pair_iter = item.into_py_iter(vm)?;
+    defer_drop!(pair_iter, vm);
+    let mut pair_iter = pair_iter.read(vm);
+
+    let Some(key) = pair_iter.py_next(vm)? else {
+        return Err(ExcType::value_error_update_sequence_length(index, 0));
+    };
+    let mut key_guard = DropGuard::new(key, vm);
+
+    let Some(value) = pair_iter.py_next(key_guard.ctx())? else {
+        return Err(ExcType::value_error_update_sequence_length(index, 1));
+    };
+    let mut value_guard = DropGuard::new(value, key_guard.ctx());
+
+    let mut length = 2;
+    while let Some(extra) = pair_iter.py_next(value_guard.ctx())? {
+        extra.drop_with(value_guard.ctx());
+        length += 1;
+        value_guard.ctx().heap.tracker.check_memory_time_every(length)?;
+    }
+    if length != 2 {
+        return Err(ExcType::value_error_update_sequence_length(index, length));
+    }
+
+    let value = value_guard.into_inner();
+    let key = key_guard.into_inner();
+    Ok((key, value))
 }
 
 /// Merges keyword arguments into a dict.

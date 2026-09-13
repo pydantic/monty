@@ -146,14 +146,18 @@ except AttributeError as e:
     assert 'nonexistent' in msg, f'error should mention method name, got: {e}'
 
 # === dict.update() sequence element error ===
-# Invalid sequence elements should raise ValueError
-try:
+# an element of the wrong length names its index and length
+for source, message in [
+    ([('a', 1), 'x', ('c', 3)], 'dictionary update sequence element #1 has length 1; 2 is required'),
+    ([[]], 'dictionary update sequence element #0 has length 0; 2 is required'),
+    ([(1, 2, 3)], 'dictionary update sequence element #0 has length 3; 2 is required'),
+    ([('a', 1), range(5)], 'dictionary update sequence element #1 has length 5; 2 is required'),
+    ([iter([1, 2, 3])], 'dictionary update sequence element #0 has length 3; 2 is required'),
+]:
     d = {}
-    d.update([('a', 1), 'x', ('c', 3)])  # 'x' at index 1 is not a 2-tuple
-    assert False, 'should raise ValueError'
-except (ValueError, TypeError) as e:
-    msg = str(e)
-    # Error message should mention 'length' requirement
-    assert 'length' in msg.lower(), f'error should mention length, got: {e}'
-    # TODO: CPython includes element index (#N) in error message
-    # assert '#1' in msg, 'error should mention element index'
+    try:
+        d.update(source)
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        assert str(exc) == message
+    assert d == {} or d == {'a': 1}

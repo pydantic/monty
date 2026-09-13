@@ -134,6 +134,17 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error(format!("{repr} is not a generic class"))
     }
 
+    /// Creates the ValueError `dict.update()` raises for a pair of the wrong
+    /// length: `dictionary update sequence element #1 has length 3; 2 is required`.
+    #[must_use]
+    fn value_error_update_sequence_length(index: usize, length: usize) -> RunError {
+        SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("dictionary update sequence element #{index} has length {length}; 2 is required"),
+        )
+        .into()
+    }
+
     /// Creates the TypeError for `typing.Union[()]`.
     #[must_use]
     fn union_of_no_types() -> RunError {
