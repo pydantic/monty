@@ -1230,6 +1230,11 @@ fn os_system_carries_cwd_kwarg_to_host() {
             MontyObject::String("/".to_owned())
         )]
     );
+    // drain the call like any other: resuming keeps the ref-count audit happy
+    let resumed = call
+        .resume(ExtFunctionResult::Return(MontyObject::Int(0)), PrintWriter::Stdout)
+        .unwrap();
+    resumed.into_complete().expect("expected Complete after resume");
 }
 
 #[test]
