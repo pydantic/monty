@@ -24,6 +24,10 @@ impl VM<'_> {
     /// `TypeError` is gated on [`PyTrait::py_is_context_manager`] so we never
     /// have to sniff exception messages — a real context manager whose
     /// `__enter__` itself raises `AttributeError` propagates unchanged.
+    ///
+    /// Out-of-line: cold opcode; keeps `VM::run`'s dispatch loop small
+    /// (I-cache/register pressure).
+    #[inline(never)]
     pub(super) fn exec_before_with(&mut self) -> RunResult<CallResult> {
         // Pattern-matching `*self.peek()` is a place expression so it doesn't
         // move the whole Value — Rust only copies the HeapId out. Non-Ref
@@ -43,6 +47,10 @@ impl VM<'_> {
     /// and push the result. The compiler emits a trailing `Pop` to discard the
     /// result; splitting "call + discard" lets the call yield to the host while
     /// the discard happens once the host has resumed with the return value.
+    ///
+    /// Out-of-line: cold opcode; keeps `VM::run`'s dispatch loop small
+    /// (I-cache/register pressure).
+    #[inline(never)]
     pub(super) fn exec_with_exit(&mut self) -> RunResult<CallResult> {
         let this = self;
         let ctx = this.pop();
@@ -65,6 +73,10 @@ impl VM<'_> {
     /// compiler-emitted `JumpIfTrue` then branches on its truthiness to either
     /// suppress (Pop ctx, Pop exc, ClearException) or re-raise (Pop ctx, Pop exc,
     /// Reraise).
+    ///
+    /// Out-of-line: cold opcode; keeps `VM::run`'s dispatch loop small
+    /// (I-cache/register pressure).
+    #[inline(never)]
     pub(super) fn exec_with_except_start(&mut self) -> RunResult<CallResult> {
         let len = self.stack.len();
         // Pattern-match via place expressions so neither stack slot is moved.
