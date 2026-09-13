@@ -237,20 +237,6 @@ pub enum Type {
     ItertoolsBatched,
     #[strum(serialize = "itertools.zip_longest")]
     ItertoolsZipLongest,
-    #[strum(serialize = "itertools.combinations")]
-    ItertoolsCombinations,
-    #[strum(serialize = "itertools.combinations_with_replacement")]
-    ItertoolsCombinationsWithReplacement,
-    #[strum(serialize = "itertools.permutations")]
-    ItertoolsPermutations,
-    #[strum(serialize = "itertools.product")]
-    ItertoolsProduct,
-    #[strum(serialize = "itertools.groupby")]
-    ItertoolsGroupBy,
-    /// The sub-iterator `groupby` yields for each group — CPython's private
-    /// `itertools._grouper`, named as such so `type()` matches.
-    #[strum(serialize = "itertools._grouper")]
-    ItertoolsGrouper,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -410,12 +396,6 @@ impl Type {
                 | Self::ItertoolsAccumulate
                 | Self::ItertoolsBatched
                 | Self::ItertoolsZipLongest
-                | Self::ItertoolsCombinations
-                | Self::ItertoolsCombinationsWithReplacement
-                | Self::ItertoolsPermutations
-                | Self::ItertoolsProduct
-                | Self::ItertoolsGroupBy
-                | Self::ItertoolsGrouper
         )
     }
 

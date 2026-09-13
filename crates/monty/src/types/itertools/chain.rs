@@ -1,5 +1,4 @@
-//! `itertools.chain(*iterables)` and `itertools.chain.from_iterable(iterable)`
-//! — the sources' items, back to back.
+//! `itertools.chain(*iterables)` — the arguments' items, back to back.
 
 use std::mem;
 
@@ -9,123 +8,33 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{ContainsHeap, DropWithContext, HeapId, HeapRead},
+    heap::{DropWithContext, HeapId, HeapRead},
     types::itertools::{ItertoolsIter, step::next_source},
     value::Value,
 };
 
-/// Yields every item of each source in turn.
+/// Yields every item of each argument in turn.
 ///
-/// Sources are held UNRESOLVED: CPython calls `iter()` on each only as it
-/// reaches it, so `chain([1], 5)` constructs cleanly and raises `TypeError`
-/// part-way through consumption.
+/// `sources` holds the arguments UNRESOLVED: CPython calls `iter()` on each only
+/// as it reaches it, so `chain([1], 5)` constructs cleanly and raises
+/// `TypeError` part-way through consumption.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Chain {
-    /// Where the sources come from; emptied by `finish` once the chain can
-    /// reach no more of them.
-    sources: ChainSources,
+    /// The arguments, still as passed; resolved one at a time by `next`, and
+    /// dropped wholesale by `finish` once the chain can reach no more of them.
+    sources: Vec<Value>,
+    started: usize,
     /// The resolved iterator currently being drained.
     current: Option<Value>,
     done: bool,
 }
 
-/// The two ways a chain is given its sources.
-///
-/// One enum rather than two adaptors because everything after the source is
-/// taken — resolving it, draining it, ending the chain on a failure — is the
-/// same, and CPython too models `from_iterable` as a `chain` over a different
-/// `source` iterator.
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) enum ChainSources {
-    /// `chain(*iterables)`: the arguments, still as passed. Each is moved out
-    /// as it is reached, leaving `None` in its slot.
-    Args { iterables: Vec<Value>, next: usize },
-    /// `chain.from_iterable(iterable)`: the outer iterator, resolved by the
-    /// constructor, whose items are the sources.
-    Outer(Value),
-}
-
-impl ChainSources {
-    /// Takes everything these sources still hold, leaving them empty.
-    ///
-    /// The empty state is an exhausted `Args`, since only a unit variant could
-    /// be a `Default` and neither of these is one.
-    fn take(&mut self) -> Self {
-        mem::replace(
-            self,
-            Self::Args {
-                iterables: Vec::new(),
-                next: 0,
-            },
-        )
-    }
-
-    /// Moves the next argument out, or `None` once all are taken or the
-    /// sources are an outer iterator (which `next` drives separately).
-    fn take_next_arg(&mut self) -> Option<Value> {
-        match self {
-            Self::Args { iterables, next } => {
-                let raw = iterables.get_mut(*next).map(|slot| mem::replace(slot, Value::None));
-                *next += 1;
-                raw
-            }
-            Self::Outer(_) => None,
-        }
-    }
-
-    /// Invokes `on_child` for each heap id these sources own (GC trace hook).
-    fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
-        match self {
-            Self::Args { iterables, .. } => {
-                for source in iterables {
-                    if let Value::Ref(id) = source {
-                        on_child(*id);
-                    }
-                }
-            }
-            Self::Outer(Value::Ref(id)) => on_child(*id),
-            Self::Outer(_) => {}
-        }
-    }
-
-    /// Releases the refs these sources own (mirrors `for_each_child_id`).
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        match self {
-            Self::Args { iterables, .. } => {
-                for source in iterables {
-                    source.py_dec_ref_ids(stack);
-                }
-            }
-            Self::Outer(outer) => outer.py_dec_ref_ids(stack),
-        }
-    }
-}
-
-impl<C: ContainsHeap> DropWithContext<C> for ChainSources {
-    fn drop_with(self, ctx: &mut C) {
-        match self {
-            Self::Args { iterables, .. } => iterables.drop_with(ctx),
-            Self::Outer(outer) => outer.drop_with(ctx),
-        }
-    }
-}
-
 impl Chain {
     /// Takes the arguments unresolved — see the type docs for why.
-    pub(crate) fn new(iterables: Vec<Value>) -> Self {
-        Self::with_sources(ChainSources::Args { iterables, next: 0 })
-    }
-
-    /// Takes the outer iterator of `chain.from_iterable`, already resolved:
-    /// CPython resolves that one up front, so `chain.from_iterable(5)` raises
-    /// at construction while its items are still resolved lazily.
-    pub(crate) fn from_iterable(outer: Value) -> Self {
-        Self::with_sources(ChainSources::Outer(outer))
-    }
-
-    fn with_sources(sources: ChainSources) -> Self {
+    pub(crate) fn new(sources: Vec<Value>) -> Self {
         Self {
             sources,
+            started: 0,
             current: None,
             done: false,
         }
@@ -133,7 +42,11 @@ impl Chain {
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
-        self.sources.for_each_child_id(&mut on_child);
+        for source in &self.sources {
+            if let Value::Ref(id) = source {
+                on_child(*id);
+            }
+        }
         if let Some(Value::Ref(id)) = &self.current {
             on_child(*id);
         }
@@ -141,7 +54,9 @@ impl Chain {
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
     pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        self.sources.py_dec_ref_ids(stack);
+        for source in &mut self.sources {
+            source.py_dec_ref_ids(stack);
+        }
         if let Some(current) = &mut self.current {
             current.py_dec_ref_ids(stack);
         }
@@ -166,13 +81,13 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
         }
 
         let Some(current) = chain.current.as_ref().map(|c| c.clone_with_heap(vm.heap)) else {
-            // No live source: take the next one, or finish.
-            let Some(raw) = next_raw_source(iter, vm)? else {
+            // No live source: resolve the next argument, or finish.
+            let Some(raw) = chain.sources.get(chain.started).map(|s| s.clone_with_heap(vm.heap)) else {
                 finish(iter, vm);
                 return Ok(None);
             };
             // `into_py_iter` consumes `raw` on both paths, and raises here for a
-            // non-iterable source — matching CPython's lazy rejection.
+            // non-iterable argument — matching CPython's lazy rejection.
             let resolved = into_py_iter_tracking(iter, raw, vm)?;
             chain_mut(iter, vm).current = Some(resolved);
             continue;
@@ -187,42 +102,16 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
     }
 }
 
-/// The next source still unresolved: the next argument, or the outer
-/// iterator's next item. `None` once there are no more.
+/// Resolves one argument to an iterator, marking it started first so a
+/// `TypeError` from a non-iterable does not leave it to be retried.
 ///
-/// An outer iterator that raises ends the chain as well as propagating, as
-/// CPython clears its `source` on any failed `PyIter_Next`.
-fn next_raw_source<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-    let ItertoolsIter::Chain(chain) = iter.get(vm.heap) else {
-        unreachable!("dispatched on Kind::Chain")
-    };
-    let outer = match &chain.sources {
-        ChainSources::Outer(outer) => Some(outer.clone_with_heap(vm.heap)),
-        ChainSources::Args { .. } => None,
-    };
-    match outer {
-        None => Ok(chain_mut(iter, vm).sources.take_next_arg()),
-        Some(outer) => {
-            defer_drop!(outer, vm);
-            match next_source(outer, vm) {
-                Ok(item) => Ok(item),
-                Err(err) => {
-                    finish(iter, vm);
-                    Err(err)
-                }
-            }
-        }
-    }
-}
-
-/// Resolves one source to an iterator.
-///
-/// A failure here *ends* the chain: CPython clears its source on an `iter()`
-/// failure, so the sources after the bad one are never reached and every
-/// later `next()` is a plain `StopIteration`. Note the asymmetry — an error
-/// raised by a resolved source's `__next__` leaves the chain live, since
+/// A failure here also *ends* the chain: CPython clears its source on an
+/// `iter()` failure, so the arguments after the bad one are never reached and
+/// every later `next()` is a plain `StopIteration`. Note the asymmetry — an
+/// error raised by a resolved source's `__next__` leaves the chain live, since
 /// CPython keeps that iterator in place.
 fn into_py_iter_tracking<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, raw: Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    chain_mut(iter, vm).started += 1;
     match raw.into_py_iter(vm) {
         Ok(resolved) => Ok(resolved),
         Err(err) => {
@@ -232,19 +121,19 @@ fn into_py_iter_tracking<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, raw: Value,
     }
 }
 
-/// Ends the chain, releasing the sources it will now never reach.
+/// Ends the chain, releasing the arguments it will now never reach.
 ///
-/// Every way a chain ends comes through here, because CPython `Py_CLEAR`s its
+/// Both ways a chain ends come through here, because CPython `Py_CLEAR`s its
 /// source either way: a spent chain that stays bound must not pin its arguments
-/// or outer iterator until it is itself destroyed.
+/// until it is itself destroyed.
 ///
-/// `current` is already `None` at every callsite — the chain only ends while
-/// taking the next source — but clearing it keeps this correct for any future
-/// path that ends a chain mid-source.
+/// `current` is already `None` at both callsites — the chain only ends while
+/// resolving the next argument — but clearing it keeps this correct for any
+/// future path that ends a chain mid-source.
 fn finish<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) {
     let chain = chain_mut(iter, vm);
     chain.done = true;
-    let sources = chain.sources.take();
+    let sources = mem::take(&mut chain.sources);
     let current = chain.current.take();
     // Dropping these can free the chain's own referrers, so it happens once
     // `chain` (and its borrow of the heap) is out of the way.

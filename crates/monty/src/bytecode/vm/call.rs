@@ -386,11 +386,6 @@ impl VM<'_> {
                 // Handle classmethods on type objects like dict.fromkeys()
                 t.call_class_method(name_id, args, this).map(Into::into)
             }
-            // A module function's own attributes (`itertools.chain.from_iterable`).
-            Value::ModuleFunction(function) if let Some(method) = function.py_getattr(&attr, this) => {
-                defer_drop!(method, this);
-                this.call_function(method, args)
-            }
             _ => {
                 // Non-heap values without method support
                 let type_name = obj.py_type_name(this);

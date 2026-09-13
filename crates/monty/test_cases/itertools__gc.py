@@ -35,40 +35,9 @@ def chain_cycle():
     return len(drained)
 
 
-def product_cycle():
-    # The pool holds the list and the list holds the product, so the cycle
-    # runs through a collected pool rather than through a live source.
-    items = []
-    items.append(itertools.product([items]))
-    return len(items)
-
-
-def groupby_cycle():
-    # `groupby` holds its source, its key function, and the key and item it
-    # read ahead — here the key function is a closure over the list that holds
-    # the `groupby`, so collecting it means tracing that edge.
-    items = []
-    items.append(itertools.groupby([1, 1], lambda x: len(items)))
-    next(items[0])
-    return len(items)
-
-
-def grouper_cycle():
-    # A group holds its parent, so the cycle closes through two iterators: the
-    # list holds the group, the group holds the `groupby`, and the `groupby`'s
-    # source holds the list.
-    items = []
-    grouped = itertools.groupby([items])
-    items.append(next(grouped)[1])
-    return len(items)
-
-
 assert repeat_cycle() == 1
 assert count_cycle() == 2
 assert chain_cycle() == 1
-assert product_cycle() == 1
-assert groupby_cycle() == 1
-assert grouper_cycle() == 1
 gc.collect()
 
 # Iterators still work after a collection.

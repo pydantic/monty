@@ -13,18 +13,13 @@
 pub mod accumulate;
 pub mod batched;
 pub mod chain;
-pub mod combinations;
-mod combinatoric;
 pub mod compress;
 pub mod count;
 pub mod cycle;
 pub mod dropwhile;
 pub mod filterfalse;
-pub mod groupby;
 pub mod islice;
 pub mod pairwise;
-pub mod permutations;
-pub mod product;
 pub mod repeat;
 pub mod starmap;
 mod step;
@@ -36,17 +31,13 @@ use std::fmt::Write;
 pub(crate) use accumulate::Accumulate;
 pub(crate) use batched::Batched;
 pub(crate) use chain::Chain;
-pub(crate) use combinations::Combinations;
 pub(crate) use compress::Compress;
 pub(crate) use count::Count;
 pub(crate) use cycle::Cycle;
 pub(crate) use dropwhile::DropWhile;
 pub(crate) use filterfalse::FilterFalse;
-pub(crate) use groupby::{GroupBy, Grouper};
 pub(crate) use islice::Islice;
 pub(crate) use pairwise::Pairwise;
-pub(crate) use permutations::Permutations;
-pub(crate) use product::Product;
 pub(crate) use repeat::Repeat;
 use serde::{Deserialize, Serialize};
 pub(crate) use starmap::StarMap;
@@ -88,22 +79,14 @@ pub(crate) enum ItertoolsIter {
     Accumulate(Box<Accumulate>),
     Batched(Batched),
     ZipLongest(ZipLongest),
-    /// Boxed, like the rest of the combinatoric family: a pool plus index
-    /// vectors is far wider than the budget below.
-    Combinations(Box<Combinations>),
-    Permutations(Box<Permutations>),
-    Product(Box<Product>),
-    GroupBy(Box<GroupBy>),
-    /// Inline: two `Value`s, the same width as `pairwise`.
-    Grouper(Grouper),
 }
 
 // `Dict` is the widest `HeapData` payload on 64-bit hosts, so it — not a
 // literal — is the budget: staying under it keeps this family from setting
 // `HeapData`'s size. Only there: on 32-bit (the wasm worker) `Dict` halves
 // while the adaptors' `i64` fields do not, and other variants set the size.
-// TODO: when this fails, box the offending variant (as `Accumulate` and the
-// combinatoric family are), not the enum and not at the `HeapData` boundary.
+// TODO: when this fails, box the offending variant (`GroupBy(Box<GroupBy>)`),
+// not the enum and not at the `HeapData` boundary.
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(size_of::<ItertoolsIter>() <= size_of::<Dict>());
 
@@ -135,11 +118,6 @@ pub(crate) enum Kind {
     Accumulate,
     Batched,
     ZipLongest,
-    Combinations,
-    Permutations,
-    Product,
-    GroupBy,
-    Grouper,
 }
 
 impl ItertoolsIter {
@@ -160,11 +138,6 @@ impl ItertoolsIter {
             Self::Accumulate(_) => Kind::Accumulate,
             Self::Batched(_) => Kind::Batched,
             Self::ZipLongest(_) => Kind::ZipLongest,
-            Self::Combinations(_) => Kind::Combinations,
-            Self::Permutations(_) => Kind::Permutations,
-            Self::Product(_) => Kind::Product,
-            Self::GroupBy(_) => Kind::GroupBy,
-            Self::Grouper(_) => Kind::Grouper,
         }
     }
 
@@ -185,11 +158,6 @@ impl ItertoolsIter {
             Self::Accumulate(_) => Type::ItertoolsAccumulate,
             Self::Batched(_) => Type::ItertoolsBatched,
             Self::ZipLongest(_) => Type::ItertoolsZipLongest,
-            Self::Combinations(combinations) => combinations.py_type(),
-            Self::Permutations(_) => Type::ItertoolsPermutations,
-            Self::Product(_) => Type::ItertoolsProduct,
-            Self::GroupBy(_) => Type::ItertoolsGroupBy,
-            Self::Grouper(_) => Type::ItertoolsGrouper,
         }
     }
 
@@ -212,12 +180,7 @@ impl ItertoolsIter {
             | Self::StarMap(_)
             | Self::Accumulate(_)
             | Self::Batched(_)
-            | Self::ZipLongest(_)
-            | Self::Combinations(_)
-            | Self::Permutations(_)
-            | Self::Product(_)
-            | Self::GroupBy(_)
-            | Self::Grouper(_) => true,
+            | Self::ZipLongest(_) => true,
         }
     }
 
@@ -239,12 +202,7 @@ impl ItertoolsIter {
             | Self::StarMap(_)
             | Self::Accumulate(_)
             | Self::Batched(_)
-            | Self::ZipLongest(_)
-            | Self::Combinations(_)
-            | Self::Permutations(_)
-            | Self::Product(_)
-            | Self::GroupBy(_)
-            | Self::Grouper(_) => 0,
+            | Self::ZipLongest(_) => 0,
             Self::Repeat(repeat) => repeat.size_hint(),
         }
     }
@@ -266,11 +224,6 @@ impl ItertoolsIter {
             Self::Accumulate(accumulate) => accumulate.for_each_child_id(on_child),
             Self::Batched(batched) => batched.for_each_child_id(on_child),
             Self::ZipLongest(zip) => zip.for_each_child_id(on_child),
-            Self::Combinations(combinations) => combinations.for_each_child_id(on_child),
-            Self::Permutations(permutations) => permutations.for_each_child_id(on_child),
-            Self::Product(product) => product.for_each_child_id(on_child),
-            Self::GroupBy(groupby) => groupby.for_each_child_id(on_child),
-            Self::Grouper(grouper) => grouper.for_each_child_id(on_child),
         }
     }
 }
@@ -293,11 +246,6 @@ impl HeapItem for ItertoolsIter {
             Self::Accumulate(accumulate) => accumulate.py_dec_ref_ids(stack),
             Self::Batched(batched) => batched.py_dec_ref_ids(stack),
             Self::ZipLongest(zip) => zip.py_dec_ref_ids(stack),
-            Self::Combinations(combinations) => combinations.py_dec_ref_ids(stack),
-            Self::Permutations(permutations) => permutations.py_dec_ref_ids(stack),
-            Self::Product(product) => product.py_dec_ref_ids(stack),
-            Self::GroupBy(groupby) => groupby.py_dec_ref_ids(stack),
-            Self::Grouper(grouper) => grouper.py_dec_ref_ids(stack),
         }
     }
 }
@@ -350,13 +298,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
             Kind::Accumulate => accumulate::next(self, vm),
             Kind::Batched => batched::next(self, vm),
             Kind::ZipLongest => zip_longest::next(self, vm),
-            // The combinatoric family steps indices over a pool it already
-            // owns, so none of these can fail.
-            Kind::Combinations => Ok(combinations::next(self, vm)),
-            Kind::Permutations => Ok(permutations::next(self, vm)),
-            Kind::Product => Ok(product::next(self, vm)),
-            Kind::GroupBy => groupby::next(self, vm),
-            Kind::Grouper => groupby::grouper_next(self, vm),
         }
     }
 
@@ -377,12 +318,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
             | Kind::StarMap
             | Kind::Accumulate
             | Kind::Batched
-            | Kind::ZipLongest
-            | Kind::Combinations
-            | Kind::Permutations
-            | Kind::Product
-            | Kind::GroupBy
-            | Kind::Grouper => self.py_default_repr_fmt(f, vm),
+            | Kind::ZipLongest => self.py_default_repr_fmt(f, vm),
         }
     }
 }

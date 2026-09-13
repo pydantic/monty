@@ -13,7 +13,6 @@ use crate::{
     exception_private::RunResult,
     heap::HeapId,
     intern::{StaticStrings, StringId},
-    value::{EitherStr, Value},
 };
 
 pub(crate) mod asyncio;
@@ -59,8 +58,8 @@ pub(crate) enum StandardLib {
     Datetime,
     /// The `unicodedata` module providing Unicode Character Database access.
     Unicodedata,
-    /// The `itertools` module providing lazy iterators — every CPython
-    /// callable except `tee`.
+    /// The `itertools` module providing lazy iterators (only `count` and
+    /// `repeat` implemented).
     Itertools,
     /// The `dataclasses` module providing `@dataclass` and helpers.
     Dataclasses,
@@ -226,16 +225,5 @@ impl ModuleFunctions {
     /// Writes the Python repr() string for this function to a formatter.
     pub fn py_repr_fmt<W: Write>(self, f: &mut W, py_id: impl fmt::LowerHex) -> fmt::Result {
         write!(f, "<function {self} at 0x{py_id:x}>")
-    }
-
-    /// Resolves an attribute on this function, or `None` when it has none.
-    ///
-    /// Module functions carry no attributes as a rule; `itertools.chain` is
-    /// the one that does (`from_iterable`).
-    pub fn py_getattr(self, attr: &EitherStr, vm: &VM<'_>) -> Option<Value> {
-        match self {
-            Self::Itertools(function) => itertools::function_getattr(function, attr, vm),
-            _ => None,
-        }
     }
 }

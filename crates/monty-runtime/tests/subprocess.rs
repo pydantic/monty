@@ -934,18 +934,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `itertools.batched` preflights one batch, capped at `n`.
         (
             "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",
-            16_033_693,
-        ),
-        // The two combinatoric iterators whose width is not bounded by their
-        // pool preflight that width: `r` repeats of a one-item pool, and
-        // `repeat` copies of the argument list.
-        (
-            "import itertools\nnext(itertools.combinations_with_replacement('a', 1_000_000))",
-            24_033_508,
-        ),
-        (
-            "import itertools\nnext(itertools.product('ab', repeat=1_000_000))",
-            24_033_570,
+            16_032_590,
         ),
     ];
 

@@ -10,21 +10,19 @@ use std::mem;
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
     bytecode::VM,
-    defer_drop, defer_drop_mut,
+    defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    resource_checks::check_estimated_size,
     types::{
         ItertoolsIter, Module, Type,
-        iter::collect_owned_iterable,
         itertools::{
-            Accumulate, Batched, Chain, Combinations, Compress, Count, Cycle, DropWhile, FilterFalse, GroupBy, Islice,
-            Pairwise, Permutations, Product, Repeat, StarMap, TakeWhile, ZipLongest,
+            Accumulate, Batched, Chain, Compress, Count, Cycle, DropWhile, FilterFalse, Islice, Pairwise, Repeat,
+            StarMap, TakeWhile, ZipLongest,
         },
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::Value,
 };
 
 /// `itertools` module functions — each variant is a Python-visible callable.
@@ -45,15 +43,6 @@ pub(crate) enum ItertoolsFunctions {
     Accumulate,
     Batched,
     ZipLongest,
-    Combinations,
-    CombinationsWithReplacement,
-    Permutations,
-    Product,
-    Groupby,
-    /// `chain.from_iterable`, reached as an attribute of `chain` rather than
-    /// from the module namespace — see [`function_getattr`].
-    #[strum(serialize = "from_iterable")]
-    ChainFromIterable,
 }
 
 /// Static mapping of attribute names to functions for module creation.
@@ -72,14 +61,6 @@ const ITERTOOLS_FUNCTIONS: &[(StaticStrings, ItertoolsFunctions)] = &[
     (StaticStrings::Accumulate, ItertoolsFunctions::Accumulate),
     (StaticStrings::Batched, ItertoolsFunctions::Batched),
     (StaticStrings::ZipLongest, ItertoolsFunctions::ZipLongest),
-    (StaticStrings::Combinations, ItertoolsFunctions::Combinations),
-    (
-        StaticStrings::CombinationsWithReplacement,
-        ItertoolsFunctions::CombinationsWithReplacement,
-    ),
-    (StaticStrings::Permutations, ItertoolsFunctions::Permutations),
-    (StaticStrings::Product, ItertoolsFunctions::Product),
-    (StaticStrings::Groupby, ItertoolsFunctions::Groupby),
 ];
 
 /// Creates the `itertools` module on the heap.
@@ -113,28 +94,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: ItertoolsFunctions, args: ArgValue
         ItertoolsFunctions::Accumulate => call_accumulate(vm, args),
         ItertoolsFunctions::Batched => call_batched(vm, args),
         ItertoolsFunctions::ZipLongest => call_zip_longest(vm, args),
-        ItertoolsFunctions::Combinations => call_combinations(vm, args),
-        ItertoolsFunctions::CombinationsWithReplacement => call_combinations_with_replacement(vm, args),
-        ItertoolsFunctions::Permutations => call_permutations(vm, args),
-        ItertoolsFunctions::Product => call_product(vm, args),
-        ItertoolsFunctions::Groupby => call_groupby(vm, args),
-        ItertoolsFunctions::ChainFromIterable => call_chain_from_iterable(vm, args),
     }
-}
-
-/// Resolves an attribute on an `itertools` function.
-///
-/// Module functions carry no attributes as a rule; `chain.from_iterable` is
-/// the one exception, a classmethod in CPython reached through `chain`. `None`
-/// for anything else, which the caller reports as an `AttributeError`.
-pub(super) fn function_getattr(function: ItertoolsFunctions, attr: &EitherStr, vm: &VM<'_>) -> Option<Value> {
-    let is_from_iterable = attr.static_string().map_or_else(
-        || attr.as_str(vm.interns) == "from_iterable",
-        |name| name == StaticStrings::FromIterable,
-    );
-    (function == ItertoolsFunctions::Chain && is_from_iterable).then_some(Value::ModuleFunction(
-        ModuleFunctions::Itertools(ItertoolsFunctions::ChainFromIterable),
-    ))
 }
 
 /// Argument shape for `count(start=0, step=1)`.
@@ -573,29 +533,27 @@ fn call_batched(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// Coerces `batched`'s `n` and enforces CPython's "at least one" floor.
-fn batched_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
-    let n = ssize_arg(value, vm)?;
-    if n < 1 {
-        Err(ExcType::batched_bad_n())
-    } else {
-        Ok(n.cast_unsigned())
-    }
-}
-
-/// Coerces an argument the way CPython's `Py_ssize_t` converters do.
 ///
 /// Needs `&mut VM` because `as_int` dispatches `__index__`, re-entering the
 /// interpreter; the caller's other arguments are owned, so that cannot
 /// invalidate them. `as_int` raises `OverflowError` past `i64` as the
-/// conversion does, and the bound below reports the same for the range between
-/// `isize` and `i64` that only a 32-bit host (`wasm32-wasip1`) has —
-/// `batched('AB', 2**40)` there.
-fn ssize_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<isize> {
+/// `Py_ssize_t` conversion does, and the bound below reports the same for the
+/// range between `isize` and `i64` that only a 32-bit host (`wasm32-wasip1`)
+/// has — `batched('AB', 2**40)` there.
+fn batched_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
     let n = match value {
         Value::Bool(b) => i64::from(*b),
         other => other.as_int(vm)?,
     };
-    isize::try_from(n).map_err(|_| ExcType::overflow_c_ssize_t())
+    if n < 1 {
+        Err(ExcType::batched_bad_n())
+    } else {
+        // CPython's `n` is a `Py_ssize_t`, so `isize` is the ceiling to check
+        // against; the sign is already known positive.
+        isize::try_from(n)
+            .map(isize::cast_unsigned)
+            .map_err(|_| ExcType::overflow_c_ssize_t())
+    }
 }
 
 /// Argument shape for `zip_longest(*iterables, fillvalue=None)`.
@@ -635,206 +593,6 @@ fn call_zip_longest(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     let (sources, vm) = guard.into_parts();
     let iter = ItertoolsIter::ZipLongest(ZipLongest::new(sources, fillvalue));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
-}
-
-/// Argument shape for `combinations(iterable, r)` and its
-/// `_with_replacement` twin.
-///
-/// Argument Clinic with both parameters keyword-capable, so `c_named` (see
-/// [`AccumulateArgs`]), and `at_most_total` because a stray keyword reports
-/// `takes at most 2 arguments (3 given)`. `r` stays a raw `Value`: its
-/// `Py_ssize_t` conversion runs in the body, ahead of the pool being collected
-/// and before the sign check, as the clinic converter and body order them.
-macro_rules! iterable_and_r_args {
-    ($struct_name:ident, $py_name:literal) => {
-        #[derive(FromArgs)]
-        #[from_args(name = $py_name, style = c_named, at_most_total)]
-        struct $struct_name {
-            #[from_args(static_string = "IterableArg")]
-            iterable: Value,
-            r: Value,
-        }
-    };
-}
-
-iterable_and_r_args!(CombinationsArgs, "combinations");
-iterable_and_r_args!(CombinationsWithReplacementArgs, "combinations_with_replacement");
-
-/// `itertools.combinations(iterable, r)` — `r`-length subsequences.
-fn call_combinations(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let CombinationsArgs { iterable, r } = CombinationsArgs::from_args(args, vm)?;
-    build_combinations(iterable, r, false, vm)
-}
-
-/// `itertools.combinations_with_replacement(iterable, r)` — the same, with
-/// each item allowed to repeat.
-fn call_combinations_with_replacement(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let CombinationsWithReplacementArgs { iterable, r } = CombinationsWithReplacementArgs::from_args(args, vm)?;
-    build_combinations(iterable, r, true, vm)
-}
-
-/// Collects the pool and builds either `combinations` flavour.
-///
-/// `r` is converted before the pool is collected, but its sign is checked
-/// after: `combinations(5, -1)` reports the non-iterable, `combinations(5, 'x')`
-/// the bad `r`.
-fn build_combinations(iterable: Value, r: Value, replacement: bool, vm: &mut VM<'_>) -> RunResult<Value> {
-    let converted = ssize_arg(&r, vm);
-    r.drop_with(vm);
-    let r = match converted {
-        Ok(r) => r,
-        Err(error) => {
-            iterable.drop_with(vm);
-            return Err(error);
-        }
-    };
-    let pool: Vec<Value> = collect_owned_iterable(iterable, vm)?;
-    let mut pool_guard = DropGuard::new(pool, vm);
-    let (pool, vm) = pool_guard.as_parts_mut();
-    let r = usize::try_from(r).map_err(|_| ExcType::combinatoric_negative_r())?;
-    // Without replacement `r` past the pool yields nothing and allocates
-    // nothing; with it `r` is unbounded, so the index vector and the result
-    // tuples it sizes are preflighted (`combinations_with_replacement('a', 10**9)`).
-    if replacement && !pool.is_empty() {
-        check_estimated_size(r.saturating_mul(size_of::<usize>() + VALUE_SIZE), &vm.heap.tracker)?;
-    }
-    let (pool, vm) = pool_guard.into_parts();
-    let iter = ItertoolsIter::Combinations(Box::new(Combinations::new(pool, r, replacement)));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
-}
-
-/// Argument shape for `permutations(iterable, r=None)`.
-///
-/// Clinic and keyword-capable like [`CombinationsArgs`]. `r` is an `object`
-/// to clinic, so the body inspects it — and only once the pool exists.
-#[derive(FromArgs)]
-#[from_args(name = "permutations", style = c_named, at_most_total)]
-struct PermutationsArgs {
-    #[from_args(static_string = "IterableArg")]
-    iterable: Value,
-    #[from_args(default = Value::None)]
-    r: Value,
-}
-
-/// `itertools.permutations(iterable, r=None)` — `r`-length orderings.
-fn call_permutations(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let PermutationsArgs { iterable, r } = PermutationsArgs::from_args(args, vm)?;
-    let mut r_guard = DropGuard::new(r, vm);
-    let pool: Vec<Value> = collect_owned_iterable(iterable, r_guard.ctx())?;
-    let (r, vm) = r_guard.into_parts();
-    let mut pool_guard = DropGuard::new(pool, vm);
-    let (pool, vm) = pool_guard.as_parts_mut();
-    let r = permutations_r(r, pool.len(), vm)?;
-    let (pool, vm) = pool_guard.into_parts();
-    let iter = ItertoolsIter::Permutations(Box::new(Permutations::new(pool, r)));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
-}
-
-/// Resolves `permutations`' `r`: `None` means every item, and only a real
-/// `int` is accepted.
-///
-/// CPython checks the type rather than calling `__index__`, so `1.0` and an
-/// `__index__` object are both `Expected int as r`; a `bool` passes as an
-/// `int` subclass.
-fn permutations_r(r: Value, n: usize, vm: &mut VM<'_>) -> RunResult<usize> {
-    defer_drop!(r, vm);
-    if matches!(r, Value::None) {
-        Ok(n)
-    } else if matches!(r.py_type_heap(vm.heap), Type::Int | Type::Bool) {
-        usize::try_from(ssize_arg(r, vm)?).map_err(|_| ExcType::combinatoric_negative_r())
-    } else {
-        Err(ExcType::permutations_bad_r())
-    }
-}
-
-/// Argument shape for `product(*iterables, repeat=1)`.
-///
-/// CPython hand-parses this: the positionals are taken as they come, and the
-/// keywords alone go through `PyArg_ParseTupleAndKeywords`, whose one-slot
-/// `kwlist` gives the derive's `got an unexpected keyword argument 'x'`
-/// wording for a bad name. `repeat` stays a raw `Value` for the `Py_ssize_t`
-/// conversion in the body.
-#[derive(FromArgs)]
-#[from_args(name = "product")]
-struct ProductArgs {
-    #[from_args(varargs)]
-    iterables: Vec<Value>,
-    #[from_args(kw_only, default = Value::Int(1))]
-    repeat: Value,
-}
-
-/// `itertools.product(*iterables, repeat=1)` — the cartesian product.
-fn call_product(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ProductArgs { iterables, repeat } = ProductArgs::from_args(args, vm)?;
-    // Each argument is moved out of the vec as it is collected; the ones a
-    // `repeat` of zero never reaches stay in it and are released by the guard,
-    // as `zip_longest` does — see there for why not `drain`.
-    defer_drop_mut!(iterables, vm);
-    let converted = ssize_arg(&repeat, vm);
-    repeat.drop_with(vm);
-    let repeat = usize::try_from(converted?).map_err(|_| ExcType::product_negative_repeat())?;
-
-    // `repeat=0` never touches the arguments: CPython skips collecting them,
-    // so `product(5, repeat=0)` is the single empty tuple, not a `TypeError`.
-    let width = if repeat == 0 { 0 } else { iterables.len() };
-    let mut pools_guard = DropGuard::new(Vec::with_capacity(width), vm);
-    for slot in iterables.iter_mut().take(width) {
-        let iterable = mem::replace(slot, Value::None);
-        let (pools, vm) = pools_guard.as_parts_mut();
-        let pool: Vec<Value> = collect_owned_iterable(iterable, vm)?;
-        pools.push(pool);
-    }
-    // The index vector and every result tuple scale with `repeat` alone, so
-    // they are preflighted (`product('ab', repeat=10**9)`).
-    let (pools, vm) = pools_guard.as_parts_mut();
-    let slots = pools.len().saturating_mul(repeat);
-    check_estimated_size(slots.saturating_mul(size_of::<usize>() + VALUE_SIZE), &vm.heap.tracker)?;
-    let (pools, vm) = pools_guard.into_parts();
-    let iter = ItertoolsIter::Product(Box::new(Product::new(pools, repeat)));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
-}
-
-/// Argument shape for `groupby(iterable, key=None)`.
-///
-/// Clinic and keyword-capable like [`CombinationsArgs`]; `key` is never
-/// type-checked, as CPython discovers a non-callable only when the first
-/// item is keyed.
-#[derive(FromArgs)]
-#[from_args(name = "groupby", style = c_named, at_most_total)]
-struct GroupbyArgs {
-    #[from_args(static_string = "IterableArg")]
-    iterable: Value,
-    #[from_args(default = Value::None)]
-    key: Value,
-}
-
-/// `itertools.groupby(iterable, key=None)` — `(key, group)` per run of equal keys.
-fn call_groupby(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let GroupbyArgs { iterable, key } = GroupbyArgs::from_args(args, vm)?;
-    let (key, source) = resolve_source(key, iterable, vm)?;
-    let iter = ItertoolsIter::GroupBy(Box::new(GroupBy::new(source, key)));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
-}
-
-/// `itertools.chain.from_iterable(iterable)` — the items of each of
-/// `iterable`'s items, back to back.
-///
-/// `METH_O` in CPython, so keywords are rejected wholesale and the arity
-/// wording is `takes exactly one argument (N given)`.
-fn call_chain_from_iterable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let mut positional = args.into_pos_only("chain.from_iterable", vm.heap)?;
-    let count = positional.len();
-    if count != 1 {
-        positional.drop_with(vm);
-        return Err(ExcType::type_error_arg_count("chain.from_iterable", 1, count));
-    }
-    let iterable = positional.next().expect("exactly one positional argument");
-    // The outer iterable is resolved now — `chain.from_iterable(5)` raises
-    // here — while its items are resolved one at a time, as `chain`'s
-    // arguments are.
-    let outer = iterable.into_py_iter(vm)?;
-    let iter = ItertoolsIter::Chain(Chain::from_iterable(outer));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
