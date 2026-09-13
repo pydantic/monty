@@ -3,7 +3,7 @@
 //! must surface as a clean error and never poison the pool.
 
 #[cfg(unix)]
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 #[cfg(windows)]
 use std::os::windows::fs::symlink_dir;
 use std::{
@@ -125,6 +125,22 @@ fn kill_pid(pid: u32) {
             .unwrap();
         assert!(status.success());
     }
+}
+
+/// Writes the executable stand-in for `monty` that a test drives, from a child shell rather than
+/// this process: a descriptor open for writing here would be inherited by any concurrently
+/// forking test, and executing the file while that child still holds it fails with `ETXTBSY`.
+#[cfg(unix)]
+fn write_fake_monty(dir: &Path, script: &str) -> PathBuf {
+    let fake = dir.join("monty");
+    let status = Command::new("sh")
+        .args(["-c", r#"printf '%s' "$2" > "$1" && chmod 755 "$1""#, "sh"])
+        .arg(&fake)
+        .arg(script)
+        .status()
+        .unwrap();
+    assert!(status.success(), "writing the stand-in `monty` failed");
+    fake
 }
 
 // =============================================================================
@@ -1543,11 +1559,9 @@ async fn max_memory_leaves_normal_work_alone() {
 #[tokio::test]
 async fn unrecognised_exit_code_stays_an_opaque_death() {
     let dir = tempfile::tempdir().unwrap();
-    let fake = dir.path().join("monty");
     // outlives the parent's first write, so the death is always observed while
     // waiting for the reply rather than racing with `sending a request`
-    fs::write(&fake, "#!/bin/sh\nsleep 0.2\nexit 64\n").unwrap();
-    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+    let fake = write_fake_monty(dir.path(), "#!/bin/sh\nsleep 0.2\nexit 64\n");
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
     let err = match pool.checkout(&ReplConfig::default()).await {
@@ -1588,11 +1602,12 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
 
-    let fake = dir.path().join("monty");
     // both frames are written up front and the process stays alive; the parent
     // reads them in turn as it sends `Configure` and then the raw request
-    fs::write(&fake, format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display())).unwrap();
-    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display()),
+    );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
     let mut checkout = pool
@@ -1632,9 +1647,10 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
 
-    let fake = dir.path().join("monty");
-    fs::write(&fake, format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display())).unwrap();
-    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display()),
+    );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
     let mut checkout = pool
@@ -1678,9 +1694,10 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
 
-    let fake = dir.path().join("monty");
-    fs::write(&fake, format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display())).unwrap();
-    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display()),
+    );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
     let mut checkout = pool
