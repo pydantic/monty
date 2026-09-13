@@ -1,0 +1,23 @@
+crates/monty/Cargo.toml
+  s_6ab2038b64b43e::t_e650479b653021 41
+crates/monty/src/types/str.rs
+  s_6ab2038b64b43e::t_dd13e6db21d974 3,696,698-703
+crates/monty/test_cases/str__methods.py
+  s_6ab2038b64b43e::t_dd13e6db21d974 41-53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "73899a0a811949198ceb4d5afeb016b8c4e0497e",
+  "prompts": {},
+  "sessions": {
+    "s_6ab2038b64b43e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09b93-cdeb-7bd2-847a-3e88d5f566a3",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
