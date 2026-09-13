@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from evals.harness.task import Approx, Task
+from evals.harness.evaluators import ApproxExpected
+from evals.harness.task import Task
 
 STANDARD_BUDGET = 5000
 
@@ -153,7 +154,8 @@ TASK = Task(
         'get_custom_budget': get_custom_budget,
     },
     inputs={'STANDARD_BUDGET': STANDARD_BUDGET},
-    expected=Approx(_expected()),
+    expected=_expected(),
+    evaluators=(ApproxExpected(),),
     reference_solution=REFERENCE,
     traps=(),
     # 1 roster + 5 expense lookups + a budget lookup for each of the 3 over the standard.

@@ -9,6 +9,6 @@ Host functions: `get_team_members(department)`, `get_expenses(user_id, quarter, 
 
 Returns `total_team_members_analyzed`, `count_exceeded_budget` and `over_budget_details`, a list of
 `name`/`total_spent`/`budget`/`amount_over` dicts.
-Scored with `Approx`; nine host calls are expected (one roster, five expense lookups, three budget lookups).
+Scored with `ApproxExpected`; nine host calls are expected (one roster, five expense lookups, three budget lookups).
 
 The natural solution uses nothing Monty lacks, so this task is the control for the rest of the suite.

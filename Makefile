@@ -137,7 +137,7 @@ lint-py: dev-py ## Lint Python code with ruff
 	uv run ruff format --check
 	uv run ruff check
 	# basedpyright type-checks examples/, so it needs that group's packages installed
-	uv run --group examples basedpyright
+	uv run --group examples --group evals basedpyright
 	# mypy-stubtest requires a build of the python package, hence dev-py
 	uv run -m mypy.stubtest pydantic_monty._monty --ignore-disjoint-bases
 

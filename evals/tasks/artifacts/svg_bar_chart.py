@@ -15,7 +15,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from evals.harness.task import Every, Predicate, Rubric, Task
+from pydantic_evals.evaluators import LLMJudge
+
+from evals.harness.evaluators import Predicate
+from evals.harness.task import Task
 from pydantic_monty import MountDir
 
 REVENUE = {
@@ -110,17 +113,18 @@ TASK = Task(
     tools={},
     inputs={'REVENUE': REVENUE},
     mounts=[MountDir(host_path=OUTPUT_DIR, virtual_path='/output', mode='read-write')],
-    expected=Every(
-        (
-            Predicate('bars written to /output/chart.svg and proportional to the data', _bars_are_proportional),
-            Rubric(
+    evaluators=(
+        Predicate('bars written to /output/chart.svg and proportional to the data', _bars_are_proportional),
+        LLMJudge(
+            rubric=(
                 'The output is an SVG bar chart. Judge only presentation: every bar is '
                 'labelled with its region name, values are readable, bars do not overlap '
                 'each other or run outside the canvas, and the chart would be '
                 'intelligible to someone who had not seen the underlying numbers. Do not '
                 'check whether the bar heights are numerically correct.'
             ),
-        )
+            assertion={'evaluation_name': 'legible', 'include_reason': True},
+        ),
     ),
     reference_solution=REFERENCE,
     traps=('Path.write_text through a mount', 'f-string format specs'),

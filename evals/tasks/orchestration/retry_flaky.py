@@ -14,7 +14,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from evals.harness.task import Exact, Task
+from pydantic_evals.evaluators import EqualsExpected
+
+from evals.harness.task import Task
 
 RECORD_IDS = [1, 2, 3, 4, 5, 6, 7, 8]
 _ALWAYS_FAIL = {3, 7}
@@ -84,7 +86,8 @@ TASK = Task(
     stubs=STUBS,
     tools={'fetch_record': fetch_record},
     inputs={'RECORD_IDS': RECORD_IDS},
-    expected=Exact({'fetched': 6, 'failed': [3, 7]}),
+    expected={'fetched': 6, 'failed': [3, 7]},
+    evaluators=(EqualsExpected(),),
     reference_solution=REFERENCE,
     traps=('custom exception classes', 'time.sleep', 'functools.wraps'),
     # 6 clean records + 2 permanent failures × 3 attempts + record 5's 2 retries.

@@ -6,8 +6,8 @@ it to `/output/chart.svg` and return the SVG text.
 `REVENUE` is passed as an input; there are no host functions.
 `/output` is `evals/reports/artifacts/` mounted read-write, and `setup` deletes any chart from a previous attempt.
 
-Scoring is `Every` of two parts.
-A predicate reads the file from the host side, takes the four tallest `<rect>` heights and checks they are proportional
-to the revenue values within 5%.
-A rubric asks the judge about presentation only: labels, readability, no overlapping bars.
+Two case evaluators.
+A `Predicate` reads the file from the host side, takes the four tallest `<rect>` heights and checks they are
+proportional to the revenue values within 5%.
+An `LLMJudge` (assertion `legible`) is asked about presentation only: labels, readability, no overlapping bars.
 Without `--judge-model` the predicate alone decides.

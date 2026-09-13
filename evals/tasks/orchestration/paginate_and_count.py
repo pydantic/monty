@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from evals.harness.task import Exact, Task
+from pydantic_evals.evaluators import EqualsExpected
+
+from evals.harness.task import Task
 
 _STATUSES = ['shipped', 'pending', 'cancelled', 'shipped', 'shipped', 'pending', 'refunded', 'shipped']
 _PAGE_SIZE = 20
@@ -80,7 +82,8 @@ TASK = Task(
     ),
     stubs=STUBS,
     tools={'list_orders': list_orders},
-    expected=Exact(_expected_counts()),
+    expected=_expected_counts(),
+    evaluators=(EqualsExpected(),),
     reference_solution=REFERENCE,
     traps=('collections.Counter', 'eager map/filter'),
     expected_external_calls=_PAGES,

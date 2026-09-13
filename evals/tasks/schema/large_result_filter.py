@@ -13,7 +13,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from evals.harness.task import Every, Exact, Predicate, Task
+from pydantic_evals.evaluators import EqualsExpected
+
+from evals.harness.task import Task
 
 _SEVERITIES = ['info', 'info', 'warning', 'info', 'debug', 'warning', 'info', 'debug']
 _CRITICAL_AT = {417, 1203, 88, 1876, 942}
@@ -71,15 +73,8 @@ TASK = Task(
     ),
     stubs=STUBS,
     tools={'fetch_events': fetch_events},
-    expected=Every(
-        (
-            Exact(_EXPECTED),
-            Predicate(
-                f'result serialises to under {MAX_RESULT_BYTES} bytes',
-                lambda result: len(repr(result)) < MAX_RESULT_BYTES,
-            ),
-        )
-    ),
+    expected=_EXPECTED,
+    evaluators=(EqualsExpected(),),
     reference_solution="""
 events = await fetch_events()
 critical = [

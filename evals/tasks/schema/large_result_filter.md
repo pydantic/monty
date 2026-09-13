@@ -4,6 +4,6 @@ Call `fetch_events()` for about 2,000 events and return the ones with severity `
 by id.
 Exactly five events are critical.
 
-Scored with `Every` of an `Exact` match and a predicate that the result's `repr` is under 400 bytes.
-`max_result_bytes=400` is also set on the task, so a solution that returns every event fails at the executor.
+Scored with `EqualsExpected`, plus the `result_size` assertion from `max_result_bytes=400`, so a solution that returns
+every event fails even though the answer is inside it.
 One host call is expected.

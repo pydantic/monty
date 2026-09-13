@@ -146,7 +146,7 @@ Ignore any deprecated models.
         logfire.info('{models=}', models=record_models.models)
 
 
-def new_node(msg: str) -> ModelRequestNode[None, str]:
+def new_node(msg: str) -> ModelRequestNode[object, str]:
     return ModelRequestNode(request=ModelRequest(instructions=instrunctions, parts=[UserPromptPart(content=msg)]))
 
 

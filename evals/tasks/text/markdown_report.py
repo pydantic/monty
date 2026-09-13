@@ -14,7 +14,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from evals.harness.task import Exact, Task
+from pydantic_evals.evaluators import EqualsExpected
+
+from evals.harness.task import Task
 
 _ROWS = [
     {'region': 'AMER', 'revenue': 3010.5, 'orders': 2},
@@ -97,7 +99,8 @@ TASK = Task(
     ),
     stubs=STUBS,
     tools={'fetch_regional_summary': fetch_regional_summary},
-    expected=Exact(_expected()),
+    expected=_expected(),
+    evaluators=(EqualsExpected(),),
     reference_solution=REFERENCE,
     traps=('str.format', '% formatting', 'str.ljust/rjust', 'f-string nested width specs'),
     expected_external_calls=1,

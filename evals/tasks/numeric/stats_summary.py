@@ -9,7 +9,8 @@ value unambiguous.
 
 from __future__ import annotations
 
-from evals.harness.task import Approx, Task
+from evals.harness.evaluators import ApproxExpected
+from evals.harness.task import Task
 
 _LATENCIES = [
     12.4, 15.1, 9.8, 22.3, 18.7, 11.2, 45.9, 13.6, 17.0, 20.1,
@@ -98,7 +99,8 @@ TASK = Task(
     ),
     stubs=STUBS,
     tools={'fetch_latencies': fetch_latencies},
-    expected=Approx(_expected()),
+    expected=_expected(),
+    evaluators=(ApproxExpected(),),
     reference_solution=REFERENCE,
     traps=('statistics module', 'math.fsum', 'math.prod'),
     expected_external_calls=1,

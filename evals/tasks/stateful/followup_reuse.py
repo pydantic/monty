@@ -14,7 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from evals.harness.task import Approx, Task, Turn
+from evals.harness.evaluators import ApproxExpected
+from evals.harness.task import Task, Turn
 
 _ORDERS = [
     {'id': 'o-1', 'region': 'EMEA', 'amount': 1200.50, 'customer': 'Analytical Engines'},
@@ -61,7 +62,8 @@ TASK = Task(
     prompt='Fetch all the orders and return the total revenue, rounded to 2 decimal places.',
     stubs=STUBS,
     tools={'fetch_orders': fetch_orders},
-    expected=Approx(_TOTAL),
+    expected=_TOTAL,
+    evaluators=(ApproxExpected(),),
     reference_solution="""
 orders = await fetch_orders()
 
@@ -78,7 +80,7 @@ round(total, 2)
             'Which region contributed the most revenue? Return a dict with "region" and '
             '"amount" (rounded to 2 decimal places).'
         ),
-        expected=Approx(_top_region()),
+        expected=_top_region(),
         # The orders are already bound in the session; fetching them again is the failure
         # this turn exists to catch.
         expected_external_calls=0,

@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from evals.harness.task import Approx, Task
+from evals.harness.evaluators import ApproxExpected
+from evals.harness.task import Task
 
 _MEETINGS = [
     {'title': 'standup', 'start': '2026-08-21T09:00:00', 'end': '2026-08-21T09:15:00'},
@@ -117,7 +118,8 @@ TASK = Task(
     ),
     stubs=STUBS,
     tools={'fetch_meetings': fetch_meetings},
-    expected=Approx(_expected()),
+    expected=_expected(),
+    evaluators=(ApproxExpected(),),
     reference_solution=REFERENCE,
     traps=('datetime.time', 'no timedelta division', 'interval overlap logic'),
     expected_external_calls=1,

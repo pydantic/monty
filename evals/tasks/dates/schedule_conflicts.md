@@ -5,7 +5,7 @@ Return `{"conflicts": [...], "busy_hours": float}`: every overlapping pair as a 
 pairs themselves sorted, and the hours covered by at least one meeting with overlaps counted once, rounded to two
 decimal places.
 
-Scored with `Approx` against a value computed from the same fixture.
+Scored with `ApproxExpected` against a value computed from the same fixture.
 One host call is expected.
 
 The reference solution stores each meeting as a tuple rather than a dict.

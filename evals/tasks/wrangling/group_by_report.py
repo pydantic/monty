@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from evals.harness.task import Approx, Task
+from evals.harness.evaluators import ApproxExpected
+from evals.harness.task import Task
 
 _SALES = [
     {'region': 'EMEA', 'product': 'widget', 'amount': 1200.0, 'units': 12},
@@ -79,7 +80,8 @@ TASK = Task(
     ),
     stubs=STUBS,
     tools={'fetch_sales': fetch_sales},
-    expected=Approx(_expected()),
+    expected=_expected(),
+    evaluators=(ApproxExpected(),),
     reference_solution=REFERENCE,
     traps=('itertools.groupby', 'collections.OrderedDict', 'collections.defaultdict nesting'),
     expected_external_calls=1,

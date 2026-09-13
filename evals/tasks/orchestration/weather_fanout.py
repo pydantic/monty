@@ -11,7 +11,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from evals.harness.task import Approx, Task
+from evals.harness.evaluators import ApproxExpected
+from evals.harness.task import Task
 
 HOST_LATENCY = 0.02
 """Simulated round-trip latency per host call, and load-bearing for the metric.
@@ -94,7 +95,8 @@ TASK = Task(
     stubs=STUBS,
     tools={'get_weather': get_weather},
     inputs={'CITIES': CITIES},
-    expected=Approx(EXPECTED),
+    expected=EXPECTED,
+    evaluators=(ApproxExpected(),),
     reference_solution=REFERENCE,
     traps=('asyncio.gather', 'sorted key/reverse are keyword-only'),
     expected_external_calls=len(CITIES),

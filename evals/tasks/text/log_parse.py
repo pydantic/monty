@@ -8,7 +8,9 @@ enough to want explaining, which is precisely when a 500-line log makes it long.
 
 from __future__ import annotations
 
-from evals.harness.task import Exact, Task
+from pydantic_evals.evaluators import EqualsExpected
+
+from evals.harness.task import Task
 
 _SERVICES = ['auth', 'billing', 'search', 'ingest']
 _LEVELS = ['INFO', 'INFO', 'WARN', 'INFO', 'ERROR', 'INFO', 'ERROR', 'DEBUG']
@@ -100,7 +102,8 @@ TASK = Task(
     ),
     stubs=STUBS,
     tools={'read_log': read_log},
-    expected=Exact(_expected()),
+    expected=_expected(),
+    evaluators=(EqualsExpected(),),
     reference_solution=REFERENCE,
     traps=('re.VERBOSE', 're.sub with a callable', 'str.format'),
     expected_external_calls=1,

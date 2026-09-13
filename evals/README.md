@@ -1,7 +1,7 @@
 # Agent-code evals
 
-Tasks an agent solves by writing Python for Monty, a harness that runs a model against them under a chosen system
-prompt, and reports on the results.
+Tasks an agent solves by writing Python for Monty, a [pydantic-evals](https://pydantic.dev/docs/ai/evals/evals/) harness
+that runs a model against them under a chosen system prompt, and reports on the results.
 
 The suite has three uses:
 
@@ -15,19 +15,21 @@ The suite has three uses:
 make dev-py   # builds the worker the harness runs code in
 
 # Run every task's reference solution through Monty; no model, no API key.
-uv run python -m evals.harness.runner --all --dry-run
+uv run --group evals python -m evals.harness.runner --all --dry-run
 
 # One task, one prompt, one model.
-uv run python -m evals.harness.runner --task numeric/expense_budget --prompt v4_codemode --model anthropic:claude-sonnet-4-5
+uv run --group evals python -m evals.harness.runner --task numeric/expense_budget --prompt v4_codemode --model anthropic:claude-sonnet-4-5
 
 # Several prompts, both modes, three attempts of each combination.
-uv run python -m evals.harness.runner --all --prompt v1_current,v4_codemode --mode both --repeat 3 \
+uv run --group evals python -m evals.harness.runner --all --prompt v1_current,v4_codemode --mode both --repeat 3 \
     --model anthropic:claude-sonnet-4-5 --judge-model anthropic:claude-sonnet-4-5
 ```
 
-Reports are written to `evals/reports/` (gitignored).
-`scoreboard.md` and `scoreboard.json` hold the per-attempt metrics; `feature_gaps.md` lists the Monty gaps hit, by
-prompt.
+Each prompt × model × mode combination is one pydantic-evals experiment, printed as a table when it finishes.
+`evals/reports/` (gitignored) then gets `scoreboard.md` and `scoreboard.json`, the per-case metrics for every experiment
+side by side, and `feature_gaps.md`, the Monty gaps hit, by prompt.
+Cases run one at a time unless `--concurrency` is raised; repeats of a task share its stateful tools and mount, so they
+must not overlap.
 
 `--dry-run` executes each task's `reference_solution` instead of calling a model.
 A reference solution that fails means the task is wrong or Monty has a gap; fix one before using the task to score a
@@ -50,14 +52,19 @@ Two modes:
 The session stays open for the whole attempt, so a task's `follow_up` turn can check that the model reuses globals
 instead of re-fetching.
 
-Each attempt is scored on separate axes rather than one number:
+Evaluators (`evaluators.py`) turn that into assertions, one column per objective axis rather than one number:
 
-| Axis        | Metrics                                                              |
-| ----------- | -------------------------------------------------------------------- |
-| Correctness | `success`, `first_attempt_runs`, `type_check_passed`                 |
-| Cost        | `total_tokens`, `turns_used`, `result_bytes`                         |
-| Time        | `call_batches`, the number of sequential waves of host calls         |
-| Simplicity  | `code_lines`, `max_nesting`, and a judge where a task has a `Rubric` |
+| Axis        | Assertions and metrics                                                                   |
+| ----------- | ---------------------------------------------------------------------------------------- |
+| Correctness | the task's own evaluator, `first_attempt_runs`, `type_check_passed`, `calls_as_expected` |
+| Cost        | `prompt_tokens` + `completion_tokens`, `turns`, `result_bytes` / `result_size`           |
+| Time        | `call_batches`, the number of sequential waves of host calls, and `within_call_budget`   |
+| Simplicity  | `code_lines`, `max_nesting`, and `LLMJudge` where a task has a rubric                    |
+
+The task's own evaluator is `EqualsExpected`, `ApproxExpected` (a float tolerance, for anything with arithmetic in it),
+`Predicate` (a host-side check, for answers no literal can express) or `LLMJudge`.
+The dataset-level evaluators read the task's pinned expectations and skip themselves when a task pins nothing.
+A case passes when every assertion holds.
 
 `call_batches` counts overlapping host calls as one wave: twelve calls under `asyncio.gather` score 1, twelve awaited in
 a loop score 12.
@@ -69,8 +76,11 @@ model mistake otherwise.
 `feature_gaps.md` groups gaps by the prompt they were hit under: a gap only weak prompts hit is a prompt problem, a gap
 the best prompt still hits is a feature to build.
 
-Sessions run with `type_check=True`, so the bundled type checker runs before execution and its failures are recorded
-under `type_check` rather than as runtime errors.
+Sessions run with `type_check=True`, so the bundled type checker runs before execution; its failures fail the
+`type_check_passed` assertion and are recorded as `type_check` gaps.
+
+`--judge-model` sets the model for `LLMJudge` evaluators; without it they are dropped from the cases, so a dry run
+scores only the machine-checkable parts of a rubric task.
 
 ## Prompt variants
 
@@ -97,7 +107,7 @@ A predicate parses the written file and checks the bar heights are proportional 
 ### dates/schedule_conflicts
 
 Fetch a day's meetings, list every overlapping pair, and total the busy hours with overlaps counted once.
-Scored with `Approx` against the computed answer.
+Scored with `ApproxExpected` against the computed answer.
 
 ### numeric/expense_budget
 
@@ -128,17 +138,17 @@ Scored on `call_batches` as well as the answer: `asyncio.gather` costs one wave,
 ### schema/large_result_filter
 
 Fetch 2,000 events and return the five critical ones with two fields each.
-`max_result_bytes` fails any solution that returns more than the answer.
+`max_result_bytes` is set, so the `result_size` assertion fails any solution that returns more than the answer.
 
 ### stateful/followup_reuse
 
 Fetch all orders and return total revenue, then answer a follow-up about the top region in the same session.
-The follow-up expects zero host calls, so re-fetching fails it.
+The follow-up expects zero host calls, so re-fetching fails `follow_up_calls_as_expected`.
 
 ### text/log_parse
 
 Parse 500 log lines with a regex, count errors per service, and list the five slowest requests.
-Scored with `Exact`.
+Scored with `EqualsExpected`.
 
 ### text/markdown_report
 
@@ -154,13 +164,16 @@ A naive `split(',')` gives a wrong number rather than an error.
 ### wrangling/group_by_report
 
 Group sales rows by region then product, summing amount and units and counting rows.
-Scored with `Approx` against the nested dict.
+Scored with `ApproxExpected` against the nested dict.
 
 ## Adding a task
 
 Create `evals/tasks/<category>/<name>.py` exporting `TASK = Task(...)`, write `<name>.md` beside it, and make
 `--dry-run` pass.
-Use `Exact` for one right answer, `Approx` where rounding order legitimately varies, `Predicate` when the property has
-to be parsed out of the result, and `Rubric` only where nothing can be checked mechanically.
+Set `expected` and pick the evaluator: `EqualsExpected` for one right answer, `ApproxExpected` where rounding order
+legitimately varies, `Predicate` when the property has to be parsed out of the result, and `LLMJudge` only where nothing
+can be checked mechanically.
+Pin `expected_external_calls`, `expected_call_batches` or `max_result_bytes` and the dataset-level evaluators assert
+them.
 Host functions may be sync or async; give them latency if the task scores `call_batches`.
 A tool that keeps state between calls needs `setup` to reset it before each attempt.

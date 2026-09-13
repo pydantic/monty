@@ -1,89 +1,49 @@
-"""Per-attempt metrics and the objective axes they roll up into.
+"""Names of the metrics and attributes the solver records on each pydantic-evals case.
 
-There is no single "best" prompt, so there is no single score. A caller optimising for
-latency and one optimising for token spend want different columns, and a prompt that
-wins one usually loses another — telling the model to `gather` everything buys round
-trips at the cost of readable code. Blending these into one number would hide exactly
-the trade-off the suite exists to expose.
+The solver records them with `increment_eval_metric` / `set_eval_attribute`; the
+evaluators and `report.py` read them back from `ctx.metrics` / `ctx.attributes`.
+Keeping the names here stops the two sides drifting apart.
 """
 
 from __future__ import annotations
 
 import ast
-from dataclasses import asdict, dataclass, field
-from typing import Any
 
-__all__ = ('AXES', 'AttemptMetrics', 'code_shape')
-
-AXES = ('correctness', 'cost', 'time', 'simplicity')
-"""The objective axes reported separately in the scoreboard."""
+__all__ = ('ATTR', 'METRIC', 'code_shape')
 
 
-@dataclass
-class AttemptMetrics:
-    """Everything measured about one task attempt under one prompt and one model."""
+class METRIC:
+    """Numeric per-case metrics, all recorded via `increment_eval_metric`."""
 
-    task: str
-    prompt_variant: str
-    model: str
-    mode: str
-    repeat: int = 0
+    PROMPT_TOKENS = 'prompt_tokens'
+    COMPLETION_TOKENS = 'completion_tokens'
+    TURNS = 'turns'
+    EXTERNAL_CALLS = 'external_calls'
+    CALL_BATCHES = 'call_batches'
+    RESULT_BYTES = 'result_bytes'
+    CODE_LINES = 'code_lines'
+    MAX_NESTING = 'max_nesting'
+    FOLLOW_UP_EXTERNAL_CALLS = 'follow_up_external_calls'
 
-    success: bool = False
-    first_attempt_runs: bool = False
-    type_check_passed: bool = True
-    turns_used: int = 0
-    detail: str = ''
 
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    result_bytes: int = 0
+class ATTR:
+    """Non-numeric per-case attributes, recorded via `set_eval_attribute`."""
 
-    external_calls: int = 0
-    call_batches: int = 0
-    expected_external_calls: int | None = None
-    expected_call_batches: int | None = None
-    duration: float = 0.0
-
-    code_lines: int = 0
-    max_nesting: int = 0
-
-    judge_score: float | None = None
-    judge_reason: str = ''
-
-    gaps: list[dict[str, Any]] = field(default_factory=list)
-    """Feature gaps hit during this attempt, as serialised `FeatureGap` records."""
-
-    @property
-    def total_tokens(self) -> int:
-        return self.prompt_tokens + self.completion_tokens
-
-    @property
-    def calls_as_expected(self) -> bool | None:
-        """Whether the run made the number of host calls the task expects.
-
-        `None` when the task does not pin a count. A wrong count with a right answer is
-        still a finding: it usually means the model fetched more than it needed.
-        """
-        if self.expected_external_calls is None:
-            return None
-        return self.external_calls == self.expected_external_calls
-
-    def as_row(self) -> dict[str, Any]:
-        """Flatten for JSON output and report aggregation."""
-        row = asdict(self)
-        row['total_tokens'] = self.total_tokens
-        row['calls_as_expected'] = self.calls_as_expected
-        return row
+    CODE = 'code'
+    ERROR = 'error'
+    FIRST_ATTEMPT_RUNS = 'first_attempt_runs'
+    TYPE_CHECK_PASSED = 'type_check_passed'
+    GAPS = 'gaps'
+    FOLLOW_UP_RESULT = 'follow_up_result'
+    FOLLOW_UP_ERROR = 'follow_up_error'
 
 
 def code_shape(code: str) -> tuple[int, int]:
     """Return `(non-blank lines, maximum block nesting depth)` for the simplicity axis.
 
-    Nesting depth is counted over the constructs that actually indent a block, so a long
-    flat script scores better than a short deeply-nested one. Unparseable code scores
-    its line count with zero depth rather than raising — the model emitting code Monty
-    cannot parse is already recorded as a failure elsewhere.
+    Nesting is counted over the constructs that indent a block, so a long flat script
+    scores better than a short deeply-nested one. Unparsable code scores its line
+    count with zero depth; the parse failure is already recorded elsewhere.
     """
     lines = len([line for line in code.splitlines() if line.strip()])
     try:

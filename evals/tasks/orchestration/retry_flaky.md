@@ -8,4 +8,4 @@ Return `{"fetched": int, "failed": [ids]}`.
 It counts attempts per record, and `setup` clears the counters before each attempt of the task, so a solution that does
 not retry gets `fetched: 5` instead of the expected `fetched: 6`.
 
-Scored with `Exact` against `{'fetched': 6, 'failed': [3, 7]}`; 14 host calls are expected.
+Scored with `EqualsExpected` against `{'fetched': 6, 'failed': [3, 7]}`; 14 host calls are expected.

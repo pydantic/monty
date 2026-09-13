@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import json
 
-from evals.harness.task import Approx, Task
+from evals.harness.evaluators import ApproxExpected
+from evals.harness.task import Task
 
 _CSV = """handle,name,company,total_spend
 @ada,Ada Lovelace,"Analytical Engines, Ltd",4820.50
@@ -137,7 +138,8 @@ TASK = Task(
     ),
     stubs=STUBS,
     tools={'read_customers_csv': read_customers_csv, 'read_tweets_json': read_tweets_json},
-    expected=Approx(_expected()),
+    expected=_expected(),
+    evaluators=(ApproxExpected(),),
     reference_solution=REFERENCE,
     traps=('csv module', 'statistics.mean', 'quoted CSV fields'),
     expected_external_calls=2,

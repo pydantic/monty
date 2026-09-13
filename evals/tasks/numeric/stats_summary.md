@@ -6,4 +6,4 @@ Call `fetch_latencies()` for 30 request latencies in milliseconds and return `co
 The prompt fixes the definitions: sample standard deviation (divide by n-1), and p90 by linear interpolation between the
 ranks either side of `0.9 * (n - 1)`.
 
-Scored with `Approx`; one host call is expected.
+Scored with `ApproxExpected`; one host call is expected.

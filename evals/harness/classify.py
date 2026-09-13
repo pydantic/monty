@@ -21,7 +21,8 @@ wider net.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from typing import Any
 
 from pydantic_monty import MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError
 
@@ -68,6 +69,10 @@ class FeatureGap:
     def doc(self) -> str | None:
         """The `limitations/` file this gap should be documented in, if any."""
         return limitation_doc(self.kind, self.symbol)
+
+    def as_dict(self) -> dict[str, Any]:
+        """Plain-dict form, recorded as a case attribute and read back by `report.py`."""
+        return {**asdict(self), 'doc': self.doc}
 
 
 def classify(error: MontyError) -> FeatureGap | None:
@@ -248,7 +253,7 @@ def _inner_exception_name(error: MontyError) -> str:
     """
     try:
         return type(error.exception()).__name__
-    except Exception:  # noqa: BLE001 - fall back to text when the inner value cannot be built
+    except Exception:
         return ''
 
 

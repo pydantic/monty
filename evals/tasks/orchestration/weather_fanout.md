@@ -7,5 +7,5 @@ rounded to one decimal place, and return the three coldest as `city`/`temp_c` di
 Without that sleep every call would complete before the next started and gathered calls could not be told from
 sequential ones.
 
-Scored with `Approx`.
+Scored with `ApproxExpected`.
 Twelve host calls are expected and `expected_call_batches` is 1, which only `asyncio.gather` (or equivalent) achieves.

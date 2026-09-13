@@ -1,279 +1,222 @@
-"""Drives tasks through a prompt variant and a model, and scores what comes back.
+"""Runs the task suite as pydantic-evals experiments, one per prompt × model × mode.
 
-Two modes, and running both is the point:
+`Solver.solve` is the pydantic-evals task function: it asks the model for code, runs it
+in Monty, records what happened as metrics and attributes, and returns the value of
+the code's trailing expression. The evaluators in `evaluators.py` then score it.
 
-- **single** — one code block, executed, graded. Cheap and low-variance, so it measures
-  what the *prompt* achieved.
-- **agentic** — errors and printed output feed back as the next user turn, up to a cap.
-  It measures what error feedback can repair.
+Two modes:
 
-A prompt that only wins in agentic mode is buying turns, not quality — which is why the
-scoreboard reports the two separately rather than averaging them.
+- `single`: one code block, executed, scored. Measures the prompt.
+- `agentic`: Monty's error and printed output go back to the model as the next turn,
+  up to `--max-turns`. Measures what error feedback repairs.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+
+from pydantic_evals import Dataset, set_eval_attribute
+from pydantic_evals.dataset import increment_eval_metric
+from pydantic_evals.evaluators.llm_as_a_judge import set_default_judge_model
+from pydantic_evals.lifecycle import CaseLifecycle
+from pydantic_evals.reporting import EvaluationReport
 
 from pydantic_monty import MontyTypingError
 
 from .agent import CodeAgent, DryRunAgent, Reply, load_prompt
 from .classify import classify
+from .evaluators import DATASET_EVALUATORS
 from .executor import ExecutionOutcome, MontyExecutor
-from .judge import judge_result
-from .metrics import AttemptMetrics, code_shape
+from .metrics import ATTR, METRIC, code_shape
 from .registry import all_tasks, load_task
 from .report import write_reports
-from .task import Task, Turn
+from .task import Task
 
-__all__ = ('main', 'run_attempt')
+__all__ = ('Solver', 'build_dataset', 'main')
 
 DEFAULT_MAX_TURNS = 4
 REPORTS_DIR = Path(__file__).parent.parent / 'reports'
 
 
+def build_dataset(tasks: list[Task], *, judge: bool) -> Dataset[Task, Any, Any]:
+    """One case per task; `judge=False` drops `LLMJudge` evaluators so no judge model is needed."""
+    return Dataset(
+        name='monty-agent-code',
+        cases=[task.case(judge=judge) for task in tasks],
+        evaluators=DATASET_EVALUATORS,
+    )
+
+
 class _Agent(Protocol):
-    """The slice of an agent the runner needs — satisfied by `CodeAgent` and `DryRunAgent`."""
+    """The slice of an agent the solver needs; satisfied by `CodeAgent` and `DryRunAgent`."""
 
     async def respond(self, user_text: str) -> Reply: ...
 
 
+@dataclass(frozen=True)
+class Solver:
+    """One prompt × model × mode combination; `solve` is the pydantic-evals task function."""
+
+    prompt_variant: str
+    model: str
+    mode: str
+    dry_run: bool = False
+    max_turns: int = DEFAULT_MAX_TURNS
+
+    @property
+    def experiment_name(self) -> str:
+        return f'{self.prompt_variant}/{self.model_label}/{self.mode}'
+
+    @property
+    def model_label(self) -> str:
+        return 'reference' if self.dry_run else self.model
+
+    def metadata(self) -> dict[str, str]:
+        """Experiment metadata, which `report.py` reads back to label its rows."""
+        return {'prompt': self.prompt_variant, 'model': self.model_label, 'mode': self.mode}
+
+    async def solve(self, task: Task) -> Any:
+        """Drive one task attempt and return the primary result, or `None` if nothing ran.
+
+        The Monty session stays open across the task's follow-up turn so a stateful
+        task can check that the follow-up reuses session state instead of re-fetching.
+        """
+        system_prompt = load_prompt(self.prompt_variant).replace('{stubs}', task.stubs.strip())
+        agent: _Agent = (
+            DryRunAgent([task.reference_solution] + ([task.follow_up.reference_solution] if task.follow_up else []))
+            if self.dry_run
+            else CodeAgent(model=self.model, system_prompt=system_prompt)
+        )
+        turn_cap = 1 if (self.mode == 'single' or self.dry_run) else self.max_turns
+
+        async with MontyExecutor(task) as executor:
+            primary = await _drive(agent, executor, task.prompt, turn_cap)
+            set_eval_attribute(ATTR.FIRST_ATTEMPT_RUNS, primary.first_attempt_ran)
+            set_eval_attribute(ATTR.TYPE_CHECK_PASSED, primary.type_check_passed)
+            gaps = list(primary.gaps)
+            outcome = primary.outcome
+            if outcome is None:
+                set_eval_attribute(ATTR.ERROR, 'model returned no code')
+                set_eval_attribute(ATTR.GAPS, gaps)
+                return None
+
+            lines, nesting = code_shape(outcome.code)
+            increment_eval_metric(METRIC.CODE_LINES, lines)
+            increment_eval_metric(METRIC.MAX_NESTING, nesting)
+            increment_eval_metric(METRIC.EXTERNAL_CALLS, outcome.external_calls)
+            increment_eval_metric(METRIC.CALL_BATCHES, outcome.call_batches)
+            increment_eval_metric(METRIC.RESULT_BYTES, outcome.result_bytes)
+            set_eval_attribute(ATTR.CODE, outcome.code)
+            set_eval_attribute(ATTR.ERROR, outcome.error_message)
+
+            if task.follow_up is not None and outcome.ok:
+                follow_up = await _drive(agent, executor, task.follow_up.prompt, turn_cap)
+                gaps += follow_up.gaps
+                if follow_up.outcome is None:
+                    set_eval_attribute(ATTR.FOLLOW_UP_ERROR, 'model returned no code')
+                else:
+                    set_eval_attribute(ATTR.FOLLOW_UP_RESULT, follow_up.outcome.result)
+                    set_eval_attribute(ATTR.FOLLOW_UP_ERROR, follow_up.outcome.error_message)
+                    increment_eval_metric(METRIC.FOLLOW_UP_EXTERNAL_CALLS, follow_up.outcome.external_calls)
+
+        set_eval_attribute(ATTR.GAPS, gaps)
+        return outcome.result
+
+
 @dataclass
-class _TurnResult:
-    """Outcome of driving one request to completion (or to the turn cap)."""
+class _Driven:
+    """What `_drive` learned from one request: the last outcome plus per-turn findings."""
 
-    outcome: ExecutionOutcome | None
-    turns: int
-    first_attempt_ran: bool
-    type_check_passed: bool
-    prompt_tokens: int
-    completion_tokens: int
-    gaps: list[dict[str, Any]]
-    last_code: str
-
-
-async def run_attempt(
-    task: Task,
-    *,
-    prompt_variant: str,
-    model: str,
-    mode: str,
-    repeat: int = 0,
-    dry_run: bool = False,
-    max_turns: int = DEFAULT_MAX_TURNS,
-    judge_model: str | None = None,
-) -> AttemptMetrics:
-    """Run one task once and return its metrics.
-
-    The Monty session stays open across the task's follow-up turn so the stateful task
-    can check that a follow-up reuses session state instead of re-fetching.
-    """
-    if task.setup is not None:
-        task.setup()
-    system_prompt = load_prompt(prompt_variant).replace('{stubs}', task.stubs.strip())
-    agent: _Agent = (
-        DryRunAgent([task.reference_solution] + ([task.follow_up.reference_solution] if task.follow_up else []))
-        if dry_run
-        else CodeAgent(model=model, system_prompt=system_prompt)
-    )
-    turn_cap = 1 if (mode == 'single' or dry_run) else max_turns
-
-    metrics = AttemptMetrics(
-        task=task.qualified_name,
-        prompt_variant=prompt_variant,
-        model='reference' if dry_run else model,
-        mode=mode,
-        repeat=repeat,
-        expected_external_calls=task.expected_external_calls,
-        expected_call_batches=task.expected_call_batches,
-    )
-
-    async with MontyExecutor(task) as executor:
-        primary = await _drive(agent, executor, task.prompt, turn_cap)
-        _absorb(metrics, primary)
-
-        outcome = primary.outcome
-        if outcome is None:
-            metrics.detail = 'model returned no code'
-            return metrics
-
-        check = task.expected.check(outcome.result)
-        metrics.success = check.passed
-        metrics.detail = check.detail
-        metrics.external_calls = outcome.external_calls
-        metrics.call_batches = outcome.call_batches
-        metrics.result_bytes = outcome.result_bytes
-        metrics.duration = outcome.duration
-
-        if check.needs_judge:
-            await _apply_judge(metrics, task, outcome, judge_model)
-
-        if task.follow_up is not None and metrics.success:
-            await _run_follow_up(metrics, task.follow_up, agent, executor, turn_cap)
-
-    return metrics
-
-
-async def _drive(
-    agent: _Agent,
-    executor: MontyExecutor,
-    request: str,
-    turn_cap: int,
-) -> _TurnResult:
-    """Ask for code, run it, and on failure hand the error back until the cap is hit."""
-    prompt_tokens = completion_tokens = 0
-    gaps: list[dict[str, Any]] = []
-    first_attempt_ran = False
-    type_check_passed = True
     outcome: ExecutionOutcome | None = None
-    user_text = request
-    turns = 0
+    first_attempt_ran: bool = False
+    type_check_passed: bool = True
+    gaps: list[dict[str, Any]] = field(default_factory=list)
 
+
+async def _drive(agent: _Agent, executor: MontyExecutor, request: str, turn_cap: int) -> _Driven:
+    """Ask for code, run it, and on failure hand the error back until the cap is hit.
+
+    Token and turn counts are recorded here because they accumulate across both the
+    primary request and the follow-up.
+    """
+    driven = _Driven()
+    user_text = request
     for turn in range(turn_cap):
         reply = await agent.respond(user_text)
-        prompt_tokens += reply.prompt_tokens
-        completion_tokens += reply.completion_tokens
+        increment_eval_metric(METRIC.PROMPT_TOKENS, reply.prompt_tokens)
+        increment_eval_metric(METRIC.COMPLETION_TOKENS, reply.completion_tokens)
         if reply.code is None:
             break
-        turns = turn + 1
+        increment_eval_metric(METRIC.TURNS, 1)
         outcome = await executor.feed(reply.code)
+        driven.outcome = outcome
         if turn == 0:
-            first_attempt_ran = outcome.ok
-        if outcome.error is not None:
-            if isinstance(outcome.error, MontyTypingError):
-                type_check_passed = False
-            gap = classify(outcome.error)
-            if gap is not None:
-                gaps.append(
-                    {
-                        'kind': gap.kind,
-                        'symbol': gap.symbol,
-                        'message': gap.message,
-                        'source_line': gap.source_line,
-                        'certain': gap.certain,
-                        'doc': gap.doc,
-                    }
-                )
-            user_text = outcome.feedback()
-            continue
-        break
-
-    last_code = outcome.code if outcome is not None else ''
-    return _TurnResult(
-        outcome=outcome,
-        turns=turns,
-        first_attempt_ran=first_attempt_ran,
-        type_check_passed=type_check_passed,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        gaps=gaps,
-        last_code=last_code,
-    )
+            driven.first_attempt_ran = outcome.ok
+        if outcome.error is None:
+            break
+        if isinstance(outcome.error, MontyTypingError):
+            driven.type_check_passed = False
+        gap = classify(outcome.error)
+        if gap is not None:
+            driven.gaps.append(gap.as_dict())
+        user_text = outcome.feedback()
+    return driven
 
 
-def _absorb(metrics: AttemptMetrics, result: _TurnResult) -> None:
-    """Fold a driven request's counters into the attempt's metrics."""
-    metrics.turns_used += result.turns
-    metrics.prompt_tokens += result.prompt_tokens
-    metrics.completion_tokens += result.completion_tokens
-    metrics.gaps.extend(result.gaps)
-    metrics.first_attempt_runs = result.first_attempt_ran
-    metrics.type_check_passed = metrics.type_check_passed and result.type_check_passed
-    if result.last_code:
-        metrics.code_lines, metrics.max_nesting = code_shape(result.last_code)
+class _TaskLifecycle(CaseLifecycle[Task, Any, Any]):
+    """Runs the task's `setup` before each attempt, so stateful tools start clean."""
+
+    async def setup(self) -> None:
+        if self.case.inputs.setup is not None:
+            self.case.inputs.setup()
 
 
-async def _run_follow_up(
-    metrics: AttemptMetrics,
-    follow_up: Turn,
-    agent: _Agent,
-    executor: MontyExecutor,
-    turn_cap: int,
-) -> None:
-    """Score the second request of a stateful task against the same live session.
-
-    The follow-up's own external-call expectation is what carries the signal: a correct
-    answer that re-fetched everything means the prompt failed to convey that session
-    state persists, even though the answer is right.
-    """
-    result = await _drive(agent, executor, follow_up.prompt, turn_cap)
-    _absorb(metrics, result)
-    if result.outcome is None:
-        metrics.success = False
-        metrics.detail = 'follow-up returned no code'
-        return
-
-    check = follow_up.expected.check(result.outcome.result)
-    metrics.detail = f'{metrics.detail}; follow-up: {check.detail}'
-    metrics.success = check.passed
-    if follow_up.expected_external_calls is not None:
-        actual = result.outcome.external_calls
-        if actual != follow_up.expected_external_calls:
-            metrics.success = False
-            metrics.detail += f'; follow-up made {actual} host calls, expected {follow_up.expected_external_calls}'
-
-
-async def _apply_judge(
-    metrics: AttemptMetrics,
-    task: Task,
-    outcome: ExecutionOutcome,
-    judge_model: str | None,
-) -> None:
-    """Settle a rubric-based expectation with an LLM judge."""
-    if judge_model is None:
-        # Keep the deterministic verdict rather than failing: a rubric task's
-        # machine-checkable half is still worth scoring, and a dry run has no judge.
-        metrics.detail = f'{metrics.detail}; rubric skipped (no --judge-model)'
-        return
-    verdict = await judge_result(task, outcome.result, judge_model)
-    metrics.judge_score = verdict.score
-    metrics.judge_reason = verdict.reason
-    metrics.success = verdict.passed
-    metrics.detail = f'{metrics.detail}; judge: {verdict.reason}'
-
-
-async def _run_all(args: argparse.Namespace) -> list[AttemptMetrics]:
-    """Expand the requested tasks × prompts × modes × repeats and run them."""
+async def _run_all(args: argparse.Namespace) -> list[EvaluationReport[Task, Any, Any]]:
+    """Run one experiment per prompt × mode and return their reports."""
     tasks = [load_task(name) for name in args.task] if args.task else all_tasks()
+    if args.judge_model is not None:
+        set_default_judge_model(args.judge_model)
+    dataset = build_dataset(tasks, judge=args.judge_model is not None)
     modes = ['single', 'agentic'] if args.mode == 'both' else [args.mode]
-    results: list[AttemptMetrics] = []
 
-    for task in tasks:
-        for variant in args.prompt:
-            for mode in modes:
-                for repeat in range(args.repeat):
-                    metrics = await run_attempt(
-                        task,
-                        prompt_variant=variant,
-                        model=args.model,
-                        mode=mode,
-                        repeat=repeat,
-                        dry_run=args.dry_run,
-                        max_turns=args.max_turns,
-                        judge_model=args.judge_model,
-                    )
-                    results.append(metrics)
-                    status = 'PASS' if metrics.success else 'FAIL'
-                    print(f'{status}  {task.qualified_name:34} {variant:14} {mode:8} {metrics.detail[:70]}')
-    return results
+    reports: list[EvaluationReport[Task, Any, Any]] = []
+    for variant in args.prompt:
+        for mode in modes:
+            solver = Solver(variant, args.model, mode, dry_run=args.dry_run, max_turns=args.max_turns)
+            report = await dataset.evaluate(
+                solver.solve,
+                name=solver.experiment_name,
+                metadata=solver.metadata(),
+                repeat=args.repeat,
+                max_concurrency=args.concurrency,
+                lifecycle=_TaskLifecycle,
+            )
+            report.print(include_reasons=True, include_output=False)
+            reports.append(report)
+    return reports
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point. Returns a non-zero exit status when any attempt failed."""
+    """CLI entry point. Returns a non-zero exit status when any case failed an assertion."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--task', action='append', default=[], help='task to run, e.g. numeric/expense_budget')
     parser.add_argument('--all', action='store_true', help='run every task (the default when --task is absent)')
     parser.add_argument('--prompt', default='v4_codemode', help='comma-separated prompt variants')
     parser.add_argument('--model', default='anthropic:claude-sonnet-4-5', help='model to generate code with')
-    parser.add_argument('--judge-model', default=None, help='model for rubric expectations; omit to skip them')
+    parser.add_argument('--judge-model', default=None, help='model for LLMJudge evaluators; omit to skip them')
     parser.add_argument('--mode', choices=['single', 'agentic', 'both'], default='single')
-    parser.add_argument('--repeat', type=int, default=1, help='attempts per combination, for variance')
+    parser.add_argument('--repeat', type=int, default=1, help='attempts per case, for variance')
     parser.add_argument('--max-turns', type=int, default=DEFAULT_MAX_TURNS)
+    parser.add_argument(
+        '--concurrency',
+        type=int,
+        default=1,
+        help='cases run at once; stateful tools and mounts are shared, so repeats of one task must not overlap',
+    )
     parser.add_argument(
         '--dry-run',
         action='store_true',
@@ -283,16 +226,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     args.prompt = [variant for variant in args.prompt.split(',') if variant]
 
-    results = asyncio.run(_run_all(args))
-    write_reports(results, args.reports)
+    reports = asyncio.run(_run_all(args))
+    write_reports(reports, args.reports)
 
-    failed = [metrics for metrics in results if not metrics.success]
-    print(f'\n{len(results) - len(failed)}/{len(results)} passed. Reports written to {args.reports}')
+    failed = [
+        case.name
+        for report in reports
+        for case in report.cases
+        if not all(assertion.value for assertion in case.assertions.values())
+    ] + [failure.name for report in reports for failure in report.failures]
+    print(f'\n{len(failed)} failing case(s). Reports written to {args.reports}')
     if failed and args.dry_run:
-        print('\nA failing reference solution means the task is wrong or Monty has a real gap:')
-        for metrics in failed:
-            print(f'  {metrics.task}: {metrics.detail}')
-            print(json.dumps(metrics.gaps, indent=2) if metrics.gaps else '  (no feature gap recorded)')
+        print('A failing reference solution means the task is wrong or Monty has a real gap:')
+        for name in failed:
+            print(f'  {name}')
     return 1 if failed else 0
 
 

@@ -53,7 +53,7 @@ def call_batches(calls: list[CallRecord]) -> int:
     score 1.
 
     This is a proxy, not a measurement: a host function fast enough that two sequential
-    calls land inside the same clock tick would merge. Task 1 pins the expected value
+    calls land inside the same clock tick would merge. `weather_fanout` pins the expected value
     both ways so the proxy stays honest.
     """
     if not calls:
@@ -86,6 +86,15 @@ class ExecutionOutcome:
     def ok(self) -> bool:
         """True when the snippet ran to completion; the answer may still be wrong."""
         return self.error is None
+
+    @property
+    def error_message(self) -> str | None:
+        """The `ExceptionType: message` line of the failure, or `None` when the snippet ran."""
+        if self.error is None:
+            return None
+        if isinstance(self.error, (MontyRuntimeError, MontySyntaxError)):
+            return self.error.display('type-msg')
+        return _render_error(self.error)
 
     @property
     def external_calls(self) -> int:

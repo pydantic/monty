@@ -6,4 +6,4 @@ The fixture has 94 orders in pages of 20, so five calls are needed and each curs
 returns.
 `expected_call_batches` is therefore 5 as well: sequential calls are the floor here, not a failure to parallelise.
 
-Scored with `Exact`.
+Scored with `EqualsExpected`.

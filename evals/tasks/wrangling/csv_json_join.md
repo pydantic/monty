@@ -8,4 +8,4 @@ dicts, sentiment rounded to three decimal places.
 Two company names contain a comma inside double quotes, so splitting lines on `,` shifts the spend column and produces a
 wrong answer rather than an error.
 
-Scored with `Approx`; two host calls are expected.
+Scored with `ApproxExpected`; two host calls are expected.
