@@ -1072,7 +1072,7 @@ fn sendable_value(env: &Env, value: Unknown<'_>) -> StdResult<MontyObject, Monty
             Some("Max input depth exceeded".to_owned()),
         )),
         Ok(value) => Ok(value),
-        Err(err) => Err(MontyException::new(ExcType::TypeError, Some(err.reason.clone()))),
+        Err(err) => Err(MontyException::new(ExcType::TypeError, Some(err.reason))),
     }
 }
 
