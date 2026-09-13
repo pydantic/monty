@@ -25,8 +25,10 @@
 
 use std::f64::consts;
 
+use monty_types::ResourceTracker;
 use num_bigint::BigInt;
-use num_traits::ToPrimitive;
+use num_integer::Integer;
+use num_traits::{One, Signed, ToPrimitive, Zero};
 use smallvec::smallvec;
 
 use crate::{
@@ -34,10 +36,11 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapData, HeapId},
+    heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{LongInt, Module, allocate_tuple},
+    resource_checks::{check_mult_size, check_product_size},
+    types::{LongInt, Module, allocate_tuple, long_int::bigint_to_f64_checked},
     value::Value,
 };
 
@@ -369,6 +372,7 @@ fn math_floor(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         Value::Float(f) => LongInt::value_from_f64(f.floor(), vm.heap),
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
+        _ if value.as_long_int(vm).is_some() => Ok(value.clone_with_heap(vm.heap)),
         _ => Err(ExcType::type_error(format!(
             "must be real number, not {}",
             value.py_type_name(vm)
@@ -388,6 +392,7 @@ fn math_ceil(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         Value::Float(f) => LongInt::value_from_f64(f.ceil(), vm.heap),
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
+        _ if value.as_long_int(vm).is_some() => Ok(value.clone_with_heap(vm.heap)),
         _ => Err(ExcType::type_error(format!(
             "must be real number, not {}",
             value.py_type_name(vm)
@@ -406,6 +411,7 @@ fn math_trunc(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         Value::Float(f) => LongInt::value_from_f64(f.trunc(), vm.heap),
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
+        _ if value.as_long_int(vm).is_some() => Ok(value.clone_with_heap(vm.heap)),
         _ => Err(ExcType::type_error(format!(
             "type {} doesn't define __trunc__ method",
             value.py_type_name(vm)
@@ -441,14 +447,21 @@ fn math_isqrt(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("math.isqrt", vm.heap)?;
     defer_drop!(value, vm);
 
-    let n = value_to_int(value, vm)?;
-    if n < 0 {
-        return Err(SimpleException::new_msg(ExcType::ValueError, "isqrt() argument must be nonnegative").into());
+    let n = value_to_bigint(value, vm)?;
+    if n.is_negative() {
+        Err(SimpleException::new_msg(ExcType::ValueError, "isqrt() argument must be nonnegative").into())
+    } else if let Some(n) = n.to_i64() {
+        Ok(Value::Int(isqrt_i64(n)))
+    } else {
+        Ok(LongInt::new(BigInt::from(n.magnitude().sqrt())).into_value(vm.heap))
     }
-    if n == 0 {
-        return Ok(Value::Int(0));
-    }
+}
 
+/// Integer square root of a non-negative machine integer.
+fn isqrt_i64(n: i64) -> i64 {
+    if n == 0 {
+        return 0;
+    }
     // Integer square root via f64 estimate + correction.
     // For i64 inputs, f64 sqrt is accurate to within ±1, so we need to
     // correct both overshoot and undershoot. The cast truncates toward zero,
@@ -467,7 +480,7 @@ fn math_isqrt(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     while x < n / (x + 1) {
         x += 1;
     }
-    Ok(Value::Int(x))
+    x
 }
 
 /// `math.cbrt(x)` — returns the cube root of x.
@@ -551,35 +564,87 @@ fn math_expm1(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// With one argument, returns the natural logarithm (base e).
 /// With two arguments, returns `log(x) / log(base)`.
-/// Raises `ValueError` for non-positive inputs (CPython 3.14: "expected a positive input").
 fn math_log(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (x_val, base_val) = args.get_one_two_args("math.log", vm.heap)?;
+    // CPython's arity errors name the bare function: `log expected at most 2 arguments, got 3`.
+    let (x_val, base_val) = args.get_one_two_args("log", vm.heap)?;
     defer_drop!(x_val, vm);
     defer_drop!(base_val, vm);
 
-    let x = value_to_float(x_val, vm)?;
-    if x <= 0.0 {
-        return Err(SimpleException::new_msg(ExcType::ValueError, "expected a positive input").into());
-    }
-
+    let numerator = log_arg(x_val, f64::ln, vm)?;
     match base_val {
         Some(base_v) => {
-            let base = value_to_float(base_v, vm)?;
-            // base == 1.0 causes division by zero in log(x)/log(base), matching
-            // CPython which raises ZeroDivisionError for this case.
-            #[expect(
-                clippy::float_cmp,
-                reason = "exact comparison with 1.0 is intentional — log(1.0) is exactly 0.0"
-            )]
-            if base == 1.0 {
-                return Err(SimpleException::new_msg(ExcType::ZeroDivisionError, "division by zero").into());
+            // `log(1) == 0.0`, so a base of 1 divides by zero as in CPython.
+            let denominator = log_arg(base_v, f64::ln, vm)?;
+            if denominator == 0.0 {
+                Err(ExcType::zero_division().into())
+            } else {
+                Ok(Value::Float(numerator / denominator))
             }
-            if base <= 0.0 {
-                return Err(SimpleException::new_msg(ExcType::ValueError, "expected a positive input").into());
-            }
-            Ok(Value::Float(x.ln() / base.ln()))
         }
-        None => Ok(Value::Float(x.ln())),
+        None => Ok(Value::Float(numerator)),
+    }
+}
+
+/// Applies a logarithm to a `math` argument, after CPython's `loghelper`.
+///
+/// An int beyond the float range is split as `m * 2**e` with `m` in `[0.5, 1)`, so
+/// `math.log(10**400)` works where `float(10**400)` overflows. Non-positive inputs
+/// raise `ValueError`; only the float message names the offending value.
+#[expect(clippy::cast_precision_loss, reason = "the exponent is a bit count, far below 2**53")]
+fn log_arg(value: &Value, log: fn(f64) -> f64, vm: &VM<'_>) -> RunResult<f64> {
+    let positive_input_error = || SimpleException::new_msg(ExcType::ValueError, "expected a positive input").into();
+    match value {
+        Value::Int(n) if *n <= 0 => Err(positive_input_error()),
+        Value::Int(n) => Ok(log(*n as f64)),
+        Value::Bool(true) => Ok(log(1.0)),
+        Value::Bool(false) => Err(positive_input_error()),
+        _ => match value.as_long_int(vm) {
+            // A long int is never zero.
+            Some(n) if n.is_negative() => Err(positive_input_error()),
+            Some(n) => Ok(if let Some(x) = n.to_f64().filter(|x| x.is_finite()) {
+                log(x)
+            } else {
+                let (mantissa, exponent) = bigint_frexp(n);
+                log(mantissa) + log(2.0) * exponent as f64
+            }),
+            None => {
+                let x = value_to_float(value, vm)?;
+                if x <= 0.0 {
+                    Err(
+                        SimpleException::new_msg(ExcType::ValueError, format!("expected a positive input, got {x:?}"))
+                            .into(),
+                    )
+                } else {
+                    Ok(log(x))
+                }
+            }
+        },
+    }
+}
+
+/// Splits a positive integer into `m * 2**e` with `m` in `[0.5, 1)`, after `_PyLong_Frexp`.
+///
+/// `m` carries the integer's top bits correctly rounded to a float (a sticky bit stands in
+/// for everything below the top 64), so it is exact where `to_f64` would overflow.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "rounding the top 64 bits to a float is the point"
+)]
+fn bigint_frexp(n: &BigInt) -> (f64, i64) {
+    let bits = n.bits();
+    let shift = bits.saturating_sub(64);
+    let mut top = (n.magnitude() >> shift).to_u64().unwrap_or(u64::MAX);
+    // Any set bit below the top 64 breaks a rounding tie upward, as the full value would.
+    if n.trailing_zeros().unwrap_or(0) < shift {
+        top |= 1;
+    }
+    let mantissa = libm::ldexp(top as f64, -64);
+    let exponent = i64::try_from(bits).unwrap_or(i64::MAX);
+    // Rounding can carry the mantissa up to 1.0; renormalise as CPython does.
+    if mantissa >= 1.0 {
+        (0.5, exponent + 1)
+    } else {
+        (mantissa, exponent)
     }
 }
 
@@ -608,12 +673,7 @@ fn math_log2(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("math.log2", vm.heap)?;
     defer_drop!(value, vm);
 
-    let f = value_to_float(value, vm)?;
-    if f <= 0.0 {
-        Err(SimpleException::new_msg(ExcType::ValueError, "expected a positive input").into())
-    } else {
-        Ok(Value::Float(f.log2()))
-    }
+    Ok(Value::Float(log_arg(value, f64::log2, vm)?))
 }
 
 /// `math.log10(x)` — returns the base-10 logarithm of x.
@@ -624,12 +684,7 @@ fn math_log10(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("math.log10", vm.heap)?;
     defer_drop!(value, vm);
 
-    let f = value_to_float(value, vm)?;
-    if f <= 0.0 {
-        Err(SimpleException::new_msg(ExcType::ValueError, "expected a positive input").into())
-    } else {
-        Ok(Value::Float(f.log10()))
-    }
+    Ok(Value::Float(log_arg(value, f64::log10, vm)?))
 }
 
 // ==========================
@@ -977,38 +1032,50 @@ fn math_factorial(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("math.factorial", vm.heap)?;
     defer_drop!(value, vm);
 
-    let n = match value {
-        Value::Int(n) => *n,
-        Value::Bool(b) => i64::from(*b),
-        _ => {
-            return Err(ExcType::type_error(format!(
-                "'{}' object cannot be interpreted as an integer",
-                value.py_type_name(vm)
-            )));
-        }
-    };
+    let n = value_to_bigint(value, vm)?;
+    Ok(LongInt::new(factorial(&n, &vm.heap.tracker)?).into_value(vm.heap))
+}
 
-    if n < 0 {
+/// `n!` with CPython's argument errors, shared by `factorial` and one-argument `perm`.
+fn factorial(n: &BigInt, tracker: &ResourceTracker) -> RunResult<BigInt> {
+    if n.is_negative() {
         return Err(
             SimpleException::new_msg(ExcType::ValueError, "factorial() not defined for negative values").into(),
         );
     }
+    let Some(n) = n.to_i64() else {
+        return Err(SimpleException::new_msg(
+            ExcType::OverflowError,
+            "factorial() argument should not exceed 9223372036854775807",
+        )
+        .into());
+    };
+    let n = n.unsigned_abs();
+    // `n!` has fewer than `n * bits(n)` bits.
+    check_product_size(n.saturating_mul(u64::from(u64::BITS - n.leading_zeros())), tracker)?;
+    product_range(2, n, &mut 0, tracker)
+}
 
-    // Compute factorial iteratively
-    let mut result: i64 = 1;
-    for i in 2..=n {
-        match result.checked_mul(i) {
-            Some(v) => result = v,
-            None => {
-                // Overflow — for simplicity, return an error for very large factorials
-                // since we don't have LongInt factorial support yet
-                return Err(
-                    SimpleException::new_msg(ExcType::OverflowError, "int too large to convert to factorial").into(),
-                );
-            }
-        }
+/// Multiplies `lo..=hi` by binary splitting, so a big factorial combines factors of
+/// similar size rather than one at a time against a growing product.
+fn product_range(lo: u64, hi: u64, polls: &mut usize, tracker: &ResourceTracker) -> RunResult<BigInt> {
+    if lo > hi {
+        Ok(BigInt::one())
+    } else if hi - lo < 32 {
+        // Nothing here returns to the VM's dispatch checkpoint, so the loop polls the clock itself.
+        tracker.check_time_every(*polls)?;
+        *polls += 1;
+        Ok((lo..=hi).fold(BigInt::one(), |product, i| product * i))
+    } else {
+        let mid = lo + (hi - lo) / 2;
+        let (low, high) = (
+            product_range(lo, mid, polls, tracker)?,
+            product_range(mid + 1, hi, polls, tracker)?,
+        );
+        // Combining two halves is where the expensive multiplications are, so each one polls.
+        tracker.check_time()?;
+        Ok(low * high)
     }
-    Ok(Value::Int(result))
 }
 
 /// `math.gcd(*integers)` — returns the greatest common divisor of the arguments.
@@ -1020,13 +1087,12 @@ fn math_gcd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let positional = args.into_pos_only("math.gcd", vm.heap)?;
     defer_drop_mut!(positional, vm);
 
-    let mut result: u64 = 0;
+    let mut result = BigInt::ZERO;
     for arg in positional.by_ref() {
         defer_drop!(arg, vm);
-        let n = value_to_int(arg, vm)?;
-        result = gcd(result, n.unsigned_abs());
+        result = result.gcd(&value_to_bigint(arg, vm)?);
     }
-    Ok(u64_to_value(result, vm.heap))
+    Ok(LongInt::new(result).into_value(vm.heap))
 }
 
 /// `math.lcm(*integers)` — returns the least common multiple of the arguments.
@@ -1038,21 +1104,21 @@ fn math_lcm(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let positional = args.into_pos_only("math.lcm", vm.heap)?;
     defer_drop_mut!(positional, vm);
 
-    let mut result: u64 = 1;
+    let mut result = BigInt::one();
     for arg in positional.by_ref() {
         defer_drop!(arg, vm);
-        let n = value_to_int(arg, vm)?;
-        let abs_n = n.unsigned_abs();
-        if abs_n == 0 {
-            return Ok(Value::Int(0));
+        let n = value_to_bigint(arg, vm)?;
+        // A zero anywhere makes the result zero, but every argument is still type-checked.
+        if !result.is_zero() && !n.is_zero() {
+            // `lcm` divides out the gcd, holding a quotient up to `result`'s size, then
+            // multiplies: preflight both like `*`.
+            check_mult_size(result.bits().saturating_mul(2), n.bits(), &vm.heap.tracker)?;
+            result = result.lcm(&n);
+        } else {
+            result = BigInt::ZERO;
         }
-        let g = gcd(result, abs_n);
-        // lcm(a, b) = |a| / gcd(a,b) * |b| — dividing first avoids intermediate overflow
-        result = (result / g)
-            .checked_mul(abs_n)
-            .ok_or_else(|| SimpleException::new_msg(ExcType::OverflowError, "integer overflow in lcm"))?;
     }
-    Ok(u64_to_value(result, vm.heap))
+    Ok(LongInt::new(result).into_value(vm.heap))
 }
 
 /// `math.comb(n, k)` — returns the number of ways to choose k items from n.
@@ -1063,47 +1129,52 @@ fn math_comb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(n_val, vm);
     defer_drop!(k_val, vm);
 
-    let n = value_to_int(n_val, vm)?;
-    let k = value_to_int(k_val, vm)?;
+    let n = value_to_bigint(n_val, vm)?;
+    let k = value_to_bigint(k_val, vm)?;
 
-    if n < 0 {
+    if n.is_negative() {
         return Err(SimpleException::new_msg(ExcType::ValueError, "n must be a non-negative integer").into());
     }
-    if k < 0 {
+    if k.is_negative() {
         return Err(SimpleException::new_msg(ExcType::ValueError, "k must be a non-negative integer").into());
     }
     if k > n {
         return Ok(Value::Int(0));
     }
 
-    // Use the smaller of k and n-k for efficiency: C(n, k) = C(n, n-k)
-    let k = k.min(n - k);
-    let mut result: i64 = 1;
-    for i in 0..k {
-        // Use GCD reduction to keep intermediates small:
-        // result = result * (n - i) / (i + 1)
-        // By dividing both numerator and denominator by their GCD first,
-        // we reduce the chance of overflow in the multiplication step.
-        let mut numerator = n - i;
-        let mut denominator = i + 1;
-        #[expect(clippy::cast_sign_loss, reason = "both values are known non-negative at this point")]
-        let g = gcd(numerator as u64, denominator as u64).cast_signed();
-        numerator /= g;
-        denominator /= g;
-        // Also reduce against the running result
-        #[expect(clippy::cast_sign_loss, reason = "result and denominator are known non-negative")]
-        let g2 = gcd(result as u64, denominator as u64).cast_signed();
-        result /= g2;
-        denominator /= g2;
-        debug_assert!(denominator == 1, "denominator should be 1 after GCD reduction in comb");
-        match result.checked_mul(numerator) {
-            Some(v) => result = v,
-            None => {
-                return Err(SimpleException::new_msg(ExcType::OverflowError, "integer overflow in comb").into());
-            }
+    // C(n, k) == C(n, n - k): take the shorter product.
+    let n_minus_k = &n - &k;
+    let k = k.min(n_minus_k);
+    let Some(k) = k.to_i64() else {
+        return Err(SimpleException::new_msg(
+            ExcType::OverflowError,
+            "min(n - k, k) must not exceed 9223372036854775807",
+        )
+        .into());
+    };
+    let result = falling_product(&n, k.unsigned_abs(), true, &vm.heap.tracker)?;
+    Ok(LongInt::new(result).into_value(vm.heap))
+}
+
+/// `n * (n - 1) * ... * (n - k + 1)`, the `k`-permutation count; with `binomial` each
+/// step also divides by `i + 1`, so every partial product is the exact `C(n, i + 1)`.
+fn falling_product(n: &BigInt, k: u64, binomial: bool, tracker: &ResourceTracker) -> RunResult<BigInt> {
+    // The product has fewer than `k * bits(n)` bits; a binomial is also below `2**n`.
+    let mut result_bits = k.saturating_mul(n.bits());
+    if binomial && let Some(n) = n.to_u64() {
+        result_bits = result_bits.min(n);
+    }
+    check_product_size(result_bits, tracker)?;
+    let mut result = BigInt::one();
+    for (polls, i) in (0..k).enumerate() {
+        // Nothing here returns to the VM's dispatch checkpoint, so the loop polls the clock itself.
+        tracker.check_time_every(polls)?;
+        result *= n - i;
+        if binomial {
+            result /= i + 1;
         }
     }
-    Ok(Value::Int(result))
+    Ok(result)
 }
 
 /// `math.perm(n, k=None)` — returns the number of k-length permutations from n items.
@@ -1111,45 +1182,32 @@ fn math_comb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Both arguments must be non-negative integers. When `k` is omitted, defaults to `n`
 /// (i.e., `perm(n)` returns `n!`), matching CPython behavior.
 fn math_perm(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (n_val, k_val) = args.get_one_two_args("math.perm", vm.heap)?;
+    // CPython's arity errors name the bare function: `perm expected at most 2 arguments, got 3`.
+    let (n_val, k_val) = args.get_one_two_args("perm", vm.heap)?;
     defer_drop!(n_val, vm);
 
-    let n = value_to_int(n_val, vm)?;
-    let k_explicit = k_val.is_some();
-    let k = match k_val {
-        Some(kv) => {
-            defer_drop!(kv, vm);
-            value_to_int(kv, vm)?
-        }
-        None => n,
+    let n = value_to_bigint(n_val, vm)?;
+    // `perm(n)` is `n!`, argument errors included.
+    let Some(k_val) = k_val else {
+        return Ok(LongInt::new(factorial(&n, &vm.heap.tracker)?).into_value(vm.heap));
     };
+    defer_drop!(k_val, vm);
+    let k = value_to_bigint(k_val, vm)?;
 
-    if n < 0 {
-        // When called as perm(n) without k, CPython uses the factorial error message
-        let msg = if k_explicit {
-            "n must be a non-negative integer"
-        } else {
-            "factorial() not defined for negative values"
-        };
-        return Err(SimpleException::new_msg(ExcType::ValueError, msg).into());
+    if n.is_negative() {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "n must be a non-negative integer").into());
     }
-    if k < 0 {
+    if k.is_negative() {
         return Err(SimpleException::new_msg(ExcType::ValueError, "k must be a non-negative integer").into());
     }
     if k > n {
         return Ok(Value::Int(0));
     }
-
-    let mut result: i64 = 1;
-    for i in 0..k {
-        match result.checked_mul(n - i) {
-            Some(v) => result = v,
-            None => {
-                return Err(SimpleException::new_msg(ExcType::OverflowError, "integer overflow in perm").into());
-            }
-        }
-    }
-    Ok(Value::Int(result))
+    let Some(k) = k.to_i64() else {
+        return Err(SimpleException::new_msg(ExcType::OverflowError, "k must not exceed 9223372036854775807").into());
+    };
+    let result = falling_product(&n, k.unsigned_abs(), false, &vm.heap.tracker)?;
+    Ok(LongInt::new(result).into_value(vm.heap))
 }
 
 // ==========================
@@ -1244,7 +1302,14 @@ fn math_ldexp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(i_val, vm);
 
     let x = value_to_float(x_val, vm)?;
-    let i = value_to_int(i_val, vm)?;
+    // An exponent beyond `i64` saturates: the result overflows or underflows either way.
+    let i = match i_val {
+        Value::Int(i) => *i,
+        Value::Bool(b) => i64::from(*b),
+        _ => i_val
+            .long_int_to_i64_saturating(vm)
+            .ok_or_else(|| not_an_integer_error(i_val, vm))?,
+    };
 
     // Special cases: inf/nan/zero pass through regardless of exponent
     if x.is_nan() || x.is_infinite() || x == 0.0 {
@@ -1331,7 +1396,8 @@ fn math_erfc(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// Converts a `Value` to `f64`, raising `TypeError` if the value is not numeric.
 ///
-/// Accepts floats, integers (including big integers), and booleans. Other types raise a `TypeError`
+/// Accepts `Float`, `Int`, `Bool` and long ints, which convert like `float()` and so
+/// raise `OverflowError` beyond the float range. Other types raise a `TypeError`
 /// with a message matching CPython's format: "must be real number, not <type>".
 #[expect(
     clippy::cast_precision_loss,
@@ -1342,36 +1408,36 @@ fn value_to_float(value: &Value, vm: &VM<'_>) -> RunResult<f64> {
         Value::Float(f) => Ok(*f),
         Value::Int(n) => Ok(*n as f64),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
-        Value::InternLongInt(id) => vm
-            .interns
-            .get_long_int(*id)
-            .to_f64()
-            .filter(|f| f.is_finite())
-            .ok_or_else(ExcType::overflow_int_to_float),
-        Value::Ref(id) if let HeapData::LongInt(integer) = vm.heap.get(*id) => integer
-            .to_f64()
-            .filter(|f| f.is_finite())
-            .ok_or_else(ExcType::overflow_int_to_float),
-        _ => Err(ExcType::type_error(format!(
-            "must be real number, not {}",
-            value.py_type_name(vm)
-        ))),
+        _ => match value.as_long_int(vm) {
+            Some(n) => bigint_to_f64_checked(n),
+            None => Err(ExcType::type_error(format!(
+                "must be real number, not {}",
+                value.py_type_name(vm)
+            ))),
+        },
     }
 }
 
-/// Converts a `Value` to `i64`, raising `TypeError` if the value is not an integer.
+/// Converts a `Value` to an arbitrary-precision integer, raising `TypeError` otherwise.
 ///
-/// Accepts `Int` and `Bool` values. For other types, raises a `TypeError`
-/// with a message matching CPython's format.
-fn value_to_int(value: &Value, vm: &VM<'_>) -> RunResult<i64> {
+/// Accepts `Int`, `Bool` and long ints; the message matches CPython's `__index__` failure.
+fn value_to_bigint(value: &Value, vm: &VM<'_>) -> RunResult<BigInt> {
     match value {
-        Value::Int(n) => Ok(*n),
-        Value::Bool(b) => Ok(i64::from(*b)),
-        _ => Err(ExcType::type_error(format!(
-            "'{}' object cannot be interpreted as an integer",
-            value.py_type_name(vm)
-        ))),
+        Value::Int(n) => Ok(BigInt::from(*n)),
+        Value::Bool(b) => Ok(BigInt::from(*b)),
+        _ => value
+            .as_long_int(vm)
+            .cloned()
+            .ok_or_else(|| not_an_integer_error(value, vm)),
     }
+}
+
+/// The `TypeError` CPython raises when `__index__` is missing on a `math` argument.
+fn not_an_integer_error(value: &Value, vm: &VM<'_>) -> RunError {
+    ExcType::type_error(format!(
+        "'{}' object cannot be interpreted as an integer",
+        value.py_type_name(vm)
+    ))
 }
 
 /// Requires that a float is finite, raising ValueError if it's inf or nan.
@@ -1382,27 +1448,5 @@ fn require_finite(f: f64) -> RunResult<()> {
         Err(SimpleException::new_msg(ExcType::ValueError, format!("expected a finite input, got {f:?}")).into())
     } else {
         Ok(())
-    }
-}
-
-/// Euclidean GCD algorithm for unsigned 64-bit integers.
-fn gcd(mut a: u64, mut b: u64) -> u64 {
-    while b != 0 {
-        let t = b;
-        b = a % b;
-        a = t;
-    }
-    a
-}
-
-/// Converts a `u64` result to a `Value`, promoting to `LongInt` if it exceeds `i64::MAX`.
-///
-/// This is needed for operations like `gcd(i64::MIN, 0)` where the unsigned result
-/// (`2^63`) doesn't fit in a signed `i64`.
-fn u64_to_value(n: u64, heap: &mut Heap) -> Value {
-    if let Ok(signed) = i64::try_from(n) {
-        Value::Int(signed)
-    } else {
-        LongInt::new(BigInt::from(n)).into_value(heap)
     }
 }

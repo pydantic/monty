@@ -11,7 +11,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use monty_types::MontyPath;
+use monty_types::{MontyPath, OsFunctionCall};
 use smallvec::SmallVec;
 
 use crate::{
@@ -23,7 +23,7 @@ use crate::{
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    os_dispatch::{build_path_os_call, is_path_os_method},
+    os_dispatch::{PreConversionEffect, build_path_os_call, is_path_os_method},
     types::{LazyHeapSet, List, PyTrait, Type, allocate_tuple, str::allocate_string},
     value::{EitherStr, Value},
 };
@@ -302,6 +302,31 @@ impl Path {
     }
 }
 
+/// Classmethod `Path.cwd()`, also callable through instances: returns the VM's
+/// virtual working directory without a host round-trip.
+///
+/// A pure-Python classmethod in CPython, so its arity errors count `cls`:
+/// one stray positional is `takes 1 positional argument but 2 were given`.
+pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    if !matches!(args, ArgValues::Empty) {
+        let (pos, kwargs) = args.into_parts();
+        let given = pos.len();
+        let first_kwarg = kwargs.first_key(vm.heap, vm.interns);
+        pos.drop_with(vm);
+        kwargs.drop_with(vm);
+        // CPython reports a stray keyword before the positional count.
+        return Err(match first_kwarg? {
+            Some(key) => ExcType::type_error_unexpected_keyword("Path.cwd", &key),
+            None => ExcType::type_error(format!(
+                "Path.cwd() takes 1 positional argument but {} were given",
+                given + 1
+            )),
+        });
+    }
+    let path = Path::new(vm.env.cwd.to_string());
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
+}
+
 /// Extracts a string from a Value for use as a path.
 fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
     value_as_path_str(val, vm.heap, vm.interns)
@@ -489,8 +514,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
     /// Handles attribute calls on Path objects, including both pure methods (no I/O)
     /// and OS methods that require host system access.
     ///
-    /// OS methods (exists, read_text, etc.) are detected via `OsFunction::try_from`
-    /// and returned as `CallResult::OsCall` for the VM to yield to the host.
+    /// OS methods yield calls to the host; `iterdir` retains the receiver's spelling
+    /// so the resume path can restore it on each returned entry.
     /// Pure methods (is_absolute, joinpath, etc.) are handled directly.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
@@ -509,6 +534,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
             // on every error path; `self` is a separate heap entry that
             // we don't transfer here.
             return match build_path_os_call(method, path, args, vm)? {
+                Some(OsFunctionCall::Iterdir(path)) => Ok(CallResult::OsCallWithEffect {
+                    effect: PreConversionEffect::IterdirPaths {
+                        path: path.as_str().to_owned(),
+                    }
+                    .into(),
+                    call: OsFunctionCall::Iterdir(path),
+                }),
                 Some(call) => Ok(CallResult::OsCall(call)),
                 None => unreachable!("is_path_os_method gates the call"),
             };
@@ -516,6 +548,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
 
         // Pure methods (no I/O)
         let value = match method {
+            StaticStrings::Cwd => class_cwd(vm, args),
             StaticStrings::IsAbsolute => {
                 args.check_zero_args("is_absolute", vm.heap)?;
                 Ok(Value::Bool(self.get(vm.heap).is_absolute()))

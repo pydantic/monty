@@ -31,6 +31,7 @@ class RunMonty(Protocol):
         | CollectString
         | None = None,
         mount: MountDir | list[MountDir] | None = None,
+        cwd: str | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
         skip_type_check: bool = False,
         limits: ResourceLimits | None = None,
@@ -66,6 +67,7 @@ def monty_run(pool: Monty) -> RunMonty:
         | CollectString
         | None = None,
         mount: MountDir | list[MountDir] | None = None,
+        cwd: str | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
         skip_type_check: bool = False,
         limits: ResourceLimits | None = None,
@@ -77,6 +79,7 @@ def monty_run(pool: Monty) -> RunMonty:
                 external_lookup=external_lookup,
                 print_callback=print_callback,
                 mount=mount,
+                cwd=cwd,
                 os=os,
                 skip_type_check=skip_type_check,
             )

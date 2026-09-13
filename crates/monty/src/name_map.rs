@@ -188,6 +188,11 @@ impl NameMap {
         }
     }
 
+    /// The name at every slot, indexed by `NamespaceId::index()`.
+    pub fn names(&self) -> &[StringId] {
+        &self.slots
+    }
+
     /// Iterates over `(slot, name)` pairs in slot order.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (NamespaceId, StringId)> + '_ {
         self.slots.iter().enumerate().map(|(i, &name)| {

@@ -16,13 +16,21 @@ import os
 import sys
 import tempfile
 from collections.abc import Generator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import Monty, MontyFileHandle, MontyRuntimeError, MountDir
+from pydantic_monty import (
+    Monty,
+    MontyFileHandle,
+    MontyRuntimeError,
+    MontySession,
+    MontySyntaxError,
+    MontyTypingError,
+    MountDir,
+)
 
 
 @pytest.fixture
@@ -639,3 +647,168 @@ def test_search_only_directory_mountability(test_dir: Path):
         assert message == snapshot("cannot open host path '<dir>': Permission denied (os error 13)")
     finally:
         target.chmod(0o755)
+
+
+# =============================================================================
+# Working directory
+# =============================================================================
+
+
+def test_cwd_defaults_to_the_first_mount(monty_run: RunMonty, test_dir: Path):
+    md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
+    code = "import os\nfrom pathlib import Path\n(os.getcwd(), Path.cwd(), __file__, open('hello.txt').read())"
+    assert monty_run(code, mount=md) == snapshot(('/data', Path('/data'), '/data/main.py', 'hello world'))
+    assert monty_run('import os\n(os.getcwd(), __file__)') == snapshot(('/', '/main.py'))
+
+
+def test_cwd_explicit(monty_run: RunMonty, test_dir: Path):
+    md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
+    code = """
+import os
+from pathlib import Path
+f = open('nested.txt')
+(os.getcwd(), f.read(), f.name, [str(p) for p in Path('.').iterdir()])
+"""
+    assert monty_run(code, mount=md, cwd='/data/subdir/') == (
+        '/data/subdir',
+        'nested content',
+        'nested.txt',
+        ['nested.txt'],
+    )
+
+
+@pytest.mark.parametrize(
+    'cwd, message',
+    [
+        pytest.param('data', 'ValueError: cwd must be an absolute POSIX path: "data"', id='relative'),
+        pytest.param('', 'ValueError: cwd must be an absolute POSIX path: ""', id='empty'),
+        pytest.param('/data\0', 'ValueError: cwd must not contain NUL bytes: "/data\\0"', id='nul'),
+    ],
+)
+def test_cwd_is_validated(monty_run: RunMonty, cwd: str, message: str):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('1', cwd=cwd)
+    assert str(exc_info.value) == message
+
+
+def test_cwd_persists_across_feeds(pool: Monty, test_dir: Path):
+    md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
+    with pool.checkout() as session:
+        # the first feed's mount sets the directory; chdir and the mount-less feed keep it
+        code = "import os\nfrom pathlib import Path\nos.chdir(path='subdir')\nstr(Path('.').cwd())"
+        assert session.feed_run(code, mount=md) == '/data/subdir'
+        assert session.feed_run('os.getcwd()', mount=md) == snapshot('/data/subdir')
+        assert session.feed_run('os.getcwd()') == snapshot('/data/subdir')
+        # an explicit cwd switches it, and the switch persists too
+        assert session.feed_run('os.getcwd()', cwd='/data') == snapshot('/data')
+        assert session.feed_run("open('hello.txt').read()", mount=md) == snapshot('hello world')
+    with pool.checkout() as session:
+        # a session whose first feed has no mount starts at the root and stays there
+        assert session.feed_run('import os\nos.getcwd()') == snapshot('/')
+        assert session.feed_run('os.getcwd()', mount=md) == snapshot('/')
+
+
+def test_chdir_errors(monty_run: RunMonty, test_dir: Path):
+    md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import os\nos.chdir('hello.txt')", mount=md)
+    assert str(exc_info.value) == snapshot("NotADirectoryError: [Errno 20] Not a directory: 'hello.txt'")
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import os\nos.chdir('missing')", mount=md)
+    assert str(exc_info.value) == snapshot("FileNotFoundError: [Errno 2] No such file or directory: '/data/missing'")
+    # Without a mount or `os` handler, the stat behind chdir has no answerer.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import os\nos.chdir('/data')")
+    assert str(exc_info.value) == snapshot("PermissionError: Permission denied: '/data'")
+
+
+@pytest.mark.parametrize('absolute', [False, True])
+@pytest.mark.parametrize(
+    'prefix, error_type',
+    [
+        pytest.param('bad\0/../', ValueError, id='nul'),
+        pytest.param('a' * 256 + '/../', OSError, id='long-component'),
+        pytest.param('a/' * 1000 + '../' * 1000, OSError, id='long-path'),
+        pytest.param('a/' * 65 + '../' * 65, OSError, id='deep-path'),
+    ],
+)
+@pytest.mark.parametrize(
+    'operation, target',
+    [
+        ('open(path).read()', 'hello.txt'),
+        ('Path(path).read_text()', 'hello.txt'),
+        ('os.chdir(path)', '.'),
+        ("os.rename(path, 'renamed.txt')", 'hello.txt'),
+        ("os.rename('hello.txt', path)", 'renamed.txt'),
+    ],
+)
+def test_paths_are_validated_before_normalization(
+    session: MontySession,
+    test_dir: Path,
+    absolute: bool,
+    prefix: str,
+    error_type: type[Exception],
+    operation: str,
+    target: str,
+):
+    """Cancelled components must still reach the mount's NUL and length checks."""
+    md = MountDir(host_path=test_dir, virtual_path='/data', mode='read-write')
+    path = ('/data/' if absolute else '') + prefix + target
+
+    def os_handler(*args: object) -> None:
+        pytest.fail('invalid paths must be rejected before calling os=')
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        session.feed_run(
+            'import os\nfrom pathlib import Path\n' + operation, inputs={'path': path}, mount=md, os=os_handler
+        )
+    assert type(exc_info.value.exception()) is error_type
+    assert session.feed_run('Path(path).exists()', mount=md) is False
+    assert session.feed_run('os.getcwd()') == '/data'
+    assert (test_dir / 'hello.txt').read_text() == 'hello world'
+    assert not (test_dir / 'renamed.txt').exists()
+
+
+def test_chdir_normalizes_after_mount_validation(session: MontySession, test_dir: Path):
+    """Only successful directory changes update the canonical session cwd."""
+    md = MountDir(host_path=test_dir, virtual_path='/data', mode='read-only')
+    assert session.feed_run("import os\nos.chdir('./subdir/../subdir//')\nos.getcwd()", mount=md) == '/data/subdir'
+    assert session.feed_run("os.chdir('.././')\nos.getcwd()", mount=md) == '/data'
+    assert session.feed_run("os.chdir('/data/./subdir/..//')\nos.getcwd()", mount=md) == '/data'
+
+
+def test_first_feed_failure_keeps_the_mount_default_cwd(pool: Monty, test_dir: Path):
+    """A first feed that fails after parsing still adopts the mount default; a
+    typing rejection never reaches the worker, so nothing is adopted."""
+    md = MountDir(host_path=test_dir, virtual_path='/data', mode='read-only')
+    with pool.checkout() as session:
+        with pytest.raises(MontySyntaxError):
+            session.feed_run('def', mount=md)
+        assert session.feed_run('import os\nos.getcwd()') == '/data'
+    with pool.checkout(type_check=True) as session:
+        with pytest.raises(MontyTypingError):
+            session.feed_run("x: int = 'a'", mount=md)
+        assert session.feed_run('import os\nos.getcwd()') == '/'
+
+
+def test_path_length_limits_are_mount_policy(monty_run: RunMonty, test_dir: Path):
+    """A feed with no mount passes overlong paths to the callback; a feed with
+    any mount rejects them first, even for paths outside every mount."""
+    seen: list[object] = []
+
+    def os_handler(function_name: str, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+        seen.append(args[0])
+        return False
+
+    long_path = '/other/' + 'a' * 5000
+    assert (
+        monty_run('from pathlib import Path\nPath(path).exists()', inputs={'path': long_path}, os=os_handler) is False
+    )
+    assert seen == [PurePosixPath(long_path)]
+    md = MountDir(host_path=test_dir, virtual_path='/data', mode='read-only')
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import os\nos.stat(path)', inputs={'path': long_path}, mount=md, os=os_handler)
+    assert str(exc_info.value) == snapshot(
+        "OSError: [Errno 36] File name too long: '/other/aaaaaaaaaaaaa…aaaaaaaaaaaaaaaaaaaa'"
+    )
+    assert seen == [PurePosixPath(long_path)]

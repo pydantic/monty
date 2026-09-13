@@ -10,6 +10,29 @@ from inline_snapshot import snapshot
 import pydantic_monty
 
 
+@pytest.mark.parametrize('wrapped', [False, True])
+async def test_coroutine_calls_keep_gather_concurrent(wrapped: bool):
+    """Both host coroutines must start before either can finish, including sandbox wrappers."""
+    ready = asyncio.Event()
+
+    async def first() -> int:
+        await ready.wait()
+        return 1
+
+    async def second() -> int:
+        ready.set()
+        return 2
+
+    code = 'import asyncio\n'
+    if wrapped:
+        code += 'async def a():\n    return await first()\nasync def b():\n    return await second()\n'
+        code += 'await asyncio.gather(a(), b())'
+    else:
+        code += 'await asyncio.gather(first(), second())'
+    result = await asyncio.wait_for(run_async(code, external_lookup={'first': first, 'second': second}), 5)
+    assert result == [1, 2]
+
+
 async def run_async(code: str, **kwargs: Any) -> Any:
     """Runs one snippet in a fresh async pool/session and returns its result."""
     async with pydantic_monty.AsyncMonty() as pool:
@@ -17,7 +40,7 @@ async def run_async(code: str, **kwargs: Any) -> Any:
             return await session.feed_run(code, **kwargs)
 
 
-@pytest.mark.parametrize('exit_mode', ['complete', 'error', 'cancel'])
+@pytest.mark.parametrize('exit_mode', ['complete', 'error', 'cancel', 'cancel_deferred'])
 @pytest.mark.parametrize('cleanup_raises', [False, True])
 async def test_async_run_joins_unfinished_callbacks(exit_mode: str, cleanup_raises: bool):
     """Every run exit joins its unfinished callbacks."""
@@ -46,13 +69,15 @@ async def test_async_run_joins_unfinished_callbacks(exit_mode: str, cleanup_rais
         code += '\nraise ValueError("sandbox failed")'
     elif exit_mode == 'cancel':
         code = 'await background()'
+    elif exit_mode == 'cancel_deferred':
+        code = 'import asyncio\nawait asyncio.gather(background())'
     unrelated = asyncio.create_task(asyncio.Event().wait())
     driver = asyncio.create_task(
         run_async(code, external_lookup={'background': background, 'wait_until_started': wait_until_started})
     )
     try:
         await asyncio.wait_for(started.wait(), timeout=5)
-        if exit_mode == 'cancel':
+        if exit_mode in {'cancel', 'cancel_deferred'}:
             driver.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await driver
@@ -248,6 +273,20 @@ async def test_async_run_does_not_own_tasks_created_by_callbacks():
         for task in child_tasks:
             task.cancel()
         await asyncio.gather(*child_tasks, return_exceptions=True)
+
+
+async def test_sequential_coroutines_use_one_suspension_per_call():
+    """Two eager calls fit a two-suspension budget, including container results."""
+
+    async def fetch() -> list[int]:
+        return [21]
+
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout(limits={'max_suspensions': 2}) as session:
+            result = await session.feed_run(
+                'a = await fetch()\nb = await fetch()\na[0] + b[0]', external_lookup={'fetch': fetch}
+            )
+            assert result == 42
 
 
 async def test_async_external_function_raises_surfaces_as_monty_runtime_error():

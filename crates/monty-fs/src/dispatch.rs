@@ -7,12 +7,9 @@
 //! Ownership matters: write payloads are *moved* through here so overlay
 //! storage can retain them without a copy.
 
-use monty_types::{FileMode, MontyFileHandle, MontyObject, MontyPath, OsFunctionCall};
+use monty_types::{FileMode, MontyFileHandle, MontyObject, MontyPath, OsFunctionCall, normalize_virtual_path};
 
-use super::{
-    common::MountContext, direct, error::MountError, mount_mode::MountMode, overlay,
-    path_security::normalize_virtual_path,
-};
+use super::{common::MountContext, direct, error::MountError, mount_mode::MountMode, overlay};
 
 /// Parsed filesystem request passed to the direct or overlay backend.
 #[derive(Debug)]
@@ -197,7 +194,7 @@ pub(super) fn execute(
 /// subsequent `read`/`write` calls re-resolve it against the mount descriptor.
 pub(super) fn file_handle_result(path: &str, mode: FileMode) -> MontyObject {
     MontyObject::FileHandle(MontyFileHandle {
-        path: normalize_virtual_path(path),
+        path: normalize_virtual_path(path).into_owned(),
         mode,
         position: 0,
     })

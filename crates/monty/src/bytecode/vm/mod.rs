@@ -15,7 +15,7 @@ mod format;
 mod recursion;
 mod scheduler;
 
-use std::mem;
+use std::{borrow::Cow, mem};
 
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
@@ -38,11 +38,13 @@ use crate::{
     intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
     object_bridge::MontyObjectExt,
-    os_dispatch::{PendingOsEffect, listdir_names, release_pending_effect},
+    os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect, resolve_call_paths},
     parse::CodeRange,
+    run::VmEnv,
     types::{
         Dict, LongInt, PyTrait,
-        file::{apply_buffer_store, apply_write_position},
+        file::{apply_buffer_store, apply_open_name, apply_write_position},
+        str::allocate_string,
     },
     value::{EitherStr, Value},
 };
@@ -158,24 +160,16 @@ macro_rules! handle_call_result {
                     name_load_ip,
                 });
             }
-            Ok(CallResult::OsCall(function_call)) => {
-                let call_id = $self.allocate_call_id();
-                return Ok(FrameExit::OsCall {
-                    function_call,
-                    call_id,
-                    effect: None,
-                });
-            }
-            Ok(CallResult::OsCallWithEffect { call, effect }) => {
-                let call_id = $self.allocate_call_id();
-                // Not armed here — this exit may still be rejected on its
-                // way out, and only a dispatched call earns a `resume`.
-                return Ok(FrameExit::OsCall {
-                    function_call: call,
-                    call_id,
-                    effect: Some(effect),
-                });
-            }
+            Ok(CallResult::OsCall(call)) => match $self.prepare_os_call(call, None) {
+                Ok(Some(exit)) => return Ok(exit),
+                Ok(None) => {}
+                Err(err) => catch!($self, err),
+            },
+            Ok(CallResult::OsCallWithEffect { call, effect }) => match $self.prepare_os_call(call, Some(effect)) {
+                Ok(Some(exit)) => return Ok(exit),
+                Ok(None) => {}
+                Err(err) => catch!($self, err),
+            },
             Ok(CallResult::MethodCall { name, args, object_id }) => {
                 let call_id = $self.allocate_call_id();
                 return Ok(FrameExit::MethodCall {
@@ -256,9 +250,9 @@ pub enum FrameExit {
         /// Unique ID for this call, used for async correlation.
         call_id: CallId,
         /// Post-processing for this call's result, armed on
-        /// [`VM::pending_os_effect`] only once the call reaches the host
+        /// [`VM::pending_effect`] only once the call reaches the host
         /// (`convert_frame_exit`); dropping the exit releases it instead.
-        effect: Option<PendingOsEffect>,
+        effect: Option<PendingEffect>,
     },
 
     /// Execution paused for a host-routed call: a method call on a host
@@ -640,38 +634,43 @@ pub struct VMSnapshot {
     scheduler: Scheduler,
 
     /// In-flight resume effect for the paused OS call, if any. See
-    /// [`VM::pending_os_effect`].
+    /// [`VM::pending_effect`].
     #[serde(default)]
-    pending_os_effect: Option<PendingOsEffect>,
+    pending_effect: Option<PendingEffect>,
     /// In-flight resume effect for the paused lazy attribute lookup, if any.
     /// See [`VM::pending_lookup_effect`].
     #[serde(default)]
     pending_lookup_effect: Option<PendingLookupEffect>,
+
+    /// Working directory at the pause, including any `os.chdir` so far.
+    cwd: String,
 }
 
 impl VMSnapshot {
     /// Discards the in-flight execution state of a snapshot that will never be
     /// restored, releasing every heap reference it holds (operand and exception
     /// stacks, scheduler tasks, pending resume effects), and returns the globals
-    /// so an abandoned REPL snippet keeps its namespace. Mirrors `VM::drop`.
-    pub(crate) fn abandon(self, heap: &mut Heap) -> Vec<Value> {
+    /// and working directory so an abandoned REPL snippet keeps its namespace
+    /// and any `os.chdir` it made. Mirrors `VM::drop`.
+    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String) {
         let Self {
             stack,
             globals,
             exception_stack,
             mut scheduler,
-            pending_os_effect,
+            pending_effect,
             pending_lookup_effect,
+            cwd,
             ..
         } = self;
         HeapReader::with(heap, &mut (), |heap, ()| {
-            release_pending_effect(pending_os_effect, heap);
+            release_pending_effect(pending_effect, heap);
             pending_lookup_effect.drop_with(heap);
             exception_stack.drop_with(heap);
             stack.drop_with(heap);
             scheduler.cleanup(heap);
         });
-        globals
+        (globals, cwd)
     }
 
     /// Number of tasks the scheduler held when this snapshot was taken.
@@ -776,11 +775,11 @@ pub struct VM<'h> {
     /// VM is single-threaded and OS calls are strictly request/response — so a
     /// single `Option` is sufficient even with async tasks (which interleave
     /// between OS calls, not within one).
-    pub(crate) pending_os_effect: Option<PendingOsEffect>,
+    pub(crate) pending_effect: Option<PendingEffect>,
 
     /// How the paused lazy attribute lookup's answer is consumed on `resume`
     /// (`hasattr()` / `getattr()` default), armed like
-    /// [`pending_os_effect`](Self::pending_os_effect) once the lookup reaches
+    /// [`pending_effect`](Self::pending_effect) once the lookup reaches
     /// the host; `None` for `obj.attr` and when nothing is in flight.
     pub(crate) pending_lookup_effect: Option<PendingLookupEffect>,
 
@@ -813,9 +812,11 @@ pub struct VM<'h> {
     /// snapshotted (a pure performance cache), so default-initialized on restore.
     pub(crate) re_pattern_cache: RePatternCache,
 
-    /// UTF-8 byte cap for each operand repr in introspected assert messages.
-    /// Supplied by the executor on construction, so it is not snapshotted.
-    pub(crate) assert_repr_max_bytes: u32,
+    /// Working directory, `__file__` inputs and the assert-repr cap for this
+    /// run. Rebuilt from the executor on restore, except the working
+    /// directory, which travels in the snapshot because `os.chdir` may have
+    /// moved it.
+    pub(crate) env: VmEnv<'h>,
 }
 
 impl<'h> VM<'h> {
@@ -826,7 +827,7 @@ impl<'h> VM<'h> {
         heap: &'h mut HeapReader<'h>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
-        assert_repr_max_bytes: u32,
+        env: VmEnv<'h>,
     ) -> Self {
         Self::new_with_frame(
             globals,
@@ -834,7 +835,7 @@ impl<'h> VM<'h> {
             heap,
             interns,
             print_writer,
-            assert_repr_max_bytes,
+            env,
         )
     }
 
@@ -845,7 +846,7 @@ impl<'h> VM<'h> {
         heap: &'h mut HeapReader<'h>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
-        assert_repr_max_bytes: u32,
+        env: VmEnv<'h>,
     ) -> Self {
         Self {
             stack: Vec::with_capacity(64),
@@ -861,13 +862,13 @@ impl<'h> VM<'h> {
             ext_function_load_ip: None, // Set by LoadGlobalCallable
             module_code: None,
             json_string_cache: JsonStringCache::default(),
-            pending_os_effect: None,
+            pending_effect: None,
             pending_lookup_effect: None,
             recursion_depth: 0,
             namespace_scratch: Vec::new(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
-            assert_repr_max_bytes,
+            env,
         }
     }
 
@@ -883,14 +884,14 @@ impl<'h> VM<'h> {
     /// * `heap` - The deserialized heap
     /// * `interns` - Interns for looking up function code
     /// * `print_writer` - Writer for print output
-    /// * `assert_repr_max_bytes` - Operand-repr byte cap from the executor
+    /// * `env` - The executor's environment; the snapshot's working directory overrides its `cwd`
     pub fn restore(
         snapshot: VMSnapshot,
         module_code: &'h Code,
         heap: &'h mut HeapReader<'h>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
-        assert_repr_max_bytes: u32,
+        env: VmEnv<'h>,
     ) -> Self {
         // Reconstruct call frames from serialized form
         let frames: Vec<CallFrame<'_>> = snapshot
@@ -937,14 +938,18 @@ impl<'h> VM<'h> {
             module_code: Some(module_code),
             ext_function_load_ip: None,
             json_string_cache: JsonStringCache::default(),
-            pending_os_effect: snapshot.pending_os_effect,
+            pending_effect: snapshot.pending_effect,
             pending_lookup_effect: snapshot.pending_lookup_effect,
             recursion_depth: current_frame_depth,
             namespace_scratch: Vec::new(),
             // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
-            assert_repr_max_bytes,
+            env: {
+                let mut env = env;
+                env.cwd = Cow::Owned(snapshot.cwd);
+                env
+            },
         }
     }
 
@@ -990,8 +995,11 @@ impl<'h> VM<'h> {
             exception_stack: mem::take(&mut self.exception_stack),
             instruction_ip: self.instruction_ip,
             scheduler: mem::take(&mut self.scheduler),
-            pending_os_effect: self.pending_os_effect.take(),
+            pending_effect: self.pending_effect.take(),
             pending_lookup_effect: self.pending_lookup_effect.take(),
+            // Reset to the starting directory rather than `take` (an empty
+            // string), so a later `take_changed_cwd` on this VM stays honest.
+            cwd: mem::replace(&mut self.env.cwd, Cow::Borrowed(self.env.initial_cwd)).into_owned(),
         }
     }
 
@@ -1017,6 +1025,42 @@ impl<'h> VM<'h> {
     /// any remaining globals with `drop_with`.
     pub fn take_globals(&mut self) -> Vec<Value> {
         mem::take(&mut self.globals)
+    }
+
+    /// Takes the working directory if this run owns one: after an `os.chdir`,
+    /// or always for a restored VM (its snapshot carried the directory). The
+    /// REPL writes it back so a directory change persists into later feeds.
+    pub fn take_changed_cwd(&mut self) -> Option<String> {
+        match mem::replace(&mut self.env.cwd, Cow::Borrowed(self.env.initial_cwd)) {
+            Cow::Owned(cwd) => Some(cwd),
+            Cow::Borrowed(_) => None,
+        }
+    }
+
+    /// Joins paths to cwd and rejects NUL bytes before yielding an OS call.
+    /// Rejected calls release their pending effect; existence predicates finish locally.
+    fn prepare_os_call(
+        &mut self,
+        mut call: OsFunctionCall,
+        effect: Option<PendingEffect>,
+    ) -> RunResult<Option<FrameExit>> {
+        resolve_call_paths(&mut call, &self.env.cwd);
+        if let Err(message) = call.check_path_null_bytes() {
+            release_pending_effect(effect, self.heap);
+            if call.is_existence_check() {
+                self.push(Value::Bool(false));
+                Ok(None)
+            } else {
+                Err(ExcType::value_error(message))
+            }
+        } else {
+            // The effect is armed only after this exit is accepted for dispatch.
+            Ok(Some(FrameExit::OsCall {
+                function_call: call,
+                call_id: self.allocate_call_id(),
+                effect,
+            }))
+        }
     }
 
     /// Allocates a new `CallId` for an external function call.
@@ -1936,16 +1980,17 @@ impl<'h> VM<'h> {
     /// through the corresponding helper (file-state update or `os.listdir`
     /// name reduction) before it is pushed back to Python.
     pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
-        // `ListdirNames` reshapes the raw host object *before* heap
-        // conversion — plain data in, plain data out, no refcounts involved.
-        let obj = if matches!(self.pending_os_effect, Some(PendingOsEffect::ListdirNames)) {
-            self.pending_os_effect = None;
-            match listdir_names(obj) {
+        // Pre-conversion effects reshape the raw host object; a post-conversion
+        // effect waits in the slot until the value exists to apply it to.
+        let obj = match self.pending_effect.take() {
+            Some(PendingEffect::Pre(effect)) => match effect.reshape(obj, self) {
                 Ok(obj) => obj,
                 Err(err) => return self.resume_with_exception(err),
+            },
+            post => {
+                self.pending_effect = post;
+                obj
             }
-        } else {
-            obj
         };
         // Surface resource-exhaustion failures from `to_value` (e.g. a host
         // string whose `heap.allocate` trips `max_memory`) as the same
@@ -1958,23 +2003,23 @@ impl<'h> VM<'h> {
                 SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {other}"))).into()
             }
         })?;
-        if let Some(effect) = self.pending_os_effect.take() {
-            let result = match effect {
-                PendingOsEffect::BufferStore { file_id } => apply_buffer_store(file_id, value, self),
-                PendingOsEffect::WritePosition { file_id, .. } => apply_write_position(file_id, value, self),
-                // Cleared above, before conversion.
-                PendingOsEffect::ListdirNames => unreachable!("ListdirNames is handled before heap conversion"),
-            };
-            match result {
-                Ok(value) => {
-                    self.push(value);
-                    self.run_external()
-                }
-                Err(err) => self.resume_with_exception(err),
+        let result = match self.pending_effect.take() {
+            Some(PendingEffect::Post(PostConversionEffect::BufferStore { file_id })) => {
+                apply_buffer_store(file_id, value, self)
             }
-        } else {
-            self.push(value);
-            self.run_external()
+            Some(PendingEffect::Post(PostConversionEffect::WritePosition { file_id, .. })) => {
+                apply_write_position(file_id, value, self)
+            }
+            Some(PendingEffect::Post(PostConversionEffect::OpenName { name })) => apply_open_name(name, value, self),
+            // Any pre-conversion effect was consumed above.
+            Some(PendingEffect::Pre(_)) | None => Ok(value),
+        };
+        match result {
+            Ok(value) => {
+                self.push(value);
+                self.run_external()
+            }
+            Err(err) => self.resume_with_exception(err),
         }
     }
 
@@ -1995,20 +2040,20 @@ impl<'h> VM<'h> {
     /// Also clears any pending file effect so user code that catches a
     /// host-side OS exception can retry without stale in-flight state.
     pub fn resume_with_exception(&mut self, error: RunError) -> Result<FrameExit, RunError> {
-        if let Some(effect) = self.pending_os_effect.take() {
+        if let Some(effect) = self.pending_effect.take() {
             match effect {
-                PendingOsEffect::BufferStore { file_id } => {
+                PendingEffect::Post(PostConversionEffect::BufferStore { file_id }) => {
                     if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
                         file.get_mut(self.heap).clear_pending_read();
                         drop(file);
                     }
                     self.heap.dec_ref(file_id);
                 }
-                PendingOsEffect::WritePosition {
+                PendingEffect::Post(PostConversionEffect::WritePosition {
                     file_id,
                     previous_position,
                     previous_length,
-                } => {
+                }) => {
                     if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
                         file.get_mut(self.heap)
                             .rollback_write_position(previous_position, previous_length);
@@ -2016,8 +2061,8 @@ impl<'h> VM<'h> {
                     }
                     self.heap.dec_ref(file_id);
                 }
-                // Holds no state or heap references — nothing to roll back.
-                PendingOsEffect::ListdirNames => {}
+                // Hold no state or heap references — nothing to roll back.
+                PendingEffect::Pre(_) | PendingEffect::Post(PostConversionEffect::OpenName { .. }) => {}
             }
         }
         // Use the normal exception handling mechanism
@@ -2310,14 +2355,16 @@ impl<'h> VM<'h> {
     /// (asserts always run). `__doc__`/`__spec__`/`__package__` default to
     /// `None` and `__annotations__` to a fresh empty dict — module-level
     /// annotations are not stored (see `limitations/typing.md`), so it is
-    /// always empty. `__loader__` is deliberately *not* exposed: CPython only
-    /// ever puts a loader object there (never `None`), so rather than diverge
-    /// on the type we let it raise `NameError` like other unexposed dunders
-    /// (`__file__`, `__cached__`, …).
+    /// always empty. `__file__` is the script name's final component under the
+    /// working directory the run started in. `__loader__` is deliberately
+    /// *not* exposed: CPython only ever puts a loader object there (never
+    /// `None`), so rather than diverge on the type we let it raise `NameError`
+    /// like other unexposed dunders (`__cached__`, …).
     fn module_dunder(&self, name_id: StringId) -> Option<Value> {
         let value = match self.interns.get_str(name_id) {
             "__name__" => Value::InternString(StaticStrings::DunderMain.into()),
             "__debug__" => Value::Bool(true),
+            "__file__" => allocate_string(self.env.file(), self.heap),
             "__annotations__" => Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))),
             "__doc__" | "__spec__" | "__package__" => Value::None,
             _ => return None,
@@ -2535,7 +2582,7 @@ impl ContainsHeap for VM<'_> {
 /// `take_globals`) are harmlessly drained as empty.
 impl Drop for VM<'_> {
     fn drop(&mut self) {
-        release_pending_effect(self.pending_os_effect.take(), self.heap);
+        release_pending_effect(self.pending_effect.take(), self.heap);
         self.pending_lookup_effect.take().drop_with(self.heap);
         self.exception_stack.drain(..).drop_with(self.heap);
         self.cleanup_current_task();

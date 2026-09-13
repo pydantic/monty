@@ -9,7 +9,7 @@
 //! host bindings get a generic `(positional, keyword)` view via
 //! [`OsFunctionCall::to_args`].
 
-use std::{fmt, ops::Deref};
+use std::{borrow::Cow, fmt, ops::Deref};
 
 use crate::{
     args::{ToArgs, ToMontyObject},
@@ -17,6 +17,7 @@ use crate::{
     file_mode::FileMode,
     format::StringRepr,
     object::{MontyObject, MontyTimeZone},
+    virtual_path::normalize_virtual_path,
 };
 // =============================================================================
 // OsFunctionCall — the central public dispatch value.
@@ -124,9 +125,19 @@ impl OsFunctionCall {
     }
 
     /// Projects this call's args into `(positional, keyword)` [`MontyObject`](crate::MontyObject)
-    /// vectors for delivery to a host callback.
+    /// vectors for delivery to a host callback, with lexically normalized paths.
+    /// Empty paths stay empty. The interpreter checks NUL bytes before dispatch;
+    /// hosts constructing calls must use [`Self::check_path_null_bytes`] first.
+    /// Mounts must validate length limits on the original typed call.
     #[must_use]
-    pub fn to_args(self) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
+    pub fn to_args(mut self) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
+        for path in self.fs_paths_mut() {
+            if !path.is_empty()
+                && let Cow::Owned(normalized) = normalize_virtual_path(path)
+            {
+                *path = MontyPath::new(normalized);
+            }
+        }
         match self {
             // Single-path variants — just the path in positionals.
             Self::Exists(p)
@@ -182,6 +193,19 @@ impl OsFunctionCall {
             self,
             Self::Exists(_) | Self::IsFile(_) | Self::IsDir(_) | Self::IsSymlink(_)
         )
+    }
+
+    /// Checks both raw filesystem paths before normalization can hide a NUL byte.
+    /// Returns the operation-specific `ValueError` message; existence predicates
+    /// should return `False` instead of raising it.
+    pub fn check_path_null_bytes(&self) -> Result<(), &'static str> {
+        if self.fs_primary_path().is_some_and(|path| path.contains('\0')) {
+            Err(self.embedded_null_message(false))
+        } else if self.rename_destination().is_some_and(|path| path.contains('\0')) {
+            Err(self.embedded_null_message(true))
+        } else {
+            Ok(())
+        }
     }
 
     /// CPython's `ValueError` message for a path containing a null byte.
@@ -251,14 +275,47 @@ impl OsFunctionCall {
         }
     }
 
+    /// Every path this call carries, mutably: the primary path plus the
+    /// rename destination. The interpreter resolves relative paths against
+    /// the sandbox working directory here before the call reaches the host,
+    /// so host backends only ever see absolute virtual paths.
+    pub fn fs_paths_mut(&mut self) -> impl Iterator<Item = &mut MontyPath> {
+        let (primary, dst) = match self {
+            Self::Exists(p)
+            | Self::IsFile(p)
+            | Self::IsDir(p)
+            | Self::IsSymlink(p)
+            | Self::ReadText(p)
+            | Self::ReadBytes(p)
+            | Self::Stat(p)
+            | Self::Iterdir(p)
+            | Self::Resolve(p)
+            | Self::Absolute(p)
+            | Self::Unlink(p)
+            | Self::Rmdir(p) => (Some(p), None),
+            Self::WriteText(a) | Self::AppendText(a) => (Some(&mut a.path), None),
+            Self::WriteBytes(a) | Self::AppendBytes(a) => (Some(&mut a.path), None),
+            Self::Open(a) => (Some(&mut a.path), None),
+            Self::Mkdir(a) => (Some(&mut a.path), None),
+            Self::Rename(a) => (Some(&mut a.src), Some(&mut a.dst)),
+            Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) => (None, None),
+        };
+        primary.into_iter().chain(dst)
+    }
+
     /// Exception to raise when no handler accepted this call: `PermissionError`
     /// for FS ops (with the path), `RuntimeError` for non-FS ops.
     #[must_use]
     pub fn on_no_handler(&self) -> MontyException {
         if let Some(path) = self.fs_primary_path() {
+            let path = if path.is_empty() {
+                Cow::Borrowed(path)
+            } else {
+                normalize_virtual_path(path)
+            };
             MontyException::new(
                 ExcType::PermissionError,
-                Some(format!("Permission denied: {}", StringRepr(path))),
+                Some(format!("Permission denied: {}", StringRepr(&path))),
             )
         } else {
             MontyException::new(
@@ -338,24 +395,26 @@ pub struct GetenvArgs {
 
 /// Owned virtual (sandbox) path carried by OS-call args.
 ///
-/// `String` newtype: derefs to `&str` for fs/ routing, and [`ToMontyObject`](crate::args::ToMontyObject)
-/// projects it back to [`MontyObject::Path`] at the host boundary. Constructed
-/// at the producer site after the source `Value` has been validated as a
-/// path/string — never from raw input.
+/// Preserves the supplied string, including invalid components, for host validation.
+/// Derefs to `&str` for routing; [`ToMontyObject`](crate::args::ToMontyObject)
+/// projects it back to [`MontyObject::Path`] at the host boundary.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MontyPath(String);
 
 impl MontyPath {
+    /// Stores the path without validation or normalization; hosts validate before I/O.
     #[must_use]
     pub fn new(path: String) -> Self {
         Self(path)
     }
 
+    /// Borrows the original spelling for host validation and error messages.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    /// Takes the original string without copying it.
     #[must_use]
     pub fn into_string(self) -> String {
         self.0

@@ -294,6 +294,7 @@ export interface FeedRequest {
   code: string
   inputs: Array<NamedValue>
   skipTypeCheck: boolean
+  cwd: string
 }
 export interface RaisedError {
   excType: string
@@ -415,6 +416,7 @@ export interface FunctionCallEvent {
   kwargs: Array<ValuePair>
   callId: number
   objectId?: string
+  allowEagerAwait: boolean
 }
 export interface NameLookupEvent {
   name: string

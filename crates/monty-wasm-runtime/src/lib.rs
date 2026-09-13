@@ -126,6 +126,18 @@ impl EventSink for ComponentEventSink {
                 len,
                 max: MAX_FRAME_LEN,
             })
+        } else if let Some(pb::child_event::Kind::Print(print)) = &event.kind {
+            // A `Print` event carries a run per stream switch, while the
+            // component's `PrintEvent` names one stream, so it expands into one
+            // event per run rather than converting whole. Checked before the
+            // clone below so print text is copied once, not twice.
+            for segment in &print.segments {
+                self.events.push(Event::Print(PrintEvent {
+                    stderr: segment.stream == i32::from(pb::PrintStream::Stderr),
+                    text: segment.text.clone(),
+                }));
+            }
+            Ok(())
         } else {
             let mut event = event.clone();
             let component_event = match event.kind.take() {
@@ -254,6 +266,7 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
                 })
                 .collect::<Result<_, String>>()?,
             skip_type_check: request.skip_type_check,
+            cwd: request.cwd,
         }),
         Request::ResumeCall(request) => pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: request.call_id,
@@ -366,10 +379,7 @@ fn raised_exception_from_component(error: RaisedError) -> pb::RaisedException {
 /// Converts one child event into its semantic component representation.
 fn event_from_proto(event: pb::ChildEvent) -> Event {
     match event.kind {
-        Some(pb::child_event::Kind::Print(print)) => Event::Print(PrintEvent {
-            stderr: print.stream == i32::from(pb::PrintStream::Stderr),
-            text: print.text,
-        }),
+        Some(pb::child_event::Kind::Print(_)) => invalid_event("Print event bypassed segment expansion"),
         Some(pb::child_event::Kind::FunctionCall(call)) => {
             let object_id = call.object_id.map(|uuid| uuid.to_string());
             Event::FunctionCall(FunctionCallEvent {
@@ -385,6 +395,7 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
                     .collect(),
                 call_id: call.call_id,
                 object_id,
+                allow_eager_await: call.allow_eager_await,
             })
         }
         Some(pb::child_event::Kind::OsCall(_)) => invalid_event("OsCall event bypassed component budget preparation"),

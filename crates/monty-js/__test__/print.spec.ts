@@ -43,6 +43,18 @@ test('batched into fewer callbacks than prints', async () => {
   t.true(output.length < 100, `expected far fewer callbacks than prints, got ${output.length}`)
 })
 
+test('stderr is labelled, and keeps its place in the output', async () => {
+  const received: [string, string][] = []
+  await run("import sys\nprint('a')\nprint('b', file=sys.stderr)\nprint('c')", {
+    printCallback: (stream, text) => received.push([stream, text]),
+  })
+  t.deepEqual(received, [
+    ['stdout', 'a\n'],
+    ['stderr', 'b\n'],
+    ['stdout', 'c\n'],
+  ])
+})
+
 test('a zero flush interval delivers one callback per line', async () => {
   const { output, callback } = makePrintCollector()
   await run('for i in range(20):\n    print(i)', { printCallback: callback, printFlushInterval: 0 })

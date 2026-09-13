@@ -30,8 +30,8 @@ use crate::{
         host_class_type,
         instance::{instance_dataclass_eq, instance_getattr, instance_str, instance_user_eq},
         long_int::{
-            bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, check_bits_str_digits_limit, i64_cmp_f64,
-            repeat_count, wide_i128_into_value,
+            bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, bigint_true_divide,
+            check_bits_str_digits_limit, i64_cmp_f64, repeat_count, wide_i128_into_value,
         },
         namedtuple::cmp_item_seqs,
         slice::slice_collect_iterator,
@@ -774,8 +774,16 @@ impl<'h> PyTrait<'h> for Value {
             (Self::Int(a), Self::Int(b)) => {
                 if *b == 0 {
                     Err(ExcType::zero_division().into())
-                } else {
+                } else if a.unsigned_abs() <= 1 << f64::MANTISSA_DIGITS && b.unsigned_abs() <= 1 << f64::MANTISSA_DIGITS
+                {
                     Ok(Some(Self::Float(*a as f64 / *b as f64)))
+                } else {
+                    // Rounding each operand to `f64` first would round the quotient twice.
+                    Ok(Some(Self::Float(bigint_true_divide(
+                        &BigInt::from(*a),
+                        &BigInt::from(*b),
+                        &vm.heap.tracker,
+                    )?)))
                 }
             }
             (Self::Float(a), Self::Float(b)) => {
@@ -870,21 +878,21 @@ impl<'h> PyTrait<'h> for Value {
                 if *b == 0.0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Self::Float((a / b).floor())))
+                    Ok(Some(Self::Float(py_float_divmod(*a, *b).0)))
                 }
             }
             (Self::Int(a), Self::Float(b)) => {
                 if *b == 0.0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Self::Float((*a as f64 / b).floor())))
+                    Ok(Some(Self::Float(py_float_divmod(*a as f64, *b).0)))
                 }
             }
             (Self::Float(a), Self::Int(b)) => {
                 if *b == 0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Self::Float((a / *b as f64).floor())))
+                    Ok(Some(Self::Float(py_float_divmod(*a, *b as f64).0)))
                 }
             }
             // Bool floor division (True=1, False=0)
@@ -1012,9 +1020,7 @@ impl<'h> PyTrait<'h> for Value {
         } else {
             match (self, other) {
                 (Self::Int(base), Self::Int(exp)) => {
-                    if *base == 0 && *exp < 0 {
-                        Err(ExcType::zero_negative_power())
-                    } else if *exp >= 0 {
+                    if *exp >= 0 {
                         // Positive exponent: try to return int, promote to LongInt on overflow
                         if let Ok(exp_u32) = u32::try_from(*exp) {
                             if let Some(result) = base.checked_pow(exp_u32) {
@@ -1038,46 +1044,17 @@ impl<'h> PyTrait<'h> for Value {
                             Ok(Some(LongInt::new(bi).into_value(vm.heap)))
                         }
                     } else {
-                        // Negative exponent: return float
-                        // Use powi if exp fits in i32, otherwise use powf
-                        if let Ok(exp_i32) = i32::try_from(*exp) {
-                            Ok(Some(Self::Float((*base as f64).powi(exp_i32))))
-                        } else {
-                            Ok(Some(Self::Float((*base as f64).powf(*exp as f64))))
-                        }
+                        // Negative exponent: CPython hands off to `float_pow`
+                        Ok(Some(Self::Float(float_pow(*base as f64, *exp as f64)?)))
                     }
                 }
-                (Self::Float(base), Self::Float(exp)) => {
-                    if *base == 0.0 && *exp < 0.0 {
-                        Err(ExcType::zero_negative_power())
-                    } else {
-                        Ok(Some(Self::Float(base.powf(*exp))))
-                    }
-                }
-                (Self::Int(base), Self::Float(exp)) => {
-                    if *base == 0 && *exp < 0.0 {
-                        Err(ExcType::zero_negative_power())
-                    } else {
-                        Ok(Some(Self::Float((*base as f64).powf(*exp))))
-                    }
-                }
-                (Self::Float(base), Self::Int(exp)) => {
-                    if *base == 0.0 && *exp < 0 {
-                        Err(ExcType::zero_negative_power())
-                    } else if let Ok(exp_i32) = i32::try_from(*exp) {
-                        // Use powi if exp fits in i32
-                        Ok(Some(Self::Float(base.powi(exp_i32))))
-                    } else {
-                        // Fall back to powf for exponents outside i32 range
-                        Ok(Some(Self::Float(base.powf(*exp as f64))))
-                    }
-                }
+                (Self::Float(base), Self::Float(exp)) => Ok(Some(Self::Float(float_pow(*base, *exp)?))),
+                (Self::Int(base), Self::Float(exp)) => Ok(Some(Self::Float(float_pow(*base as f64, *exp)?))),
+                (Self::Float(base), Self::Int(exp)) => Ok(Some(Self::Float(float_pow(*base, *exp as f64)?))),
                 // Bool power operations (True=1, False=0)
                 (Self::Bool(base), Self::Int(exp)) => {
                     let base_int = i64::from(*base);
-                    if base_int == 0 && *exp < 0 {
-                        Err(ExcType::zero_negative_power())
-                    } else if *exp >= 0 {
+                    if *exp >= 0 {
                         // Positive exponent: 1**n=1, 0**n=0 (for n>0), 0**0=1
                         if let Ok(exp_u32) = u32::try_from(*exp) {
                             match base_int.checked_pow(exp_u32) {
@@ -1088,12 +1065,8 @@ impl<'h> PyTrait<'h> for Value {
                             Ok(Some(Self::Float((base_int as f64).powf(*exp as f64))))
                         }
                     } else {
-                        // Negative exponent: return float (1**-n=1.0)
-                        if let Ok(exp_i32) = i32::try_from(*exp) {
-                            Ok(Some(Self::Float((base_int as f64).powi(exp_i32))))
-                        } else {
-                            Ok(Some(Self::Float((base_int as f64).powf(*exp as f64))))
-                        }
+                        // Negative exponent: CPython hands off to `float_pow`
+                        Ok(Some(Self::Float(float_pow(base_int as f64, *exp as f64)?)))
                     }
                 }
                 (Self::Int(base), Self::Bool(exp)) => {
@@ -1104,14 +1077,7 @@ impl<'h> PyTrait<'h> for Value {
                         Ok(Some(Self::Int(1)))
                     }
                 }
-                (Self::Bool(base), Self::Float(exp)) => {
-                    let base_float = f64::from(*base);
-                    if base_float == 0.0 && *exp < 0.0 {
-                        Err(ExcType::zero_negative_power())
-                    } else {
-                        Ok(Some(Self::Float(base_float.powf(*exp))))
-                    }
-                }
+                (Self::Bool(base), Self::Float(exp)) => Ok(Some(Self::Float(float_pow(f64::from(*base), *exp)?))),
                 (Self::Float(base), Self::Bool(exp)) => {
                     // base ** True = base, base ** False = 1.0
                     if *exp {
@@ -1933,6 +1899,20 @@ impl Value {
         }
     }
 
+    /// Borrows the arbitrary-precision value of a `LongInt`-valued int (interned
+    /// or heap-allocated). `None` for every other value, `Int`/`Bool` included,
+    /// so callers keep their own fast paths for those.
+    pub(crate) fn as_long_int<'a>(&self, vm: &'a VM<'_>) -> Option<&'a BigInt> {
+        match self {
+            Self::InternLongInt(id) => Some(vm.interns.get_long_int(*id)),
+            Self::Ref(id) => match vm.heap.get(*id) {
+                HeapData::LongInt(li) => Some(li.inner()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Performs Python `+` with reflected-operation fallback.
     pub(crate) fn py_add(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
         if let Some(result) = self.py_add_result(other, vm)? {
@@ -2542,13 +2522,57 @@ pub(crate) fn floor_divmod(a: i64, b: i64) -> Option<(i64, i64)> {
     }
 }
 
+/// Computes Python-style float floor division and modulo together (CPython's `float_divmod`).
+///
+/// The remainder comes from `fmod` adjusted to the divisor's sign, and the quotient is
+/// floored from the exactly adjusted dividend rather than from `a / b`, which keeps
+/// `quotient * b + remainder == a` as close as floats allow. Callers must reject a zero
+/// divisor first; this helper assumes `b != 0`.
+pub(crate) fn py_float_divmod(a: f64, b: f64) -> (f64, f64) {
+    let mut modulus = a % b;
+    let mut div = (a - modulus) / b;
+    if modulus == 0.0 {
+        modulus = 0.0f64.copysign(b);
+    } else if (b < 0.0) != (modulus < 0.0) {
+        modulus += b;
+        div -= 1.0;
+    }
+    let floordiv = if div == 0.0 {
+        0.0f64.copysign(a / b)
+    } else {
+        // `div` is within an ulp of an integer; an excess above one half means it rounded down.
+        let floordiv = div.floor();
+        if div - floordiv > 0.5 { floordiv + 1.0 } else { floordiv }
+    };
+    (floordiv, modulus)
+}
+
+/// Raises `base` to `exp` with CPython's `float_pow` error rules.
+///
+/// Zero to a finite negative power is `ZeroDivisionError`, and finite operands whose
+/// result overflows raise `OverflowError` where C's `pow` would set `ERANGE`. Infinite or
+/// NaN operands pass straight through `powf`, whose special cases match C99 `pow`
+/// (so `0.0 ** -inf` is `inf`, not an error).
+pub(crate) fn float_pow(base: f64, exp: f64) -> RunResult<f64> {
+    if base == 0.0 && exp.is_finite() && exp < 0.0 {
+        Err(ExcType::zero_negative_power())
+    } else {
+        let result = base.powf(exp);
+        if result.is_infinite() && base.is_finite() && exp.is_finite() {
+            Err(ExcType::overflow_float_pow())
+        } else {
+            Ok(result)
+        }
+    }
+}
+
 /// Computes Python-style float modulo (CPython's `float_rem`).
 ///
 /// Unlike Rust's `%` (which follows the dividend's sign), the result takes the
 /// divisor's sign — `-7.0 % 3.0 == 2.0` — and a zero result gets the divisor's
 /// sign too (`6.0 % -3.0 == -0.0`). Callers must reject a zero divisor first
 /// (`ZeroDivisionError`); this helper assumes `b != 0`.
-fn py_float_mod(a: f64, b: f64) -> f64 {
+pub(crate) fn py_float_mod(a: f64, b: f64) -> f64 {
     let r = a % b;
     if r == 0.0 {
         0.0f64.copysign(b)
@@ -2602,11 +2626,11 @@ fn bigint_pow(base: BigInt, exp: u64) -> BigInt {
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{AssertMessageAnnotations, PrintWriter, ResourceTracker};
+    use monty_types::{PrintWriter, ResourceTracker};
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::{bytecode::Code, heap::HeapReader, intern::InternerBuilder};
+    use crate::{bytecode::Code, heap::HeapReader, intern::InternerBuilder, run::VmEnv};
 
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///
@@ -2644,7 +2668,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2667,7 +2691,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2692,7 +2716,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2717,7 +2741,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_int(&mut vm)
         });
@@ -2741,7 +2765,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_int(&mut vm)
         });
@@ -2764,7 +2788,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2787,7 +2811,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2811,7 +2835,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2835,7 +2859,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });

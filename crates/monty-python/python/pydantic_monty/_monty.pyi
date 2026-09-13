@@ -545,7 +545,10 @@ class Monty:
         session and returned to the pool when the `with` block exits.
 
         Arguments:
-            script_name: Name used in tracebacks and error messages.
+            script_name: Name used in tracebacks and error messages, and the
+                basis of the sandbox's `__file__`: its final path component
+                placed under the working directory the feed starts in
+                (`/main.py` by default).
             limits: Resource limits enforced inside the worker, plus `max_suspensions`,
                 which the pool enforces itself.
             type_check: Type-check each fed snippet before executing it; each
@@ -597,6 +600,7 @@ class MontySession:
         | CollectString
         | None = None,
         mount: MountDir | list[MountDir] | None = None,
+        cwd: str | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
         skip_type_check: bool = False,
     ) -> Any:
@@ -627,6 +631,13 @@ class MontySession:
                 Serviced by the pool on the host side — `'overlay'` writes
                 live in the pool's per-feed mount table and are discarded when
                 the feed ends.
+            cwd: Switches the sandbox's working directory before this feed,
+                an absolute virtual path. The directory persists across the
+                session's feeds, including any `os.chdir()`, so `None` keeps
+                the current one; the session's first feed defaults to its
+                first mount's virtual path, or `/` without mounts.
+                `os.getcwd()` reports it and relative paths resolve against
+                it before reaching a mount or the `os` handler.
             os: Fallback handler for OS calls (e.g. filesystem access) not
                 covered by a mount, invoked as `(function_name, args, kwargs)`,
                 or an `AbstractOS` instance.
@@ -648,6 +659,7 @@ class MontySession:
         external_lookup: dict[str, Any] | None = None,
         print_callback: PrintCallback | None = None,
         mount: MountDir | list[MountDir] | None = None,
+        cwd: str | None = None,
         os: OsHandler | None = None,
         skip_type_check: bool = False,
     ) -> SyncSnapshot:
@@ -690,6 +702,9 @@ class MontySession:
                 (there is no `mount=` on `resume`). `'overlay'` writes live in
                 the pool's per-feed mount table and are discarded when the feed
                 ends.
+            cwd: The sandbox's working directory for the whole feed (there is
+                no `cwd=` on `resume`); see `feed_run`. A dump taken mid-feed
+                carries it, so `load_snapshot` needs none.
             os: Fallback handler for OS calls not covered by a mount, invoked
                 as `(function_name, args, kwargs)`, or an `AbstractOS` instance.
                 Consulted only by `resume_auto()` — `feed_start` always surfaces
@@ -948,6 +963,7 @@ class AsyncMontySession:
         | CollectString
         | None = None,
         mount: MountDir | list[MountDir] | None = None,
+        cwd: str | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
         skip_type_check: bool = False,
     ) -> Any:
@@ -988,6 +1004,13 @@ class AsyncMontySession:
                 Serviced by the pool on the host side — `'overlay'` writes
                 live in the pool's per-feed mount table and are discarded when
                 the feed ends.
+            cwd: Switches the sandbox's working directory before this feed,
+                an absolute virtual path. The directory persists across the
+                session's feeds, including any `os.chdir()`, so `None` keeps
+                the current one; the session's first feed defaults to its
+                first mount's virtual path, or `/` without mounts.
+                `os.getcwd()` reports it and relative paths resolve against
+                it before reaching a mount or the `os` handler.
             os: Fallback handler for OS calls (e.g. filesystem access) not
                 covered by a mount, invoked as `(function_name, args, kwargs)`,
                 or an `AbstractOS` instance.
@@ -1003,6 +1026,7 @@ class AsyncMontySession:
         external_lookup: dict[str, Any] | None = None,
         print_callback: PrintCallback | None = None,
         mount: MountDir | list[MountDir] | None = None,
+        cwd: str | None = None,
         os: OsHandler | None = None,
         skip_type_check: bool = False,
     ) -> AsyncSnapshot:
@@ -1014,8 +1038,9 @@ class AsyncMontySession:
         As in the sync version, `external_lookup` (and `os`) are captured for
         `await snapshot.resume_auto()` rather than consulted during this initial
         drive. A coroutine external answered by `resume_auto()` is awaited
-        concurrently: it yields an `AsyncFutureSnapshot` whose `resume_auto()`
-        settles the pending coroutines.
+        directly when the snapshot's `allow_eager_await` is true; otherwise it
+        is awaited concurrently and yields an `AsyncFutureSnapshot` whose
+        `resume_auto()` settles the pending coroutines.
 
         Arguments:
             code: The Python snippet to execute; its trailing expression value
@@ -1035,6 +1060,9 @@ class AsyncMontySession:
                 (there is no `mount=` on `resume`). `'overlay'` writes live in
                 the pool's per-feed mount table and are discarded when the feed
                 ends.
+            cwd: The sandbox's working directory for the whole feed (there is
+                no `cwd=` on `resume`); see `feed_run`. A dump taken mid-feed
+                carries it, so `load_snapshot` needs none.
             os: Fallback handler for OS calls not covered by a mount, invoked
                 as `(function_name, args, kwargs)`, or an `AbstractOS` instance.
                 Consulted only by `resume_auto()` — `feed_start` always surfaces
@@ -1111,6 +1139,10 @@ class FunctionSnapshot:
     `OsFunction` name; resume with a value, an exception, or
     `resume_not_handled()`.
     """
+
+    @property
+    def allow_eager_await(self) -> bool:
+        """Whether the worker permits eager coroutine resolution at this call."""
 
     @property
     def script_name(self) -> str: ...
@@ -1221,6 +1253,10 @@ class AsyncFunctionSnapshot:
     """Async sibling of `FunctionSnapshot`; `resume`/`resume_not_handled` are awaitable."""
 
     @property
+    def allow_eager_await(self) -> bool:
+        """Whether `resume_auto` may await a coroutine directly at this call."""
+
+    @property
     def script_name(self) -> str: ...
     @property
     def is_os_function(self) -> bool: ...
@@ -1239,9 +1275,8 @@ class AsyncFunctionSnapshot:
     async def resume(self, result: ExternalResult) -> AsyncSnapshot: ...
     async def resume_not_handled(self) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
-        """Async sibling of `FunctionSnapshot.resume_auto`. A coroutine external
-        is spawned and answered with a pending future, so other sandbox tasks
-        keep running; it is later settled by `AsyncFutureSnapshot.resume_auto`."""
+        """Awaits eligible coroutine calls directly. Other coroutines are spawned
+        and later settled by `AsyncFutureSnapshot.resume_auto`."""
 
     def dump(self) -> bytes: ...
     def __repr__(self) -> str: ...

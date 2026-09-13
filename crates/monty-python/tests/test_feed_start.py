@@ -247,6 +247,59 @@ def test_dump_at_suspension_then_load_and_resume(pool: Monty):
         assert done.output == snapshot(42)
 
 
+def test_dump_keeps_the_feeds_working_directory(pool: Monty):
+    # cwd is session state and travels inside a mid-feed dump, so the
+    # restoring session needs no `cwd=`
+    with pool.checkout() as session:
+        snap = session.feed_start('import os\nfetch()\nos.getcwd()', cwd='/work')
+        assert isinstance(snap, FunctionSnapshot)
+        blob = snap.dump()
+
+    with pool.checkout() as session:
+        loaded_snap = session.load_snapshot(blob)
+        assert isinstance(loaded_snap, FunctionSnapshot)
+        done = loaded_snap.resume({'return_value': None})
+        assert isinstance(done, MontyComplete)
+        assert done.output == snapshot('/work')
+
+
+@pytest.mark.parametrize(
+    'expression, expected',
+    [
+        ("open('./hello.txt').name", './hello.txt'),
+        ("open(b'./hello.txt').name", b'./hello.txt'),
+        ("[str(p) for p in Path('.').iterdir()]", ['hello.txt']),
+    ],
+)
+def test_dump_keeps_original_filesystem_paths(pool: Monty, tmp_path: Path, expression: str, expected: Any):
+    """Original path spelling survives suspension before the host returns a result."""
+    (tmp_path / 'hello.txt').write_text('hi')
+    with pool.checkout() as session:
+        snap = session.feed_start('from pathlib import Path\n' + expression, cwd='/data')
+        assert isinstance(snap, FunctionSnapshot)
+        blob = snap.dump()
+
+    with MountDir(host_path=tmp_path, virtual_path='/data') as mount:
+        with pool.checkout() as session:
+            loaded = session.load_snapshot(blob, mount=mount)
+            assert isinstance(loaded, FunctionSnapshot)
+            done = loaded.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == expected
+
+
+def test_dump_keeps_open_file_name_and_target(pool: Monty, tmp_path: Path):
+    """The display name and I/O target both survive dumping an already-open file."""
+    (tmp_path / 'hello.txt').write_text('hi')
+    with MountDir(host_path=tmp_path, virtual_path='/data') as mount:
+        with pool.checkout() as session:
+            session.feed_run("f = open('./hello.txt')", mount=mount)
+            blob = session.dump()
+        with pool.checkout() as session:
+            session.load_session(blob)
+            assert session.feed_run('(f.name, f.read())', cwd='/', mount=mount) == ('./hello.txt', 'hi')
+
+
 def test_loaded_snapshot_reports_the_dumps_script_name(pool: Monty):
     # script_name travels inside the dump; the restored snapshot reports the
     # dump's name, not the (differently-configured) restoring session's
@@ -633,12 +686,30 @@ async def test_async_resume_auto_coroutine_external():
         async with pool.checkout() as session:
             snap = await session.feed_start(code, external_lookup={'go': go})
             assert isinstance(snap, AsyncFunctionSnapshot)
-            # the coroutine is spawned and answered with a pending future
-            fut = await snap.resume_auto()
-            assert isinstance(fut, AsyncFutureSnapshot)
-            done = await fut.resume_auto()
+            assert snap.allow_eager_await
+            done = await snap.resume_auto()
             assert isinstance(done, MontyComplete)
             assert done.output == snapshot(99)
+
+
+async def test_async_allow_eager_await_survives_snapshot_restore():
+    """A restored call retains eager eligibility and finishes without a future suspension."""
+
+    async def go() -> list[int]:
+        return [42]
+
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap = await session.feed_start('await go()', external_lookup={'go': go})
+            assert isinstance(snap, AsyncFunctionSnapshot)
+            blob = snap.dump()
+        async with pool.checkout() as session:
+            restored = await session.load_snapshot(blob, external_lookup={'go': go})
+            assert isinstance(restored, AsyncFunctionSnapshot)
+            assert restored.allow_eager_await
+            done = await restored.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == [42]
 
 
 async def test_async_resume_auto_multiple_pending_coroutines():

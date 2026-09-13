@@ -30,7 +30,8 @@ WebAssembly runtimes do.
     are **pre-checked** before allocating: integer multiplication, left
     shift, integer power, sequence repeat (`'x' * n`), replacement
     (`str.replace`, `bytes.replace`), `re.sub`, padding (`str.ljust`, `str.center`,
-    `str.zfill`, `bytes.ljust`, …), integer division and `divmod`, deque
+    `str.zfill`, `bytes.ljust`, …), integer division and `divmod`,
+    `math.factorial`, `math.comb` and `math.perm`, deque
     rotation, slicing and repeat, materialising an iterator into a
     container, and string formatting with dynamic width or precision, for
     f-strings (`f"{v:>{w}}"`, `f"{v:.{p}f}"`), `str.format()`
@@ -199,6 +200,10 @@ indistinguishable from a stack overflow.
     **not** polled and run to completion however large the input: `in` with an
     integer probe (a single-byte scan) and `split()`/`rsplit()` left to their
     default `sep=None` (whitespace splitting).
+- The `str` case methods (`lower`, `upper`, `casefold`, `capitalize`, `title`,
+    `swapcase`) and `is*()` predicates are **not** polled and run to completion.
+    Their cost is linear in the input, so the overshoot is bounded by the largest
+    string `max_memory` admits.
 - `base64.a85decode()` polls the clock every 64th byte that matches no
     Ascii85 digit and so reaches `ignorechars`. Each of those bytes is one
     `in` test against the container, so a large explicit `ignorechars`

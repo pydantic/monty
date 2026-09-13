@@ -17,7 +17,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::{ExprLoc, Identifier},
     heap::{ContainsHeap, DropWithContext, Heap},
-    intern::StringId,
+    intern::{Interns, StringId},
     object_bridge::MontyObjectExt,
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
@@ -381,6 +381,25 @@ impl KwargsValues {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// The first keyword's name, for callables that accept none and report
+    /// CPython's `got an unexpected keyword argument`. A non-string key (only
+    /// possible via `**` unpacking) is CPython's `keywords must be strings`.
+    pub fn first_key(&self, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
+        let key = match self {
+            Self::Empty => return Ok(None),
+            Self::Inline(kvs) => return Ok(kvs.first().map(|(id, _)| interns.get_str(*id).to_owned())),
+            Self::Pairs(kvs) => kvs.first().map(|(key, _)| key),
+            Self::Dict(dict) => dict.iter().next().map(|(key, _)| key),
+        };
+        match key {
+            None => Ok(None),
+            Some(key) => key
+                .as_either_str(heap)
+                .map(|key| Some(key.as_str(interns).to_owned()))
+                .ok_or_else(ExcType::type_error_kwargs_nonstring_key),
+        }
     }
 
     /// Converts the arguments into a Vec of MontyObjects.

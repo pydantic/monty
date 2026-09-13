@@ -411,6 +411,7 @@ def test_external_function_json_decode_error_missing_attributes(monty_run: RunMo
         (StopIteration, 'StopIteration'),
         (re.error, 're.PatternError'),
         (binascii.Error, 'binascii.Error'),
+        (binascii.Incomplete, 'binascii.Incomplete'),
     ],
 )
 def test_external_function_exception_hierarchy(
@@ -504,6 +505,7 @@ caught
     'exception_class,dotted_name,parent_class',
     [
         (binascii.Error, 'binascii.Error', ValueError),
+        (binascii.Incomplete, 'binascii.Incomplete', Exception),
         (json.JSONDecodeError, 'json.JSONDecodeError', ValueError),
         (re.error, 're.PatternError', Exception),
     ],

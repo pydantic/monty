@@ -379,9 +379,16 @@ pub enum ExcType {
     /// `binascii.Error` - raised by the `base64` codecs for malformed input.
     ///
     /// A `ValueError` subclass in CPython, so `except ValueError:` catches it.
-    /// Monty's `binascii` module exposes this class and nothing else.
     #[strum(serialize = "binascii.Error")]
     BinasciiError,
+
+    /// `binascii.Incomplete` - a direct `Exception` subclass, not a `ValueError`.
+    ///
+    /// Nothing raises it: the `a2b_hqx` family it belonged to left CPython in
+    /// 3.11, so the class survives only for `except binascii.Incomplete:` in
+    /// older code. Monty exposes it for the same reason.
+    #[strum(serialize = "binascii.Incomplete")]
+    BinasciiIncomplete,
 }
 impl ExcType {
     /// Checks if this exception type is a subclass of another exception type.

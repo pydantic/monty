@@ -18,7 +18,7 @@ use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState}
 use monty_proto::{FrameError, PROTOCOL_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 use monty_types::{
     AssertMessageAnnotations, DEFAULT_MAX_SUSPENSIONS, ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid,
-    NameLookupResult, OsFunctionCall, PrintStream, ResourceLimits, TypeCheckingConfig,
+    NameLookupResult, OsFunctionCall, PrintStream, ResourceLimits, TypeCheckingConfig, validate_cwd,
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
@@ -36,7 +36,9 @@ use crate::{
 /// `MontyRepl`'s constructor surface.
 #[derive(Debug, Clone)]
 pub struct ReplConfig {
-    /// Script name used in tracebacks and type-check diagnostics.
+    /// Script name used in tracebacks and type-check diagnostics, and the
+    /// basis of the sandbox's `__file__`: its final path component placed
+    /// under the working directory a feed starts in (`/main.py` at the root).
     pub script_name: String,
     /// Sandbox resource limits enforced inside the worker. `None` means
     /// unlimited (except monty's standard recursion-depth default).
@@ -226,6 +228,8 @@ pub enum TurnEvent {
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
         object_id: Option<MontyUuid>,
+        /// Coroutine results may be awaited and returned via [`Checkout::resume_futures`].
+        allow_eager_await: bool,
     },
     /// The sandbox performed an OS operation (e.g. `"Path.read_text"`).
     /// Answer it from this feed's mounts with
@@ -323,6 +327,10 @@ where
 /// unknowable. The checkout notices on its next call,
 /// discards the worker, and fails with [`PoolError::Protocol`]; `finish` on
 /// such a session likewise discards the worker rather than returning it.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent turn, abort, cwd and send flags"
+)]
 pub struct Checkout {
     /// `None` after `finish()` or after the worker was discarded on error.
     worker: Option<Worker>,
@@ -357,6 +365,15 @@ pub struct Checkout {
     /// Consulted only by [`Checkout::resume_from_mounts`]. Dropped when the
     /// feed ends so overlay writes never leak into the next feed.
     feed_mounts: Option<MountTable>,
+    /// Whether the session's working directory has been established (a feed
+    /// chose it, or a restored dump carried it). Until then a feed without an
+    /// explicit `cwd` sends the mount-derived default; afterwards it sends
+    /// nothing and the worker keeps the directory, `os.chdir` included.
+    cwd_set: bool,
+    /// Whether the latest request reached the worker. An oversize frame is
+    /// rejected before any bytes are written, so state the request would have
+    /// set on the worker (the working directory) stays as it was.
+    request_sent: bool,
     /// When the session started, for `monty.pool.session.duration`. Taken by
     /// `finish`, terminal worker loss, or `Drop`, so it is recorded once.
     #[cfg(feature = "telemetry")]
@@ -490,6 +507,8 @@ enum Pending {
         /// `None` for an external function call, which also gates
         /// [`ResumeValue::NotHandled`] — only an OS call can resolve that way.
         os_call: Option<Box<OsFunctionCall>>,
+        /// Accept a settled coroutine for this call via `ResumeFutures`.
+        allow_eager_await: bool,
     },
     NameLookup,
     Futures,
@@ -527,6 +546,8 @@ impl Checkout {
             armed_deadline: None,
             restored_script_name: None,
             feed_mounts: None,
+            cwd_set: false,
+            request_sent: false,
             #[cfg(feature = "telemetry")]
             started: Some(Instant::now()),
         };
@@ -589,24 +610,51 @@ impl Checkout {
                 return Err(self.protocol_violation(format!("unexpected reply to Load: {other:?}")));
             }
         };
+        // The adopted dump carries the session's working directory too.
+        self.cwd_set = true;
         Ok((event, self.restored_script_name.take()))
     }
 
     /// Executes one snippet against the session. Inputs become sandbox
     /// globals; mounts apply to this feed only and are serviced by the parent
     /// (an invalid host path fails here, before any frame is sent, as a
-    /// session-preserving [`PoolError::Runtime`]). Returns the first
-    /// suspension (or completion); `print()` output streams to `on_print`
-    /// throughout.
+    /// session-preserving [`PoolError::Runtime`]). The session's first feed
+    /// sets the sandbox working directory to its first mount's virtual path,
+    /// or `/` without mounts; later feeds keep the directory (`os.chdir`
+    /// included) unless [`Checkout::feed_with_cwd`] switches it. Returns the
+    /// first suspension (or completion); `print()` output streams to
+    /// `on_print` throughout.
     ///
     /// # Errors
     /// [`PoolError::Runtime`] / [`PoolError::Typing`] leave the session
     /// usable; all other errors mean the worker was discarded.
     pub async fn feed(
         &mut self,
-        code: &str,
+        code: impl Into<String>,
         inputs: Vec<(String, MontyObject)>,
         mounts: Vec<MountSpec>,
+        skip_type_check: bool,
+        on_print: OnPrint<'_>,
+    ) -> Result<TurnEvent, PoolError> {
+        self.feed_with_cwd(code, inputs, mounts, None, skip_type_check, on_print)
+            .await
+    }
+
+    /// [`Checkout::feed`] with an explicit switch of the sandbox working
+    /// directory before the feed: an absolute POSIX virtual path that
+    /// `os.getcwd()` reports and relative paths resolve against. `None` keeps
+    /// the session's current directory, which the first feed defaults to its
+    /// first mount (else `/`).
+    ///
+    /// # Errors
+    /// A relative or NUL-containing `cwd` is a session-preserving
+    /// [`PoolError::Runtime`] (`ValueError`), raised before any frame is sent.
+    pub async fn feed_with_cwd(
+        &mut self,
+        code: impl Into<String>,
+        inputs: Vec<(String, MontyObject)>,
+        mounts: Vec<MountSpec>,
+        cwd: Option<&str>,
         skip_type_check: bool,
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
@@ -617,9 +665,17 @@ impl Checkout {
             ));
         }
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
+        let cwd = match cwd {
+            Some(cwd) => checked_cwd(cwd)?,
+            // An empty wire cwd keeps the worker's current directory.
+            None if self.cwd_set => String::new(),
+            None => mounts
+                .first()
+                .map_or_else(|| "/".to_owned(), |mount| mount.virtual_path().to_owned()),
+        };
         self.feed_mounts = Self::build_feed_mounts(mounts);
         let request = request(pb::parent_request::Kind::Feed(pb::Feed {
-            code: code.to_owned(),
+            code: code.into(),
             inputs: inputs
                 .into_iter()
                 .map(|(name, value)| pb::NamedValue {
@@ -628,8 +684,17 @@ impl Checkout {
                 })
                 .collect(),
             skip_type_check,
+            cwd,
         }));
-        self.expect_turn(&request, on_print).await
+        let outcome = self.expect_turn(&request, on_print).await;
+        // The worker adopts the directory after type checking and before it
+        // parses or runs the snippet, so once the request reached it every
+        // reply but a typing rejection (a `SyntaxError` included) means it
+        // took effect; a lost worker takes the session with it.
+        if self.request_sent && !matches!(outcome, Err(PoolError::Typing(_))) {
+            self.cwd_set = true;
+        }
+        outcome
     }
 
     /// Answers a [`TurnEvent::FunctionCall`] or [`TurnEvent::OsCall`].
@@ -639,6 +704,7 @@ impl Checkout {
             call_id,
             function_name,
             os_call,
+            ..
         }) = &self.pending
         else {
             return Err(PoolError::Protocol("no suspended call to resume".into()));
@@ -785,14 +851,27 @@ impl Checkout {
     /// Answers a [`TurnEvent::ResolveFutures`] with results for some or all
     /// pending call ids. Each result must be `Return` or `Error` — a future
     /// cannot resolve to another future or to "not found".
+    /// Also accepts exactly one matching result for a call with `allow_eager_await` set.
     pub async fn resume_futures(
         &mut self,
         results: Vec<(u32, ResumeValue)>,
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
         self.ensure_ready()?;
-        if !matches!(self.pending, Some(Pending::Futures)) {
-            return Err(PoolError::Protocol("no suspended futures to resume".into()));
+        match &self.pending {
+            Some(Pending::Call {
+                call_id,
+                allow_eager_await: true,
+                ..
+            }) => {
+                if results.len() != 1 || results[0].0 != *call_id {
+                    return Err(PoolError::Protocol(
+                        "eager result must match the suspended call id".into(),
+                    ));
+                }
+            }
+            Some(Pending::Futures) => {}
+            _ => return Err(PoolError::Protocol("no suspended futures to resume".into())),
         }
         let results = results
             .into_iter()
@@ -1137,24 +1216,9 @@ impl Checkout {
         request: &pb::ParentRequest,
         on_event: OnRawEvent<'_>,
     ) -> Result<pb::ChildEvent, PoolError> {
-        let Some(worker) = self.worker.as_mut() else {
-            return Err(PoolError::Finished);
-        };
-        if let Err(err) = worker.send(request).await {
-            // an oversize frame is rejected before any bytes are written, so
-            // the worker is still synced — see `turn_io`
-            return Err(match err {
-                FrameError::FrameTooLarge { len, max } => PoolError::Runtime(MontyException::new(
-                    ExcType::RuntimeError,
-                    Some(format!(
-                        "request frame of {len} bytes exceeds the maximum of {max} bytes"
-                    )),
-                )),
-                _ => self.poison("sending a request").await,
-            });
-        }
+        self.send_request(request).await?;
         loop {
-            let event = match self.worker.as_mut().expect("checked above").recv().await {
+            let event = match self.worker.as_mut().expect("checked by send_request").recv().await {
                 Ok(event) => event,
                 Err(FrameError::Decode(err)) => {
                     return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
@@ -1228,29 +1292,9 @@ impl Checkout {
     /// the turn-ending event. All failure paths discard the worker except
     /// `Runtime` / `Typing`, which are sandbox-level outcomes.
     async fn turn_io(&mut self, request: &pb::ParentRequest, on_print: OnPrint<'_>) -> Result<ControlEvent, PoolError> {
-        let Some(worker) = self.worker.as_mut() else {
-            return Err(PoolError::Finished);
-        };
-        if let Err(err) = worker.send(request).await {
-            // An oversize frame is rejected *before* any bytes are written, so
-            // the worker never saw the request and is still synced — surface a
-            // clean, catchable error instead of discarding a healthy worker as
-            // if it had crashed. For a `resume*` request this also leaves
-            // `pending` set (nothing overwrites it on this path), so the
-            // suspension stays answerable with a smaller value. Every other
-            // send failure is a real I/O break (dead worker / closed pipe).
-            return Err(match err {
-                FrameError::FrameTooLarge { len, max } => PoolError::Runtime(MontyException::new(
-                    ExcType::RuntimeError,
-                    Some(format!(
-                        "request frame of {len} bytes exceeds the maximum of {max} bytes"
-                    )),
-                )),
-                _ => self.poison("sending a request").await,
-            });
-        }
+        self.send_request(request).await?;
         loop {
-            let event = match self.worker.as_mut().expect("checked above").recv().await {
+            let event = match self.worker.as_mut().expect("checked by send_request").recv().await {
                 Ok(event) => event,
                 // a decode failure means the frame arrived intact but its
                 // payload was garbage (including values that fail semantic
@@ -1273,31 +1317,36 @@ impl Checkout {
             }
             match event.kind {
                 Some(pb::child_event::Kind::Print(print)) => {
-                    let stream = match print.stream() {
-                        pb::PrintStream::Stderr => PrintStream::Stderr,
-                        pb::PrintStream::Stdout | pb::PrintStream::Unspecified => PrintStream::Stdout,
-                    };
                     #[cfg(feature = "telemetry")]
                     let context = self.callback_context();
-                    let future = {
+                    // One event can carry several runs: hand each to the host
+                    // in order, so the callback shape stays per-stream.
+                    for segment in &print.segments {
+                        let stream = match segment.stream() {
+                            pb::PrintStream::Stderr => PrintStream::Stderr,
+                            pb::PrintStream::Stdout | pb::PrintStream::Unspecified => PrintStream::Stdout,
+                        };
+                        let future = {
+                            #[cfg(feature = "telemetry")]
+                            let _context = context.has_active_span().then(|| context.clone().attach());
+                            on_print(stream, &segment.text)
+                        };
                         #[cfg(feature = "telemetry")]
-                        let _context = context.has_active_span().then(|| context.clone().attach());
-                        on_print(stream, &print.text)
-                    };
-                    #[cfg(feature = "telemetry")]
-                    if context.has_active_span() {
-                        future.with_context(context).await;
-                    } else {
+                        if context.has_active_span() {
+                            future.with_context(context.clone()).await;
+                        } else {
+                            future.await;
+                        }
+                        #[cfg(not(feature = "telemetry"))]
                         future.await;
                     }
-                    #[cfg(not(feature = "telemetry"))]
-                    future.await;
                 }
                 Some(pb::child_event::Kind::FunctionCall(call)) => {
                     self.pending = Some(Pending::Call {
                         call_id: call.call_id,
                         function_name: call.function_name.clone(),
                         os_call: None,
+                        allow_eager_await: call.allow_eager_await,
                     });
                     return self.convert_turn(|| {
                         Ok(TurnEvent::FunctionCall {
@@ -1306,6 +1355,7 @@ impl Checkout {
                             kwargs: call.kwargs,
                             call_id: call.call_id,
                             object_id: call.object_id,
+                            allow_eager_await: call.allow_eager_await,
                         })
                     });
                 }
@@ -1324,17 +1374,16 @@ impl Checkout {
                             }
                         },
                     };
-                    // Every OS call surfaces, mount-covered or not: the caller
-                    // decides how to answer it, and reaches this feed's mounts
-                    // through `resume_from_mounts`. The typed call is retained
-                    // for that; the caller-facing `(name, args, kwargs)` shape
-                    // is projected from a clone.
+                    // The caller can answer any OS call or use `resume_from_mounts`.
+                    // Retain the raw typed call for mount validation; `to_args`
+                    // normalizes only the clone presented to callbacks.
                     let function_name = function_call.name().to_owned();
                     let (args, kwargs) = function_call.clone().to_args();
                     self.pending = Some(Pending::Call {
                         call_id,
                         function_name: function_name.clone(),
                         os_call: Some(Box::new(function_call)),
+                        allow_eager_await: false,
                     });
                     return Ok(ControlEvent::Turn(TurnEvent::OsCall {
                         function_name,
@@ -1428,6 +1477,34 @@ impl Checkout {
                     return Err(self.protocol_violation("unexpected event"));
                 }
             }
+        }
+    }
+
+    /// Sends `request`, recording in `request_sent` whether it reached the
+    /// worker. An oversize frame is rejected *before* any bytes are written,
+    /// so the worker never saw the request and is still synced — surface a
+    /// clean, catchable error instead of discarding a healthy worker as if it
+    /// had crashed. For a `resume*` request this also leaves `pending` set
+    /// (nothing overwrites it on this path), so the suspension stays
+    /// answerable with a smaller value. Every other send failure is a real
+    /// I/O break (dead worker / closed pipe).
+    async fn send_request(&mut self, request: &pb::ParentRequest) -> Result<(), PoolError> {
+        self.request_sent = false;
+        let Some(worker) = self.worker.as_mut() else {
+            return Err(PoolError::Finished);
+        };
+        match worker.send(request).await {
+            Ok(()) => {
+                self.request_sent = true;
+                Ok(())
+            }
+            Err(FrameError::FrameTooLarge { len, max }) => Err(PoolError::Runtime(MontyException::new(
+                ExcType::RuntimeError,
+                Some(format!(
+                    "request frame of {len} bytes exceeds the maximum of {max} bytes"
+                )),
+            ))),
+            Err(_) => Err(self.poison("sending a request").await),
         }
     }
 
@@ -1691,6 +1768,11 @@ fn min_deadline(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
         (Some(a), Some(b)) => Some(a.min(b)),
         (deadline, None) | (None, deadline) => deadline,
     }
+}
+/// Checks an explicit working directory with [`validate_cwd`], raising its
+/// message as a session-preserving `ValueError`.
+fn checked_cwd(cwd: &str) -> Result<String, PoolError> {
+    validate_cwd(cwd).map_err(|message| PoolError::Runtime(MontyException::new(ExcType::ValueError, Some(message))))
 }
 
 /// Builds the parent-side [`MountTable`] for one feed from its (non-empty)

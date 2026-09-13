@@ -10,6 +10,8 @@
 
 use std::io::ErrorKind;
 
+use monty_types::normalize_virtual_path;
+
 use super::error::MountError;
 
 /// Maximum total path length in bytes (Linux `PATH_MAX`).
@@ -72,34 +74,6 @@ pub(super) fn resolve_virtual_path(
     reject_drive_or_unc_segments(&relative, &normalized)?;
 
     Ok(MountRelativePath { relative })
-}
-
-/// Normalizes a virtual sandbox path by removing `.` and resolving `..`.
-///
-/// The result is always absolute. Excess `..` components at the root collapse
-/// to `/` instead of escaping the sandbox namespace.
-#[must_use]
-pub(super) fn normalize_virtual_path(path: &str) -> String {
-    if is_already_normalized_absolute_path(path) {
-        return path.to_owned();
-    }
-
-    let mut components = Vec::new();
-    for part in path.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                components.pop();
-            }
-            _ => components.push(part),
-        }
-    }
-
-    if components.is_empty() {
-        "/".to_owned()
-    } else {
-        format!("/{}", components.join("/"))
-    }
 }
 
 /// Strips a normalized mount prefix from a normalized sandbox path.
@@ -213,22 +187,4 @@ fn elide_middle(path: &str) -> Option<String> {
     let head_end = boundaries.nth(ERROR_PATH_EDGE)?;
     let tail_start = boundaries.nth_back(ERROR_PATH_EDGE - 1)?;
     Some(format!("{}…{}", &path[..head_end], &path[tail_start..]))
-}
-
-/// Fast path for paths already in normalized absolute form.
-fn is_already_normalized_absolute_path(path: &str) -> bool {
-    if !path.starts_with('/') {
-        return false;
-    }
-    if path == "/" {
-        return true;
-    }
-    if path.ends_with('/') {
-        return false;
-    }
-
-    !path
-        .split('/')
-        .skip(1)
-        .any(|component| component.is_empty() || component == "." || component == "..")
 }

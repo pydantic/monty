@@ -689,6 +689,28 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Creates `FileNotFoundError: [Errno 2] No such file or directory: '{path}'`,
+    /// as raised by `os.chdir('')` without consulting the host.
+    #[must_use]
+    fn file_not_found_error(path: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::FileNotFoundError,
+            format!("[Errno 2] No such file or directory: {}", StringRepr(path)),
+        )
+        .into()
+    }
+
+    /// Creates `NotADirectoryError: [Errno 20] Not a directory: '{path}'`, as
+    /// raised by `os.chdir` when the host's stat result is not a directory.
+    #[must_use]
+    fn not_a_directory_error(path: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::NotADirectoryError,
+            format!("[Errno 20] Not a directory: {}", StringRepr(path)),
+        )
+        .into()
+    }
+
     /// Creates the `os.fspath` TypeError, also raised by pure-Python `os`
     /// functions that call `fspath` internally (e.g. `os.makedirs`):
     /// `expected str, bytes or os.PathLike object, not {type}`
@@ -1470,6 +1492,15 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "Python int too large to convert to C long").into()
     }
 
+    /// Creates the TypeError for three-argument `pow()` with a non-integer operand and no
+    /// float among them: `unsupported operand type(s) for ** or pow(): '{base}', '{exp}', '{modulus}'`.
+    #[must_use]
+    fn ternary_pow_type_error(base: impl Display, exp: impl Display, modulus: impl Display) -> RunError {
+        Self::type_error(format!(
+            "unsupported operand type(s) for ** or pow(): '{base}', '{exp}', '{modulus}'"
+        ))
+    }
+
     /// Creates a TypeError for unsupported binary operations.
     ///
     /// For `+` or `+=` with str/list on the left side, uses CPython's special format:
@@ -1536,6 +1567,21 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn overflow_int_to_float() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "int too large to convert to float").into()
+    }
+
+    /// Creates the OverflowError raised when a float power overflows.
+    ///
+    /// CPython reports C's `ERANGE` through `strerror`, whose wording depends on the host libc;
+    /// Monty always uses glibc's so sandboxed code sees the same message on every platform.
+    #[must_use]
+    fn overflow_float_pow() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "(34, 'Numerical result out of range')").into()
+    }
+
+    /// Creates the OverflowError raised when `int / int` has a quotient beyond the float range.
+    #[must_use]
+    fn overflow_int_division_to_float() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "integer division result too large for a float").into()
     }
 
     /// Creates the OverflowError raised when converting an infinite float to an integer.

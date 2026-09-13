@@ -38,6 +38,8 @@ pub mod timedelta;
 pub mod timezone;
 pub mod tuple;
 pub mod r#type;
+mod unicode_type;
+mod unicode_type_data;
 
 pub(crate) use bytes::{Bytes, BytesIterator};
 pub(crate) use class::{Class, DataclassOptions};

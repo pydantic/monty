@@ -218,6 +218,9 @@ interface worker {
         code: string,
         inputs: list<named-value>,
         skip-type-check: bool,
+        /// Absolute virtual working directory to switch the session to; empty
+        /// keeps its current one (`/` until a feed or `os.chdir` changes it).
+        cwd: string,
     }
 
     /// A host-raised exception used to resume a call.
@@ -309,6 +312,8 @@ interface worker {
         /// Uuid string of the routed receiver (instance or class type);
         /// absent for plain external calls.
         object-id: option<string>,
+        /// A coroutine may settle before replying with resume-futures.
+        allow-eager-await: bool,
     }
 
     /// A suspended name or lazy-attribute lookup.

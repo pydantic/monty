@@ -216,14 +216,24 @@ impl Recorder {
                 self.close_pending("aborted_with", &result, cut);
             }
             Some(pb::parent_request::Kind::ResumeFutures(r)) => {
-                let pending = self.take_pending();
-                let (results, cut) = render_future_results(&r.results);
-                logfire::info!(
-                    parent: pending,
-                    "future results",
-                    results = results,
-                    length_limit_exceeded = cut.then_some(true),
-                );
+                if let [result] = r.results.as_slice()
+                    && self
+                        .pending
+                        .as_ref()
+                        .is_some_and(|pending| pending.eager_call_id == Some(result.call_id))
+                {
+                    let (value, cut) = render_ext_result(result.result.as_ref());
+                    self.close_pending("return_value", &value, cut);
+                } else {
+                    let pending = self.take_pending();
+                    let (results, cut) = render_future_results(&r.results);
+                    logfire::info!(
+                        parent: pending,
+                        "future results",
+                        results = results,
+                        length_limit_exceeded = cut.then_some(true),
+                    );
+                }
             }
             Some(pb::parent_request::Kind::Dump(_)) => {
                 self.dump_turn = true;
@@ -268,14 +278,18 @@ impl Recorder {
         }
         match &event.kind {
             Some(pb::child_event::Kind::Print(p)) => {
-                let (text, cut) = truncate_str(&p.text);
-                logfire::info!(
-                    parent: self.context_span(),
-                    "print {stream}",
-                    stream = print_stream(p.stream),
-                    text = text,
-                    length_limit_exceeded = cut.then_some(true),
-                );
+                // One record per run rather than per event: a run is the
+                // largest span of output that has a single stream to name.
+                for segment in &p.segments {
+                    let (text, cut) = truncate_str(&segment.text);
+                    logfire::info!(
+                        parent: self.context_span(),
+                        "print {stream}",
+                        stream = print_stream(segment.stream),
+                        text = text,
+                        length_limit_exceeded = cut.then_some(true),
+                    );
+                }
             }
             Some(pb::child_event::Kind::FunctionCall(c)) => {
                 let (args, kwargs, args_cut) = render_call_arguments(c);
@@ -292,11 +306,13 @@ impl Recorder {
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_duration_micros = max_duration,
-                    // filled in by the answering `ResumeCall`, or an `AbortFeed`
+                    // Filled by ResumeCall, an eager ResumeFutures, or AbortFeed.
                     return_value = Empty,
                     aborted_with = Empty,
                 ));
-                self.pending = Some(OpenSpan::new(span, cut));
+                let mut pending = OpenSpan::new(span, cut);
+                pending.eager_call_id = c.allow_eager_await.then_some(c.call_id);
+                self.pending = Some(pending);
             }
             Some(pb::child_event::Kind::OsCall(c)) => {
                 self.pending = Some(os_call_span(c, micros, max_duration, &self.context_span()));
@@ -474,12 +490,18 @@ impl Recorder {
 struct OpenSpan {
     span: Span,
     cut: bool,
+    /// Matches an eager reply to this call; absent on other spans.
+    eager_call_id: Option<u32>,
 }
 
 impl OpenSpan {
     /// Holds a span already flagged (or not) by the values it was opened with.
     const fn new(span: Span, cut: bool) -> Self {
-        Self { span, cut }
+        Self {
+            span,
+            cut,
+            eager_call_id: None,
+        }
     }
 
     const fn span(&self) -> &Span {
@@ -958,6 +980,8 @@ fn print_stream(stream: i32) -> &'static str {
 // recording is a side effect of the worker, not part of the pool's public API
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, PoisonError};
+
     use logfire::{Logfire, config::AdvancedOptions, set_local_logfire};
     use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
     use monty_types::MontyObject;
@@ -968,6 +992,17 @@ mod tests {
     };
 
     use super::{ATTR_SIZE_LIMIT, Recorder, bytes_attr, render_ext_result};
+
+    /// Every subscriber these tests install, held for the life of the process.
+    ///
+    /// `set_local_logfire` registers the subscriber with tracing-core, which
+    /// upgrades that weak registration inside its dispatcher read lock whenever
+    /// callsite interest is rebuilt and drops the temporary handle there. If that
+    /// were the last reference, the OpenTelemetry meter provider's destructor
+    /// would log through a callsite that takes the same lock again, and with
+    /// another test's `set_local_logfire` queued for the write lock the whole
+    /// test binary deadlocks. One extra reference keeps the drop out of that loop.
+    static INSTALLED: Mutex<Vec<Logfire>> = Mutex::new(Vec::new());
 
     /// A local logfire capturing spans and logs in memory instead of exporting.
     fn test_logfire() -> (Logfire, InMemorySpanExporter, InMemoryLogExporter) {
@@ -980,6 +1015,10 @@ mod tests {
             .with_advanced_options(AdvancedOptions::default().with_log_processor(SimpleLogProcessor::new(logs.clone())))
             .finish()
             .unwrap();
+        INSTALLED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(logfire.clone());
         (logfire, spans, logs)
     }
 
@@ -1022,6 +1061,7 @@ mod tests {
             code: "double(2)".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })));
         recorder.event(&event(pb::child_event::Kind::FunctionCall(WireFunctionCall {
             function_name: "double".to_owned(),
@@ -1029,6 +1069,7 @@ mod tests {
             kwargs: vec![],
             call_id: 1,
             object_id: None,
+            allow_eager_await: false,
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
@@ -1190,6 +1231,7 @@ mod tests {
             code: "1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })));
         recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete {
             value: Some(MontyObject::Int(1).into()),

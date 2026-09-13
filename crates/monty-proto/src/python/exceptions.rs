@@ -97,6 +97,16 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
                 exceptions::PyValueError::new_err(msg)
             }
         }
+        ExcType::BinasciiIncomplete => {
+            if let Ok(incomplete) = get_binascii_incomplete(py)
+                && let Ok(exc_instance) = incomplete.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                // Falls back to its own parent, `Exception`, not `ValueError`.
+                exceptions::PyException::new_err(msg)
+            }
+        }
     }
 }
 
@@ -246,6 +256,10 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
             ExcType::AssertionError
         } else if exceptions::PySyntaxError::type_check(exc) {
             ExcType::SyntaxError
+        // `binascii.Incomplete` derives straight from `Exception`, so unlike
+        // `binascii.Error` it has no hierarchy branch to sit under
+        } else if is_binascii_incomplete(exc) {
+            ExcType::BinasciiIncomplete
         // LookupError hierarchy
         } else if exceptions::PyLookupError::type_check(exc) {
             if exceptions::PyKeyError::type_check(exc) {
@@ -370,6 +384,22 @@ fn is_binascii_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
 fn get_binascii_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static BINASCII_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
     BINASCII_ERROR.import(py, "binascii", "Error")
+}
+
+/// Checks if an exception is a `binascii.Incomplete`, which hangs off
+/// `Exception` rather than `ValueError` and so is tested on its own.
+fn is_binascii_incomplete(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(incomplete_cls) = get_binascii_incomplete(exc.py()) {
+        exc.is_instance(incomplete_cls).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Returns the cached `binascii.Incomplete` class.
+fn get_binascii_incomplete(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static BINASCII_INCOMPLETE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    BINASCII_INCOMPLETE.import(py, "binascii", "Incomplete")
 }
 
 /// Checks if an exception is a `re.PatternError` (a stdlib class, not a

@@ -7,11 +7,147 @@
 
 use monty::{DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
 use monty_proto::{
-    FrameReader, PROTOCOL_VERSION, WireObject, pb,
+    FrameReader, PROTOCOL_VERSION, WireFunctionCall, WireObject, pb,
     worker::{Child, HandleOutcome, dispatch_frame},
     write_frame,
 };
 use monty_types::{CompileOptions, MONTY_VERSION, MontyObject, PrintWriter, ResourceTracker};
+
+/// Starts a feed with `f` already bound, leaving the worker at its first external call.
+fn start_external_call(child: &mut Child, code: &str) -> WireFunctionCall {
+    create_repl(child);
+    let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
+        code: code.to_owned(),
+        inputs: vec![pb::NamedValue {
+            name: "f".to_owned(),
+            value: Some(
+                MontyObject::Function {
+                    name: "f".to_owned(),
+                    docstring: None,
+                }
+                .into(),
+            ),
+        }],
+        skip_type_check: false,
+        cwd: "/".to_owned(),
+    }));
+    let (bytes, _) = dispatch_frame(child, &request);
+    let (_, event) = split_turn(&bytes);
+    let pb::child_event::Kind::FunctionCall(call) = event else {
+        panic!("expected call, got {event:?}")
+    };
+    call
+}
+
+/// Constructs one settled or malformed future reply without bypassing wire validation.
+fn future_reply(call_id: u32, kind: pb::ext_function_result::Kind) -> pb::FutureResult {
+    pb::FutureResult {
+        call_id,
+        result: Some(pb::ExtFunctionResult { kind: Some(kind) }),
+    }
+}
+
+/// Each eager reply advances directly to the next call or completion.
+#[test]
+fn allow_eager_await_uses_one_reply_per_call() {
+    let mut child = Child::default();
+    let mut call = start_external_call(&mut child, "a = await f()\nb = await f()\na + b");
+    for n in [10, 20] {
+        assert!(call.allow_eager_await);
+        let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+            results: vec![future_reply(
+                call.call_id,
+                pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(n).into()),
+            )],
+        }));
+        let (bytes, outcome) = dispatch_frame(&mut child, &request);
+        assert_eq!(outcome, HandleOutcome::Continue);
+        let (_, event) = split_turn(&bytes);
+        if n == 10 {
+            let pb::child_event::Kind::FunctionCall(next) = event else {
+                panic!("expected next call, got {event:?}")
+            };
+            call = next;
+        } else {
+            assert_eq!(expect_complete(event), MontyObject::Int(30));
+        }
+    }
+}
+
+/// Invalid eager replies leave the suspension available for a valid retry.
+#[test]
+fn allow_eager_await_rejects_malformed_replies() {
+    let mut child = Child::default();
+    let call = start_external_call(&mut child, "await f()");
+    assert!(call.allow_eager_await);
+    let value = pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(42).into());
+    for results in [
+        vec![],
+        vec![future_reply(call.call_id + 1, value.clone())],
+        vec![
+            future_reply(call.call_id, value.clone()),
+            future_reply(call.call_id, value.clone()),
+        ],
+        vec![future_reply(
+            call.call_id,
+            pb::ext_function_result::Kind::Future(call.call_id),
+        )],
+        vec![future_reply(
+            call.call_id,
+            pb::ext_function_result::Kind::NotFound("f".to_owned()),
+        )],
+        vec![pb::FutureResult {
+            call_id: call.call_id,
+            result: None,
+        }],
+    ] {
+        let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results }));
+        let (bytes, outcome) = dispatch_frame(&mut child, &request);
+        assert_eq!(outcome, HandleOutcome::Continue);
+        assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Error(_)));
+    }
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+        results: vec![future_reply(call.call_id, value)],
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::Int(42));
+}
+
+/// Older hosts can ignore the hint; calls without the hint reject the new reply sequence.
+#[test]
+fn allow_eager_await_preserves_legacy_replies() {
+    let mut child = Child::default();
+    let call = start_external_call(&mut child, "await f()");
+    let request = frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+        call_id: call.call_id,
+        result: Some(pb::ExtFunctionResult {
+            kind: Some(pb::ext_function_result::Kind::Future(call.call_id)),
+        }),
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::ResolveFutures(_)));
+    let value = pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(42).into());
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+        results: vec![future_reply(call.call_id, value.clone())],
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::Int(42));
+
+    let mut child = Child::default();
+    let call = start_external_call(&mut child, "f()");
+    assert!(!call.allow_eager_await);
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+        results: vec![future_reply(call.call_id, value.clone())],
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Error(_)));
+    let request = frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+        call_id: call.call_id,
+        result: Some(pb::ExtFunctionResult { kind: Some(value) }),
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::Int(42));
+}
 
 /// Frames one request the way a host transport would before posting it.
 fn frame_request(kind: pb::parent_request::Kind) -> Vec<u8> {
@@ -53,6 +189,11 @@ fn split_turn(bytes: &[u8]) -> (Vec<pb::Print>, pb::child_event::Kind) {
 }
 
 fn create_repl(child: &mut Child) {
+    create_repl_with_flush_interval(child, None);
+}
+
+/// `create_repl`, naming the print flush interval the session runs with.
+fn create_repl_with_flush_interval(child: &mut Child, print_flush_interval_ms: Option<u32>) {
     let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: "main.py".to_owned(),
         limits: None,
@@ -61,6 +202,7 @@ fn create_repl(child: &mut Child) {
         assert_message_annotations: None,
         monty_version: MONTY_VERSION.to_owned(),
         protocol_version: PROTOCOL_VERSION,
+        print_flush_interval_ms,
         ..Default::default()
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
@@ -76,10 +218,26 @@ fn feed(child: &mut Child, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind
         code: code.to_owned(),
         inputs: vec![],
         skip_type_check: false,
+        cwd: "/".to_owned(),
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     split_turn(&bytes)
+}
+
+/// The runs each `Print` event carried, as `(stream, text)` per event, so a
+/// test can assert both what was batched together and in what order.
+fn segments_per_event(prints: &[pb::Print]) -> Vec<Vec<(pb::PrintStream, &str)>> {
+    prints
+        .iter()
+        .map(|print| {
+            print
+                .segments
+                .iter()
+                .map(|segment| (segment.stream(), segment.text.as_str()))
+                .collect()
+        })
+        .collect()
 }
 
 fn expect_complete(event: pb::child_event::Kind) -> MontyObject {
@@ -120,9 +278,78 @@ fn print_output_is_streamed_before_the_terminator() {
     create_repl(&mut child);
 
     let (prints, event) = feed(&mut child, "print('hello'); print('world')");
-    let streamed: String = prints.into_iter().map(|print| print.text).collect();
+    let streamed: String = prints
+        .into_iter()
+        .flat_map(|print| print.segments)
+        .map(|segment| segment.text)
+        .collect();
     assert_eq!(streamed, "hello\nworld\n");
     assert_eq!(expect_complete(event), MontyObject::None);
+}
+
+/// Output alternating between the streams batches into one event, holding a
+/// segment per run: the worker never has to flush to change stream, so the
+/// debounce applies to mixed output as much as to plain stdout.
+#[test]
+fn alternating_streams_batch_into_one_event() {
+    let mut child = Child::default();
+    // an interval no test will wait out leaves the flush to `drain`, so this
+    // asserts how output is segmented rather than how the timer fires
+    create_repl_with_flush_interval(&mut child, Some(60_000));
+
+    let (prints, event) = feed(
+        &mut child,
+        "import sys\nprint('a')\nprint('b', file=sys.stderr)\nprint('c')",
+    );
+    assert_eq!(expect_complete(event), MontyObject::None);
+    assert_eq!(
+        segments_per_event(&prints),
+        vec![vec![
+            (pb::PrintStream::Stdout, "a\n"),
+            (pb::PrintStream::Stderr, "b\n"),
+            (pb::PrintStream::Stdout, "c\n"),
+        ]]
+    );
+}
+
+/// With the timer off, a completed line still ends the event whichever stream
+/// wrote it, so a host that asked for line buffering gets one event per line.
+#[test]
+fn line_buffering_gives_each_line_its_own_event() {
+    let mut child = Child::default();
+    create_repl_with_flush_interval(&mut child, Some(0));
+
+    let (prints, event) = feed(&mut child, "import sys\nprint('a')\nprint('b', file=sys.stderr)");
+    assert_eq!(expect_complete(event), MontyObject::None);
+    assert_eq!(
+        segments_per_event(&prints),
+        vec![
+            vec![(pb::PrintStream::Stdout, "a\n")],
+            vec![(pb::PrintStream::Stderr, "b\n")],
+        ]
+    );
+}
+
+/// A line the sandbox wrote across both streams is one line, so line buffering
+/// ships the runs it spans in one event rather than cutting at the switch. The
+/// trailing partial line waits for the drain at the end of the turn.
+#[test]
+fn line_buffering_keeps_a_line_spanning_the_streams_together() {
+    let mut child = Child::default();
+    create_repl_with_flush_interval(&mut child, Some(0));
+
+    let (prints, event) = feed(
+        &mut child,
+        "import sys\nprint('out', end='')\nprint('err', file=sys.stderr)\nprint('next', end='')",
+    );
+    assert_eq!(expect_complete(event), MontyObject::None);
+    assert_eq!(
+        segments_per_event(&prints),
+        vec![
+            vec![(pb::PrintStream::Stdout, "out"), (pb::PrintStream::Stderr, "err\n")],
+            vec![(pb::PrintStream::Stdout, "next")],
+        ]
+    );
 }
 
 #[test]
@@ -137,6 +364,7 @@ fn inputs_are_injected() {
             value: Some(WireObject::new(MontyObject::Int(41))),
         }],
         skip_type_check: false,
+        cwd: "/".to_owned(),
     }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -333,6 +561,7 @@ fn turn_events_carry_the_suspension_budget() {
         code: "1 + 1".to_owned(),
         inputs: vec![],
         skip_type_check: false,
+        cwd: "/".to_owned(),
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     let events = decode_full_events(&bytes);

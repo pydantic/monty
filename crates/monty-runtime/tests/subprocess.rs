@@ -118,6 +118,7 @@ impl ChildProc {
             code: code.to_owned(),
             inputs,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         }));
         self.recv_turn()
     }
@@ -149,6 +150,7 @@ impl ChildProc {
             code: code.to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         }));
         self.expect_death();
     }
@@ -280,10 +282,11 @@ fn print_output_is_streamed_in_order() {
     child.create_repl();
     let (prints, event) = child.feed("print('one')\nprint('two')\nprint('three', end='')\n'done'");
     expect_complete(event);
-    let text: String = prints.iter().map(|p| p.text.as_str()).collect();
+    let segments = || prints.iter().flat_map(|print| print.segments.iter());
+    let text: String = segments().map(|segment| segment.text.as_str()).collect();
     // the partial (no-newline) third line must still arrive before the turn ends
     assert_eq!(text, "one\ntwo\nthree");
-    assert!(prints.iter().all(|p| p.stream == i32::from(pb::PrintStream::Stdout)));
+    assert!(segments().all(|segment| segment.stream == i32::from(pb::PrintStream::Stdout)));
     child.shutdown();
 }
 
@@ -375,6 +378,7 @@ fn near_limit_suspension_is_refused_cleanly() {
             kwargs: vec![],
             call_id: 1,
             object_id: None,
+            allow_eager_await: false,
         })),
         ..Default::default()
     };
@@ -889,6 +893,17 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("[None] * 1_000_000", 16_031_391),
         ("2 ** 10_000_000", 10_031_230),
         ("1 << 10_000_000", 1_281_231),
+        // `int / int` scales one operand before dividing; both shift directions are
+        // preflighted.
+        ("x = 1 << 3_000_000\nx / (x - 1)", 1_531_926),
+        ("x = 1 << 3_000_000\nx / (x >> 100)", 1_531_908),
+        // `math.factorial`, `comb` and `perm` preflight their product's size.
+        ("import math\nmath.factorial(2_000_000)", 10_535_476),
+        // A binomial is bounded by `2**n`, so `comb` needs a larger `n` to trip the check.
+        ("import math\nmath.comb(9_000_000, 4_500_000)", 2_285_542),
+        ("import math\nmath.perm(4_000_000, 2_000_000)", 11_035_608),
+        // `math.lcm` of two large coprime ints is a product, preflighted like `*`.
+        ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_285_845),
         ("('a' * 1000).replace('a', 'b' * 2000)", 2_034_769),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.
@@ -946,6 +961,29 @@ fn non_finite_float_precision_is_not_charged() {
         child.feed_complete("'%.2000000000f' % float('inf')"),
         MontyObject::String("inf".to_owned())
     );
+}
+
+/// `Path.iterdir()` repeats the receiver in every joined entry, so the joins
+/// are preflighted in one shot before any is built.
+#[test]
+fn iterdir_joins_are_preflighted() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "from pathlib import Path\nlist(Path('/' + 'd' * 100_000).iterdir())";
+    let (_, event) = child.feed(code);
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    let entries = MontyObject::List(vec![MontyObject::String("x".to_owned()); 20]);
+    let (_, event) = child.resume_call(
+        call.call_id,
+        pb::ext_function_result::Kind::ReturnValue(WireObject::new(entries)),
+    );
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError");
+    let message = error.message.expect("MemoryError should have a message");
+    assert_reported_usage(&message, 2_234_235, code);
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
     child.shutdown();
 }
 
@@ -1735,6 +1773,7 @@ fn killed_child_is_detected_as_eof() {
         code: "while True:\n    pass".to_owned(),
         inputs: vec![],
         skip_type_check: false,
+        cwd: "/".to_owned(),
     }));
     thread::sleep(Duration::from_millis(200));
     child.child.kill().expect("kill");

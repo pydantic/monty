@@ -102,7 +102,9 @@ became mandatory in Python 3.7 or earlier and so are inert there too, and
 
 Monty has no module object and no `globals()` dict, but it exposes a fixed set
 of module-level dunders so common idioms (e.g. `if __name__ == '__main__':`)
-work. They are resolved on read; there is no real namespace entry behind them.
+work. They are resolved on read; there is no real namespace entry behind them,
+so the values built per read (`__file__`, `__annotations__`) are fresh objects
+each time and `__file__ is __file__` is `False` where CPython gives `True`.
 
 | Name              | Monty value  | CPython (script run)         |
 | ----------------- | ------------ | ---------------------------- |
@@ -130,13 +132,24 @@ ordinary local in a separate namespace), matching CPython, except `__debug__`,
 which CPython rejects everywhere with `SyntaxError` but Monty permits as a
 local.
 
-Other module dunders CPython defines (`__loader__`, `__file__`, `__builtins__`,
+`__file__` is the final path component of the session's script name placed
+under the virtual working directory the feed started in: `/main.py` by
+default, `/data/main.py` when the feed's first mount is `/data`. CPython makes
+the script path absolute as given, so `python src/app.py` reports
+`/host/cwd/src/app.py`; Monty keeps only `app.py`, because the script name is a
+host-side label that may be a host path and no host directory may leak into the
+sandbox. The `monty` CLI passes its file argument as the script name, so
+`monty /abs/script.py` reports `/script.py` (or `/data/script.py` under a
+`/data` mount) and `monty -c` reports `/<string>` where CPython raises
+`NameError`. Like the other dunders it is read-only, where CPython allows
+rebinding it.
+
+Other module dunders CPython defines (`__loader__`, `__builtins__`,
 `__cached__`, `__dict__`) are not exposed; reading them falls through to the host
 name lookup and ultimately raises `NameError` if unresolved. `__loader__` is
 omitted because CPython always binds it to a loader *object* (never `None`), so
 exposing `None` would diverge on type, and a real loader is neither available
-nor safe to surface in the sandbox. `__file__` is omitted so no host path can
-leak into the sandbox.
+nor safe to surface in the sandbox.
 
 ## Function objects
 

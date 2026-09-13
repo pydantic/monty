@@ -1091,7 +1091,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ListIterator> {
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{AssertMessageAnnotations, PrintWriter, ResourceTracker};
+    use monty_types::{PrintWriter, ResourceTracker};
     use num_bigint::BigInt;
 
     use super::*;
@@ -1099,6 +1099,7 @@ mod tests {
         bytecode::Code,
         heap::{Heap, HeapReader},
         intern::{InternerBuilder, Interns},
+        run::VmEnv,
         types::LongInt,
     };
 
@@ -1143,7 +1144,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
@@ -1184,7 +1185,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
@@ -1222,7 +1223,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");

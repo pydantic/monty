@@ -3,7 +3,7 @@
 //! must surface as a clean error and never poison the pool.
 
 #[cfg(unix)]
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 #[cfg(windows)]
 use std::os::windows::fs::symlink_dir;
 use std::{
@@ -127,9 +127,65 @@ fn kill_pid(pid: u32) {
     }
 }
 
+/// Writes the executable stand-in for `monty` that a test drives, from a child shell rather than
+/// this process: a descriptor open for writing here would be inherited by any concurrently
+/// forking test, and executing the file while that child still holds it fails with `ETXTBSY`.
+#[cfg(unix)]
+fn write_fake_monty(dir: &Path, script: &str) -> PathBuf {
+    let fake = dir.join("monty");
+    let status = Command::new("sh")
+        .args(["-c", r#"printf '%s' "$2" > "$1" && chmod 755 "$1""#, "sh"])
+        .arg(&fake)
+        .arg(script)
+        .status()
+        .unwrap();
+    assert!(status.success(), "writing the stand-in `monty` failed");
+    fake
+}
+
 // =============================================================================
 // Happy path
 // =============================================================================
+
+/// Rejected eager answers leave the checkout and worker at the same call.
+#[tokio::test]
+async fn allow_eager_await_validates_replies_before_sending() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let event = session
+        .feed("await f()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    let TurnEvent::FunctionCall {
+        call_id,
+        allow_eager_await,
+        ..
+    } = event
+    else {
+        panic!("expected function call, got {event:?}")
+    };
+    assert!(allow_eager_await);
+    for results in [
+        vec![],
+        vec![(call_id + 1, ResumeValue::Return(MontyObject::Int(42)))],
+        vec![(call_id, ResumeValue::Future)],
+        vec![(call_id, ResumeValue::NotFound)],
+    ] {
+        assert!(matches!(
+            session.resume_futures(results, &mut no_print).await,
+            Err(PoolError::Protocol(_))
+        ));
+    }
+    let done = session
+        .resume_futures(
+            vec![(call_id, ResumeValue::Return(MontyObject::Int(42)))],
+            &mut no_print,
+        )
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(done), MontyObject::Int(42));
+    session.finish().await.unwrap();
+}
 
 /// An over-threshold frame round-trips through `decode_event`'s
 /// `block_in_place` branch (multi-thread runtime) without corruption.
@@ -356,6 +412,147 @@ async fn invalid_mount_host_path_is_rejected_cleanly() {
         .await
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(2));
+    session.finish().await.unwrap();
+}
+
+/// The sandbox working directory is session state: the first feed sets it
+/// (its first mount, else `/`), and later feeds keep it — `os.chdir`
+/// included — unless `feed_with_cwd` switches it.
+#[tokio::test]
+async fn working_directory_persists_across_feeds() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("data.txt"), "relative!").unwrap();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()];
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+
+    // The first feed's mount, so relative paths reach into it; `__file__` is placed under it.
+    let code = "\
+import os
+from pathlib import Path
+before = (os.getcwd(), __file__, open('data.txt').read())
+os.chdir('sub')
+(before, Path.cwd(), Path('..').resolve())";
+    let result = session.feed(code, vec![], mount(), false, &mut no_print).await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::Tuple(vec![
+            MontyObject::Tuple(vec![
+                MontyObject::String("/mnt".to_owned()),
+                MontyObject::String("/mnt/main.py".to_owned()),
+                MontyObject::String("relative!".to_owned()),
+            ]),
+            MontyObject::Path("/mnt/sub".to_owned()),
+            MontyObject::Path("/mnt".to_owned()),
+        ])
+    );
+
+    // The chdir persists, even into a feed without the mount.
+    let event = session
+        .feed("os.getcwd()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt/sub".to_owned()));
+
+    // An explicit cwd switches it, and the switch persists too.
+    let result = session
+        .feed_with_cwd("os.getcwd()", vec![], mount(), Some("/mnt/"), false, &mut no_print)
+        .await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt".to_owned()));
+
+    // A relative cwd is refused before anything is sent; the session survives unchanged.
+    let err = session
+        .feed_with_cwd("1", vec![], vec![], Some("data"), false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected a runtime error, got {err:?}");
+    };
+    assert_eq!(exc.exc_type(), ExcType::ValueError);
+    assert_eq!(exc.message().unwrap(), "cwd must be an absolute POSIX path: \"data\"");
+    let event = session
+        .feed("os.getcwd()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt".to_owned()));
+    session.finish().await.unwrap();
+
+    // A session whose first feed has no mount starts at the root and stays
+    // there when a later feed mounts something.
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let event = session
+        .feed(
+            "import os\n(os.getcwd(), __file__)",
+            vec![],
+            vec![],
+            false,
+            &mut no_print,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::Tuple(vec![
+            MontyObject::String("/".to_owned()),
+            MontyObject::String("/main.py".to_owned())
+        ])
+    );
+    let result = session.feed("os.getcwd()", vec![], mount(), false, &mut no_print).await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/".to_owned()));
+    session.finish().await.unwrap();
+}
+
+/// A first feed that type checking rejects never reaches the worker's
+/// directory switch, so the next feed still establishes the mount default.
+#[tokio::test]
+async fn working_directory_survives_a_rejected_first_feed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()];
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            type_check: true,
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let err = session
+        .feed("x: int = 'nope'", vec![], mount(), false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Typing(_)), "expected Typing, got {err:?}");
+    let result = session
+        .feed("import os\nos.getcwd()", vec![], mount(), false, &mut no_print)
+        .await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt".to_owned()));
+    session.finish().await.unwrap();
+}
+
+/// A first feed rejected as oversize never reaches the worker, so its
+/// directory is not established: the next feed still sends the mount default.
+#[tokio::test]
+async fn working_directory_survives_an_oversize_first_feed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()];
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    // just over monty_proto's 256 MiB MAX_FRAME_LEN
+    let huge = MontyObject::String("x".repeat(257 * 1024 * 1024));
+    let err = session
+        .feed("data", vec![("data".to_owned(), huge)], mount(), false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Runtime(_)), "expected Runtime, got {err:?}");
+    let result = session
+        .feed("import os\nos.getcwd()", vec![], mount(), false, &mut no_print)
+        .await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt".to_owned()));
     session.finish().await.unwrap();
 }
 
@@ -1402,11 +1599,9 @@ async fn max_memory_leaves_normal_work_alone() {
 #[tokio::test]
 async fn unrecognised_exit_code_stays_an_opaque_death() {
     let dir = tempfile::tempdir().unwrap();
-    let fake = dir.path().join("monty");
     // outlives the parent's first write, so the death is always observed while
     // waiting for the reply rather than racing with `sending a request`
-    fs::write(&fake, "#!/bin/sh\nsleep 0.2\nexit 64\n").unwrap();
-    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+    let fake = write_fake_monty(dir.path(), "#!/bin/sh\nsleep 0.2\nexit 64\n");
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
     let err = match pool.checkout(&ReplConfig::default()).await {
@@ -1447,11 +1642,12 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
 
-    let fake = dir.path().join("monty");
     // both frames are written up front and the process stays alive; the parent
     // reads them in turn as it sends `Configure` and then the raw request
-    fs::write(&fake, format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display())).unwrap();
-    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display()),
+    );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
     let mut checkout = pool
@@ -1463,6 +1659,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1490,9 +1687,10 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
 
-    let fake = dir.path().join("monty");
-    fs::write(&fake, format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display())).unwrap();
-    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display()),
+    );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
     let mut checkout = pool
@@ -1504,6 +1702,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1535,9 +1734,10 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
 
-    let fake = dir.path().join("monty");
-    fs::write(&fake, format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display())).unwrap();
-    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display()),
+    );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
     let mut checkout = pool
@@ -1549,6 +1749,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };

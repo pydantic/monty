@@ -938,21 +938,25 @@ fn timeout_in_str_format_parser() {
     repl.feed_run("template = '{' + 'x' * 20_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
 
-    let start = Instant::now();
-    let exc = repl
-        .feed_run("template.format()", vec![], PrintWriter::Stdout)
-        .expect_err("an unterminated field must fail without a time limit");
-    let full_scan = start.elapsed();
-    assert_eq!(exc.exc_type(), ExcType::ValueError);
+    let full_scan = fastest_of_attempts(|| {
+        let start = Instant::now();
+        let exc = repl
+            .feed_run("template.format()", vec![], PrintWriter::Stdout)
+            .expect_err("an unterminated field must fail without a time limit");
+        assert_eq!(exc.exc_type(), ExcType::ValueError);
+        start.elapsed()
+    });
 
-    repl.tracker_mut().set_max_duration(full_scan / 10);
-    let start = Instant::now();
-    let exc = repl
-        .feed_run("template.format()", vec![], PrintWriter::Stdout)
-        .expect_err("the format-string parser must hit the time limit");
-    let elapsed = start.elapsed();
+    let elapsed = fastest_of_attempts(|| {
+        repl.tracker_mut().set_max_duration(full_scan / 10);
+        let start = Instant::now();
+        let exc = repl
+            .feed_run("template.format()", vec![], PrintWriter::Stdout)
+            .expect_err("the format-string parser must hit the time limit");
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+        start.elapsed()
+    });
 
-    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
     assert!(
         elapsed < full_scan / 2,
         "str.format() should stop during the scan; full scan {full_scan:?}, timed scan {elapsed:?}"
@@ -968,21 +972,25 @@ fn timeout_in_str_format_receiver_snapshot() {
     repl.feed_run("template = '{missing}' + 'x' * 20_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
 
-    let before = repl.tracker().elapsed();
-    let exc = repl
-        .feed_run("template.format()", vec![], PrintWriter::Stdout)
-        .expect_err("the missing field must fail after snapshotting the receiver");
-    let full_snapshot = repl.tracker().elapsed().saturating_sub(before);
-    assert_eq!(exc.exc_type(), ExcType::KeyError);
+    let full_snapshot = fastest_of_attempts(|| {
+        let before = repl.tracker().elapsed();
+        let exc = repl
+            .feed_run("template.format()", vec![], PrintWriter::Stdout)
+            .expect_err("the missing field must fail after snapshotting the receiver");
+        assert_eq!(exc.exc_type(), ExcType::KeyError);
+        repl.tracker().elapsed().saturating_sub(before)
+    });
 
-    // resets the execution clock, so the next feed's elapsed time starts at zero
-    repl.tracker_mut().set_max_duration(full_snapshot / 10);
-    let exc = repl
-        .feed_run("template.format()", vec![], PrintWriter::Stdout)
-        .expect_err("the receiver snapshot must hit the time limit before field lookup");
-    let elapsed = repl.tracker().elapsed();
+    let elapsed = fastest_of_attempts(|| {
+        // resets the execution clock, so the next feed's elapsed time starts at zero
+        repl.tracker_mut().set_max_duration(full_snapshot / 10);
+        let exc = repl
+            .feed_run("template.format()", vec![], PrintWriter::Stdout)
+            .expect_err("the receiver snapshot must hit the time limit before field lookup");
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+        repl.tracker().elapsed()
+    });
 
-    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
     assert!(
         elapsed < full_snapshot / 2,
         "str.format() should stop while copying the receiver; full snapshot {full_snapshot:?}, timed snapshot {elapsed:?}"
@@ -995,22 +1003,33 @@ fn timeout_in_str_format_escaped_braces() {
     repl.feed_run("template = '{{' * 5_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
 
-    let start = Instant::now();
-    repl.feed_run("template.format()", vec![], PrintWriter::Stdout).unwrap();
-    let full_scan = start.elapsed();
+    let full_scan = fastest_of_attempts(|| {
+        let start = Instant::now();
+        repl.feed_run("template.format()", vec![], PrintWriter::Stdout).unwrap();
+        start.elapsed()
+    });
 
-    repl.tracker_mut().set_max_duration(full_scan / 10);
-    let start = Instant::now();
-    let exc = repl
-        .feed_run("template.format()", vec![], PrintWriter::Stdout)
-        .expect_err("escaped braces must not bypass the time limit");
-    let elapsed = start.elapsed();
+    let elapsed = fastest_of_attempts(|| {
+        repl.tracker_mut().set_max_duration(full_scan / 10);
+        let start = Instant::now();
+        let exc = repl
+            .feed_run("template.format()", vec![], PrintWriter::Stdout)
+            .expect_err("escaped braces must not bypass the time limit");
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+        start.elapsed()
+    });
 
-    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
     assert!(
         elapsed < full_scan / 2,
         "str.format() should stop during the scan; full scan {full_scan:?}, timed scan {elapsed:?}"
     );
+}
+
+/// Fastest of several timings of `measure`: the `str.format()` timeout tests
+/// compare millisecond-scale runs, and one run preempted by the parallel test
+/// threads can lose a scheduler slice longer than the work being timed.
+fn fastest_of_attempts(mut measure: impl FnMut() -> Duration) -> Duration {
+    (0..5).map(|_| measure()).min().expect("at least one attempt")
 }
 
 #[test]

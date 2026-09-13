@@ -498,6 +498,10 @@ message Feed {
   repeated NamedValue inputs = 2;
   // Skip type checking for this feed even when the session enables it.
   bool skip_type_check = 3;
+  // Absolute virtual working directory to switch the session to before the
+  // feed, resolved by the parent (an explicit choice, or the first mount on
+  // the session's first feed). Empty keeps the session's current directory.
+  string cwd = 4;
 }
 
 // Ends a pending suspension by raising `exception` uncatchably at its site.
@@ -532,6 +536,8 @@ message ResumeNameLookup {
 // Answers a `ResolveFutures` suspension with results for some or all pending
 // call ids.
 message ResumeFutures {
+  // Also answers an eager FunctionCall with exactly one result matching its
+  // call_id. The worker creates a settled awaitable before continuing.
   repeated FutureResult results = 1;
 }
 
@@ -628,11 +634,23 @@ enum PrintStream {
   PRINT_STREAM_STDERR = 2;
 }
 
-// Streamed sandbox print() output. Zero or more of these precede each
-// turn-ending event; text is flushed at line granularity.
-message Print {
+// One run of print() output on a single stream, as one `Print` event may
+// carry several.
+message PrintSegment {
   PrintStream stream = 1;
   string text = 2;
+}
+
+// Streamed sandbox print() output. Zero or more of these precede each
+// turn-ending event, and each carries the runs the worker had buffered, in
+// the order the sandbox produced them — so output alternating between the
+// streams batches into one event without losing that order.
+message Print {
+  // 1 and 2 were the single stream and text this event carried before it
+  // could hold more than one run.
+  reserved 1, 2;
+  reserved "stream", "text";
+  repeated PrintSegment segments = 3;
 }
 
 // Suspension: the sandbox called an external function, or — when `object_id`
@@ -648,6 +666,10 @@ message FunctionCall {
   uint32 call_id = 4;
   // The uuid of the receiver; absent for plain external function calls.
   Uuid object_id = 5;
+  // The host may await a coroutine and answer with ResumeFutures for this
+  // call_id. Synchronous results use ResumeCall; returning a pending
+  // future remains valid. Absent/false requires the ordinary call reply.
+  bool allow_eager_await = 6;
 }
 
 // Suspension: the sandbox performed an OS operation, surfaced for the parent

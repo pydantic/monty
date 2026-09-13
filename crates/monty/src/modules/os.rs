@@ -10,7 +10,7 @@
 //! [`OsFunctionCall`] (the same variants `pathlib.Path` methods use) for the
 //! host to permit or reject. `os.listdir` reuses the `Iterdir` call and
 //! reduces the returned child paths to bare names via
-//! [`PendingOsEffect::ListdirNames`] (see `os_dispatch::listdir_names`).
+//! [`PreConversionEffect::ListdirNames`] (see `os_dispatch::listdir_names`).
 //!
 //! `dir_fd` / `follow_symlinks` keyword arguments are parsed for signature
 //! parity but rejected with the `NotImplementedError` CPython raises on
@@ -27,9 +27,10 @@ use crate::{
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     object_bridge::MontyObjectExt,
-    os_dispatch::{PendingOsEffect, value_to_owned_string},
-    types::{Module, Property, Type, property::ZeroArgOsProperty, str::allocate_string},
+    os_dispatch::{PreConversionEffect, value_to_owned_string},
+    types::{Bytes, Module, Property, Type, property::ZeroArgOsProperty, str::allocate_string},
     value::Value,
+    virtual_path::posix_join,
 };
 
 /// OS module functions.
@@ -47,6 +48,9 @@ pub(crate) enum OsFunctions {
     Rename,
     Replace,
     Fspath,
+    Getcwd,
+    Getcwdb,
+    Chdir,
 }
 
 /// Creates the `os` module and allocates it on the heap.
@@ -75,6 +79,9 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         (StaticStrings::Rmdir, function(OsFunctions::Rmdir)),
         (StaticStrings::Rename, function(OsFunctions::Rename)),
         (StaticStrings::Replace, function(OsFunctions::Replace)),
+        (StaticStrings::Getcwd, function(OsFunctions::Getcwd)),
+        (StaticStrings::Getcwdb, function(OsFunctions::Getcwdb)),
+        (StaticStrings::Chdir, function(OsFunctions::Chdir)),
         (StaticStrings::OsFspath, function(OsFunctions::Fspath)),
         // os.environ — property that yields the host environment as a dict.
         (
@@ -116,7 +123,65 @@ pub(super) fn call(vm: &mut VM<'_>, functions: OsFunctions, args: ArgValues) -> 
         OsFunctions::Rename => rename(vm, args),
         OsFunctions::Replace => replace(vm, args),
         OsFunctions::Fspath => fspath(vm, args),
+        OsFunctions::Getcwd => getcwd(vm, args),
+        OsFunctions::Getcwdb => getcwdb(vm, args),
+        OsFunctions::Chdir => chdir(vm, args),
     }
+}
+
+/// Implementation of `os.getcwd()` — the sandbox's virtual working
+/// directory, held by the VM so no host round-trip is needed.
+fn getcwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    args.check_zero_args("getcwd", vm.heap)?;
+    Ok(CallResult::Value(allocate_string(&*vm.env.cwd, vm.heap)))
+}
+
+/// Implementation of `os.getcwdb()`: the working directory as bytes.
+///
+/// Virtual paths are always UTF-8, so this is `os.getcwd().encode()` with no
+/// filesystem encoding involved.
+fn getcwdb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    args.check_zero_args("getcwdb", vm.heap)?;
+    let bytes = Bytes::new(vm.env.cwd.as_bytes().to_vec());
+    Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Bytes(bytes)))))
+}
+
+/// `os.chdir(path)` accepts a positional or keyword path, with CPython's total-count check.
+#[derive(FromArgs)]
+#[from_args(name = "chdir", style = c_named, at_most_total)]
+struct ChdirArgs {
+    path: Value,
+}
+
+/// Implementation of `os.chdir(path)`.
+///
+/// The VM owns the working directory, but the target must exist and be a
+/// directory, so the resolved path goes to the host as a `Path.stat` call
+/// with a [`PreConversionEffect::Chdir`] that adopts it on a directory reply.
+/// `FileNotFoundError` therefore comes from the host, `NotADirectoryError`
+/// from the resume side.
+fn chdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let ChdirArgs { path } = ChdirArgs::from_args(args, vm)?;
+    defer_drop!(path, vm);
+    let spelled = extract_os_path(path, "chdir", "path", PathAccepts::Fd, vm)?;
+    if spelled.is_empty() {
+        // CPython's `chdir("")` fails with ENOENT; the host would otherwise stat the root.
+        return Err(ExcType::file_not_found_error(""));
+    }
+    if spelled.contains('\0') {
+        // The VM's generic NUL check names the `Path.stat` call this becomes; CPython names `chdir`.
+        return Err(ExcType::value_error("chdir: embedded null character in path"));
+    }
+    // Keep every component until the host validates the target; normalize on success.
+    let path = posix_join(&vm.env.cwd, &spelled);
+    Ok(CallResult::OsCallWithEffect {
+        call: OsFunctionCall::Stat(MontyPath::new(path.clone())),
+        effect: PreConversionEffect::Chdir {
+            path,
+            spelled: spelled.into_string(),
+        }
+        .into(),
+    })
 }
 
 /// Implementation of `os.getenv(key, default=None)`.
@@ -158,10 +223,9 @@ struct ListdirArgs {
 /// Implementation of `os.listdir(path=None)`.
 ///
 /// Reuses the `Iterdir` OS call (host returns full child paths) with a
-/// [`PendingOsEffect::ListdirNames`] — armed at dispatch, not here — so the
+/// [`PreConversionEffect::ListdirNames`] — armed at dispatch, not here — so the
 /// resume reduces them to bare entry names. `None` maps to `'.'` like
-/// CPython; Monty has no working directory, so hosts typically reject the
-/// relative default.
+/// CPython, which the VM resolves to the working directory on its way out.
 fn listdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let ListdirArgs { path } = ListdirArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
@@ -172,7 +236,7 @@ fn listdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     };
     Ok(CallResult::OsCallWithEffect {
         call: OsFunctionCall::Iterdir(path),
-        effect: PendingOsEffect::ListdirNames,
+        effect: PreConversionEffect::ListdirNames.into(),
     })
 }
 

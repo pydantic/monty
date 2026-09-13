@@ -179,7 +179,7 @@ test('a suspension answering abort-feed ends the wasm worker', async () => {
   // servicing it would let it call host functions past the budget.
   const call = (callId: number) => ({
     tag: 'function-call' as const,
-    val: { callId, functionName: 'fetch', args: [], kwargs: [] },
+    val: { callId, functionName: 'fetch', args: [], kwargs: [], allowEagerAwait: false },
   })
   const requests: string[] = []
   const transport = await WorkerTransport.create(async (request) => {
@@ -192,7 +192,7 @@ test('a suspension answering abort-feed ends the wasm worker', async () => {
   transport.onFinish = (value) => {
     reusable = value
   }
-  const first = await transport.feed('fetch()', null, [], true, () => {})
+  const first = await transport.feed('fetch()', null, [], { skipTypeCheck: true }, () => {})
   t.is(first.kind, 'functionCall')
   const turn = await transport.resumeReturn(null, () => {})
   t.deepEqual(turn, { kind: 'protocol', message: 'worker answered abort-feed with functionCall' })

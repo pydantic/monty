@@ -101,6 +101,12 @@ These raise `NameError`:
     rejects negative exponents with `ValueError` instead of computing a modular
     inverse. Non-modular exponents whose result cannot be materialized raise
     `OverflowError` (see [resource_limits.md](resource_limits.md)).
+- **`pow(base, exp)` and `**` with a negative float base and a fractional
+    exponent** — gives `nan` where CPython returns a `complex` (Monty has no
+    complex type). Overflow raises `OverflowError` like CPython, always worded
+    `(34, 'Numerical result out of range')` (glibc's `strerror(ERANGE)`; CPython
+    on macOS and Windows says `(34, 'Result too large')`), and `exc.args` is that
+    text as one string rather than CPython's `(34, '...')` tuple.
 - **`sorted(iterable, *, key=None, reverse=False)`** — `key` and `reverse`
     must be passed by keyword; positional forms raise `TypeError`.
 - **`round(n, ndigits)`** — `ndigits` values outside the i64 range are
