@@ -1,0 +1,41 @@
+docs/limitations/str.md
+  s_b43b30eae72d5b::t_03da16050203e2 1,3-4
+mkdocs.yml
+  s_b43b30eae72d5b::t_03da16050203e2 57
+CLAUDE.md
+  s_b43b30eae72d5b::t_e47242b1860ecb 403
+crates/monty/src/types/mod.rs
+  s_b43b30eae72d5b::t_e47242b1860ecb 41-42
+crates/monty/src/types/str.rs
+  s_b43b30eae72d5b::t_2ef246fdec6b93 9-10
+  s_b43b30eae72d5b::t_e47242b1860ecb 552-555,648,650,664,683,711-717,726,733-735,741,743,750-757,766,781,796,1106,1119,1132,1210,1259,1321,1325,1327,1344,1348,1351,1832-1834,1836-1837,1854
+crates/monty/src/types/unicode_type.rs
+  s_b43b30eae72d5b::t_e47242b1860ecb 1-179
+crates/monty/src/intern.rs
+  s_b43b30eae72d5b::t_e47242b1860ecb 231
+crates/monty/test_cases/str__methods.py
+  s_b43b30eae72d5b::t_e47242b1860ecb 96-101,109-113,120-122,130-132,138-147,173,175,557-577
+  s_b43b30eae72d5b::t_ec9d57be63700b 174
+crates/monty/src/types/unicode_type_data.rs
+  s_b43b30eae72d5b::t_e47242b1860ecb 1-3988
+Makefile
+  s_b43b30eae72d5b::t_e47242b1860ecb 235-237
+scripts/gen_unicode_type.py
+  s_b43b30eae72d5b::t_e47242b1860ecb 1-179
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9274a18e20e0e42c6e4e28c720be6a9a2e2e7227",
+  "prompts": {},
+  "sessions": {
+    "s_b43b30eae72d5b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "120b30e4-8833-4a3a-91a2-74b922f10aeb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
