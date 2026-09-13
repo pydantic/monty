@@ -1,0 +1,102 @@
+evals/tasks/text/log_parse.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 11-13,105-106
+evals/tasks/schema/large_result_filter.md
+  s_94bd17dac64411::t_a4b6117068691f 7-8
+evals/harness/evaluators.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 64
+  s_94bd17dac64411::t_1e7276979bc3ac 1-63,65-175
+evals/tasks/wrangling/csv_json_join.md
+  s_94bd17dac64411::t_a4b6117068691f 11
+evals/tasks/numeric/stats_summary.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 12-13,102-103
+evals/harness/runner.py
+  s_94bd17dac64411::t_ee6da0bd96f484 1,3-5,7,9-11,22-26,32,34,37,39,45-53,55,60-96,102-103,105,110-112,116,120-121,127,141,145,150-151,154,159-161,163-164,166,170-179,181-183,185-200,204,210,212,214-219,229-230,232-238,240-242
+  s_94bd17dac64411::t_aa0a27f794d0bc 27
+  s_94bd17dac64411::t_aa1d44c25822a7 97-101,104,106-109,113-114,117-119,122-126,128-129,131-132,135-140,143-144,146,156,158,162,165,167
+  s_94bd17dac64411::t_779ffd2736c518 18
+evals/tasks/numeric/expense_budget.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 16-17,157-158
+Makefile
+  s_94bd17dac64411::t_aa0a27f794d0bc 140
+evals/harness/executor.py
+  s_94bd17dac64411::t_b385fd9d4af391 56
+  s_94bd17dac64411::t_e578f872ce5200 91-98
+examples/web_scraper/main.py
+  s_94bd17dac64411::t_4054b08e10ec34 149
+evals/tasks/orchestration/weather_fanout.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 14-15,98-99
+evals/tasks/text/markdown_report.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 17-19,102-103
+evals/harness/metrics.py
+  s_94bd17dac64411::t_68005160b931fd 1,3-5,12,15-16,18-26,29-30,32-38,44,46
+evals/tasks/artifacts/svg_bar_chart.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 18-21,116-119,126-127
+evals/tasks/artifacts/svg_bar_chart.md
+  s_94bd17dac64411::t_a4b6117068691f 9-12
+evals/tasks/schema/large_result_filter.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 16-18,76-77
+evals/tasks/wrangling/group_by_report.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 13-14,83-84
+evals/harness/task.py
+  s_94bd17dac64411::t_7fb267aa0f3662 3-6,8-9,14,16,18-19,21,23,28,30-32,36,43,45-48,57-58,60,70,76-89
+pyproject.toml
+  s_94bd17dac64411::t_cc9aac9b039165 29-34
+evals/tasks/stateful/followup_reuse.md
+  s_94bd17dac64411::t_a4b6117068691f 6-7,9
+evals/harness/agent.py
+  s_94bd17dac64411::t_9cb29be83ab2f5 79
+  s_94bd17dac64411::t_364aa0f2feba2b 4-5,14-15,69
+evals/tasks/dates/schedule_conflicts.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 14-15,121-122
+evals/tasks/orchestration/retry_flaky.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 17-19,89-90
+evals/tasks/orchestration/retry_flaky.md
+  s_94bd17dac64411::t_a4b6117068691f 11
+evals/tasks/stateful/followup_reuse.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 17-18,65-66,83
+evals/tasks/text/markdown_report.md
+  s_94bd17dac64411::t_a4b6117068691f 9
+evals/tasks/wrangling/group_by_report.md
+  s_94bd17dac64411::t_a4b6117068691f 6
+evals/tasks/orchestration/weather_fanout.md
+  s_94bd17dac64411::t_a4b6117068691f 10
+evals/tasks/text/log_parse.md
+  s_94bd17dac64411::t_a4b6117068691f 7
+evals/harness/classify.py
+  s_94bd17dac64411::t_aaa0b2301047a8 24-25
+  s_94bd17dac64411::t_e5f20373b122a8 73-76
+  s_94bd17dac64411::t_aa0a27f794d0bc 256
+evals/harness/report.py
+  s_94bd17dac64411::t_60c4951177c63b 1,3-6,16-18,20-21,28,30,32-49,55-56,59-60,63-91,93-95,100,105-108,113-121,126-131,137-139,143-148,153-154,165,167,170-172,174,182,184,186,190-191,197
+  s_94bd17dac64411::t_aa0a27f794d0bc 50-52,109-111,132-134
+evals/tasks/numeric/stats_summary.md
+  s_94bd17dac64411::t_a4b6117068691f 9
+evals/tasks/orchestration/paginate_and_count.md
+  s_94bd17dac64411::t_a4b6117068691f 9
+evals/README.md
+  s_94bd17dac64411::t_286ec5185a31d5 3-4,18,21,24,28-32,55,57-67,79-83,110,141,146,151,167,173-177
+evals/tasks/numeric/expense_budget.md
+  s_94bd17dac64411::t_a4b6117068691f 12
+evals/tasks/dates/schedule_conflicts.md
+  s_94bd17dac64411::t_a4b6117068691f 8
+evals/tasks/wrangling/csv_json_join.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 14-15,141-142
+evals/tasks/orchestration/paginate_and_count.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 12-14,85-86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0f15469a991977bed5427088f019cd8ba7345001",
+  "prompts": {},
+  "sessions": {
+    "s_94bd17dac64411": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f9be6770-bfa2-49ff-89f1-70bdc3b3655c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
