@@ -10,7 +10,7 @@
 # because Monty's `count()` rejects anything else, where CPython accepts any
 # number protocol.
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from typing import Any, Generic, TypeAlias, TypeVar, overload
 
 from typing_extensions import Self
@@ -141,12 +141,6 @@ class product(Generic[_T]):
     def __next__(self) -> tuple[Any, ...]: ...
     def __iter__(self) -> Self: ...
 
-# The sub-iterator `groupby` yields. CPython names it `itertools._grouper` at
-# runtime and does not export it, so it is only ever reached through `groupby`.
-class _grouper(Generic[_T]):
-    def __iter__(self) -> Self: ...
-    def __next__(self) -> _T: ...
-
 # Generic over the key as well as the item, so a supplied `key` types what the
 # pairs carry: without `_K` every key would come back as `Any`.
 class groupby(Generic[_K, _T]):
@@ -154,5 +148,9 @@ class groupby(Generic[_K, _T]):
     def __new__(cls, iterable: Iterable[_T], key: None = None) -> groupby[_T, _T]: ...
     @overload
     def __new__(cls, iterable: Iterable[_T], key: Callable[[_T], _K]) -> groupby[_K, _T]: ...
-    def __next__(self) -> tuple[_K, _grouper[_T]]: ...
+    # The group is typed as a plain iterator rather than as the
+    # `itertools._grouper` upstream typeshed declares: CPython exposes that
+    # name on the module and Monty does not, so declaring it here would let
+    # `from itertools import _grouper` type-check and then fail at runtime.
+    def __next__(self) -> tuple[_K, Iterator[_T]]: ...
     def __iter__(self) -> Self: ...

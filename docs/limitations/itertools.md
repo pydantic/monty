@@ -49,7 +49,9 @@ raises `AttributeError` at runtime.
     through the synchronous `evaluate_function` path, which runs a frame to
     completion and cannot yield to the host. A callable that reaches an external
     function, an `os` operation, or a host method call therefore raises
-    `NotImplementedError: takewhile(): external function 'f' is not yet supported in this context`.
+    `NotImplementedError`, naming the adaptor that called it —
+    `takewhile(): external function 'f' is not yet supported in this context`
+    from `takewhile`, `groupby(): ...` from `groupby`, and so on.
     CPython would simply call it. This is the same restriction that applies to `__init__`,
     `__next__` and `__repr__` (see [classes.md](classes.md)); ordinary
     sandbox-defined functions and lambdas are unaffected.
@@ -116,7 +118,11 @@ raises `AttributeError` at runtime.
     raises `MemoryError`. The two calls that genuinely need the vector agree
     with CPython: `combinations_with_replacement('a', 2**62)` raises
     `MemoryError`, and `product('ab', repeat=2**62)` raises
-    `OverflowError: repeat argument too large`.
+    `OverflowError: repeat argument too large`. All four are 64-bit worker
+    behaviour: like `batched`'s `n`, `r` and `repeat` are bounded by the
+    worker's pointer width, so the wasm worker raises
+    `OverflowError: Python int too large to convert to C ssize_t` for anything
+    at or above `2**31` before reaching any of it.
 - **`product` names a rejected keyword instead of counting keywords.** Two
     keywords where one is unknown (`product([1], repeat=2, bogus=1)`) raise
     `product() got an unexpected keyword argument 'bogus'`, where CPython

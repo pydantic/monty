@@ -801,7 +801,7 @@ fn call_product(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         check_estimated_size(slots.saturating_mul(size_of::<usize>() + VALUE_SIZE), &vm.heap.tracker)?;
     }
     let (pools, vm) = pools_guard.into_parts();
-    let iter = ItertoolsIter::Product(Box::new(Product::new(pools, repeat)));
+    let iter = ItertoolsIter::Product(Box::new(Product::new(pools, slots)));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
@@ -809,9 +809,9 @@ fn call_product(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// index vector beyond what a machine integer can address.
 ///
 /// CPython bounds `nargs * repeat * sizeof(Py_ssize_t)` by `PY_SSIZE_T_MAX` and
-/// raises before it touches the arguments, so a hostile `repeat` never reaches
-/// the multiplication inside [`Product::new`] — which would otherwise wrap, or
-/// panic in a debug build.
+/// raises before it touches the arguments. The count this returns is the one
+/// [`Product::new`] is given, so the multiplication happens once, here, where
+/// it is checked.
 fn product_slots(width: usize, repeat: usize) -> RunResult<usize> {
     match width.checked_mul(repeat) {
         Some(slots) if index_bytes(slots).is_some() => Ok(slots),

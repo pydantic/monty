@@ -32,13 +32,16 @@ pub(crate) struct Product {
 }
 
 impl Product {
-    /// Takes the collected pools.
+    /// Takes the collected pools and the result width `call_product` checked.
     ///
-    /// `call_product` has already checked that `pools.len() * repeat` is in
-    /// range and preflighted the index vector, and passes no pools at all for
-    /// `repeat=0`, so the multiplication below cannot overflow.
-    pub(crate) fn new(pools: Vec<Vec<Value>>, repeat: usize) -> Self {
-        let slots = pools.len() * repeat;
+    /// `slots` is `pools.len() * repeat`, passed in rather than recomputed
+    /// here: the caller is where that product is proved to be in range, and a
+    /// second multiplication would be a second chance to overflow.
+    pub(crate) fn new(pools: Vec<Vec<Value>>, slots: usize) -> Self {
+        debug_assert!(
+            slots == 0 || slots >= pools.len(),
+            "slots must be a whole number of rounds"
+        );
         // An empty pool empties the product — unless there are no slots, in
         // which case the single empty tuple is still yielded.
         let (indices, phase) = if slots > 0 && pools.iter().any(Vec::is_empty) {

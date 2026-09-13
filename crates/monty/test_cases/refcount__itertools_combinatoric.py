@@ -48,11 +48,24 @@ assert survivor == [1]
 cyclic = []
 cyclic.append(itertools.product([cyclic]))
 
+
 # `groupby` has four edges — source, key function, the key read ahead and the
 # item read ahead — and the last two are only populated once it has stepped.
-# `keyed` names none of them separately.
-groupers = itertools.groupby([[1], [1], [2]], len)
+# The key function is a closure over a list nothing else names, so the key edge
+# has to be traced to reach it; `len` would be a builtin with no heap entry.
+def make_length_key():
+    offset = [0]
+    return lambda item: len(item) + offset[0]
+
+
+groupers = itertools.groupby([[1], [1], [2]], make_length_key())
 grouped_key, grouped_group = next(groupers)
+
+# The freeing path for that edge: a dropped `groupby` must release its key
+# function as well as its source.
+gone_keyed = itertools.groupby([[1], [2]], make_length_key())
+next(gone_keyed)
+gone_keyed = None
 
 # The grouper owns its parent AND its target key, so a `groupby` reachable only
 # through the group it yielded must stay alive.
