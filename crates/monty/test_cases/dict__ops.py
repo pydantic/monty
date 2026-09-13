@@ -160,6 +160,34 @@ assert list(right | left) == ['b', 'c', 'a']
 assert left == {'a': 1, 'b': 2}
 assert right == {'b': 3, 'c': 4}
 assert left | {} == left
+
+
+# A right-hand key that collides with an existing one whose `__eq__` raises,
+# so the merge fails partway through `right`
+class CollidingKey:
+    def __hash__(self):
+        return 1
+
+    def __eq__(self, other):
+        raise ValueError('collide')
+
+
+class SameHash:
+    def __hash__(self):
+        return 1
+
+
+colliding_right = {SameHash(): 1, 'after': [2]}
+try:
+    {CollidingKey(): 0} | colliding_right
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'collide'
+try:
+    {CollidingKey(): 0}.update(colliding_right)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'collide'
 assert {} | right == right
 assert (left | right) is not left
 assert type(left | right) is dict

@@ -97,8 +97,9 @@ These raise `NameError`:
     `OverflowError: cannot fit 'int' into an index-sized integer`.
 - **`isinstance(obj, T)`** — `T` must be a built-in type (`int`, `str`,
     `list`, ...), a built-in exception class, a sandbox-defined class (see
-    [classes.md](classes.md)), or a tuple of those. Passing a host-supplied
-    dataclass / namedtuple as the second argument raises `TypeError`.
+    [classes.md](classes.md)), a `|` union of those (see [typing.md](typing.md)),
+    or a tuple of those. Passing a host-supplied dataclass / namedtuple as the
+    second argument raises `TypeError`.
 - **`iter()`** — see [iter.md](iter.md) for iterator and `iter(callable, sentinel)` divergences.
 - **`pow(base, exp, mod)`** — the three-argument form requires all integers and
     rejects negative exponents with `ValueError` instead of computing a modular

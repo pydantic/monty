@@ -1853,8 +1853,11 @@ fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_>) -
                 .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
                 .collect();
 
-            // Apply pairs into the target dict.
-            for (key, value) in pairs {
+            // Apply pairs into the target dict. A key whose `__hash__` raises
+            // fails `set` midway, so the guard releases the pairs not yet applied.
+            let pairs_iter = pairs.into_iter();
+            defer_drop_mut!(pairs_iter, vm);
+            for (key, value) in pairs_iter {
                 let old_value = dict.set(key, value, vm)?;
                 old_value.drop_with(vm);
             }

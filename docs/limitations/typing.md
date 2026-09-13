@@ -135,9 +135,16 @@ Divergences in the aliases themselves:
 - **No attributes beyond `__args__`, `__origin__` and `__parameters__`.**
     `__class__`, `__or__` and the other dunders CPython exposes raise
     `AttributeError`.
+- **String members stay strings.** `Optional['Foo']` is `'Foo' | None` where
+    CPython wraps the string as `ForwardRef('Foo')`; there is no `ForwardRef`.
+- **Special forms are accepted as members.** `Optional[typing.Final]` builds
+    `typing.Final | None` where CPython raises
+    `TypeError: Plain typing.Final is not valid as type argument`.
 - **Neither aliases nor unions cross the host boundary.** One built in the
     sandbox reaches the host as its repr string. Passed in from the host, a
     `list[int]` degrades to an external function (it is callable, so it is
     treated like any unmodeled class) and an `int | None` is rejected with
     `MontyConversionError`; neither has a `MontyObject` form. Their type
-    objects (`types.GenericAlias`, `typing.Union`) round-trip by identity.
+    objects round-trip: `types.GenericAlias` by identity, and Monty's
+    `typing.Union` as the host's `types.UnionType`, which is `typing.Union`
+    itself only from Python 3.14.
