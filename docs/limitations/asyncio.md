@@ -56,8 +56,8 @@ threads and no exposed event loop.
 ### Siblings left running by a failed `gather` only advance while something else suspends
 
 When one child of a `gather` raises, the siblings keep running as they do in CPython.
-They resume only when a host result arrives or when another task awaits, because Monty has no event loop of its own
-to turn.
+They resume only when a host result arrives or when another task awaits: Monty's scheduler runs ready tasks only at
+those suspension points and has no idle loop that would otherwise turn.
 Code that catches the error and then returns without awaiting again leaves them parked where they were:
 
 ```python test="skip"
