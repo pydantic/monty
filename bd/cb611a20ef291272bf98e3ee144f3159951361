@@ -1,0 +1,71 @@
+docs/limitations/typing.md
+  s_dbe9f0e7cf7f24::t_c5ec39cc8fa26c 162,167
+  s_dbe9f0e7cf7f24::t_14a46894656391 163-166
+  s_dbe9f0e7cf7f24::t_df6b9def072e19 4-11,56-58,131-161
+crates/monty/src/object_bridge.rs
+  s_dbe9f0e7cf7f24::t_0c9e04602493e1 690,779
+crates/monty/src/builtins/isinstance.rs
+  s_dbe9f0e7cf7f24::t_0c9e04602493e1 56-64,128-136
+crates/monty/tests/resource_limits.rs
+  s_dbe9f0e7cf7f24::t_df6b9def072e19 1341-1357
+crates/monty/src/types/union.rs
+  s_dbe9f0e7cf7f24::t_35e18319e70681 198-204,346-348
+  s_dbe9f0e7cf7f24::t_51109bdfb0e4c9 123,272,274,297
+  s_dbe9f0e7cf7f24::t_992252ff7191de 1-9,11-116,118-122,124-197,205-271,273,275-296,298-345,349-360
+  s_dbe9f0e7cf7f24::t_0c9e04602493e1 10,117
+crates/monty/test_cases/typing__union.py
+  s_dbe9f0e7cf7f24::t_a1f0dc78f46103 1-210
+crates/monty-types/src/object.rs
+  s_dbe9f0e7cf7f24::t_0c9e04602493e1 964-966
+crates/monty/src/heap_data.rs
+  s_dbe9f0e7cf7f24::t_0c9e04602493e1 146-147,224-225,286,489,1011
+crates/monty-proto/src/python/convert.rs
+  s_dbe9f0e7cf7f24::t_0c9e04602493e1 254,526
+crates/monty/src/exception_private.rs
+  s_dbe9f0e7cf7f24::t_0c9e04602493e1 137-149
+pyproject.toml
+  s_dbe9f0e7cf7f24::t_df6b9def072e19 171-172
+crates/monty/src/modules/typing.rs
+  s_dbe9f0e7cf7f24::t_0c9e04602493e1 6,9-10,13,17,32-39
+crates/monty/src/value.rs
+  s_dbe9f0e7cf7f24::t_0c9e04602493e1 29,1143-1146,1156-1160,1304-1307,2486-2488,2498-2499
+crates/monty/src/types/generic_alias.rs
+  s_dbe9f0e7cf7f24::t_35e18319e70681 209-214
+crates/monty/src/types/type.rs
+  s_dbe9f0e7cf7f24::t_0c9e04602493e1 244-248,638-641
+crates/monty/test_cases/refcount__typing_union.py
+  s_dbe9f0e7cf7f24::t_a1f0dc78f46103 1-27
+crates/monty/tests/binary_serde.rs
+  s_dbe9f0e7cf7f24::t_855c1e244eb187 367,382,385
+  s_dbe9f0e7cf7f24::t_962982daf55eac 369
+  s_dbe9f0e7cf7f24::t_df6b9def072e19 362-366,368,370-381,383-384,386-392
+crates/monty/src/heap/mod.rs
+  s_dbe9f0e7cf7f24::t_0c9e04602493e1 2068,2216
+crates/monty/src/types/mod.rs
+  s_dbe9f0e7cf7f24::t_0c9e04602493e1 42
+  s_dbe9f0e7cf7f24::t_35e18319e70681 74
+crates/monty-python/tests/test_types.py
+  s_dbe9f0e7cf7f24::t_51109bdfb0e4c9 201-202,267
+  s_dbe9f0e7cf7f24::t_855c1e244eb187 264,268-269,280
+  s_dbe9f0e7cf7f24::t_df6b9def072e19 262-263,266
+  s_dbe9f0e7cf7f24::t_35e18319e70681 265
+  s_dbe9f0e7cf7f24::t_14a46894656391 270-279,281
+  s_dbe9f0e7cf7f24::t_66765ac70c4103 10
+  s_dbe9f0e7cf7f24::t_d58b8e22cc7043 282-284
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "bdcb611a20ef291272bf98e3ee144f3159951361",
+  "prompts": {},
+  "sessions": {
+    "s_dbe9f0e7cf7f24": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf505686-fd13-49a3-99c2-79ce098624a9",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
