@@ -33,7 +33,7 @@ The checksums detect corruption, not malicious replacement.
 Files remain on disk until you delete them; this example provides no automatic deletion, redaction or encryption.
 
 ```bash
-mkdir -p examples/snapshot_replay/recordings
+install -d -m 700 examples/snapshot_replay/recordings
 uv run python -m examples.snapshot_replay.main --binary target/debug/monty capture examples/snapshot_replay/recordings/run.jsonl
 uv run python -m examples.snapshot_replay.main --binary target/debug/monty replay examples/snapshot_replay/recordings/run.jsonl
 uv run python -m examples.snapshot_replay.main --binary target/debug/monty branch examples/snapshot_replay/recordings/run.jsonl --at 1 --response examples/snapshot_replay/response.json --output examples/snapshot_replay/recordings/branch.json
@@ -41,10 +41,13 @@ uv run python -m examples.snapshot_replay.main --binary target/debug/monty repor
 ```
 
 In PowerShell, create the directory with `New-Item -ItemType Directory examples/snapshot_replay/recordings`.
+On Windows, files inherit the directory's ACL; use a directory accessible only to your account.
+On POSIX, new artifacts are created with mode `0600`, independent of a permissive umask.
 Open `report.html` locally to inspect the calls and result differences.
 It contains no scripts or remote assets.
 The comparison file includes the replacement response or edited source as well as the original recording's checksum.
 Outputs use exclusive creation: choose new filenames for another capture or comparison.
+Comparison files use compact JSON and the same 8 MiB limit for writing and reading.
 `--at 1` selects the second call, for `pydantic-ai-harness`; indices start at zero.
 
 To compare edited sandbox code, pass `--code path/to/edited.py` to `replay`.
@@ -90,6 +93,17 @@ Restoring a later suspension preserves the recorded output prefix and remaining 
 The snapshot carries its resource limits and accumulated execution time; restoring does not reset the time budget.
 Memory limits apply to live allocations in the restored worker.
 Two different error observations are reported as different, even if both mention a resource limit.
+
+Printed output is an ordered list of `[stream, text]` pairs, with `stdout` and `stderr` kept distinct.
+Adjacent fragments from the same stream are combined, so transport chunk boundaries do not affect comparisons.
+Saved prefixes retain stream order when replay restores a later suspension.
+The output cap charges UTF-8 text bytes plus 64 bytes per retained pair, including the restored prefix.
+This is a logical buffer limit, not a host-memory measurement.
+Recordings use schema 3; older recordings lack stream labels and must be captured again.
+
+Reports are limited to 8 MiB of UTF-8 HTML, including escaping.
+Comparison traversal stops at 10,000 nodes, 200 differences or a path longer than 1,024 characters.
+Exceeding these limits raises an error before a report file is created; differences are not silently truncated.
 
 ## Tests
 

@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -40,15 +42,76 @@ def test_capture_restore_branch_and_changed_source(case: Any) -> None:
     case.capture()
     recording = r.load(case.path)
     assert r.replay(recording, binary=case.binary)['result'] == snapshot(
-        {'kind': 'return', 'value': 12, 'stdout': 'before\nbetween\n'}
+        {'kind': 'return', 'value': 12, 'output': [['stdout', 'before\nbetween\n']]}
     )
     branch = r.replay(recording, at=1, response={'return_value': 9}, binary=case.binary)
     assert branch['result']['value'] == snapshot(19)
-    assert branch['result']['stdout'] == snapshot('before\nbetween\n')
+    assert branch['result']['output'] == snapshot([['stdout', 'before\nbetween\n']])
     assert r.replay(recording, code='x=fetch("a")\ny=fetch("b")\nx-y', binary=case.binary)['result'][
         'value'
     ] == snapshot(8)
     assert r.load(case.path)['sha256'] == snapshot(recording['sha256'])
+
+
+@pytest.mark.parametrize('before, after', [('stdout', 'stderr'), ('stderr', 'stdout')])
+def test_changed_source_preserves_output_stream(case: Any, before: str, after: str) -> None:
+    code = 'import sys\nprint("</pre><script>same</script>", file=sys.{stream})\n7'
+    case.capture(code.format(stream=before))
+    recording = r.load(case.path)
+    branch = r.replay(recording, code=code.format(stream=after), binary=case.binary)
+    assert branch['same_result'] == snapshot(False)
+    assert branch['comparison'] == snapshot('result-differs')
+    assert app.differences(branch['original'], branch['result']) == [('$.output[0][0]', before, after)]
+    report = app.report(recording, branch)
+    assert ('$.output[0][0]' in report) == snapshot(True)
+    assert ('<script>' not in report) == snapshot(True)
+    assert ('&lt;script&gt;' in report) == snapshot(True)
+
+
+@pytest.mark.parametrize(
+    'at, expected',
+    [
+        (0, snapshot([['stderr', 'prefix\nmiddle'], ['stdout', 'tail\n']])),
+        (1, snapshot([['stderr', 'prefix\n'], ['stdout', 'middle'], ['stderr', 'tail\n']])),
+    ],
+)
+def test_response_branch_restores_stream_prefix(case: Any, at: int, expected: list[list[str]]) -> None:
+    case.capture(
+        'import sys\nprint("prefix", file=sys.stderr)\nfirst = fetch("a")\n'
+        'print("middle", file=sys.stdout if first else sys.stderr, end="")\nsecond = fetch("b")\n'
+        'print("tail", file=sys.stdout if second else sys.stderr)\n7'
+    )
+    recording = r.load(case.path)
+    saved = r.encode(recording)
+    assert recording['result']['output'] == snapshot([['stderr', 'prefix\n'], ['stdout', 'middletail\n']])
+    assert r.replay(recording, binary=case.binary)['same_result'] == snapshot(True)
+    branch = r.replay(recording, at=at, response={'return_value': 0}, binary=case.binary)
+    assert branch['result']['output'] == expected
+    assert branch['result']['value'] == snapshot(7)
+    assert branch['same_result'] == snapshot(False)
+    assert branch['comparison'] == snapshot('result-differs')
+    assert (r.encode(recording) == saved) == snapshot(True)
+    assert r.replay(recording, binary=case.binary)['same_result'] == snapshot(True)
+
+
+def test_changed_source_preserves_cross_stream_order(case: Any) -> None:
+    code = 'import sys\nprint("same", file=sys.{first})\nprint("same", file=sys.{second})\n7'
+    case.capture(code.format(first='stdout', second='stderr'))
+    branch = r.replay(r.load(case.path), code=code.format(first='stderr', second='stdout'), binary=case.binary)
+    assert branch['original']['output'] == snapshot([['stdout', 'same\n'], ['stderr', 'same\n']])
+    assert branch['result']['output'] == snapshot([['stderr', 'same\n'], ['stdout', 'same\n']])
+    assert branch['same_result'] == snapshot(False)
+
+
+@pytest.mark.parametrize('stream', ['stdout', 'stderr'])
+def test_output_ignores_chunk_boundaries(stream: Any) -> None:
+    whole, split = r.Output(), r.Output()
+    whole(stream, '\u00e9x\n')
+    split(stream, '\u00e9')
+    split('stderr' if stream == 'stdout' else 'stdout', '')
+    split(stream, 'x\n')
+    assert split.output == whole.output == [[stream, '\u00e9x\n']]
+    assert split.size == whole.size == snapshot(68)
 
 
 def test_sample_response_changes_only_selected_package(case: Any) -> None:
@@ -109,8 +172,8 @@ def test_response_branch_can_return_early_after_last_call(case: Any) -> None:
     case.capture('def run():\n    if not fetch("a"):\n        return 0\n    return 1\nrun()')
     recording = r.load(case.path)
     branch = r.replay(recording, at=0, response={'return_value': 0}, binary=case.binary)
-    assert branch['original'] == snapshot({'kind': 'return', 'value': 1, 'stdout': ''})
-    assert branch['result'] == snapshot({'kind': 'return', 'value': 0, 'stdout': ''})
+    assert branch['original'] == snapshot({'kind': 'return', 'value': 1, 'output': []})
+    assert branch['result'] == snapshot({'kind': 'return', 'value': 0, 'output': []})
     assert branch['comparison'] == snapshot('result-differs')
 
 
@@ -127,10 +190,10 @@ def test_null_response_and_no_calls(case: Any) -> None:
     [
         (
             'try:\n    fetch("a")\nexcept ValueError:\n    result = 7\nresult',
-            snapshot({'kind': 'return', 'value': 7, 'stdout': ''}),
+            snapshot({'kind': 'return', 'value': 7, 'output': []}),
         ),
-        ('fetch("a")', snapshot({'kind': 'error', 'message': 'ValueError: bad', 'stdout': ''})),
-        ('1 / 0', snapshot({'kind': 'error', 'message': 'ZeroDivisionError: division by zero', 'stdout': ''})),
+        ('fetch("a")', snapshot({'kind': 'error', 'message': 'ValueError: bad', 'output': []})),
+        ('1 / 0', snapshot({'kind': 'error', 'message': 'ZeroDivisionError: division by zero', 'output': []})),
     ],
 )
 def test_guest_exception_caught_and_uncaught(case: Any, code: str, expected: dict[str, Any]) -> None:
@@ -338,11 +401,120 @@ def test_report_snapshot_size_excludes_padding(case: Any, encoded: str, size: in
 
 
 @pytest.mark.parametrize(
+    'before, after, message',
+    [
+        ({'k' * 8192: [0] * 1024}, {'k' * 8192: [1] * 1024}, snapshot('Comparison path exceeds 1024 characters')),
+        ({'k' * 1021: [0]}, {'k' * 1021: [1]}, snapshot('Comparison path exceeds 1024 characters')),
+        ([0] * 201, [1] * 201, snapshot('Comparison exceeds 200 differences')),
+        ([0] * 10000, [0] * 9999 + [1], snapshot('Comparison exceeds 10000 nodes')),
+    ],
+)
+def test_comparison_budgets(before: Any, after: Any, message: str) -> None:
+    with pytest.raises(r.ReplayError) as error:
+        app.differences(before, after)
+    assert str(error.value) == message
+
+
+def test_comparison_budget_edges() -> None:
+    key = 'k' * (app.MAX_DIFF_PATH - 2)
+    assert app.differences({key: 0}, {key: 1}) == [('$.' + key, 0, 1)]
+    assert len(app.differences([0] * 200, [1] * 200)) == snapshot(200)
+    assert app.differences([0] * 9999, [0] * 9998 + [1]) == snapshot([('$[9998]', 0, 1)])
+
+
+def test_report_stops_before_consuming_more_fragments() -> None:
+    assert app.bounded_html(['\u00e9' * (r.MAX_FILE // 2)]) == '\u00e9' * (r.MAX_FILE // 2)
+    parts = iter(['x' * r.MAX_FILE, 'x', 'not consumed'])
+    with pytest.raises(r.ReplayError) as error:
+        app.bounded_html(parts)
+    assert str(error.value) == snapshot('Report exceeds 8 MiB')
+    assert next(parts) == snapshot('not consumed')
+
+
+def test_report_caps_escaped_call_cards(case: Any) -> None:
+    r.capture(
+        'for i in range(8):\n    fetch(i)\nNone',
+        case.path,
+        lambda call: {'return_value': "'" * 240000},
+        binary=case.binary,
+    )
+    recording = r.load(case.path)
+    with pytest.raises(r.ReplayError) as error:
+        app.report(recording)
+    assert str(error.value) == snapshot('Report exceeds 8 MiB')
+
+
+def test_artifact_size_checked_before_creation(case: Any) -> None:
+    with pytest.raises(r.ReplayError) as error:
+        r.write_artifact(case.path, b'x' * (r.MAX_FILE + 1))
+    assert str(error.value) == snapshot('Artifact exceeds 8 MiB')
+    assert case.path.exists() == snapshot(False)
+    r.write_artifact(case.path, b'x' * r.MAX_FILE)
+    assert len(r.read_text(case.path, r.MAX_FILE, 'Branch')) == snapshot(r.MAX_FILE)
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Windows artifacts inherit the parent directory ACL')
+def test_artifacts_private_under_permissive_umask() -> None:
+    with TemporaryDirectory() as directory:
+        path = Path(directory)
+        previous = os.umask(0o022)
+        try:
+            journal = r.Journal(path / 'run.jsonl')
+            journal.close()
+            r.write_artifact(path / 'branch.json', b'{}')
+            r.write_artifact(path / 'report.html', b'<html>')
+        finally:
+            os.umask(previous)
+        assert [
+            (path / name).stat().st_mode & 0o777 for name in ('run.jsonl', 'branch.json', 'report.html')
+        ] == snapshot([0o600, 0o600, 0o600])
+
+
+def test_deep_comparison_file_roundtrips_through_cli(case: Any) -> None:
+    code = 'x = [0] * 119970\nfor _ in range(28):\n    x = [x]\nx'
+    case.capture(code)
+    comparison, document = Path(case.temp.name) / 'branch.json', Path(case.temp.name) / 'report.html'
+    with (
+        patch.object(
+            sys,
+            'argv',
+            ['snapshot-replay', '--binary', str(case.binary), 'replay', str(case.path), '--output', str(comparison)],
+        ),
+        redirect_stdout(io.StringIO()),
+    ):
+        app.main()
+    data = r.parse_json(r.read_text(comparison, r.MAX_FILE, 'Branch'))
+    assert (comparison.stat().st_size < 500000) == snapshot(True)
+    assert (len(json.dumps(data, indent=2)) > r.MAX_FILE) == snapshot(True)
+    with (
+        patch.object(
+            sys,
+            'argv',
+            [
+                'snapshot-replay',
+                '--binary',
+                str(case.binary),
+                'report',
+                str(case.path),
+                '--branch',
+                str(comparison),
+                '--output',
+                str(document),
+            ],
+        ),
+        redirect_stdout(io.StringIO()),
+    ):
+        app.main()
+    assert (document.stat().st_size <= r.MAX_FILE) == snapshot(True)
+
+
+@pytest.mark.parametrize(
     'row, key, value, message',
     [
-        (0, 'schema', 9, snapshot('Unsupported recording schema; capture again with schema 2')),
-        (0, 'schema', 1, snapshot('Unsupported recording schema; capture again with schema 2')),
-        (0, 'schema', True, snapshot('Unsupported recording schema; capture again with schema 2')),
+        (0, 'schema', 9, snapshot('Unsupported recording schema; capture again with schema 3')),
+        (0, 'schema', 1, snapshot('Unsupported recording schema; capture again with schema 3')),
+        (0, 'schema', 2, snapshot('Unsupported recording schema; capture again with schema 3')),
+        (0, 'schema', True, snapshot('Unsupported recording schema; capture again with schema 3')),
         (0, 'code', 42, snapshot('Invalid source')),
         (0, 'limits', {}, snapshot('Source or limits mismatch')),
         (0, 'runtime', None, snapshot('Invalid object fields')),
@@ -356,14 +528,19 @@ def test_report_snapshot_size_excludes_padding(case: Any, encoded: str, size: in
         (1, 'call', [], snapshot('Invalid object fields')),
         (1, 'call', {'name': False, 'args': [], 'kwargs': {}}, snapshot('Invalid call identity')),
         (1, 'call', {'name': 'fetch', 'args': {}, 'kwargs': {}}, snapshot('Invalid call identity')),
-        (1, 'stdout_before', [], snapshot('Invalid output prefix')),
-        (3, 'stdout_before', 'unrelated', snapshot('Invalid output prefix')),
+        (1, 'output_before', '', snapshot('Invalid captured output')),
+        (3, 'output_before', [['stdout', 'unrelated']], snapshot('Invalid output prefix')),
         (-1, 'calls', 99, snapshot('Call count mismatch')),
         (-1, 'result', 'bad', snapshot('Invalid terminal result')),
         (-1, 'result', {'kind': 'potato'}, snapshot('Invalid terminal result')),
         (-1, 'result', {'kind': 'return', 'value': 1}, snapshot('Invalid object fields')),
-        (-1, 'result', {'kind': 'error', 'message': [], 'stdout': ''}, snapshot('Invalid terminal text')),
-        (-1, 'result', {'kind': 'return', 'value': 1, 'stdout': 'unrelated'}, snapshot('Invalid final output prefix')),
+        (-1, 'result', {'kind': 'error', 'message': [], 'output': []}, snapshot('Invalid terminal text')),
+        (
+            -1,
+            'result',
+            {'kind': 'return', 'value': 1, 'output': [['stdout', 'unrelated']]},
+            snapshot('Invalid final output prefix'),
+        ),
     ],
 )
 def test_record_structure_rejects_resealed_invalid_data(
@@ -376,6 +553,52 @@ def test_record_structure_rejects_resealed_invalid_data(
     with pytest.raises(r.ReplayError) as error:
         r.load(case.path)
     assert str(error.value) == message
+
+
+@pytest.mark.parametrize('terminal', [False, True])
+@pytest.mark.parametrize(
+    'output',
+    [
+        None,
+        '',
+        ['stdout'],
+        [[]],
+        [['stdout']],
+        [['stdout', 'x', 'y']],
+        [['other', 'x']],
+        [[False, 'x']],
+        [['stdout', 1]],
+        [['stdout', '']],
+        [['stdout', 'x'], ['stdout', 'y']],
+    ],
+)
+def test_recording_rejects_invalid_output(case: Any, terminal: bool, output: Any) -> None:
+    case.capture('fetch("a")')
+    rows = [json.loads(line) for line in case.path.read_bytes().splitlines()]
+    if terminal:
+        rows[-1]['result']['output'] = output
+    else:
+        rows[1]['output_before'] = output
+    write_sealed_recording(case.path, rows)
+    with pytest.raises(r.ReplayError) as error:
+        r.load(case.path)
+    assert str(error.value) == snapshot('Invalid captured output')
+
+
+@pytest.mark.parametrize(
+    'output, expected',
+    [
+        ([], snapshot(False)),
+        ([['stdout', 'ab']], snapshot(False)),
+        ([['stdout', 'ab'], ['stderr', 'c']], snapshot(False)),
+        ([['stdout', 'ac'], ['stderr', 'cd']], snapshot(False)),
+        ([['stderr', 'ab'], ['stdout', 'cd']], snapshot(False)),
+        ([['stdout', 'ab'], ['stderr', 'cd']], snapshot(True)),
+        ([['stdout', 'ab'], ['stderr', 'cde'], ['stdout', 'f']], snapshot(True)),
+    ],
+)
+def test_output_prefix_requires_streams_and_text(output: list[list[str]], expected: bool) -> None:
+    assert r.has_output_prefix(output, [['stdout', 'ab'], ['stderr', 'cd']]) == expected
 
 
 @pytest.mark.parametrize(
@@ -460,11 +683,28 @@ def test_restored_output_budget_matches_fresh_capture(case: Any) -> None:
     assert branch['result'] == snapshot(fresh)
     assert fresh['kind'] == snapshot('error')
     assert (len(r.encode(branch['result'])) <= r.MAX_VALUE) == snapshot(True)
-    output = r.Output('\u00e9' * (r.MAX_VALUE // 2))
+    text = '\u00e9' + 'x' * (r.MAX_VALUE - r.OUTPUT_ENTRY_OVERHEAD - 2)
+    output = r.Output([['stdout', text]])
     with pytest.raises(MemoryError) as error:
         output('stdout', 'x')
     assert str(error.value) == snapshot('Captured output exceeds 256 KiB')
-    assert len(output.output.encode()) == snapshot(r.MAX_VALUE)
+    assert output.size == snapshot(r.MAX_VALUE)
+    assert output.output == [['stdout', text]]
+
+
+def test_output_entry_overhead_and_restored_limit() -> None:
+    count = r.MAX_VALUE // (r.OUTPUT_ENTRY_OVERHEAD + 1)
+    prefix = [['stdout' if i % 2 == 0 else 'stderr', 'x'] for i in range(count)]
+    output = r.Output(prefix)
+    assert output.size == snapshot(262080)
+    with pytest.raises(MemoryError) as error:
+        output('stdout', 'x')
+    assert str(error.value) == snapshot('Captured output exceeds 256 KiB')
+    assert output.output == prefix
+    assert output.size == snapshot(262080)
+    with pytest.raises(r.ReplayError) as error:
+        r.Output([*prefix, ['stdout', 'x']])
+    assert str(error.value) == snapshot('Captured output exceeds 256 KiB')
 
 
 @pytest.mark.parametrize(
@@ -480,7 +720,7 @@ def test_late_restore_preserves_suspension_budget(case: Any, index: int, message
     recording = r.load(case.path)
     assert len(recording['events']) == snapshot(16)
     branch = r.replay(recording, at=index, response={'return_value': 1}, binary=case.binary)
-    assert branch['result'] == {'kind': 'error', 'message': message, 'stdout': ''}
+    assert branch['result'] == {'kind': 'error', 'message': message, 'output': []}
     case.path.unlink()
     r.capture('[fetch(i) for i in range(16)]', case.path, lambda call: {'return_value': 1}, binary=case.binary)
     assert r.replay(r.load(case.path), at=15, response={'return_value': 1}, binary=case.binary)[
