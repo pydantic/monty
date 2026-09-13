@@ -12,9 +12,11 @@ combos = itertools.combinations([[1], [2], [3]], 2)
 replaced = itertools.combinations_with_replacement([[1], [2]], 2)
 permuted = itertools.permutations([[1], [2]])
 
-# A yielded tuple names its items too, so the pool items are held twice while
-# the tuple lives — one edge from the pool, one from the tuple.
-yielded = next(itertools.combinations([[1], [2]], 2))
+# A yielded tuple names its items too, so while BOTH the iterator and the tuple
+# live each pool item has two edges. The iterator has to stay bound for that:
+# an unbound one is released as the statement ends, taking its pool with it.
+yielding = itertools.combinations([[1], [2]], 2)
+yielded = next(yielding)
 
 # `product` holds a pool per argument, so a hook walking only the first strands
 # the second's items.
@@ -98,4 +100,4 @@ next(gone_flat)
 gone_flat = None
 
 len('done')
-# ref-counts={'itertools': 1, 'combos': 1, 'replaced': 1, 'permuted': 1, 'yielded': 1, 'product_live': 1, 'repeated': 1, 'survivor': 1, 'cyclic': 2, 'groupers': 2, 'grouped_group': 1, 'orphan_group': 1, 'keys_source': 2, 'drained_groupby': 1, 'flattened': 1, 'flat_source': 1, 'spent_flat': 1, 'bad_source': 1, 'failing_flat': 1}
+# ref-counts={'itertools': 1, 'combos': 1, 'yielding': 1, 'replaced': 1, 'permuted': 1, 'yielded': 1, 'product_live': 1, 'repeated': 1, 'survivor': 1, 'cyclic': 2, 'groupers': 2, 'grouped_group': 1, 'orphan_group': 1, 'keys_source': 2, 'drained_groupby': 1, 'flattened': 1, 'flat_source': 1, 'spent_flat': 1, 'bad_source': 1, 'failing_flat': 1}

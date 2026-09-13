@@ -107,7 +107,26 @@ raises `AttributeError` at runtime.
     preflighted against `max_memory`.** Each sizes a result wider than the input
     it was given, so under a memory limit a large value
     (`product('ab', repeat=10**9)`) raises `MemoryError` at construction, where
-    CPython raises only once an allocation actually fails.
+    CPython raises only once an allocation actually fails. An empty pool is
+    exempt, since it empties the product before anything is sized.
+- **An `r` too large to build indices for yields nothing instead of raising.**
+    `combinations('a', 2**62)` and `permutations('a', 2**62)` are empty
+    iterators in Monty, because an `r` past the pool is known to yield nothing
+    before any vector is sized. CPython allocates the vector first and so
+    raises `MemoryError`. The two calls that genuinely need the vector agree
+    with CPython: `combinations_with_replacement('a', 2**62)` raises
+    `MemoryError`, and `product('ab', repeat=2**62)` raises
+    `OverflowError: repeat argument too large`.
+- **`product` names a rejected keyword instead of counting keywords.** Two
+    keywords where one is unknown (`product([1], repeat=2, bogus=1)`) raise
+    `product() got an unexpected keyword argument 'bogus'`, where CPython
+    raises `product() takes at most 1 keyword argument (2 given)`. A single
+    unknown keyword reads the same on both.
+- **A `groupby` key comparison that re-enters its own `groupby` keeps going.**
+    A user `__eq__` that steps the same `groupby` and consumes the pair being
+    compared leaves CPython reading through freed state, where it segfaults.
+    Monty reads the next pair instead, which is what CPython's own loop
+    condition intends, so the call ends in an ordinary `StopIteration`.
 
 ## Infinite iterators and the eager builtins
 

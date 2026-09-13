@@ -696,8 +696,12 @@ fn build_combinations(iterable: Value, r: Value, replacement: bool, vm: &mut VM<
     // Without replacement `r` past the pool yields nothing and allocates
     // nothing; with it `r` is unbounded, so the index vector and the result
     // tuples it sizes are preflighted (`combinations_with_replacement('a', 10**9)`).
+    // An `r` whose vector no allocation could address is CPython's bare
+    // `MemoryError` rather than a limit refusal, and stops `Vec` panicking on
+    // a capacity that overflows.
     if replacement && !pool.is_empty() {
-        check_estimated_size(r.saturating_mul(size_of::<usize>() + VALUE_SIZE), &vm.heap.tracker)?;
+        let bytes = index_bytes(r).ok_or_else(ExcType::allocation_too_large)?;
+        check_estimated_size(bytes.saturating_add(r.saturating_mul(VALUE_SIZE)), &vm.heap.tracker)?;
     }
     let (pool, vm) = pool_guard.into_parts();
     let iter = ItertoolsIter::Combinations(Box::new(Combinations::new(pool, r, replacement)));
@@ -778,6 +782,8 @@ fn call_product(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // `repeat=0` never touches the arguments: CPython skips collecting them,
     // so `product(5, repeat=0)` is the single empty tuple, not a `TypeError`.
     let width = if repeat == 0 { 0 } else { iterables.len() };
+    let slots = product_slots(width, repeat)?;
+
     let mut pools_guard = DropGuard::new(Vec::with_capacity(width), vm);
     for slot in iterables.iter_mut().take(width) {
         let iterable = mem::replace(slot, Value::None);
@@ -786,13 +792,39 @@ fn call_product(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         pools.push(pool);
     }
     // The index vector and every result tuple scale with `repeat` alone, so
-    // they are preflighted (`product('ab', repeat=10**9)`).
+    // they are preflighted (`product('ab', repeat=10**9)`). An empty pool
+    // empties the product, and `Product::new` then allocates nothing at all —
+    // so `product([], repeat=10**9)` must not be refused for a cost it never
+    // pays.
     let (pools, vm) = pools_guard.as_parts_mut();
-    let slots = pools.len().saturating_mul(repeat);
-    check_estimated_size(slots.saturating_mul(size_of::<usize>() + VALUE_SIZE), &vm.heap.tracker)?;
+    if pools.iter().all(|pool| !pool.is_empty()) {
+        check_estimated_size(slots.saturating_mul(size_of::<usize>() + VALUE_SIZE), &vm.heap.tracker)?;
+    }
     let (pools, vm) = pools_guard.into_parts();
     let iter = ItertoolsIter::Product(Box::new(Product::new(pools, repeat)));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+}
+
+/// The number of slots `product` will step, rejecting a `repeat` that puts the
+/// index vector beyond what a machine integer can address.
+///
+/// CPython bounds `nargs * repeat * sizeof(Py_ssize_t)` by `PY_SSIZE_T_MAX` and
+/// raises before it touches the arguments, so a hostile `repeat` never reaches
+/// the multiplication inside [`Product::new`] — which would otherwise wrap, or
+/// panic in a debug build.
+fn product_slots(width: usize, repeat: usize) -> RunResult<usize> {
+    match width.checked_mul(repeat) {
+        Some(slots) if index_bytes(slots).is_some() => Ok(slots),
+        _ => Err(ExcType::product_repeat_too_large()),
+    }
+}
+
+/// The byte size of an index vector of `slots` entries, or `None` when that is
+/// more than any allocation could address.
+fn index_bytes(slots: usize) -> Option<usize> {
+    slots
+        .checked_mul(size_of::<usize>())
+        .filter(|bytes| *bytes <= isize::MAX.cast_unsigned())
 }
 
 /// Argument shape for `groupby(iterable, key=None)`.

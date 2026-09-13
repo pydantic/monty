@@ -142,7 +142,11 @@ pub(super) fn next<'h>(iter: &mut HeapObjectRead<'h, ItertoolsIter>, vm: &mut VM
             // target is the LEFT operand, as CPython's comparison makes it.
             (Some(current), Some(target)) => target.py_eq(current, vm)?,
         };
-        if !same_group {
+        // A user `__eq__` can step this same `groupby` and consume the pair
+        // that was just compared, so the answer is only usable while a key is
+        // still there. CPython re-tests `currkey` at the top of its loop for
+        // the same reason; without this the read below has nothing to take.
+        if !same_group && groupby_ref(iter, vm).current_key.is_some() {
             break;
         }
         if !step(iter, vm)? {
@@ -156,7 +160,7 @@ pub(super) fn next<'h>(iter: &mut HeapObjectRead<'h, ItertoolsIter>, vm: &mut VM
     let key = groupby
         .current_key
         .as_ref()
-        .expect("the skip loop only exits with a key read ahead");
+        .expect("the skip loop only breaks with a key read ahead");
     let (yielded, target, group_target) = (
         key.clone_with_heap(vm.heap),
         key.clone_with_heap(vm.heap),

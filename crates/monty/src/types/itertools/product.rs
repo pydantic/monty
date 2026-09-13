@@ -32,9 +32,11 @@ pub(crate) struct Product {
 }
 
 impl Product {
-    /// Takes the collected pools; `repeat` has been range-checked and the
-    /// index vector preflighted by the constructor, which also passes no
-    /// pools at all for `repeat=0`.
+    /// Takes the collected pools.
+    ///
+    /// `call_product` has already checked that `pools.len() * repeat` is in
+    /// range and preflighted the index vector, and passes no pools at all for
+    /// `repeat=0`, so the multiplication below cannot overflow.
     pub(crate) fn new(pools: Vec<Vec<Value>>, repeat: usize) -> Self {
         let slots = pools.len() * repeat;
         // An empty pool empties the product — unless there are no slots, in

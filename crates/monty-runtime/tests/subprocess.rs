@@ -1159,6 +1159,18 @@ fn small_batched_n_is_not_preflighted() {
     child.shutdown();
 }
 
+/// An empty pool empties the whole product, so `itertools.product` allocates no
+/// index vector however large `repeat` is — the `repeat`-sized preflight must
+/// not refuse a call that costs nothing.
+#[test]
+fn empty_product_pool_is_not_preflighted() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "import itertools\nlen(list(itertools.product([1], [], repeat=1_000_000)))";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(0));
+    child.shutdown();
+}
+
 /// A bounded deque retains at most `maxlen` items, so extending it from a huge
 /// exact-hint iterator (the sliding-window pattern) must not trip the
 /// `deque.extend` preflight — the memory really is capped at `maxlen`.

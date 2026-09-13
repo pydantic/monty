@@ -639,7 +639,9 @@ assert_type(next(itertools.combinations_with_replacement([1, 2], combination_r))
 assert_type(next(itertools.permutations([1, 2])), tuple[int, ...])
 assert_type(next(itertools.permutations([1, 2], combination_r)), tuple[int, ...])
 assert_type(list(itertools.chain.from_iterable([[1], [2]])), list[int])
-for _key, group in itertools.groupby([1, 1, 2]):
+for key, group in itertools.groupby([1, 1, 2]):
+    assert_type(key, int)
     assert_type(list(group), list[int])
-for _key_fn, group_fn in itertools.groupby([1, 1, 2], key=lambda i: i > 1):
+for key_fn, group_fn in itertools.groupby([1, 1, 2], key=lambda i: i > 1):
+    assert_type(key_fn, bool)
     assert_type(list(group_fn), list[int])

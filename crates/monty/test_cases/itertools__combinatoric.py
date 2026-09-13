@@ -172,6 +172,14 @@ try:
 except TypeError as exc:
     assert str(exc) == "'str' object cannot be interpreted as an integer"
 
+# `r` is unbounded by the pool here, so one whose index vector no allocation
+# could address raises rather than being attempted.
+try:
+    itertools.combinations_with_replacement('a', 2**62)
+    assert False, 'expected MemoryError'
+except MemoryError as exc:
+    assert str(exc) == ''
+
 # === permutations ===
 assert list(itertools.permutations([1, 2, 3])) == [
     (1, 2, 3),
@@ -317,6 +325,38 @@ try:
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == "product() got an unexpected keyword argument 'foo'"
+
+# A `repeat` that puts the index vector past what a machine integer can address
+# is rejected before the arguments are even looked at, so a non-iterable
+# argument alongside it goes unreported.
+for bad_product in (
+    lambda: itertools.product([1], [2], [3], repeat=2**62),
+    lambda: itertools.product('ab', repeat=2**62),
+    lambda: itertools.product(5, repeat=2**62),
+):
+    try:
+        bad_product()
+        assert False, 'expected OverflowError'
+    except OverflowError as exc:
+        assert str(exc) == 'repeat argument too large'
+
+# The negative check comes first, though.
+try:
+    itertools.product(5, repeat=-1)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'repeat argument cannot be negative'
+
+# With no iterables there is no index vector to size, so the same `repeat` is
+# fine and yields the one empty tuple.
+assert list(itertools.product(repeat=2**62)) == [()]
+
+# An empty pool empties the product, so no index vector is built however large
+# `repeat` is. Kept modest here because CPython does size its own vector from
+# `repeat` before noticing the empty pool; the memory-limit side of this is
+# `empty_product_pool_is_not_preflighted` in the subprocess tests.
+assert list(itertools.product([], repeat=10**5)) == []
+assert list(itertools.product([1], [], repeat=10**5)) == []
 
 try:
     itertools.product([1], 5)

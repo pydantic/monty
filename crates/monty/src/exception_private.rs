@@ -1038,6 +1038,21 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::value_error("repeat argument cannot be negative")
     }
 
+    /// Creates the OverflowError `itertools.product` raises when `repeat` puts
+    /// its index array beyond what a `Py_ssize_t` can address.
+    #[must_use]
+    fn product_repeat_too_large() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "repeat argument too large").into()
+    }
+
+    /// Creates the message-less `MemoryError` CPython raises when an allocation
+    /// is too large to attempt at all, rather than merely too large to fit the
+    /// sandbox's budget — `combinations_with_replacement('a', 2**62)`.
+    #[must_use]
+    fn allocation_too_large() -> RunError {
+        SimpleException::new(ExcType::MemoryError, None).into()
+    }
+
     /// Creates the ValueError `itertools.islice` raises for a non-positive or
     /// non-integer `step`.
     #[must_use]

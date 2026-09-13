@@ -82,7 +82,12 @@ assert list(group_two) == [2, 2]
 # the next one, so the "is this still the current group?" check must not
 # confuse a fresh group with the spent one it replaced.
 grouped = itertools.groupby([1, 2, 3])
+reused_group = None
 for expected in (1, 2, 3):
+    # Released BEFORE the next pair is opened: rebinding alone would keep the
+    # old group alive across the `next` that allocates its replacement, so the
+    # slot could not be reused and the check below would prove nothing.
+    reused_group = None
     reused_key, reused_group = next(grouped)
     assert reused_key == expected
     assert list(reused_group) == [expected]
@@ -192,8 +197,10 @@ def explode(x):
     raise ValueError('bang')
 
 
+# The item is heap-allocated, so a `groupby` that dropped it on this path would
+# show up as a leaked reference under `memory-model-checks`.
 try:
-    next(itertools.groupby([1], explode))
+    next(itertools.groupby([[1]], explode))
     assert False, 'expected ValueError'
 except ValueError as exc:
     assert str(exc) == 'bang'
