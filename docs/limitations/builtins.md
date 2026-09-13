@@ -43,6 +43,12 @@ These raise `NameError`:
     `AttributeError`, so `[1].append`, `'a'.upper`, `{}.get`, `dict.fromkeys`
     and `list.__class_getitem__` cannot be assigned, passed as a callback or
     reached through `getattr`. Call them directly (`list.__class_getitem__(int)`).
+- **`hash(x)`** — Monty hashes `str`, `bytes`, `float` and every container with
+    its own algorithm, so the values differ from CPython's for everything except
+    `int` and `bool`. They are stable within a run and across runs of the same
+    build (Monty has no hash randomisation), but never persist a Monty hash or
+    compare one against a CPython hash. `sys.hash_info` is not exposed, so the
+    parameters CPython publishes are unavailable (see [sys.md](sys.md)).
 - **`repr` of a dict being mutated by its own elements** — Monty iterates the
     live entries like CPython, but deletion compacts Monty's dense entry storage
     where CPython leaves a tombstone in place: a key deleted from inside a user

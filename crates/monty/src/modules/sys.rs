@@ -1,16 +1,21 @@
 //! Implementation of the `sys` module.
 //!
-//! Provides a minimal implementation of Python's `sys` module with:
-//! - `version`: Python version string (e.g., "3.14.0 (Monty)")
-//! - `version_info`: Named tuple (3, 14, 0, 'final', 0)
-//! - `platform`: Platform identifier ("monty")
-//! - `stdout`: Marker for standard output (no real functionality)
-//! - `stderr`: Marker for standard error (no real functionality)
+//! `sys` is attribute-only in production builds: every name below is a
+//! constant fixed at module creation, since the sandbox has no interpreter
+//! state a program is allowed to reach. What Monty exposes is limited to
+//! values that are true *of Monty* — the Python version it targets, the
+//! properties of the `f64` it stores floats in, the Unicode range, and the
+//! fact that it has no install tree, no `__pycache__` and no command line.
+//! Structseqs describing CPython's C implementation (`hash_info`, `int_info`,
+//! `thread_info`, `flags`) are deliberately absent rather than fabricated;
+//! see `limitations/sys.md`.
 //!
 //! Under the `test-hooks` feature one callable is also exposed:
 //! - `setrecursionlimit(n)`: tighten the active recursion ceiling so fixtures
 //!   can simulate Monty's lower default depth on CPython too. Only allows
 //!   *lowering* the host-configured ceiling — see [`SysFunctions`].
+
+use smallvec::SmallVec;
 
 #[cfg(feature = "test-hooks")]
 use crate::{
@@ -22,9 +27,53 @@ use crate::{
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    types::{Module, NamedTuple},
+    types::{Module, NamedTuple, allocate_tuple},
     value::{Marker, Value},
 };
+
+/// `sys.hexversion` for the version Monty reports: `3.14.0` final, encoded as
+/// CPython encodes it — `major << 24 | minor << 16 | micro << 8 | level << 4 | serial`.
+const MONTY_HEXVERSION: i64 = 0x030E_00F0;
+
+/// `sys.api_version` — the CPython 3.14 C API version.
+///
+/// Monty has no C API; the number is reported so version-gated code reads the
+/// value it expects from the Python version Monty targets.
+const CPYTHON_API_VERSION: i64 = 1013;
+
+/// `sys.maxsize`, pinned to the 64-bit value rather than the host's `isize::MAX`.
+///
+/// Monty behaves identically on every target, including 32-bit wasm where the
+/// real container ceiling is lower — and resource limits bind long before either.
+const MAXSIZE: i64 = i64::MAX;
+
+/// `sys.maxunicode` — the largest code point, `U+10FFFF`.
+const MAXUNICODE: i64 = 0x0010_FFFF;
+
+/// The modules Monty can import, in the sorted order CPython uses for its own
+/// `sys.builtin_module_names`. Every Monty module is compiled into the
+/// interpreter, so this is the whole importable set rather than a C-extension
+/// subset — keep it in step with [`StandardLib`](super::StandardLib).
+const BUILTIN_MODULE_NAMES: &[StaticStrings] = &[
+    StaticStrings::Asyncio,
+    StaticStrings::Base64,
+    StaticStrings::Binascii,
+    StaticStrings::Collections,
+    StaticStrings::Dataclasses,
+    StaticStrings::Datetime,
+    StaticStrings::Functools,
+    #[cfg(feature = "test-hooks")]
+    StaticStrings::Gc,
+    StaticStrings::Itertools,
+    StaticStrings::Json,
+    StaticStrings::Math,
+    StaticStrings::Os,
+    StaticStrings::Pathlib,
+    StaticStrings::Re,
+    StaticStrings::Sys,
+    StaticStrings::Typing,
+    StaticStrings::Unicodedata,
+];
 
 /// Functions exposed by the `sys` module under the `test-hooks` feature.
 ///
@@ -48,17 +97,56 @@ pub(crate) enum SysFunctions {
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Sys);
 
-    // sys.platform
+    // Interpreter identity. `platform` is "monty" rather than the host OS, which
+    // the sandbox never reveals.
     module.set_attr(StaticStrings::Platform, StaticStrings::Monty.into(), vm);
+    module.set_attr(StaticStrings::Version, StaticStrings::MontyVersionString.into(), vm);
+    module.set_attr(StaticStrings::VersionInfo, version_info(vm), vm);
+    module.set_attr(StaticStrings::Hexversion, Value::Int(MONTY_HEXVERSION), vm);
+    module.set_attr(StaticStrings::ApiVersion, Value::Int(CPYTHON_API_VERSION), vm);
+    module.set_attr(StaticStrings::Copyright, StaticStrings::MontyCopyright.into(), vm);
+    module.set_attr(StaticStrings::BuiltinModuleNames, builtin_module_names(vm), vm);
+
+    // Numeric and text limits of the value representations Monty actually uses.
+    module.set_attr(StaticStrings::Maxsize, Value::Int(MAXSIZE), vm);
+    module.set_attr(StaticStrings::Maxunicode, Value::Int(MAXUNICODE), vm);
+    module.set_attr(StaticStrings::Byteorder, StaticStrings::Little.into(), vm);
+    module.set_attr(StaticStrings::FloatInfo, float_info(vm), vm);
+    module.set_attr(StaticStrings::FloatReprStyle, StaticStrings::Short.into(), vm);
+
+    // The sandbox has no install tree, no bytecode cache and no ABI. CPython
+    // documents the empty string for a path it cannot determine, so these report
+    // "unknown" instead of raising; `prefix == base_prefix` also answers the
+    // usual "am I in a virtualenv?" test correctly.
+    module.set_attr(StaticStrings::Executable, StaticStrings::EmptyString.into(), vm);
+    module.set_attr(StaticStrings::Prefix, StaticStrings::EmptyString.into(), vm);
+    module.set_attr(StaticStrings::ExecPrefix, StaticStrings::EmptyString.into(), vm);
+    module.set_attr(StaticStrings::BasePrefix, StaticStrings::EmptyString.into(), vm);
+    module.set_attr(StaticStrings::BaseExecPrefix, StaticStrings::EmptyString.into(), vm);
+    module.set_attr(StaticStrings::Platlibdir, StaticStrings::Lib.into(), vm);
+    module.set_attr(StaticStrings::Abiflags, StaticStrings::EmptyString.into(), vm);
+    module.set_attr(StaticStrings::DontWriteBytecode, Value::Bool(true), vm);
+    module.set_attr(StaticStrings::PycachePrefix, Value::None, vm);
 
     // sys.stdout / sys.stderr - markers for standard output/error
     module.set_attr(StaticStrings::Stdout, Value::Marker(Marker(StaticStrings::Stdout)), vm);
     module.set_attr(StaticStrings::Stderr, Value::Marker(Marker(StaticStrings::Stderr)), vm);
 
-    // sys.version
-    module.set_attr(StaticStrings::Version, StaticStrings::MontyVersionString.into(), vm);
-    // sys.version_info - named tuple (major=3, minor=14, micro=0, releaselevel='final', serial=0)
-    let version_info = NamedTuple::new(
+    // Test-only callables — see the module-level docs and the
+    // [`test-hooks`] feature gate.
+    #[cfg(feature = "test-hooks")]
+    module.set_attr(
+        StaticStrings::Setrecursionlimit,
+        Value::ModuleFunction(ModuleFunctions::Sys(SysFunctions::Setrecursionlimit)),
+        vm,
+    );
+
+    vm.heap.allocate(HeapData::Module(Box::new(module)))
+}
+
+/// Builds `sys.version_info`: `(major=3, minor=14, micro=0, releaselevel='final', serial=0)`.
+fn version_info(vm: &VM<'_>) -> Value {
+    let named_tuple = NamedTuple::new(
         StaticStrings::SysVersionInfo,
         vec![
             StaticStrings::Major.into(),
@@ -75,19 +163,55 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
             Value::Int(0),
         ],
     );
-    let version_info_id = vm.heap.allocate(HeapData::NamedTuple(Box::new(version_info)));
-    module.set_attr(StaticStrings::VersionInfo, Value::Ref(version_info_id), vm);
+    Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named_tuple))))
+}
 
-    // Test-only callables — see the module-level docs and the
-    // [`test-hooks`] feature gate.
-    #[cfg(feature = "test-hooks")]
-    module.set_attr(
-        StaticStrings::Setrecursionlimit,
-        Value::ModuleFunction(ModuleFunctions::Sys(SysFunctions::Setrecursionlimit)),
-        vm,
+/// Builds `sys.float_info` from Rust's `f64` constants.
+///
+/// Monty stores every float as an `f64`, so each field is the IEEE 754
+/// binary64 property CPython reports for its own C `double`. `rounds` is `1`,
+/// the `FLT_ROUNDS` code for round-to-nearest, which is the only mode Monty
+/// can be in — nothing in the sandbox can change the rounding direction.
+fn float_info(vm: &VM<'_>) -> Value {
+    let named_tuple = NamedTuple::new(
+        StaticStrings::SysFloatInfo,
+        vec![
+            StaticStrings::Max.into(),
+            StaticStrings::MaxExp.into(),
+            StaticStrings::Max10Exp.into(),
+            StaticStrings::Min.into(),
+            StaticStrings::MinExp.into(),
+            StaticStrings::Min10Exp.into(),
+            StaticStrings::Dig.into(),
+            StaticStrings::MantDig.into(),
+            StaticStrings::Epsilon.into(),
+            StaticStrings::Radix.into(),
+            StaticStrings::Rounds.into(),
+        ],
+        vec![
+            Value::Float(f64::MAX),
+            Value::Int(i64::from(f64::MAX_EXP)),
+            Value::Int(i64::from(f64::MAX_10_EXP)),
+            Value::Float(f64::MIN_POSITIVE),
+            Value::Int(i64::from(f64::MIN_EXP)),
+            Value::Int(i64::from(f64::MIN_10_EXP)),
+            Value::Int(i64::from(f64::DIGITS)),
+            Value::Int(i64::from(f64::MANTISSA_DIGITS)),
+            Value::Float(f64::EPSILON),
+            Value::Int(i64::from(f64::RADIX)),
+            Value::Int(1),
+        ],
     );
+    Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named_tuple))))
+}
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+/// Builds the `sys.builtin_module_names` tuple from [`BUILTIN_MODULE_NAMES`].
+fn builtin_module_names(vm: &VM<'_>) -> Value {
+    let names: SmallVec<_> = BUILTIN_MODULE_NAMES
+        .iter()
+        .map(|name| Value::InternString((*name).into()))
+        .collect();
+    allocate_tuple(names, vm.heap)
 }
 
 /// Dispatches a `sys` module function call.

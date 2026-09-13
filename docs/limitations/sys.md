@@ -7,22 +7,65 @@ access raises `AttributeError`.
 
 - `sys.version` — the string `"3.14.0 (Monty)"`.
 - `sys.version_info` — named tuple `(major=3, minor=14, micro=0, releaselevel='final', serial=0)`.
+- `sys.hexversion` — `0x030E00F0`, the packed form of that `version_info`.
+- `sys.api_version` — `1013`, CPython 3.14's C API version. Monty has no C API,
+    so nothing can be loaded against it; the number is reported only so
+    version-gated code reads what it expects.
 - `sys.platform` — the string `"monty"`, not `"linux"` / `"darwin"` /
     `"win32"`. Code that branches on the host OS will not work; the sandbox
     does not expose which OS it runs on.
+- `sys.copyright` — Monty's copyright line, not CPython's.
+- `sys.builtin_module_names` — every module Monty can import, since they are
+    all compiled into the interpreter. CPython lists only its C modules, so the
+    tuple differs: it includes `json`, `re`, `typing` and the other modules that
+    are pure Python in CPython, and omits `builtins`, `time` and everything else
+    Monty does not implement. See [modules.md](modules.md) for the module list.
+- `sys.maxsize` — `2**63 - 1` on every target, including 32-bit wasm where the
+    real container ceiling is lower. Resource limits bind long before either.
+- `sys.byteorder` — always `"little"`; Monty builds for no big-endian target.
+- `sys.float_info` — the IEEE 754 binary64 properties of the `f64` Monty stores
+    floats in, so the values match CPython. `rounds` is `1` (round-to-nearest)
+    and nothing in the sandbox can change it.
+- `sys.float_repr_style` — always `"short"`.
+- `sys.executable`, `sys.prefix`, `sys.exec_prefix`, `sys.base_prefix`,
+    `sys.base_exec_prefix` — the empty string. The sandbox has no install tree,
+    and CPython documents the empty string for a path it cannot determine.
+    `prefix == base_prefix`, so the usual virtualenv test reports "not in one".
+- `sys.platlibdir` — `"lib"`, joined onto a `sys.prefix` that is empty.
+- `sys.abiflags` — the empty string; Monty has no ABI. CPython does not define
+    this attribute at all on Windows.
+- `sys.dont_write_bytecode` — `True`, where CPython defaults to `False`. Monty
+    never writes bytecode to disk.
+- `sys.pycache_prefix` — always `None`.
 - `sys.stdout` / `sys.stderr` — opaque marker objects with no methods. They
     cannot be written to via `.write()`, and `sys.stdout.flush()` and the rest
     raise `AttributeError`. They are useful only as `print(..., file=...)`,
     which routes output to that stream through the host print callback (see
     [print.md](print.md)).
 
+Accessing an attribute the module does not define raises Monty's generic
+`AttributeError: 'module' object has no attribute '<name>'`, where CPython says
+`module 'sys' has no attribute '<name>'`.
+
 ## Not implemented
 
-`argv`, `path`, `modules`, `prefix`, `executable`, `byteorder`,
-`maxsize`, `maxunicode`, `flags`, `float_info`, `int_info`, `hash_info`,
-`exit`, `exc_info`, `getrecursionlimit`,
+`argv`, `path`, `modules`, `exit`, `exc_info`, `getrecursionlimit`,
 `getsizeof`, `getrefcount`, `intern`, `displayhook`, `excepthook`,
 `settrace`, `setprofile`, `stdin`, `__stdout__`, `_getframe`, `audit`.
+
+`flags`, `hash_info`, `int_info` and `thread_info` describe CPython's own C
+implementation — its command line, its string and integer hashing, its bignum
+digit layout, its thread library — none of which Monty shares, so they raise
+`AttributeError` rather than reporting fabricated values. In particular
+`hash_info` cannot be used to predict Monty's hashes, which differ from
+CPython's (see [builtins.md](builtins.md)).
+
+`ps1` and `ps2` are absent, so `hasattr(sys, 'ps1')` correctly reports that the
+sandbox is not an interactive prompt.
+
+The private install-layout attributes `_base_executable`, `_framework`, `_git`,
+`_home` and `_stdlib_dir` are absent for the same reason as `sys.prefix` and
+friends: there is no install tree.
 
 Production builds do not expose `sys.setrecursionlimit`. Test builds expose a
 lowering-only hook so shared fixtures can force deterministic recursion errors;
