@@ -1819,19 +1819,11 @@ struct EncodeArgs {
     errors: Option<StrArg>,
 }
 
-/// Implements Python's `str.isidentifier()` predicate.
+/// Implements Python's `str.isidentifier()` predicate: `XID_Start` or `_`, then `XID_Continue`
+/// characters; the empty string is not an identifier.
 ///
-/// Returns True if the string is a valid Python identifier according to
-/// the language definition (starts with letter or underscore, followed by
-/// letters, digits, or underscores). Empty strings return False.
-///
-/// Note this matches `str.isidentifier()`, which accepts keywords (`'def'`
-/// is an identifier); callers needing the keyword distinction (e.g.
-/// `collections.namedtuple`) must combine this with a separate keyword check.
-///
-/// Implements Python's `str.isidentifier()` method.
-///
-/// A valid first character followed by continue characters; keywords are accepted, as in CPython.
+/// Keywords are accepted (`'def'` is an identifier), as in CPython; callers needing the keyword
+/// distinction (e.g. `collections.namedtuple`) must combine this with a separate keyword check.
 pub(crate) fn str_isidentifier(s: &str) -> bool {
     let mut chars = s.chars();
     chars.next().is_some_and(|first| type_record(first).is_id_start()) && chars.all(|c| type_record(c).is_id_continue())

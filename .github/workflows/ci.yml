@@ -86,6 +86,10 @@ jobs:
       - name: Check vendored typeshed stubs are in sync
         run: make check-typeshed
 
+      # the str character-property tables are generated from the pinned CPython
+      - name: Check generated str Unicode tables are in sync
+        run: make check-unicode-type
+
       # rustdoc JSON is nightly-only and format-unstable, so the API reference
       # is generated with the exact nightly matching monty-apidoc's pinned
       # `rustdoc-types` (see crates/monty-apidoc/src/main.rs)

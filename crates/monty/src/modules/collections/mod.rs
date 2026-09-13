@@ -22,7 +22,7 @@ pub(crate) mod defaultdict;
 
 use std::iter::once;
 
-use ruff_python_stdlib::identifiers::is_identifier;
+use ruff_python_stdlib::keyword::is_keyword;
 
 use self::counter::counter_update;
 use crate::{
@@ -306,7 +306,7 @@ fn apply_rename(names: &mut [String]) {
     let mut seen: Vec<String> = Vec::with_capacity(names.len());
     for (index, name) in names.iter_mut().enumerate() {
         let invalid =
-            !str_isidentifier(name) || !is_identifier(name) || name.starts_with('_') || seen.iter().any(|s| s == name);
+            !str_isidentifier(name) || is_keyword(name) || name.starts_with('_') || seen.iter().any(|s| s == name);
         seen.push(name.clone());
         if invalid {
             *name = format!("_{index}");
@@ -328,9 +328,7 @@ fn validate_names(type_name: &str, field_names: &[String], rename: bool) -> RunR
                 repr_name(name)
             )));
         }
-        // `str.isidentifier()` accepts keywords, but ruff's `is_identifier`
-        // rejects them — so an identifier ruff rejects is exactly a keyword.
-        if !is_identifier(name) {
+        if is_keyword(name) {
             return Err(ExcType::value_error(format!(
                 "Type names and field names cannot be a keyword: {}",
                 repr_name(name)
