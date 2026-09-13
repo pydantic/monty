@@ -143,6 +143,8 @@ macro_rules! heap_payloads {
             Partial(boxed $crate::types::Partial),
             /// A `types.GenericAlias` such as `list[int]`.
             GenericAlias(inline $crate::types::GenericAlias),
+            /// A `typing.Union` such as `int | None`.
+            Union(inline $crate::types::Union),
         }
     };
 }
@@ -219,7 +221,8 @@ impl HeapData {
             | Self::GatherFuture(_)
             | Self::ExternalFuture(_)
             | Self::Partial(_)
-            | Self::GenericAlias(_) => true,
+            | Self::GenericAlias(_)
+            | Self::Union(_) => true,
             // Leaf types, plus iterators whose heap refs only point at leaves and so
             // cannot close a cycle. Move one up if it gains a container-valued field.
             Self::Str(_)
@@ -280,6 +283,7 @@ impl HeapData {
             Self::Dict(_) => Type::Dict,
             Self::Partial(_) => Type::Partial,
             Self::GenericAlias(_) => Type::GenericAlias,
+            Self::Union(_) => Type::Union,
             Self::DictKeysView(_) => Type::DictKeys,
             Self::DictItemsView(_) => Type::DictItems,
             Self::DictValuesView(_) => Type::DictValues,
@@ -482,6 +486,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Itertools($value) => $body,
             Self::Partial($value) => $body,
             Self::GenericAlias($value) => $body,
+            Self::Union($value) => $body,
             Self::Tuple($value) => $body,
             Self::NamedTuple($value) => $body,
             Self::NamedTupleClass($value) => $body,
@@ -1003,6 +1008,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::ExtFunction(_)
             | Self::Partial(_)
             | Self::GenericAlias(_)
+            | Self::Union(_)
             | Self::Cell(_)
             | Self::Exception(_)
             | Self::LongInt(_)

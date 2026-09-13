@@ -241,6 +241,11 @@ pub enum Type {
     /// `functools.partial`, so `type(list[int])` reads `<class 'types.GenericAlias'>`.
     #[strum(serialize = "types.GenericAlias")]
     GenericAlias,
+    /// `typing.Union`, the type of `int | None` — one object with
+    /// `types.UnionType` since CPython 3.14, and the value bound to
+    /// `typing.Union` itself.
+    #[strum(serialize = "typing.Union")]
+    Union,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -628,6 +633,12 @@ impl Type {
                 };
                 defer_drop!(v, vm);
                 Ok(Value::Bool(v.py_bool(vm)?))
+            }
+
+            // CPython words this one differently from the other uncallable types.
+            Self::Union => {
+                args.drop_with(vm);
+                Err(ExcType::type_error("cannot create 'typing.Union' instances"))
             }
 
             // Non-callable types - raise TypeError

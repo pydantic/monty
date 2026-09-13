@@ -1,13 +1,14 @@
 # `typing` module
 
 `typing` exists so type-annotated code can `import` it without
-`ModuleNotFoundError`. **No runtime type checking happens.** The forms are
-inert marker objects and none of them can be subscripted: `Optional[str]`,
-`List[int]` and `Callable[[int], str]` raise `TypeError: 'typing._SpecialForm' object is not subscriptable`, and
-`Union[int, str]` raises `TypeError: 'type' object is not subscriptable`.
-The builtin generics (`list[int]`, `dict[str, int]`, `tuple[int, ...]`) do
-work; see [Runtime generic aliases](#runtime-generic-aliases). Annotations are
-unaffected, being stringized rather than evaluated (see below).
+`ModuleNotFoundError`. **No runtime type checking happens.** Apart from
+`Union` and `Optional` (see [Unions](#unions)) the forms are inert marker
+objects that cannot be subscripted: `List[int]` and `Callable[[int], str]`
+raise `TypeError: 'typing._SpecialForm' object is not subscriptable`. The
+builtin generics (`list[int]`, `dict[str, int]`, `tuple[int, ...]`) and `|`
+unions (`int | None`) do work; see
+[Runtime generic aliases](#runtime-generic-aliases) and [Unions](#unions).
+Annotations are unaffected, being stringized rather than evaluated (see below).
 
 ## Names defined
 
@@ -52,11 +53,9 @@ This is a known temporary divergence; see `class__annotations.py`.
     Monty when the calling code uses `from __future__ import annotations`
     (PEP 563), which Monty's behaviour is otherwise equivalent to, except that
     Monty stringizes whether or not that import is present.
-- The blocker is that Monty has no union types: `int | None` raises
-    `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'`, so evaluated annotations
-    would fail on one of the most common forms. `|` unions are the remaining
-    prerequisite for matching PEP 649, now that `list[int]` evaluates (see
-    below).
+- Generic aliases and `|` unions now evaluate (see below), so the common
+    annotation forms no longer block a PEP 649 migration; annotations are
+    still stringized regardless.
 - **Treat the values as provisional.** Code reading `__annotations__` sees
     strings today and would see type objects after a PEP 649 migration; the
     *keys* and their order are stable either way.
@@ -117,7 +116,6 @@ Divergences in the aliases themselves:
 - **`typing` forms stay unsubscriptable.** `typing.List[int]` and
     `typing.Optional[int]` raise as described above; only the builtin types
     build aliases.
-- **No unions.** `list[int] | None` raises `TypeError`, as `int | None` does.
 - **Not iterable.** CPython iterates an alias to yield its starred form
     (`*tuple[int, ...]`); Monty raises `TypeError: 'types.GenericAlias' object is not iterable`.
 - **Argument reprs use Monty's type names.** A user class prints its bare name
@@ -130,3 +128,40 @@ Divergences in the aliases themselves:
 - **A cycle through the arguments prints as `...`.** CPython's alias repr has
     no recursion guard and raises `RecursionError` on `l = []; l.append(list[l]); repr(l)`;
     Monty prints `[list[[...]]]`.
+
+## Unions
+
+`int | None`, `str | list[int]` and the other `|` combinations of types build
+a `typing.Union`, as in CPython 3.14 (where `types.UnionType` and
+`typing.Union` are the same object): `typing.Union` is that type, so
+`type(int | None) is typing.Union`. `typing.Union[int, str]` and
+`typing.Optional[int]` build the same values. A union flattens nested unions,
+drops duplicates and collapses to a lone member (`int | int is int`), reprs
+as `int | None`, compares and hashes as an unordered set of members, and
+works as the second argument of `isinstance`, including inside a tuple.
+`__args__`, `__origin__` and `__parameters__` are set; every other attribute
+raises `AttributeError`, and a union cannot be called, subscripted, iterated
+or ordered, each with CPython's message.
+
+`|` unions with a type on either side: builtin types, exception types, user
+classes, `collections.namedtuple` classes, host classes, generic aliases,
+`None` and the `typing` markers; anything else raises the usual
+`unsupported operand type(s) for |` error. A union's own `|` accepts any
+operand (`(int | str) | 1` is `int | str | 1`), as CPython 3.14's does.
+
+Divergences:
+
+- **Member reprs use Monty's type names**, as in a generic alias: `Foo | None`
+    where CPython prints `__main__.Foo | None`.
+- **An unhashable member names the union.** `hash(int | list[[1]])` raises
+    `TypeError: unhashable type: 'typing.Union'` where CPython names the
+    member.
+- **`typing.Union` and `typing.Optional` are the only subscriptable forms.**
+    `typing.Optional[int] == int | None` holds; `typing.List[int]` still
+    raises.
+- **Neither aliases nor unions cross the host boundary.** One built in the
+    sandbox reaches the host as its repr string. Passed in from the host, a
+    `list[int]` degrades to an external function (it is callable, so it is
+    treated like any unmodeled class) and an `int | None` is rejected with
+    `MontyConversionError`; neither has a `MontyObject` form. Their type
+    objects (`types.GenericAlias`, `typing.Union`) round-trip by identity.

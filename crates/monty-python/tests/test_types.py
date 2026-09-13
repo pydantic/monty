@@ -7,6 +7,7 @@ import pathlib
 import re
 import sys
 import types
+import typing
 import zoneinfo
 from typing import NamedTuple
 
@@ -197,6 +198,8 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         # re-emerges as PurePosixPath; everything else round-trips by identity.
         expected: type[object] = pathlib.PurePosixPath if issubclass(ty, pathlib.PurePath) else ty
         assert monty_run('x', inputs={'x': ty}) is expected
+    # `typing.Union` is a type object at runtime but not a `type[object]` to pyright.
+    assert monty_run('x', inputs={'x': typing.Union}) is typing.Union
 
 
 @pytest.mark.skipif(sys.version_info >= (3, 12), reason='batched round-trips like the rest from 3.12')
@@ -254,6 +257,31 @@ def test_generic_alias_crosses_as_repr(monty_run: RunMonty):
     assert monty_run('list[int]') == snapshot('list[int]')
     assert monty_run('type(dict[str, int])') is types.GenericAlias
     assert monty_run('tuple[int, str, ...].__args__') == snapshot((int, str, ...))
+
+
+def test_union_crosses_as_repr(monty_run: RunMonty):
+    """`int | None` built in the sandbox crosses as its repr, its type object is
+    the host's `typing.Union`, and its `__args__` are real type objects."""
+    assert monty_run('int | None') == snapshot('int | None')
+    assert monty_run('type(int | None)') is typing.Union
+    assert monty_run('(int | None).__args__') == (int, type(None))
+
+
+def test_generic_alias_input_becomes_callable(monty_run: RunMonty):
+    """A host-built `list[int]` has no `MontyObject` form; being callable, it
+    degrades to an external function the way an unmodeled class does."""
+    assert monty_run('(type(x).__name__, repr(x))', inputs={'x': list[int]}) == snapshot(
+        ('function', "<function 'list' external>")
+    )
+
+
+def test_union_input_is_rejected(monty_run: RunMonty):
+    """A host-built `int | None` is not even callable, so it has no boundary form."""
+    with pytest.raises(MontyConversionError) as exc_info:
+        monty_run('x', inputs={'x': int | None})
+    assert str(exc_info.value) == snapshot(
+        'Cannot convert typing.Union to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+    )
 
 
 def test_type_object_input_isinstance(monty_run: RunMonty):

@@ -206,7 +206,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
 /// Writes one `__args__` item the way CPython's `ga_repr_item` does: a type
 /// by its qualified name (`int`, `collections.deque`, a class's bare name),
 /// `...` for `Ellipsis`, and the ordinary repr for anything else.
-fn repr_type_arg(item: &Value, f: &mut impl Write, vm: &mut VM<'_>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+pub(crate) fn repr_type_arg(
+    item: &Value,
+    f: &mut impl Write,
+    vm: &mut VM<'_>,
+    heap_ids: &mut LazyHeapSet,
+) -> RunResult<()> {
     match item {
         Value::Ellipsis => Ok(f.write_str("...")?),
         Value::Builtin(Builtins::Type(ty)) => Ok(f.write_str(&ty.name(vm.heap, vm.interns))?),

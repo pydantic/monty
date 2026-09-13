@@ -134,6 +134,19 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error(format!("{repr} is not a generic class"))
     }
 
+    /// Creates the TypeError for `typing.Union[()]`.
+    #[must_use]
+    fn union_of_no_types() -> RunError {
+        Self::type_error("Cannot take a Union of no types.")
+    }
+
+    /// Creates the TypeError for `typing.Optional[a, b]`, `repr` being the
+    /// tuple's.
+    #[must_use]
+    fn optional_requires_single_type(repr: &str) -> RunError {
+        Self::type_error(format!("typing.Optional requires a single type. Got {repr}."))
+    }
+
     /// Creates the TypeError `isinstance()` raises for a `types.GenericAlias`
     /// second argument, which CPython refuses to check against.
     #[must_use]

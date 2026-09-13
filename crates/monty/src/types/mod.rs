@@ -41,6 +41,7 @@ pub mod tuple;
 pub mod r#type;
 mod unicode_type;
 mod unicode_type_data;
+pub mod union;
 
 pub(crate) use bytes::{Bytes, BytesIterator};
 pub(crate) use class::{Class, DataclassOptions};
@@ -72,3 +73,4 @@ pub(crate) use timedelta::TimeDelta;
 pub(crate) use timezone::TimeZone;
 pub(crate) use tuple::{Tuple, TupleIterator, TupleVec, allocate_tuple};
 pub(crate) use r#type::Type;
+pub(crate) use union::Union;

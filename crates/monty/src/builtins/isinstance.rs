@@ -53,6 +53,15 @@ fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResul
         Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::GenericAlias(_)) => {
             Err(ExcType::isinstance_parameterized_generic())
         }
+        // `int | None`: true when any member matches, tested in order.
+        Value::Ref(id) if let HeapData::Union(union) = vm.heap.get(*id) => {
+            let args = union.args(vm.heap);
+            defer_drop!(args, vm);
+            let Some(HeapReadOutput::Tuple(members)) = args.read_heap(vm) else {
+                unreachable!("Union::args is always a tuple")
+            };
+            isinstance_check_tuple(obj, &members, vm)
+        }
         _ => Err(ExcType::isinstance_arg2_error()),
     }
 }
@@ -115,6 +124,16 @@ fn isinstance_check_tuple<'h>(obj: &Value, tuple: &HeapRead<'h, Tuple>, vm: &mut
             }
             Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::GenericAlias(_)) => {
                 return Err(ExcType::isinstance_parameterized_generic());
+            }
+            Value::Ref(id) if let HeapData::Union(union) = vm.heap.get(*id) => {
+                let args = union.args(vm.heap);
+                defer_drop!(args, vm);
+                let Some(HeapReadOutput::Tuple(members)) = args.read_heap(vm) else {
+                    unreachable!("Union::args is always a tuple")
+                };
+                if isinstance_check_tuple(obj, &members, vm)? {
+                    return Ok(true);
+                }
             }
             _ => return Err(ExcType::isinstance_arg2_error()),
         }

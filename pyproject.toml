@@ -168,6 +168,8 @@ exclude = [
     "crates/monty/test_cases/generic_alias.py",
     "crates/monty/test_cases/generic_alias__not_subscriptable.py",
     "crates/monty/test_cases/refcount__generic_alias.py",
+    "crates/monty/test_cases/typing__union.py",
+    "crates/monty/test_cases/refcount__typing_union.py",
     "scripts/startup_performance.py",
     "examples/web_scraper/example_code.py",
 ]

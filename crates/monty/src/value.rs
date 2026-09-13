@@ -26,6 +26,7 @@ use crate::{
     resource_checks::check_pow_size,
     types::{
         Bytes, BytesIterator, CmpOrder, GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
+        Union,
         bytes::{bytes_contains, bytes_repr_fmt, concat_bytes, get_byte_at_index, repeat_bytes},
         host_class_type,
         instance::{instance_dataclass_eq, instance_getattr, instance_str, instance_user_eq},
@@ -1139,6 +1140,10 @@ impl<'h> PyTrait<'h> for Value {
             Ok(Some(Self::Bool(*lhs || *rhs)))
         } else if let (Some(lhs), Some(rhs)) = (immediate_int(self), immediate_int(other)) {
             Ok(Some(Self::Int(lhs | rhs)))
+        } else if let Some(union) = Union::try_or(self, other, vm)? {
+            // `int | None` and friends, checked before the heap dispatch so a
+            // class object or generic alias on the left needs no `__or__`.
+            Ok(Some(union))
         } else if let Self::Ref(id) = self {
             vm.heap.read(*id).py_or_impl(other, vm)
         } else {
@@ -1148,7 +1153,11 @@ impl<'h> PyTrait<'h> for Value {
 
     /// Reflected implementation of Python `|`.
     fn py_ror_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        if let Self::Ref(id) = self {
+        // `None | int` and `1 | (int | str)`: the left operand has no `|` of
+        // its own, so the union forms on the reflected path, in source order.
+        if let Some(union) = Union::try_or(other, self, vm)? {
+            Ok(Some(union))
+        } else if let Self::Ref(id) = self {
             vm.heap.read(*id).py_ror_impl(other, vm)
         } else {
             Ok(None)
@@ -1292,6 +1301,10 @@ impl<'h> PyTrait<'h> for Value {
             Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
                 Ok(GenericAlias::subscript(Type::Type, key.clone_with_heap(vm), vm))
             }
+            // `typing.Union[int, str]` and `typing.Optional[int]` are the
+            // `|` unions spelled the pre-3.10 way.
+            Self::Builtin(Builtins::Type(Type::Union)) => Union::subscript(key.clone_with_heap(vm), vm),
+            Self::Marker(Marker(StaticStrings::Optional)) => Union::optional(key.clone_with_heap(vm), vm),
             Self::Builtin(Builtins::Type(t)) => {
                 Err(ExcType::type_error_type_not_subscriptable(&t.name(vm.heap, vm.interns)))
             }
@@ -2470,28 +2483,25 @@ pub(crate) struct Marker(pub StaticStrings);
 impl Marker {
     /// Returns the Python type of this marker.
     ///
-    /// System markers (stdout, stderr) are `TextIOWrapper`.
-    /// `typing.Union` has type `type` (matching CPython).
-    /// Other typing markers (Any, Optional, etc.) are `_SpecialForm`.
+    /// System markers (stdout, stderr) are `TextIOWrapper`; the typing
+    /// markers (Any, Optional, etc.) are `_SpecialForm`. (`typing.Union` is
+    /// a real type, `Type::Union`, not a marker.)
     pub(crate) fn py_type(self) -> Type {
         match self.0 {
             StaticStrings::Stdout | StaticStrings::Stderr => Type::TextIOWrapper,
-            StaticStrings::UnionType => Type::Type,
             _ => Type::SpecialForm,
         }
     }
 
     /// Writes the Python repr for this marker.
     ///
-    /// System markers have special repr formats ("<stdout>", "<stderr>").
-    /// `typing.Union` uses `<class 'typing.Union'>` format (matching CPython).
-    /// Other typing markers are prefixed with "typing." (e.g., "typing.Any").
+    /// System markers have special repr formats ("<stdout>", "<stderr>");
+    /// typing markers are prefixed with "typing." (e.g., "typing.Any").
     pub(crate) fn py_repr_fmt(self, f: &mut impl Write) -> fmt::Result {
         let s: &'static str = self.0.into();
         match self.0 {
             StaticStrings::Stdout => f.write_str("<stdout>")?,
             StaticStrings::Stderr => f.write_str("<stderr>")?,
-            StaticStrings::UnionType => f.write_str("<class 'typing.Union'>")?,
             _ => write!(f, "typing.{s}")?,
         }
         Ok(())

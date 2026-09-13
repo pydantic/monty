@@ -359,6 +359,47 @@ ext_fn(0)
     assert_eq!(from_loaded.into_complete().unwrap(), expected);
 }
 
+/// A live `typing.Union` on the heap survives a round-trip with its members
+/// intact — the only coverage that carries `HeapData::Union` through postcard.
+#[test]
+fn run_progress_round_trip_preserves_union() {
+    let code = r"
+Maybe = None | list[int]
+ext_fn(0)
+[repr(Maybe), Maybe.__args__, Maybe == list[int] | None, isinstance(None, Maybe), isinstance(3, int | Maybe)]
+"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+
+    // Suspend at `ext_fn` with the union built and still live.
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded: RunProgress = round_trip_progress(&progress);
+
+    let expected = MontyObject::List(vec![
+        MontyObject::String("None | list[int]".to_owned()),
+        MontyObject::Tuple(vec![
+            MontyObject::Type(MontyType::NoneType),
+            MontyObject::Repr("list[int]".to_owned()),
+        ]),
+        MontyObject::Bool(true),
+        MontyObject::Bool(true),
+        MontyObject::Bool(true),
+    ]);
+
+    // Both are resumed for the reason given in the itertools round-trip above.
+    let original = progress.into_function_call().expect("should be at function call");
+    assert_eq!(original.function_name, "ext_fn");
+    let from_original = original.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_original.into_complete().unwrap(), expected);
+
+    let call = loaded.into_function_call().expect("should be at function call");
+    let from_loaded = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_loaded.into_complete().unwrap(), expected);
+}
+
 #[test]
 fn run_progress_complete_round_trip() {
     // When execution completes, we can still dump/load the Complete variant

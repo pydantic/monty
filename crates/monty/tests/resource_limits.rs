@@ -1338,6 +1338,23 @@ repr(alias)
     assert_repr_timeout(code, "generic alias repr");
 }
 
+/// Test that building a `typing.Union` from a huge tuple respects the time
+/// limit.
+///
+/// Deduplication is a linear scan per member, so 200k distinct members would
+/// run to completion in one native loop without the poll in
+/// `Union::from_members`.
+#[test]
+fn timeout_in_union_construction() {
+    let code = r"
+import typing
+members = tuple(range(200_000))
+interrupt()
+typing.Union[members]
+";
+    assert_repr_timeout(code, "union construction");
+}
+
 /// Test that `repr(large_set)` respects the time limit.
 ///
 /// The elements are ints rather than strings so that the promptness bound
