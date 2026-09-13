@@ -1,0 +1,34 @@
+docs/limitations/eval_exec.md
+  s_48cfc37a3b381f::t_ced4c93094c969 1-54
+docs/limitations/builtins.md
+  s_48cfc37a3b381f::t_ced4c93094c969 9,11,13,25-26
+docs/security.md
+  s_48cfc37a3b381f::t_ced4c93094c969 357,360-361
+mkdocs.yml
+  s_48cfc37a3b381f::t_ced4c93094c969 47
+docs/limitations/resource_limits.md
+  s_48cfc37a3b381f::t_ced4c93094c969 21-25
+docs/limitations/index.md
+  s_48cfc37a3b381f::t_ced4c93094c969 61-62
+docs/resource-limits.md
+  s_48cfc37a3b381f::t_ced4c93094c969 154-155
+crates/monty-typeshed/update.py
+  s_48cfc37a3b381f::t_3753a2a1a5c750 26-27
+  s_48cfc37a3b381f::t_ced4c93094c969 34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2d11e7f3b03e99c342f5f2a95d63bd7ab86e63f6",
+  "prompts": {},
+  "sessions": {
+    "s_48cfc37a3b381f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4fb3c57f-2787-4903-bd11-4112173970ff",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
