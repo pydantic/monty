@@ -35,30 +35,40 @@ impl VM<'_> {
     /// Builds a dict from the top 2n stack values (key/value pairs).
     pub(super) fn build_dict(&mut self, count: usize) -> Result<(), RunError> {
         let items = self.pop_n(count * 2);
-        let mut dict = Dict::new();
-        // Use into_iter to consume items by value, avoiding clone and proper ownership transfer
-        let mut iter = items.into_iter();
-        while let (Some(key), Some(value)) = (iter.next(), iter.next()) {
-            // A duplicate literal key (`{k: 1, k: 2}`) replaces the earlier
-            // value, which must be dropped or its refcount leaks.
-            if let Some(old_value) = dict.set(key, value, self)? {
-                old_value.drop_with(self);
+        let mut dict_guard = DropGuard::new(Dict::new(), self);
+        let (dict, this) = dict_guard.as_parts_mut();
+        {
+            let iter = items.into_iter();
+            defer_drop_mut!(iter, this);
+            while let (Some(key), Some(value)) = (iter.next(), iter.next()) {
+                // A duplicate literal key (`{k: 1, k: 2}`) replaces the earlier
+                // value, which must be dropped or its refcount leaks.
+                if let Some(old_value) = dict.set(key, value, this)? {
+                    old_value.drop_with(this);
+                }
             }
         }
-        let heap_id = self.heap.allocate(HeapData::Dict(dict));
-        self.push(Value::Ref(heap_id));
+        let (dict, this) = dict_guard.into_parts();
+        let heap_id = this.heap.allocate(HeapData::Dict(dict));
+        this.push(Value::Ref(heap_id));
         Ok(())
     }
 
     /// Builds a set from the top n stack values.
     pub(super) fn build_set(&mut self, count: usize) -> Result<(), RunError> {
         let items = self.pop_n(count);
-        let mut set = Set::new();
-        for item in items {
-            set.add(item, self)?;
+        let mut set_guard = DropGuard::new(Set::new(), self);
+        let (set, this) = set_guard.as_parts_mut();
+        {
+            let items = items.into_iter();
+            defer_drop_mut!(items, this);
+            for item in items {
+                set.add(item, this)?;
+            }
         }
-        let heap_id = self.heap.allocate(HeapData::Set(set));
-        self.push(Value::Ref(heap_id));
+        let (set, this) = set_guard.into_parts();
+        let heap_id = this.heap.allocate(HeapData::Set(set));
+        this.push(Value::Ref(heap_id));
         Ok(())
     }
 
