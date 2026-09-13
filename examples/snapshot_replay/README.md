@@ -52,6 +52,9 @@ Comparison files use compact JSON and the same 8 MiB limit for writing and readi
 
 To compare edited sandbox code, pass `--code path/to/edited.py` to `replay`.
 That starts from the edited source rather than restoring bytecode from the original snapshot.
+Capture and edited-source replay reject syntax errors with `ReplayError`, preserving Monty's diagnostic.
+A rejected capture has no completion record; a rejected replay produces no comparison.
+Type checking is not enabled.
 For both edited source and response branches, the name, host-visible JSON arguments, mapping order and order of
 every remaining host call must match the recording.
 A mismatch reports `DIVERGED`; it does not fetch another response.
@@ -76,6 +79,9 @@ See [storing and restoring snapshots](../../docs/snapshots.md#storing-and-restor
 `pypi_tools.py` owns the live HTTP callback and permits only the three named packages at a fixed PyPI endpoint.
 The callback runs on the host with host authority, as described in [Monty's security model](../../docs/security.md).
 Changing it requires validating the sandbox's arguments and bounding host work independently of Monty's limits.
+Each PyPI fetch runs in a short-lived Python child with a 10-second deadline covering DNS, headers and body reads.
+On timeout the child is killed and joined; capture stops without retrying the request.
+The child accepts only an allowlisted package name and reads at most 1 MiB plus one overflow byte.
 
 Each call and snapshot is flushed before the host callback runs.
 Loading rejects empty or truncated recordings and reports a missing response or completion record.

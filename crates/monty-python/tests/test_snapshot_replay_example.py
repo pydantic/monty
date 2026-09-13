@@ -7,7 +7,11 @@ import io
 import json
 import os
 import re
+import runpy
+import socket
+import subprocess
 import sys
+import threading
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -775,6 +779,35 @@ def test_invalid_source(code: Any, message: str) -> None:
     assert str(error.value) == message
 
 
+@pytest.mark.parametrize('mode', ['capture', 'changed-source'])
+def test_syntax_errors_are_rejected(case: Any, mode: str) -> None:
+    recording: dict[str, Any] = {}
+    if mode == 'changed-source':
+        case.capture()
+        recording = r.load(case.path)
+    dispatch = MagicMock()
+    with pytest.raises(r.ReplayError) as error:
+        if mode == 'capture':
+            r.capture('if :', case.path, dispatch, binary=case.binary)
+        else:
+            r.replay(recording, code='if :', binary=case.binary)
+    assert str(error.value) == snapshot('Invalid source: Expected an expression')
+    assert type(error.value.__cause__).__name__ == snapshot('MontySyntaxError')
+    assert dispatch.call_count == snapshot(0)
+    if mode == 'capture':
+        with pytest.raises(r.ReplayError) as incomplete:
+            r.load(case.path)
+        assert str(incomplete.value) == snapshot('Capture incomplete: completion record is missing')
+    else:
+        assert r.load(case.path)['sha256'] == snapshot(recording['sha256'])
+
+
+def test_replay_does_not_enable_type_checking(case: Any) -> None:
+    case.capture('value: int = "text"\nvalue')
+    result = r.replay(r.load(case.path), code='value: int = "changed"\nvalue', binary=case.binary)
+    assert result['result'] == snapshot({'kind': 'return', 'value': 'changed', 'output': []})
+
+
 @pytest.mark.parametrize(
     'key, value, message',
     [
@@ -815,23 +848,147 @@ def test_final_result_mismatch(case: Any) -> None:
     assert str(error.value) == snapshot('DIVERGED: final result differs')
 
 
-def test_live_adapter_boundary(case: Any) -> None:
+def test_live_adapter_boundary() -> None:
     good: dict[str, Any] = {'name': 'package_metadata', 'args': ['pydantic-ai-slim'], 'kwargs': {}}
     response = MagicMock()
     response.__enter__.return_value = response
     opener = MagicMock()
     opener.open.return_value = response
-    with patch.object(pypi_tools.urllib.request, 'build_opener', return_value=opener):
+    with patch.object(pypi_tools.urllib.request, 'build_opener', return_value=opener) as build:
         info: dict[str, Any] = {'version': '1', 'requires_python': '>=3.10', 'requires_dist': []}
         response.read.return_value = json.dumps({'info': info}).encode()
+        raw = pypi_tools.read_package('pydantic-ai-slim')
+        assert raw == snapshot(json.dumps({'info': info}).encode())
+        request = opener.open.call_args.args[0]
+        assert (request.full_url, request.get_header('User-agent')) == snapshot(
+            ('https://pypi.org/pypi/pydantic-ai-slim/json', 'monty-snapshot-replay-example/0.1')
+        )
+        assert build.call_args.args[0].proxies == snapshot({})
+        assert response.read.call_args.args == snapshot((1024 * 1024 + 1,))
+        with io.TextIOWrapper(io.BytesIO()) as output:
+            with patch.object(sys, 'argv', [pypi_tools.__file__, 'pydantic-ai-slim']), redirect_stdout(output):
+                runpy.run_path(pypi_tools.__file__, run_name='__main__')
+            assert output.buffer.getvalue() == snapshot(raw)
+    with (
+        patch.object(pypi_tools.subprocess, 'run') as run,
+        patch.dict(os.environ, {'SystemRoot': 'system-directory', 'PRIVATE_TOKEN': 'test-only'}, clear=True),
+    ):
+        run.return_value.stdout = raw
         assert pypi_tools.dispatch(good) == snapshot({'return_value': info})
-        response.read.return_value = b'x' * (1024 * 1024 + 1)
+        assert run.call_args.args[0] == snapshot(
+            [sys.executable, '-I', str(Path(pypi_tools.__file__).resolve()), 'pydantic-ai-slim']
+        )
+        creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        assert run.call_args.kwargs == snapshot(
+            {
+                'stdin': subprocess.DEVNULL,
+                'capture_output': True,
+                'check': True,
+                'timeout': 10,
+                'env': {'SystemRoot': 'system-directory'},
+                'creationflags': creationflags,
+            }
+        )
+        run.return_value.stdout = b'x' * (1024 * 1024 + 1)
         with pytest.raises(ValueError) as error:
             pypi_tools.dispatch(good)
         assert str(error.value) == snapshot('PyPI response exceeds 1 MiB')
     assert pypi_tools.NoRedirect().redirect_request(None, None, 302, 'Found', None, 'http://127.0.0.1') == snapshot(
         None
     )
+
+
+@pytest.mark.parametrize('phase', ['complete', 'headers', 'body', 'http-error'])
+def test_pypi_deadline_stops_the_fetch(tmp_path: Path, phase: str) -> None:
+    info: dict[str, Any] = {'version': '1', 'requires_python': '>=3.10', 'requires_dist': []}
+    body = json.dumps({'info': info}).encode()
+    status = '404 Not Found' if phase == 'http-error' else '200 OK'
+    headers = f'HTTP/1.1 {status}\r\nX-Padding: {"x" * 200}\r\nContent-Length: {len(body)}\r\n\r\n'.encode()
+    stopped = threading.Event()
+    sent: list[int] = []
+    children: list[subprocess.Popen[Any]] = []
+    popen = subprocess.Popen
+
+    def spawn(*args: Any, **kwargs: Any) -> subprocess.Popen[Any]:
+        child = popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    with socket.socket() as server:
+        server.bind(('127.0.0.1', 0))
+        server.listen(1)
+        server.settimeout(5)
+        endpoint = f'http://127.0.0.1:{server.getsockname()[1]}/'
+
+        def serve() -> None:
+            try:
+                with server.accept()[0] as connection:
+                    connection.settimeout(5)
+                    connection.recv(4096)
+                    if phase == 'headers':
+                        data = headers + body
+                    else:
+                        connection.sendall(headers)
+                        data = body
+                    if phase in ('complete', 'http-error'):
+                        connection.sendall(data)
+                    else:
+                        for byte in data:
+                            connection.sendall(bytes([byte]))
+                            sent.append(byte)
+                            if stopped.wait(0.05):
+                                break
+            except (TimeoutError, BrokenPipeError, ConnectionResetError):
+                pass
+
+        helper = tmp_path / 'fetch.py'
+        # Redirect only the test child's request to loopback; run the actual adapter entry point.
+        helper.write_text(
+            'import runpy, urllib.request\n'
+            'request = urllib.request.Request\n'
+            f'urllib.request.Request = lambda url, **kw: request({endpoint!r}, **kw)\n'
+            f'runpy.run_path({pypi_tools.__file__!r}, run_name="__main__")\n'
+        )
+        serving = threading.Thread(target=serve)
+        serving.start()
+        try:
+            with (
+                patch.object(pypi_tools, '__file__', str(helper)),
+                patch.object(pypi_tools, 'REQUEST_TIMEOUT', 2),
+                patch.object(subprocess, 'Popen', side_effect=spawn),
+            ):
+                call: dict[str, Any] = {'name': 'package_metadata', 'args': ['pydantic-ai-slim'], 'kwargs': {}}
+                if phase == 'complete':
+                    assert pypi_tools.dispatch(call) == snapshot({'return_value': info})
+                elif phase == 'http-error':
+                    with pytest.raises(subprocess.CalledProcessError) as failure:
+                        pypi_tools.dispatch(call)
+                    assert failure.value.returncode == snapshot(1)
+                else:
+                    with pytest.raises(TimeoutError) as error:
+                        pypi_tools.dispatch(call)
+                    assert str(error.value) == snapshot('PyPI request exceeded its deadline')
+                    assert type(error.value.__cause__).__name__ == snapshot('TimeoutExpired')
+                    assert (0 < len(sent) < len(headers + body if phase == 'headers' else body)) == snapshot(True)
+            assert len(children) == snapshot(1)
+            assert (children[0].returncode is not None) == snapshot(True)
+        finally:
+            stopped.set()
+            serving.join(timeout=6)
+        assert serving.is_alive() == snapshot(False)
+
+
+def test_capture_stops_after_http_deadline(case: Any) -> None:
+    with patch.object(subprocess, 'run', side_effect=subprocess.TimeoutExpired('fetch', 10)) as run:
+        with pytest.raises(TimeoutError) as error:
+            r.capture('package_metadata("pydantic-ai-slim")', case.path, pypi_tools.dispatch, binary=case.binary)
+    assert str(error.value) == snapshot('PyPI request exceeded its deadline')
+    assert run.call_count == snapshot(1)
+    rows = [json.loads(line) for line in case.path.read_text().splitlines()]
+    assert [row['type'] for row in rows] == snapshot(['header', 'call'])
+    with pytest.raises(r.ReplayError) as incomplete:
+        r.load(case.path)
+    assert str(incomplete.value) == snapshot('Capture incomplete: last call has no recorded response')
 
 
 def test_cli_capture_replay_branch_report(case: Any) -> None:
@@ -897,10 +1054,18 @@ def test_comparison_preserves_what_if_inputs(case: Any) -> None:
 
 @pytest.mark.parametrize('argument', [None, True, [], {}, 'other', 'https://example.com', '../pydantic-ai-slim'])
 def test_pypi_arguments_rejected_before_network(argument: Any) -> None:
-    with patch.object(pypi_tools.urllib.request, 'build_opener') as open_network:
+    with patch.object(pypi_tools.subprocess, 'run') as open_network:
         with pytest.raises(ValueError) as error:
             pypi_tools.dispatch({'name': 'package_metadata', 'args': [argument], 'kwargs': {}})
     assert str(error.value) == snapshot('Tool or package is not allowlisted')
+    assert open_network.call_count == snapshot(0)
+
+
+def test_pypi_child_rejects_unlisted_package() -> None:
+    with patch.object(pypi_tools.urllib.request, 'build_opener') as open_network:
+        with pytest.raises(ValueError) as error:
+            pypi_tools.read_package('../pydantic-ai-slim')
+    assert str(error.value) == snapshot('Package is not allowlisted')
     assert open_network.call_count == snapshot(0)
 
 
@@ -916,7 +1081,7 @@ def test_pypi_arguments_rejected_before_network(argument: Any) -> None:
 )
 def test_pypi_call_shape_rejected_before_network(override: dict[str, Any]) -> None:
     call: dict[str, Any] = {'name': 'package_metadata', 'args': ['pydantic-ai-slim'], 'kwargs': {}, **override}
-    with patch.object(pypi_tools.urllib.request, 'build_opener') as open_network:
+    with patch.object(pypi_tools.subprocess, 'run') as open_network:
         with pytest.raises(ValueError) as error:
             pypi_tools.dispatch(call)
     assert str(error.value) == snapshot('Tool or package is not allowlisted')

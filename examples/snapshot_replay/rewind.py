@@ -13,7 +13,15 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, BinaryIO, Literal, cast
 
-from pydantic_monty import ExternalResult, FunctionSnapshot, Monty, MontyComplete, MontyRuntimeError, ResourceLimits
+from pydantic_monty import (
+    ExternalResult,
+    FunctionSnapshot,
+    Monty,
+    MontyComplete,
+    MontyRuntimeError,
+    MontySyntaxError,
+    ResourceLimits,
+)
 
 MAX_FILE = 8 * 1024 * 1024
 MAX_VALUE = 256 * 1024
@@ -76,6 +84,8 @@ def capture(
                     count += 1
                     progress = progress.resume(cast(ExternalResult, response))
                 result = terminal(progress, output)
+            except MontySyntaxError as error:
+                raise ReplayError(f'Invalid source: {error}') from error
             except MontyRuntimeError as error:
                 result = failure(error, output)
         end = {'type': 'complete', 'calls': count, 'result': result}
@@ -215,6 +225,8 @@ def replay(
                 index += 1
                 progress = cast(FunctionSnapshot, progress).resume(cast(ExternalResult, value))
             result = terminal(progress, output)
+        except MontySyntaxError as error:
+            raise ReplayError(f'Invalid source: {error}') from error
         except MontyRuntimeError as error:
             result = failure(error, output)
     if index != len(events):
