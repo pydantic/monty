@@ -162,8 +162,7 @@ measurement.
 | `escape_attempts`     | Prompt-injected code tries to reach the host filesystem, network and environment.                                                                                                                 | No escape by any route; an error in the sandbox, not a crash.                                                                                                                                                                                                     |
 | `runaway`             | A loop that never ends and a list that never stops growing.                                                                                                                                       | `TimeoutError` and `MemoryError` raised in the sandbox, session kept alive.                                                                                                                                                                                       |
 
-Two reference solutions fail today: `shift_roster` needs `itertools.combinations`, and `redact_pii` needs `casefold()`
-to fold Greek final sigma as CPython does.
+One reference solution fails today: `shift_roster` needs `itertools.combinations`.
 Building the rest found four more divergences that the references work around, each recorded in the task's `.md`:
 functions have no `__name__`, `PermissionError` is missing from the bundled type stubs, `open`, `eval` and
 `__import__` are rejected by the type checker rather than the runtime, and `dict.setdefault` is typed `None | Any`.
@@ -362,7 +361,7 @@ Scored on the exact rendered string.
 ### text/redact_pii
 
 Parse senders from `Name <email>` headers in five scripts, redact phones, addresses and names, and dedupe senders after NFKC and casefold.
-Scored with `EqualsExpected`; fails on Monty's `casefold` of Greek final sigma.
+Scored with `EqualsExpected`.
 
 ### web/lighthouse
 

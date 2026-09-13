@@ -8,6 +8,5 @@ decomposed forms.
 No host functions; `EMAILS` is an input.
 Scored with `EqualsExpected` against the same regexes and normalisation run under CPython.
 
-The reference currently fails: CPython's `casefold()` maps the Greek final sigma `ς` to `σ`, Monty's does not, so
-the sender `πέτρος παπαδόπουλος` differs in one character.
-The case is kept as designed so the divergence is measured.
+The Greek sender `πέτρος παπαδόπουλος` is the sharp edge: `casefold()` must map the final sigma `ς` to `σ` as
+CPython does, or the sender dedupes under a different key.
