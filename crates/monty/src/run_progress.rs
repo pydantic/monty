@@ -124,6 +124,8 @@ pub struct FunctionCall {
     /// classmethod call, or construction spelled `__call__`); `None` for
     /// plain external function calls.
     pub object_id: Option<MontyUuid>,
+    /// The host may await a coroutine and answer with [`Self::resume_eager`].
+    pub allow_eager_await: bool,
     /// Internal execution snapshot.
     snapshot: Snapshot,
 }
@@ -136,6 +138,7 @@ impl FunctionCall {
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
         object_id: Option<MontyUuid>,
+        allow_eager_await: bool,
         snapshot: Snapshot,
     ) -> Self {
         Self {
@@ -144,6 +147,7 @@ impl FunctionCall {
             kwargs,
             call_id,
             object_id,
+            allow_eager_await,
             snapshot,
         }
     }
@@ -190,6 +194,20 @@ impl FunctionCall {
     /// * `print` — Writer for print output.
     pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
+    }
+
+    /// Resumes with a settled coroutine, preserving its awaitable value and exception timing.
+    /// Only use when [`Self::allow_eager_await`] is true; synchronous returns use [`Self::resume`].
+    pub fn resume_eager(
+        self,
+        result: Result<MontyObject, MontyException>,
+        print: PrintWriter<'_>,
+    ) -> Result<RunProgress, MontyException> {
+        self.snapshot.run_inner(
+            result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
+            Some(self.call_id),
+            print,
+        )
     }
 
     /// Aborts the feed with an uncatchable exception; see [`OsCall::abort`].
@@ -753,8 +771,17 @@ impl Snapshot {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
-        let ext_result = result.into();
+        self.run_inner(result.into(), None, print)
+    }
 
+    /// Shared body of [`Self::run`] and [`FunctionCall::resume_eager`];
+    /// `eager_call_id` is set only for the latter.
+    fn run_inner(
+        self,
+        ext_result: ExtFunctionResult,
+        eager_call_id: Option<u32>,
+        print: PrintWriter<'_>,
+    ) -> Result<RunProgress, MontyException> {
         let Self {
             executor,
             vm_state,
@@ -772,7 +799,7 @@ impl Snapshot {
                     executor.vm_env(),
                 );
 
-                let vm_result = resume_with_result(&mut vm, ext_result);
+                let vm_result = resume_with_result(&mut vm, ext_result, eager_call_id);
 
                 // Three-phase: convert while VM alive, snapshot, build progress
                 let converted = convert_frame_exit(vm_result, &mut vm);
@@ -797,34 +824,48 @@ impl Snapshot {
 /// VM and runs on. Shared by the one-shot and REPL resume paths so both treat
 /// every [`ExtFunctionResult`] the same way.
 ///
+/// `eager_call_id` marks a coroutine the host already settled at an eligible
+/// `await` (see [`FunctionCall::resume_eager`]): the call's future is
+/// registered and resolved in one step, so the `Await` that follows finds it
+/// settled without a `ResolveFutures` round trip.
+///
 /// Calls whose result must be postprocessed before execution continues
 /// (`os.chdir`, `Path.iterdir`, `open`) refuse a future: the effect runs in
 /// `VM::resume`, which a future bypasses. The future is not registered, so
 /// nothing waits on a call id no task will ever await.
-pub(crate) fn resume_with_result(vm: &mut VM<'_>, result: ExtFunctionResult) -> Result<FrameExit, RunError> {
-    match result {
-        ExtFunctionResult::Return(obj) => vm.resume(obj),
-        ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
-        ExtFunctionResult::Future(raw_call_id) => {
-            if let Some(name) = vm
-                .pending_effect
-                .as_ref()
-                .and_then(PendingEffect::immediate_result_name)
-            {
-                vm.resume_with_exception(
-                    SimpleException::new_msg(
-                        ExcType::RuntimeError,
-                        format!("{name} cannot be answered with a future"),
+pub(crate) fn resume_with_result(
+    vm: &mut VM<'_>,
+    result: ExtFunctionResult,
+    eager_call_id: Option<u32>,
+) -> Result<FrameExit, RunError> {
+    if let Some(call_id) = eager_call_id {
+        vm.add_pending_call(CallId::new(call_id));
+        vm.resume_with_resolved_futures(vec![(call_id, result)])
+    } else {
+        match result {
+            ExtFunctionResult::Return(obj) => vm.resume(obj),
+            ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
+            ExtFunctionResult::Future(raw_call_id) => {
+                if let Some(name) = vm
+                    .pending_effect
+                    .as_ref()
+                    .and_then(PendingEffect::immediate_result_name)
+                {
+                    vm.resume_with_exception(
+                        SimpleException::new_msg(
+                            ExcType::RuntimeError,
+                            format!("{name} cannot be answered with a future"),
+                        )
+                        .into(),
                     )
-                    .into(),
-                )
-            } else {
-                vm.add_pending_call(CallId::new(raw_call_id));
-                vm.run_external()
+                } else {
+                    vm.add_pending_call(CallId::new(raw_call_id));
+                    vm.run_external()
+                }
             }
-        }
-        ExtFunctionResult::NotFound(function_name) => {
-            vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
+            ExtFunctionResult::NotFound(function_name) => {
+                vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
+            }
         }
     }
 }
@@ -889,6 +930,7 @@ pub(crate) enum ConvertedExit {
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
         object_id: Option<MontyUuid>,
+        allow_eager_await: bool,
     },
     /// OS-level operation.
     OsCall {
@@ -939,6 +981,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                 kwargs: kwargs_py,
                 call_id: call_id.raw(),
                 object_id: None,
+                allow_eager_await: vm.allow_eager_await(),
             }
         }
         Ok(FrameExit::OsCall {
@@ -968,6 +1011,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                 kwargs: kwargs_py,
                 call_id: call_id.raw(),
                 object_id: Some(object_id),
+                allow_eager_await: vm.allow_eager_await(),
             }
         }
         Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
@@ -1050,12 +1094,14 @@ pub(crate) fn build_run_progress(
             kwargs,
             call_id,
             object_id,
+            allow_eager_await,
         } => Ok(RunProgress::FunctionCall(FunctionCall::new(
             function_name,
             args,
             kwargs,
             call_id,
             object_id,
+            allow_eager_await,
             new_snapshot!(),
         ))),
         ConvertedExit::OsCall { function_call, call_id } => Ok(RunProgress::OsCall(OsCall::new(

@@ -874,8 +874,10 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             kwargs,
             call_id,
             object_id,
+            allow_eager_await,
         }) => {
             obj.set("kind", "functionCall")?;
+            obj.set("allowEagerAwait", allow_eager_await)?;
             obj.set("functionName", function_name)?;
             obj.set("args", values_to_js(env, &args)?)?;
             obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;

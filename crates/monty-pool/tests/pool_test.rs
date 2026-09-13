@@ -131,6 +131,46 @@ fn kill_pid(pid: u32) {
 // Happy path
 // =============================================================================
 
+/// Rejected eager answers leave the checkout and worker at the same call.
+#[tokio::test]
+async fn allow_eager_await_validates_replies_before_sending() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let event = session
+        .feed("await f()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    let TurnEvent::FunctionCall {
+        call_id,
+        allow_eager_await,
+        ..
+    } = event
+    else {
+        panic!("expected function call, got {event:?}")
+    };
+    assert!(allow_eager_await);
+    for results in [
+        vec![],
+        vec![(call_id + 1, ResumeValue::Return(MontyObject::Int(42)))],
+        vec![(call_id, ResumeValue::Future)],
+        vec![(call_id, ResumeValue::NotFound)],
+    ] {
+        assert!(matches!(
+            session.resume_futures(results, &mut no_print).await,
+            Err(PoolError::Protocol(_))
+        ));
+    }
+    let done = session
+        .resume_futures(
+            vec![(call_id, ResumeValue::Return(MontyObject::Int(42)))],
+            &mut no_print,
+        )
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(done), MontyObject::Int(42));
+    session.finish().await.unwrap();
+}
+
 /// An over-threshold frame round-trips through `decode_event`'s
 /// `block_in_place` branch (multi-thread runtime) without corruption.
 #[tokio::test(flavor = "multi_thread")]

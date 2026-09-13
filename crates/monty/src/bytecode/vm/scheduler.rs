@@ -226,6 +226,11 @@ impl Scheduler {
         self.current_task
     }
 
+    /// Whether awaiting the current call can proceed without delaying other work.
+    pub fn can_await_eagerly(&self) -> bool {
+        self.ready_queue.is_empty() && self.pending_externals.is_empty()
+    }
+
     /// Returns a mutable reference to a task by ID.
     ///
     /// # Panics

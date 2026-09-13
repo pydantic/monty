@@ -284,6 +284,8 @@ package, then `PATH`, and in a checkout of the Monty repository finally a cargo-
 completion.
 `snapshot.resume(...)` returns the next snapshot or a `MontyComplete`; `snapshot.resumeAuto()` answers it from the
 captured `externalLookup` / `os`.
+A promise-returning external is awaited directly by `resumeAuto()` when the snapshot's `allowEagerAwait` is true, and
+otherwise concurrently, surfacing as an intermediate `FutureSnapshot`, exactly as under `feedRun`.
 `snapshot.dump()` serializes a paused worker and `session.loadSnapshot(blob)` restores it; `session.dump()` and
 `session.loadSession(blob)` do the same for an idle session between feeds.
 

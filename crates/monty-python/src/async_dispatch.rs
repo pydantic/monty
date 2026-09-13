@@ -1,10 +1,11 @@
 //! Async-dispatch helpers shared by the `AsyncMonty` drive loop.
 //!
-//! Coroutine external functions are converted to Rust futures and spawned as
-//! tokio tasks; when the sandbox blocks on its external futures
-//! (`ResolveFutures`), the completed task results are batched back to the
-//! worker.
+//! Eligible coroutines are awaited at their call suspension. Other coroutines
+//! are spawned as tokio tasks and resolved in batches when the sandbox blocks.
 
+use std::future::Future;
+
+use monty_pool::ResumeValue;
 use monty_proto::python::InstanceStore;
 use monty_types::{ExtFunctionResult, MontyObject, MontyUuid};
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
@@ -45,23 +46,38 @@ pub(crate) fn spawn_coroutine_task(
     coro: Py<PyAny>,
     instances: &InstanceStore,
 ) -> PyResult<()> {
+    let future = coroutine_future(coro, instances)?;
+    join_set.spawn(async move { (call_id, future.await) });
+    Ok(())
+}
+
+/// Converts a coroutine under the current asyncio task-locals, for eager await or spawning.
+pub(crate) fn coroutine_future(
+    coro: Py<PyAny>,
+    instances: &InstanceStore,
+) -> PyResult<impl Future<Output = ExtFunctionResult> + Send + use<>> {
     let instances = Python::attach(|py| instances.clone_ref(py));
     let future = Python::attach(|py| {
         let locals = get_current_locals(py)?.copy_context(py)?;
         into_future_with_locals(&locals, coro.into_bound(py))
     })?;
 
-    join_set.spawn(async move {
+    Ok(async move {
         match future.await {
             Ok(py_result) => Python::attach(|py| {
                 let bound = py_result.bind(py);
-                (call_id, py_obj_to_ext_result(bound, &instances))
+                py_obj_to_ext_result(bound, &instances)
             }),
-            Err(err) => Python::attach(|py| (call_id, py_err_to_ext_result(py, &err))),
+            Err(err) => Python::attach(|py| py_err_to_ext_result(py, &err)),
         }
-    });
+    })
+}
 
-    Ok(())
+/// Outcome of dispatching a function call under the callback context: either
+/// an answer, or an eager coroutine future still to be awaited outside the GIL.
+pub(crate) enum Dispatched<F> {
+    Done(ResumeValue),
+    Eager(F),
 }
 
 /// Waits for at least one `JoinSet` task to complete, then drains any other

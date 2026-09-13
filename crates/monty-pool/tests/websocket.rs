@@ -950,6 +950,7 @@ fn serve_endless_suspensions(socket: &mut WebSocket<TcpStream>, expected_calls: 
             kwargs: vec![],
             call_id,
             object_id: None,
+            allow_eager_await: false,
         }))
     };
     assert!(matches!(read_request(socket), pb::parent_request::Kind::Feed(_)));
@@ -1188,6 +1189,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
                 kwargs: vec![],
                 call_id,
                 object_id: None,
+                allow_eager_await: false,
             }))
         };
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
@@ -1399,6 +1401,7 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
             kwargs: vec![],
             call_id,
             object_id: None,
+            allow_eager_await: false,
         };
         let abort_reply = |socket: &mut WebSocket<TcpStream>| {
             let pb::parent_request::Kind::AbortFeed(abort) = read_request(socket) else {
@@ -1564,6 +1567,7 @@ fn function_call(call_id: u32) -> pb::child_event::Kind {
         kwargs: vec![],
         call_id,
         object_id: None,
+        allow_eager_await: false,
     })
 }
 

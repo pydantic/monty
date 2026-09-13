@@ -49,7 +49,7 @@ use tokio::{sync::Mutex, task::JoinSet};
 mod tests;
 
 use crate::{
-    async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
+    async_dispatch::{Dispatched, coroutine_future, dispatch_function_call, spawn_coroutine_task, wait_for_futures},
     callback_context::CallbackContext,
     exceptions::MontyError,
     external::{CallResult, ExternalLookup, resolve_object_attr, wire_call_arguments},
@@ -262,6 +262,7 @@ pub(crate) fn build_snapshot(
             kwargs,
             call_id,
             object_id,
+            allow_eager_await,
         } => {
             let call = FunctionCallData {
                 function_name,
@@ -270,6 +271,7 @@ pub(crate) fn build_snapshot(
                 call_id,
                 is_os_function: false,
                 object_id,
+                allow_eager_await,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
@@ -286,6 +288,7 @@ pub(crate) fn build_snapshot(
                 call_id,
                 is_os_function: true,
                 object_id: None,
+                allow_eager_await: false,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
@@ -554,6 +557,8 @@ struct FunctionCallData {
     /// Uuid of the routed receiver — an instance or class type; `None` for
     /// plain external functions and OS calls.
     object_id: Option<MontyUuid>,
+    /// The worker accepts a settled coroutine at this suspension.
+    allow_eager_await: bool,
 }
 
 struct FunctionSnapshot {
@@ -586,6 +591,12 @@ pub struct PyFunctionSnapshot(FunctionSnapshot);
 
 #[pymethods]
 impl PyFunctionSnapshot {
+    /// Whether the worker permits eager coroutine resolution at this suspension.
+    #[getter]
+    fn allow_eager_await(&self) -> bool {
+        self.0.call.allow_eager_await
+    }
+
     #[getter]
     fn script_name(&self) -> &str {
         &self.0.snapshot.ctx.script_name
@@ -714,6 +725,12 @@ pub struct PyAsyncFunctionSnapshot(FunctionSnapshot);
 
 #[pymethods]
 impl PyAsyncFunctionSnapshot {
+    /// Whether `resume_auto` may await a coroutine directly at this suspension.
+    #[getter]
+    fn allow_eager_await(&self) -> bool {
+        self.0.call.allow_eager_await
+    }
+
     #[getter]
     fn script_name(&self) -> &str {
         &self.0.snapshot.ctx.script_name
@@ -765,10 +782,8 @@ impl PyAsyncFunctionSnapshot {
         })
     }
 
-    /// Async sibling of [`PyFunctionSnapshot::resume_auto`]. A coroutine external
-    /// is spawned into the session's shared future pool and answered with a
-    /// pending future — so other sandbox tasks keep running — to be settled
-    /// later by an [`PyAsyncFutureSnapshot::resume_auto`].
+    /// Awaits eligible coroutine calls directly; other coroutines are spawned
+    /// for later resolution by [`PyAsyncFutureSnapshot::resume_auto`].
     fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let context = CallbackContext::capture(py)?;
         let ctx = self.0.snapshot.claim(py)?;
@@ -782,6 +797,7 @@ impl PyAsyncFunctionSnapshot {
                 .as_ref()
                 .map(Checkout::callback_context)
                 .unwrap_or_default();
+            let mut eager = false;
             // Dispatch inside the future: a coroutine's `into_future` needs the
             // asyncio task-locals that `future_into_py`'s scope establishes.
             let answer: PyResult<ResumeValue> = if call.is_os_function {
@@ -808,7 +824,9 @@ impl PyAsyncFunctionSnapshot {
                 }
             } else {
                 let mut join_set = ctx.pending_futures.lock().await;
-                Python::attach(|py| {
+                // Dispatch (and convert any coroutine) under the callback context;
+                // only the eager await itself runs outside it.
+                let dispatched = Python::attach(|py| {
                     let _guard = context.enter(py, &native)?;
                     match dispatch_function_call(
                         &call.function_name,
@@ -818,13 +836,24 @@ impl PyAsyncFunctionSnapshot {
                         ctx.external_lookup.as_ref(),
                         &ctx.instances,
                     ) {
-                        CallResult::Sync(result) => Ok(ext_result_to_resume(result)),
+                        CallResult::Sync(result) => Ok(Dispatched::Done(ext_result_to_resume(result))),
+                        CallResult::Coroutine(coro) if call.allow_eager_await => {
+                            coroutine_future(coro, &ctx.instances).map(Dispatched::Eager)
+                        }
                         CallResult::Coroutine(coro) => {
                             spawn_coroutine_task(&mut join_set, call.call_id, coro, &ctx.instances)
-                                .map(|()| ResumeValue::Future)
+                                .map(|()| Dispatched::Done(ResumeValue::Future))
                         }
                     }
-                })
+                });
+                match dispatched {
+                    Ok(Dispatched::Done(value)) => Ok(value),
+                    Ok(Dispatched::Eager(future)) => {
+                        eager = true;
+                        Ok(ext_result_to_resume(future.await))
+                    }
+                    Err(err) => Err(err),
+                }
             };
             let value = match answer {
                 Ok(value) => value,
@@ -833,7 +862,19 @@ impl PyAsyncFunctionSnapshot {
                     return Err(err);
                 }
             };
-            drive_async(ctx, turn_fn(move |c, p| Box::pin(c.resume(value, p)))).await
+            drive_async(
+                ctx,
+                turn_fn(move |c, p| {
+                    Box::pin(async move {
+                        if eager {
+                            c.resume_futures(vec![(call.call_id, value)], p).await
+                        } else {
+                            c.resume(value, p).await
+                        }
+                    })
+                }),
+            )
+            .await
         })
     }
 
