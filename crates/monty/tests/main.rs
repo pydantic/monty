@@ -6,7 +6,7 @@ use monty_types::{CompileOptions, DictPairs, ExcType, MontyClassInstance, MontyC
 /// Test we can reuse exec without borrow checker issues.
 #[test]
 fn repeat_exec() {
-    let ex = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let r = ex.run_no_limits(vec![]).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
@@ -19,7 +19,7 @@ fn repeat_exec() {
 
 #[test]
 fn test_get_interned_string() {
-    let ex = MontyRun::new("'foobar'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("'foobar'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let r = ex.run_no_limits(vec![]).unwrap();
     let int_value: String = r.as_ref().try_into().unwrap();
@@ -34,7 +34,7 @@ fn test_get_interned_string() {
 /// to the host and must fail before the call escapes the formatter.
 #[test]
 fn str_format_os_attribute_reports_suspension_limit() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "import os\n'{0.environ}'.format(os)".to_owned(),
         "test.py",
         vec![],
@@ -68,7 +68,7 @@ fn class_instance_method_call_in_standard_mode_errors() {
         .into(),
     }));
 
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "point.sum()".to_owned(),
         "test.py",
         vec!["point".to_string()],
@@ -115,7 +115,7 @@ fn subscript_augassign_matmul_reports_not_supported() {
 #[test]
 fn multiline_preview_mixed_indentation_not_dedented() {
     let code = "if True:\n    class C:\n        x = (1 /\n\t0)";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let err = ex.run_no_limits(vec![]).unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -132,7 +132,7 @@ fn multiline_preview_mixed_indentation_not_dedented() {
 #[test]
 fn external_function_as_init_raises_not_implemented() {
     let code = "class Foo:\n    __init__ = ext_fn\n\nFoo()";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
@@ -159,7 +159,7 @@ fn external_function_as_init_raises_not_implemented() {
 #[test]
 fn external_function_in_reduce_raises_not_implemented() {
     let code = "import functools\n\nfunctools.reduce(ext_fn, [1, 2, 3])";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
@@ -187,7 +187,7 @@ fn external_function_in_reduce_raises_not_implemented() {
 #[test]
 fn external_function_in_next_raises_not_implemented() {
     let code = "class Foo:\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        return ext_fn()\n\nfor _x in Foo():\n    pass";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
@@ -220,7 +220,7 @@ def key_fn(x):
 
 sorted([1, 2, 3], key=key_fn)
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
@@ -257,7 +257,7 @@ except NotImplementedError:
 seen.append('after')
 seen
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
@@ -284,7 +284,7 @@ seen
 #[test]
 fn not_implemented_in_list_sort_key_names_sort() {
     let code = "[1, 2].sort(key=lambda x: ext_fn())";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
@@ -322,7 +322,7 @@ fn external_function_as_itertools_callable_raises_not_implemented() {
     ] {
         let expr = format!("list({call})");
         let code = format!("import itertools\n\n{expr}");
-        let ex = MontyRun::new(code, "test.py", vec!["ext_fn".to_owned()], CompileOptions::default()).unwrap();
+        let mut ex = MontyRun::new(code, "test.py", vec!["ext_fn".to_owned()], CompileOptions::default()).unwrap();
         let err = ex
             .run_no_limits(vec![MontyObject::Function {
                 name: "ext_fn".to_owned(),
@@ -346,7 +346,7 @@ fn external_function_as_itertools_callable_raises_not_implemented() {
 #[test]
 fn dynamic_type_with_bases_raises_type_error() {
     let code = "type('A', (int,), {})";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let err = ex.run_no_limits(vec![]).unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -363,7 +363,7 @@ fn dynamic_type_with_bases_raises_type_error() {
 #[test]
 fn dynamic_type_with_non_string_key_raises_type_error() {
     let code = "type('A', (), {1: 'one'})";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let err = ex.run_no_limits(vec![]).unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -443,7 +443,7 @@ class Evil:
 
 lst = [Evil(), 1, 2]
 lst";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let mut result = ex.run_no_limits(vec![]).unwrap();
     normalize_instance_uuids(&mut result);
     assert_eq!(
@@ -462,7 +462,7 @@ class Evil:
 
 d = {'k': Evil(), 'a': 1}
 d";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let mut result = ex.run_no_limits(vec![]).unwrap();
     normalize_instance_uuids(&mut result);
     assert_eq!(
@@ -489,7 +489,7 @@ class Evil:
 
 d = deque([Evil(), 1, 2])
 d";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let mut result = ex.run_no_limits(vec![]).unwrap();
     normalize_instance_uuids(&mut result);
     assert_eq!(

@@ -52,7 +52,7 @@ fn run_repr(expr: &str, clock: HostClock) -> String {
 #[test]
 fn the_host_clock_is_the_default() {
     let code = "from datetime import date, datetime\n(date.today().year, datetime.now().year)";
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let MontyObject::Tuple(years) = runner.run_no_limits(vec![]).unwrap() else {
         panic!("expected a tuple of years");
     };

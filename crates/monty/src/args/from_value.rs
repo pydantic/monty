@@ -143,14 +143,13 @@ pub(crate) trait FromValue: Sized {
     /// CPython does in the function body belongs in the body (see
     /// `NormForm::parse` in `unicodedata.rs`).
     fn extract_into(value: Value, slot: &mut Option<Self>, vm: &mut VM<'_>, ctx: ArgErrCtx) -> RunResult<()> {
-        // Snapshot the incoming type's arg-error name before `from_value`
-        // consumes the value — a `Type::Instance` cannot be named once the
-        // value is dropped. Only impls that constrain their input (an
-        // `EXPECTED_TYPE_NAME`) can report `WrongType`, so the lookup is
-        // skipped for accept-anything impls. The slice borrows only the
-        // interner, so it stays valid after the value is dropped.
-        let got_name =
-            Self::EXPECTED_TYPE_NAME.map(|_| value.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.interns));
+        // Snapshot the incoming type before `from_value` consumes the value —
+        // it is what the arg-error message names. Only impls that constrain
+        // their input (an `EXPECTED_TYPE_NAME`) can report `WrongType`, so the
+        // lookup is skipped for accept-anything impls. The name is resolved on
+        // the error path only: a `Type::Instance` names itself through the
+        // class object, which outlives the dropped value.
+        let got_type = Self::EXPECTED_TYPE_NAME.map(|_| value.py_type_heap(vm.heap));
         match Self::from_value(value, vm) {
             Ok(extracted) => {
                 *slot = Some(extracted);
@@ -161,7 +160,7 @@ pub(crate) trait FromValue: Sized {
                 // `WrongType` is only reported by impls with an
                 // `EXPECTED_TYPE_NAME`, so the snapshot is always present;
                 // "object" keeps that unreachable arm honest without a panic.
-                let got = got_name.unwrap_or(Cow::Borrowed("object"));
+                let got = got_type.map_or(Cow::Borrowed("object"), |ty| ty.cpython_arg_name(vm.heap, vm.interns));
                 Err(match (ctx, Self::EXPECTED_TYPE_NAME) {
                     (ArgErrCtx::BadArgPos { func_name, pos }, Some(expected)) => {
                         ExcType::type_error_bad_arg_pos(func_name, pos, expected, got)

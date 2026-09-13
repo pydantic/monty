@@ -12,7 +12,7 @@ use monty_types::{
 
 #[test]
 fn input_int() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -25,7 +25,7 @@ fn input_int() {
 
 #[test]
 fn input_int_arithmetic() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x + 1".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -38,7 +38,7 @@ fn input_int_arithmetic() {
 
 #[test]
 fn input_bool_true() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -51,7 +51,7 @@ fn input_bool_true() {
 
 #[test]
 fn input_bool_false() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -64,7 +64,7 @@ fn input_bool_false() {
 
 #[test]
 fn input_float() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -77,7 +77,7 @@ fn input_float() {
 
 #[test]
 fn input_none() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -90,7 +90,7 @@ fn input_none() {
 
 #[test]
 fn input_ellipsis() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -105,7 +105,7 @@ fn input_ellipsis() {
 
 #[test]
 fn input_string() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -120,7 +120,7 @@ fn input_string() {
 
 #[test]
 fn input_string_concat() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x + ' world'".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -135,7 +135,7 @@ fn input_string_concat() {
 
 #[test]
 fn input_bytes() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -148,7 +148,7 @@ fn input_bytes() {
 
 #[test]
 fn input_list() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -166,7 +166,7 @@ fn input_list() {
 
 #[test]
 fn input_list_append() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x.append(3)\nx".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -184,7 +184,7 @@ fn input_list_append() {
 
 #[test]
 fn input_tuple() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -207,7 +207,7 @@ fn input_tuple() {
 fn input_dict() {
     let map = vec![(MontyObject::String("a".to_string()), MontyObject::Int(1))];
 
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -227,7 +227,7 @@ fn input_dict() {
 fn input_dict_get() {
     let map = vec![(MontyObject::String("key".to_string()), MontyObject::Int(42))];
 
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x['key']".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -242,7 +242,7 @@ fn input_dict_get() {
 
 #[test]
 fn multiple_inputs_two() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x + y".to_owned(),
         "test.py",
         vec!["x".to_owned(), "y".to_owned()],
@@ -257,7 +257,7 @@ fn multiple_inputs_two() {
 
 #[test]
 fn multiple_inputs_three() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x + y + z".to_owned(),
         "test.py",
         vec!["x".to_owned(), "y".to_owned(), "z".to_owned()],
@@ -273,7 +273,7 @@ fn multiple_inputs_three() {
 #[test]
 fn multiple_inputs_mixed_types() {
     // Create a list from two inputs
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "[x, y]".to_owned(),
         "test.py",
         vec!["x".to_owned(), "y".to_owned()],
@@ -293,14 +293,14 @@ fn multiple_inputs_mixed_types() {
 
 #[test]
 fn no_inputs() {
-    let ex = MontyRun::new("42".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("42".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(42));
 }
 
 #[test]
 fn nested_list() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x[0][1]".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -318,7 +318,7 @@ fn nested_list() {
 
 #[test]
 fn empty_list_input() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "len(x)".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -331,7 +331,7 @@ fn empty_list_input() {
 
 #[test]
 fn empty_string_input() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "len(x)".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -346,7 +346,7 @@ fn empty_string_input() {
 
 #[test]
 fn input_exception() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -370,7 +370,7 @@ fn input_exception() {
 
 #[test]
 fn input_exception_no_arg() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -394,7 +394,7 @@ fn input_exception_no_arg() {
 
 #[test]
 fn input_exception_in_list() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x[0]".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -419,7 +419,7 @@ fn input_exception_in_list() {
 #[test]
 fn input_exception_raise() {
     // Test that an exception passed as input can be raised
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "raise x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -439,7 +439,7 @@ fn input_exception_raise() {
 
 #[test]
 fn invalid_input_repr() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -452,7 +452,7 @@ fn invalid_input_repr() {
 
 #[test]
 fn invalid_input_repr_nested_in_list() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -473,7 +473,7 @@ fn invalid_input_repr_nested_in_list() {
 
 /// Runs `x` bound to `input`, returning the conversion/execution result.
 fn run_input(input: MontyObject) -> Result<MontyObject, monty_types::MontyException> {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -633,7 +633,7 @@ fn type_object_missing_attr_uses_type_object_wording() {
     // Non-iterative `run` has no host to answer the AttrLookup suspension, so
     // it must raise the AttributeError locally — with CPython's type-object
     // wording, since the receiver is a class type.
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x.missing".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -656,7 +656,7 @@ x.data.append(x)
 x = None
 1
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -677,7 +677,7 @@ x.data.append(p)
 x = p = None
 1
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned(), "p".to_owned()],
@@ -711,7 +711,7 @@ def foo(x):
 
 foo(x * 2)
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -732,7 +732,7 @@ def add(x, y):
 
 add(x * 10, y * 100)
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned(), "y".to_owned()],
@@ -755,7 +755,7 @@ def foo(x):
 
 foo(100)
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned(), "y".to_owned()],
@@ -778,7 +778,7 @@ def double(x):
 
 double(10) + x
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -799,7 +799,7 @@ def foo(x=100):
 
 foo(x * 2)
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -820,7 +820,7 @@ def double(x):
 
 double(x)
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -840,7 +840,7 @@ def double(x):
 
 double(2)
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned()],

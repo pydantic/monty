@@ -12,7 +12,7 @@
 //! * 1000 to count(StaticStrings) - strings StaticStrings
 //! * 10_000+ - strings interned per executor
 
-use std::{slice::from_ref, str::FromStr};
+use std::{ops::Deref, rc::Rc, slice::from_ref, str::FromStr};
 
 use ahash::AHashMap;
 use num_bigint::BigInt;
@@ -1416,6 +1416,28 @@ impl FunctionId {
     }
 }
 
+/// An interned string held independently of the table it came from.
+///
+/// Reserved ids (single ASCII chars, [`StaticStrings`]) are `'static`; the
+/// rest share the table's `Rc`. Derefs to `str`.
+pub(crate) enum InternedStr {
+    /// A reserved-range string.
+    Static(&'static str),
+    /// A pooled string, shared with the table.
+    Shared(Rc<str>),
+}
+
+impl Deref for InternedStr {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        match self {
+            Self::Static(s) => s,
+            Self::Shared(s) => s,
+        }
+    }
+}
+
 /// Storage for interned strings, bytes, long integers and compiled functions.
 ///
 /// One table serves the whole pipeline: the parser interns names and literals
@@ -1451,10 +1473,12 @@ impl FunctionId {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(from = "InternsWire")]
 pub(crate) struct Interns {
-    strings: Vec<WithHash<String>>,
-    bytes: Vec<WithHash<Vec<u8>>>,
+    strings: Vec<WithHash<Rc<str>>>,
+    bytes: Vec<WithHash<Rc<[u8]>>>,
     long_ints: Vec<WithHash<BigInt>>,
-    functions: Vec<Function>,
+    /// Compiled functions by `FunctionId`, each shared (`Rc`) so a call can
+    /// hold the entry while the VM (and so this table) is borrowed mutably.
+    functions: Vec<Rc<Function>>,
     /// `String → StringId` reverse lookup for [`Self::get_string_id_by_name`].
     ///
     /// Built from `strings` at construction and after deserialization, so
@@ -1469,10 +1493,10 @@ pub(crate) struct Interns {
 /// Serialized form of [`Interns`]
 #[derive(serde::Deserialize)]
 struct InternsWire {
-    strings: Vec<WithHash<String>>,
-    bytes: Vec<WithHash<Vec<u8>>>,
+    strings: Vec<WithHash<Rc<str>>>,
+    bytes: Vec<WithHash<Rc<[u8]>>>,
     long_ints: Vec<WithHash<BigInt>>,
-    functions: Vec<Function>,
+    functions: Vec<Rc<Function>>,
 }
 
 impl From<Interns> for InternsWire {
@@ -1499,6 +1523,20 @@ impl From<InternsWire> for Interns {
     }
 }
 
+/// The text of a reserved-range id: a single ASCII char or a [`StaticStrings`] value.
+///
+/// # Panics
+///
+/// Panics if `id` is a pooled id or otherwise invalid.
+fn reserved_str(id: StringId) -> &'static str {
+    if let Some(ascii_str) = ASCII_STRS.get(id.index()) {
+        ascii_str
+    } else {
+        let static_str = StaticStrings::from_string_id(id).expect("Invalid static string ID");
+        static_str.into()
+    }
+}
+
 /// Builds the `String → StringId` reverse map from the `strings` vector.
 ///
 /// Used after deserialization. The
@@ -1506,7 +1544,7 @@ impl From<InternsWire> for Interns {
 /// reserved for ASCII single-character strings and the [`StaticStrings`]
 /// table — those are handled by the cheap branches at the top of
 /// [`Interns::get_string_id_by_name`] and never enter this map.
-fn build_string_id_by_name(strings: &[WithHash<String>]) -> AHashMap<String, StringId> {
+fn build_string_id_by_name(strings: &[WithHash<Rc<str>>]) -> AHashMap<String, StringId> {
     strings
         .iter()
         .enumerate()
@@ -1515,7 +1553,7 @@ fn build_string_id_by_name(strings: &[WithHash<String>]) -> AHashMap<String, Str
                 u32::try_from(INTERN_STRING_ID_OFFSET + index)
                     .expect("StringId overflow while building reverse interns map"),
             );
-            (entry.value().clone(), id)
+            (entry.value().to_string(), id)
         })
         .collect()
 }
@@ -1573,7 +1611,7 @@ impl Interns {
 
     /// Appends a compiled function and returns its index, which is its `FunctionId`.
     pub(crate) fn push_function(&mut self, function: Function) -> usize {
-        self.functions.push(function);
+        self.functions.push(Rc::new(function));
         self.functions.len() - 1
     }
 
@@ -1596,13 +1634,24 @@ impl Interns {
     /// Panics if the `StringId` is invalid - not from this table, an ascii char or a `StaticStrings`.
     #[inline]
     pub fn get_str(&self, id: StringId) -> &str {
-        if let Some(ascii_str) = ASCII_STRS.get(id.index()) {
-            ascii_str
-        } else if let Some(intern_index) = id.index().checked_sub(INTERN_STRING_ID_OFFSET) {
+        if let Some(intern_index) = id.index().checked_sub(INTERN_STRING_ID_OFFSET) {
             self.strings[intern_index].value()
         } else {
-            let static_str = StaticStrings::from_string_id(id).expect("Invalid static string ID");
-            static_str.into()
+            reserved_str(id)
+        }
+    }
+
+    /// Looks up a string by its `StringId` as an owned handle, for callers that
+    /// need the text while the VM (and so this table) is borrowed mutably.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `StringId` is invalid.
+    pub(crate) fn get_str_handle(&self, id: StringId) -> InternedStr {
+        if let Some(intern_index) = id.index().checked_sub(INTERN_STRING_ID_OFFSET) {
+            InternedStr::Shared(Rc::clone(self.strings[intern_index].value()))
+        } else {
+            InternedStr::Static(reserved_str(id))
         }
     }
 
@@ -1614,6 +1663,16 @@ impl Interns {
     #[inline]
     pub fn get_bytes(&self, id: BytesId) -> &[u8] {
         self.bytes[id.index()].value()
+    }
+
+    /// Looks up bytes by their `BytesId` as a shared handle; see
+    /// [`get_str_handle`](Self::get_str_handle).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `BytesId` is invalid.
+    pub(crate) fn get_bytes_handle(&self, id: BytesId) -> Rc<[u8]> {
+        Rc::clone(self.bytes[id.index()].value())
     }
 
     /// Looks up a long integer by its `LongIntId`.
@@ -1636,6 +1695,17 @@ impl Interns {
         self.functions.get(id.index()).expect("Function not found")
     }
 
+    /// Shared handle to a function, for call paths that must keep the entry
+    /// while mutating the VM (which holds this table `&mut`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `FunctionId` is invalid.
+    #[inline]
+    pub(crate) fn function(&self, id: FunctionId) -> Rc<Function> {
+        Rc::clone(self.functions.get(id.index()).expect("Function not found"))
+    }
+
     /// Injects `fault` into the named function's metadata.
     #[cfg(feature = "test-hooks")]
     pub(crate) fn corrupt_function_metadata_for_tests(&mut self, name: &str, fault: FunctionMetadataFault) {
@@ -1644,7 +1714,7 @@ impl Interns {
             .iter()
             .position(|function| self.get_str(function.name.name_id) == name)
             .unwrap_or_else(|| panic!("test function '{name}' not found"));
-        self.functions[index].corrupt_metadata_for_tests(fault);
+        Rc::make_mut(&mut self.functions[index]).corrupt_metadata_for_tests(fault);
     }
 
     /// Returns the Python hash for an interned string.

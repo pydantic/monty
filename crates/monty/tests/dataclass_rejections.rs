@@ -11,7 +11,7 @@ use monty_types::CompileOptions;
 
 /// Runs `code` and returns the exception message, panicking if it succeeds.
 fn expect_error(code: &str) -> String {
-    let run =
+    let mut run =
         MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("code should compile");
     match run.run_no_limits(vec![]) {
         Ok(value) => panic!("expected an exception, got {value:?}"),
@@ -97,7 +97,7 @@ class F:
 /// Monty's match is purely textual and therefore stable.
 #[test]
 fn quoted_classvar_is_excluded() {
-    let run = MontyRun::new(
+    let mut run = MontyRun::new(
         r#"
 from dataclasses import dataclass
 from typing import ClassVar
@@ -124,7 +124,7 @@ repr(C(7))
 /// matches CPython's precedence for it.
 #[test]
 fn user_repr_in_a_dataclass_body_is_allowed() {
-    let run = MontyRun::new(
+    let mut run = MontyRun::new(
         r"
 from dataclasses import dataclass
 

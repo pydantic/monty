@@ -4,6 +4,8 @@
 //! bytecode instructions, a constant pool, source location information for tracebacks,
 //! and an exception handler table.
 
+use std::rc::Rc;
+
 use crate::{intern::StringId, parse::CodeRange, value::Value};
 
 /// Compiled bytecode for a function or module.
@@ -12,12 +14,13 @@ use crate::{intern::StringId, parse::CodeRange, value::Value};
 /// Each function has its own Code object; module-level code also gets one.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Code {
-    /// Raw bytecode instructions as a byte vector.
+    /// Raw bytecode instructions.
     ///
     /// Opcodes are 1 byte each, followed by their operands (0-3 bytes depending
     /// on the instruction). The variable-width encoding gives better cache locality
-    /// than fixed-width alternatives.
-    bytecode: Vec<u8>,
+    /// than fixed-width alternatives. Shared (`Rc`) so a call frame can hoist
+    /// the instruction stream and reach it with one load per fetch.
+    bytecode: Rc<[u8]>,
 
     /// Constant pool for this code object.
     ///
@@ -85,7 +88,7 @@ impl Code {
         local_names: Vec<StringId>,
     ) -> Self {
         Self {
-            bytecode,
+            bytecode: Rc::from(bytecode),
             constants,
             location_table,
             exception_table,
@@ -95,10 +98,16 @@ impl Code {
         }
     }
 
-    /// Returns the raw bytecode bytes.
-    #[must_use]
-    pub fn bytecode(&self) -> &[u8] {
+    /// Returns the raw bytecode bytes; the VM reads them through a frame's
+    /// hoisted [`shared_bytecode`](Self::shared_bytecode) instead.
+    #[cfg(test)]
+    pub(crate) fn bytecode(&self) -> &[u8] {
         &self.bytecode
+    }
+
+    /// A shared handle to the instruction stream, for a frame to hoist.
+    pub(crate) fn shared_bytecode(&self) -> Rc<[u8]> {
+        Rc::clone(&self.bytecode)
     }
 
     /// Returns the constant pool.

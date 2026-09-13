@@ -45,7 +45,7 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
 fn monty_run_round_trip_simple() {
     // Create a runner, round-trip it, and verify it produces the same result
     let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let loaded = round_trip(&runner);
+    let mut loaded = round_trip(&runner);
 
     let result = loaded.run_no_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(3));
@@ -61,7 +61,7 @@ fn monty_run_round_trip_with_inputs() {
         CompileOptions::default(),
     )
     .unwrap();
-    let loaded = round_trip(&runner);
+    let mut loaded = round_trip(&runner);
 
     let result = loaded
         .run_no_limits(vec![MontyObject::Int(10), MontyObject::Int(5)])
@@ -74,7 +74,7 @@ fn monty_run_round_trip_preserves_code() {
     // Verify the code string is preserved
     let code = "def foo(x):\n    return x * 2\nfoo(21)".to_owned();
     let runner = MontyRun::new(code.clone(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let loaded = round_trip(&runner);
+    let mut loaded = round_trip(&runner);
 
     assert_eq!(loaded.code(), code);
     let result = loaded.run_no_limits(vec![]).unwrap();
@@ -98,7 +98,7 @@ result
     .to_owned();
 
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-    let loaded = round_trip(&runner);
+    let mut loaded = round_trip(&runner);
 
     let result = loaded.run_no_limits(vec![]).unwrap();
     // First 10 Fibonacci numbers: 0, 1, 1, 2, 3, 5, 8, 13, 21, 34
@@ -122,7 +122,7 @@ result
 fn monty_run_round_trip_comprehension_closure() {
     let code = "funcs = [lambda: item for item in ['first', 'second']]\nfuncs[0]()".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-    let loaded = round_trip(&runner);
+    let mut loaded = round_trip(&runner);
 
     assert_eq!(
         loaded.run_no_limits(vec![]).unwrap(),
@@ -140,7 +140,7 @@ fn monty_run_round_trip_multiple_runs() {
         CompileOptions::default(),
     )
     .unwrap();
-    let loaded = round_trip(&runner);
+    let mut loaded = round_trip(&runner);
 
     assert_eq!(
         loaded.run_no_limits(vec![MontyObject::Int(5)]).unwrap(),

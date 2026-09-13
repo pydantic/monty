@@ -240,7 +240,7 @@ impl From<bool> for Value {
 impl<'h> PyTrait<'h> for Value {
     /// Forwards to the inherent [`Value::py_type_name`], so generic `PyTrait`
     /// callers also see the real class name of a named tuple or host instance.
-    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
+    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'static, str> {
         Self::py_type_name(self, vm)
     }
 
@@ -329,7 +329,7 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
-        let interns = vm.interns;
+        let interns = &*vm.interns;
         // py_cmp handles numbers, strings, bytes, tuples, and lists.
         // Recursion depth tracking for tuples/lists is handled by their iterators.
         //
@@ -466,7 +466,6 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'_>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        let interns = vm.interns;
         match self {
             Self::Undefined => Ok(f.write_str("Undefined")?),
             Self::Ellipsis => Ok(f.write_str("Ellipsis")?),
@@ -478,7 +477,7 @@ impl<'h> PyTrait<'h> for Value {
             // `fmt`/`pad_integral` path and its repeated `RawVec` reallocation.
             Self::Int(v) => Ok(f.write_str(itoa::Buffer::new().format(*v))?),
             Self::InternLongInt(long_int_id) => {
-                let bi = interns.get_long_int(*long_int_id);
+                let bi = vm.interns.get_long_int(*long_int_id);
                 check_bits_str_digits_limit(bi.bits())?;
                 Ok(write!(f, "{bi}")?)
             }
@@ -492,12 +491,13 @@ impl<'h> PyTrait<'h> for Value {
             Self::DefFunction(f_id) => {
                 let py_id = self.id().into_value(vm.heap);
                 defer_drop!(py_id, vm);
-                Ok(interns
+                Ok(vm
+                    .interns
                     .get_function(*f_id)
-                    .py_repr_fmt(f, interns, PythonIdDisplay::new(py_id, vm.heap))?)
+                    .py_repr_fmt(f, vm.interns, PythonIdDisplay::new(py_id, vm.heap))?)
             }
-            Self::InternString(string_id) => Ok(string_repr_fmt(interns.get_str(*string_id), f)?),
-            Self::InternBytes(bytes_id) => Ok(bytes_repr_fmt(interns.get_bytes(*bytes_id), f)?),
+            Self::InternString(string_id) => Ok(string_repr_fmt(vm.interns.get_str(*string_id), f)?),
+            Self::InternBytes(bytes_id) => Ok(bytes_repr_fmt(vm.interns.get_bytes(*bytes_id), f)?),
             Self::Marker(m) => Ok(m.py_repr_fmt(f)?),
             Self::Property(p) => Ok(write!(f, "<property {p:?}>")?),
             Self::Ref(id) => {
@@ -648,7 +648,7 @@ impl<'h> PyTrait<'h> for Value {
 
     /// One-sided implementation of Python `+`.
     fn py_add_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        let interns = vm.interns;
+        let interns = &*vm.interns;
         match (self, other) {
             // Int + Int with overflow detection
             (Self::Int(a), Self::Int(b)) => {
@@ -1251,7 +1251,6 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_getitem(&self, key: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
-        let interns = vm.interns;
         match self {
             // `heap_subscript` owns the mutating defaultdict-miss path outside
             // the read-only `PyTrait::py_getitem` interface.
@@ -1261,7 +1260,7 @@ impl<'h> PyTrait<'h> for Value {
                 if let Self::Ref(key_id) = key
                     && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
                 {
-                    let s = interns.get_str(*string_id);
+                    let s = vm.interns.get_str(*string_id);
                     let result_str: Box<str> = slice_collect_iterator(vm, slice_obj, s.chars(), |c| c)?;
                     return Ok(allocate_string(result_str, vm.heap));
                 }
@@ -1271,7 +1270,7 @@ impl<'h> PyTrait<'h> for Value {
                 // user `__index__` included.
                 let index = key.as_index(vm, Type::Str)?;
 
-                let s = interns.get_str(*string_id);
+                let s = vm.interns.get_str(*string_id);
                 let c = get_char_at_index(s, index).ok_or_else(ExcType::str_index_error)?;
                 Ok(allocate_char(c, vm.heap))
             }
@@ -1280,7 +1279,7 @@ impl<'h> PyTrait<'h> for Value {
                 if let Self::Ref(key_id) = key
                     && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
                 {
-                    let bytes = interns.get_bytes(*bytes_id);
+                    let bytes = vm.interns.get_bytes(*bytes_id);
                     let result_bytes = slice_collect_iterator(vm, slice_obj, bytes.iter(), |b| *b)?;
                     let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(result_bytes)));
                     return Ok(Self::Ref(heap_id));
@@ -1289,7 +1288,7 @@ impl<'h> PyTrait<'h> for Value {
                 // Shared with the heap-`bytes` path, as for `InternString` above.
                 let index = key.as_index(vm, Type::Bytes)?;
 
-                let bytes = interns.get_bytes(*bytes_id);
+                let bytes = vm.interns.get_bytes(*bytes_id);
                 let byte = get_byte_at_index(bytes, index).ok_or_else(ExcType::bytes_index_error)?;
                 Ok(Self::Int(i64::from(byte)))
             }
@@ -1398,21 +1397,25 @@ impl Value {
     /// reprs — user-class instances, named tuples, and host class instances
     /// render as their real class name rather than a generic placeholder.
     ///
-    /// The result borrows only `vm.interns` (never the heap), so it can be
-    /// captured before `drop_with` cleanup and formatted after.
+    /// The result borrows nothing, so it can be captured before `drop_with`
+    /// cleanup and formatted after; only dynamic class names allocate.
     #[must_use]
-    pub(crate) fn py_type_name<'h>(&self, vm: &VM<'h>) -> Cow<'h, str> {
-        self.dynamic_class_name(vm.heap, vm.interns)
-            .unwrap_or_else(|| self.py_type(vm).name(vm.heap, vm.interns))
+    pub(crate) fn py_type_name(&self, vm: &VM<'_>) -> Cow<'static, str> {
+        self.dynamic_class_name(vm.heap, vm.interns).map_or_else(
+            || self.py_type(vm).name(vm.heap, vm.interns),
+            |name| Cow::Owned(name.into_owned()),
+        )
     }
 
     /// [`py_type_name`](Self::py_type_name) for contexts without a `&VM` —
     /// notably the macro-generated `from_args` bodies, which are passed
     /// `heap` + `interns` instead (mirrors [`py_type_heap`](Self::py_type_heap)).
     #[must_use]
-    pub(crate) fn py_type_name_heap<'i>(&self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
-        self.dynamic_class_name(heap, interns)
-            .unwrap_or_else(|| self.py_type_heap(heap).name(heap, interns))
+    pub(crate) fn py_type_name_heap(&self, heap: &Heap, interns: &Interns) -> Cow<'static, str> {
+        self.dynamic_class_name(heap, interns).map_or_else(
+            || self.py_type_heap(heap).name(heap, interns),
+            |name| Cow::Owned(name.into_owned()),
+        )
     }
 
     /// Class name of a named tuple or host class instance, if this value is
@@ -2656,7 +2659,10 @@ mod tests {
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::{bytecode::Code, heap::HeapReader, run::VmEnv};
+    use crate::{
+        heap::HeapReader,
+        run::{Program, SessionTables},
+    };
 
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///
@@ -2669,11 +2675,6 @@ mod tests {
         (heap, heap_id)
     }
 
-    /// Creates a minimal Interns for testing.
-    fn create_test_interns() -> Interns {
-        Interns::default()
-    }
-
     /// Tests that `as_index()` correctly handles a LongInt containing an i64-fitting value.
     ///
     /// This tests a defensive code path that's normally unreachable because
@@ -2684,17 +2685,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(42));
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_index(&mut vm, Type::List)
         });
         assert_eq!(result.unwrap(), 42);
@@ -2707,17 +2701,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(-100));
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_index(&mut vm, Type::List)
         });
         assert_eq!(result.unwrap(), -100);
@@ -2732,17 +2719,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_index(&mut vm, Type::List)
         });
         assert!(result.is_err());
@@ -2757,17 +2737,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(12345));
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_int(&mut vm)
         });
         assert_eq!(result.unwrap(), 12345);
@@ -2781,17 +2754,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_int(&mut vm)
         });
         assert!(result.is_err());
@@ -2804,17 +2770,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(i64::MAX));
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_index(&mut vm, Type::List)
         });
         assert_eq!(result.unwrap(), i64::MAX);
@@ -2827,17 +2786,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(i64::MIN));
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_index(&mut vm, Type::List)
         });
         assert_eq!(result.unwrap(), i64::MIN);
@@ -2851,17 +2803,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_index(&mut vm, Type::List)
         });
         assert!(result.is_err());
@@ -2875,17 +2820,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_index(&mut vm, Type::List)
         });
         assert!(result.is_err());

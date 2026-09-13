@@ -313,7 +313,7 @@ impl MontyObjectExt for MontyObject {
         };
         let vm = &mut *guard;
 
-        let interns = vm.interns;
+        let interns = &*vm.interns;
         match object {
             Value::Undefined => panic!("Undefined found while converting to MontyObject"),
             Value::Ellipsis => Self::Ellipsis,

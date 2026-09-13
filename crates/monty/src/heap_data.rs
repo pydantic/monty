@@ -546,7 +546,7 @@ pub(crate) fn heap_subscript<'h>(value: HeapReadOutput<'h>, key: &Value, vm: &mu
 
 impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     /// Forwards so host class instances and named tuples name their real class.
-    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
+    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'static, str> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_type_name(vm),

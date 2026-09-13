@@ -10,7 +10,7 @@ use monty_types::{CompileOptions, MontyObject, NameLookupResult, PrintWriter, Re
 /// Builds two `MontyObject::Function` inputs with the same `__name__` ("foo")
 /// and runs `code` against them as inputs `a` and `b`.
 fn run_with_same_named_callable_inputs(code: &str) -> MontyObject {
-    let runner = MontyRun::new(
+    let mut runner = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["a".to_owned(), "b".to_owned()],
@@ -68,7 +68,7 @@ fn same_named_callables_share_dict_key() {
 /// Functions with different names are also distinct objects.
 #[test]
 fn different_named_callables_remain_distinct() {
-    let runner = MontyRun::new(
+    let mut runner = MontyRun::new(
         "(a is b, a == b, id(a) == id(b))".to_owned(),
         "test.py",
         vec!["a".to_owned(), "b".to_owned()],
@@ -101,7 +101,7 @@ fn different_named_callables_remain_distinct() {
 /// also appears in source.
 #[test]
 fn callable_exports_as_function_object() {
-    let runner = MontyRun::new(
+    let mut runner = MontyRun::new(
         "foo = None\nx".to_owned(),
         "test.py",
         vec!["x".to_owned()],

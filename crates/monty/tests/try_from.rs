@@ -9,7 +9,7 @@ use monty_types::CompileOptions;
 
 #[test]
 fn try_from_ok_int_to_i64() {
-    let ex = MontyRun::new("42".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("42".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let value: i64 = (&result).try_into().expect("conversion should succeed");
     assert_eq!(value, 42);
@@ -17,7 +17,7 @@ fn try_from_ok_int_to_i64() {
 
 #[test]
 fn try_from_ok_zero_to_i64() {
-    let ex = MontyRun::new("0".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("0".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let value: i64 = (&result).try_into().expect("conversion should succeed");
     assert_eq!(value, 0);
@@ -26,7 +26,7 @@ fn try_from_ok_zero_to_i64() {
 #[test]
 #[expect(clippy::float_cmp)]
 fn try_from_ok_float_to_f64() {
-    let ex = MontyRun::new("2.5".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("2.5".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let value: f64 = (&result).try_into().expect("conversion should succeed");
     assert_eq!(value, 2.5);
@@ -35,7 +35,7 @@ fn try_from_ok_float_to_f64() {
 #[test]
 #[expect(clippy::float_cmp)]
 fn try_from_ok_int_to_f64() {
-    let ex = MontyRun::new("42".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("42".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let value: f64 = (&result).try_into().expect("conversion should succeed");
     assert_eq!(value, 42.0);
@@ -43,7 +43,7 @@ fn try_from_ok_int_to_f64() {
 
 #[test]
 fn try_from_ok_string_to_string() {
-    let ex = MontyRun::new("'hello'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("'hello'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let value: String = (&result).try_into().expect("conversion should succeed");
     assert_eq!(value, "hello".to_string());
@@ -51,7 +51,7 @@ fn try_from_ok_string_to_string() {
 
 #[test]
 fn try_from_ok_empty_string_to_string() {
-    let ex = MontyRun::new("''".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("''".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let value: String = (&result).try_into().expect("conversion should succeed");
     assert_eq!(value, String::new());
@@ -59,7 +59,7 @@ fn try_from_ok_empty_string_to_string() {
 
 #[test]
 fn try_from_ok_multiline_string_to_string() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "'hello\\nworld'".to_owned(),
         "test.py",
         vec![],
@@ -73,7 +73,7 @@ fn try_from_ok_multiline_string_to_string() {
 
 #[test]
 fn try_from_ok_bool_true_to_bool() {
-    let ex = MontyRun::new("True".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("True".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let value: bool = (&result).try_into().expect("conversion should succeed");
     assert!(value);
@@ -81,7 +81,7 @@ fn try_from_ok_bool_true_to_bool() {
 
 #[test]
 fn try_from_ok_bool_false_to_bool() {
-    let ex = MontyRun::new("False".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("False".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let value: bool = (&result).try_into().expect("conversion should succeed");
     assert!(!value);
@@ -95,7 +95,7 @@ fn try_from_ok_bool_false_to_bool() {
 
 #[test]
 fn try_from_err_string_to_i64() {
-    let ex = MontyRun::new("'hello'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("'hello'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let err = TryInto::<i64>::try_into(&result).expect_err("conversion should fail");
     assert_eq!(err.to_string(), "expected int, got str");
@@ -103,7 +103,7 @@ fn try_from_err_string_to_i64() {
 
 #[test]
 fn try_from_err_float_to_i64() {
-    let ex = MontyRun::new("2.5".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("2.5".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let err = TryInto::<i64>::try_into(&result).expect_err("conversion should fail");
     assert_eq!(err.to_string(), "expected int, got float");
@@ -111,7 +111,7 @@ fn try_from_err_float_to_i64() {
 
 #[test]
 fn try_from_err_none_to_i64() {
-    let ex = MontyRun::new("None".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("None".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let err = TryInto::<i64>::try_into(&result).expect_err("conversion should fail");
     assert_eq!(err.to_string(), "expected int, got NoneType");
@@ -119,7 +119,7 @@ fn try_from_err_none_to_i64() {
 
 #[test]
 fn try_from_err_list_to_i64() {
-    let ex = MontyRun::new("[1, 2, 3]".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("[1, 2, 3]".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let err = TryInto::<i64>::try_into(&result).expect_err("conversion should fail");
     assert_eq!(err.to_string(), "expected int, got list");
@@ -127,7 +127,7 @@ fn try_from_err_list_to_i64() {
 
 #[test]
 fn try_from_err_int_to_string() {
-    let ex = MontyRun::new("42".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("42".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let err = TryInto::<String>::try_into(&result).expect_err("conversion should fail");
     assert_eq!(err.to_string(), "expected str, got int");
@@ -135,7 +135,7 @@ fn try_from_err_int_to_string() {
 
 #[test]
 fn try_from_err_none_to_string() {
-    let ex = MontyRun::new("None".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("None".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let err = TryInto::<String>::try_into(&result).expect_err("conversion should fail");
     assert_eq!(err.to_string(), "expected str, got NoneType");
@@ -143,7 +143,7 @@ fn try_from_err_none_to_string() {
 
 #[test]
 fn try_from_err_list_to_string() {
-    let ex = MontyRun::new("[1, 2]".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("[1, 2]".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let err = TryInto::<String>::try_into(&result).expect_err("conversion should fail");
     assert_eq!(err.to_string(), "expected str, got list");
@@ -151,7 +151,7 @@ fn try_from_err_list_to_string() {
 
 #[test]
 fn try_from_err_int_to_bool() {
-    let ex = MontyRun::new("1".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("1".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let err = TryInto::<bool>::try_into(&result).expect_err("conversion should fail");
     assert_eq!(err.to_string(), "expected bool, got int");
@@ -159,7 +159,7 @@ fn try_from_err_int_to_bool() {
 
 #[test]
 fn try_from_err_string_to_bool() {
-    let ex = MontyRun::new("'true'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("'true'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let err = TryInto::<bool>::try_into(&result).expect_err("conversion should fail");
     assert_eq!(err.to_string(), "expected bool, got str");
@@ -167,7 +167,7 @@ fn try_from_err_string_to_bool() {
 
 #[test]
 fn try_from_err_none_to_bool() {
-    let ex = MontyRun::new("None".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("None".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let err = TryInto::<bool>::try_into(&result).expect_err("conversion should fail");
     assert_eq!(err.to_string(), "expected bool, got NoneType");

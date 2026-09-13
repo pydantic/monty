@@ -15,7 +15,7 @@ mod format;
 mod recursion;
 mod scheduler;
 
-use std::{borrow::Cow, mem};
+use std::{borrow::Cow, mem, rc::Rc};
 
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
@@ -37,10 +37,11 @@ use crate::{
     heap_data::{CellValue, Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
+    name_map::NameMap,
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect, resolve_call_paths},
     parse::CodeRange,
-    run::VmEnv,
+    run::{Program, SessionTables, VmEnv},
     types::{
         Dict, LongInt, PyTrait,
         file::{apply_buffer_store, apply_open_name, apply_write_position},
@@ -346,14 +347,16 @@ impl<C: ContainsHeap> DropWithContext<C> for FrameExit {
 /// Each frame represents one level in the call stack and owns its own
 /// instruction pointer. This design avoids sync bugs on call/return.
 #[derive(Debug)]
-pub struct CallFrame<'code> {
-    /// Bytecode being executed.
-    code: &'code Code,
+pub struct CallFrame {
+    /// Bytecode being executed, shared with the function (or program) that
+    /// owns it. Shared rather than borrowed so the VM can hold the intern
+    /// table mutably while frames run code from it.
+    code: Rc<Code>,
 
-    /// `code.bytecode()`, hoisted into the frame so the dispatch loop reaches
-    /// the instruction stream with one load instead of chasing
-    /// `frame -> Code -> Vec` on every opcode and operand fetch.
-    bytecode: &'code [u8],
+    /// `code`'s instruction stream, hoisted into the frame so the dispatch
+    /// loop reaches it with one load instead of chasing `frame -> Code -> bytes`
+    /// on every opcode and operand fetch.
+    bytecode: Rc<[u8]>,
 
     /// Instruction pointer within this frame's bytecode.
     ip: usize,
@@ -400,15 +403,15 @@ pub struct CallFrame<'code> {
     is_initializer: bool,
 }
 
-impl<'code> CallFrame<'code> {
+impl CallFrame {
     /// Creates a new call frame for module-level code.
     ///
     /// Module frames have `locals_count = 0` because module-level variables
     /// are stored in the VM's `globals` vec, not in the stack.
-    pub fn new_module(code: &'code Code, exception_stack_base: usize) -> Self {
+    pub fn new_module(code: Rc<Code>, exception_stack_base: usize) -> Self {
         Self {
+            bytecode: code.shared_bytecode(),
             code,
-            bytecode: code.bytecode(),
             ip: 0,
             stack_base: 0,
             locals_count: 0,
@@ -422,7 +425,7 @@ impl<'code> CallFrame<'code> {
     }
 
     /// Creates a non-executing frame for a VM with no active Python task.
-    fn new_parked(code: &'code Code) -> Self {
+    fn new_parked(code: Rc<Code>) -> Self {
         let mut frame = Self::new_module(code, 0);
         frame.is_parked = true;
         frame
@@ -437,7 +440,7 @@ impl<'code> CallFrame<'code> {
     /// its exit, so they share the same address space as ordinary operand
     /// values (no separate per-frame region).
     pub fn new_function(
-        code: &'code Code,
+        code: Rc<Code>,
         stack_base: usize,
         locals_count: u16,
         exception_stack_base: usize,
@@ -445,8 +448,8 @@ impl<'code> CallFrame<'code> {
         call_offset: Option<u32>,
     ) -> Self {
         Self {
+            bytecode: code.shared_bytecode(),
             code,
-            bytecode: code.bytecode(),
             ip: 0,
             stack_base,
             locals_count,
@@ -460,7 +463,7 @@ impl<'code> CallFrame<'code> {
     }
 }
 
-impl CallFrame<'_> {
+impl CallFrame {
     /// Fetches `N` bytes from bytecode at the current IP, advancing IP by `N`.
     ///
     /// Performs a single bounds check covering all `N` bytes. All typed fetch
@@ -573,7 +576,7 @@ pub struct SerializedFrame {
     is_initializer: bool,
 }
 
-impl CallFrame<'_> {
+impl CallFrame {
     /// Converts this frame to a serializable representation.
     fn serialize(&self) -> SerializedFrame {
         assert!(!self.is_parked, "cannot serialize a parked frame");
@@ -708,16 +711,21 @@ pub struct VM<'h> {
     pub(crate) globals: Vec<Value>,
 
     /// Frame currently executing, or a placeholder while no task is active.
-    current_frame: CallFrame<'h>,
+    current_frame: CallFrame,
 
     /// Caller frames suspended below `current_frame`.
-    suspended_frames: Vec<CallFrame<'h>>,
+    suspended_frames: Vec<CallFrame>,
 
     /// Heap for reference-counted objects.
     pub(crate) heap: &'h mut HeapReader<'h>,
 
-    /// Interned strings/bytes.
-    pub(crate) interns: &'h Interns,
+    /// Interned strings, bytes and compiled functions. Held mutably so code
+    /// compiled at runtime (`eval()` / `exec()`) can be appended mid-run.
+    pub(crate) interns: &'h mut Interns,
+
+    /// Module-level global names, slot by slot; extended alongside
+    /// [`globals`](Self::globals) when runtime-compiled code binds a new name.
+    pub(crate) global_names: &'h mut NameMap,
 
     /// Print output writer, borrowed so callers retain access to collected output.
     pub(crate) print_writer: PrintWriter<'h>,
@@ -747,7 +755,7 @@ pub struct VM<'h> {
     ///
     /// Stored here because the main task's frames have `function_id: None` and
     /// need a reference to the module code when being restored after task switching.
-    module_code: Option<&'h Code>,
+    module_code: Option<Rc<Code>>,
 
     /// Bytecode IP of the most recent `LoadGlobalCallable` that
     /// pushed an `ExtFunction` for an undefined name.
@@ -820,41 +828,26 @@ pub struct VM<'h> {
 }
 
 impl<'h> VM<'h> {
-    /// Creates a new VM with the given runtime context.
+    /// Creates a new VM ready to run `program`'s module code.
+    ///
+    /// `tables` is borrowed mutably for the VM's lifetime because runtime
+    /// compilation extends it; `program` is only read.
     pub fn new(
         globals: Vec<Value>,
-        code: &'h Code,
+        tables: &'h mut SessionTables,
+        program: &'h Program,
         heap: &'h mut HeapReader<'h>,
-        interns: &'h Interns,
         print_writer: PrintWriter<'h>,
-        env: VmEnv<'h>,
     ) -> Self {
-        Self::new_with_frame(
-            globals,
-            CallFrame::new_module(code, 0),
-            heap,
-            interns,
-            print_writer,
-            env,
-        )
-    }
-
-    /// Creates a VM from its initial frame and runtime context.
-    fn new_with_frame(
-        globals: Vec<Value>,
-        current_frame: CallFrame<'h>,
-        heap: &'h mut HeapReader<'h>,
-        interns: &'h Interns,
-        print_writer: PrintWriter<'h>,
-        env: VmEnv<'h>,
-    ) -> Self {
+        let SessionTables { global_names, interns } = tables;
         Self {
             stack: Vec::with_capacity(64),
             globals,
-            current_frame,
+            current_frame: CallFrame::new_module(Rc::clone(&program.module_code), 0),
             suspended_frames: Vec::with_capacity(16),
             heap,
             interns,
+            global_names,
             print_writer,
             exception_stack: Vec::new(),
             instruction_ip: 0,
@@ -868,43 +861,36 @@ impl<'h> VM<'h> {
             namespace_scratch: Vec::new(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
-            env,
+            env: program.vm_env(),
         }
     }
 
     /// Reconstructs a VM from a snapshot.
     ///
-    /// The heap must already be deserialized. `FunctionId` values
-    /// in frames are used to look up pre-compiled `Code` objects from the `Interns`.
-    /// The `module_code` is used for frames with `function_id = None`.
-    ///
-    /// # Arguments
-    /// * `snapshot` - The VM snapshot to restore
-    /// * `module_code` - Compiled module code (for frames with function_id = None)
-    /// * `heap` - The deserialized heap
-    /// * `interns` - Interns for looking up function code
-    /// * `print_writer` - Writer for print output
-    /// * `env` - The executor's environment; the snapshot's working directory overrides its `cwd`
+    /// The heap must already be deserialized. `FunctionId` values in frames
+    /// are used to look up pre-compiled `Code` objects from the intern table;
+    /// `program.module_code` serves frames with `function_id = None`. The
+    /// snapshot's working directory overrides the program's.
     pub fn restore(
         snapshot: VMSnapshot,
-        module_code: &'h Code,
+        tables: &'h mut SessionTables,
+        program: &'h Program,
         heap: &'h mut HeapReader<'h>,
-        interns: &'h Interns,
         print_writer: PrintWriter<'h>,
-        env: VmEnv<'h>,
     ) -> Self {
+        let SessionTables { global_names, interns } = tables;
         // Reconstruct call frames from serialized form
-        let frames: Vec<CallFrame<'_>> = snapshot
+        let frames: Vec<CallFrame> = snapshot
             .frames
             .into_iter()
             .map(|sf| {
                 let code = match sf.function_id {
-                    Some(func_id) => &interns.get_function(func_id).code,
-                    None => module_code,
+                    Some(func_id) => Rc::clone(&interns.get_function(func_id).code),
+                    None => Rc::clone(&program.module_code),
                 };
                 CallFrame {
+                    bytecode: code.shared_bytecode(),
                     code,
-                    bytecode: code.bytecode(),
                     ip: sf.ip,
                     stack_base: sf.stack_base,
                     locals_count: sf.locals_count,
@@ -922,7 +908,9 @@ impl<'h> VM<'h> {
         // The root frame does not contribute to recursion depth.
         let current_frame_depth = frames.len().saturating_sub(1);
         let mut frames = frames;
-        let current_frame = frames.pop().unwrap_or_else(|| CallFrame::new_parked(module_code));
+        let current_frame = frames
+            .pop()
+            .unwrap_or_else(|| CallFrame::new_parked(Rc::clone(&program.module_code)));
 
         Self {
             stack: snapshot.stack,
@@ -931,11 +919,12 @@ impl<'h> VM<'h> {
             suspended_frames: frames,
             heap,
             interns,
+            global_names,
             print_writer,
             exception_stack: snapshot.exception_stack,
             instruction_ip: snapshot.instruction_ip,
             scheduler: snapshot.scheduler,
-            module_code: Some(module_code),
+            module_code: Some(Rc::clone(&program.module_code)),
             ext_function_load_ip: None,
             json_string_cache: JsonStringCache::default(),
             pending_effect: snapshot.pending_effect,
@@ -946,7 +935,7 @@ impl<'h> VM<'h> {
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
             env: {
-                let mut env = env;
+                let mut env = program.vm_env();
                 env.cwd = Cow::Owned(snapshot.cwd);
                 env
             },
@@ -1006,7 +995,7 @@ impl<'h> VM<'h> {
     /// Runs the module frame installed when the VM was constructed.
     pub fn run_module(&mut self) -> Result<FrameExit, RunError> {
         // Store module code for restoring main task frames during task switching.
-        self.module_code = Some(self.current_frame.code);
+        self.module_code = Some(Rc::clone(&self.current_frame.code));
         self.run_external()
     }
 
@@ -2109,20 +2098,20 @@ impl<'h> VM<'h> {
 
     /// Returns the frame currently executing, or the parked placeholder.
     #[inline]
-    pub(crate) fn current_frame(&self) -> &CallFrame<'h> {
+    pub(crate) fn current_frame(&self) -> &CallFrame {
         &self.current_frame
     }
 
     /// Returns mutable access to the current frame.
     #[inline]
-    pub(super) fn current_frame_mut(&mut self) -> &mut CallFrame<'h> {
+    pub(super) fn current_frame_mut(&mut self) -> &mut CallFrame {
         &mut self.current_frame
     }
 
     /// Pushes the given frame onto the call stack.
     ///
     /// Returns an error if the recursion depth limit is exceeded by pushing this frame.
-    pub(super) fn push_frame(&mut self, frame: CallFrame<'h>) -> RunResult<()> {
+    pub(super) fn push_frame(&mut self, frame: CallFrame) -> RunResult<()> {
         if !self.current_frame.is_parked
             && let Err(e) = self.incr_recursion()
         {
@@ -2154,7 +2143,7 @@ impl<'h> VM<'h> {
         frame.should_return
     }
 
-    fn cleanup_frame_state(&mut self, frame: &CallFrame<'_>) {
+    fn cleanup_frame_state(&mut self, frame: &CallFrame) {
         // Clean up frame's stack region (locals + operand stack, which now
         // includes any in-flight comprehension variables — the operand-stack
         // drain naturally covers them).
@@ -2171,7 +2160,10 @@ impl<'h> VM<'h> {
     pub(super) fn cleanup_current_task(&mut self) {
         self.stack.drain(..).drop_with(self.heap);
         self.suspended_frames.clear();
-        let code = self.module_code.unwrap_or(self.current_frame.code);
+        let code = self
+            .module_code
+            .clone()
+            .unwrap_or_else(|| Rc::clone(&self.current_frame.code));
         self.current_frame = CallFrame::new_parked(code);
     }
 
@@ -2433,11 +2425,10 @@ impl<'h> VM<'h> {
 
     /// Returns the interned name of a module-level global at `slot`, if known.
     ///
-    /// Returns `None` if no module code is attached (test harness use of
-    /// `VM::new` without `run_module`) or if the slot is past the recorded
-    /// name table.
+    /// Read from the live name map rather than the module `Code`, so slots
+    /// first allocated after the module was compiled are named too.
     fn global_name(&self, slot: u16) -> Option<StringId> {
-        self.module_code.and_then(|c| c.local_name(slot))
+        self.global_names.names().get(usize::from(slot)).copied()
     }
 
     /// Pops the top of stack and stores it in a global variable.

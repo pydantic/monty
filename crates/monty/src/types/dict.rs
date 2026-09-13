@@ -1314,8 +1314,9 @@ impl<'h> HeapRead<'h, Dict> {
             }
         } else {
             let type_name = self.get(vm.heap).kind_type().name(vm.heap, vm.interns);
+            let err = ExcType::attribute_error_no_setattr(&type_name, attr.as_str(vm.interns));
             value.drop_with(vm);
-            Err(ExcType::attribute_error_no_setattr(&type_name, attr.as_str(vm.interns)))
+            Err(err)
         }
     }
 }
@@ -1511,9 +1512,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
-            let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+            let err = ExcType::attribute_error(self.py_type(vm).name(vm.heap, vm.interns), attr.as_str(vm.interns));
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)));
+            return Err(err);
         };
 
         let value = match method {
@@ -1620,9 +1621,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
                 defaultdict_missing(self, key, vm)
             }
             _ => {
-                let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+                let err = ExcType::attribute_error(self.py_type(vm).name(vm.heap, vm.interns), attr.as_str(vm.interns));
                 args.drop_with(vm);
-                return Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)));
+                return Err(err);
             }
         };
         value.map(CallResult::Value)

@@ -4,7 +4,7 @@
 //! functions for executing function calls. The main entry points are the `exec_*`
 //! methods which are called from the VM's main dispatch loop.
 
-use std::mem;
+use std::{mem, rc::Rc};
 
 use monty_types::{MontyUuid, OsFunctionCall};
 
@@ -374,13 +374,13 @@ impl VM<'_> {
             }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
-                let s = this.interns.get_str(string_id);
-                call_str_method(s, name_id, args, this).map(CallResult::Value)
+                let s = this.interns.get_str_handle(string_id);
+                call_str_method(&s, name_id, args, this).map(CallResult::Value)
             }
             Value::InternBytes(bytes_id) => {
                 // Call bytes method on interned bytes literal using the unified dispatcher
-                let b = this.interns.get_bytes(bytes_id);
-                call_bytes_method(b, name_id, args, this).map(CallResult::Value)
+                let b = this.interns.get_bytes_handle(bytes_id);
+                call_bytes_method(&b, name_id, args, this).map(CallResult::Value)
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
@@ -903,7 +903,7 @@ impl VM<'_> {
         let func = self.interns.get_function(func_id);
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
-        let code = &func.code;
+        let code = Rc::clone(&func.code);
 
         let callable = self.stack.remove(callable_index);
         debug_assert_exact_callable(&callable, func_id);
@@ -925,10 +925,10 @@ impl VM<'_> {
 
     /// Creates a coroutine by moving exact positional arguments into its namespace.
     fn create_exact_coroutine(&mut self, func_id: FunctionId, callable_index: usize) -> CallResult {
-        let func = self.interns.get_function(func_id);
+        let func = self.interns.function(func_id);
         let mut namespace = self.stack.split_off(callable_index + 1);
         namespace.reserve(func.namespace_size - namespace.len());
-        self.install_closure_cells(func, &[], &mut namespace);
+        self.install_closure_cells(&func, &[], &mut namespace);
 
         let callable = self.pop();
         debug_assert_exact_callable(&callable, func_id);
@@ -972,7 +972,7 @@ impl VM<'_> {
         defaults: &[Value],
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
-        let func = self.interns.get_function(func_id);
+        let func = self.interns.function(func_id);
 
         // 1. Create namespace for the coroutine with bound arguments and captured cells.
         let namespace = Vec::with_capacity(func.namespace_size);
@@ -983,7 +983,7 @@ impl VM<'_> {
         func.signature.bind(args, defaults, this, func.name, namespace)?;
 
         // 3. Install owned cells and captured free-var cells at their slots.
-        this.install_closure_cells(func, cells, namespace);
+        this.install_closure_cells(&func, cells, namespace);
 
         // 4. Create Coroutine on heap
         let (namespace, this) = namespace_guard.into_parts();
@@ -1047,7 +1047,7 @@ impl VM<'_> {
         let call_offset = self.current_offset();
         let stack_base = self.stack.len();
 
-        let func = self.interns.get_function(func_id);
+        let func = self.interns.function(func_id);
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 
@@ -1067,9 +1067,9 @@ impl VM<'_> {
         }
 
         // 3. Install owned cells and captured free-var cells at their slots.
-        this.install_closure_cells(func, cells, namespace);
+        this.install_closure_cells(&func, cells, namespace);
 
-        let code = &func.code;
+        let code = Rc::clone(&func.code);
 
         // 6. Commit the guard (no rollback) and push the frame. The operand
         // stack starts immediately above the locals region — comprehensions
@@ -1146,9 +1146,12 @@ impl VM<'_> {
             None if matches!(args, ArgValues::Empty) => Ok(CallResult::Value(Value::Ref(instance_id))),
             None => {
                 args.drop_with(self);
-                let name = class_name(class_id, self.heap, self.interns);
+                let err = ExcType::type_error(format!(
+                    "{}() takes no arguments",
+                    class_name(class_id, self.heap, self.interns)
+                ));
                 Value::Ref(instance_id).drop_with(self);
-                Err(ExcType::type_error(format!("{name}() takes no arguments")))
+                Err(err)
             }
             Some(init_func) => {
                 let this = self;

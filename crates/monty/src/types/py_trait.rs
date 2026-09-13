@@ -132,7 +132,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// carries no class identity (host class instances, named tuples)
     /// override it to name their real class rather than a placeholder.
     /// Borrows only `vm.interns`, so it survives heap cleanup.
-    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
+    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'static, str> {
         self.py_type(vm).name(vm.heap, vm.interns)
     }
 

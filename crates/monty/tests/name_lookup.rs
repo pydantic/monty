@@ -207,7 +207,7 @@ fn error_raises_host_exception() {
 /// without yielding to the host.
 #[test]
 fn standard_mode_raises_name_error() {
-    let runner = MontyRun::new(
+    let mut runner = MontyRun::new(
         "unknown_fn(42)".to_owned(),
         "test.py",
         vec![],
@@ -621,7 +621,7 @@ else:
 sorted([1], key=lambda x: x+1)
         "
     .to_owned();
-    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
     let value = runner.run_no_limits(vec![]).unwrap();
     assert_eq!(value, MontyObject::List(vec![MontyObject::Int(1)]));
 }
