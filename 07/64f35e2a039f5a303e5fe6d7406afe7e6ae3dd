@@ -1,0 +1,32 @@
+crates/monty/test_cases/collections__defaultdict.py
+  s_dbe9f0e7cf7f24::t_582e7020701e19 230-250
+crates/monty/src/types/dict.rs
+  s_dbe9f0e7cf7f24::t_eb63072c2c0cf1 966,968,972,1865-1866,1872,1874,1878,1884-1917
+  s_dbe9f0e7cf7f24::t_582e7020701e19 1418-1420,1422-1425,1440-1442,1444-1447,1768-1778,1787-1793,1795
+  s_dbe9f0e7cf7f24::t_405cc3ab01798b 1779-1786,1794
+crates/monty/src/exception_private.rs
+  s_dbe9f0e7cf7f24::t_eb63072c2c0cf1 137-147
+crates/monty/test_cases/dict__methods.py
+  s_dbe9f0e7cf7f24::t_eb63072c2c0cf1 149-156,158-163
+crates/monty/test_cases/dict__ops.py
+  s_dbe9f0e7cf7f24::t_582e7020701e19 152-201
+crates/monty/test_cases/collections__counter.py
+  s_dbe9f0e7cf7f24::t_405cc3ab01798b 10
+  s_dbe9f0e7cf7f24::t_582e7020701e19 544-554
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0764f35e2a039f5a303e5fe6d7406afe7e6ae3dd",
+  "prompts": {},
+  "sessions": {
+    "s_dbe9f0e7cf7f24": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf505686-fd13-49a3-99c2-79ce098624a9",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
