@@ -1,0 +1,23 @@
+docs/limitations/resource_limits.md
+  s_b43b30eae72d5b::t_e29de13e0ee412 203-206
+crates/monty/src/types/unicode_type_data.rs
+  s_b43b30eae72d5b::t_7dba9d3caf1473 46,48-357
+scripts/gen_unicode_type.py
+  s_b43b30eae72d5b::t_44471d7a45bcb4 111
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "20cd82bfc7ad72545c5140c1aa4eda7b25657fd6",
+  "prompts": {},
+  "sessions": {
+    "s_b43b30eae72d5b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "120b30e4-8833-4a3a-91a2-74b922f10aeb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
