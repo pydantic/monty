@@ -540,6 +540,10 @@ assert 'Ǆemal'.istitle() == True
 assert 'ǅemal'.istitle() == True
 assert 'ǆemal'.istitle() == False
 assert 'Aǅ'.istitle() == False
+assert 'Aǅ'.isupper() == False
+assert 'aǅ'.islower() == False
+assert 'ǅ'.isupper() == False
+assert 'Ⓐ'.isupper() == True
 
 # === Phase 10: Unicode support for is* methods ===
 

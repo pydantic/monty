@@ -1,17 +1,34 @@
-# `str` case methods
+# `str` character predicates
 
-`upper()`, `lower()`, `title()`, `capitalize()`, `swapcase()`, `isupper()`, `islower()` and `istitle()` take their
-case mappings from Rust's standard library, whose Unicode tables can be newer than CPython 3.14's (Unicode 16.0.0).
-`casefold()`, and the titlecase exceptions `title()` and `capitalize()` apply, are pinned to Unicode 16.0.0.
+The case methods (`lower`, `upper`, `casefold`, `capitalize`, `title`, `swapcase`, `isupper`, `islower`,
+`istitle`) use tables generated from CPython 3.14 (`scripts/gen_case_data.py`) and match it for every code point.
+The other character-class predicates use Rust's standard library and hand-written tables, and diverge as below.
+Counts are code points, measured against CPython 3.14 (Unicode 16.0.0) with the Rust standard library's Unicode
+17.0.0 data.
 
-## Unicode version skew
+## `isalpha()` and `isalnum()`
 
-With the current toolchain (Unicode 17.0.0) these 58 code points have case mappings in Monty and none in CPython 3.14,
-so `upper()`, `lower()` and `title()` change them and `isupper()`, `islower()` and `istitle()` can return `True` where
-CPython returns `False`:
+Return `True` for 6393 and 6167 code points where CPython returns `False`: combining marks (`Mn`, `Mc`), letter
+numbers (`Nl`, e.g. Roman numerals `Ⅰ`), a few symbols (`So`), and code points first assigned in Unicode 17.
+Monty tests the Unicode `Alphabetic` property, CPython the `L*` general categories.
 
-- `U+0295`, `U+A7CE`–`U+A7CF`, `U+A7D2`–`U+A7D5`, `U+A7F1` (Latin Extended-D additions)
-- `U+16EA0`–`U+16EB8`, `U+16EBB`–`U+16ED3` (Beria Erfe)
+## `isdecimal()`, `isdigit()` and `isnumeric()`
 
-`casefold()` leaves them unchanged, as CPython does.
-Code points assigned in Unicode 16.0.0 or earlier are unaffected.
+- `isdecimal()` returns `False` for 200 `Nd` digits in blocks added since the table was written
+    (e.g. Garay, Kirat Rai, Ol Onal, Sunuwar, mathematical digits `𝟎`–`𝟿`).
+- `isdigit()` misses the same digits plus 52 `No` code points (e.g. Ethiopic `፩`–`፱`, dingbat circled digits `❶`),
+    and returns `True` for circled numbers `⑩`–`⑳`, `⓾`, `➉` and `➓` where CPython returns `False`.
+- `isnumeric()` returns `False` for the 91 CJK ideographs with a numeric value (`一`, `二`, `十`, `百`, `万` …),
+    and `True` for 13 code points unassigned in Unicode 16.
+
+## `isspace()`
+
+Returns `False` for `\x1c`–`\x1f`, which CPython treats as whitespace.
+
+## `isprintable()`
+
+Not implemented; raises `AttributeError`.
+
+## `isidentifier()`
+
+Returns `True` for 4647 code points first assigned in Unicode 17, which CPython 3.14 rejects.

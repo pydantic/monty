@@ -1,13 +1,14 @@
 use std::{cell::Cell, fmt::Write, ops};
 
-use caseless::default_case_fold_str;
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use ruff_python_stdlib::{identifiers::is_identifier, keyword::is_keyword};
 use smallvec::smallvec;
-use unicode_general_category::{GeneralCategory, get_general_category};
 
-use super::{Bytes, CmpOrder, PyTrait, titlecase_data::TITLECASE_EXCEPTIONS};
+use super::{
+    Bytes, CmpOrder, PyTrait,
+    case_mapping::{case_record, casefold, lowercase, uppercase},
+};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -627,75 +628,47 @@ fn str_join<'h>(separator: &HeapRead<'h, str>, iterable: Value, vm: &mut VM<'h>)
 
 /// Implements Python's `str.lower()` method.
 fn str_lower(s: &str, vm: &VM<'_>) -> Value {
-    allocate_string(s.to_lowercase(), vm.heap)
+    allocate_string(lowercase(s), vm.heap)
 }
 
 /// Implements Python's `str.upper()` method.
 fn str_upper(s: &str, vm: &VM<'_>) -> Value {
-    allocate_string(s.to_uppercase(), vm.heap)
+    allocate_string(uppercase(s), vm.heap)
 }
 
 /// Implements Python's `str.capitalize()` method.
 ///
-/// Returns a copy of the string with its first character capitalized and the rest lowercased.
+/// Returns a copy of the string with its first character titlecased and the rest lowercased.
 fn str_capitalize(s: &str, vm: &VM<'_>) -> Value {
-    let mut chars = chars_with_final_sigma(s);
-    let result = match chars.next() {
-        None => String::new(),
-        Some((first, _)) => {
-            let mut result = String::with_capacity(s.len());
-            push_titlecase(first, &mut result);
-            for (_, base) in chars {
-                result.extend(base.to_lowercase());
-            }
-            result
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.char_indices();
+    if let Some((_, first)) = chars.next() {
+        case_record(first).push_title(&mut result, first);
+        for (i, c) in chars {
+            case_record(c).push_lower(&mut result, s, i, c);
         }
-    };
+    }
     allocate_string(result, vm.heap)
 }
 
 /// Implements Python's `str.title()` method.
 ///
-/// Returns a titlecased version of the string where words start with an uppercase
-/// character and the remaining characters are lowercase.
+/// Titlecases the first character after each uncased one and lowercases the rest.
 fn str_title(s: &str, vm: &VM<'_>) -> Value {
     let mut result = String::with_capacity(s.len());
     let mut prev_is_cased = false;
 
-    for (c, base) in chars_with_final_sigma(s) {
+    for (i, c) in s.char_indices() {
+        let record = case_record(c);
         if prev_is_cased {
-            result.extend(base.to_lowercase());
+            record.push_lower(&mut result, s, i, c);
         } else {
-            push_titlecase(c, &mut result);
+            record.push_title(&mut result, c);
         }
-        prev_is_cased = is_cased(c);
+        prev_is_cased = record.is_cased();
     }
 
     allocate_string(result, vm.heap)
-}
-
-/// Appends the full titlecase mapping of `c` to `out`.
-///
-/// Titlecase equals uppercase except for `TITLECASE_EXCEPTIONS` (digraphs such as `ǆ` → `ǅ`,
-/// `ß` → `Ss`, ligatures, Greek with ypogegrammeni, Georgian Mkhedruli), which std lacks.
-fn push_titlecase(c: char, out: &mut String) {
-    match TITLECASE_EXCEPTIONS.binary_search_by_key(&c, |&(from, _)| from) {
-        Ok(i) => out.push_str(TITLECASE_EXCEPTIONS[i].1),
-        Err(_) => out.extend(c.to_uppercase()),
-    }
-}
-
-/// Whether `c` has the Unicode `Cased` property, as CPython's `_PyUnicode_IsCased` checks it:
-/// `Lowercase` or `Uppercase` (the std predicates) or general category `Lt`.
-fn is_cased(c: char) -> bool {
-    c.is_lowercase() || c.is_uppercase() || is_titlecase(c)
-}
-
-/// Whether `c` is a titlecase letter (general category `Lt`), which CPython's `str.istitle()`
-/// treats like an uppercase letter.
-fn is_titlecase(c: char) -> bool {
-    // Every `Lt` code point lies in U+01C5..=U+1FFC; the range test skips the category lookup elsewhere.
-    ('\u{1c5}'..='\u{1ffc}').contains(&c) && get_general_category(c) == GeneralCategory::TitlecaseLetter
 }
 
 /// Implements Python's `str.swapcase()` method.
@@ -704,11 +677,12 @@ fn is_titlecase(c: char) -> bool {
 fn str_swapcase(s: &str, vm: &VM<'_>) -> Value {
     let mut result = String::with_capacity(s.len());
 
-    for (c, base) in chars_with_final_sigma(s) {
-        if c.is_uppercase() {
-            result.extend(base.to_lowercase());
-        } else if c.is_lowercase() {
-            result.extend(c.to_uppercase());
+    for (i, c) in s.char_indices() {
+        let record = case_record(c);
+        if record.is_upper() {
+            record.push_lower(&mut result, s, i, c);
+        } else if record.is_lower() {
+            record.push_upper(&mut result, c);
         } else {
             result.push(c);
         }
@@ -717,40 +691,11 @@ fn str_swapcase(s: &str, vm: &VM<'_>) -> Value {
     allocate_string(result, vm.heap)
 }
 
-/// Iterates `s` as `(c, base)` pairs where `base.to_lowercase()` is `c` lowercased with
-/// `Final_Sigma` applied: `base` is `c` itself except for a `Σ`, which becomes `σ` or `ς`.
-///
-/// `char::to_lowercase` is context-free and maps every `Σ` to `σ`, whereas `str::to_lowercase`
-/// applies the rule. Only `Σ`, `σ` and `ς` lower to a sigma, so the sigmas in its output line up
-/// one-to-one with those source characters and are replayed here; the full lowering is skipped
-/// when there is no `Σ` to decide.
-fn chars_with_final_sigma(s: &str) -> impl Iterator<Item = (char, char)> + '_ {
-    let sigmas: Vec<char> = if s.contains('Σ') {
-        s.to_lowercase().chars().filter(|c| matches!(c, 'σ' | 'ς')).collect()
-    } else {
-        Vec::new()
-    };
-    let mut sigmas = sigmas.into_iter();
-    s.chars().map(move |c| {
-        let base = if matches!(c, 'Σ' | 'σ' | 'ς') {
-            sigmas.next().unwrap_or(c)
-        } else {
-            c
-        };
-        (c, base)
-    })
-}
-
 /// Implements Python's `str.casefold()` method.
 ///
 /// Uses full default Unicode folding without normalization or locale tailoring.
 fn str_casefold(s: &str, vm: &VM<'_>) -> Value {
-    let result = if s.is_ascii() {
-        s.to_ascii_lowercase()
-    } else {
-        default_case_fold_str(s)
-    };
-    allocate_string(result, vm.heap)
+    allocate_string(casefold(s), vm.heap)
 }
 
 // =============================================================================
@@ -802,12 +747,11 @@ fn str_isspace(s: &str) -> bool {
 fn str_islower(s: &str) -> bool {
     let mut has_cased = false;
     for c in s.chars() {
-        if c.is_uppercase() {
+        let record = case_record(c);
+        if record.is_upper() || record.is_title() {
             return false;
         }
-        if c.is_lowercase() {
-            has_cased = true;
-        }
+        has_cased |= record.is_lower();
     }
     has_cased
 }
@@ -818,12 +762,11 @@ fn str_islower(s: &str) -> bool {
 fn str_isupper(s: &str) -> bool {
     let mut has_cased = false;
     for c in s.chars() {
-        if c.is_lowercase() {
+        let record = case_record(c);
+        if record.is_lower() || record.is_title() {
             return false;
         }
-        if c.is_uppercase() {
-            has_cased = true;
-        }
+        has_cased |= record.is_upper();
     }
     has_cased
 }
@@ -2062,14 +2005,15 @@ fn str_istitle(s: &str) -> bool {
     let mut has_cased = false;
 
     for c in s.chars() {
-        if c.is_uppercase() || is_titlecase(c) {
+        let record = case_record(c);
+        if record.is_upper() || record.is_title() {
             // Uppercase or titlecase must follow uncased
             if prev_cased {
                 return false;
             }
             prev_cased = true;
             has_cased = true;
-        } else if c.is_lowercase() {
+        } else if record.is_lower() {
             // Lowercase must follow cased
             if !prev_cased {
                 return false;

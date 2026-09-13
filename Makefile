@@ -232,6 +232,11 @@ testcov: ## Run Rust tests with coverage, print table, and generate HTML report
 complete-tests: ## Fill in incomplete test expectations using CPython
 	uv run scripts/complete_tests.py
 
+.PHONY: generate-case-data
+generate-case-data: ## Regenerate the str case-mapping tables from the current CPython
+	uv run scripts/gen_case_data.py
+	cargo +nightly fmt -p monty
+
 .PHONY: update-typeshed
 update-typeshed: ## Update vendored typeshed from upstream
 	uv run crates/monty-typeshed/update.py

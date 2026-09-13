@@ -7,6 +7,8 @@
 /// types, enabling efficient dispatch via `enum_dispatch`.
 pub mod bytes;
 pub mod callable_iterator;
+mod case_data;
+mod case_mapping;
 pub mod class;
 pub mod date;
 pub mod datetime;
@@ -36,7 +38,6 @@ pub mod str;
 pub mod time;
 pub mod timedelta;
 pub mod timezone;
-mod titlecase_data;
 pub mod tuple;
 pub mod r#type;
 
