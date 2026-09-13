@@ -54,7 +54,7 @@ nav:
       - assert: 'limitations/assert.md'
       - print(): 'limitations/print.md'
       - Format mini-language: 'limitations/format.md'
-      - str character predicates: 'limitations/str.md'
+      - str methods: 'limitations/str.md'
       - str.encode() / bytes.decode(): 'limitations/encoding.md'
       - typing: 'limitations/typing.md'
       - asyncio: 'limitations/asyncio.md'

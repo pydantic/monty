@@ -400,7 +400,7 @@ make test-docs            Test docs examples only
 make test                 Run rust tests
 make testcov              Run Rust tests with coverage, print table, and generate HTML report
 make complete-tests       Fill in incomplete test expectations using CPython
-make generate-case-data   Regenerate the str case-mapping tables from the current CPython
+make generate-unicode-type Regenerate the str character-property tables from the current CPython
 make update-typeshed      Update vendored typeshed from upstream
 make bench                Run benchmarks
 make bench-pool           Run subprocess pool benchmarks (spawn, checkout, wire round-trips)

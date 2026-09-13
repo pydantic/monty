@@ -7,8 +7,6 @@
 /// types, enabling efficient dispatch via `enum_dispatch`.
 pub mod bytes;
 pub mod callable_iterator;
-mod case_data;
-mod case_mapping;
 pub mod class;
 pub mod date;
 pub mod datetime;
@@ -40,6 +38,8 @@ pub mod timedelta;
 pub mod timezone;
 pub mod tuple;
 pub mod r#type;
+mod unicode_type;
+mod unicode_type_data;
 
 pub(crate) use bytes::{Bytes, BytesIterator};
 pub(crate) use class::{Class, DataclassOptions};

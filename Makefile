@@ -232,9 +232,9 @@ testcov: ## Run Rust tests with coverage, print table, and generate HTML report
 complete-tests: ## Fill in incomplete test expectations using CPython
 	uv run scripts/complete_tests.py
 
-.PHONY: generate-case-data
-generate-case-data: ## Regenerate the str case-mapping tables from the current CPython
-	uv run scripts/gen_case_data.py
+.PHONY: generate-unicode-type
+generate-unicode-type: ## Regenerate the str character-property tables from the current CPython
+	uv run scripts/gen_unicode_type.py
 	cargo +nightly fmt -p monty
 
 .PHONY: update-typeshed

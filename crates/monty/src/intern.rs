@@ -228,6 +228,7 @@ pub enum StaticStrings {
     Encode,
     Isidentifier,
     Istitle,
+    Isprintable,
 
     // ==========================
     // Bytes methods

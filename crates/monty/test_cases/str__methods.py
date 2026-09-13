@@ -93,6 +93,12 @@ assert 'ǅǈǋǲ'.casefold() == 'ǆǉǌǳ'
 # === Phase 2: Predicate methods ===
 
 # isalpha()
+assert '\u0301'.isalpha() == False
+assert 'a\u0301'.isalpha() == False
+assert 'Ⅰ'.isalpha() == False
+assert 'ⓐ'.isalpha() == False
+assert 'ǅ'.isalpha() == True
+assert 'ª'.isalpha() == True
 assert 'hello'.isalpha() == True
 assert 'Hello'.isalpha() == True
 assert ''.isalpha() == False
@@ -100,12 +106,20 @@ assert 'hello123'.isalpha() == False
 assert 'hello world'.isalpha() == False
 
 # isdigit()
+assert '⑩'.isdigit() == False
+assert '፩'.isdigit() == True
+assert '❶'.isdigit() == True
+assert '一'.isdigit() == False
+assert '²'.isdigit() == True
 assert '123'.isdigit() == True
 assert ''.isdigit() == False
 assert '123abc'.isdigit() == False
 assert '12 34'.isdigit() == False
 
 # isalnum()
+assert 'a\u0301'.isalnum() == False
+assert 'Ⅰ'.isalnum() == True
+assert '一'.isalnum() == True
 assert 'hello123'.isalnum() == True
 assert 'hello'.isalnum() == True
 assert '123'.isalnum() == True
@@ -113,11 +127,24 @@ assert ''.isalnum() == False
 assert 'hello 123'.isalnum() == False
 
 # isnumeric()
+assert '一二三十百万'.isnumeric() == True
+assert '⑩'.isnumeric() == True
+assert 'Ⅰ'.isnumeric() == True
 assert '123'.isnumeric() == True
 assert ''.isnumeric() == False
 assert '123abc'.isnumeric() == False
 
 # isspace()
+assert '\x1c\x1d\x1e\x1f'.isspace() == True
+assert '\x85\xa0\u2028'.isspace() == True
+assert '\u200b'.isspace() == False
+# split() and strip() share the definition
+assert 'a\x1cb\x1fc'.split() == ['a', 'b', 'c']
+assert 'a\x1cb'.split(None, 1) == ['a', 'b']
+assert 'a\x1cb'.rsplit(None, 1) == ['a', 'b']
+assert '\x1fa\x1f'.strip() == 'a'
+assert '\x1fa\x1f'.lstrip() == 'a\x1f'
+assert '\x1fa\x1f'.rstrip() == '\x1fa'
 assert '   '.isspace() == True
 assert '\t\n'.isspace() == True
 assert ''.isspace() == False
@@ -143,6 +170,9 @@ assert ''.isascii() == True
 assert '\x00\x7f'.isascii() == True
 
 # isdecimal()
+assert '𝟎𝟿'.isdecimal() == True
+assert '\U00010d40'.isdecimal() == True
+assert '²'.isdecimal() == False
 assert '123'.isdecimal() == True
 assert ''.isdecimal() == False
 assert '123abc'.isdecimal() == False
@@ -524,6 +554,27 @@ assert 'café'.isidentifier() == True
 assert 'á'.isidentifier() == True  # base letter + combining acute accent
 assert 'Ω'.isidentifier() == True
 assert '3'.isidentifier() == False
+assert '\u0301'.isidentifier() == False
+assert 'a\u0301'.isidentifier() == True
+assert '℘'.isidentifier() == True
+assert '℘\u0301'.isidentifier() == True
+assert '·'.isidentifier() == False
+assert 'a·'.isidentifier() == True
+assert '\u2118x'.isidentifier() == True
+
+# isprintable()
+assert 'Hello, World!'.isprintable() == True
+assert ''.isprintable() == True
+assert 'a\nb'.isprintable() == False
+assert '\t'.isprintable() == False
+assert '\x7f'.isprintable() == False
+assert ' '.isprintable() == True
+assert '\xa0'.isprintable() == False
+assert '\u2028'.isprintable() == False
+assert '\u200b'.isprintable() == False
+assert 'é中😀'.isprintable() == True
+assert '\U000e0001'.isprintable() == False
+assert '\U0010ffff'.isprintable() == False
 
 # istitle()
 assert 'Hello World'.istitle() == True
