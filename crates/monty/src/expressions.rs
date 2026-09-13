@@ -362,6 +362,21 @@ pub enum Expr {
         target: Identifier,
         value: Box<ExprLoc>,
     },
+    // Serialized expression variants are append-only.
+    /// Raw generator expression from the parser, before its child scope is prepared.
+    GeneratorRaw {
+        /// Synthetic `<genexpr>` function name.
+        name_id: StringId,
+        /// Value yielded for each matching iteration.
+        elt: Box<ExprLoc>,
+        /// Comprehension clauses in source order.
+        generators: Vec<Comprehension>,
+    },
+    /// Prepared generator expression with a resumable synthetic function scope.
+    Generator {
+        /// Scope, closure, and lazy-body metadata used to build the generator.
+        generator: Box<PreparedGeneratorExpression>,
+    },
 }
 
 /// Target for tuple unpacking - can be a single name, nested tuple, or starred target.
@@ -437,6 +452,19 @@ pub struct Comprehension {
     pub iter: ExprLoc,
     /// Zero or more filter conditions (all must be truthy for the element to be included).
     pub ifs: Vec<ExprLoc>,
+}
+
+/// Prepared state for a generator expression's eagerly-created iterator and lazy body.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PreparedGeneratorExpression {
+    /// Synthetic function metadata and closure layout; its ordinary body is empty.
+    pub func_def: PreparedFunctionDef,
+    /// Value yielded by the innermost generator loop.
+    pub elt: ExprLoc,
+    /// Prepared clauses; only the first `iter` belongs to the enclosing scope.
+    pub generators: Vec<Comprehension>,
+    /// Lexical target slots captured by nested child scopes.
+    pub captured_slots: Vec<u16>,
 }
 
 impl Expr {

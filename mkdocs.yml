@@ -50,6 +50,7 @@ nav:
       - Exceptions: 'limitations/exceptions.md'
       - iter() and iterators: 'limitations/iter.md'
       - Comprehensions: 'limitations/comprehensions.md'
+      - Generator expressions: 'limitations/generator_expressions.md'
       - with statement: 'limitations/with.md'
       - assert: 'limitations/assert.md'
       - print(): 'limitations/print.md'

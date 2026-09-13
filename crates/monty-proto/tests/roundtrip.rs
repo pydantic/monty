@@ -192,6 +192,7 @@ fn exception_and_type_values_round_trip() {
     });
     assert_value_round_trip(&MontyObject::Type(MontyType::Int));
     assert_value_round_trip(&MontyObject::Type(MontyType::DateTime));
+    assert_value_round_trip(&MontyObject::Type(MontyType::Generator));
     // Qualified name (`collections.deque`) must survive the wire round-trip.
     assert_value_round_trip(&MontyObject::Type(MontyType::Deque));
     assert_value_round_trip(&MontyObject::Type(MontyType::Exception(ExcType::KeyError)));

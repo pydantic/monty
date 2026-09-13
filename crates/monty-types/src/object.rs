@@ -958,6 +958,8 @@ pub enum MontyType {
     ItertoolsBatched,
     #[strum(serialize = "itertools.zip_longest")]
     ItertoolsZipLongest,
+    /// Iterator type produced by a generator expression.
+    Generator,
 }
 
 impl fmt::Display for MontyType {
