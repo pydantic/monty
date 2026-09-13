@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import json
 from pathlib import Path
@@ -11,24 +12,58 @@ from typing import Any, cast
 from . import pypi_tools, rewind
 
 
-def differences(before: object, after: object, path: str = '$') -> list[tuple[str, Any, Any]]:
-    """Compare JSON values without discarding observable mapping order."""
-    if rewind.encode(before) == rewind.encode(after):
-        return []
-    before_type, after_type = type(before), type(after)
-    if before_type is dict and after_type is dict:
-        left, right = cast(dict[str, Any], before), cast(dict[str, Any], after)
-        if list(left) == list(right):
-            return [row for key in left for row in differences(left[key], right[key], f'{path}.{key}')]
-    if before_type is list and after_type is list:
-        left_items, right_items = cast(list[Any], before), cast(list[Any], after)
-        if len(left_items) == len(right_items):
-            return [
-                row
-                for index, pair in enumerate(zip(left_items, right_items))
-                for row in differences(*pair, f'{path}[{index}]')
-            ]
-    return [(path, before, after)]
+def main() -> None:
+    parser = argparse.ArgumentParser(description='Capture and replay Monty tool boundaries')
+    parser.add_argument('--binary', type=Path, required=True, help='Path to the trusted Monty worker binary')
+    commands = parser.add_subparsers(dest='command', required=True)
+    cap = commands.add_parser('capture')
+    cap.add_argument('recording')
+    cap.add_argument('--code', type=Path, default=Path(__file__).with_name('program.txt'))
+    for name in ('replay', 'branch', 'report'):
+        command = commands.add_parser(name)
+        command.add_argument('recording')
+        if name == 'branch':
+            command.add_argument('--at', type=int, required=True)
+            command.add_argument('--response', required=True)
+        if name == 'replay':
+            command.add_argument('--code')
+        if name == 'report':
+            command.add_argument('--branch')
+            command.add_argument('--output', required=True)
+        else:
+            command.add_argument('--output')
+    args = parser.parse_args()
+    if args.command == 'capture':
+        result = rewind.capture(
+            rewind.read_text(args.code, rewind.MAX_SOURCE, 'Source'),
+            args.recording,
+            pypi_tools.dispatch,
+            binary=args.binary,
+        )
+    else:
+        recording = rewind.load(args.recording)
+        if args.command == 'report':
+            branch = (
+                rewind.parse_json(rewind.read_text(args.branch, rewind.MAX_FILE, 'Branch')) if args.branch else None
+            )
+            document = report(recording, branch)
+            with open(args.output, 'x', encoding='utf-8') as output:
+                output.write(document)
+            result = {'report': args.output}
+        else:
+            response = (
+                rewind.parse_json(rewind.read_text(args.response, rewind.MAX_VALUE, 'Response'))
+                if args.command == 'branch'
+                else None
+            )
+            source = rewind.read_text(args.code, rewind.MAX_SOURCE, 'Source') if getattr(args, 'code', None) else None
+            result = rewind.replay(
+                recording, binary=args.binary, at=getattr(args, 'at', None), response=response, code=source
+            )
+            if args.output:
+                with open(args.output, 'x', encoding='utf-8') as output:
+                    json.dump(result, output, indent=2)
+    print(json.dumps(result, indent=2))
 
 
 def report(recording: dict[str, Any], branch: dict[str, Any] | None = None) -> str:
@@ -39,7 +74,7 @@ def report(recording: dict[str, Any], branch: dict[str, Any] | None = None) -> s
     for event in recording['events']:
         cards.append(
             f'<details><summary><span>{event["index"]:02d}</span> {html.escape(event["call"]["name"])} '
-            f'<small>{len(event["snapshot"]) * 3 // 4:,} snapshot bytes</small></summary>'
+            f'<small>{len(base64.b64decode(event["snapshot"])):,} snapshot bytes</small></summary>'
             f'<h3>Arguments</h3><pre>{pretty(event["call"])}</pre>'
             f'<h3>Recorded response</h3><pre>{pretty(event["response"])}</pre></details>'
         )
@@ -107,58 +142,24 @@ footer{border-top:1px solid #293749;padding:20px 0;color:#91a6bf;font-size:13px}
     )
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description='Capture and replay Monty tool boundaries')
-    parser.add_argument('--binary', type=Path, required=True, help='Path to the trusted Monty worker binary')
-    commands = parser.add_subparsers(dest='command', required=True)
-    cap = commands.add_parser('capture')
-    cap.add_argument('recording')
-    cap.add_argument('--code', type=Path, default=Path(__file__).with_name('program.txt'))
-    for name in ('replay', 'branch', 'report'):
-        command = commands.add_parser(name)
-        command.add_argument('recording')
-        if name == 'branch':
-            command.add_argument('--at', type=int, required=True)
-            command.add_argument('--response', required=True)
-        if name == 'replay':
-            command.add_argument('--code')
-        if name == 'report':
-            command.add_argument('--branch')
-            command.add_argument('--output', required=True)
-        else:
-            command.add_argument('--output')
-    args = parser.parse_args()
-    if args.command == 'capture':
-        result = rewind.capture(
-            rewind.read_text(args.code, rewind.MAX_SOURCE, 'Source'),
-            args.recording,
-            pypi_tools.dispatch,
-            binary=args.binary,
-        )
-    else:
-        recording = rewind.load(args.recording)
-        if args.command == 'report':
-            branch = (
-                rewind.parse_json(rewind.read_text(args.branch, rewind.MAX_FILE, 'Branch')) if args.branch else None
-            )
-            document = report(recording, branch)
-            with open(args.output, 'x', encoding='utf-8') as output:
-                output.write(document)
-            result = {'report': args.output}
-        else:
-            response = (
-                rewind.parse_json(rewind.read_text(args.response, rewind.MAX_VALUE, 'Response'))
-                if args.command == 'branch'
-                else None
-            )
-            source = rewind.read_text(args.code, rewind.MAX_SOURCE, 'Source') if getattr(args, 'code', None) else None
-            result = rewind.replay(
-                recording, binary=args.binary, at=getattr(args, 'at', None), response=response, code=source
-            )
-            if args.output:
-                with open(args.output, 'x', encoding='utf-8') as output:
-                    json.dump(result, output, indent=2)
-    print(json.dumps(result, indent=2))
+def differences(before: object, after: object, path: str = '$') -> list[tuple[str, Any, Any]]:
+    """Compare JSON values without discarding observable mapping order."""
+    if rewind.encode(before) == rewind.encode(after):
+        return []
+    before_type, after_type = type(before), type(after)
+    if before_type is dict and after_type is dict:
+        left, right = cast(dict[str, Any], before), cast(dict[str, Any], after)
+        if list(left) == list(right):
+            return [row for key in left for row in differences(left[key], right[key], f'{path}.{key}')]
+    if before_type is list and after_type is list:
+        left_items, right_items = cast(list[Any], before), cast(list[Any], after)
+        if len(left_items) == len(right_items):
+            return [
+                row
+                for index, pair in enumerate(zip(left_items, right_items))
+                for row in differences(*pair, f'{path}[{index}]')
+            ]
+    return [(path, before, after)]
 
 
 if __name__ == '__main__':

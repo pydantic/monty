@@ -32,8 +32,11 @@ The response in `response.json` is deliberately hypothetical, not a claim about 
 
 To compare edited sandbox code, pass `--code path/to/edited.py` to `replay`.
 That starts from the edited source rather than restoring bytecode from the original snapshot.
-The name, argument types, mapping order and order of every host call must still match the recording.
+The name, host-visible JSON arguments, mapping order and order of every host call must still match the recording.
 A mismatch reports `DIVERGED`; it does not fetch another response.
+Monty converts some guest values, such as functions, to strings before the host receives them.
+Replay cannot distinguish those values from literal strings with the same text; see
+[host-function argument conversion](../../docs/host-functions.md#arguments-and-return-values).
 
 ## Boundaries
 
@@ -43,10 +46,11 @@ The callback runs on the host with host authority, as described in [Monty's secu
 Changing it requires validating the sandbox's arguments and bounding host work independently of Monty's limits.
 
 Each call and snapshot is flushed before the host callback runs.
-If capture stops without a complete response and terminal record, loading reports `UNKNOWN`.
+Loading rejects empty or truncated recordings and reports a missing response or completion record.
+A missing response does not establish whether the callback ran.
 Do not retry a side-effecting callback merely because its response is missing.
 
-This example accepts finite JSON values, up to 16 direct synchronous host calls, 32 KiB of source,
+This example accepts finite JSON values at the host boundary, up to 16 direct synchronous host calls, 32 KiB of source,
 256 KiB per value or captured output, 512 KiB per snapshot and 8 MiB per recording.
 It rejects host objects, OS calls, name-lookup suspensions and futures.
 It does not inspect frames or locals, schedule async completions or persist host state.

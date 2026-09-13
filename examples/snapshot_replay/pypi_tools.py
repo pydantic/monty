@@ -9,11 +9,6 @@ from typing import Any
 PACKAGES = {'pydantic-ai-slim', 'pydantic-ai-harness', 'langchain-monty'}
 
 
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
-        return None
-
-
 def dispatch(call: dict[str, Any]) -> dict[str, Any]:
     if (
         call['name'] != 'package_metadata'
@@ -34,3 +29,8 @@ def dispatch(call: dict[str, Any]) -> dict[str, Any]:
         raise ValueError('PyPI response exceeds 1 MiB')
     data = json.loads(raw)['info']
     return {'return_value': {key: data[key] for key in ('version', 'requires_python', 'requires_dist')}}
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        return None
