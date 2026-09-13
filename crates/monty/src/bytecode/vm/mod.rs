@@ -548,6 +548,19 @@ impl CallFrame {
         let [a, b, c, d] = self.fetch_array();
         (u16::from_le_bytes([a, b]), c, d)
     }
+
+    /// Fetches two little-endian `u16`s followed by a `u8`, in a single bounds check.
+    ///
+    /// Mirrors `CodeBuilder::emit_name_op` on the encode side.
+    #[inline]
+    fn fetch_u16_u16_u8(&mut self) -> (u16, u16, u8) {
+        let [slot_lo, slot_hi, name_lo, name_hi, flags] = self.fetch_array();
+        (
+            u16::from_le_bytes([slot_lo, slot_hi]),
+            u16::from_le_bytes([name_lo, name_hi]),
+            flags,
+        )
+    }
 }
 
 /// Serializable representation of a call frame.
@@ -1322,6 +1335,19 @@ impl<'h> VM<'h> {
                 Opcode::DeleteGlobal => {
                     let slot = self.current_frame.fetch_u16();
                     try_catch!(self, self.delete_global(slot));
+                }
+                // Variables - runtime name resolution (eval/exec snippets)
+                Opcode::LoadName => {
+                    let (slot, name_idx, flags) = self.current_frame.fetch_u16_u16_u8();
+                    handle_load_result!(self, self.load_name(slot, StringId::from_index(name_idx), flags));
+                }
+                Opcode::StoreName => {
+                    let (slot, name_idx, flags) = self.current_frame.fetch_u16_u16_u8();
+                    try_catch!(self, self.store_name(slot, StringId::from_index(name_idx), flags));
+                }
+                Opcode::DeleteName => {
+                    let (slot, name_idx, flags) = self.current_frame.fetch_u16_u16_u8();
+                    try_catch!(self, self.delete_name(slot, StringId::from_index(name_idx), flags));
                 }
                 // Variables - Global Operations
                 Opcode::LoadGlobal => {
@@ -2485,6 +2511,11 @@ impl<'h> VM<'h> {
     /// check is needed here.
     fn store_global(&mut self, slot: u16) {
         let value = self.pop();
+        self.set_global_slot(slot, value);
+    }
+
+    /// Binds `value` at a global slot, releasing what the slot held.
+    fn set_global_slot(&mut self, slot: u16, value: Value) {
         let old_value = mem::replace(&mut self.globals[slot as usize], value);
         old_value.drop_with(self);
     }

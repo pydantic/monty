@@ -16,7 +16,7 @@ use super::{
     RESERVED_MODULE_DUNDERS,
     builder::{CodeBuilder, JumpLabel, JumpTarget, Offset},
     code::{Code, HandlerKind},
-    op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode, assert_flags},
+    op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode, assert_flags},
 };
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
@@ -289,9 +289,24 @@ pub struct Compiler<'a> {
     /// cell-backed, together with its absolute frame-stack offset.
     comp_slots: Vec<Option<CompSlot>>,
 
+    /// Settings inherited by nested function and class-body compilers.
+    flags: ScopeFlags,
+
+    /// Whether `await` is a `SyntaxError` here: true only for the top level of
+    /// an `eval()` / `exec()` snippet, which CPython compiles without
+    /// top-level-await support. Not inherited by nested compilers.
+    forbid_await: bool,
+}
+
+/// Compiler settings that every nested scope inherits from its parent.
+#[derive(Debug, Clone, Copy)]
+struct ScopeFlags {
     /// Whether to compile pytest-style assert failure annotations.
-    /// Propagated to nested function and class-body compilers.
     assert_message_annotations: bool,
+    /// Whether global-scope names compile to the `*Name` opcodes (with
+    /// `NAME_GLOBAL_ONLY`) because the running frame's globals are an explicit
+    /// `exec()` / `eval()` dict.
+    globals_by_name: bool,
 }
 
 /// Jump targets needed to compile `break` and `continue`.
@@ -502,12 +517,7 @@ impl<'a> Compiler<'a> {
     /// Creates a compiler for a module or function.
     /// `frame_locals` is zero at module scope or the function namespace size;
     /// comprehension slots follow it on the operand stack.
-    fn new(
-        interns: &'a mut Interns,
-        is_module_scope: bool,
-        frame_locals: u16,
-        assert_message_annotations: bool,
-    ) -> Self {
+    fn new(interns: &'a mut Interns, is_module_scope: bool, frame_locals: u16, flags: ScopeFlags) -> Self {
         let mut code = CodeBuilder::new();
         code.new_code_region(0);
         Self {
@@ -518,7 +528,8 @@ impl<'a> Compiler<'a> {
             is_module_scope,
             frame_locals,
             comp_slots: Vec::new(),
-            assert_message_annotations,
+            flags,
+            forbid_await: false,
         }
     }
 
@@ -536,25 +547,54 @@ impl<'a> Compiler<'a> {
         options: CompileOptions,
     ) -> Result<Code, CompileError> {
         let functions_len = interns.functions_len();
-        let result = Self::compile_module_inner(nodes, interns, globals, options);
+        let result = Self::compile_module_inner(nodes, interns, globals, options, None);
         if result.is_err() {
             interns.truncate_functions(functions_len);
         }
         result
     }
 
-    /// [`compile_module`](Self::compile_module) without the rollback of the function table.
+    /// Compiles an `eval()` / `exec()` snippet prepared by
+    /// [`prepare_snippet`](crate::prepare::prepare_snippet): module-style code
+    /// whose `await`s are rejected and whose global references compile by name
+    /// when `globals_by_name` (an explicit globals dict). Rolls back the
+    /// function table on failure like [`compile_module`](Self::compile_module).
+    #[expect(dead_code, reason = "used by eval()/exec(), which land next")]
+    pub(crate) fn compile_snippet(
+        nodes: &[PreparedNode],
+        interns: &mut Interns,
+        globals: &NameMap,
+        options: CompileOptions,
+        globals_by_name: bool,
+    ) -> Result<Code, CompileError> {
+        let functions_len = interns.functions_len();
+        let result = Self::compile_module_inner(nodes, interns, globals, options, Some(globals_by_name));
+        if result.is_err() {
+            interns.truncate_functions(functions_len);
+        }
+        result
+    }
+
+    /// [`compile_module`](Self::compile_module) without the rollback of the
+    /// function table; `snippet` is `Some(globals_by_name)` for an
+    /// `eval()` / `exec()` snippet.
     fn compile_module_inner(
         nodes: &[PreparedNode],
         interns: &mut Interns,
         globals: &NameMap,
         options: CompileOptions,
+        snippet: Option<bool>,
     ) -> Result<Code, CompileError> {
         let num_locals = check_namespace_size_u16(globals.len(), "module")?;
         // Module frames have `locals_count = 0` at runtime (globals live in
         // `self.globals`), so comp-var offsets are emitted as plain operand-
         // stack indices.
-        let mut compiler = Compiler::new(interns, true, 0, options.assert_message_annotations.enabled());
+        let flags = ScopeFlags {
+            assert_message_annotations: options.assert_message_annotations.enabled(),
+            globals_by_name: snippet.unwrap_or(false),
+        };
+        let mut compiler = Compiler::new(interns, true, 0, flags);
+        compiler.forbid_await = snippet.is_some();
 
         // All globals are "local names" in the module
         compiler.code.register_local_names(globals.names());
@@ -577,12 +617,12 @@ impl<'a> Compiler<'a> {
         body: &[PreparedNode],
         interns: &mut Interns,
         num_locals: u16,
-        assert_message_annotations: bool,
+        flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
         // Function frames have `locals_count = num_locals` at runtime, so
         // comp-var load/store opcodes use `num_locals + offset` to skip past
         // the locals region into the operand-stack region.
-        let mut compiler = Compiler::new(interns, false, num_locals, assert_message_annotations);
+        let mut compiler = Compiler::new(interns, false, num_locals, flags);
         compiler.compile_block(body)?;
 
         // Implicit return None if no explicit return
@@ -835,9 +875,9 @@ impl<'a> Compiler<'a> {
     /// namespace-size error message. Net stack effect is `+1`: even when free
     /// variables are captured, the pushed cells are consumed by `MakeClosure`.
     fn emit_make_function(&mut self, func_def: &PreparedFunctionDef, what: &'static str) -> Result<(), CompileError> {
-        let assert_message_annotations = self.assert_message_annotations;
+        let flags = self.flags;
         self.emit_make_callable(func_def, what, |interns, namespace_size| {
-            Self::compile_function_body(&func_def.body, interns, namespace_size, assert_message_annotations)
+            Self::compile_function_body(&func_def.body, interns, namespace_size, flags)
         })
     }
 
@@ -986,7 +1026,7 @@ impl<'a> Compiler<'a> {
         class_name: &Identifier,
         position: CodeRange,
     ) -> Result<(), CompileError> {
-        let assert_message_annotations = self.assert_message_annotations;
+        let flags = self.flags;
         self.emit_make_callable(body, "class body", |interns, namespace_size| {
             Self::compile_class_body(
                 &body.body,
@@ -995,7 +1035,7 @@ impl<'a> Compiler<'a> {
                 position,
                 interns,
                 namespace_size,
-                assert_message_annotations,
+                flags,
             )
         })
     }
@@ -1019,9 +1059,9 @@ impl<'a> Compiler<'a> {
         position: CodeRange,
         interns: &mut Interns,
         num_locals: u16,
-        assert_message_annotations: bool,
+        flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
-        let mut compiler = Compiler::new(interns, false, num_locals, assert_message_annotations);
+        let mut compiler = Compiler::new(interns, false, num_locals, flags);
         compiler.compile_block(body)?;
 
         // Assembly errors (e.g. resource limits while building the dict)
@@ -1387,6 +1427,9 @@ impl<'a> Compiler<'a> {
             }
 
             Expr::Await(value) => {
+                if self.forbid_await {
+                    return Err(CompileError::new("'await' outside function", expr_loc.position));
+                }
                 // Await expressions: compile the inner expression, then emit Await
                 // Await handles ExternalFuture, Coroutine, and GatherFuture
                 self.compile_expr(value)?;
@@ -1474,12 +1517,20 @@ impl<'a> Compiler<'a> {
                     self.code.emit_load_local(slot)
                 }
             }
+            NameScope::Global if self.flags.globals_by_name => {
+                self.code
+                    .emit_name_op(Opcode::LoadName, slot, ident.name_id, NAME_GLOBAL_ONLY)
+            }
             NameScope::Global => {
                 // Global name - only a "local" name at module scope
                 if self.is_module_scope {
                     self.code.register_local_name(slot, ident.name_id);
                 }
                 self.code.emit_u16(Opcode::LoadGlobal, slot)
+            }
+            NameScope::Name => {
+                self.code.register_local_name(slot, ident.name_id);
+                self.code.emit_name_op(Opcode::LoadName, slot, ident.name_id, 0)
             }
             NameScope::Cell => {
                 // Register the name for NameError messages (unbound free variable)
@@ -1505,7 +1556,17 @@ impl<'a> Compiler<'a> {
     /// For `Local` and `Cell` scopes, delegates to `compile_name` since those can't
     /// be external functions (they're always defined locally or captured).
     fn compile_name_callable(&mut self, ident: &Identifier) -> Result<(), CompileError> {
+        let slot = ident.namespace_id().as_u16();
         match ident.scope {
+            NameScope::Global if self.flags.globals_by_name => {
+                self.code
+                    .emit_name_op(Opcode::LoadName, slot, ident.name_id, NAME_CALLABLE | NAME_GLOBAL_ONLY)
+            }
+            NameScope::Name => {
+                self.code.register_local_name(slot, ident.name_id);
+                self.code
+                    .emit_name_op(Opcode::LoadName, slot, ident.name_id, NAME_CALLABLE)
+            }
             NameScope::Global => {
                 // Global scope - name_id is encoded in the operand because global slot
                 // indices are in a different namespace from local slots, so looking up
@@ -1540,7 +1601,18 @@ impl<'a> Compiler<'a> {
             }
             NameScope::Global => {
                 self.check_reserved_dunder_store(target)?;
-                self.code.emit_u16(Opcode::StoreGlobal, slot)
+                if self.flags.globals_by_name {
+                    self.code
+                        .emit_name_op(Opcode::StoreName, slot, target.name_id, NAME_GLOBAL_ONLY)
+                } else {
+                    self.code.emit_u16(Opcode::StoreGlobal, slot)
+                }
+            }
+            // A snippet namespace is a real dict, so it may bind any name,
+            // reserved module dunders included.
+            NameScope::Name => {
+                self.code.register_local_name(slot, target.name_id);
+                self.code.emit_name_op(Opcode::StoreName, slot, target.name_id, 0)
             }
             NameScope::Cell => {
                 // Emit local slot index — the VM reads the cell HeapId from the stack
@@ -3376,7 +3448,7 @@ impl<'a> Compiler<'a> {
 
     /// Compiles an assert statement.
     fn compile_assert(&mut self, test: &ExprLoc, msg: Option<&ExprLoc>) -> Result<(), CompileError> {
-        if self.assert_message_annotations {
+        if self.flags.assert_message_annotations {
             return self.compile_assert_with_message(test, msg);
         }
         // Without annotations, compile the ordinary `AssertionError` path.
@@ -3857,8 +3929,15 @@ impl<'a> Compiler<'a> {
                     ));
                 }
             }
+            NameScope::Global if self.flags.globals_by_name => {
+                self.code
+                    .emit_name_op(Opcode::DeleteName, slot, target.name_id, NAME_GLOBAL_ONLY)?;
+            }
             NameScope::Global => {
                 self.code.emit_u16(Opcode::DeleteGlobal, slot)?;
+            }
+            NameScope::Name => {
+                self.code.emit_name_op(Opcode::DeleteName, slot, target.name_id, 0)?;
             }
             NameScope::Cell => {
                 // unbind the cell (CPython's DELETE_DEREF) so a captured

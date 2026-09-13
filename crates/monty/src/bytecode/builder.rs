@@ -386,6 +386,14 @@ impl CodeBuilder {
         self.emit_with_operand(Opcode::LoadGlobalCallable, Operand::U16U16(slot, name_id_u16))
     }
 
+    /// Emits a `LoadName` / `StoreName` / `DeleteName` with its slot, interned
+    /// name and `NAME_*` flags; the name is encoded for the same reason as in
+    /// [`emit_load_global_callable`](Self::emit_load_global_callable).
+    pub fn emit_name_op(&mut self, op: Opcode, slot: u16, name_id: StringId, flags: u8) -> Result<(), CompileError> {
+        let name_id_u16 = u16::try_from(name_id.index()).map_err(|_| self.name_id_too_large())?;
+        self.emit_with_operand(op, Operand::U16U16U8(slot, name_id_u16, flags))
+    }
+
     /// Emits `StoreLocal`, using wide variant for slots > 255.
     pub fn emit_store_local(&mut self, slot: u16) -> Result<(), CompileError> {
         if let Ok(s) = u8::try_from(slot) {
@@ -552,6 +560,11 @@ impl CodeBuilder {
                 self.bytecode.extend(w.to_le_bytes());
                 self.bytecode.push(b1);
                 self.bytecode.push(b2);
+            }
+            Operand::U16U16U8(w1, w2, b) => {
+                self.bytecode.extend(w1.to_le_bytes());
+                self.bytecode.extend(w2.to_le_bytes());
+                self.bytecode.push(b);
             }
             Operand::CallKw { pos_count, kwname_ids } => {
                 let kw_count = u8::try_from(kwname_ids.len()).map_err(|_| self.kw_count_too_large())?;

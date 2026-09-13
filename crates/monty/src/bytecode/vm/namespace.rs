@@ -7,7 +7,19 @@
 //! globals through that dict at every call. [`FrameNamespace`] records which
 //! case a frame is in; the descriptor owns the dict references it names.
 
-use crate::heap::{ContainsHeap, DropWithContext, HeapId};
+use std::rc::Rc;
+
+use ahash::AHashSet;
+
+use super::VM;
+use crate::{
+    bytecode::{FrameExit, NAME_CALLABLE, NAME_GLOBAL_ONLY},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    intern::StringId,
+    types::Dict,
+    value::Value,
+};
 
 /// Where a frame's global names live.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -83,6 +95,175 @@ impl<C: ContainsHeap> DropWithContext<C> for Box<FrameNamespace> {
                     ctx.heap_mut().dec_ref(locals);
                 }
             }
+        }
+    }
+}
+
+impl VM<'_> {
+    /// `LoadName`: resolves `name_id` through the frame's namespace and pushes it.
+    ///
+    /// With slot globals the tail of the lookup is [`load_global`](Self::load_global)
+    /// (or the callable variant under `NAME_CALLABLE`), so builtins, module
+    /// dunders and the host `NameLookup` suspension behave exactly as for
+    /// compiled code. Dict globals see the dict and builtins only: CPython
+    /// resolves nothing else for `exec(src, {})`.
+    pub(super) fn load_name(&mut self, slot: u16, name_id: StringId, flags: u8) -> RunResult<Option<FrameExit>> {
+        let (globals, locals) = self.frame_namespace();
+        if flags & NAME_GLOBAL_ONLY == 0
+            && let Some(locals) = locals
+            && let Some(value) = self.namespace_get(locals, name_id)?
+        {
+            self.push(value);
+            return Ok(None);
+        }
+        match globals {
+            FrameGlobals::Slots if flags & NAME_CALLABLE != 0 => {
+                self.load_global_callable(slot, name_id);
+                Ok(None)
+            }
+            FrameGlobals::Slots => self.load_global(slot),
+            FrameGlobals::Dict(dict) => {
+                if let Some(value) = self.namespace_get(dict, name_id)? {
+                    self.push(value);
+                } else if let Some(builtin) = self.builtin_for_name(name_id) {
+                    self.push(builtin);
+                } else {
+                    return Err(ExcType::name_error(self.interns.get_str(name_id)).into());
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    /// `StoreName`: pops the value and binds `name_id` in the locals dict when
+    /// there is one (and `NAME_GLOBAL_ONLY` is clear), else in the globals.
+    pub(super) fn store_name(&mut self, slot: u16, name_id: StringId, flags: u8) -> RunResult<()> {
+        let value = self.pop();
+        match self.frame_namespace() {
+            (_, Some(locals)) if flags & NAME_GLOBAL_ONLY == 0 => self.namespace_set(locals, name_id, value),
+            (FrameGlobals::Slots, _) => {
+                self.set_global_slot(slot, value);
+                Ok(())
+            }
+            (FrameGlobals::Dict(dict), _) => self.namespace_set(dict, name_id, value),
+        }
+    }
+
+    /// `DeleteName`: unbinds `name_id` where [`store_name`](Self::store_name)
+    /// would bind it; `NameError` if it is not bound there.
+    pub(super) fn delete_name(&mut self, slot: u16, name_id: StringId, flags: u8) -> RunResult<()> {
+        let removed = match self.frame_namespace() {
+            (_, Some(locals)) if flags & NAME_GLOBAL_ONLY == 0 => self.namespace_pop(locals, name_id)?,
+            (FrameGlobals::Slots, _) => return self.delete_global(slot),
+            (FrameGlobals::Dict(dict), _) => self.namespace_pop(dict, name_id)?,
+        };
+        if removed {
+            Ok(())
+        } else {
+            Err(ExcType::name_error(self.interns.get_str(name_id)).into())
+        }
+    }
+
+    /// Builds the dict `locals()` reports for the current frame: a snapshot of
+    /// its named stack slots, with captured variables read through their cells
+    /// (PEP 667 semantics — writes to the dict never reach the frame).
+    ///
+    /// Returns an owned reference to the new dict.
+    #[expect(dead_code, reason = "used by eval()/exec(), which land next")]
+    pub(crate) fn snapshot_locals(&mut self) -> RunResult<HeapId> {
+        let dict_id = self.heap.allocate(HeapData::Dict(Dict::new()));
+        let code = Rc::clone(&self.current_frame.code);
+        let base = self.current_frame.stack_base;
+        let count = usize::from(self.current_frame.locals_count);
+        // Cell slots go last so a captured parameter's live cell value replaces
+        // the stale copy left in its parameter slot under the same name.
+        let cell_slots: AHashSet<usize> = self
+            .current_frame
+            .function_id
+            .map(|id| self.interns.function(id))
+            .into_iter()
+            .flat_map(|func| {
+                func.cell_var_slots
+                    .iter()
+                    .chain(&func.free_var_slots)
+                    .map(|slot| slot.index())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let named = |slot: usize| {
+            code.local_name(u16::try_from(slot).expect("locals fit in u16"))
+                .filter(|name_id| *name_id != StringId::default())
+        };
+        for slot in (0..count).filter(|slot| !cell_slots.contains(slot)) {
+            let Some(name_id) = named(slot) else { continue };
+            let value = self.stack[base + slot].clone_with_heap(self.heap);
+            self.snapshot_entry(dict_id, name_id, value)?;
+        }
+        for slot in (0..count).filter(|slot| cell_slots.contains(slot)) {
+            let Some(name_id) = named(slot) else { continue };
+            let value = match &self.stack[base + slot] {
+                Value::Ref(cell_id) => match self.heap.get(*cell_id) {
+                    HeapData::Cell(cell) => cell.0.clone_with_heap(self.heap),
+                    _ => Value::Undefined,
+                },
+                _ => Value::Undefined,
+            };
+            self.snapshot_entry(dict_id, name_id, value)?;
+        }
+        Ok(dict_id)
+    }
+
+    /// Stores one `locals()` entry, skipping unbound slots.
+    fn snapshot_entry(&mut self, dict_id: HeapId, name_id: StringId, value: Value) -> RunResult<()> {
+        if matches!(value, Value::Undefined) {
+            Ok(())
+        } else {
+            self.namespace_set(dict_id, name_id, value)
+        }
+    }
+
+    /// The globals and locals the current frame resolves names through.
+    ///
+    /// A frame with no namespace resolves like compiled module code.
+    fn frame_namespace(&self) -> (FrameGlobals, Option<HeapId>) {
+        match self.current_frame.namespace.as_deref() {
+            None => (FrameGlobals::Slots, None),
+            Some(FrameNamespace::Function { globals }) => (FrameGlobals::Dict(*globals), None),
+            Some(FrameNamespace::Snippet { globals, locals }) => (*globals, *locals),
+        }
+    }
+
+    /// Looks `name_id` up in a namespace dict, returning an owned value.
+    fn namespace_get(&mut self, dict_id: HeapId, name_id: StringId) -> RunResult<Option<Value>> {
+        let HeapReadOutput::Dict(dict) = self.heap.read(dict_id) else {
+            return Err(RunError::internal("namespace is not a dict"));
+        };
+        dict.dict_get(&Value::InternString(name_id), self)
+    }
+
+    /// Binds `name_id` to `value` in a namespace dict, releasing any old value.
+    fn namespace_set(&mut self, dict_id: HeapId, name_id: StringId, value: Value) -> RunResult<()> {
+        let HeapReadOutput::Dict(mut dict) = self.heap.read(dict_id) else {
+            value.drop_with(self);
+            return Err(RunError::internal("namespace is not a dict"));
+        };
+        let old = dict.set(Value::InternString(name_id), value, self)?;
+        old.drop_with(self);
+        Ok(())
+    }
+
+    /// Removes `name_id` from a namespace dict; `false` if it was not bound.
+    fn namespace_pop(&mut self, dict_id: HeapId, name_id: StringId) -> RunResult<bool> {
+        let HeapReadOutput::Dict(mut dict) = self.heap.read(dict_id) else {
+            return Err(RunError::internal("namespace is not a dict"));
+        };
+        match dict.pop(&Value::InternString(name_id), self)? {
+            Some((key, value)) => {
+                key.drop_with(self);
+                value.drop_with(self);
+                Ok(true)
+            }
+            None => Ok(false),
         }
     }
 }

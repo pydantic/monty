@@ -111,6 +111,54 @@ pub(crate) fn prepare_with_existing_names(
     Ok(prepared_nodes)
 }
 
+/// How the top-level names of an `eval()` / `exec()` snippet bind.
+#[expect(dead_code, reason = "used by eval()/exec(), which land next")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SnippetNames {
+    /// An ordinary module compile against the session `NameMap` (`LoadGlobal`):
+    /// the implicit form at module scope.
+    Slots,
+    /// Top level by name, nested scopes by slot: the implicit form inside a
+    /// function or class body (slot globals plus a locals snapshot), or
+    /// `eval(src, None, locals)`.
+    NameOverSlots,
+    /// Everything by name against an explicit globals dict.
+    NameOverDict,
+}
+
+/// Prepares an `eval()` / `exec()` snippet for [`Compiler::compile_snippet`](crate::bytecode::Compiler::compile_snippet).
+///
+/// Unlike [`prepare_with_existing_names`] there is no implicit return of a
+/// trailing expression: `exec` returns `None` and `eval` parses one expression
+/// it returns itself. `globals` is the session map for the slot modes and a
+/// scratch map under [`SnippetNames::NameOverDict`], so names that only exist
+/// inside a dict-namespaced snippet never consume session slots.
+#[expect(dead_code, reason = "used by eval()/exec(), which land next")]
+pub(crate) fn prepare_snippet(
+    nodes: Vec<ParseNode>,
+    interner: &Interns,
+    globals: &mut NameMap,
+    names: SnippetNames,
+) -> Result<Vec<PreparedNode>, ParseError> {
+    let mut prepare = Prepare::new_module(globals, interner);
+    if names != SnippetNames::Slots {
+        prepare.top_level_by_name = true;
+        // `global x` at the top level binds in the globals (CPython emits
+        // `STORE_GLOBAL` there), so those names keep slot resolution.
+        let (mut nonlocals, mut assigned) = (AHashSet::new(), AHashSet::new());
+        for node in &nodes {
+            collect_scope_info_from_node(
+                node,
+                &mut prepare.module_global_names,
+                &mut nonlocals,
+                &mut assigned,
+                interner,
+            );
+        }
+    }
+    prepare.prepare_nodes(nodes)
+}
+
 /// Builds the module's initial `NameMap` from the embedder-supplied `input_names`.
 ///
 /// Input names are interned and added in order so they own the first
@@ -193,6 +241,14 @@ struct Prepare<'i, 'g> {
     /// variables by bare name. [`Self::child_enclosing_locals`] honours this by
     /// excluding our own (class-member) locals when this flag is set.
     is_class_scope: bool,
+    /// True when preparing the top level of an `eval()` / `exec()` snippet
+    /// whose names resolve at runtime (see [`SnippetNames`]): module-level
+    /// names become [`NameScope::Name`] and builtins are never substituted at
+    /// compile time, since a namespace dict may shadow them.
+    top_level_by_name: bool,
+    /// Names declared `global` at a by-name snippet's top level; they keep
+    /// slot resolution. Empty otherwise.
+    module_global_names: AHashSet<StringId>,
     /// Class members whose binding statement has already been prepared, in
     /// source order (only populated when `is_class_scope`).
     ///
@@ -521,6 +577,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
             names_used: AHashSet::new(),
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
+            top_level_by_name: false,
+            module_global_names: AHashSet::new(),
             is_class_scope: false,
             bound_class_members: AHashSet::new(),
         }
@@ -632,6 +690,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
             names_used: AHashSet::new(),
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
+            top_level_by_name: false,
+            module_global_names: AHashSet::new(),
             is_class_scope: false,
             bound_class_members: AHashSet::new(),
         })
@@ -1255,7 +1315,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // followed later by `def sum(...)`), and in REPL the rebinding can happen in a
         // future snippet that the current compile can't see. So at function scope we
         // always go through `get_id` and defer the builtin check to runtime.
-        if self.is_module_scope() {
+        //
+        // A by-name snippet top level never has it either: its namespace dict
+        // may shadow the builtin, so the read is deferred to runtime too.
+        if self.is_module_scope() && !self.top_level_by_name {
             let name_str = self.interner.get_str(name.name_id);
             let already_bound =
                 self.names_assigned_in_order.contains(&name.name_id) || self.globals.globals.contains(name.name_id);
@@ -2128,7 +2191,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let fn_state = match &mut self.state {
             PrepareState::Module => {
                 let slot = self.globals.ensure_slot(name_id, position)?;
-                return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Global));
+                let scope = if self.top_level_by_name && !self.module_global_names.contains(&name_id) {
+                    NameScope::Name
+                } else {
+                    NameScope::Global
+                };
+                return Ok(Identifier::new_with_scope(name_id, position, slot, scope));
             }
             PrepareState::Function(state) => state,
         };

@@ -42,6 +42,12 @@ pub enum NameScope {
     /// The namespace ID is a comprehension-local slot ID. The compiler stores
     /// uncaptured targets directly and gives captured targets a stable cell.
     CompVar,
+    /// Top-level name of an `eval()` / `exec()` snippet that runs with a locals
+    /// dict or dict globals: resolved by name at runtime through the frame's
+    /// namespace. The namespace ID is the session global slot for the name (a
+    /// scratch slot under dict globals) so the slot-globals tail of the lookup
+    /// reuses the `LoadGlobal` machinery.
+    Name,
 }
 
 /// Identifies where an enclosing scope stores a cell captured by a callable.
