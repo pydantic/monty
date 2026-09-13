@@ -391,6 +391,7 @@ impl<'h> VM<'h> {
             exc_stack_base,
             func_id,
             call_offset,
+            None,
         ))?;
 
         Ok(())
@@ -600,9 +601,11 @@ impl<'h> VM<'h> {
                 exception_stack_base: f.exception_stack_base,
                 call_offset: f.call_offset,
                 is_initializer: f.is_initializer,
+                namespace: f.namespace,
             })
             .collect();
-        let current = &self.current_frame;
+        // The namespace moves across so the frame left behind releases nothing.
+        let current = &mut self.current_frame;
         frames.push(SerializedTaskFrame {
             function_id: current.function_id,
             ip: current.ip,
@@ -611,6 +614,7 @@ impl<'h> VM<'h> {
             exception_stack_base: current.exception_stack_base,
             call_offset: current.call_offset,
             is_initializer: current.is_initializer,
+            namespace: mem::take(&mut current.namespace),
         });
 
         // Count this task's recursion depth contribution and subtract it from
@@ -679,6 +683,7 @@ impl<'h> VM<'h> {
                         call_offset: sf.call_offset,
                         should_return: false,
                         is_parked: false,
+                        namespace: sf.namespace,
                         is_initializer: sf.is_initializer,
                     }
                 })
@@ -759,6 +764,7 @@ impl<'h> VM<'h> {
             exc_stack_base,
             func_id,
             None, // No call position — this is the root frame for a spawned task
+            None,
         );
         self.suspended_frames.clear();
 

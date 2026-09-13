@@ -12,6 +12,7 @@ mod compare;
 mod context_manager;
 mod exceptions;
 mod format;
+mod namespace;
 mod recursion;
 mod scheduler;
 
@@ -20,6 +21,7 @@ use std::{borrow::Cow, mem, rc::Rc};
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
+pub(crate) use namespace::FrameNamespace;
 pub(crate) use recursion::{ContainsVM, RecursionToken};
 use scheduler::Scheduler;
 
@@ -393,6 +395,11 @@ pub struct CallFrame {
     /// Whether this is a non-executing frame parked between active tasks.
     is_parked: bool,
 
+    /// Where names that are not stack slots resolve; `None` for every
+    /// ordinary frame. Owns its dict references: released by
+    /// `cleanup_frame_state`, or taken by `serialize` for a snapshot.
+    namespace: Option<Box<FrameNamespace>>,
+
     /// Whether this frame is a class `__init__` running for `Foo(...)`.
     ///
     /// When `true`, the `ReturnValue` handler discards the frame's return value
@@ -420,6 +427,7 @@ impl CallFrame {
             call_offset: None,
             should_return: false,
             is_parked: false,
+            namespace: None,
             is_initializer: false,
         }
     }
@@ -446,6 +454,7 @@ impl CallFrame {
         exception_stack_base: usize,
         function_id: FunctionId,
         call_offset: Option<u32>,
+        namespace: Option<Box<FrameNamespace>>,
     ) -> Self {
         Self {
             bytecode: code.shared_bytecode(),
@@ -458,6 +467,7 @@ impl CallFrame {
             call_offset,
             should_return: false,
             is_parked: false,
+            namespace,
             is_initializer: false,
         }
     }
@@ -544,7 +554,7 @@ impl CallFrame {
 ///
 /// Cannot store `&Code` (a reference) — instead stores `FunctionId` to look up
 /// the pre-compiled Code object on resume. Module-level code uses `None`.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SerializedFrame {
     /// Which function's code this frame executes (None = module-level).
     function_id: Option<FunctionId>,
@@ -574,11 +584,17 @@ pub struct SerializedFrame {
     /// `None` instead of leaving the instance on the stack.
     #[serde(default)]
     is_initializer: bool,
+
+    /// Frame namespace, with ownership of its dict references (see
+    /// `CallFrame.namespace`).
+    #[serde(default)]
+    namespace: Option<Box<FrameNamespace>>,
 }
 
 impl CallFrame {
-    /// Converts this frame to a serializable representation.
-    fn serialize(&self) -> SerializedFrame {
+    /// Converts this frame to a serializable representation, moving the
+    /// namespace's owned references across so the live frame releases nothing.
+    fn serialize(&mut self) -> SerializedFrame {
         assert!(!self.is_parked, "cannot serialize a parked frame");
         assert!(
             !self.should_return,
@@ -592,6 +608,7 @@ impl CallFrame {
             exception_stack_base: self.exception_stack_base,
             call_offset: self.call_offset,
             is_initializer: self.is_initializer,
+            namespace: mem::take(&mut self.namespace),
         }
     }
 }
@@ -659,6 +676,7 @@ impl VMSnapshot {
         let Self {
             stack,
             globals,
+            frames,
             exception_stack,
             mut scheduler,
             pending_effect,
@@ -671,6 +689,9 @@ impl VMSnapshot {
             pending_lookup_effect.drop_with(heap);
             exception_stack.drop_with(heap);
             stack.drop_with(heap);
+            for frame in frames {
+                frame.namespace.drop_with(heap);
+            }
             scheduler.cleanup(heap);
         });
         (globals, cwd)
@@ -899,6 +920,7 @@ impl<'h> VM<'h> {
                     call_offset: sf.call_offset,
                     should_return: false,
                     is_parked: false,
+                    namespace: sf.namespace,
                     is_initializer: sf.is_initializer,
                 }
             })
@@ -976,8 +998,8 @@ impl<'h> VM<'h> {
                 Vec::new()
             } else {
                 self.suspended_frames
-                    .iter()
-                    .chain([&self.current_frame])
+                    .iter_mut()
+                    .chain([&mut self.current_frame])
                     .map(CallFrame::serialize)
                     .collect()
             },
@@ -2111,11 +2133,11 @@ impl<'h> VM<'h> {
     /// Pushes the given frame onto the call stack.
     ///
     /// Returns an error if the recursion depth limit is exceeded by pushing this frame.
-    pub(super) fn push_frame(&mut self, frame: CallFrame) -> RunResult<()> {
+    pub(super) fn push_frame(&mut self, mut frame: CallFrame) -> RunResult<()> {
         if !self.current_frame.is_parked
             && let Err(e) = self.incr_recursion()
         {
-            self.cleanup_frame_state(&frame);
+            self.cleanup_frame_state(&mut frame);
             return Err(e.into());
         }
         let caller = mem::replace(&mut self.current_frame, frame);
@@ -2132,8 +2154,8 @@ impl<'h> VM<'h> {
     /// Returns `true` if this frame indicated evaluation should stop when popped.
     pub(super) fn pop_frame(&mut self) -> bool {
         let caller = self.suspended_frames.pop().expect("cannot pop the root frame");
-        let frame = mem::replace(&mut self.current_frame, caller);
-        self.cleanup_frame_state(&frame);
+        let mut frame = mem::replace(&mut self.current_frame, caller);
+        self.cleanup_frame_state(&mut frame);
         // Sync instruction_ip to the restored caller so exception table lookups
         // target the correct frame after returning from a nested run() call.
         self.instruction_ip = self.current_frame.ip;
@@ -2143,13 +2165,15 @@ impl<'h> VM<'h> {
         frame.should_return
     }
 
-    fn cleanup_frame_state(&mut self, frame: &CallFrame) {
+    /// Releases what a finished frame owns: its stack region and namespace.
+    fn cleanup_frame_state(&mut self, frame: &mut CallFrame) {
         // Clean up frame's stack region (locals + operand stack, which now
         // includes any in-flight comprehension variables — the operand-stack
         // drain naturally covers them).
         self.stack
             .drain(frame.stack_base..)
             .for_each(|value| value.drop_with(&mut *self.heap));
+        mem::take(&mut frame.namespace).drop_with(self.heap);
     }
 
     /// Cleans up all frames and stack values for the current task.
@@ -2159,12 +2183,15 @@ impl<'h> VM<'h> {
     /// parked frame until another task is loaded.
     pub(super) fn cleanup_current_task(&mut self) {
         self.stack.drain(..).drop_with(self.heap);
-        self.suspended_frames.clear();
+        for mut frame in self.suspended_frames.drain(..) {
+            mem::take(&mut frame.namespace).drop_with(self.heap);
+        }
         let code = self
             .module_code
             .clone()
             .unwrap_or_else(|| Rc::clone(&self.current_frame.code));
-        self.current_frame = CallFrame::new_parked(code);
+        let mut finished = mem::replace(&mut self.current_frame, CallFrame::new_parked(code));
+        mem::take(&mut finished.namespace).drop_with(self.heap);
     }
 
     /// Runs the trial-deletion cycle collector.

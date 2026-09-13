@@ -918,6 +918,7 @@ impl VM<'_> {
             exc_stack_base,
             func_id,
             call_offset,
+            None,
         ))?;
 
         Ok(CallResult::FramePushed)
@@ -1088,6 +1089,7 @@ impl VM<'_> {
             exc_stack_base,
             func_id,
             call_offset,
+            None,
         ))?;
 
         Ok(CallResult::FramePushed)
