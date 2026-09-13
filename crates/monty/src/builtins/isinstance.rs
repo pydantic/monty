@@ -50,6 +50,9 @@ fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResul
         Value::Ref(id) if let HeapReadOutput::Tuple(tuple) = vm.heap.read(*id) => {
             isinstance_check_tuple(obj, &tuple, vm)
         }
+        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::GenericAlias(_)) => {
+            Err(ExcType::isinstance_parameterized_generic())
+        }
         _ => Err(ExcType::isinstance_arg2_error()),
     }
 }
@@ -109,6 +112,9 @@ fn isinstance_check_tuple<'h>(obj: &Value, tuple: &HeapRead<'h, Tuple>, vm: &mut
                 if isinstance_check_tuple(obj, &nested, vm)? {
                     return Ok(true);
                 }
+            }
+            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::GenericAlias(_)) => {
+                return Err(ExcType::isinstance_parameterized_generic());
             }
             _ => return Err(ExcType::isinstance_arg2_error()),
         }

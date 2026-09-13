@@ -6,6 +6,7 @@ import itertools
 import pathlib
 import re
 import sys
+import types
 import zoneinfo
 from typing import NamedTuple
 
@@ -169,7 +170,7 @@ from collections import deque
 def test_type_object_input_roundtrip(monty_run: RunMonty):
     """A type object passed in as an input is preserved as a type (not degraded to
     a callable) and round-trips back out by identity."""
-    types: list[type[object]] = [
+    type_objects: list[type[object]] = [
         int,
         str,
         type,
@@ -189,8 +190,9 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         re.Pattern,
         re.Match,
         collections.deque,
+        types.GenericAlias,
     ]
-    for ty in types:
+    for ty in type_objects:
         # The pathlib family all collapses to a single Monty path type, which
         # re-emerges as PurePosixPath; everything else round-trips by identity.
         expected: type[object] = pathlib.PurePosixPath if issubclass(ty, pathlib.PurePath) else ty
@@ -243,6 +245,15 @@ def test_itertools_type_object_isinstance(monty_run: RunMonty, ty: type[object],
     which is what identity recognition is actually for."""
     code = f'import itertools\nisinstance({build}, t)'
     assert monty_run(code, inputs={'t': ty}) is True
+
+
+def test_generic_alias_crosses_as_repr(monty_run: RunMonty):
+    """A `list[int]` built in the sandbox has no host counterpart that could be
+    rebuilt faithfully, so it crosses as its repr, while its type object is the
+    host's `types.GenericAlias` and its `__args__` are real type objects."""
+    assert monty_run('list[int]') == snapshot('list[int]')
+    assert monty_run('type(dict[str, int])') is types.GenericAlias
+    assert monty_run('tuple[int, str, ...].__args__') == snapshot((int, str, ...))
 
 
 def test_type_object_input_isinstance(monty_run: RunMonty):

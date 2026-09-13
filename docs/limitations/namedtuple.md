@@ -26,3 +26,5 @@ tuples model CPython *structseqs*, which expose none of them
     `AttributeError`: methods are call-only, not bound-method values. Repo-wide,
     `[1].append`, `'a'.upper` and `{}.get` all do the same.
 - **Subclassing** is unsupported (see [classes.md](classes.md)).
+- **Subscripting the class** (`Point[int]`) raises `TypeError: type 'Point' is not subscriptable`; CPython
+    builds a `types.GenericAlias` through the inherited `tuple.__class_getitem__` (see [typing.md](typing.md)).

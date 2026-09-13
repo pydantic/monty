@@ -120,6 +120,27 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::TypeError, format!("'{type_}' object is not subscriptable")).into()
     }
 
+    /// Creates the TypeError for subscripting a type that defines no
+    /// `__class_getitem__`: `type 'int' is not subscriptable`.
+    #[must_use]
+    fn type_error_type_not_subscriptable(type_: &str) -> RunError {
+        Self::type_error(format!("type '{type_}' is not subscriptable"))
+    }
+
+    /// Creates the TypeError for subscripting a `types.GenericAlias` again
+    /// (`list[int][str]`), `repr` being the alias's own.
+    #[must_use]
+    fn type_error_not_generic_class(repr: &str) -> RunError {
+        Self::type_error(format!("{repr} is not a generic class"))
+    }
+
+    /// Creates the TypeError `isinstance()` raises for a `types.GenericAlias`
+    /// second argument, which CPython refuses to check against.
+    #[must_use]
+    fn isinstance_parameterized_generic() -> RunError {
+        Self::type_error("isinstance() argument 2 cannot be a parameterized generic")
+    }
+
     /// Creates the TypeError for an ordering comparison (`<`, `<=`, `>`, `>=`)
     /// between values whose types define no ordering, e.g. `1 < 'a'` or two
     /// instances of a user class without comparison dunders.

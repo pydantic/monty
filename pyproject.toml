@@ -163,6 +163,11 @@ exclude = [
     # their TypeError messages
     "crates/monty/test_cases/functools__reduce.py",
     "crates/monty/test_cases/functools__partial.py",
+    # deliberately subscripts types with the wrong arity and with non-type
+    # arguments to pin `types.GenericAlias` behaviour
+    "crates/monty/test_cases/generic_alias.py",
+    "crates/monty/test_cases/generic_alias__not_subscriptable.py",
+    "crates/monty/test_cases/refcount__generic_alias.py",
     "scripts/startup_performance.py",
     "examples/web_scraper/example_code.py",
 ]

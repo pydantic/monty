@@ -828,6 +828,11 @@ impl NamedTupleClass {
     pub(crate) fn module(&self) -> &Value {
         &self.module
     }
+
+    /// The class name, `Point` for `namedtuple('Point', ...)`.
+    pub(crate) fn name<'a>(&'a self, interns: &'a Interns) -> &'a str {
+        self.name.as_str(interns)
+    }
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
@@ -843,6 +848,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // Class objects compare by identity, resolved before reaching here.
         Ok(None)
+    }
+
+    /// `Point[int]` raises here where CPython builds a `types.GenericAlias`
+    /// via the inherited `tuple.__class_getitem__` (see `limitations/namedtuple.md`).
+    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+        Err(ExcType::type_error_type_not_subscriptable(
+            self.get(vm.heap).name(vm.interns),
+        ))
     }
 
     fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {

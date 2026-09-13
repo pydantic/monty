@@ -25,7 +25,7 @@ use crate::{
     percent_format::{copy_bytes_template, percent_format, percent_format_bytes},
     resource_checks::check_pow_size,
     types::{
-        Bytes, BytesIterator, CmpOrder, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
+        Bytes, BytesIterator, CmpOrder, GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
         bytes::{bytes_contains, bytes_repr_fmt, concat_bytes, get_byte_at_index, repeat_bytes},
         host_class_type,
         instance::{instance_dataclass_eq, instance_getattr, instance_str, instance_user_eq},
@@ -1282,6 +1282,21 @@ impl<'h> PyTrait<'h> for Value {
                 let bytes = interns.get_bytes(*bytes_id);
                 let byte = get_byte_at_index(bytes, index).ok_or_else(ExcType::bytes_index_error)?;
                 Ok(Self::Int(i64::from(byte)))
+            }
+            // `list[int]` and the other parameterizable types build a
+            // `types.GenericAlias`; `type` is a builtin function in Monty but
+            // subscripts like the type it is in CPython.
+            Self::Builtin(Builtins::Type(t)) if t.has_class_getitem() => {
+                Ok(GenericAlias::subscript(*t, key.clone_with_heap(vm), vm))
+            }
+            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
+                Ok(GenericAlias::subscript(Type::Type, key.clone_with_heap(vm), vm))
+            }
+            Self::Builtin(Builtins::Type(t)) => {
+                Err(ExcType::type_error_type_not_subscriptable(&t.name(vm.heap, vm.interns)))
+            }
+            Self::Builtin(Builtins::ExcType(exc_type)) => {
+                Err(ExcType::type_error_type_not_subscriptable((*exc_type).into()))
             }
             _ => Err(ExcType::type_error_not_sub(&self.py_type_name(vm))),
         }

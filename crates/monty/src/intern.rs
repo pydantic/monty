@@ -1149,6 +1149,18 @@ pub enum StaticStrings {
     /// `wrapcol` parameter of `base64.a85encode()`.
     #[strum(serialize = "wrapcol")]
     Wrapcol,
+    /// `__origin__` of a `types.GenericAlias`.
+    #[strum(serialize = "__origin__")]
+    DunderOrigin,
+    /// `__args__` of a `types.GenericAlias`.
+    #[strum(serialize = "__args__")]
+    DunderArgs,
+    /// `__parameters__` of a `types.GenericAlias`.
+    #[strum(serialize = "__parameters__")]
+    DunderParameters,
+    /// `__class_getitem__`, the classmethod behind `list[int]`.
+    #[strum(serialize = "__class_getitem__")]
+    ClassGetitem,
     /// `adobe` parameter of `base64.a85encode()` / `a85decode()`.
     #[strum(serialize = "adobe")]
     Adobe,

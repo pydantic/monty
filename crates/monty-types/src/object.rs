@@ -958,6 +958,9 @@ pub enum MontyType {
     ItertoolsBatched,
     #[strum(serialize = "itertools.zip_longest")]
     ItertoolsZipLongest,
+    /// `types.GenericAlias`, the type of `list[int]`, qualified the way CPython's `tp_name` is.
+    #[strum(serialize = "types.GenericAlias")]
+    GenericAlias,
 }
 
 impl fmt::Display for MontyType {

@@ -7,7 +7,9 @@
 //! directly to cover the serde impls a dump ultimately rests on.
 
 use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
-use monty_types::{CompileOptions, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
+use monty_types::{
+    CompileOptions, MontyException, MontyObject, MontyType, NameLookupResult, PrintWriter, ResourceTracker,
+};
 use serde::{Serialize, de::DeserializeOwned};
 
 /// Round-trips compiled code through postcard.
@@ -301,6 +303,49 @@ ext_fn(0)
         MontyObject::Tuple(vec![MontyObject::Int(1)]),
         MontyObject::Dict(vec![(MontyObject::String("c".to_owned()), MontyObject::Int(3))].into()),
         MontyObject::String("True".to_owned()),
+    ]);
+
+    // Both are resumed for the reason given in the itertools round-trip above.
+    let original = progress.into_function_call().expect("should be at function call");
+    assert_eq!(original.function_name, "ext_fn");
+    let from_original = original.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_original.into_complete().unwrap(), expected);
+
+    let call = loaded.into_function_call().expect("should be at function call");
+    let from_loaded = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_loaded.into_complete().unwrap(), expected);
+}
+
+/// A live `types.GenericAlias` on the heap survives a round-trip with its
+/// origin and `__args__` tuple intact — the only coverage that carries
+/// `HeapData::GenericAlias` through postcard.
+#[test]
+fn run_progress_round_trip_preserves_generic_alias() {
+    let code = r"
+Record = tuple[int, str, ...]
+ext_fn(0)
+[repr(Record), Record.__args__, repr(Record.__origin__), Record((1, 2)), Record == tuple[int, str, ...]]
+"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+
+    // Suspend at `ext_fn` with the alias built and still live.
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded: RunProgress = round_trip_progress(&progress);
+
+    let expected = MontyObject::List(vec![
+        MontyObject::String("tuple[int, str, ...]".to_owned()),
+        MontyObject::Tuple(vec![
+            MontyObject::Type(MontyType::Int),
+            MontyObject::Type(MontyType::Str),
+            MontyObject::Ellipsis,
+        ]),
+        MontyObject::String("<class 'tuple'>".to_owned()),
+        MontyObject::Tuple(vec![MontyObject::Int(1), MontyObject::Int(2)]),
+        MontyObject::Bool(true),
     ]);
 
     // Both are resumed for the reason given in the itertools round-trip above.

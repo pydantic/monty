@@ -160,6 +160,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         None
     }
 
+    /// `Foo[int]`: a class's `__class_getitem__` is never looked up, so the
+    /// wording is CPython's for a type without one.
+    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+        Err(ExcType::type_error_type_not_subscriptable(
+            self.get(vm.heap).name.as_str(vm.interns),
+        ))
+    }
+
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut value_guard = DropGuard::new(value, vm);
         let name = attribute_name_value(name, value_guard.ctx());

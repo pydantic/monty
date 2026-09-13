@@ -473,6 +473,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
         None
     }
 
+    /// `Point[int]`: the host's class may define `__class_getitem__`, but the
+    /// sandbox never asks it, so this is the wording for a type without one.
+    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+        Err(ExcType::type_error_type_not_subscriptable(
+            self.get(vm.heap).name(vm.interns),
+        ))
+    }
+
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::HostClassType(other)) = other.read_heap(vm) else {
             return Ok(None);

@@ -1323,6 +1323,21 @@ repr(p)
     assert_repr_timeout(code, "partial repr");
 }
 
+/// Test that `repr()` of a `types.GenericAlias` with many arguments respects
+/// the time limit.
+///
+/// The arguments are formatted in one native loop, as a tuple's are, so the
+/// same `repr_check_time` poll has to truncate it.
+#[test]
+fn timeout_truncation_in_generic_alias_repr() {
+    let code = r"
+alias = tuple[tuple(['abcdefghij'] * 500_000)]
+interrupt()
+repr(alias)
+";
+    assert_repr_timeout(code, "generic alias repr");
+}
+
 /// Test that `repr(large_set)` respects the time limit.
 ///
 /// The elements are ints rather than strings so that the promptness bound

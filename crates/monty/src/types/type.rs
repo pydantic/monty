@@ -12,8 +12,8 @@ use crate::{
     intern::{Interns, StaticStrings, StringId},
     modules::collections,
     types::{
-        AttrCallResult, Bytes, Deque, Dict, FrozenSet, List, LongInt, Partial, Path, PyTrait, Range, Set, Slice, Str,
-        TimeZone, Tuple,
+        AttrCallResult, Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Range, Set,
+        Slice, Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         date, datetime,
         dict::{DictKind, dict_fromkeys},
@@ -237,6 +237,10 @@ pub enum Type {
     ItertoolsBatched,
     #[strum(serialize = "itertools.zip_longest")]
     ItertoolsZipLongest,
+    /// `types.GenericAlias`, the type of `list[int]`; qualified like
+    /// `functools.partial`, so `type(list[int])` reads `<class 'types.GenericAlias'>`.
+    #[strum(serialize = "types.GenericAlias")]
+    GenericAlias,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -363,6 +367,30 @@ impl Type {
             "object" => Some(Self::Object),
             _ => None,
         }
+    }
+
+    /// Whether subscripting this type builds a `types.GenericAlias`
+    /// (`list[int]`), i.e. whether CPython's type defines `__class_getitem__`.
+    ///
+    /// `type` is included even though Monty binds the name to a builtin
+    /// function: `type[int]` is routed here by `Value::py_getitem`.
+    #[must_use]
+    pub(crate) const fn has_class_getitem(self) -> bool {
+        matches!(
+            self,
+            Self::List
+                | Self::Tuple
+                | Self::Dict
+                | Self::DefaultDict
+                | Self::Counter
+                | Self::Set
+                | Self::FrozenSet
+                | Self::Type
+                | Self::Deque
+                | Self::Partial
+                | Self::RePattern
+                | Self::ReMatch
+        )
     }
 
     /// Returns whether this is one of Python's concrete iterator types.
@@ -523,6 +551,13 @@ impl Type {
             }
             (Self::Time, m) if m == StaticStrings::Fromisoformat => {
                 time::class_fromisoformat(vm, args).map(AttrCallResult::Value)
+            }
+            // `list.__class_getitem__(int)` is `list[int]`; the error names the
+            // bare type as CPython does (`deque.__class_getitem__()`).
+            (ty, m) if ty.has_class_getitem() && m == StaticStrings::ClassGetitem => {
+                let name = format!("{}.__class_getitem__", ty.dunder_name(vm.heap, vm.interns));
+                let key = args.get_one_arg(&name, vm.heap)?;
+                Ok(AttrCallResult::Value(GenericAlias::subscript(ty, key, vm)))
             }
             _ => {
                 let method_name = vm.interns.get_str(method_id);
