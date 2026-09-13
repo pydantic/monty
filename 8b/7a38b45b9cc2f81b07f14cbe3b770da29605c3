@@ -1,0 +1,33 @@
+evals/harness/executor.py
+  s_94bd17dac64411::t_3edaf6090ca2e2 119-120,123-124,128,134-139,143-153,176,178-179,233-234
+evals/harness/runner.py
+  s_94bd17dac64411::t_3edaf6090ca2e2 7,12-13,32,44,100-102,104-105,125,134-136,141-148,150-155,166-167,169-171,186,188-194,212,239
+  s_94bd17dac64411::t_62779045ade018 45-46,149
+evals/README.md
+  s_94bd17dac64411::t_2a5be546fb9f52 23-24,55-59,106-156,198-202
+  s_94bd17dac64411::t_bcc4aac350e620 103-105,157
+evals/tasks/rlm/support_tickets.py
+  s_94bd17dac64411::t_0b61e541ac853e 1-226
+evals/tasks/rlm/support_tickets.md
+  s_94bd17dac64411::t_c9110effcca750 1-18
+evals/harness/agent.py
+  s_94bd17dac64411::t_3edaf6090ca2e2 17,106-131
+evals/harness/task.py
+  s_94bd17dac64411::t_3edaf6090ca2e2 72-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8b7a38b45b9cc2f81b07f14cbe3b770da29605c3",
+  "prompts": {},
+  "sessions": {
+    "s_94bd17dac64411": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f9be6770-bfa2-49ff-89f1-70bdc3b3655c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
