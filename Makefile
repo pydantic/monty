@@ -94,7 +94,8 @@ format-js: install-js ## Format JS code with prettier
 # look like markdown, the AGENTS.md symlink (CLAUDE.md is formatted directly), and the crate
 # READMEs: rustdoc embeds those and clippy's `doc_overindented_list_items` rejects the
 # four-space list continuations mdformat-mkdocs writes
-MD_FILES := $(shell git ls-files '*.md' ':!:crates/monty-typeshed/**' ':!:.macroscope/**' ':!:AGENTS.md' ':!:crates/*/README*.md')
+# evals/prompts: LLM prompt text, mdformat would escape the ``` fences it tells the model to emit
+MD_FILES := $(shell git ls-files '*.md' ':!:crates/monty-typeshed/**' ':!:.macroscope/**' ':!:AGENTS.md' ':!:crates/*/README*.md' ':!:evals/prompts/**')
 
 .PHONY: format-md
 format-md: ## Format markdown with mdformat (tables, mkdocs admonitions, frontmatter)
