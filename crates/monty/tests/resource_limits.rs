@@ -1535,3 +1535,86 @@ fn timeout_in_a85decode_ignorechars() {
         "a85decode with large ignorechars",
     );
 }
+
+// === Native codec loops consult the clock as they run ===
+
+/// One case per loop shape in `binascii` and `base64`, with the fill each
+/// conversion needs to reach its own loop rather than an early error.
+///
+/// `binascii.b2a_uu` is absent deliberately: its input is capped at 45 bytes,
+/// so it has no loop long enough to need a poll.
+#[cfg(feature = "test-hooks")]
+const CODEC_CASES: [(&str, &str); 23] = [
+    ("b'a'", "binascii.hexlify(src)"),
+    ("b'a'", "binascii.unhexlify(src)"),
+    ("b'a'", "binascii.b2a_base64(src)"),
+    ("b'A'", "binascii.a2b_base64(src)"),
+    ("b'a'", "binascii.crc32(src, 0)"),
+    ("b'a'", "binascii.crc_hqx(src, 0)"),
+    ("b' '", "binascii.a2b_uu(b'!80' + src)"),
+    ("b'a'", "binascii.b2a_qp(src)"),
+    ("b'a'", "binascii.a2b_qp(src)"),
+    ("b'a'", "base64.b64encode(src)"),
+    ("b'A'", "base64.b64decode(src)"),
+    ("b'a'", "base64.urlsafe_b64encode(src)"),
+    ("b'a'", "base64.b32encode(src)"),
+    ("b'A'", "base64.b32decode(src)"),
+    ("b'a'", "base64.b32hexencode(src)"),
+    ("b'a'", "base64.b16encode(src)"),
+    ("b'A'", "base64.b16decode(src)"),
+    ("b'a'", "base64.b85encode(src)"),
+    ("b'0'", "base64.b85decode(src)"),
+    ("b'a'", "base64.a85encode(src)"),
+    ("b'!'", "base64.a85decode(src)"),
+    ("b'a'", "base64.encodebytes(src)"),
+    ("b'A'", "base64.decodebytes(src)"),
+];
+
+/// Clock polls a script makes, over and above building its input.
+///
+/// The same script runs twice, once without the conversion, so the difference
+/// is the conversion's own polling and nothing else — not the dispatch loop's
+/// checkpoint, and not the sequence repeat that builds `src`.
+#[cfg(feature = "test-hooks")]
+fn codec_polls(fill: &str, call: &str, size: usize) -> usize {
+    let run = |code: String| {
+        let ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_duration(Duration::from_secs(60));
+        monty_types::reset_clock_polls();
+        ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+            .unwrap_or_else(|err| panic!("{call}: should stay inside the budget, got {err}"));
+        monty_types::clock_polls()
+    };
+    let setup = format!("import binascii, base64\nsrc = {fill} * {size}\n");
+    run(format!("{setup}result = {call}\nNone\n")).saturating_sub(run(format!("{setup}None\n")))
+}
+
+/// Every conversion in the two modules must read the clock as it runs, so an
+/// exhausted budget ends it rather than the whole buffer being scanned inside
+/// one bytecode instruction.
+///
+/// Asserted as a poll count rather than as a timeout: a conversion fast enough
+/// to finish inside its budget returns the same value whether it polled or
+/// not, so a wall-clock assertion only holds while the machine is slow enough
+/// to make it hold. Counting separates the two on any machine, and reports the
+/// conversion that stopped polling rather than a timing failure somewhere in a
+/// pool.
+#[test]
+#[cfg(feature = "test-hooks")]
+fn native_codec_loops_poll_the_clock() {
+    // A megabyte is 256 windows at the 4KiB stride, and a handful of seconds
+    // for the slowest of these conversions in a debug build.
+    const SIZE: usize = 1024 * 1024;
+    // Half the windows the stride implies, which leaves room for a loop whose
+    // unit is a group rather than a byte while still failing loudly for one
+    // that polls once or not at all.
+    let floor = SIZE / monty_types::ResourceTracker::BYTE_LOOP_CHECK_INTERVAL / 2;
+
+    for (fill, call) in CODEC_CASES {
+        let polls = codec_polls(fill, call, SIZE);
+        assert!(
+            polls >= floor,
+            "{call}: polled the clock {polls} times over {SIZE} bytes, expected at least {floor}"
+        );
+    }
+}

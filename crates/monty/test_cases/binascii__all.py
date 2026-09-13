@@ -370,6 +370,11 @@ assert binascii.b2a_qp(b'  ', quotetabs=True) == b'=20=20'
 # istext=False makes newlines data rather than line structure
 assert binascii.b2a_qp(b'a\nb', istext=False) == b'a=0Ab'
 assert binascii.b2a_qp(b'\r\n', istext=False) == b'=0D=0A'
+# a soft break still follows the input's own line ending, which is picked from
+# the first newline whether or not that newline is line structure
+assert binascii.b2a_qp(b'a' * 80 + b'\r\n', istext=False) == b'a' * 75 + b'=\r\naaaaa=0D=0A'
+assert binascii.b2a_qp(b'a' * 80 + b'\r\n', istext=True) == b'a' * 75 + b'=\r\naaaaa\r\n'
+assert binascii.b2a_qp(b'a' * 80 + b'\n', istext=False) == b'a' * 75 + b'=\naaaaa=0A'
 # header mode writes a space as '_', so '_' itself has to be quoted
 assert binascii.b2a_qp(b'a b', header=True) == b'a_b'
 assert binascii.b2a_qp(b'a_b', header=True) == b'a=5Fb'

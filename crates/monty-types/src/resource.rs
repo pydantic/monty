@@ -329,6 +329,9 @@ impl ResourceTracker {
     /// monotonic, so once the budget is exceeded every later call fails too.
     #[inline]
     pub fn check_time(&self) -> Result<(), ResourceError> {
+        #[cfg(feature = "test-hooks")]
+        CLOCK_POLLS.with(|polls| polls.set(polls.get().saturating_add(1)));
+
         if let Some(max) = self.limits.max_duration {
             let elapsed = self.elapsed();
             if elapsed > max {
@@ -354,6 +357,37 @@ impl ResourceTracker {
     #[inline]
     pub fn check_time_every(&self, i: usize) -> Result<(), ResourceError> {
         if i % Self::LOOP_CHECK_INTERVAL == Self::LOOP_CHECK_INTERVAL - 1 {
+            self.check_time()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Bytes processed between clock reads in loops whose item is one byte.
+    ///
+    /// [`LOOP_CHECK_INTERVAL`](Self::LOOP_CHECK_INTERVAL) counts items and is
+    /// sized for loops whose item is a Python value; at one byte per item it
+    /// reads the clock 64x more often per unit of work than that, which a
+    /// codec loop feels. The overshoot this allows is still microseconds.
+    pub const BYTE_LOOP_CHECK_INTERVAL: usize = 4096;
+
+    /// The largest multiple of `group` that fits one poll window.
+    ///
+    /// Lets a loop over `data.chunks(group)` poll on an outer window instead:
+    /// every window but the last splits evenly into groups, so the inner loop
+    /// carries no check at all. `group` must be non-zero.
+    #[must_use]
+    pub const fn poll_window(group: usize) -> usize {
+        Self::BYTE_LOOP_CHECK_INTERVAL / group * group
+    }
+
+    /// Byte-scale sibling of [`check_time_every`](Self::check_time_every), for
+    /// byte loops that cannot be windowed — a state machine whose stride
+    /// varies with the input, say. Prefer windowing where the loop allows it:
+    /// this still costs a test per byte, which denies the body its unrolling.
+    #[inline]
+    pub fn check_time_every_bytes(&self, i: usize) -> Result<(), ResourceError> {
+        if i % Self::BYTE_LOOP_CHECK_INTERVAL == Self::BYTE_LOOP_CHECK_INTERVAL - 1 {
             self.check_time()
         } else {
             Ok(())
@@ -460,6 +494,35 @@ impl ResourceTracker {
         self.recursion_limit_override.set(Some(new_limit));
         Ok(())
     }
+}
+
+#[cfg(feature = "test-hooks")]
+thread_local! {
+    /// Clock polls this thread has made since [`reset_clock_polls`].
+    ///
+    /// Thread-local so tests running in parallel cannot see each other's
+    /// counts. A count is the only way to tell a loop that polls from one that
+    /// simply finished before its budget mattered: a wall-clock assertion sees
+    /// the same result either way, and so depends on how fast the machine is.
+    static CLOCK_POLLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Zeroes this thread's clock-poll count, so a measurement can start from a
+/// known point.
+#[cfg(feature = "test-hooks")]
+pub fn reset_clock_polls() {
+    CLOCK_POLLS.with(|polls| polls.set(0));
+}
+
+/// How many times this thread has read the clock since [`reset_clock_polls`].
+///
+/// Counts every [`ResourceTracker::check_time`], whether or not a
+/// `max_duration` is configured, so a test can assert how densely a native
+/// loop polls without also having to make it time out.
+#[cfg(feature = "test-hooks")]
+#[must_use]
+pub fn clock_polls() -> usize {
+    CLOCK_POLLS.with(Cell::get)
 }
 
 /// Returns memory used in bytes
