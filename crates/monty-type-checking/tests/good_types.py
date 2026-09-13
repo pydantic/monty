@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import functools
+import itertools
 import json
 import os
 import re
@@ -619,3 +620,19 @@ for k_dict, v_dict in {'a': 1}.items():
     assert_type(k_dict, str)
     assert_type(v_dict, int)
 assert_type([y_comp for y_comp in [1, 2]], list[int])
+
+# `itertools`: the combinatoric iterators yield tuples, `groupby` yields
+# `(key, group)` pairs whose group iterates the source's items, and
+# `chain.from_iterable` flattens one level. `r` is a variable rather than a
+# literal because this file is also checked against upstream typeshed, whose
+# per-arity overloads would give a fixed-width tuple for a literal.
+combination_r = len([1, 2])
+assert_type(next(itertools.combinations([1, 2], combination_r)), tuple[int, ...])
+assert_type(next(itertools.combinations_with_replacement([1, 2], combination_r)), tuple[int, ...])
+assert_type(next(itertools.permutations([1, 2])), tuple[int, ...])
+assert_type(next(itertools.permutations([1, 2], combination_r)), tuple[int, ...])
+assert_type(list(itertools.chain.from_iterable([[1], [2]])), list[int])
+for _key, group in itertools.groupby([1, 1, 2]):
+    assert_type(list(group), list[int])
+for _key_fn, group_fn in itertools.groupby([1, 1, 2], key=lambda i: i > 1):
+    assert_type(list(group_fn), list[int])

@@ -1749,6 +1749,11 @@ impl Value {
                     attr.as_str(vm.interns),
                 ));
             }
+            Self::ModuleFunction(function) => {
+                if let Some(value) = function.py_getattr(attr, vm) {
+                    return Ok(CallResult::Value(value));
+                }
+            }
             _ => {}
         }
         let type_name = self.py_type_name(vm);

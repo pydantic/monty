@@ -973,6 +973,26 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::value_error("batched(): incomplete batch")
     }
 
+    /// Creates the ValueError the combinatoric `itertools` constructors raise
+    /// for a negative `r`.
+    #[must_use]
+    fn combinatoric_negative_r() -> RunError {
+        Self::value_error("r must be non-negative")
+    }
+
+    /// Creates the TypeError `itertools.permutations` raises for an `r` that is
+    /// neither `None` nor an `int` — it checks the type rather than `__index__`.
+    #[must_use]
+    fn permutations_bad_r() -> RunError {
+        Self::type_error("Expected int as r")
+    }
+
+    /// Creates the ValueError `itertools.product` raises for a negative `repeat`.
+    #[must_use]
+    fn product_negative_repeat() -> RunError {
+        Self::value_error("repeat argument cannot be negative")
+    }
+
     /// Creates the ValueError `itertools.islice` raises for a non-positive or
     /// non-integer `step`.
     #[must_use]

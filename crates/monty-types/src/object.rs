@@ -958,6 +958,18 @@ pub enum MontyType {
     ItertoolsBatched,
     #[strum(serialize = "itertools.zip_longest")]
     ItertoolsZipLongest,
+    #[strum(serialize = "itertools.combinations")]
+    ItertoolsCombinations,
+    #[strum(serialize = "itertools.combinations_with_replacement")]
+    ItertoolsCombinationsWithReplacement,
+    #[strum(serialize = "itertools.permutations")]
+    ItertoolsPermutations,
+    #[strum(serialize = "itertools.product")]
+    ItertoolsProduct,
+    #[strum(serialize = "itertools.groupby")]
+    ItertoolsGroupBy,
+    #[strum(serialize = "itertools._grouper")]
+    ItertoolsGrouper,
 }
 
 impl fmt::Display for MontyType {

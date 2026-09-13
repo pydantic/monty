@@ -213,13 +213,21 @@ def test_itertools_batched_type_on_older_host(monty_run: RunMonty):
 ITERTOOLS_TYPES: list[tuple[type[object], str]] = [
     (itertools.accumulate, 'itertools.accumulate([1, 2])'),
     (itertools.chain, 'itertools.chain([1], [2])'),
+    (itertools.combinations, 'itertools.combinations([1, 2], 2)'),
+    (
+        itertools.combinations_with_replacement,
+        'itertools.combinations_with_replacement([1, 2], 2)',
+    ),
     (itertools.compress, 'itertools.compress([1, 2], [1, 0])'),
     (itertools.count, 'itertools.count()'),
     (itertools.cycle, 'itertools.cycle([1, 2])'),
     (itertools.dropwhile, 'itertools.dropwhile(bool, [1, 2])'),
     (itertools.filterfalse, 'itertools.filterfalse(bool, [1, 2])'),
+    (itertools.groupby, 'itertools.groupby([1, 1, 2])'),
     (itertools.islice, 'itertools.islice([1, 2], 1)'),
     (itertools.pairwise, 'itertools.pairwise([1, 2])'),
+    (itertools.permutations, 'itertools.permutations([1, 2])'),
+    (itertools.product, 'itertools.product([1], [2])'),
     (itertools.repeat, 'itertools.repeat(1)'),
     (itertools.starmap, 'itertools.starmap(max, [(1, 2)])'),
     (itertools.takewhile, 'itertools.takewhile(bool, [1, 2])'),
@@ -227,6 +235,10 @@ ITERTOOLS_TYPES: list[tuple[type[object], str]] = [
 ]
 if sys.version_info >= (3, 12):
     ITERTOOLS_TYPES.append((itertools.batched, 'itertools.batched([1, 2], 1)'))
+
+# `itertools._grouper` is private and unexported, so it is reached through the
+# `groupby` that yields one rather than imported by name.
+ITERTOOLS_TYPES.append((type(next(itertools.groupby([1]))[1]), 'next(itertools.groupby([1]))[1]'))
 
 
 @pytest.mark.parametrize(('ty', 'build'), ITERTOOLS_TYPES, ids=[ty.__name__ for ty, _ in ITERTOOLS_TYPES])

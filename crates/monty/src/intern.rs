@@ -1213,6 +1213,25 @@ pub enum StaticStrings {
     /// `header` parameter of the `binascii` quoted-printable pair.
     #[strum(serialize = "header")]
     Header,
+
+    // ==========================
+    // Batch-four itertools module strings: the combinatoric iterators,
+    // `groupby` and `chain.from_iterable`. Appended for the same reason as
+    // every block above.
+    /// `itertools.combinations()` function.
+    Combinations,
+    /// `itertools.combinations_with_replacement()` function.
+    #[strum(serialize = "combinations_with_replacement")]
+    CombinationsWithReplacement,
+    /// `itertools.permutations()` function.
+    Permutations,
+    /// `itertools.product()` function.
+    Product,
+    /// `itertools.groupby()` function.
+    Groupby,
+    /// `chain.from_iterable` — the one attribute an `itertools` function carries.
+    #[strum(serialize = "from_iterable")]
+    FromIterable,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.
