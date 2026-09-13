@@ -1,4 +1,4 @@
-use std::{cell::Cell, char::ToLowercase, fmt::Write, ops};
+use std::{cell::Cell, fmt::Write, ops};
 
 use caseless::default_case_fold_str;
 use monty_types::{ResourceError, ResourceTracker};
@@ -639,14 +639,14 @@ fn str_upper(s: &str, vm: &VM<'_>) -> Value {
 ///
 /// Returns a copy of the string with its first character capitalized and the rest lowercased.
 fn str_capitalize(s: &str, vm: &VM<'_>) -> Value {
-    let mut chars = chars_with_lowercase(s);
+    let mut chars = chars_with_final_sigma(s);
     let result = match chars.next() {
         None => String::new(),
         Some((first, _)) => {
             let mut result = String::with_capacity(s.len());
             push_titlecase(first, &mut result);
-            for (_, lower) in chars {
-                result.extend(lower);
+            for (_, base) in chars {
+                result.extend(base.to_lowercase());
             }
             result
         }
@@ -662,9 +662,9 @@ fn str_title(s: &str, vm: &VM<'_>) -> Value {
     let mut result = String::with_capacity(s.len());
     let mut prev_is_cased = false;
 
-    for (c, lower) in chars_with_lowercase(s) {
+    for (c, base) in chars_with_final_sigma(s) {
         if prev_is_cased {
-            result.extend(lower);
+            result.extend(base.to_lowercase());
         } else {
             push_titlecase(c, &mut result);
         }
@@ -694,7 +694,8 @@ fn is_cased(c: char) -> bool {
 /// Whether `c` is a titlecase letter (general category `Lt`), which CPython's `str.istitle()`
 /// treats like an uppercase letter.
 fn is_titlecase(c: char) -> bool {
-    get_general_category(c) == GeneralCategory::TitlecaseLetter
+    // Every `Lt` code point lies in U+01C5..=U+1FFC; the range test skips the category lookup elsewhere.
+    ('\u{1c5}'..='\u{1ffc}').contains(&c) && get_general_category(c) == GeneralCategory::TitlecaseLetter
 }
 
 /// Implements Python's `str.swapcase()` method.
@@ -703,9 +704,9 @@ fn is_titlecase(c: char) -> bool {
 fn str_swapcase(s: &str, vm: &VM<'_>) -> Value {
     let mut result = String::with_capacity(s.len());
 
-    for (c, lower) in chars_with_lowercase(s) {
+    for (c, base) in chars_with_final_sigma(s) {
         if c.is_uppercase() {
-            result.extend(lower);
+            result.extend(base.to_lowercase());
         } else if c.is_lowercase() {
             result.extend(c.to_uppercase());
         } else {
@@ -716,13 +717,14 @@ fn str_swapcase(s: &str, vm: &VM<'_>) -> Value {
     allocate_string(result, vm.heap)
 }
 
-/// Iterates `s` as `(c, lower)` pairs, `lower` being `c` lowercased with `Final_Sigma` applied.
+/// Iterates `s` as `(c, base)` pairs where `base.to_lowercase()` is `c` lowercased with
+/// `Final_Sigma` applied: `base` is `c` itself except for a `Σ`, which becomes `σ` or `ς`.
 ///
 /// `char::to_lowercase` is context-free and maps every `Σ` to `σ`, whereas `str::to_lowercase`
 /// applies the rule. Only `Σ`, `σ` and `ς` lower to a sigma, so the sigmas in its output line up
 /// one-to-one with those source characters and are replayed here; the full lowering is skipped
 /// when there is no `Σ` to decide.
-fn chars_with_lowercase(s: &str) -> impl Iterator<Item = (char, ToLowercase)> + '_ {
+fn chars_with_final_sigma(s: &str) -> impl Iterator<Item = (char, char)> + '_ {
     let sigmas: Vec<char> = if s.contains('Σ') {
         s.to_lowercase().chars().filter(|c| matches!(c, 'σ' | 'ς')).collect()
     } else {
@@ -730,12 +732,12 @@ fn chars_with_lowercase(s: &str) -> impl Iterator<Item = (char, ToLowercase)> + 
     };
     let mut sigmas = sigmas.into_iter();
     s.chars().map(move |c| {
-        let lower = if matches!(c, 'Σ' | 'σ' | 'ς') {
+        let base = if matches!(c, 'Σ' | 'σ' | 'ς') {
             sigmas.next().unwrap_or(c)
         } else {
             c
         };
-        (c, lower.to_lowercase())
+        (c, base)
     })
 }
 
