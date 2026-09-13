@@ -60,6 +60,13 @@ assert dict[args].__args__ is args
 
 # === Other attributes come from the origin ===
 assert dict[str, int].fromkeys('ab') == {'a': None, 'b': None}
+assert list[int].__origin__() == []
+assert Record.__origin__((1, 2)) == (1, 2)
+try:
+    list[int].__args__()
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'tuple' object is not callable"
 assert list[int].__class_getitem__(str) == list[str]
 assert repr(list[int].__class_getitem__(str)) == 'list[str]'
 try:

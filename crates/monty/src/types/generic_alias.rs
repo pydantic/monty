@@ -196,9 +196,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         }
     }
 
+    /// `list[int].__origin__()` calls the attribute the alias itself carries;
     /// `dict[str, int].fromkeys(...)` and `list[int].__class_getitem__(str)`
     /// dispatch to the origin's classmethods.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        if matches!(
+            attr.static_string(),
+            Some(StaticStrings::DunderOrigin | StaticStrings::DunderArgs | StaticStrings::DunderParameters)
+        ) {
+            let Some(CallResult::Value(value)) = self.py_getattr(attr, vm)? else {
+                unreachable!("the alias's own attributes are always plain values")
+            };
+            defer_drop!(value, vm);
+            return vm.call_function(value, args);
+        }
         let origin = self.get(vm.heap).origin;
         match attr {
             EitherStr::Interned(method_id) => origin.call_class_method(*method_id, args, vm).map(Into::into),

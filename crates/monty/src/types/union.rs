@@ -78,12 +78,19 @@ impl Union {
     /// `typing.Union[key]`: a tuple key supplies the members, anything else is
     /// the single member. Takes ownership of `key`.
     pub(crate) fn subscript(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
-        let members = match tuple_items(&key, vm)? {
+        // Guarded because the item clone can fail its allocation preflight,
+        // and `key` must be released on that path too.
+        let mut key_guard = DropGuard::new(key, vm);
+        let items = {
+            let (key, vm) = key_guard.as_parts_mut();
+            tuple_items(key, vm)?
+        };
+        let members = match items {
             Some(items) => {
-                key.drop_with(vm);
+                drop(key_guard);
                 items
             }
-            None => vec![key],
+            None => vec![key_guard.into_inner()],
         };
         if members.is_empty() {
             Err(ExcType::union_of_no_types())
