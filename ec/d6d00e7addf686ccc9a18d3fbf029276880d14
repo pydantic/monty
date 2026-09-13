@@ -1,0 +1,20 @@
+evals/README.md
+  s_94bd17dac64411::t_c0691ae763fe97 108-109,132-145,147-150,152,154,156,158,160-162
+  s_94bd17dac64411::t_55b772a522a225 130,146,151,153,155,157,159
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ecd6d00e7addf686ccc9a18d3fbf029276880d14",
+  "prompts": {},
+  "sessions": {
+    "s_94bd17dac64411": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f9be6770-bfa2-49ff-89f1-70bdc3b3655c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
