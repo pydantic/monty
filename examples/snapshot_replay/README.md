@@ -5,6 +5,23 @@ The included program reads public PyPI metadata for three packages and returns t
 Replay uses the recorded responses; it never calls PyPI.
 No model or API key is required.
 
+For example, replace the `pydantic-ai-harness` response with [response.json](response.json) to inspect a hypothetical
+change to its Python requirement and Monty dependency:
+
+| Report field         | Example recording            | Replacement response         |
+| -------------------- | ---------------------------- | ---------------------------- |
+| `version`            | `recorded`                   | `what-if`                    |
+| `python`             | `>=3.10`                     | `>=3.14`                     |
+| `monty_dependencies` | `["pydantic-monty>=0.0.22"]` | `["pydantic-monty==0.0.23"]` |
+
+These are test inputs, not current PyPI metadata.
+The other two package rows stay unchanged, and no package is fetched again.
+The program reports dependency strings containing `monty`; it does not resolve dependencies or check compatibility.
+
+Response branches keep all later recorded responses fixed.
+If the replacement changes a later call or leaves recorded calls unused, replay stops with `DIVERGED`.
+Matching calls do not establish how a live external system would respond to the changed execution.
+
 ## Run
 
 From the repository root, build the current worker and Python client with `make dev-py`.
@@ -28,15 +45,27 @@ Open `report.html` locally to inspect the calls and result differences.
 It contains no scripts or remote assets.
 The comparison file includes the replacement response or edited source as well as the original recording's checksum.
 Outputs use exclusive creation: choose new filenames for another capture or comparison.
-The response in `response.json` is deliberately hypothetical, not a claim about the package on PyPI.
+`--at 1` selects the second call, for `pydantic-ai-harness`; indices start at zero.
 
 To compare edited sandbox code, pass `--code path/to/edited.py` to `replay`.
 That starts from the edited source rather than restoring bytecode from the original snapshot.
-The name, host-visible JSON arguments, mapping order and order of every host call must still match the recording.
+For both edited source and response branches, the name, host-visible JSON arguments, mapping order and order of
+every remaining host call must match the recording.
 A mismatch reports `DIVERGED`; it does not fetch another response.
+Returning early is allowed only after all remaining recorded calls have been consumed.
 Monty converts some guest values, such as functions, to strings before the host receives them.
 Replay cannot distinguish those values from literal strings with the same text; see
 [host-function argument conversion](../../docs/host-functions.md#arguments-and-return-values).
+
+## Snapshot flow
+
+[`capture()` in rewind.py](rewind.py) calls `session.feed_start()` and saves `snapshot.dump()` at each host call,
+before running the callback.
+It records the response and passes it to `snapshot.resume()` to continue execution.
+For a response branch, `replay()` restores the selected suspension with `session.load_snapshot()` in a fresh worker.
+It then calls `resume()` with the replacement response and the remaining recorded responses.
+It has no live dispatcher.
+See [storing and restoring snapshots](../../docs/snapshots.md#storing-and-restoring) for the underlying API.
 
 ## Boundaries
 

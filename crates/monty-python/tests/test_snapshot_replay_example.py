@@ -51,6 +51,69 @@ def test_capture_restore_branch_and_changed_source(case: Any) -> None:
     assert r.load(case.path)['sha256'] == snapshot(recording['sha256'])
 
 
+def test_sample_response_changes_only_selected_package(case: Any) -> None:
+    example = Path(app.__file__).parent
+    info = {
+        'version': 'recorded',
+        'requires_python': '>=3.10',
+        'requires_dist': ['pydantic-monty>=0.0.22', 'httpx>=0.28'],
+    }
+    dispatch = MagicMock(return_value={'return_value': info})
+    original = r.capture((example / 'program.txt').read_text(), case.path, dispatch, binary=case.binary)
+    recording = r.load(case.path)
+    assert [call.args[0]['args'] for call in dispatch.call_args_list] == snapshot(
+        [['pydantic-ai-slim'], ['pydantic-ai-harness'], ['langchain-monty']]
+    )
+    assert r.replay(recording, binary=case.binary)['result'] == snapshot(original)
+    branch = r.replay(
+        recording, at=1, response=r.parse_json((example / 'response.json').read_bytes()), binary=case.binary
+    )
+    assert app.differences(original['value'], branch['result']['value']) == snapshot(
+        [
+            ('$[1].version', 'recorded', 'what-if'),
+            ('$[1].python', '>=3.10', '>=3.14'),
+            ('$[1].monty_dependencies[0]', 'pydantic-monty>=0.0.22', 'pydantic-monty==0.0.23'),
+        ]
+    )
+    assert dispatch.call_count == snapshot(3)
+
+
+@pytest.mark.parametrize(
+    'code, message',
+    [
+        (
+            'x = fetch("a")\nfetch("b") if x else other("b")',
+            snapshot('DIVERGED: tool call 1 differs; no live fallback'),
+        ),
+        ('x = fetch("a")\nfetch(x)', snapshot('DIVERGED: tool call 1 differs; no live fallback')),
+        (
+            'def run():\n    x = fetch("a")\n    if not x:\n        return 0\n    return fetch("b")\nrun()',
+            snapshot('DIVERGED: recorded responses remain unused'),
+        ),
+        (
+            'x = fetch("a")\ny = fetch("b")\nif not x:\n    fetch("c")\ny',
+            snapshot('DIVERGED: tool call 2 differs; no live fallback'),
+        ),
+    ],
+    ids=['different-function', 'different-argument', 'unused-call', 'extra-call'],
+)
+def test_response_branch_requires_remaining_recorded_calls(case: Any, code: str, message: str) -> None:
+    case.capture(code)
+    recording = r.load(case.path)
+    with pytest.raises(r.ReplayError) as error:
+        r.replay(recording, at=0, response={'return_value': 0}, binary=case.binary)
+    assert str(error.value) == message
+
+
+def test_response_branch_can_return_early_after_last_call(case: Any) -> None:
+    case.capture('def run():\n    if not fetch("a"):\n        return 0\n    return 1\nrun()')
+    recording = r.load(case.path)
+    branch = r.replay(recording, at=0, response={'return_value': 0}, binary=case.binary)
+    assert branch['original'] == snapshot({'kind': 'return', 'value': 1, 'stdout': ''})
+    assert branch['result'] == snapshot({'kind': 'return', 'value': 0, 'stdout': ''})
+    assert branch['comparison'] == snapshot('result-differs')
+
+
 def test_null_response_and_no_calls(case: Any) -> None:
     case.capture('None')
     assert r.replay(r.load(case.path), binary=case.binary)['result']['value'] == snapshot(None)
