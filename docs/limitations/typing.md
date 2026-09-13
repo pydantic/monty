@@ -4,10 +4,7 @@
 `ModuleNotFoundError`. **No runtime type checking happens.** Apart from
 `Union` and `Optional` (see [Unions](#unions)) the forms are inert marker
 objects that cannot be subscripted: `List[int]` and `Callable[[int], str]`
-raise `TypeError: 'typing._SpecialForm' object is not subscriptable`. The
-builtin generics (`list[int]`, `dict[str, int]`, `tuple[int, ...]`) and `|`
-unions (`int | None`) do work; see
-[Runtime generic aliases](#runtime-generic-aliases) and [Unions](#unions).
+raise `TypeError: 'typing._SpecialForm' object is not subscriptable`.
 Annotations are unaffected, being stringized rather than evaluated (see below).
 
 ## Names defined
@@ -53,9 +50,6 @@ This is a known temporary divergence; see `class__annotations.py`.
     Monty when the calling code uses `from __future__ import annotations`
     (PEP 563), which Monty's behaviour is otherwise equivalent to, except that
     Monty stringizes whether or not that import is present.
-- Generic aliases and `|` unions now evaluate (see below), so the common
-    annotation forms no longer block a PEP 649 migration; annotations are
-    still stringized regardless.
 - **Treat the values as provisional.** Code reading `__annotations__` sees
     strings today and would see type objects after a PEP 649 migration; the
     *keys* and their order are stable either way.
@@ -84,38 +78,25 @@ sandbox boundary.
 
 ## Runtime generic aliases
 
-Subscripting a builtin type builds a `types.GenericAlias`, as in CPython:
-`Record = tuple[int, int, int]` is a value with `__origin__`, `__args__` and
-`__parameters__` (always `()`), reprs as `tuple[int, int, int]`, compares and
-hashes by origin and arguments, calls through to its origin
-(`list[int]([1, 2])` is `[1, 2]`), and resolves every other attribute on the
-origin (`list[int].__name__` is `'list'`). `isinstance(x, list[int])` raises
-`TypeError: isinstance() argument 2 cannot be a parameterized generic`, and
-subscripting an alias again raises `TypeError: list[int] is not a generic class`.
-
-The subscriptable types are `list`, `tuple`, `dict`, `set`, `frozenset`, `type`,
-`collections.deque`, `collections.defaultdict`, `collections.Counter`,
-`functools.partial`, `re.Pattern` and `re.Match`. `list.__class_getitem__(int)`
-works for each, called directly on the type. Every other type raises
-`TypeError: type 'int' is not subscriptable`, including the ones CPython
-parameterizes that Monty lacks or models differently:
+Subscripting a builtin type builds a `types.GenericAlias`, but only for
+`list`, `tuple`, `dict`, `set`, `frozenset`, `type`, `collections.deque`,
+`collections.defaultdict`, `collections.Counter`, `functools.partial`,
+`re.Pattern` and `re.Match`. Every other type raises
+`TypeError: type 'int' is not subscriptable`, including ones CPython
+parameterizes:
 
 - `enumerate` (a builtin function in Monty, not a type).
 - `collections.namedtuple` classes, which in CPython inherit
-    `tuple.__class_getitem__`; `Point[int]` raises here.
+    `tuple.__class_getitem__`; `Point[int]` raises.
 - User classes: `__class_getitem__` is not looked up, so `Foo[int]` raises
-    `TypeError: type 'Foo' is not subscriptable` whether or not the class
-    defines it.
+    whether or not the class defines it.
 
 Divergences in the aliases themselves:
 
 - **No `types` module.** `type(list[int])` reprs as `<class 'types.GenericAlias'>`,
-    but `import types` still raises `ModuleNotFoundError`, so
+    but `import types` raises `ModuleNotFoundError`, so
     `isinstance(x, types.GenericAlias)` cannot be written; compare
     `type(x) is type(list[int])` instead.
-- **Other `typing` forms stay unsubscriptable.** `typing.List[int]` raises
-    as described above; only the builtin types build aliases, and only
-    `typing.Union` / `typing.Optional` build unions (see [Unions](#unions)).
 - **Not iterable.** CPython iterates an alias to yield its starred form
     (`*tuple[int, ...]`); Monty raises `TypeError: 'types.GenericAlias' object is not iterable`.
 - **Argument reprs use Monty's type names.** A user class prints its bare name
@@ -134,42 +115,26 @@ Divergences in the aliases themselves:
 - **No `__class__`.** `list[int].__class__` raises `AttributeError`, as it
     does for every builtin value (see [builtins.md](builtins.md)); use
     `type(list[int])`.
-- **No `__orig_class__` on call results.** CPython sets `__orig_class__` on
-    the result of calling an alias when the object accepts attributes, so
-    `functools.partial[int](f).__orig_class__` is `functools.partial[int]`.
-    Monty's partial objects take no attributes, so the call returns a bare
-    partial and the lookup raises `AttributeError`. No other subscriptable
-    type accepts the attribute in CPython either.
+- **No `__orig_class__` on call results.** CPython sets it on the result of
+    calling an alias when the object accepts attributes, so
+    `functools.partial[int](f).__orig_class__` is `functools.partial[int]`;
+    Monty's partial objects take no attributes, so the lookup raises
+    `AttributeError`. `partial` is the only subscriptable type whose CPython
+    instances accept it.
 
 ## Unions
 
-`int | None`, `str | list[int]` and the other `|` combinations of types build
-a `typing.Union`, as in CPython 3.14 (where `types.UnionType` and
-`typing.Union` are the same object): `typing.Union` is that type, so
-`type(int | None) is typing.Union`. `typing.Union[int, str]` and
-`typing.Optional[int]` build the same values. A union flattens nested unions,
-drops duplicates and collapses to a lone member (`int | int is int`), reprs
-as `int | None`, compares and hashes as an unordered set of members, and
-works as the second argument of `isinstance`, including inside a tuple.
-`__args__`, `__origin__` and `__parameters__` are set; every other attribute
-raises `AttributeError`, and a union cannot be called, subscripted, iterated
-or ordered, each with CPython's message.
-
-`|` unions with a type on either side: builtin types, exception types, user
-classes, `collections.namedtuple` classes, host classes, generic aliases,
-`None` and the `typing` markers; anything else raises the usual
-`unsupported operand type(s) for |` error. A union's own `|` accepts any
-operand (`(int | str) | 1` is `int | str | 1`), as CPython 3.14's does.
-
-Divergences:
+`int | None`, `typing.Union[int, str]` and `typing.Optional[int]` build a
+`typing.Union`, as in CPython 3.14. Divergences:
 
 - **Member reprs use Monty's type names**, as in a generic alias: `Foo | None`
     where CPython prints `__main__.Foo | None`.
 - **An unhashable member names the union.** `hash(int | list[[1]])` raises
     `TypeError: unhashable type: 'typing.Union'` where CPython names the
     member.
-- **`typing.Union` and `typing.Optional` are the only subscriptable forms.**
-    `typing.List[int]` and the rest still raise.
+- **No attributes beyond `__args__`, `__origin__` and `__parameters__`.**
+    `__class__`, `__or__` and the other dunders CPython exposes raise
+    `AttributeError`.
 - **Neither aliases nor unions cross the host boundary.** One built in the
     sandbox reaches the host as its repr string. Passed in from the host, a
     `list[int]` degrades to an external function (it is callable, so it is

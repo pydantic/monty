@@ -36,6 +36,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `async` / `await`, and `asyncio.run` / `asyncio.gather`
 - `import x`, `import x.y`, `from x import y, z as w`
 - Starred unpacking everywhere CPython allows it
+- Runtime generic aliases (`list[int]`) and `|` unions (`int | None`), see [typing.md](typing.md)
 
 **Rejected at parse time**, with `NotImplementedError` before any code runs:
 
