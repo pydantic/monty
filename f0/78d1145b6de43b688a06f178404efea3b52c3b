@@ -1,0 +1,27 @@
+.github/workflows/ci.yml
+  s_29264d1835215c::t_2e88a614e1cee2 89-92
+crates/monty/src/modules/collections/mod.rs
+  s_29264d1835215c::t_801bad7e15201d 25,309,331
+CLAUDE.md
+  s_29264d1835215c::t_2e88a614e1cee2 404
+Makefile
+  s_29264d1835215c::t_2e88a614e1cee2 239-242
+crates/monty/src/types/str.rs
+  s_29264d1835215c::t_14b4c83649487f 1822-1823,1825-1826
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f078d1145b6de43b688a06f178404efea3b52c3b",
+  "prompts": {},
+  "sessions": {
+    "s_29264d1835215c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a37d8ff9-a541-4bb4-8d18-e7a2d0617f78",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
