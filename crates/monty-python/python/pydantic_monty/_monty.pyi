@@ -974,6 +974,11 @@ class AsyncMontySession:
         entries in `external_lookup`) may be coroutines, awaited concurrently.
         See `MontySession.feed_run` for the shared error types.
 
+        Unfinished coroutine callbacks are cancelled and joined before returning
+        the outcome or propagating caller cancellation. Further cancellation
+        reaches their cleanup; callbacks must cooperate with cancellation.
+        Tasks callbacks create themselves remain their responsibility.
+
         Host callbacks run in copies of the caller's Python context. With tracing
         enabled, telemetry emitted inside callbacks is parented to the corresponding
         Monty operation: the execution span for prints, or the host-call span for

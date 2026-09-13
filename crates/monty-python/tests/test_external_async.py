@@ -1,7 +1,9 @@
 """Tests for the async external-function surface of the Python bindings."""
 
+import asyncio
 from typing import Any
 
+import anyio
 import pytest
 from inline_snapshot import snapshot
 
@@ -13,6 +15,239 @@ async def run_async(code: str, **kwargs: Any) -> Any:
     async with pydantic_monty.AsyncMonty() as pool:
         async with pool.checkout() as session:
             return await session.feed_run(code, **kwargs)
+
+
+@pytest.mark.parametrize('exit_mode', ['complete', 'error', 'cancel'])
+@pytest.mark.parametrize('cleanup_raises', [False, True])
+async def test_async_run_joins_unfinished_callbacks(exit_mode: str, cleanup_raises: bool):
+    """Every run exit joins its unfinished callbacks."""
+    started = asyncio.Event()
+    cleaned_up = asyncio.Event()
+    callback_tasks: list[asyncio.Task[Any]] = []
+
+    async def background():
+        task = asyncio.current_task()
+        assert task is not None
+        callback_tasks.append(task)
+        try:
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            cleaned_up.set()
+            if cleanup_raises:
+                raise RuntimeError('callback cleanup failed')
+
+    async def wait_until_started():
+        await started.wait()
+
+    code = 'background()\nawait wait_until_started()\n42'
+    if exit_mode == 'error':
+        code += '\nraise ValueError("sandbox failed")'
+    elif exit_mode == 'cancel':
+        code = 'await background()'
+    unrelated = asyncio.create_task(asyncio.Event().wait())
+    driver = asyncio.create_task(
+        run_async(code, external_lookup={'background': background, 'wait_until_started': wait_until_started})
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        if exit_mode == 'cancel':
+            driver.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await driver
+        elif exit_mode == 'error':
+            with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+                await driver
+            assert str(exc_info.value.exception()) == snapshot('sandbox failed')
+        else:
+            assert await driver == snapshot(42)
+        assert [task.done() for task in callback_tasks] == snapshot([True])
+        assert cleaned_up.is_set() == snapshot(True)
+        assert unrelated.done() == snapshot(False)
+    finally:
+        driver.cancel()
+        unrelated.cancel()
+        for task in callback_tasks:
+            task.cancel()
+        await asyncio.gather(driver, unrelated, *callback_tasks, return_exceptions=True)
+
+
+@pytest.mark.parametrize('cancel_before_cleanup', [False, True])
+async def test_async_run_repeated_cancellation_during_callback_cleanup(cancel_before_cleanup: bool):
+    cleanup_started = asyncio.Event()
+    cleanup_cancelled = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleaned_up = asyncio.Event()
+    started = asyncio.Event()
+    callback_tasks: list[asyncio.Task[Any]] = []
+
+    async def background():
+        task = asyncio.current_task()
+        assert task is not None
+        callback_tasks.append(task)
+        try:
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            try:
+                await release_cleanup.wait()
+            except asyncio.CancelledError:
+                cleanup_cancelled.set()
+                await release_cleanup.wait()
+            cleaned_up.set()
+
+    async def wait_until_started():
+        await started.wait()
+
+    code = 'await background()' if cancel_before_cleanup else 'background()\nawait wait_until_started()'
+    driver = asyncio.create_task(
+        run_async(code, external_lookup={'background': background, 'wait_until_started': wait_until_started})
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        if cancel_before_cleanup:
+            driver.cancel()
+        await asyncio.wait_for(cleanup_started.wait(), timeout=5)
+        driver.cancel()
+        await asyncio.wait_for(cleanup_cancelled.wait(), timeout=5)
+        assert driver.done() == snapshot(False)
+        assert [task.done() for task in callback_tasks] == snapshot([False])
+        release_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(driver, timeout=5)
+        assert cleaned_up.is_set() == snapshot(True)
+        assert [task.done() for task in callback_tasks] == snapshot([True])
+    finally:
+        release_cleanup.set()
+        driver.cancel()
+        await asyncio.gather(driver, *callback_tasks, return_exceptions=True)
+
+
+async def test_async_run_anyio_cancellation_joins_callback():
+    started = asyncio.Event()
+    cleanup_exited = asyncio.Event()
+    callback_tasks: list[asyncio.Task[Any]] = []
+    scopes: list[anyio.CancelScope] = []
+
+    async def background():
+        task = asyncio.current_task()
+        assert task is not None
+        callback_tasks.append(task)
+        try:
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            try:
+                await asyncio.sleep(0)
+            finally:
+                cleanup_exited.set()
+
+    async def run():
+        with anyio.CancelScope() as scope:
+            scopes.append(scope)
+            await run_async('await background()', external_lookup={'background': background})
+
+    driver = asyncio.create_task(run())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        scopes[0].cancel()
+        await asyncio.wait_for(driver, timeout=5)
+        assert cleanup_exited.is_set() == snapshot(True)
+        assert [task.done() for task in callback_tasks] == snapshot([True])
+    finally:
+        driver.cancel()
+        await asyncio.gather(driver, *callback_tasks, return_exceptions=True)
+
+
+@pytest.mark.parametrize('exit_mode', ['complete', 'error'])
+async def test_async_run_waits_for_slow_callback_cleanup(exit_mode: str):
+    started = asyncio.Event()
+    cleaned_up = asyncio.Event()
+
+    async def background():
+        try:
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(1.05)
+            cleaned_up.set()
+
+    async def wait_until_started():
+        await started.wait()
+
+    code = 'background()\nawait wait_until_started()\n42'
+    if exit_mode == 'error':
+        code += '\nraise ValueError("sandbox failed")'
+    driver = asyncio.create_task(
+        run_async(code, external_lookup={'background': background, 'wait_until_started': wait_until_started})
+    )
+    try:
+        if exit_mode == 'error':
+            with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+                await asyncio.wait_for(driver, timeout=5)
+            assert str(exc_info.value.exception()) == snapshot('sandbox failed')
+        else:
+            assert await asyncio.wait_for(driver, timeout=5) == snapshot(42)
+        assert cleaned_up.is_set() == snapshot(True)
+    finally:
+        driver.cancel()
+        await asyncio.gather(driver, return_exceptions=True)
+
+
+async def test_async_run_cancelled_before_start_leaves_session_healthy():
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            feed = asyncio.ensure_future(session.feed_run('x = 1'))
+            feed.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await feed
+            with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+                await session.feed_run('x')
+            assert str(exc_info.value.exception()) == snapshot("name 'x' is not defined")
+            assert await session.feed_run('1 + 1') == snapshot(2)
+
+
+async def test_async_run_callback_cleanup_preserves_session():
+    started = asyncio.Event()
+    cleaned_up = asyncio.Event()
+
+    async def background():
+        try:
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            cleaned_up.set()
+
+    async def wait_until_started():
+        await started.wait()
+
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            await session.feed_run(
+                'background()\nawait wait_until_started()\nx = 42',
+                external_lookup={'background': background, 'wait_until_started': wait_until_started},
+            )
+            assert cleaned_up.is_set() == snapshot(True)
+            assert await session.feed_run('x') == snapshot(42)
+
+
+async def test_async_run_does_not_own_tasks_created_by_callbacks():
+    child_tasks: list[asyncio.Task[bool]] = []
+
+    async def launch():
+        child_tasks.append(asyncio.create_task(asyncio.Event().wait()))
+        return 42
+
+    try:
+        assert await run_async('await launch()', external_lookup={'launch': launch}) == snapshot(42)
+        assert [task.done() for task in child_tasks] == snapshot([False])
+    finally:
+        for task in child_tasks:
+            task.cancel()
+        await asyncio.gather(*child_tasks, return_exceptions=True)
 
 
 async def test_async_external_function_raises_surfaces_as_monty_runtime_error():
