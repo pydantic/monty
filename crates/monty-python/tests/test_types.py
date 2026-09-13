@@ -13,7 +13,16 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import MontyConversionError, MontyRuntimeError
+from pydantic_monty import (
+    AsyncFunctionSnapshot,
+    AsyncMonty,
+    FunctionSnapshot,
+    MontyComplete,
+    MontyConversionError,
+    MontyError,
+    MontyRuntimeError,
+    MontySession,
+)
 
 
 def test_none_input(monty_run: RunMonty):
@@ -164,6 +173,161 @@ from collections import deque
         re.Match,
         collections.deque,
     ]
+
+
+NON_BUILTIN_TYPES: list[tuple[str, type[object]]] = [
+    ('{}.keys()', type({0: 0}.keys())),
+    ('{}.values()', type({0: 0}.values())),
+    ('{}.items()', type({0: 0}.items())),
+    ('iter(())', type(iter(()))),
+    ("iter('abc')", type(iter('abc'))),
+    ("iter('é')", type(iter('é'))),
+    ("iter(b'')", type(iter(b''))),
+    ('iter(range(0))', type(iter(range(0)))),
+    ('iter({})', type(iter({}))),
+    ('iter({}.items())', type(iter({0: 0}.items()))),
+    ('iter({}.values())', type(iter({0: 0}.values()))),
+    ('iter(set())', type(iter({0}))),
+    ('NotImplemented', type(NotImplemented)),
+    ('lambda: None', type(lambda: None)),
+    ('len', type(len)),
+    ('sys', type(sys)),
+]
+
+
+@pytest.mark.parametrize(('expression', 'expected'), NON_BUILTIN_TYPES, ids=[e for e, _ in NON_BUILTIN_TYPES])
+def test_non_builtin_type_object_output(monty_run: RunMonty, expression: str, expected: type[object]):
+    assert monty_run(f'import sys\ntype({expression})') is expected
+
+
+@pytest.mark.parametrize(('expression', 'expected'), NON_BUILTIN_TYPES, ids=[e for e, _ in NON_BUILTIN_TYPES])
+def test_non_builtin_type_object_external_arguments(monty_run: RunMonty, expression: str, expected: type[object]):
+    def check(values: list[object], *, kind: object) -> bool:
+        return values[0] is expected and kind is expected
+
+    code = f'import sys\ncheck([type({expression})], kind=type({expression}))'
+    assert monty_run(code, external_lookup={'check': check}) is True
+
+
+@pytest.mark.parametrize(('expression', 'expected'), NON_BUILTIN_TYPES, ids=[e for e, _ in NON_BUILTIN_TYPES])
+async def test_non_builtin_type_object_async(expression: str, expected: type[object]):
+    async def check(value: object) -> bool:
+        return value is expected
+
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            assert await session.feed_run(f'import sys\ntype({expression})') is expected
+            assert await session.feed_run(f'await check(type({expression}))', external_lookup={'check': check}) is True
+
+
+@pytest.mark.parametrize('error_type', [TypeError, RuntimeError])
+@pytest.mark.parametrize('suspendable', [False, True])
+def test_type_object_output_preserves_host_error(
+    session: MontySession, monkeypatch: pytest.MonkeyPatch, error_type: type[Exception], suspendable: bool
+):
+    import builtins
+
+    expected = error_type('Cannot convert iterator to a host type: no output mapping')
+
+    def missing_builtin(name: str) -> object:
+        if name == 'iterator':
+            raise expected
+        raise AttributeError(name)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(builtins, '__getattr__', missing_builtin, raising=False)
+        with pytest.raises(error_type) as exc_info:
+            code = 'from collections import deque\ntype(iter(deque()))'
+            if suspendable:
+                result = session.feed_start(code)
+                assert isinstance(result, MontyComplete)
+                _ = result.output
+            else:
+                session.feed_run(code)
+    assert exc_info.value is expected
+
+
+@pytest.mark.parametrize('expression', ['type(iter(deque()))', "{'kind': [type(iter(deque()))]}"])
+@pytest.mark.parametrize('suspendable', [False, True])
+def test_unmapped_type_object_output(session: MontySession, expression: str, suspendable: bool):
+    code = f'from collections import deque\n{expression}'
+    with pytest.raises(MontyError) as exc_info:
+        if suspendable:
+            result = session.feed_start(code)
+            assert isinstance(result, MontyComplete)
+            _ = result.output
+        else:
+            session.feed_run(code)
+    assert isinstance(exc_info.value, MontyConversionError)
+    assert isinstance(exc_info.value.exception(), TypeError)
+    assert str(exc_info.value) == snapshot('Cannot convert iterator to a host type: no output mapping')
+    assert session.feed_run('42') == snapshot(42)
+
+
+@pytest.mark.parametrize('expression', ['type(iter(deque()))', "{'kind': [type(iter(deque()))]}"])
+@pytest.mark.parametrize('suspendable', [False, True])
+async def test_unmapped_type_object_async_output(expression: str, suspendable: bool):
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            code = f'from collections import deque\n{expression}'
+            with pytest.raises(MontyError) as exc_info:
+                if suspendable:
+                    result = await session.feed_start(code)
+                    assert isinstance(result, MontyComplete)
+                    _ = result.output
+                else:
+                    await session.feed_run(code)
+            assert isinstance(exc_info.value, MontyConversionError)
+            assert isinstance(exc_info.value.exception(), TypeError)
+            assert str(exc_info.value) == snapshot('Cannot convert iterator to a host type: no output mapping')
+            assert await session.feed_run('42') == snapshot(42)
+
+
+def test_unmapped_type_object_external_argument(monty_run: RunMonty):
+    def check(value: object) -> None:
+        pytest.fail('An unconvertible argument must not reach the callback')
+
+    code = """
+from collections import deque
+try:
+    check(type(iter(deque())))
+except TypeError as exc:
+    message = str(exc)
+message
+"""
+    assert monty_run(code, external_lookup={'check': check}) == snapshot(
+        'Cannot convert iterator to a host type: no output mapping'
+    )
+
+
+@pytest.mark.parametrize(('argument', 'attribute'), [('value', 'args'), ('kind=value', 'kwargs')])
+def test_unmapped_type_object_snapshot_argument(session: MontySession, argument: str, attribute: str):
+    code = f'from collections import deque\nvalue = type(iter(deque()))\ncheck({argument})'
+    pending = session.feed_start(code)
+    assert isinstance(pending, FunctionSnapshot)
+    with pytest.raises(MontyError) as exc_info:
+        getattr(pending, attribute)
+    assert isinstance(exc_info.value, MontyConversionError)
+    assert str(exc_info.value) == snapshot('Cannot convert iterator to a host type: no output mapping')
+    done = pending.resume({'return_value': 42})
+    assert isinstance(done, MontyComplete)
+    assert done.output == snapshot(42)
+
+
+@pytest.mark.parametrize(('argument', 'attribute'), [('value', 'args'), ('kind=value', 'kwargs')])
+async def test_unmapped_type_object_async_snapshot_argument(argument: str, attribute: str):
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            code = f'from collections import deque\nvalue = type(iter(deque()))\ncheck({argument})'
+            pending = await session.feed_start(code)
+            assert isinstance(pending, AsyncFunctionSnapshot)
+            with pytest.raises(MontyError) as exc_info:
+                getattr(pending, attribute)
+            assert isinstance(exc_info.value, MontyConversionError)
+            assert str(exc_info.value) == snapshot('Cannot convert iterator to a host type: no output mapping')
+            done = await pending.resume({'return_value': 42})
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot(42)
 
 
 def test_type_object_input_roundtrip(monty_run: RunMonty):

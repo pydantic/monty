@@ -65,7 +65,9 @@ use crate::{
     async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
-    exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
+    exceptions::{
+        MontyConversionError, MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError,
+    },
     external::{CallResult, ExternalLookup, dispatch_object_call, resolve_object_attr},
     get_not_handled,
     limits::extract_limits,
@@ -1333,7 +1335,10 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
         })?;
         let callback_guard = callback_context.enter(py, &native)?;
         let resume_with = match event {
-            TurnEvent::Complete(value) => return monty_to_py(py, &value, &instances),
+            TurnEvent::Complete(value) => {
+                return monty_to_py(py, &value, &instances)
+                    .map_err(|err| MontyConversionError::output_conversion_err(py, err));
+            }
             // This feed's mounts get first refusal on every OS call; only what
             // they don't cover reaches the `os=` callback.
             TurnEvent::OsCall {
@@ -1536,7 +1541,10 @@ async fn drive_async_inner(
             .unwrap_or_default();
         let answer: TurnAnswer = match event {
             TurnEvent::Complete(value) => {
-                return Python::attach(|py| monty_to_py(py, &value, &instances));
+                return Python::attach(|py| {
+                    monty_to_py(py, &value, &instances)
+                        .map_err(|err| MontyConversionError::output_conversion_err(py, err))
+                });
             }
             TurnEvent::ResolveFutures { .. } => {
                 let resolved = wait_for_futures(&mut join_set).await.and_then(|results| {

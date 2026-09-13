@@ -9,7 +9,7 @@ use monty_types::{
 };
 use num_bigint::BigInt;
 use pyo3::{
-    exceptions::{PyBaseException, PyRuntimeError, PyTypeError, PyValueError},
+    exceptions::{PyAttributeError, PyBaseException, PyRuntimeError, PyTypeError, PyValueError},
     intern,
     prelude::*,
     sync::PyOnceLock,
@@ -26,6 +26,13 @@ use super::{
     exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_object},
 };
 use crate::MAX_VALUE_DEPTH;
+
+pyo3::create_exception!(
+    monty_proto,
+    UnmappedTypeError,
+    PyTypeError,
+    "A type without a host mapping; embedders choose the public exception."
+);
 
 /// Depth limit for converting host values INTO the sandbox: values must fit
 /// the wire protocol, whose decoder caps nesting (see [`MAX_VALUE_DEPTH`]) —
@@ -481,14 +488,9 @@ pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
     BUILTINS.get_or_try_init(py, || py.import("builtins").map(Bound::unbind))
 }
 
-/// Reconstructs the host Python *type object* for a Monty [`MontyType`] crossing the
-/// boundary as a value (e.g. sandbox code passing `type(Path('/x'))` to a host call).
-///
-/// Genuine builtins resolve from `builtins`; modeled stdlib types resolve from their
-/// real defining module (the `Path` class maps to `PurePosixPath`, like its instances).
-/// The import path can differ from [`MontyType`]'s `Display` (io types show `_io.*` but
-/// live in `io`). Unmodeled types fall through to `builtins` and raise `AttributeError`.
-/// Each modeled type's host class is cached in its own `PyOnceLock` (imported once).
+/// Converts a Monty type to its host class, caching modeled non-builtin classes.
+/// Private iterator and view classes are derived from host objects; types without
+/// an output mapping raise [`UnmappedTypeError`] naming the type.
 fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
     // A type this host's Python is too old to define has no object to hand back.
     // Say which type that was, rather than leaving the arm's import to raise a
@@ -508,6 +510,15 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
             LOCK.import(py, $module, $name).map(|b| b.clone().unbind())
         }};
     }
+    // Private iterator and view classes have no module attribute; derive them
+    // from small host objects once, without advancing an iterator.
+    macro_rules! cached_type {
+        ($value:expr) => {{
+            static TYPE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+            TYPE.get_or_try_init(py, || Ok($value.get_type().into_any().unbind()))
+                .map(|ty| ty.clone_ref(py))
+        }};
+    }
     match t {
         MontyType::Date => cached!("datetime", "date"),
         MontyType::DateTime => cached!("datetime", "datetime"),
@@ -516,6 +527,34 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         MontyType::TimeDelta => cached!("datetime", "timedelta"),
         MontyType::TimeZone => cached!("datetime", "timezone"),
         MontyType::ListIterator => get_list_iterator_type(py).map(|b| b.clone().unbind()),
+        MontyType::TupleIterator => cached_type!(PyTuple::empty(py).try_iter()?),
+        MontyType::StrAsciiIterator => cached_type!(PyString::new(py, "").try_iter()?),
+        MontyType::StrIterator => cached_type!(PyString::new(py, "é").try_iter()?),
+        MontyType::BytesIterator => cached_type!(PyBytes::new(py, b"").try_iter()?),
+        MontyType::RangeIterator => {
+            cached_type!(
+                import_builtins(py)?
+                    .getattr(py, "range")?
+                    .call1(py, (0,))?
+                    .bind(py)
+                    .try_iter()?
+            )
+        }
+        MontyType::DictKeyIterator => cached_type!(PyDict::new(py).try_iter()?),
+        MontyType::DictItemIterator => {
+            cached_type!(PyDict::new(py).call_method0(intern!(py, "items"))?.try_iter()?)
+        }
+        MontyType::DictValueIterator => {
+            cached_type!(PyDict::new(py).call_method0(intern!(py, "values"))?.try_iter()?)
+        }
+        MontyType::SetIterator => cached_type!(PySet::empty(py)?.try_iter()?),
+        MontyType::DictKeys => cached_type!(PyDict::new(py).call_method0(intern!(py, "keys"))?),
+        MontyType::DictItems => cached_type!(PyDict::new(py).call_method0(intern!(py, "items"))?),
+        MontyType::DictValues => cached_type!(PyDict::new(py).call_method0(intern!(py, "values"))?),
+        MontyType::NotImplementedType => cached!("types", "NotImplementedType"),
+        MontyType::Function => cached!("types", "FunctionType"),
+        MontyType::BuiltinFunction => cached!("types", "BuiltinFunctionType"),
+        MontyType::Module => cached!("types", "ModuleType"),
         MontyType::CallableIterator => get_callable_iterator_type(py).map(|b| b.clone().unbind()),
         MontyType::ItertoolsCount => cached!("itertools", "count"),
         MontyType::ItertoolsRepeat => cached!("itertools", "repeat"),
@@ -553,7 +592,13 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
             "cannot convert class '{}' to a host type object",
             class_type.name
         ))),
-        _ => import_builtins(py)?.getattr(py, t.to_string()),
+        _ => import_builtins(py)?.getattr(py, t.to_string()).map_err(|err| {
+            if err.is_instance_of::<PyAttributeError>(py) {
+                UnmappedTypeError::new_err(format!("Cannot convert {t} to a host type: no output mapping"))
+            } else {
+                err
+            }
+        }),
     }
 }
 

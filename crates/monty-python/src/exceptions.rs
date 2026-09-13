@@ -14,13 +14,13 @@
 //! ├── MontyCrashedError        # Raised when the sandbox dies or times out
 //! ├── MontyDisconnectError     # A remote worker's connection closed (websocket only)
 //! ├── MontyShutdown            # The remote server is shutting down (websocket only)
-//! └── MontyConversionError     # A host value that can't be converted into the sandbox
+//! └── MontyConversionError     # A value or type that can't cross the host boundary
 //! ```
 
 use std::sync::Arc;
 
 use ahash::AHashMap;
-use monty_proto::python::exc_monty_to_py;
+use monty_proto::python::{UnmappedTypeError, exc_monty_to_py};
 use monty_types::{ExcType, MontyException};
 use pyo3::{
     PyClassInitializer,
@@ -94,15 +94,21 @@ impl MontyError {
     }
 }
 
-/// Raised when a host value cannot be converted across the Monty/host boundary
-/// — an `external_lookup` value or an `inputs` value of a type Monty cannot
-/// represent. Inherits from `MontyError` (so `except MontyError` catches it) and
-/// carries the "Cannot convert X to Monty value" message; the stored type is
-/// `TypeError`, so `exception()` reconstructs a native `TypeError`.
+/// Raised for an unsupported host input or a sandbox type with no host mapping.
+/// Inherits from `MontyError`; `exception()` reconstructs a native `TypeError`.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyConversionError;
 
 impl MontyConversionError {
+    /// Wraps an unmapped output type without masking other host failures.
+    pub(crate) fn output_conversion_err(py: Python<'_>, err: PyErr) -> PyErr {
+        if err.is_instance_of::<UnmappedTypeError>(py) {
+            Self::new_err(py, err.value(py).to_string())
+        } else {
+            err
+        }
+    }
+
     /// Builds a `MontyConversionError` carrying `message`, stored as a
     /// `TypeError`. Raised via [`Self::value_conversion_err`] for a genuine
     /// unrepresentable-type failure.

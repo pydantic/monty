@@ -51,7 +51,7 @@ mod tests;
 use crate::{
     async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
     callback_context::CallbackContext,
-    exceptions::MontyError,
+    exceptions::{MontyConversionError, MontyError},
     external::{CallResult, ExternalLookup, resolve_object_attr, wire_call_arguments},
     pool::{
         FeedArgs, SharedCheckout, TurnFuture, block_on_sync, discard_checkout, discard_checkout_sync,
@@ -524,7 +524,9 @@ fn parse_external_result(
 
 /// The pending call's positional args as a Python tuple.
 fn args_to_py<'py>(py: Python<'py>, args: &[MontyObject], instances: &InstanceStore) -> PyResult<Bound<'py, PyTuple>> {
-    wire_call_arguments(py, args, &[], instances).map(|(args, _)| args)
+    wire_call_arguments(py, args, &[], instances)
+        .map(|(args, _)| args)
+        .map_err(|err| MontyConversionError::output_conversion_err(py, err))
 }
 
 /// The pending call's keyword args as a Python dict.
@@ -533,7 +535,9 @@ fn kwargs_to_py<'py>(
     kwargs: &[(MontyObject, MontyObject)],
     instances: &InstanceStore,
 ) -> PyResult<Bound<'py, PyDict>> {
-    wire_call_arguments(py, &[], kwargs, instances).map(|(_, kwargs)| kwargs)
+    wire_call_arguments(py, &[], kwargs, instances)
+        .map(|(_, kwargs)| kwargs)
+        .map_err(|err| MontyConversionError::output_conversion_err(py, err))
 }
 
 // =============================================================================
@@ -1196,6 +1200,7 @@ impl MontyComplete {
     #[getter]
     fn output(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         monty_to_py(py, &self.value, &self.instances)
+            .map_err(|err| MontyConversionError::output_conversion_err(py, err))
     }
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
