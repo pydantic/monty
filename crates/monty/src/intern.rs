@@ -1492,7 +1492,8 @@ pub(crate) struct Interns {
     /// `<string>` filename id each call interns (ascending), so a traceback
     /// frame's byte offsets resolve to the right line of the right snippet.
     eval_sources: Vec<(StringId, Arc<str>)>,
-    /// `String → StringId` reverse lookup for [`Self::get_string_id_by_name`].
+    /// `str → StringId` reverse lookup for [`Self::get_string_id_by_name`];
+    /// each key shares the `Rc<str>` allocation of its `strings` entry.
     ///
     /// Built from `strings` at construction and after deserialization, so
     /// the structure is purely additive on the wire (`InternsWire` carries
@@ -1500,7 +1501,7 @@ pub(crate) struct Interns {
     /// here — those are resolved by the cheap branches at the top of
     /// `get_string_id_by_name`.
     #[serde(skip)]
-    string_id_by_name: AHashMap<String, StringId>,
+    string_id_by_name: AHashMap<Rc<str>, StringId>,
 }
 
 /// Serialized form of [`Interns`]
@@ -1561,7 +1562,7 @@ fn reserved_str(id: StringId) -> &'static str {
 /// reserved for ASCII single-character strings and the [`StaticStrings`]
 /// table — those are handled by the cheap branches at the top of
 /// [`Interns::get_string_id_by_name`] and never enter this map.
-fn build_string_id_by_name(strings: &[WithHash<Rc<str>>]) -> AHashMap<String, StringId> {
+fn build_string_id_by_name(strings: &[WithHash<Rc<str>>]) -> AHashMap<Rc<str>, StringId> {
     strings
         .iter()
         .enumerate()
@@ -1570,7 +1571,7 @@ fn build_string_id_by_name(strings: &[WithHash<Rc<str>>]) -> AHashMap<String, St
                 u32::try_from(INTERN_STRING_ID_OFFSET + index)
                     .expect("StringId overflow while building reverse interns map"),
             );
-            (entry.value().to_string(), id)
+            (Rc::clone(entry.value()), id)
         })
         .collect()
 }
@@ -1602,20 +1603,20 @@ impl Interns {
             StringId::from_ascii(s.as_bytes()[0])
         } else if let Ok(ss) = StaticStrings::from_str(s) {
             ss.into()
+        } else if let Some(id) = self.string_id_by_name.get(s) {
+            *id
         } else {
-            *self.string_id_by_name.entry(s.to_owned()).or_insert_with(|| {
-                let string_id = self.strings.len() + INTERN_STRING_ID_OFFSET;
-                let id = StringId(string_id.try_into().expect("StringId overflow"));
-                self.strings.push(WithHash::for_str(s.to_owned()));
-                id
-            })
+            let s: Rc<str> = Rc::from(s);
+            let id = self.push_string(Rc::clone(&s));
+            self.string_id_by_name.insert(s, id);
+            id
         }
     }
 
     /// Interns bytes, returning its `BytesId`; not deduplicated (bytes literals are rare).
     pub(crate) fn intern_bytes(&mut self, b: &[u8]) -> BytesId {
         let id = BytesId(self.bytes.len().try_into().expect("BytesId overflow"));
-        self.bytes.push(WithHash::for_bytes(b.to_vec()));
+        self.bytes.push(WithHash::for_bytes(b));
         id
     }
 
@@ -1633,10 +1634,16 @@ impl Interns {
     /// The id is deliberately not deduplicated: every snippet gets its own so
     /// [`eval_source`](Self::eval_source) can tell their tracebacks apart.
     pub(crate) fn add_eval_source(&mut self, source: Arc<str>) -> StringId {
+        let id = self.push_string(Rc::from("<string>"));
+        self.eval_sources.push((id, source));
+        id
+    }
+
+    /// Appends `s` to the pool (no deduplication) and returns its id.
+    fn push_string(&mut self, s: Rc<str>) -> StringId {
         let string_id = self.strings.len() + INTERN_STRING_ID_OFFSET;
         let id = StringId(string_id.try_into().expect("StringId overflow"));
-        self.strings.push(WithHash::for_str("<string>".to_owned()));
-        self.eval_sources.push((id, source));
+        self.strings.push(WithHash::for_str(s));
         id
     }
 

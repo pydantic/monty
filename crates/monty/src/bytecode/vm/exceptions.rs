@@ -299,8 +299,9 @@ impl VM<'_> {
                 // Unwind operands to the compiler-recorded region depth,
                 // including any in-flight comprehension values.
                 let handler_offset = usize::try_from(entry.handler()).expect("handler offset exceeds usize");
-                let target_stack_depth = frame.stack_base + frame.locals_count as usize + entry.stack_depth() as usize;
-                let target_exc_stack_depth = frame.exception_stack_base + entry.exception_stack_count() as usize;
+                let target_stack_depth =
+                    frame.stack_base() + frame.locals_count as usize + entry.stack_depth() as usize;
+                let target_exc_stack_depth = frame.exception_stack_base() + entry.exception_stack_count() as usize;
                 let pushes_exception = entry.pushes_exception();
 
                 // Unwind stack to target depth (drop excess values)

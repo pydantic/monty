@@ -348,6 +348,8 @@ impl<C: ContainsHeap> DropWithContext<C> for FrameExit {
 ///
 /// Each frame represents one level in the call stack and owns its own
 /// instruction pointer. This design avoids sync bugs on call/return.
+/// Every call moves a frame four times (push and pop each replace and
+/// copy), so the layout is pinned at 72 bytes by the assertion below.
 #[derive(Debug)]
 pub struct CallFrame {
     /// Bytecode being executed, shared with the function (or program) that
@@ -366,8 +368,9 @@ pub struct CallFrame {
     /// Base index into the VM stack for this frame's locals region.
     ///
     /// The frame's locals occupy `stack[stack_base..stack_base + locals_count]`,
-    /// and operands are pushed above that.
-    stack_base: usize,
+    /// and operands are pushed above that. `u32` keeps the frame at 72 bytes;
+    /// the stack can never hold that many values.
+    stack_base: u32,
 
     /// Number of local variable slots in this frame.
     ///
@@ -378,7 +381,7 @@ pub struct CallFrame {
     /// Base of this frame's entries in the VM-wide `exception_stack`.
     /// Recorded region depths are relative to this index, keeping caller
     /// exceptions intact when abandoned handlers are unwound.
-    exception_stack_base: usize,
+    exception_stack_base: u32,
 
     /// Function ID (for tracebacks). None for module-level code.
     function_id: Option<FunctionId>,
@@ -410,6 +413,17 @@ pub struct CallFrame {
     is_initializer: bool,
 }
 
+const _: () = assert!(mem::size_of::<CallFrame>() <= 72);
+
+/// Narrows a VM stack index to the frame's `u32` field.
+///
+/// The operand and exception stacks are bounded by the recursion limit and
+/// `Vec` capacity long before `u32::MAX`, so failure means a VM bug.
+#[inline]
+pub(super) fn stack_index(index: usize) -> u32 {
+    u32::try_from(index).expect("VM stack index exceeds u32")
+}
+
 impl CallFrame {
     /// Creates a new call frame for module-level code.
     ///
@@ -422,7 +436,7 @@ impl CallFrame {
             ip: 0,
             stack_base: 0,
             locals_count: 0,
-            exception_stack_base,
+            exception_stack_base: stack_index(exception_stack_base),
             function_id: None,
             call_offset: None,
             should_return: false,
@@ -437,6 +451,27 @@ impl CallFrame {
         let mut frame = Self::new_module(code, 0);
         frame.is_parked = true;
         frame
+    }
+
+    /// Turns this finished frame into the parked frame left between tasks,
+    /// reusing its allocations; the namespace must already be released.
+    fn park(&mut self, module_code: Option<&Rc<Code>>) {
+        if let Some(code) = module_code
+            && !Rc::ptr_eq(code, &self.code)
+        {
+            self.bytecode = code.shared_bytecode();
+            self.code = Rc::clone(code);
+        }
+        self.ip = 0;
+        self.stack_base = 0;
+        self.locals_count = 0;
+        self.exception_stack_base = 0;
+        self.function_id = None;
+        self.call_offset = None;
+        self.should_return = false;
+        self.is_parked = true;
+        self.is_initializer = false;
+        debug_assert!(self.namespace.is_none(), "parked frame still owns a namespace");
     }
 
     /// Creates a new call frame for a function call.
@@ -460,9 +495,9 @@ impl CallFrame {
             bytecode: code.shared_bytecode(),
             code,
             ip: 0,
-            stack_base,
+            stack_base: stack_index(stack_base),
             locals_count,
-            exception_stack_base,
+            exception_stack_base: stack_index(exception_stack_base),
             function_id: Some(function_id),
             call_offset,
             should_return: false,
@@ -474,6 +509,18 @@ impl CallFrame {
 }
 
 impl CallFrame {
+    /// Start of this frame's locals region on the VM stack.
+    #[inline]
+    pub(super) fn stack_base(&self) -> usize {
+        self.stack_base as usize
+    }
+
+    /// Start of this frame's entries in the VM-wide `exception_stack`.
+    #[inline]
+    pub(super) fn exception_stack_base(&self) -> usize {
+        self.exception_stack_base as usize
+    }
+
     /// Fetches `N` bytes from bytecode at the current IP, advancing IP by `N`.
     ///
     /// Performs a single bounds check covering all `N` bytes. All typed fetch
@@ -616,9 +663,9 @@ impl CallFrame {
         SerializedFrame {
             function_id: self.function_id,
             ip: self.ip,
-            stack_base: self.stack_base,
+            stack_base: self.stack_base(),
             locals_count: self.locals_count,
-            exception_stack_base: self.exception_stack_base,
+            exception_stack_base: self.exception_stack_base(),
             call_offset: self.call_offset,
             is_initializer: self.is_initializer,
             namespace: mem::take(&mut self.namespace),
@@ -926,9 +973,9 @@ impl<'h> VM<'h> {
                     bytecode: code.shared_bytecode(),
                     code,
                     ip: sf.ip,
-                    stack_base: sf.stack_base,
+                    stack_base: stack_index(sf.stack_base),
                     locals_count: sf.locals_count,
-                    exception_stack_base: sf.exception_stack_base,
+                    exception_stack_base: stack_index(sf.exception_stack_base),
                     function_id: sf.function_id,
                     call_offset: sf.call_offset,
                     should_return: false,
@@ -1039,7 +1086,7 @@ impl<'h> VM<'h> {
     /// Used by `NameLookup` resolution to determine which stack region to cache
     /// resolved values into when the lookup originated from a function scope.
     pub fn current_stack_base(&self) -> usize {
-        self.current_frame.stack_base
+        self.current_frame.stack_base()
     }
 
     /// Takes ownership of the globals vector, replacing it with an empty vec.
@@ -2212,14 +2259,18 @@ impl<'h> VM<'h> {
     }
 
     /// Releases what a finished frame owns: its stack region and namespace.
+    #[inline]
     fn cleanup_frame_state(&mut self, frame: &mut CallFrame) {
         // Clean up frame's stack region (locals + operand stack, which now
         // includes any in-flight comprehension variables — the operand-stack
         // drain naturally covers them).
         self.stack
-            .drain(frame.stack_base..)
+            .drain(frame.stack_base()..)
             .for_each(|value| value.drop_with(&mut *self.heap));
-        mem::take(&mut frame.namespace).drop_with(self.heap);
+        // Almost every frame has no namespace; skip the release call for those.
+        if let Some(namespace) = frame.namespace.take() {
+            namespace.drop_with(self.heap);
+        }
     }
 
     /// Cleans up all frames and stack values for the current task.
@@ -2229,15 +2280,11 @@ impl<'h> VM<'h> {
     /// parked frame until another task is loaded.
     pub(super) fn cleanup_current_task(&mut self) {
         self.stack.drain(..).drop_with(self.heap);
-        for mut frame in self.suspended_frames.drain(..) {
-            mem::take(&mut frame.namespace).drop_with(self.heap);
+        for frame in self.suspended_frames.drain(..) {
+            frame.namespace.drop_with(self.heap);
         }
-        let code = self
-            .module_code
-            .clone()
-            .unwrap_or_else(|| Rc::clone(&self.current_frame.code));
-        let mut finished = mem::replace(&mut self.current_frame, CallFrame::new_parked(code));
-        mem::take(&mut finished.namespace).drop_with(self.heap);
+        self.current_frame.namespace.take().drop_with(self.heap);
+        self.current_frame.park(self.module_code.as_ref());
     }
 
     /// Runs the trial-deletion cycle collector.
@@ -2338,7 +2385,7 @@ impl<'h> VM<'h> {
     /// `LoadLocal*` slot is registered as assigned by the compiler, so an undefined
     /// value can only mean access-before-assignment.
     fn load_local(&mut self, slot: u16) -> RunResult<()> {
-        let index = self.current_frame.stack_base + slot as usize;
+        let index = self.current_frame.stack_base() + slot as usize;
         if matches!(self.stack[index], Value::Undefined) {
             let name = self.current_frame.code.local_name(slot);
             Err(self.unbound_local_error(slot, name))
@@ -2449,14 +2496,14 @@ impl<'h> VM<'h> {
     /// Pops the top of stack and stores it in a local variable.
     fn store_local(&mut self, slot: u16) {
         let value = self.pop();
-        let index = self.current_frame.stack_base + slot as usize;
+        let index = self.current_frame.stack_base() + slot as usize;
         let old_value = mem::replace(&mut self.stack[index], value);
         old_value.drop_with(self);
     }
 
     /// Deletes a local variable (sets it to Undefined).
     fn delete_local(&mut self, slot: u16) {
-        let index = self.current_frame.stack_base + slot as usize;
+        let index = self.current_frame.stack_base() + slot as usize;
         let old_value = mem::replace(&mut self.stack[index], Value::Undefined);
         old_value.drop_with(self);
     }
@@ -2569,7 +2616,7 @@ impl<'h> VM<'h> {
     ///
     /// Cell variables are stored as `Value::Ref(cell_id)` in the frame's locals region.
     fn cell_id_from_local(&self, slot: u16) -> HeapId {
-        match &self.stack[self.current_frame.stack_base + slot as usize] {
+        match &self.stack[self.current_frame.stack_base() + slot as usize] {
             Value::Ref(cell_id) => *cell_id,
             other => panic!("LoadCell/StoreCell: expected cell reference in local slot {slot}, found {other:?}"),
         }

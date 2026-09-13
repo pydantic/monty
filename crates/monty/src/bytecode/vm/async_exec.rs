@@ -11,7 +11,7 @@ use std::{mem, rc::Rc, task::Poll};
 use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
-use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM, function_namespace};
+use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM, function_namespace, stack_index};
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
@@ -603,9 +603,9 @@ impl<'h> VM<'h> {
             .map(|f| SerializedTaskFrame {
                 function_id: f.function_id,
                 ip: f.ip,
-                stack_base: f.stack_base,
+                stack_base: f.stack_base(),
                 locals_count: f.locals_count,
-                exception_stack_base: f.exception_stack_base,
+                exception_stack_base: f.exception_stack_base(),
                 call_offset: f.call_offset,
                 is_initializer: f.is_initializer,
                 namespace: f.namespace,
@@ -616,9 +616,9 @@ impl<'h> VM<'h> {
         frames.push(SerializedTaskFrame {
             function_id: current.function_id,
             ip: current.ip,
-            stack_base: current.stack_base,
+            stack_base: current.stack_base(),
             locals_count: current.locals_count,
-            exception_stack_base: current.exception_stack_base,
+            exception_stack_base: current.exception_stack_base(),
             call_offset: current.call_offset,
             is_initializer: current.is_initializer,
             namespace: mem::take(&mut current.namespace),
@@ -683,9 +683,9 @@ impl<'h> VM<'h> {
                         bytecode: code.shared_bytecode(),
                         code,
                         ip: sf.ip,
-                        stack_base: sf.stack_base,
+                        stack_base: stack_index(sf.stack_base),
                         locals_count: sf.locals_count,
-                        exception_stack_base: sf.exception_stack_base,
+                        exception_stack_base: stack_index(sf.exception_stack_base),
                         function_id: sf.function_id,
                         call_offset: sf.call_offset,
                         should_return: false,

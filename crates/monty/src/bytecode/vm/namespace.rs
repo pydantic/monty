@@ -77,6 +77,7 @@ impl FrameNamespace {
 
 /// The namespace for a frame of a function that carries `globals`: an owned
 /// reference to the dict (inc_ref'd here), or `None` for slot globals.
+#[inline]
 pub(crate) fn function_namespace(globals: Option<HeapId>, heap: &impl ContainsHeap) -> Option<Box<FrameNamespace>> {
     globals.map(|globals| {
         heap.heap().inc_ref(globals);
@@ -302,7 +303,7 @@ impl VM<'_> {
     pub(crate) fn snapshot_locals(&mut self) -> RunResult<HeapId> {
         let dict_id = self.heap.allocate(HeapData::Dict(Dict::new()));
         let code = Rc::clone(&self.current_frame.code);
-        let base = self.current_frame.stack_base;
+        let base = self.current_frame.stack_base();
         let count = usize::from(self.current_frame.locals_count);
         // Cell slots go last so a captured parameter's live cell value replaces
         // the stale copy left in its parameter slot under the same name.

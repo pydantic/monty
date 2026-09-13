@@ -24,6 +24,7 @@
 //!   time for any non-trivial program).
 
 use std::{
+    borrow::Cow,
     collections::hash_map::DefaultHasher,
     fmt,
     hash::{Hash, Hasher},
@@ -233,22 +234,19 @@ impl<T> WithHash<T> {
 }
 
 impl WithHash<Rc<str>> {
-    /// Construct from an owned `String`, hashing via [`hash_python_str`].
+    /// Construct from a shared string, hashing via [`hash_python_str`].
     #[inline]
-    pub fn for_str(value: String) -> Self {
+    pub fn for_str(value: Rc<str>) -> Self {
         let hash = hash_python_str(&value);
-        Self {
-            value: Rc::from(value),
-            hash,
-        }
+        Self { value, hash }
     }
 }
 
 impl WithHash<Rc<[u8]>> {
-    /// Construct from an owned `Vec<u8>`, hashing via [`hash_python_bytes`].
+    /// Construct from a byte slice, hashing via [`hash_python_bytes`].
     #[inline]
-    pub fn for_bytes(value: Vec<u8>) -> Self {
-        let hash = hash_python_bytes(&value);
+    pub fn for_bytes(value: &[u8]) -> Self {
+        let hash = hash_python_bytes(value);
         Self {
             value: Rc::from(value),
             hash,
@@ -278,13 +276,13 @@ impl<T: serde::Serialize> serde::Serialize for WithHash<T> {
 // `hash_python_*` helper is invoked.
 impl<'de> serde::Deserialize<'de> for WithHash<Rc<str>> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self::for_str(String::deserialize(deserializer)?))
+        Ok(Self::for_str(Rc::from(&*Cow::<str>::deserialize(deserializer)?)))
     }
 }
 
 impl<'de> serde::Deserialize<'de> for WithHash<Rc<[u8]>> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self::for_bytes(Vec::<u8>::deserialize(deserializer)?))
+        Ok(Self::for_bytes(&Cow::<[u8]>::deserialize(deserializer)?))
     }
 }
 
