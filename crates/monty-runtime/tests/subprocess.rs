@@ -913,9 +913,9 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `dict | dict` snapshots the left pairs and builds the merged dict
         // while that snapshot is live, so both are preflighted together.
         ("d = dict.fromkeys(range(12_000))\nd | {}", 1_794_799),
-        // The right operand is snapshotted and applied inside the same call, so
-        // it is preflighted like the left one and refuses at the same figure.
-        ("d = dict.fromkeys(range(12_000))\n{} | d", 1_794_799),
+        // The right operand is snapshotted inside the same call, so that copy is
+        // preflighted too. Only the copy: see the overlap test below.
+        ("d = dict.fromkeys(range(12_000))\n{} | d", 1_218_799),
         // A partial re-clones its bound arguments on every call, so that clone
         // is preflighted like any other bulk container copy.
         (
@@ -955,6 +955,19 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
         child.shutdown();
     }
+}
+
+/// A merge charges the pairs it copies out, but not room for every one of them
+/// in the target: `a | b` over keys `a` already holds grows the result by
+/// nothing, so charging per source pair refused merges that comfortably fit.
+/// This limit sits between the two, so it only passes if the growth is left out.
+#[test]
+fn overlapping_dict_merges_are_not_charged_for_absent_growth() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(23 * 1024 * 1024));
+    child.feed_complete("a = dict.fromkeys(range(100_000))\nb = dict.fromkeys(range(100_000))");
+    assert_eq!(child.feed_complete("x = a | b\nlen(x)"), MontyObject::Int(100_000));
+    child.shutdown();
 }
 
 /// `inf` and `nan` print as they are, so a huge float precision costs nothing

@@ -1776,11 +1776,14 @@ fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> Run
     let Some(HeapReadOutput::Dict(right_dict)) = right.read_heap(vm) else {
         return Ok(None);
     };
-    // The pair snapshot is still live while `from_pairs` builds the merged
-    // entries, so preflight both at once: copying a near-limit dict must raise
-    // `MemoryError` rather than jump past the allocator's hard ceiling.
-    // `dict_merge_from_value` preflights the right operand the same way.
-    check_merge_allocation(left.get(vm.heap).len(), vm)?;
+    // `from_pairs` builds a fresh dict of exactly these pairs while the snapshot
+    // is still live, so charge both: copying a near-limit dict must raise
+    // `MemoryError` rather than jump past the allocator's hard ceiling. The
+    // growth term is exact here only because the destination starts empty.
+    let left_len = left.get(vm.heap).len();
+    vm.heap.tracker.check_allocation(
+        left_len.saturating_mul(2 * VALUE_SIZE + mem::size_of::<DictEntry>() + mem::size_of::<usize>()),
+    )?;
     let pairs = left.clone_all_pairs(vm)?;
     let merged = Dict::from_pairs(pairs, vm)?;
     let mut merged_guard = DropGuard::new(merged, vm);
@@ -1846,9 +1849,10 @@ fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_>) -
             && let HeapData::Dict(src_dict) = vm.heap.get(*id)
         {
             // The snapshot stays live while the pairs are applied, so charge it
-            // together with the room they need in the target. `dict.update(d)`
-            // and `big | small` reach the same burst as `small | big` does.
-            check_merge_allocation(src_dict.len(), vm)?;
+            // up front. Only the snapshot: how much the target grows depends on
+            // how many of these keys it already holds, and charging for all of
+            // them refuses merges that would have fit (`a | b` over shared keys).
+            check_pair_snapshot(src_dict.len(), vm)?;
             // Clone key-value pairs from the source dict.
             let pairs: Vec<(Value, Value)> = src_dict
                 .iter()
@@ -1872,15 +1876,14 @@ fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_>) -
     dict_merge_from_iterable_pairs(dict, other_value, vm)
 }
 
-/// Preflights a dict-to-dict merge of `len` pairs: the `(key, value)` snapshot
-/// plus the entry and index slots they need in the target.
+/// Preflights the `(key, value)` snapshot a dict-to-dict merge copies out.
 ///
-/// Both `|` operands and `update`'s source burst this inside one builtin call
-/// with no instruction checkpoint, so an over-budget merge is refused here
-/// rather than after the fact, at the allocator's hard ceiling.
-fn check_merge_allocation(len: usize, vm: &VM<'_>) -> RunResult<()> {
-    let per_pair = 2 * VALUE_SIZE + mem::size_of::<DictEntry>() + mem::size_of::<usize>();
-    Ok(vm.heap.tracker.check_allocation(len.saturating_mul(per_pair))?)
+/// The snapshot is a known-size bulk allocation made inside one builtin call
+/// with no instruction checkpoint, so it is refused here rather than after the
+/// fact. The target's own growth is left to the ordinary checkpoints, being
+/// unknowable until the keys are compared.
+fn check_pair_snapshot(len: usize, vm: &VM<'_>) -> RunResult<()> {
+    Ok(vm.heap.tracker.check_allocation(len.saturating_mul(2 * VALUE_SIZE))?)
 }
 
 /// Merges key-value pairs from an iterable of 2-item iterables.

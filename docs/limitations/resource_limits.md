@@ -184,6 +184,12 @@ indistinguishable from a stack overflow.
     themselves (iterator advancement, sequence repeats, comparisons, `repr`)
     do so every 64th item. Both are unconditional overshoots of ordinary
     `max_duration` enforcement, on top of the per-operation cases below.
+- A container narrower than that 64-item interval never reaches a poll at all.
+    Structures that share sub-objects are walked once per path rather than once
+    per object, so `repr`, `==` and `hash` over one nested `n` levels deep do
+    work exponential in `n` (`x = (x, x)` repeated, and the same through a
+    generic alias). Neither limit is consulted until the walk finishes, so the
+    overshoot is bounded only by the hard ceiling.
 - Every host turn re-checks both limits as it returns, so a turn that
     finished without reaching a checkpoint still fails rather than returning
     its result. Two consequences: a turn whose Python code raised an exception
