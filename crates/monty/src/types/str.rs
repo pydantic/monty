@@ -1,9 +1,6 @@
 use std::{cell::Cell, fmt::Write, ops};
 
-/// Python string type, wrapping a Rust `String`.
-///
-/// This type provides Python string semantics. Currently supports basic
-/// operations like length and equality comparison.
+use caseless::default_case_fold_str;
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use ruff_python_stdlib::{identifiers::is_identifier, keyword::is_keyword};
@@ -696,11 +693,14 @@ fn str_swapcase(s: &str, vm: &VM<'_>) -> Value {
 
 /// Implements Python's `str.casefold()` method.
 ///
-/// Returns a casefolded copy of the string. Casefolding is similar to lowercasing
-/// but more aggressive because it is intended for caseless string matching.
+/// Uses full default Unicode folding without normalization or locale tailoring.
 fn str_casefold(s: &str, vm: &VM<'_>) -> Value {
-    // Rust's to_lowercase() is equivalent to Unicode casefolding for most purposes
-    allocate_string(s.to_lowercase(), vm.heap)
+    let result = if s.is_ascii() {
+        s.to_ascii_lowercase()
+    } else {
+        default_case_fold_str(s)
+    };
+    allocate_string(result, vm.heap)
 }
 
 // =============================================================================
