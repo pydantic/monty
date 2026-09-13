@@ -913,6 +913,9 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `dict | dict` snapshots the left pairs and builds the merged dict
         // while that snapshot is live, so both are preflighted together.
         ("d = dict.fromkeys(range(12_000))\nd | {}", 1_794_799),
+        // The right operand is snapshotted and applied inside the same call, so
+        // it is preflighted like the left one and refuses at the same figure.
+        ("d = dict.fromkeys(range(12_000))\n{} | d", 1_794_799),
         // A partial re-clones its bound arguments on every call, so that clone
         // is preflighted like any other bulk container copy.
         (

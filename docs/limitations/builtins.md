@@ -39,6 +39,10 @@ These raise `NameError`:
 - **No `__class__` on builtin values** — `[].__class__`, `list.__class__` and
     `list[int].__class__` raise `AttributeError`; only instances of Monty classes
     carry it (see [classes.md](classes.md)). Use `type(x)`.
+- **Builtin methods are call-only** — reading one without calling it raises
+    `AttributeError`, so `[1].append`, `'a'.upper`, `{}.get`, `dict.fromkeys`
+    and `list.__class_getitem__` cannot be assigned, passed as a callback or
+    reached through `getattr`. Call them directly (`list.__class_getitem__(int)`).
 - **`repr` of a dict being mutated by its own elements** — Monty iterates the
     live entries like CPython, but deletion compacts Monty's dense entry storage
     where CPython leaves a tombstone in place: a key deleted from inside a user

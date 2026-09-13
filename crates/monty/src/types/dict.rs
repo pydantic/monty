@@ -1779,10 +1779,8 @@ fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> Run
     // The pair snapshot is still live while `from_pairs` builds the merged
     // entries, so preflight both at once: copying a near-limit dict must raise
     // `MemoryError` rather than jump past the allocator's hard ceiling.
-    let len = left.get(vm.heap).len();
-    vm.heap
-        .tracker
-        .check_allocation(len.saturating_mul(2 * VALUE_SIZE + mem::size_of::<DictEntry>() + mem::size_of::<usize>()))?;
+    // `dict_merge_from_value` preflights the right operand the same way.
+    check_merge_allocation(left.get(vm.heap).len(), vm)?;
     let pairs = left.clone_all_pairs(vm)?;
     let merged = Dict::from_pairs(pairs, vm)?;
     let mut merged_guard = DropGuard::new(merged, vm);
@@ -1847,6 +1845,10 @@ fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_>) -
         if let Value::Ref(id) = other_value
             && let HeapData::Dict(src_dict) = vm.heap.get(*id)
         {
+            // The snapshot stays live while the pairs are applied, so charge it
+            // together with the room they need in the target. `dict.update(d)`
+            // and `big | small` reach the same burst as `small | big` does.
+            check_merge_allocation(src_dict.len(), vm)?;
             // Clone key-value pairs from the source dict.
             let pairs: Vec<(Value, Value)> = src_dict
                 .iter()
@@ -1868,6 +1870,17 @@ fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_>) -
     // Non-dict values are interpreted as iterable-of-pairs.
     let other_value = other_value_guard.into_inner();
     dict_merge_from_iterable_pairs(dict, other_value, vm)
+}
+
+/// Preflights a dict-to-dict merge of `len` pairs: the `(key, value)` snapshot
+/// plus the entry and index slots they need in the target.
+///
+/// Both `|` operands and `update`'s source burst this inside one builtin call
+/// with no instruction checkpoint, so an over-budget merge is refused here
+/// rather than after the fact, at the allocator's hard ceiling.
+fn check_merge_allocation(len: usize, vm: &VM<'_>) -> RunResult<()> {
+    let per_pair = 2 * VALUE_SIZE + mem::size_of::<DictEntry>() + mem::size_of::<usize>();
+    Ok(vm.heap.tracker.check_allocation(len.saturating_mul(per_pair))?)
 }
 
 /// Merges key-value pairs from an iterable of 2-item iterables.
