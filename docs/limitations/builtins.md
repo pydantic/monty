@@ -36,6 +36,9 @@ These raise `NameError`:
 
 ## Behavioural divergences
 
+- **No `__class__` on builtin values** — `[].__class__`, `list.__class__` and
+    `list[int].__class__` raise `AttributeError`; only instances of Monty classes
+    carry it (see [classes.md](classes.md)). Use `type(x)`.
 - **`repr` of a dict being mutated by its own elements** — Monty iterates the
     live entries like CPython, but deletion compacts Monty's dense entry storage
     where CPython leaves a tombstone in place: a key deleted from inside a user

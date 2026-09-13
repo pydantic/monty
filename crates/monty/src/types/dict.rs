@@ -1776,6 +1776,13 @@ fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> Run
     let Some(HeapReadOutput::Dict(right_dict)) = right.read_heap(vm) else {
         return Ok(None);
     };
+    // The pair snapshot is still live while `from_pairs` builds the merged
+    // entries, so preflight both at once: copying a near-limit dict must raise
+    // `MemoryError` rather than jump past the allocator's hard ceiling.
+    let len = left.get(vm.heap).len();
+    vm.heap
+        .tracker
+        .check_allocation(len.saturating_mul(2 * VALUE_SIZE + mem::size_of::<DictEntry>() + mem::size_of::<usize>()))?;
     let pairs = left.clone_all_pairs(vm)?;
     let merged = Dict::from_pairs(pairs, vm)?;
     let mut merged_guard = DropGuard::new(merged, vm);

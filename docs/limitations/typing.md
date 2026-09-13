@@ -131,6 +131,15 @@ Divergences in the aliases themselves:
 - **A cycle through the arguments prints as `...`.** CPython's alias repr has
     no recursion guard and raises `RecursionError` on `l = []; l.append(list[l]); repr(l)`;
     Monty prints `[list[[...]]]`.
+- **No `__class__`.** `list[int].__class__` raises `AttributeError`, as it
+    does for every builtin value (see [builtins.md](builtins.md)); use
+    `type(list[int])`.
+- **No `__orig_class__` on call results.** CPython sets `__orig_class__` on
+    the result of calling an alias when the object accepts attributes, so
+    `functools.partial[int](f).__orig_class__` is `functools.partial[int]`.
+    Monty's partial objects take no attributes, so the call returns a bare
+    partial and the lookup raises `AttributeError`. No other subscriptable
+    type accepts the attribute in CPython either.
 
 ## Unions
 

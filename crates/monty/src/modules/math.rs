@@ -2,7 +2,7 @@
 //!
 //! Provides mathematical functions and constants matching CPython 3.14 behavior
 //! and error messages. All functions are pure computations that don't require
-//! host involvement, so they return `Value` directly rather than `AttrCallResult`.
+//! host involvement, so they return `Value` directly rather than `CallResult`.
 //!
 //! ## Implemented functions
 //!

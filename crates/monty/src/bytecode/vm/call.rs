@@ -384,7 +384,7 @@ impl VM<'_> {
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
-                t.call_class_method(name_id, args, this).map(Into::into)
+                t.call_class_method(name_id, args, this)
             }
             _ => {
                 // Non-heap values without method support

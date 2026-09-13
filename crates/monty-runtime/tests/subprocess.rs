@@ -910,6 +910,9 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("x = [None] * 40_000\nx += x", 1_951_835),
         ("t = (None,) * 40_000\nt + t", 1_311_835),
         ("x = [None] * 40_000\nx.copy()", 1_311_585),
+        // `dict | dict` snapshots the left pairs and builds the merged dict
+        // while that snapshot is live, so both are preflighted together.
+        ("d = dict.fromkeys(range(12_000))\nd | {}", 1_794_799),
         // A partial re-clones its bound arguments on every call, so that clone
         // is preflighted like any other bulk container copy.
         (

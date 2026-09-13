@@ -121,10 +121,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     }
 
     /// Two aliases are equal when their origins and `__args__` are.
+    ///
+    /// Takes a recursion level like the repr: an argument can be a list that
+    /// holds this alias, and comparing two such cycles raises `RecursionError`
+    /// rather than overflowing the native stack.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::GenericAlias(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
+        let mut guard = vm.recursion_guard()?;
+        let vm = &mut *guard;
         let (origin, args) = self.parts(vm);
         defer_drop!(args, vm);
         let (other_origin, other_args) = other.parts(vm);
@@ -198,7 +204,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
 
     /// `list[int].__origin__()` calls the attribute the alias itself carries;
     /// `dict[str, int].fromkeys(...)` and `list[int].__class_getitem__(str)`
-    /// dispatch to the origin's classmethods.
+    /// dispatch to the origin's classmethods, and `list[int].__name__()` to
+    /// the origin's own attributes.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         if matches!(
             attr.static_string(),
@@ -212,7 +219,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         }
         let origin = self.get(vm.heap).origin;
         match attr {
-            EitherStr::Interned(method_id) => origin.call_class_method(*method_id, args, vm).map(Into::into),
+            EitherStr::Interned(method_id) => origin.call_class_method(*method_id, args, vm),
             // Classmethod names are all interned, so a heap string never names one.
             EitherStr::Heap(name) => {
                 args.drop_with(vm);

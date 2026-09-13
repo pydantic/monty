@@ -78,6 +78,16 @@ assert list[int].__name__ == 'list'
 assert type[int].__name__ == 'type'
 assert collections.deque[int].__name__ == 'deque'
 try:
+    list[int].__name__()
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'str' object is not callable"
+try:
+    list.__name__()
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'str' object is not callable"
+try:
     list[int].foo
     assert False, 'expected AttributeError'
 except AttributeError as exc:
@@ -102,6 +112,20 @@ try:
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc).startswith('unhashable type: ')
+# Two aliases whose arguments cycle back to them: the comparison recurses
+# until the recursion limit, as for two self-referential lists.
+cyclic_a = []
+cyclic_x = list[cyclic_a]
+cyclic_a.append(cyclic_x)
+cyclic_b = []
+cyclic_y = list[cyclic_b]
+cyclic_b.append(cyclic_y)
+try:
+    cyclic_x == cyclic_y
+    assert False, 'expected RecursionError'
+except RecursionError:
+    pass
+assert cyclic_x == cyclic_x
 
 # === Calling an alias calls the origin ===
 assert list[int]() == []
