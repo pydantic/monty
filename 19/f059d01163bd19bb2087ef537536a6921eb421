@@ -1,0 +1,25 @@
+docs/snapshots.md
+  s_cae9b6fccafbfa::t_632ebda3e44f33 246
+docs/limitations/asyncio.md
+  s_cae9b6fccafbfa::t_632ebda3e44f33 59-60
+crates/monty-python/src/pool.rs
+  s_cae9b6fccafbfa::t_632ebda3e44f33 1384
+crates/monty/src/dump_format.rs
+  s_cae9b6fccafbfa::t_8b458beb81dc14 29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "19f059d01163bd19bb2087ef537536a6921eb421",
+  "prompts": {},
+  "sessions": {
+    "s_cae9b6fccafbfa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e68a7f25-4b93-4b23-872f-faf46ae0ba92",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
