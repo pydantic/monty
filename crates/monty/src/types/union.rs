@@ -18,10 +18,13 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_one},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{
+        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapPayload,
+        HeapReadOutput,
+    },
     intern::StaticStrings,
     types::{LazyHeapSet, PyTrait, Type, generic_alias::repr_type_arg, list::repr_check_time, tuple::allocate_tuple},
-    value::{EitherStr, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// A union of two or more members, such as `int | None`.
@@ -75,7 +78,7 @@ impl Union {
     /// `typing.Union[key]`: a tuple key supplies the members, anything else is
     /// the single member. Takes ownership of `key`.
     pub(crate) fn subscript(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
-        let members = match tuple_items(&key, vm) {
+        let members = match tuple_items(&key, vm)? {
             Some(items) => {
                 key.drop_with(vm);
                 items
@@ -117,7 +120,7 @@ impl Union {
             vm.heap.tracker.check_memory_time_every(index)?;
             let member = member.clone_with_heap(vm);
             defer_drop!(member, vm);
-            match tuple_items_of_union(member, vm) {
+            match tuple_items_of_union(member, vm)? {
                 Some(nested) => {
                     defer_drop!(nested, vm);
                     for nested_member in nested {
@@ -148,6 +151,30 @@ impl Union {
     pub(crate) fn args(&self, heap: &impl ContainsHeap) -> Value {
         self.args.clone_with_heap(heap)
     }
+
+    /// `py_or_impl` for the heap types that take part in unions (classes,
+    /// generic aliases, unions): `this | other`.
+    pub(crate) fn heap_or<'h>(
+        this: &HeapObjectRead<'h, impl HeapPayload>,
+        other: &Value,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Option<Value>> {
+        let this = this.clone_value(vm.heap);
+        defer_drop!(this, vm);
+        Self::try_or(this, other, vm)
+    }
+
+    /// `py_ror_impl` counterpart of [`Union::heap_or`]: `other | this`, reached
+    /// when the left operand has no `|` of its own (`None | Foo`, `1 | (int | str)`).
+    pub(crate) fn heap_ror<'h>(
+        this: &HeapObjectRead<'h, impl HeapPayload>,
+        other: &Value,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Option<Value>> {
+        let this = this.clone_value(vm.heap);
+        defer_drop!(this, vm);
+        Self::try_or(other, this, vm)
+    }
 }
 
 /// Appends `member` to `flat` unless an equal member is already there.
@@ -158,7 +185,10 @@ fn push_unique(flat: &mut Vec<Value>, member: &Value, vm: &mut VM<'_>) -> RunRes
         other => other.clone_with_heap(vm),
     };
     defer_drop!(member, vm);
-    for existing in flat.iter() {
+    // The scan is linear per member, so a wide union polls the time limit here
+    // rather than only in the outer construction loop.
+    for (index, existing) in flat.iter().enumerate() {
+        vm.heap.tracker.check_memory_time_every(index)?;
         if existing.py_eq(member, vm)? {
             return Ok(());
         }
@@ -189,26 +219,26 @@ fn operand_kind(value: &Value, vm: &VM<'_>) -> Option<Operand> {
     }
 }
 
-/// Owned clones of a tuple's items, or `None` when `value` is not a tuple.
-fn tuple_items(value: &Value, vm: &mut VM<'_>) -> Option<Vec<Value>> {
-    let Value::Ref(id) = value else { return None };
+/// Owned clones of a tuple's items, or `None` when `value` is not a plain
+/// tuple (a namedtuple key is one member, as in CPython). Preflights the
+/// clone like `clone_all_pairs`.
+fn tuple_items(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
+    let Value::Ref(id) = value else { return Ok(None) };
     let HeapData::Tuple(tuple) = vm.heap.get(*id) else {
-        return None;
+        return Ok(None);
     };
-    Some(
-        tuple
-            .as_slice()
-            .iter()
-            .map(|item| item.clone_with_heap(vm.heap))
-            .collect(),
-    )
+    let items = tuple.as_slice();
+    vm.heap
+        .tracker
+        .check_allocation(items.len().saturating_mul(VALUE_SIZE))?;
+    Ok(Some(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect()))
 }
 
 /// Owned clones of a union's members, or `None` when `value` is not a union.
-fn tuple_items_of_union(value: &Value, vm: &mut VM<'_>) -> Option<Vec<Value>> {
-    let Value::Ref(id) = value else { return None };
+fn tuple_items_of_union(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
+    let Value::Ref(id) = value else { return Ok(None) };
     let HeapData::Union(union) = vm.heap.get(*id) else {
-        return None;
+        return Ok(None);
     };
     let args = union.args(vm.heap);
     defer_drop!(args, vm);
@@ -256,11 +286,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
         defer_drop!(args, vm);
         let other_args = other.get(vm.heap).args(vm.heap);
         defer_drop!(other_args, vm);
-        let Some(mine) = tuple_items(args, vm) else {
+        let Some(mine) = tuple_items(args, vm)? else {
             unreachable!("Union::args is always a tuple")
         };
         defer_drop!(mine, vm);
-        let Some(theirs) = tuple_items(other_args, vm) else {
+        let Some(theirs) = tuple_items(other_args, vm)? else {
             unreachable!("Union::args is always a tuple")
         };
         defer_drop!(theirs, vm);
@@ -268,10 +298,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
             return Ok(Some(false));
         }
         // Members are deduplicated, so equal lengths plus containment one way
-        // is set equality.
+        // is set equality. Quadratic, so the inner scan polls the time limit.
         for member in mine {
             let mut found = false;
-            for candidate in theirs {
+            for (index, candidate) in theirs.iter().enumerate() {
+                vm.heap.tracker.check_memory_time_every(index)?;
                 if member.py_eq(candidate, vm)? {
                     found = true;
                     break;
@@ -289,12 +320,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let args = self.get(vm.heap).args(vm.heap);
         defer_drop!(args, vm);
-        let Some(members) = tuple_items(args, vm) else {
+        let Some(members) = tuple_items(args, vm)? else {
             unreachable!("Union::args is always a tuple")
         };
         defer_drop!(members, vm);
         let mut combined = members.len() as u64;
-        for member in members {
+        for (index, member) in members.iter().enumerate() {
+            vm.heap.tracker.check_memory_time_every(index)?;
             let Some(hash) = member.py_hash(vm)? else {
                 return Ok(None);
             };
@@ -349,6 +381,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
             Some(StaticStrings::DunderParameters) => Ok(Some(CallResult::Value(vm.heap.get_empty_tuple()))),
             _ => Ok(None),
         }
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_or(self, other, vm)
+    }
+
+    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_ror(self, other, vm)
     }
 
     /// A union has no type variables to fill, so `(int | str)[bytes]` fails

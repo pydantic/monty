@@ -523,7 +523,9 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         MontyType::ItertoolsRepeat => cached!("itertools", "repeat"),
         MontyType::Partial => cached!("functools", "partial"),
         MontyType::GenericAlias => cached!("types", "GenericAlias"),
-        MontyType::Union => cached!("typing", "Union"),
+        // `types.UnionType` is the type of `int | None` on every supported host;
+        // on 3.14+ it is the same object as `typing.Union`.
+        MontyType::Union => cached!("types", "UnionType"),
         MontyType::ItertoolsPairwise => cached!("itertools", "pairwise"),
         MontyType::ItertoolsCompress => cached!("itertools", "compress"),
         MontyType::ItertoolsIslice => cached!("itertools", "islice"),

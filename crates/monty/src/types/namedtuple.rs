@@ -39,7 +39,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     resource_checks::check_repeat_size,
     types::{
-        Dict, Type, allocate_tuple,
+        Dict, Type, Union, allocate_tuple,
         iter::collect_owned_iterable,
         long_int::repeat_count,
         py_trait::LazyHeapSet,
@@ -848,6 +848,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // Class objects compare by identity, resolved before reaching here.
         Ok(None)
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_or(self, other, vm)
+    }
+
+    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_ror(self, other, vm)
     }
 
     /// `Point[int]` raises here where CPython builds a `types.GenericAlias`

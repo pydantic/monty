@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::smallvec;
 
 use crate::{
+    args::ArgValues,
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
@@ -24,7 +25,7 @@ use crate::{
     hash::HashValue,
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{LazyHeapSet, PyTrait, Type, instance::class_name, list::repr_check_time, tuple::allocate_tuple},
+    types::{LazyHeapSet, PyTrait, Type, Union, instance::class_name, list::repr_check_time, tuple::allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -193,6 +194,28 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
             Some(StaticStrings::DunderParameters) => Ok(Some(CallResult::Value(vm.heap.get_empty_tuple()))),
             _ => Value::Builtin(Builtins::Type(origin)).py_getattr(attr, vm).map(Some),
         }
+    }
+
+    /// `dict[str, int].fromkeys(...)` and `list[int].__class_getitem__(str)`
+    /// dispatch to the origin's classmethods.
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        let origin = self.get(vm.heap).origin;
+        match attr {
+            EitherStr::Interned(method_id) => origin.call_class_method(*method_id, args, vm).map(Into::into),
+            // Classmethod names are all interned, so a heap string never names one.
+            EitherStr::Heap(name) => {
+                args.drop_with(vm);
+                Err(ExcType::attribute_error_type(&origin.name(vm.heap, vm.interns), name))
+            }
+        }
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_or(self, other, vm)
+    }
+
+    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_ror(self, other, vm)
     }
 
     /// An alias has no type variables to fill, so `list[int][str]` fails as

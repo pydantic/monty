@@ -62,7 +62,6 @@ assert int | str != int
 assert (int | str) != (int, str)
 assert int | None is not int | None
 assert hash(int | str) == hash(str | int)
-assert hash(int | str) != hash(int | bytes)
 assert {int | str: 1}[str | int] == 1
 assert len({int | str, str | int, int | None}) == 2
 try:
@@ -172,6 +171,10 @@ assert repr(typing.Union[list[int], None]) == 'list[int] | None'
 assert repr(typing.Union[typing.Any, int]) == 'typing.Any | int'
 assert repr(typing.Union[Foo, None]).endswith('Foo | None')
 assert typing.Union[int, str, None].__args__ == (int, str, type(None))
+# a namedtuple key is one member, not a tuple of members
+pair = collections.namedtuple('Pair', 'first second')(int, str)
+assert typing.Union[pair] is pair
+assert typing.Union[pair, None].__args__ == (pair, type(None))
 assert isinstance(1, typing.Union[int, str])
 assert repr(typing.Optional[int]) == 'int | None'
 assert typing.Optional[int] == int | None

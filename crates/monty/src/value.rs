@@ -1140,12 +1140,13 @@ impl<'h> PyTrait<'h> for Value {
             Ok(Some(Self::Bool(*lhs || *rhs)))
         } else if let (Some(lhs), Some(rhs)) = (immediate_int(self), immediate_int(other)) {
             Ok(Some(Self::Int(lhs | rhs)))
-        } else if let Some(union) = Union::try_or(self, other, vm)? {
-            // `int | None` and friends, checked before the heap dispatch so a
-            // class object or generic alias on the left needs no `__or__`.
-            Ok(Some(union))
         } else if let Self::Ref(id) = self {
             vm.heap.read(*id).py_or_impl(other, vm)
+        } else if matches!(self, Self::Builtin(_) | Self::None | Self::Marker(_)) {
+            // `int | None` and the other unions with an immediate left operand;
+            // class objects, aliases and unions dispatch through their own
+            // `py_or_impl`, so other heap receivers never reach this check.
+            Union::try_or(self, other, vm)
         } else {
             Ok(None)
         }
@@ -1153,12 +1154,12 @@ impl<'h> PyTrait<'h> for Value {
 
     /// Reflected implementation of Python `|`.
     fn py_ror_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        // `None | int` and `1 | (int | str)`: the left operand has no `|` of
-        // its own, so the union forms on the reflected path, in source order.
-        if let Some(union) = Union::try_or(other, self, vm)? {
-            Ok(Some(union))
-        } else if let Self::Ref(id) = self {
+        if let Self::Ref(id) = self {
             vm.heap.read(*id).py_ror_impl(other, vm)
+        } else if matches!(self, Self::Builtin(_) | Self::None | Self::Marker(_)) {
+            // `None | int`: the left operand has no `|` of its own, so the
+            // union forms on the reflected path, in source order.
+            Union::try_or(other, self, vm)
         } else {
             Ok(None)
         }

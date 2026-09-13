@@ -19,7 +19,7 @@ use crate::{
         HeapObjectRead, HeapRead, HeapReadOutput, HeapReader, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::Interns,
-    types::Type,
+    types::{Type, Union},
     value::{EitherStr, Value},
 };
 
@@ -471,6 +471,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         None
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_or(self, other, vm)
+    }
+
+    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_ror(self, other, vm)
     }
 
     /// `Point[int]`: the host's class may define `__class_getitem__`, but the

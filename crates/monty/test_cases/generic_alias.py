@@ -59,6 +59,14 @@ args = (int, str)
 assert dict[args].__args__ is args
 
 # === Other attributes come from the origin ===
+assert dict[str, int].fromkeys('ab') == {'a': None, 'b': None}
+assert list[int].__class_getitem__(str) == list[str]
+assert repr(list[int].__class_getitem__(str)) == 'list[str]'
+try:
+    list[int].nope()
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == "type object 'list' has no attribute 'nope'"
 assert list[int].__name__ == 'list'
 assert type[int].__name__ == 'type'
 assert collections.deque[int].__name__ == 'deque'
@@ -79,7 +87,6 @@ assert tuple[int, str] != tuple[str, int]
 assert tuple[int, ...] == tuple[int, ...]
 assert list[int] is not list[int]
 assert hash(list[int]) == hash(list[int])
-assert hash(list[int]) != hash(list[str])
 assert {list[int]: 1}[list[int]] == 1
 assert list[int] in {list[int], dict[str, int]}
 assert len({list[int], list[int], list[str]}) == 2

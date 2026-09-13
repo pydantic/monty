@@ -113,9 +113,9 @@ Divergences in the aliases themselves:
     but `import types` still raises `ModuleNotFoundError`, so
     `isinstance(x, types.GenericAlias)` cannot be written; compare
     `type(x) is type(list[int])` instead.
-- **`typing` forms stay unsubscriptable.** `typing.List[int]` and
-    `typing.Optional[int]` raise as described above; only the builtin types
-    build aliases.
+- **Other `typing` forms stay unsubscriptable.** `typing.List[int]` raises
+    as described above; only the builtin types build aliases, and only
+    `typing.Union` / `typing.Optional` build unions (see [Unions](#unions)).
 - **Not iterable.** CPython iterates an alias to yield its starred form
     (`*tuple[int, ...]`); Monty raises `TypeError: 'types.GenericAlias' object is not iterable`.
 - **Argument reprs use Monty's type names.** A user class prints its bare name
@@ -125,6 +125,9 @@ Divergences in the aliases themselves:
 - **An unhashable argument names the alias.** `hash(list[[1]])` raises
     `TypeError: unhashable type: 'types.GenericAlias'` where CPython names the
     argument (`'list'`), as with a tuple holding a list.
+- **A namedtuple subscript is one argument.** `list[Point(int, str)]` keeps
+    the namedtuple as its single argument, where CPython's `PyTuple_Check`
+    unpacks it into `list[int, str]`.
 - **A cycle through the arguments prints as `...`.** CPython's alias repr has
     no recursion guard and raises `RecursionError` on `l = []; l.append(list[l]); repr(l)`;
     Monty prints `[list[[...]]]`.
@@ -157,8 +160,7 @@ Divergences:
     `TypeError: unhashable type: 'typing.Union'` where CPython names the
     member.
 - **`typing.Union` and `typing.Optional` are the only subscriptable forms.**
-    `typing.Optional[int] == int | None` holds; `typing.List[int]` still
-    raises.
+    `typing.List[int]` and the rest still raise.
 - **Neither aliases nor unions cross the host boundary.** One built in the
     sandbox reaches the host as its repr string. Passed in from the host, a
     `list[int]` degrades to an external function (it is callable, so it is

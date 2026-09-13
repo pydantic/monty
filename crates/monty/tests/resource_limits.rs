@@ -1235,11 +1235,11 @@ fn erroring_turns_still_hit_limits_at_exit() {
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
 
-/// Helper: builds a large object without time limit, then runs `repr()` on it
-/// with a short time limit and asserts it produces a TimeoutError promptly.
-///
-/// The code must call `interrupt()` between object construction and `repr()`.
-fn assert_repr_timeout(code: &str, label: &str) {
+/// Helper: runs `code` up to its `interrupt()` call without a time limit,
+/// then resumes under a short one and asserts the rest raises `TimeoutError`
+/// promptly — the native loop after `interrupt()` (a `repr()`, a union
+/// construction) must poll the limit rather than run to completion.
+fn assert_timeout_promptly(code: &str, label: &str) {
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     // Phase 1: build the large object with no time limit
@@ -1286,7 +1286,7 @@ x = ['abcdefghij'] * 100_000
 interrupt()
 repr(x)
 ";
-    assert_repr_timeout(code, "list repr");
+    assert_timeout_promptly(code, "list repr");
 }
 
 /// Test that `repr(large_dict)` respects the time limit.
@@ -1300,7 +1300,7 @@ x = {i: 'abcdefghij' for i in range(100_000)}
 interrupt()
 repr(x)
 ";
-    assert_repr_timeout(code, "dict repr");
+    assert_timeout_promptly(code, "dict repr");
 }
 
 /// Test that `repr()` of a widely bound `functools.partial` respects the time
@@ -1320,7 +1320,7 @@ p = functools.partial(target, *(['abcdefghij'] * 500_000))
 interrupt()
 repr(p)
 ";
-    assert_repr_timeout(code, "partial repr");
+    assert_timeout_promptly(code, "partial repr");
 }
 
 /// Test that `repr()` of a `types.GenericAlias` with many arguments respects
@@ -1335,7 +1335,7 @@ alias = tuple[tuple(['abcdefghij'] * 500_000)]
 interrupt()
 repr(alias)
 ";
-    assert_repr_timeout(code, "generic alias repr");
+    assert_timeout_promptly(code, "generic alias repr");
 }
 
 /// Test that building a `typing.Union` from a huge tuple respects the time
@@ -1352,7 +1352,7 @@ members = tuple(range(200_000))
 interrupt()
 typing.Union[members]
 ";
-    assert_repr_timeout(code, "union construction");
+    assert_timeout_promptly(code, "union construction");
 }
 
 /// Test that `repr(large_set)` respects the time limit.
@@ -1368,7 +1368,7 @@ x = {i for i in range(300_000)}
 interrupt()
 repr(x)
 ";
-    assert_repr_timeout(code, "set repr");
+    assert_timeout_promptly(code, "set repr");
 }
 /// Test that `re.sub` raises `re.PatternError` when the regex engine hits its backtracking limit.
 ///
