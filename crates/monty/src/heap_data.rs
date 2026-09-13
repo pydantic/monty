@@ -349,30 +349,42 @@ impl Deref for CellValue {
 /// A closure: a function that captures variables from enclosing scopes.
 ///
 /// Contains a reference to the function definition, a vector of captured cell HeapIds,
-/// and evaluated default values (if any). When the closure is called, these cells are
-/// passed to the RunFrame for variable access. When the closure is dropped, we must
-/// decrement the ref count on each captured cell and each default value.
+/// evaluated default values (if any) and the globals dict it was defined under
+/// (if any). When the closure is called, the cells are passed to the frame for
+/// variable access. When the closure is dropped, we must decrement the ref
+/// count on each captured cell, each default value and the globals dict.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Closure {
     /// The function definition being captured.
     pub func_id: FunctionId,
-    /// Captured cells from enclosing scopes.
-    pub cells: Vec<HeapId>,
+    /// Captured cells from enclosing scopes. Boxed slices rather than `Vec`s
+    /// (never grown after construction) keep this the size of the largest
+    /// `HeapData` variant, not larger.
+    pub cells: Box<[HeapId]>,
     /// Evaluated default parameter values (if any).
-    pub defaults: Vec<Value>,
+    pub defaults: Box<[Value]>,
+    /// Owned reference to the `exec()` / `eval()` globals dict the closure was
+    /// defined under; `None` when its globals are module slots.
+    #[serde(default)]
+    pub globals: Option<HeapId>,
 }
 
-/// A function with evaluated default parameter values (non-closure).
+/// A `def` that needs a heap object but captures nothing: it has evaluated
+/// default values, an explicit globals dict, or both.
 ///
-/// Contains a reference to the function definition and the evaluated default values.
-/// When the function is called, defaults are cloned for missing optional parameters.
-/// When dropped, we must decrement the ref count on each default value.
+/// When the function is called, defaults are cloned for missing optional
+/// parameters and the frame resolves globals through the dict. When dropped,
+/// we must decrement the ref count on each default value and the dict.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FunctionDefaults {
     /// The function definition being captured.
     pub func_id: FunctionId,
     /// Evaluated default parameter values (if any).
     pub defaults: Vec<Value>,
+    /// Owned reference to the `exec()` / `eval()` globals dict the function
+    /// was defined under; `None` when its globals are module slots.
+    #[serde(default)]
+    pub globals: Option<HeapId>,
 }
 
 impl HeapItem for CellValue {
@@ -389,6 +401,7 @@ impl HeapItem for Closure {
         for default in &mut self.defaults {
             default.py_dec_ref_ids(stack);
         }
+        stack.extend(self.globals);
     }
 }
 
@@ -398,6 +411,7 @@ impl HeapItem for FunctionDefaults {
         for default in &mut self.defaults {
             default.py_dec_ref_ids(stack);
         }
+        stack.extend(self.globals);
     }
 }
 
@@ -419,6 +433,7 @@ impl HeapItem for Coroutine {
         for value in &mut self.namespace {
             value.py_dec_ref_ids(stack);
         }
+        stack.extend(self.globals);
     }
 }
 

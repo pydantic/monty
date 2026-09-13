@@ -44,6 +44,33 @@ pub(crate) enum FrameNamespace {
     },
 }
 
+impl FrameNamespace {
+    /// The globals dict a function created in this frame must carry, so its
+    /// own frames resolve globals the same way; `None` for slot globals.
+    pub(crate) fn dict_globals(&self) -> Option<HeapId> {
+        match self {
+            Self::Snippet {
+                globals: FrameGlobals::Slots,
+                ..
+            } => None,
+            Self::Function { globals }
+            | Self::Snippet {
+                globals: FrameGlobals::Dict(globals),
+                ..
+            } => Some(*globals),
+        }
+    }
+}
+
+/// The namespace for a frame of a function that carries `globals`: an owned
+/// reference to the dict (inc_ref'd here), or `None` for slot globals.
+pub(crate) fn function_namespace(globals: Option<HeapId>, heap: &impl ContainsHeap) -> Option<Box<FrameNamespace>> {
+    globals.map(|globals| {
+        heap.heap().inc_ref(globals);
+        Box::new(FrameNamespace::Function { globals })
+    })
+}
+
 impl<C: ContainsHeap> DropWithContext<C> for Box<FrameNamespace> {
     fn drop_with(self, ctx: &mut C) {
         match *self {

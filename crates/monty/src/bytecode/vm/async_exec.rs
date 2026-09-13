@@ -11,7 +11,7 @@ use std::{mem, rc::Rc, task::Poll};
 use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
-use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM};
+use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM, function_namespace};
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
@@ -90,6 +90,7 @@ impl<'h> VM<'h> {
 
         // Extract coroutine data before mutating
         let func_id = coro.get(self.heap).func_id;
+        let globals = coro.get(self.heap).globals;
         let namespace_values: Vec<Value> = coro
             .get(self.heap)
             .namespace
@@ -101,7 +102,7 @@ impl<'h> VM<'h> {
         coro.get_mut(self.heap).state = CoroutineState::Running;
 
         // Create namespace and push frame (guard drops awaitable at scope exit)
-        self.start_coroutine_frame(func_id, namespace_values)?;
+        self.start_coroutine_frame(func_id, namespace_values, globals)?;
 
         Ok(AwaitResult::FramePushed)
     }
@@ -373,7 +374,12 @@ impl<'h> VM<'h> {
     ///
     /// Extends the VM stack with the coroutine's pre-bound namespace values
     /// and pushes a new frame to execute the coroutine's function body.
-    fn start_coroutine_frame(&mut self, func_id: FunctionId, namespace_values: Vec<Value>) -> Result<(), RunError> {
+    fn start_coroutine_frame(
+        &mut self,
+        func_id: FunctionId,
+        namespace_values: Vec<Value>,
+        globals: Option<HeapId>,
+    ) -> Result<(), RunError> {
         let call_offset = self.current_offset();
         let code = Rc::clone(&self.interns.get_function(func_id).code);
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
@@ -384,6 +390,7 @@ impl<'h> VM<'h> {
 
         // Push frame to execute the coroutine
         let exc_stack_base = self.exception_stack.len();
+        let namespace = function_namespace(globals, &*self.heap);
         self.push_frame(CallFrame::new_function(
             code,
             stack_base,
@@ -391,7 +398,7 @@ impl<'h> VM<'h> {
             exc_stack_base,
             func_id,
             call_offset,
-            None,
+            namespace,
         ))?;
 
         Ok(())
@@ -737,6 +744,7 @@ impl<'h> VM<'h> {
 
         // Extract coroutine data
         let func_id = coro.get(self.heap).func_id;
+        let globals = coro.get(self.heap).globals;
         let namespace_values: Vec<Value> = coro
             .get(self.heap)
             .namespace
@@ -757,6 +765,7 @@ impl<'h> VM<'h> {
         self.stack.extend(namespace_values);
 
         let exc_stack_base = self.exception_stack.len();
+        let namespace = function_namespace(globals, &*self.heap);
         self.current_frame = CallFrame::new_function(
             code,
             stack_base,
@@ -764,7 +773,7 @@ impl<'h> VM<'h> {
             exc_stack_base,
             func_id,
             None, // No call position — this is the root frame for a spawned task
-            None,
+            namespace,
         );
         self.suspended_frames.clear();
 

@@ -21,7 +21,7 @@ use std::{borrow::Cow, mem, rc::Rc};
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
-pub(crate) use namespace::FrameNamespace;
+pub(crate) use namespace::{FrameNamespace, function_namespace};
 pub(crate) use recursion::{ContainsVM, RecursionToken};
 use scheduler::Scheduler;
 
@@ -1715,17 +1715,28 @@ impl<'h> VM<'h> {
                     let func_id = FunctionId::from_index(func_idx);
                     let defaults_count = defaults_count as usize;
 
-                    if defaults_count == 0 {
+                    // A function defined under an explicit globals dict carries it.
+                    let globals = self
+                        .current_frame
+                        .namespace
+                        .as_deref()
+                        .and_then(FrameNamespace::dict_globals);
+                    if defaults_count == 0 && globals.is_none() {
                         // No defaults - use inline Value::Function (no heap allocation)
                         self.push(Value::DefFunction(func_id));
                     } else {
                         // Pop default values from stack (drain maintains order: first pushed = first in vec)
                         let defaults = self.pop_n(defaults_count);
+                        if let Some(globals) = globals {
+                            self.heap.inc_ref(globals);
+                        }
 
                         // Create FunctionDefaults on heap and push reference
-                        let heap_id = self
-                            .heap
-                            .allocate(HeapData::FunctionDefaults(FunctionDefaults { func_id, defaults }));
+                        let heap_id = self.heap.allocate(HeapData::FunctionDefaults(FunctionDefaults {
+                            func_id,
+                            defaults,
+                            globals,
+                        }));
                         self.push(Value::Ref(heap_id));
                     }
                 }
@@ -1762,12 +1773,21 @@ impl<'h> VM<'h> {
 
                     // Pop default values from stack (drain maintains order: first pushed = first in vec)
                     let defaults = self.pop_n(defaults_count);
+                    let globals = self
+                        .current_frame
+                        .namespace
+                        .as_deref()
+                        .and_then(FrameNamespace::dict_globals);
+                    if let Some(globals) = globals {
+                        self.heap.inc_ref(globals);
+                    }
 
                     // Create Closure on heap and push reference
                     let heap_id = self.heap.allocate(HeapData::Closure(Closure {
                         func_id,
-                        cells,
-                        defaults,
+                        cells: cells.into_boxed_slice(),
+                        defaults: defaults.into_boxed_slice(),
+                        globals,
                     }));
                     self.push(Value::Ref(heap_id));
                 }
