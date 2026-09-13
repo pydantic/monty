@@ -45,6 +45,7 @@ python = ["dep:pyo3"]
 # the interpreter. Off by default so host-side consumers (monty-pool, the
 # bindings) never link the interpreter itself.
 worker = ["dep:monty", "dep:monty-type-checking"]
+pyrefly = ["monty-type-checking?/pyrefly"]
 
 [[bin]]
 name = "generate-proto"

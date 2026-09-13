@@ -1,3 +1,5 @@
+#![cfg(not(feature = "pyrefly"))]
+
 use std::thread;
 
 use insta::assert_snapshot;

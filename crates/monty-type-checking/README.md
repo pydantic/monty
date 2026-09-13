@@ -11,6 +11,9 @@ typeshed describing the stdlib subset Monty actually implements. Code that
 uses unsupported stdlib surface is therefore flagged *before* it runs rather
 than failing at runtime.
 
+The `pyrefly` cargo feature swaps ty for an experimental
+[Pyrefly](https://github.com/facebook/pyrefly) backend; ty is used when it is unset.
+
 It backs `monty --type-check` in the CLI and the `type_check` option on
 sessions in the [`pydantic-monty`](https://pypi.org/project/pydantic-monty/)
 and [`@pydantic/monty`](https://www.npmjs.com/package/@pydantic/monty)

@@ -20,6 +20,8 @@ path = "src/main.rs"
 
 [features]
 default = ["standalone"]
+# Swaps the ty backend for pyrefly; ty is used when unset.
+pyrefly = ["monty-type-checking/pyrefly", "monty-proto/pyrefly"]
 # The standalone CLI (`run.rs`) and its terminal stack. Drop it to build the
 # worker `monty subprocess` alone, which is all a pool ever spawns.
 standalone = ["dep:anstream", "dep:anstyle", "dep:rustyline"]
