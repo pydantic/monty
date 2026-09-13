@@ -16,6 +16,7 @@
 //! The byte-level codecs live in [`super::base64`], where they were written
 //! first; `binascii` re-exposes them under the names CPython puts them at.
 
+use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
@@ -29,8 +30,11 @@ use crate::{
     intern::StaticStrings,
     modules::{
         ModuleFunctions,
-        base64::{allocate_bytes, b64_decode, b64_encode, binascii_error, decode_input_described, encode_input},
+        base64::{
+            allocate_bytes, b64_decode, b64_encode_reserving, binascii_error, decode_input_described, encode_input,
+        },
     },
+    resource_checks::check_estimated_size,
     types::{Module, PyTrait},
     value::Value,
 };
@@ -149,7 +153,12 @@ fn call_hexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value
     defer_drop!(sep, vm);
 
     let separator = hex_separator(sep.as_ref(), vm)?;
-    let encoded = hex_encode(encode_input(data, vm)?.as_ref(), separator, bytes_per_sep);
+    let encoded = hex_encode(
+        encode_input(data, vm)?.as_ref(),
+        separator,
+        bytes_per_sep,
+        &vm.heap.tracker,
+    )?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -165,7 +174,10 @@ fn call_unhexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Val
     };
     defer_drop!(hexstr, vm);
 
-    let decoded = hex_decode(decode_input_described(hexstr, vm, "bytes, buffer or ASCII string")?.as_ref())?;
+    let decoded = hex_decode(
+        decode_input_described(hexstr, vm, "bytes, buffer or ASCII string")?.as_ref(),
+        &vm.heap.tracker,
+    )?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -176,8 +188,11 @@ fn call_b2a_base64(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(data, vm);
     defer_drop!(newline, vm);
 
-    let mut encoded = b64_encode(encode_input(data, vm)?.as_ref());
-    if newline.py_bool(vm)? {
+    // Resolved before encoding so the newline is reserved with the rest, which
+    // is also where CPython's Argument Clinic `p` converter reads it.
+    let newline = newline.py_bool(vm)?;
+    let mut encoded = b64_encode_reserving(encode_input(data, vm)?.as_ref(), usize::from(newline), &vm.heap.tracker)?;
+    if newline {
         encoded.push(b'\n');
     }
     Ok(allocate_bytes(encoded, vm.heap))
@@ -194,6 +209,7 @@ fn call_a2b_base64(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let decoded = b64_decode(
         decode_input_described(data, vm, "bytes, buffer or ASCII string")?.as_ref(),
         strict,
+        &vm.heap.tracker,
     )?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
@@ -211,7 +227,7 @@ fn call_crc32(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         None => 0,
         Some(value) => wrapping_u32(value, vm)?,
     };
-    let checksum = crc32(encode_input(data, vm)?.as_ref(), seed);
+    let checksum = crc32(encode_input(data, vm)?.as_ref(), seed, &vm.heap.tracker)?;
     Ok(Value::Int(i64::from(checksum)))
 }
 
@@ -225,7 +241,7 @@ fn call_crc_hqx(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // The `I` format takes the seed modulo 2**32, then the body narrows it to
     // the 16 bits the register holds — so `-1` and `0xffff` seed alike.
     let seed = u16::try_from(wrapping_u32(crc, vm)? & 0xffff).expect("masked below 2**16");
-    let checksum = crc_hqx(encode_input(data, vm)?.as_ref(), seed);
+    let checksum = crc_hqx(encode_input(data, vm)?.as_ref(), seed, &vm.heap.tracker)?;
     Ok(Value::Int(i64::from(checksum)))
 }
 
@@ -252,7 +268,10 @@ fn call_a2b_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     };
     defer_drop!(data, vm);
 
-    let decoded = uu_decode(decode_input_described(data, vm, "bytes, buffer or ASCII string")?.as_ref())?;
+    let decoded = uu_decode(
+        decode_input_described(data, vm, "bytes, buffer or ASCII string")?.as_ref(),
+        &vm.heap.tracker,
+    )?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -275,12 +294,13 @@ fn call_b2a_qp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         istext: istext.py_bool(vm)?,
         header: header.py_bool(vm)?,
     };
-    let encoded = qp_encode(encode_input(data, vm)?.as_ref(), options);
+    let encoded = qp_encode(encode_input(data, vm)?.as_ref(), options, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
 /// `binascii.a2b_qp(data, header=False)` — quoted-printable decoding, which
-/// never fails: anything malformed is copied through verbatim.
+/// rejects nothing: anything malformed is copied through verbatim, so only a
+/// resource limit can end it.
 fn call_a2b_qp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let A2bQpArgs { data, header } = A2bQpArgs::from_args(args, vm)?;
     defer_drop!(data, vm);
@@ -290,7 +310,8 @@ fn call_a2b_qp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let decoded = qp_decode(
         decode_input_described(data, vm, "bytes, buffer or ASCII string")?.as_ref(),
         header,
-    );
+        &vm.heap.tracker,
+    )?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -421,7 +442,9 @@ fn wrapping_u32(value: &Value, vm: &VM<'_>) -> RunResult<u32> {
 ///
 /// A positive `bytes_per_sep` groups from the right, so any short group leads;
 /// a negative one groups from the left. Zero, or no separator, means none.
-fn hex_encode(data: &[u8], sep: Option<u8>, bytes_per_sep: i32) -> Vec<u8> {
+fn hex_encode(data: &[u8], sep: Option<u8>, bytes_per_sep: i32, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+    const WINDOW: usize = ResourceTracker::BYTE_LOOP_CHECK_INTERVAL;
+
     let group = match sep {
         Some(_) if bytes_per_sep != 0 && !data.is_empty() => usize::try_from(bytes_per_sep.unsigned_abs())
             .expect("u32 fits usize on supported targets")
@@ -440,28 +463,47 @@ fn hex_encode(data: &[u8], sep: Option<u8>, bytes_per_sep: i32) -> Vec<u8> {
         group
     };
 
-    let mut out = Vec::with_capacity(data.len() * 2 + data.len() / group);
-    for (index, byte) in data.iter().enumerate() {
-        if let Some(sep) = sep
-            && (index == lead || (index > lead && (index - lead) % group == 0))
-        {
-            out.push(sep);
+    let capacity = data.len() * 2 + data.len() / group;
+    check_estimated_size(capacity, tracker)?;
+    let mut out = Vec::with_capacity(capacity);
+    for (window_index, window) in data.chunks(WINDOW).enumerate() {
+        tracker.check_time()?;
+        let base = window_index * WINDOW;
+        for (offset, byte) in window.iter().enumerate() {
+            let index = base + offset;
+            if let Some(sep) = sep
+                && (index == lead || (index > lead && (index - lead).is_multiple_of(group)))
+            {
+                out.push(sep);
+            }
+            out.push(HEX_DIGITS[usize::from(byte >> 4)]);
+            out.push(HEX_DIGITS[usize::from(byte & 0x0f)]);
         }
-        out.push(HEX_DIGITS[usize::from(byte >> 4)]);
-        out.push(HEX_DIGITS[usize::from(byte & 0x0f)]);
     }
-    out
+    Ok(out)
 }
 
 /// Decodes hex of either case, CPython's `unhexlify`.
-fn hex_decode(data: &[u8]) -> RunResult<Vec<u8>> {
+///
+/// Written as a windowed loop rather than a `collect`: collecting into a
+/// `Result` erases the iterator's lower size hint, so the output would grow by
+/// doubling instead of being reserved once.
+fn hex_decode(data: &[u8], tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
     if data.len().is_multiple_of(2) {
-        data.chunks(2)
-            .map(|pair| match (hex_digit(pair[0]), hex_digit(pair[1])) {
-                (Some(hi), Some(lo)) => Ok((hi << 4) | lo),
-                _ => Err(binascii_error("Non-hexadecimal digit found")),
-            })
-            .collect()
+        let mut out = Vec::with_capacity(data.len() / 2);
+        for window in data.chunks(ResourceTracker::poll_window(2)) {
+            tracker.check_time()?;
+            // Exact for the same reason as `b16_decode`: an even length and an
+            // even window leave no remainder, and the stride is what the
+            // compiler needs to widen the loop.
+            for pair in window.as_chunks::<2>().0 {
+                match (hex_digit(pair[0]), hex_digit(pair[1])) {
+                    (Some(hi), Some(lo)) => out.push((hi << 4) | lo),
+                    _ => return Err(binascii_error("Non-hexadecimal digit found")),
+                }
+            }
+        }
+        Ok(out)
     } else {
         Err(binascii_error("Odd-length string"))
     }
@@ -528,7 +570,7 @@ fn value_error(message: &'static str) -> RunError {
 ///
 /// The standard reflected polynomial (`0xedb88320`), computed a nibble at a
 /// time so the table stays 16 entries rather than 256.
-fn crc32(data: &[u8], seed: u32) -> u32 {
+fn crc32(data: &[u8], seed: u32, tracker: &ResourceTracker) -> RunResult<u32> {
     const NIBBLE_TABLE: [u32; 16] = [
         0x0000_0000,
         0x1db7_1064,
@@ -549,31 +591,40 @@ fn crc32(data: &[u8], seed: u32) -> u32 {
     ];
 
     let mut crc = !seed;
-    for byte in data {
-        crc ^= u32::from(*byte);
-        crc = (crc >> 4) ^ NIBBLE_TABLE[usize::try_from(crc & 0x0f).expect("nibble fits usize")];
-        crc = (crc >> 4) ^ NIBBLE_TABLE[usize::try_from(crc & 0x0f).expect("nibble fits usize")];
+    for window in data.chunks(ResourceTracker::BYTE_LOOP_CHECK_INTERVAL) {
+        tracker.check_time()?;
+        for byte in window {
+            crc ^= u32::from(*byte);
+            crc = (crc >> 4) ^ NIBBLE_TABLE[usize::try_from(crc & 0x0f).expect("nibble fits usize")];
+            crc = (crc >> 4) ^ NIBBLE_TABLE[usize::try_from(crc & 0x0f).expect("nibble fits usize")];
+        }
     }
-    !crc
+    Ok(!crc)
 }
 
 /// Computes the CRC-16 of `data`, continuing from `seed`.
 ///
 /// CRC-16/XMODEM: polynomial `0x1021`, unreflected, no final xor — the
 /// checksum BinHex 4.0 carried, which `crc_hqx` outlived.
-fn crc_hqx(data: &[u8], seed: u16) -> u16 {
+fn crc_hqx(data: &[u8], seed: u16, tracker: &ResourceTracker) -> RunResult<u16> {
     let mut crc = seed;
-    for byte in data {
-        crc ^= u16::from(*byte) << 8;
-        for _ in 0..8 {
-            crc = if crc & 0x8000 == 0 {
-                crc << 1
-            } else {
-                (crc << 1) ^ 0x1021
-            };
+    // Eight shift rounds per byte make this the slowest loop in the module, so
+    // it polls the clock rather than running to completion inside one
+    // instruction and letting the pool's turn timeout kill the worker.
+    for window in data.chunks(ResourceTracker::BYTE_LOOP_CHECK_INTERVAL) {
+        tracker.check_time()?;
+        for byte in window {
+            crc ^= u16::from(*byte) << 8;
+            for _ in 0..8 {
+                crc = if crc & 0x8000 == 0 {
+                    crc << 1
+                } else {
+                    (crc << 1) ^ 0x1021
+                };
+            }
         }
     }
-    crc
+    Ok(crc)
 }
 
 /// The most bytes one uuencoded line can hold, since the leading length byte
@@ -616,7 +667,7 @@ fn uu_encode(data: &[u8], backtick: bool) -> RunResult<Vec<u8>> {
 /// A line shorter than its length byte claims is zero-padded rather than
 /// rejected, matching CPython — only a character outside the alphabet, or
 /// non-whitespace left over once the promised bytes are decoded, is an error.
-fn uu_decode(data: &[u8]) -> RunResult<Vec<u8>> {
+fn uu_decode(data: &[u8], tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
     let Some((length_byte, mut rest)) = data.split_first() else {
         return Err(binascii_error("Missing length byte"));
     };
@@ -654,11 +705,15 @@ fn uu_decode(data: &[u8]) -> RunResult<Vec<u8>> {
         }
     }
 
-    if rest.iter().all(|byte| matches!(byte, b' ' | b'`' | b'\n' | b'\r')) {
-        Ok(out)
-    } else {
-        Err(binascii_error("Trailing garbage"))
+    // At most 63 bytes are ever decoded, but the check for what follows them
+    // walks the rest of the input however long it is.
+    for window in rest.chunks(ResourceTracker::BYTE_LOOP_CHECK_INTERVAL) {
+        tracker.check_time()?;
+        if window.iter().any(|byte| !matches!(byte, b' ' | b'`' | b'\n' | b'\r')) {
+            return Err(binascii_error("Trailing garbage"));
+        }
     }
+    Ok(out)
 }
 
 /// The column at which `b2a_qp` soft-wraps, CPython's `MAXLINESIZE`.
@@ -682,16 +737,19 @@ struct QpOptions {
 /// [`QP_MAX_LINE`]; which newline they use is decided once, up front, by
 /// whether the input's first line ends `\r\n` — so mixed endings are
 /// normalised to whichever came first, as CPython's own does.
-fn qp_encode(data: &[u8], options: QpOptions) -> Vec<u8> {
-    let crlf = data
-        .iter()
-        .position(|byte| *byte == b'\n')
-        .is_some_and(|index| index > 0 && data[index - 1] == b'\r');
+fn qp_encode(data: &[u8], options: QpOptions, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+    let QpPlan { capacity, crlf } = qp_plan(data, options, tracker)?;
+    check_estimated_size(capacity, tracker)?;
 
-    let mut out = Vec::with_capacity(data.len());
+    let mut out = Vec::with_capacity(capacity);
     let mut linelen = 0;
     let mut index = 0;
+    let mut steps = 0;
     while index < data.len() {
+        // `index` jumps by two over a `\r\n`, so the clock is keyed on a
+        // separate counter that cannot skip a check interval.
+        tracker.check_time_every_bytes(steps)?;
+        steps += 1;
         let byte = data[index];
         if qp_needs_quoting(data, index, linelen, options) {
             // The escape is three columns wide and may not be split, so it
@@ -729,7 +787,67 @@ fn qp_encode(data: &[u8], options: QpOptions) -> Vec<u8> {
             index += 1;
         }
     }
-    out
+    Ok(out)
+}
+
+/// What one pass over the input tells [`qp_encode`] before it writes anything.
+struct QpPlan {
+    /// Upper bound on the encoded length, and the buffer reserved for it.
+    capacity: usize,
+    /// Whether the first line ends `\r\n`, which picks the newline used
+    /// throughout.
+    crlf: bool,
+}
+
+/// Measures `data` so [`qp_encode`] can reserve exactly once.
+///
+/// A flat bound of the 3.125 bytes per byte a fully escaped input reaches
+/// would reject plain text, which encodes to a little over its own length, at
+/// a third of the budget it needs. Counting what actually escapes costs one
+/// cheap pass and is honest both ways: nothing that would have fit is
+/// rejected, and the buffer never grows past what was preflighted.
+fn qp_plan(data: &[u8], options: QpOptions, tracker: &ResourceTracker) -> RunResult<QpPlan> {
+    const WINDOW: usize = ResourceTracker::BYTE_LOOP_CHECK_INTERVAL;
+
+    // The one position rule that can catch a byte the per-byte rules do not:
+    // a space or tab last in the input is quoted for being last.
+    let mut escaped = usize::from(matches!(data.last(), Some(b' ' | b'\t')));
+    let mut newlines = 0usize;
+    let mut first_newline = None;
+    // This runs ahead of the encode's own pass, so it is half of what a large
+    // input costs; polling per window leaves the counting loop free of both a
+    // check and an index.
+    for (window_index, window) in data.chunks(WINDOW).enumerate() {
+        tracker.check_time()?;
+        // Independent of `istext`, as CPython's own `memchr` for it is.
+        if first_newline.is_none()
+            && let Some(offset) = window.iter().position(|byte| *byte == b'\n')
+        {
+            first_newline = Some(window_index * WINDOW + offset);
+        }
+        for byte in window {
+            if options.istext && *byte == b'\n' {
+                newlines += 1;
+            } else if qp_always_quotes(*byte, options) || *byte == b'.' {
+                // `.` covers the leading-dot rule, whose line position this
+                // pass does not track, at two bytes for every dot in the input.
+                escaped += 1;
+            }
+        }
+    }
+
+    // One column per byte, three if it escapes; a literal newline costs two
+    // for a `\r\n` plus the two that quoting a space before it adds.
+    let body = data
+        .len()
+        .saturating_add(escaped.saturating_mul(2))
+        .saturating_add(newlines.saturating_mul(3));
+    // A soft break needs three bytes, and cannot fire before column 73.
+    let breaks = body / (QP_MAX_LINE - 3) + 1;
+    Ok(QpPlan {
+        capacity: body.saturating_add(breaks.saturating_mul(3)),
+        crlf: first_newline.is_some_and(|index| index > 0 && data[index - 1] == b'\r'),
+    })
 }
 
 /// Whether the byte at `index` has to be written as an `=XX` escape.
@@ -743,12 +861,18 @@ fn qp_needs_quoting(data: &[u8], index: usize, linelen: usize, options: QpOption
     let last = index + 1 == data.len();
     let leading_dot = byte == b'.' && linelen == 0 && matches!(data.get(index + 1), None | Some(b'\n' | b'\r' | b'\0'));
 
+    qp_always_quotes(byte, options) || leading_dot || (matches!(byte, b'\t' | b' ') && last)
+}
+
+/// The half of [`qp_needs_quoting`] that depends only on the byte.
+///
+/// Split out so [`qp_plan`] can count escapes without tracking line position,
+/// which leaves the two with one copy of the rules rather than two that drift.
+fn qp_always_quotes(byte: u8, options: QpOptions) -> bool {
     byte > 126
         || byte == b'='
         || (options.header && byte == b'_')
-        || leading_dot
         || (!options.istext && matches!(byte, b'\r' | b'\n'))
-        || (matches!(byte, b'\t' | b' ') && last)
         || (byte < 33 && byte != b'\r' && byte != b'\n' && (options.quotetabs || !matches!(byte, b'\t' | b' ')))
 }
 
@@ -770,12 +894,19 @@ fn qp_hex(byte: u8) -> [u8; 2] {
 
 /// Decodes quoted-printable.
 ///
-/// Never fails: a malformed escape is copied through as the literal text it
-/// was, which is what lets the format survive a mangled message.
-fn qp_decode(data: &[u8], header: bool) -> Vec<u8> {
+/// Rejects nothing: a malformed escape is copied through as the literal text
+/// it was, which is what lets the format survive a mangled message. The only
+/// error it can return is the clock poll's.
+fn qp_decode(data: &[u8], header: bool, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+    // Output is never longer than the input, so only the clock needs watching.
     let mut out = Vec::with_capacity(data.len());
     let mut index = 0;
+    let mut steps = 0;
     while index < data.len() {
+        // A soft break can consume a whole line at once, so the clock is keyed
+        // on a step counter rather than on `index`.
+        tracker.check_time_every_bytes(steps)?;
+        steps += 1;
         match data[index] {
             b'=' => {
                 index += 1;
@@ -816,5 +947,5 @@ fn qp_decode(data: &[u8], header: bool) -> Vec<u8> {
             }
         }
     }
-    out
+    Ok(out)
 }

@@ -51,3 +51,6 @@ pub use crate::{
     uuid::MontyUuid,
     virtual_path::{normalize_virtual_path, validate_cwd},
 };
+
+#[cfg(feature = "test-hooks")]
+pub use resource::{clock_polls, reset_clock_polls};

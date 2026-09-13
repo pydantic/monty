@@ -1235,6 +1235,106 @@ fn loading_a_dump_applies_its_own_memory_limit() {
     );
 }
 
+/// Every `binascii`/`base64` conversion whose output is larger than its input
+/// can be handed a buffer that fits under the soft limit and encodes to one
+/// that clears the allocator's hard ceiling, which kills the worker rather
+/// than raising. Each preflights its output, so the session survives.
+///
+/// The sizes matter: the input must fit under the soft limit while the
+/// expansion clears soft + `BASE_HEADROOM`, which needs a limit above 2 MiB.
+/// `a85decode` is here rather than among the decoders because Ascii85's `z`
+/// stands for a whole zero word, so a buffer of them quadruples.
+#[test]
+fn expanding_codecs_fail_softly() {
+    const LIMIT: u64 = 8 * 1024 * 1024;
+    // smallest expansion here is base64's 4/3, so 5 MB covers every case
+    const SETUP: &str = "import binascii, base64\nsrc = {FILL} * 5_000_000\n";
+    let cases = [
+        ("b'\\xff'", "binascii.hexlify(src)"),
+        ("b'\\xff'", "binascii.b2a_base64(src)"),
+        ("b'\\xff'", "binascii.b2a_qp(src)"),
+        ("b'\\xff'", "base64.b64encode(src)"),
+        ("b'\\xff'", "base64.b32encode(src)"),
+        ("b'\\xff'", "base64.b16encode(src)"),
+        ("b'\\xff'", "base64.b85encode(src)"),
+        ("b'\\xff'", "base64.a85encode(src)"),
+        ("b'\\xff'", "base64.encodebytes(src)"),
+        ("b'z'", "base64.a85decode(src)"),
+    ];
+
+    for (fill, call) in cases {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(LIMIT));
+        let (_, event) = child.feed(&format!("{}{call}", SETUP.replace("{FILL}", fill)));
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{call}");
+        // the worker raised rather than exiting, so it is still serving
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{call}");
+        child.shutdown();
+    }
+}
+
+/// A conversion that appends to, or frames, a buffer it filled exactly must
+/// reserve that room before filling it. `Vec` doubles when it grows, so one
+/// appended byte charges the session a second copy of the encoded output —
+/// a burst the preflight never accounted for, and past the allocator's hard
+/// ceiling with it.
+///
+/// Each size sits in the window where the preflight passes but the doubling
+/// would not, so before the reservations every case exited the worker and the
+/// parent saw EOF instead of a turn-ending event.
+#[test]
+fn expanding_codecs_reserve_what_they_preflight() {
+    // (max_memory, code, the length CPython gives for the same call)
+    let cases = [
+        // the Ascii85 `z` word, which is sized from the input's content
+        (
+            30 * 1024 * 1024,
+            "import base64\nsrc = b'z' * 5_000_000\nlen(base64.a85decode(src))",
+            20_000_000,
+        ),
+        // the trailing newline appended to an exactly filled base64 buffer
+        (
+            32 * 1024 * 1024,
+            "import binascii\nsrc = b'\\xff' * 12_000_000\nlen(binascii.b2a_base64(src))",
+            16_000_001,
+        ),
+        // quoted-printable, whose bound is not a fixed ratio of its input
+        (
+            48 * 1024 * 1024,
+            "import binascii\nsrc = b'\\xff' * 11_000_000\nlen(binascii.b2a_qp(src))",
+            33_879_998,
+        ),
+        // the `<~` / `~>` framing spliced onto both ends of the encoded output
+        (
+            32 * 1024 * 1024,
+            "import base64\nsrc = b'\\xff' * 9_000_000\nlen(base64.a85encode(src, adobe=True))",
+            11_250_004,
+        ),
+    ];
+
+    for (limit, code, encoded_len) in cases {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(limit));
+        assert_eq!(child.feed_complete(code), MontyObject::Int(encoded_len), "{code}");
+        child.shutdown();
+    }
+}
+
+/// `b2a_qp`'s buffer is sized from what the input actually quotes, not from
+/// the worst case every byte escaping.
+///
+/// Plain text encodes to a little over its own length, so bounding it at the
+/// 3.125 bytes per byte that `b'\xff'` reaches would reject, at a third of the
+/// budget it needs, an input the session has ample room for.
+#[test]
+fn quoted_printable_is_sized_from_what_it_quotes() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(32 * 1024 * 1024));
+    let code = "import binascii\nsrc = b'a' * 10_000_000\nlen(binascii.b2a_qp(src))";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(10_266_666));
+    child.shutdown();
+}
+
 /// A `Configure` carrying `max_memory`, which is what limits the worker.
 fn configure_with_max_memory(bytes: u64) -> pb::Configure {
     pb::Configure {
