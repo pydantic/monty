@@ -53,8 +53,9 @@ It does not inspect frames or locals, schedule async completions or persist host
 
 Replay requires the same Python client version and exact worker binary as capture.
 It is not a cross-version snapshot format.
-Restoring a later suspension preserves the recorded output prefix and remaining call count;
-worker time and memory limits apply to the new checkout, not cumulative usage before capture.
+Restoring a later suspension preserves the recorded output prefix and remaining call count.
+The snapshot carries its resource limits and accumulated execution time; restoring does not reset the time budget.
+Memory limits apply to live allocations in the restored worker.
 Two different error observations are reported as different, even if both mention a resource limit.
 
 ## Tests
