@@ -1,0 +1,19 @@
+crates/monty-pool/tests/pool_test.rs
+  s_b43b30eae72d5b::t_6ff152ce442bf1 6,130-145,1564,1607-1610,1650-1653,1697-1700
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7091fb4cf4a267dd7ebbda25384b2ea71f0929e6",
+  "prompts": {},
+  "sessions": {
+    "s_b43b30eae72d5b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "120b30e4-8833-4a3a-91a2-74b922f10aeb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
