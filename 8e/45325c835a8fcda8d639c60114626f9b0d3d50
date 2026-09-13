@@ -1,0 +1,37 @@
+crates/monty/Cargo.toml
+  s_b43b30eae72d5b::t_10e8d5a725bb67 40-41
+  s_b43b30eae72d5b::t_9349841baf4005 39,42
+scripts/gen_titlecase.py
+  ai_agent 17
+  s_b43b30eae72d5b::t_51e0dd9cc6ead4 1-16,18-43
+crates/monty/src/types/mod.rs
+  s_b43b30eae72d5b::t_51e0dd9cc6ead4 39
+docs/limitations/str.md
+  s_b43b30eae72d5b::t_cf8d66e01132af 1-17
+mkdocs.yml
+  s_b43b30eae72d5b::t_cf8d66e01132af 57
+crates/monty/src/types/str.rs
+  s_b43b30eae72d5b::t_51e0dd9cc6ead4 8,10,646-647,669,671,677-699,2063-2064
+  s_b43b30eae72d5b::t_10e8d5a725bb67 1,642,645,648-649,665,667,706,708,719-739
+crates/monty/test_cases/str__methods.py
+  s_b43b30eae72d5b::t_10e8d5a725bb67 9,30-31,43-44,62-63
+  s_b43b30eae72d5b::t_51e0dd9cc6ead4 10-13,21-22,32-35,45-55,64-69,88-91,538-542
+crates/monty/src/types/titlecase_data.rs
+  s_b43b30eae72d5b::t_51e0dd9cc6ead4 1-143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8e45325c835a8fcda8d639c60114626f9b0d3d50",
+  "prompts": {},
+  "sessions": {
+    "s_b43b30eae72d5b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "120b30e4-8833-4a3a-91a2-74b922f10aeb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
