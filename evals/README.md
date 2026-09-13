@@ -20,8 +20,8 @@ uv run --group evals python -m evals.harness.runner --all --dry-run
 # One task, one prompt, one model.
 uv run --group evals python -m evals.harness.runner --task numeric/expense_budget --prompt v4_codemode --model anthropic:claude-sonnet-4-5
 
-# Several prompts, both modes, three attempts of each combination.
-uv run --group evals python -m evals.harness.runner --all --prompt v1_current,v4_codemode --mode both --repeat 3 \
+# Several prompts, every mode, three attempts of each combination.
+uv run --group evals python -m evals.harness.runner --all --prompt v1_current,v4_codemode --mode all --repeat 3 \
     --model anthropic:claude-sonnet-4-5 --judge-model anthropic:claude-sonnet-4-5
 ```
 
@@ -51,6 +51,11 @@ Two modes:
 
 The session stays open for the whole attempt, so a task's `follow_up` turn can check that the model reuses globals
 instead of re-fetching.
+
+A task with a `sub_model_stub` also gets an `llm_query(prompt)` host function.
+With a model it is one plain completion of that model per call, and its tokens count towards the attempt; under
+`--dry-run` the task's stub answers instead.
+Batching is the sandboxed code's job, so gathered sub-calls show up in `call_batches` like any other host call.
 
 Evaluators (`evaluators.py`) turn that into assertions, one column per objective axis rather than one number:
 
@@ -95,6 +100,61 @@ scores only the machine-checkable parts of a rubric task.
 | `v4_codemode` | v3 plus strategy: loop in code, `gather` independent calls, return only what is needed.   |
 | `v5_minimal`  | v4's content in the fewest words.                                                         |
 
+## Coverage
+
+What Monty has to do for each kind of agent workload, and which tasks exercise it.
+The workloads come from agent-code practice and from the literature on it: Anthropic's programmatic tool calling,
+CodeAct, Cloudflare's Code Mode, smolagents and the Recursive Language Models paper.
+15 rows have a task; the 30 below them have none, or only a partial one, and are where new tasks should go first.
+
+| Use case                                                                               | Monty must support                                                                                                                                      | Tasks                                                     |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| Fan out many API calls at once                                                         | async host functions, `asyncio.gather`, one round trip per wave                                                                                         | `weather_fanout`                                          |
+| Data-dependent call sequences (pagination, lookups)                                    | awaiting host functions inside loops and branches                                                                                                       | `paginate_and_count`, `expense_budget`                    |
+| Unreliable APIs (retries, partial failure)                                             | host exceptions raised as Python exceptions, `try`/`except`                                                                                             | `retry_flaky`                                             |
+| Keep large results out of the model's context                                          | large values in and out of the sandbox, filtering before return                                                                                         | `large_result_filter`                                     |
+| Orchestrating tools from code (Anthropic programmatic tool calling)                    | tools as async host functions, results processed in the sandbox, only the answer returned                                                               | `expense_budget`, `weather_fanout`, `large_result_filter` |
+| Self-debugging from execution feedback (CodeAct)                                       | tracebacks and printed output fed back per turn, session state kept between turns                                                                       | every task, via `--mode agentic`                          |
+| Long context as a REPL variable (Recursive Language Models)                            | a multi-hundred-KB `inputs` string, `str` and `re` over it, `llm_query` sub-calls batched with `gather`, `--mode repl` iteration                        | `support_tickets`                                         |
+| Notebook-style sessions with follow-up questions                                       | globals persisting across `feed_run` calls                                                                                                              | `followup_reuse`                                          |
+| Parsing text formats (CSV, logs, JSON)                                                 | `str` methods, `re`, `json`                                                                                                                             | `csv_json_join`, `log_parse`                              |
+| Grouping and aggregating records                                                       | dict and list operations, `sorted` with `key`                                                                                                           | `group_by_report`, `csv_json_join`, `log_parse`           |
+| Financial and statistical summaries                                                    | float arithmetic, `round`, `math`                                                                                                                       | `stats_summary`, `expense_budget`                         |
+| Calendars and scheduling                                                               | `datetime`, `timedelta`, ISO-8601 parsing                                                                                                               | `schedule_conflicts`                                      |
+| Rendering reports (markdown, tables)                                                   | f-string format specs                                                                                                                                   | `markdown_report`                                         |
+| Producing file artifacts (charts, documents)                                           | writing to a read-write mount with `pathlib`                                                                                                            | `svg_bar_chart`                                           |
+| Code the bundled type checker accepts                                                  | idiomatic Python passing `type_check=True` before it runs                                                                                               | every task, via `type_check_passed`                       |
+| Recursive sub-agents (`rlm_query`): child sandboxes with their own REPL                | a host function that starts a nested session and returns its final answer, with a depth limit                                                           | none yet                                                  |
+| Tool servers exposed as a typed sandbox API (Cloudflare Code Mode)                     | stubs generated from MCP tool schemas, dozens of tools at once, credentials held by the host                                                            | none yet                                                  |
+| Tools callable only from code beside tools only the model may call (`allowed_callers`) | one turn mixing host functions with model-level tool calls                                                                                              | none yet                                                  |
+| Agents orchestrating other agents from code (smolagents managed agents)                | an agent with its own tools behind a host function, called in loops and gathered                                                                        | none yet                                                  |
+| Real-time control loops: the `pydantic/thrust` rocket autopilot                        | hundreds of sequential `await update(move)` calls, a compute budget per tick, host dataclasses via `ClassType`, its Logfire `pilot-instructions` prompt | none yet                                                  |
+| Engineering and scientific maths                                                       | `math` beyond arithmetic: `atan2`, `hypot`, `erf`, `gamma`, `comb`, `fsum`, `nextafter`                                                                 | none yet                                                  |
+| Quantitative finance (NPV, IRR, option pricing)                                        | root finding with `exp`, `log`, `sqrt` and `erf`, compounding, exact money rounding                                                                     | none yet                                                  |
+| Geospatial work (distances, containment, routing)                                      | haversine with `radians` and `atan2`, point-in-polygon, greedy routes                                                                                   | none yet                                                  |
+| Forecasting and anomaly detection                                                      | moving averages, exponential smoothing, z-scores over thousands of points                                                                               | none yet                                                  |
+| Rostering, assignment and packing (shifts, deliveries, stock)                          | heuristics over constraints, `itertools`, tight loops inside the time limit                                                                             | none yet                                                  |
+| DataFrame-style APIs through a host proxy (polars, pandas)                             | `ClassInstance` / `ClassType` policies, method chaining, lazy attribute reads, expressions built from host objects                                      | none yet                                                  |
+| Querying databases from code                                                           | a host function or proxy running SQL, result sets as rows, joins finished in Python                                                                     | none yet                                                  |
+| Classification at scale via a model-backed host function                               | an LLM behind a host function called per row, batched to cut round trips                                                                                | `support_tickets` (one subset only)                       |
+| Cross-system workflows (CRM, ticketing, calendar)                                      | many distinct host functions, idempotent writes, deduplication, ordered side effects                                                                    | none yet                                                  |
+| Policy and compliance rule engines (expense policy, KYC)                               | rules as sandbox functions, a reason attached to every decision                                                                                         | none yet                                                  |
+| Reconciliation between two ledgers                                                     | fuzzy matching with tolerances, unmatched-item reports over thousands of rows                                                                           | none yet                                                  |
+| Document extraction and redaction (invoices, contracts, emails)                        | text from host functions, `re` for PII, structured output                                                                                               | none yet                                                  |
+| Pricing and quoting (tiers, tax, FX)                                                   | money rounding rules, currency conversion, `datetime` for effective dates                                                                               | none yet                                                  |
+| Cohort, funnel and pivot analytics                                                     | nested grouping and window-style calculations over large lists                                                                                          | `group_by_report` (two levels only)                       |
+| Time-zone-aware scheduling across regions                                              | `datetime` with fixed-offset `timezone`s, DST offsets supplied by the host                                                                              | none yet                                                  |
+| Approval gates mid-run (human in the loop)                                             | suspending at a host call with `feed_start`, resuming after a decision                                                                                  | none yet                                                  |
+| Long batch jobs that survive restarts                                                  | `dump()` mid-feed and `load_snapshot` on another worker                                                                                                 | none yet                                                  |
+| Event streams (sliding windows over a feed)                                            | events pulled in pages, windowed aggregates, bounded memory                                                                                             | none yet                                                  |
+| Analysing files the user uploaded                                                      | read-only and overlay mounts, `pathlib`, `os`                                                                                                           | none yet                                                  |
+| User-defined plugins, validation rules and formulas                                    | functions, classes and `@dataclass` defined in the sandbox                                                                                              | none yet                                                  |
+| Adversarial or prompt-injected code                                                    | no filesystem, network, environment or import escape; an error, not a crash                                                                             | none yet                                                  |
+| Code that hangs or allocates without bound                                             | `TimeoutError` / `MemoryError` raised in the sandbox, session kept alive                                                                                | none yet                                                  |
+| Progress reporting from long runs                                                      | `print` streamed to the host while the code runs                                                                                                        | none yet                                                  |
+| Sync host functions and host-side objects                                              | sync external functions, method calls on host objects                                                                                                   | none yet                                                  |
+| Unicode text processing                                                                | `unicodedata`, `str` methods on non-ASCII text                                                                                                          | none yet                                                  |
+
 ## Tasks
 
 Each task has a `<name>.md` next to its module describing the request, the host functions and how it is scored.
@@ -134,6 +194,12 @@ The tool keeps per-record attempt counters, so giving up early changes the answe
 
 Fetch the weather for twelve cities, convert to Celsius, and return the three coldest.
 Scored on `call_batches` as well as the answer: `asyncio.gather` costs one wave, a loop costs twelve.
+
+### rlm/support_tickets
+
+Answer a question over a 600 KB support-ticket log bound as `context`, the Recursive Language Models case.
+The ticket text never names its issue type, so the model must filter in Python and classify with gathered
+`llm_query` sub-calls; a sequential loop fails the call budget.
 
 ### schema/large_result_filter
 

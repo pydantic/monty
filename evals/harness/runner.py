@@ -4,11 +4,13 @@
 in Monty, records what happened as metrics and attributes, and returns the value of
 the code's trailing expression. The evaluators in `evaluators.py` then score it.
 
-Two modes:
+Three modes:
 
 - `single`: one code block, executed, scored. Measures the prompt.
 - `agentic`: Monty's error and printed output go back to the model as the next turn,
   up to `--max-turns`. Measures what error feedback repairs.
+- `repl`: every outcome goes back, success included, until the model replies without
+  code or the cap is hit. The RLM interaction pattern: peek, then decide what to run.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from pydantic_evals.reporting import EvaluationReport
 
 from pydantic_monty import MontyTypingError
 
-from .agent import CodeAgent, DryRunAgent, Reply, load_prompt
+from .agent import CodeAgent, DryRunAgent, Reply, SubModel, load_prompt
 from .classify import classify
 from .evaluators import DATASET_EVALUATORS
 from .executor import ExecutionOutcome, MontyExecutor
@@ -39,6 +41,9 @@ from .task import Task
 __all__ = ('Solver', 'build_dataset', 'main')
 
 DEFAULT_MAX_TURNS = 4
+MODES = ('single', 'agentic', 'repl')
+STUB_LATENCY = 0.005
+"""Seconds a dry-run `llm_query` sleeps, so gathered sub-calls overlap and `call_batches` can see them."""
 REPORTS_DIR = Path(__file__).parent.parent / 'reports'
 
 
@@ -92,9 +97,12 @@ class Solver:
             else CodeAgent(model=self.model, system_prompt=system_prompt)
         )
         turn_cap = 1 if (self.mode == 'single' or self.dry_run) else self.max_turns
+        repl = self.mode == 'repl'
+        sub_model = None if self.dry_run or task.sub_model_stub is None else SubModel(self.model)
+        extra_tools = _llm_tools(task, sub_model)
 
-        async with MontyExecutor(task) as executor:
-            primary = await _drive(agent, executor, task.prompt, turn_cap)
+        async with MontyExecutor(task, extra_tools) as executor:
+            primary = await _drive(agent, executor, task.prompt, turn_cap, repl=repl)
             set_eval_attribute(ATTR.FIRST_ATTEMPT_RUNS, primary.first_attempt_ran)
             set_eval_attribute(ATTR.TYPE_CHECK_PASSED, primary.type_check_passed)
             gaps = list(primary.gaps)
@@ -114,7 +122,7 @@ class Solver:
             set_eval_attribute(ATTR.ERROR, outcome.error_message)
 
             if task.follow_up is not None and outcome.ok:
-                follow_up = await _drive(agent, executor, task.follow_up.prompt, turn_cap)
+                follow_up = await _drive(agent, executor, task.follow_up.prompt, turn_cap, repl=repl)
                 gaps += follow_up.gaps
                 if follow_up.outcome is None:
                     set_eval_attribute(ATTR.FOLLOW_UP_ERROR, 'model returned no code')
@@ -123,8 +131,26 @@ class Solver:
                     set_eval_attribute(ATTR.FOLLOW_UP_ERROR, follow_up.outcome.error_message)
                     increment_eval_metric(METRIC.FOLLOW_UP_EXTERNAL_CALLS, follow_up.outcome.external_calls)
 
+        if sub_model is not None:
+            increment_eval_metric(METRIC.PROMPT_TOKENS, sub_model.prompt_tokens)
+            increment_eval_metric(METRIC.COMPLETION_TOKENS, sub_model.completion_tokens)
         set_eval_attribute(ATTR.GAPS, gaps)
         return outcome.result
+
+
+def _llm_tools(task: Task, sub_model: SubModel | None) -> dict[str, Any]:
+    """The `llm_query` host function for an RLM-style task, or nothing for the rest."""
+    if task.sub_model_stub is None:
+        return {}
+    if sub_model is None:
+        stub = task.sub_model_stub
+
+        async def llm_query(prompt: str) -> str:
+            await asyncio.sleep(STUB_LATENCY)
+            return stub(prompt)
+
+        return {'llm_query': llm_query}
+    return {'llm_query': sub_model.llm_query}
 
 
 @dataclass
@@ -137,11 +163,12 @@ class _Driven:
     gaps: list[dict[str, Any]] = field(default_factory=list)
 
 
-async def _drive(agent: _Agent, executor: MontyExecutor, request: str, turn_cap: int) -> _Driven:
-    """Ask for code, run it, and on failure hand the error back until the cap is hit.
+async def _drive(agent: _Agent, executor: MontyExecutor, request: str, turn_cap: int, *, repl: bool) -> _Driven:
+    """Ask for code, run it, and hand the outcome back until the cap is hit.
 
-    Token and turn counts are recorded here because they accumulate across both the
-    primary request and the follow-up.
+    Failures always go back; with `repl` successes do too, and the last executed
+    result stands when the model stops writing code. Token and turn counts are
+    recorded here because they accumulate across the primary request and the follow-up.
     """
     driven = _Driven()
     user_text = request
@@ -156,14 +183,15 @@ async def _drive(agent: _Agent, executor: MontyExecutor, request: str, turn_cap:
         driven.outcome = outcome
         if turn == 0:
             driven.first_attempt_ran = outcome.ok
-        if outcome.error is None:
+        if outcome.error is None and not repl:
             break
-        if isinstance(outcome.error, MontyTypingError):
-            driven.type_check_passed = False
-        gap = classify(outcome.error)
-        if gap is not None:
-            driven.gaps.append(gap.as_dict())
-        user_text = outcome.feedback()
+        if outcome.error is not None:
+            if isinstance(outcome.error, MontyTypingError):
+                driven.type_check_passed = False
+            gap = classify(outcome.error)
+            if gap is not None:
+                driven.gaps.append(gap.as_dict())
+        user_text = outcome.feedback(repl=repl)
     return driven
 
 
@@ -181,7 +209,7 @@ async def _run_all(args: argparse.Namespace) -> list[EvaluationReport[Task, Any,
     if args.judge_model is not None:
         set_default_judge_model(args.judge_model)
     dataset = build_dataset(tasks, judge=args.judge_model is not None)
-    modes = ['single', 'agentic'] if args.mode == 'both' else [args.mode]
+    modes = list(MODES) if args.mode == 'all' else [args.mode]
 
     reports: list[EvaluationReport[Task, Any, Any]] = []
     for variant in args.prompt:
@@ -208,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--prompt', default='v4_codemode', help='comma-separated prompt variants')
     parser.add_argument('--model', default='anthropic:claude-sonnet-4-5', help='model to generate code with')
     parser.add_argument('--judge-model', default=None, help='model for LLMJudge evaluators; omit to skip them')
-    parser.add_argument('--mode', choices=['single', 'agentic', 'both'], default='single')
+    parser.add_argument('--mode', choices=[*MODES, 'all'], default='single')
     parser.add_argument('--repeat', type=int, default=1, help='attempts per case, for variance')
     parser.add_argument('--max-turns', type=int, default=DEFAULT_MAX_TURNS)
     parser.add_argument(

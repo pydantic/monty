@@ -116,23 +116,39 @@ class ExecutionOutcome:
         except (TypeError, ValueError):
             return len(repr(self.result))
 
-    def feedback(self) -> str:
-        """Render this outcome as the next user turn for the agentic mode.
+    def feedback(self, *, repl: bool = False) -> str:
+        """Render this outcome as the next user turn for the agentic and repl modes.
 
         Errors are rendered as a full Monty traceback because that is what a real
-        integration would hand back — if the traceback is not enough for the model to
-        self-correct, that is a finding about Monty's errors, not about the harness.
+        integration would hand back. `repl` adds the invitation to keep going that the
+        repl mode relies on; the agentic mode only ever feeds back failures.
         """
         parts: list[str] = []
         if self.stdout:
-            parts.append(f'Output printed while running:\n```\n{self.stdout.rstrip()}\n```')
+            parts.append(f'Output printed while running:\n```\n{_clip(self.stdout.rstrip())}\n```')
         if self.error is not None:
             parts.append(
                 f'The code failed:\n```\n{_render_error(self.error)}\n```\nFix it and return the corrected code.'
             )
         else:
-            parts.append(f'The code ran and returned:\n```\n{self.result!r}\n```')
+            parts.append(f'The code ran and returned:\n```\n{_clip(repr(self.result))}\n```')
+            if repl:
+                parts.append(
+                    'Names you defined are still bound. Reply with another code block to continue, '
+                    'or with no code block if that returned value is your final answer.'
+                )
         return '\n\n'.join(parts)
+
+
+FEEDBACK_LIMIT = 8_000
+"""Characters of printed output or result fed back per turn; the rest is elided."""
+
+
+def _clip(text: str) -> str:
+    """Truncate feedback so a model that prints a whole context cannot flood its own window."""
+    if len(text) <= FEEDBACK_LIMIT:
+        return text
+    return f'{text[:FEEDBACK_LIMIT]}\n... [{len(text) - FEEDBACK_LIMIT} more characters elided]'
 
 
 def _render_error(error: MontyError) -> str:
@@ -157,8 +173,10 @@ class MontyExecutor:
     is allowed to write.
     """
 
-    def __init__(self, task: Task) -> None:
+    def __init__(self, task: Task, extra_tools: dict[str, Callable[..., Any]] | None = None) -> None:
         self._task = task
+        self._extra_tools = extra_tools or {}
+        """Host functions the runner supplies on top of the task's own, e.g. `llm_query`."""
         self._stack = AsyncExitStack()
         self._session: AsyncMontySession | None = None
         self.calls: list[CallRecord] = []
@@ -212,7 +230,8 @@ class MontyExecutor:
         return outcome
 
     def _wrapped_tools(self) -> dict[str, Callable[..., Any]]:
-        return {name: self._instrument(name, fn) for name, fn in self._task.tools.items()}
+        tools = {**self._task.tools, **self._extra_tools}
+        return {name: self._instrument(name, fn) for name, fn in tools.items()}
 
     def _instrument(self, name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
         """Wrap a host function to record its call interval, preserving sync/async."""

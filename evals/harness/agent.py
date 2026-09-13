@@ -14,7 +14,7 @@ from pathlib import Path
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage
 
-__all__ = ('CodeAgent', 'DryRunAgent', 'Reply', 'extract_code', 'load_prompt')
+__all__ = ('CodeAgent', 'DryRunAgent', 'Reply', 'SubModel', 'extract_code', 'load_prompt')
 
 PROMPTS_DIR = Path(__file__).parent.parent / 'prompts'
 
@@ -103,3 +103,29 @@ class DryRunAgent:
         code = self.solutions[self._index]
         self._index += 1
         return Reply(code=code, text=f'```python\n{code}\n```')
+
+
+@dataclass
+class SubModel:
+    """The `llm_query` host function for RLM-style tasks, backed by a model.
+
+    Each call is one plain completion with no history, as in the RLM paper's
+    `llm_query`; batching is the sandboxed code's job via `asyncio.gather`. Token usage
+    accumulates here so the runner can add sub-calls to the attempt's cost.
+    """
+
+    model: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    _agent: Agent[None, str] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._agent = Agent(self.model, output_type=str)
+
+    async def llm_query(self, prompt: str) -> str:
+        """Answer `prompt` with a single model completion."""
+        result = await self._agent.run(prompt)
+        usage = result.usage
+        self.prompt_tokens += usage.input_tokens or 0
+        self.completion_tokens += usage.output_tokens or 0
+        return result.output

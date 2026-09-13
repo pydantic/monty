@@ -69,6 +69,13 @@ class Task:
     setup: Callable[[], None] | None = None
     """Called before each attempt; required for any task whose tools keep state."""
 
+    sub_model_stub: Callable[[str], str] | None = None
+    """Declares an RLM-style task: the runner adds an `llm_query(prompt)` host function.
+
+    With a model it is backed by that model; under `--dry-run` this deterministic
+    stand-in answers instead, so it must understand the reference solution's prompts.
+    """
+
     @property
     def qualified_name(self) -> str:
         """`category/name`, the identifier used on the command line and in reports."""
