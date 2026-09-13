@@ -6,6 +6,11 @@ assert 'Hello World'.lower() == 'hello world'
 assert 'hello'.lower() == 'hello'
 assert ''.lower() == ''
 assert '123'.lower() == '123'
+assert 'ΣΑΣ'.lower() == 'σας'
+assert 'ΑΣ́'.lower() == 'ας́'
+assert 'Σ1'.lower() == 'σ1'
+assert 'AΣ1'.lower() == 'aς1'
+assert 'İ'.lower() == 'i\u0307'
 
 # upper()
 assert 'hello'.upper() == 'HELLO'
@@ -13,6 +18,8 @@ assert 'Hello World'.upper() == 'HELLO WORLD'
 assert 'HELLO'.upper() == 'HELLO'
 assert ''.upper() == ''
 assert '123'.upper() == '123'
+assert 'ßﬁŉ'.upper() == 'SSFIʼN'
+assert 'ა'.upper() == 'Ა'
 
 # capitalize()
 assert 'hello'.capitalize() == 'Hello'
@@ -20,6 +27,12 @@ assert 'HELLO'.capitalize() == 'Hello'
 assert 'hELLO wORLD'.capitalize() == 'Hello world'
 assert ''.capitalize() == ''
 assert '123abc'.capitalize() == '123abc'
+assert 'ΣΑΣ ΣΑΣ'.capitalize() == 'Σας σας'
+assert 'ΣΣ'.capitalize() == 'Σς'
+assert 'ß'.capitalize() == 'Ss'
+assert 'ǆemal'.capitalize() == 'ǅemal'
+assert 'ᾳ'.capitalize() == 'ᾼ'
+assert 'ﬁsh'.capitalize() == 'Fish'
 
 # title()
 assert 'hello world'.title() == 'Hello World'
@@ -27,12 +40,33 @@ assert 'HELLO WORLD'.title() == 'Hello World'
 assert "they're".title() == "They'Re"
 assert ''.title() == ''
 assert '123 abc'.title() == '123 Abc'
+assert 'ΣΑΣ'.title() == 'Σας'
+assert 'ΑΣ ΑΣ.'.title() == 'Ας Ας.'
+assert 'ǆemal ǆemal'.title() == 'ǅemal ǅemal'
+assert 'ﬁsh'.title() == 'Fish'
+assert 'ßa'.title() == 'Ssa'
+assert 'ა'.title() == 'ა'
+assert 'a中b'.title() == 'A中B'
+assert 'aαb'.title() == 'Aαb'
+assert 'a\u0301b'.title() == 'A\u0301B'
+assert 'ⅰx'.title() == 'Ⅰx'
+assert 'ª b'.title() == 'ª B'
+assert 'x1y'.title() == 'X1Y'
+assert 'ⓐb'.title() == 'Ⓐb'
 
 # swapcase()
 assert 'Hello World'.swapcase() == 'hELLO wORLD'
 assert 'HELLO'.swapcase() == 'hello'
 assert 'hello'.swapcase() == 'HELLO'
 assert ''.swapcase() == ''
+assert 'ΣΑΣ σ'.swapcase() == 'σας Σ'
+assert 'σας'.swapcase() == 'ΣΑΣ'
+assert 'ǅ'.swapcase() == 'ǅ'
+assert 'ß'.swapcase() == 'SS'
+assert 'ﬁ'.swapcase() == 'FI'
+assert 'İı'.swapcase() == 'i\u0307I'
+assert 'ⓐⒶ'.swapcase() == 'Ⓐⓐ'
+assert 'ⅰⅠ'.swapcase() == 'Ⅰⅰ'
 
 # casefold()
 assert 'Hello'.casefold() == 'hello'
@@ -51,6 +85,10 @@ assert 'Iİıi'.casefold() == 'ii\u0307ıi'
 assert 'ÉE\u0301'.casefold() == 'ée\u0301'
 assert 'ß\x00Σ'.casefold() == 'ss\x00σ'
 assert '\U00010400'.casefold() == '\U00010428'
+assert 'ΐ'.casefold() == 'ι\u0308\u0301'
+assert 'ﬗ'.casefold() == 'մխ'
+assert '\u212a\u2126\u212b'.casefold() == 'k\u03c9\u00e5'
+assert 'ǅǈǋǲ'.casefold() == 'ǆǉǌǳ'
 
 # === Phase 2: Predicate methods ===
 
@@ -497,6 +535,11 @@ assert 'Hello world'.istitle() == False
 assert '123'.istitle() == False
 assert 'Hello 123 World'.istitle() == True
 assert "They'Re".istitle() == True
+assert 'A中B'.istitle() == True
+assert 'Ǆemal'.istitle() == True
+assert 'ǅemal'.istitle() == True
+assert 'ǆemal'.istitle() == False
+assert 'Aǅ'.istitle() == False
 
 # === Phase 10: Unicode support for is* methods ===
 

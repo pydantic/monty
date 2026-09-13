@@ -36,6 +36,7 @@ pub mod str;
 pub mod time;
 pub mod timedelta;
 pub mod timezone;
+mod titlecase_data;
 pub mod tuple;
 pub mod r#type;
 
