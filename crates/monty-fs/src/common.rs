@@ -338,6 +338,15 @@ pub(super) fn host_iterdir(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudg
     Ok(MontyObject::List(result))
 }
 
+/// Returns the size of the file a truncating write would discard, or `0` if
+/// no file exists there yet. New-file creation must stay free; only clobbering
+/// an existing file's content should be charged — mirrors the accounting
+/// `overlay::append_bytes` already applies when materializing a backing file.
+pub(super) fn existing_file_len(dir: &Dir, rel: &str) -> usize {
+    dir.metadata(rel)
+        .map_or(0, |meta| usize::try_from(meta.len()).unwrap_or(usize::MAX))
+}
+
 /// Validates that writing `bytes` would not exceed the mount's quota.
 pub(super) fn check_write_limit(bytes: usize, ctx: &MountContext<'_>) -> Result<(), MountError> {
     if let Some(limit) = ctx.write_bytes_limit {
