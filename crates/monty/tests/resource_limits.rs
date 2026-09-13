@@ -1462,7 +1462,10 @@ fn itertools_adaptors_charge_recursion_only_when_they_delegate() {
     // The shallowest limit that runs a fixed nest, found rather than pinned:
     // what matters is the difference between the two innermost iterators, not
     // the absolute depth the surrounding frames happen to use.
-    let min_depth = |inner: &str| {
+    // `yields` is the one item the innermost iterator produces, which differs
+    // per adaptor — the combinatoric family yields tuples where the rest yield
+    // whatever their source held.
+    let min_depth = |inner: &str, yields: MontyObject| {
         let code = format!(
             r"
 import itertools
@@ -1478,7 +1481,7 @@ next(source)
                 let limits = ResourceLimits::default().max_recursion_depth(depth);
                 match ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout) {
                     Ok(value) => {
-                        assert_eq!(value, MontyObject::Int(1), "inner: {inner}");
+                        assert_eq!(value, yields, "inner: {inner}");
                         true
                     }
                     Err(_) => false,
@@ -1488,9 +1491,16 @@ next(source)
     };
 
     assert_eq!(
-        min_depth("itertools.accumulate([], initial=1)"),
-        min_depth("iter([1])"),
+        min_depth("itertools.accumulate([], initial=1)", MontyObject::Int(1)),
+        min_depth("iter([1])", MontyObject::Int(1)),
         "answering from adaptor state should cost no recursion level"
+    );
+    // The combinatoric family never delegates at all: the pool is collected at
+    // construction, so every step is index arithmetic over values it owns.
+    assert_eq!(
+        min_depth("itertools.product([1])", MontyObject::Tuple(vec![MontyObject::Int(1)])),
+        min_depth("iter([(1,)])", MontyObject::Tuple(vec![MontyObject::Int(1)])),
+        "stepping a pool should cost no recursion level"
     );
 }
 
@@ -1538,6 +1548,11 @@ const ITERTOOLS_INFINITE_LOOPS: &[&str] = &[
     "next(itertools.islice(itertools.count(1), 10**18, None))",
     "next(itertools.starmap(max, itertools.repeat(itertools.count(1))))",
     "next(itertools.batched(itertools.count(1), 10**18))",
+    // `groupby`'s skip loop: the key never changes, so the second `next` runs
+    // over the source forever looking for the next group.
+    "g = itertools.groupby(itertools.repeat(1))\nnext(g)\nnext(g)",
+    // `chain.from_iterable` resolving empty sources, none of which yields.
+    "next(itertools.chain.from_iterable(itertools.repeat([])))",
 ];
 
 /// Test that adaptors discarding items from an infinite source still time out.

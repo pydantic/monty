@@ -193,17 +193,23 @@ mod tests {
         assert_eq!(
             opcode_fingerprint(),
             0x0d57_34dd_be07_19ac,
-            "opcodes changed for dump version {DUMP_VERSION}"
+            "opcodes changed for dump version {}, actual: {:#x}",
+            DUMP_VERSION,
+            opcode_fingerprint()
         );
         assert_eq!(
             static_strings_fingerprint(),
-            0xa946_9719_1535_83c8,
-            "static strings changed for dump version {DUMP_VERSION}"
+            0x7e1d_9b97_d135_f5dc,
+            "static strings changed for dump version {}, actual: {:#x}",
+            DUMP_VERSION,
+            static_strings_fingerprint()
         );
         assert_eq!(
             comparison_operators_fingerprint(),
             0x8ecc_d26b_160d_9c0b,
-            "comparison operators changed for dump version {DUMP_VERSION}"
+            "comparison operators changed for dump version {}, actual: {:#x}",
+            DUMP_VERSION,
+            comparison_operators_fingerprint()
         );
         // `VariantNames` keeps the `#[strum(disabled)]` variants that `EnumString`
         // and `EnumIter` drop, which is what lets the two fingerprints below cover
@@ -215,20 +221,26 @@ mod tests {
 
         assert_eq!(
             variant_order_fingerprint(Type::VARIANTS),
-            0xfc3c_c4c9_d68d_2ac8,
-            "Type variants changed for dump version {DUMP_VERSION}"
+            0x4b5a_82ac_c92a_1205,
+            "Type variants changed for dump version {}, actual: {:#x}",
+            DUMP_VERSION,
+            variant_order_fingerprint(Type::VARIANTS)
         );
         assert_eq!(
             variant_order_fingerprint(MontyType::VARIANTS),
-            0x8ac1_c04f_70cb_b2b8,
-            "MontyType variants changed for dump version {DUMP_VERSION}"
+            0xb372_0f80_2b84_7bd5,
+            "MontyType variants changed for dump version {}, actual: {:#x}",
+            DUMP_VERSION,
+            variant_order_fingerprint(MontyType::VARIANTS)
         );
         // Builtin discriminants are `CallBuiltinFunction` operands, so the enum
         // is append-only: a new builtin goes after the last variant.
         assert_eq!(
             variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
             0xd5ef_68ff_fc6b_f752,
-            "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}"
+            "BuiltinsFunctions variants changed for dump version {}, actual: {:#x}",
+            DUMP_VERSION,
+            variant_order_fingerprint(BuiltinsFunctions::VARIANTS)
         );
     }
 

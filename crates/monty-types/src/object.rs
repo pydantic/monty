@@ -964,6 +964,18 @@ pub enum MontyType {
     /// `typing.Union`, the type of `int | None` (one object with `types.UnionType` since 3.14).
     #[strum(serialize = "typing.Union")]
     Union,
+    #[strum(serialize = "itertools.combinations")]
+    ItertoolsCombinations,
+    #[strum(serialize = "itertools.combinations_with_replacement")]
+    ItertoolsCombinationsWithReplacement,
+    #[strum(serialize = "itertools.permutations")]
+    ItertoolsPermutations,
+    #[strum(serialize = "itertools.product")]
+    ItertoolsProduct,
+    #[strum(serialize = "itertools.groupby")]
+    ItertoolsGroupBy,
+    #[strum(serialize = "itertools._grouper")]
+    ItertoolsGrouper,
 }
 
 impl fmt::Display for MontyType {

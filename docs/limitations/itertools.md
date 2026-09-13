@@ -8,27 +8,23 @@ notes below.
 
 `count(start=0, step=1)`, `repeat(object, times=?)`, `pairwise(iterable)`,
 `compress(data, selectors)`, `islice(iterable, [start,] stop[, step])`,
-`chain(*iterables)`, `cycle(iterable)`, `takewhile(predicate, iterable)`,
-`dropwhile(predicate, iterable)`, `filterfalse(predicate, iterable)`,
-`starmap(function, iterable)`, `accumulate(iterable, func=None, *, initial=None)`,
+`chain(*iterables)`, `chain.from_iterable(iterable)`, `cycle(iterable)`,
+`takewhile(predicate, iterable)`, `dropwhile(predicate, iterable)`,
+`filterfalse(predicate, iterable)`, `starmap(function, iterable)`,
+`accumulate(iterable, func=None, *, initial=None)`,
 `batched(iterable, n, *, strict=False)`,
-`zip_longest(*iterables, fillvalue=None)`.
+`zip_longest(*iterables, fillvalue=None)`, `combinations(iterable, r)`,
+`combinations_with_replacement(iterable, r)`,
+`permutations(iterable, r=None)`, `product(*iterables, repeat=1)`,
+`groupby(iterable, key=None)`.
 
 ## Not implemented
 
-Everything else: `combinations`, `combinations_with_replacement`, `groupby`,
-`permutations`, `product`, `tee`.
+`tee` is the only `itertools` callable Monty does not implement.
 
-`chain.from_iterable` is also absent, even though `chain` itself is
-implemented: it is a classmethod reached through an attribute on the `chain`
-builtin, and Monty's module functions expose no attributes
-(`itertools.chain.from_iterable` raises
-`AttributeError: 'builtin_function_or_method' object has no attribute 'from_iterable'`). Use `chain(*iterables)`
-instead.
-
-These names are absent from the module namespace rather than stubbed, so they
-are rejected at type-check time (`Module 'itertools' has no member 'chain'`) and
-raise `AttributeError` at runtime.
+It is absent from the module namespace rather than stubbed, so it is
+rejected at type-check time (`Module 'itertools' has no member 'tee'`) and
+raises `AttributeError` at runtime.
 
 ## Behavioural divergences
 
@@ -49,7 +45,7 @@ raise `AttributeError` at runtime.
     CPython prints `repeat([repeat([...])])`. This is Monty's general cycle
     detection in `repr()`, not specific to `itertools`.
 - **A callable that suspends is rejected, not paused.** `takewhile`,
-    `dropwhile`, `filterfalse`, `starmap` and `accumulate` apply their callable
+    `dropwhile`, `filterfalse`, `starmap`, `accumulate` and `groupby` apply their callable
     through the synchronous `evaluate_function` path, which runs a frame to
     completion and cannot yield to the host. A callable that reaches an external
     function, an `os` operation, or a host method call therefore raises
@@ -83,6 +79,35 @@ raise `AttributeError` at runtime.
     such a host raises
     `TypeError: Cannot convert itertools.batched to a host type: this Python does not define it`.
     Every other adaptor's type resolves on all supported hosts.
+- **`chain.from_iterable` is a plain function, not a bound classmethod.** CPython
+    builds a new bound method object per attribute access, so
+    `repr(itertools.chain.from_iterable)` is
+    `<built-in method from_iterable of type object at 0x...>` and
+    `itertools.chain.from_iterable is itertools.chain.from_iterable` is `False`.
+    Monty resolves the attribute to one function value, so the `repr` reads
+    `<function from_iterable at 0x...>` and the identity check is `True`. The
+    attribute is also reachable only through the `chain` callable itself: an
+    instance does not carry it, so `itertools.chain([1]).from_iterable([[2]])`
+    raises `AttributeError: 'itertools.chain' object has no attribute 'from_iterable'`
+    where CPython accepts it. The stub types it as a plain function for the same
+    reason.
+- **`groupby` never releases its source.** This matches CPython, but note that
+    the [resource limits](resource_limits.md) apply to the skip between groups:
+    a source whose key never changes (`groupby(repeat(1))`) makes the second
+    `next()` scan forever, and is stopped by `max_duration` rather than running
+    to completion.
+- **The combinatoric iterators collect their input at construction.** CPython
+    does the same (its `pool` is a tuple built by `PySequence_Tuple`), so
+    `combinations`, `combinations_with_replacement`, `permutations` and
+    `product` all consume the whole iterable before the first `next()` and
+    raise there for a non-iterable or a raising source. The consequence worth
+    naming is that an infinite input never returns: `permutations(count())`
+    runs until a resource limit trips on both engines.
+- **`product`'s `repeat` and `combinations_with_replacement`'s `r` are
+    preflighted against `max_memory`.** Each sizes a result wider than the input
+    it was given, so under a memory limit a large value
+    (`product('ab', repeat=10**9)`) raises `MemoryError` at construction, where
+    CPython raises only once an allocation actually fails.
 
 ## Infinite iterators and the eager builtins
 

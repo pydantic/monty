@@ -1295,6 +1295,25 @@ pub enum StaticStrings {
     /// `__class_getitem__`, the classmethod behind `list[int]`.
     #[strum(serialize = "__class_getitem__")]
     ClassGetitem,
+
+    // ==========================
+    // Batch-four itertools module strings: the combinatoric iterators,
+    // `groupby` and `chain.from_iterable`. Appended for the same reason as
+    // every block above.
+    /// `itertools.combinations()` function.
+    Combinations,
+    /// `itertools.combinations_with_replacement()` function.
+    #[strum(serialize = "combinations_with_replacement")]
+    CombinationsWithReplacement,
+    /// `itertools.permutations()` function.
+    Permutations,
+    /// `itertools.product()` function.
+    Product,
+    /// `itertools.groupby()` function.
+    Groupby,
+    /// `chain.from_iterable` — the one attribute an `itertools` function carries.
+    #[strum(serialize = "from_iterable")]
+    FromIterable,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

@@ -310,15 +310,16 @@ fn not_implemented_in_list_sort_key_names_sort() {
 /// function and the call would succeed.
 ///
 /// Every call site is covered — the predicate helper shared by `takewhile`,
-/// `dropwhile` and `filterfalse`, plus `starmap` and `accumulate`, which each
-/// call their callable themselves and so name themselves in the error.
-/// `accumulate` needs two items, since the first is yielded untouched.
+/// `dropwhile` and `filterfalse`, plus `starmap`, `accumulate` and `groupby`,
+/// which each call their callable themselves and so name themselves in the
+/// error. `accumulate` needs two items, since the first is yielded untouched.
 #[test]
 fn external_function_as_itertools_callable_raises_not_implemented() {
     for (call, adaptor) in [
         ("itertools.takewhile(ext_fn, [1])", "takewhile"),
         ("itertools.starmap(ext_fn, [(1,)])", "starmap"),
         ("itertools.accumulate([1, 2], ext_fn)", "accumulate"),
+        ("itertools.groupby([1], ext_fn)", "groupby"),
     ] {
         let expr = format!("list({call})");
         let code = format!("import itertools\n\n{expr}");
