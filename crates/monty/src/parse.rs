@@ -10,12 +10,12 @@ use ruff_python_ast::{
     token::TokenKind,
     visitor::{Visitor, walk_expr},
 };
-use ruff_python_parser::parse_module;
+use ruff_python_parser::{parse_expression, parse_module};
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
-    exception_private::ExcType,
+    exception_private::{ExcType, ExcTypeExt, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
         Node, Operator, SequenceItem, UnpackTarget,
@@ -182,6 +182,13 @@ pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseErro
     Ok(ParseResult { nodes, interns })
 }
 
+/// The `SyntaxError` an `eval()` / `exec()` snippet raises at runtime:
+/// `msg (<string>, line N)`, as CPython's `SyntaxError.__str__` renders it.
+pub(crate) fn syntax_error_in_snippet(msg: &str, position: CodeRange, source: &str) -> RunError {
+    let (start, _, _) = SourceMap::new(source).resolve_range(position);
+    SimpleException::new_msg(ExcType::SyntaxError, format!("{msg} (<string>, line {})", start.line)).into()
+}
+
 /// Builds a [`CodeRange`] from an interned filename and a ruff range.
 ///
 /// Free rather than a `Parser` method so a syntax error raised before the parser
@@ -207,6 +214,17 @@ pub(crate) fn parse_with_interner(
     // Interned up front so a syntax error can be located without a `Parser`,
     // leaving the parser to be built once, fully populated, after parsing.
     let filename_id = interner.intern(filename);
+    parse_module_with_filename_id(code, filename_id, interner)
+}
+
+/// [`parse_with_interner`] for a filename already interned — an `exec()`
+/// snippet, whose `<string>` id is fresh per call so tracebacks can tell the
+/// snippets apart.
+pub(crate) fn parse_module_with_filename_id(
+    code: &str,
+    filename_id: StringId,
+    interner: &mut Interns,
+) -> Result<Vec<ParseNode>, ParseError> {
     let parsed =
         parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
     // Harvested before `into_syntax` drops the token stream.
@@ -218,6 +236,22 @@ pub(crate) fn parse_with_interner(
         .collect();
     let mut parser = Parser::new(code, filename_id, interner, class_keyword_offsets);
     parser.parse_statements(parsed.into_syntax().body)
+}
+
+/// Parses `code` as a single expression, as `eval()` does.
+///
+/// `filename_id` is the snippet's fresh `<string>` id (see
+/// [`parse_module_with_filename_id`]).
+pub(crate) fn parse_expression_with_interner(
+    code: &str,
+    filename_id: StringId,
+    interner: &mut Interns,
+) -> Result<ExprLoc, ParseError> {
+    let parsed = parse_expression(code)
+        .map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
+    // No `class` keywords can occur in a bare expression.
+    let mut parser = Parser::new(code, filename_id, interner, Vec::new());
+    parser.parse_expression(*parsed.into_syntax().body)
 }
 
 /// Parser for converting ruff AST to Monty's intermediate ParseNode representation.
@@ -2435,6 +2469,21 @@ impl ParseError {
 }
 
 impl ParseError {
+    /// Converts to the exception an `eval()` / `exec()` call raises for its
+    /// snippet: the same type and message as [`into_python_exc`](Self::into_python_exc),
+    /// with a `SyntaxError` carrying CPython's `(<string>, line N)` suffix.
+    /// The traceback is the caller's, added as the error propagates.
+    pub(crate) fn into_run_error(self, source: &str) -> RunError {
+        match self {
+            Self::Syntax { msg, position } => syntax_error_in_snippet(&msg, position, source),
+            Self::NotImplemented { msg, .. } => {
+                ExcType::not_implemented(format!("The monty syntax parser does not yet support {msg}")).into()
+            }
+            Self::NotSupported { msg, .. } => ExcType::not_implemented(msg).into(),
+            Self::Import { msg, .. } => SimpleException::new_msg(ExcType::ImportError, msg).into(),
+        }
+    }
+
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
         let mut source_map = SourceMap::new(source);
         match self {

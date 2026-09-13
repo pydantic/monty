@@ -12,7 +12,7 @@
 //! * 1000 to count(StaticStrings) - strings StaticStrings
 //! * 10_000+ - strings interned per executor
 
-use std::{ops::Deref, rc::Rc, slice::from_ref, str::FromStr};
+use std::{ops::Deref, rc::Rc, slice::from_ref, str::FromStr, sync::Arc};
 
 use ahash::AHashMap;
 use num_bigint::BigInt;
@@ -1295,6 +1295,15 @@ pub enum StaticStrings {
     /// `__class_getitem__`, the classmethod behind `list[int]`.
     #[strum(serialize = "__class_getitem__")]
     ClassGetitem,
+    /// `globals` parameter of `eval()` / `exec()`.
+    #[strum(serialize = "globals")]
+    Globals,
+    /// `locals` parameter of `eval()` / `exec()`.
+    #[strum(serialize = "locals")]
+    Locals,
+    /// `closure` parameter of `exec()`.
+    #[strum(serialize = "closure")]
+    Closure,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.
@@ -1479,6 +1488,10 @@ pub(crate) struct Interns {
     /// Compiled functions by `FunctionId`, each shared (`Rc`) so a call can
     /// hold the entry while the VM (and so this table) is borrowed mutably.
     functions: Vec<Rc<Function>>,
+    /// Source text of every `eval()` / `exec()` snippet, keyed by the fresh
+    /// `<string>` filename id each call interns (ascending), so a traceback
+    /// frame's byte offsets resolve to the right line of the right snippet.
+    eval_sources: Vec<(StringId, Arc<str>)>,
     /// `String → StringId` reverse lookup for [`Self::get_string_id_by_name`].
     ///
     /// Built from `strings` at construction and after deserialization, so
@@ -1497,6 +1510,8 @@ struct InternsWire {
     bytes: Vec<WithHash<Rc<[u8]>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Rc<Function>>,
+    #[serde(default)]
+    eval_sources: Vec<(StringId, Arc<str>)>,
 }
 
 impl From<Interns> for InternsWire {
@@ -1506,6 +1521,7 @@ impl From<Interns> for InternsWire {
             bytes: interns.bytes,
             long_ints: interns.long_ints,
             functions: interns.functions,
+            eval_sources: interns.eval_sources,
         }
     }
 }
@@ -1518,6 +1534,7 @@ impl From<InternsWire> for Interns {
             bytes: wire.bytes,
             long_ints: wire.long_ints,
             functions: wire.functions,
+            eval_sources: wire.eval_sources,
             string_id_by_name,
         }
     }
@@ -1570,6 +1587,7 @@ impl Interns {
             bytes: Vec::new(),
             long_ints: Vec::new(),
             functions: Vec::new(),
+            eval_sources: Vec::new(),
             string_id_by_name: AHashMap::with_capacity(capacity),
         }
     }
@@ -1607,6 +1625,28 @@ impl Interns {
         let id = LongIntId(self.long_ints.len().try_into().expect("LongIntId overflow"));
         self.long_ints.push(WithHash::for_long_int(bi));
         id
+    }
+
+    /// Records the source of an `eval()` / `exec()` snippet under a fresh
+    /// `<string>` filename id, which it returns.
+    ///
+    /// The id is deliberately not deduplicated: every snippet gets its own so
+    /// [`eval_source`](Self::eval_source) can tell their tracebacks apart.
+    pub(crate) fn add_eval_source(&mut self, source: Arc<str>) -> StringId {
+        let string_id = self.strings.len() + INTERN_STRING_ID_OFFSET;
+        let id = StringId(string_id.try_into().expect("StringId overflow"));
+        self.strings.push(WithHash::for_str("<string>".to_owned()));
+        self.eval_sources.push((id, source));
+        id
+    }
+
+    /// The source recorded by [`add_eval_source`](Self::add_eval_source) for
+    /// `filename`, or `None` if it is not an `eval()` / `exec()` snippet.
+    pub(crate) fn eval_source(&self, filename: StringId) -> Option<&str> {
+        self.eval_sources
+            .binary_search_by(|(id, _)| id.index().cmp(&filename.index()))
+            .ok()
+            .map(|index| &*self.eval_sources[index].1)
     }
 
     /// Appends a compiled function and returns its index, which is its `FunctionId`.

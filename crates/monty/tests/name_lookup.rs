@@ -11,6 +11,8 @@
 //! - Multiple distinct names each get their own lookup
 //! - Builtins bypass the `NameLookup` mechanism entirely
 
+use std::cell::Cell;
+
 use monty::{MontyRun, RunProgress};
 use monty_types::{
     CompileOptions, ExcType, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceTracker,
@@ -624,4 +626,30 @@ sorted([1], key=lambda x: x+1)
     let mut runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
     let value = runner.run_no_limits(vec![]).unwrap();
     assert_eq!(value, MontyObject::List(vec![MontyObject::Int(1)]));
+}
+
+#[test]
+fn resolve_inside_eval_in_function() {
+    // A name the snippet cannot find locally reaches the host like any
+    // undefined global, and the answer is cached in the module namespace.
+    let runner = MontyRun::new(
+        "def f():\n    local = 1\n    return eval('local + ext_value')\nf() + ext_value".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+
+    let lookups = Cell::new(0);
+    let progress = resolve_lookups_with(progress, |name| {
+        assert_eq!(name, "ext_value");
+        lookups.set(lookups.get() + 1);
+        NameLookupResult::Value(MontyObject::Int(41))
+    })
+    .unwrap();
+    assert_eq!(progress.into_complete(), Some(MontyObject::Int(83)));
+    assert_eq!(lookups.get(), 1);
 }

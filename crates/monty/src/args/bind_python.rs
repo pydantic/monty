@@ -577,6 +577,20 @@ impl Signature {
         self.pos_arg_count() + self.arg_count() + self.kwarg_count()
     }
 
+    /// Parameter names in slot order — positional-only, positional-or-keyword,
+    /// `*args`, keyword-only, `**kwargs` — the layout `bind` fills, so a
+    /// frame's slot `i` (for `i < total_slots()`) holds the `i`th name here.
+    pub(crate) fn slot_names(&self) -> impl Iterator<Item = StringId> + '_ {
+        self.pos_args
+            .iter()
+            .flatten()
+            .chain(self.args.iter().flatten())
+            .chain(self.var_args.iter())
+            .chain(self.kwargs.iter().flatten())
+            .chain(self.var_kwargs.iter())
+            .copied()
+    }
+
     /// Returns the total number of namespace slots needed for parameters.
     ///
     /// This includes slots for:

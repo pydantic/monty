@@ -271,6 +271,10 @@ pub(crate) struct Program {
     /// UTF-8 byte cap for each operand repr in introspected assert messages.
     /// Stored with the compiled program and passed to every VM.
     pub(crate) assert_repr_max_bytes: u32,
+    /// The options the program was compiled with; `eval()` / `exec()` compile
+    /// their snippets the same way.
+    #[serde(default)]
+    pub(crate) options: CompileOptions,
     /// Clock serving `date.today()` / `datetime.now()` on the non-suspending
     /// path; `System` unless the embedder chose otherwise.
     #[serde(default = "default_clock")]
@@ -302,6 +306,8 @@ pub(crate) struct VmEnv<'h> {
     pub(crate) script_name: &'h str,
     /// UTF-8 byte cap for each operand repr in introspected assert messages.
     pub(crate) assert_repr_max_bytes: u32,
+    /// Compile options for code compiled at runtime by `eval()` / `exec()`.
+    pub(crate) options: CompileOptions,
 }
 
 impl VmEnv<'_> {
@@ -331,6 +337,7 @@ impl Default for VmEnv<'static> {
             initial_cwd: DEFAULT_CWD,
             script_name: "",
             assert_repr_max_bytes: AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+            options: CompileOptions::default(),
         }
     }
 }
@@ -378,6 +385,7 @@ impl Executor {
                 code: Arc::from(code),
                 input_slots: Vec::new(),
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+                options,
                 clock: default_clock(),
                 script_name: Arc::from(script_name),
                 cwd: Arc::from(DEFAULT_CWD),
@@ -449,6 +457,7 @@ impl Executor {
                 code,
                 input_slots,
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+                options,
                 // Fail-closed placeholder; the owning `MontyRepl` overwrites it via `with_clock`.
                 clock: HostClock::Denied,
                 script_name: Arc::clone(session.script_name),
@@ -523,6 +532,7 @@ impl Executor {
                 code: Arc::from(code),
                 input_slots: vec![args_slot],
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
+                options,
                 // Fail-closed placeholder; the owning `MontyRepl` overwrites it via `with_clock`.
                 clock: HostClock::Denied,
                 script_name: Arc::clone(session.script_name),
@@ -693,6 +703,7 @@ impl Program {
             initial_cwd: &self.cwd,
             script_name: &self.script_name,
             assert_repr_max_bytes: self.assert_repr_max_bytes,
+            options: self.options,
         }
     }
 
@@ -704,6 +715,7 @@ impl Program {
             code: Arc::from(""),
             input_slots: Vec::new(),
             assert_repr_max_bytes: AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+            options: CompileOptions::default(),
             clock: default_clock(),
             script_name: Arc::from(""),
             cwd: Arc::from(DEFAULT_CWD),

@@ -11,12 +11,13 @@ use std::rc::Rc;
 
 use ahash::AHashSet;
 
-use super::VM;
+use super::{CallFrame, VM};
 use crate::{
     bytecode::{FrameExit, NAME_CALLABLE, NAME_GLOBAL_ONLY},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapReadOutput},
-    intern::StringId,
+    intern::{FunctionId, StringId},
+    prepare::SnippetNames,
     types::Dict,
     value::Value,
 };
@@ -100,6 +101,135 @@ impl<C: ContainsHeap> DropWithContext<C> for Box<FrameNamespace> {
 }
 
 impl VM<'_> {
+    /// The namespace an `eval()` / `exec()` snippet runs in, from the call's
+    /// `globals` / `locals` dicts (owned references, or `None`), and the mode
+    /// its top level compiles in.
+    ///
+    /// Without a `globals` dict the snippet inherits the caller's: a snippet
+    /// frame's own namespace (so nested implicit calls share it), a
+    /// dict-namespaced function's dict, or the module slots. Without a
+    /// `locals` dict a function frame contributes a snapshot of its locals
+    /// (PEP 667), a module frame nothing.
+    pub(crate) fn snippet_namespace(
+        &mut self,
+        globals: Option<HeapId>,
+        locals: Option<HeapId>,
+    ) -> RunResult<(SnippetNames, Box<FrameNamespace>)> {
+        let (globals, locals) = match globals {
+            Some(dict) => (FrameGlobals::Dict(dict), locals),
+            None => match self.current_frame.namespace.as_deref() {
+                Some(FrameNamespace::Snippet {
+                    globals,
+                    locals: frame_locals,
+                }) => {
+                    let (globals, frame_locals) = (*globals, *frame_locals);
+                    if let FrameGlobals::Dict(dict) = globals {
+                        self.heap.inc_ref(dict);
+                    }
+                    let locals = match (locals, frame_locals) {
+                        (Some(dict), _) => Some(dict),
+                        (None, Some(dict)) => {
+                            self.heap.inc_ref(dict);
+                            Some(dict)
+                        }
+                        (None, None) => None,
+                    };
+                    (globals, locals)
+                }
+                Some(FrameNamespace::Function { globals }) => {
+                    let dict = *globals;
+                    self.heap.inc_ref(dict);
+                    let locals = match locals {
+                        Some(dict) => Some(dict),
+                        None => Some(self.snapshot_locals()?),
+                    };
+                    (FrameGlobals::Dict(dict), locals)
+                }
+                None => {
+                    let locals = match (locals, self.current_frame.function_id) {
+                        (Some(dict), _) => Some(dict),
+                        (None, Some(_)) => Some(self.snapshot_locals()?),
+                        (None, None) => None,
+                    };
+                    (FrameGlobals::Slots, locals)
+                }
+            },
+        };
+        let names = match (globals, locals) {
+            (FrameGlobals::Dict(_), _) => SnippetNames::NameOverDict,
+            (FrameGlobals::Slots, Some(_)) => SnippetNames::NameOverSlots,
+            (FrameGlobals::Slots, None) => SnippetNames::Slots,
+        };
+        Ok((names, Box::new(FrameNamespace::Snippet { globals, locals })))
+    }
+
+    /// Pushes the frame that runs a compiled `eval()` / `exec()` snippet.
+    ///
+    /// The snippet is a `<module>`-named function with no locals; the frame
+    /// takes ownership of `namespace`, and releases it if the push is refused
+    /// by the recursion limit.
+    pub(crate) fn push_snippet_frame(&mut self, func_id: FunctionId, namespace: Box<FrameNamespace>) -> RunResult<()> {
+        let call_offset = self.current_offset();
+        let code = Rc::clone(&self.interns.get_function(func_id).code);
+        let stack_base = self.stack.len();
+        let exc_stack_base = self.exception_stack.len();
+        self.push_frame(CallFrame::new_function(
+            code,
+            stack_base,
+            0,
+            exc_stack_base,
+            func_id,
+            call_offset,
+            Some(namespace),
+        ))
+    }
+
+    /// The dict `locals()` returns in the current frame.
+    ///
+    /// A snippet with a locals dict returns that dict itself; one that runs
+    /// straight in a globals dict returns the dict. Every other frame gets a
+    /// snapshot: named stack slots for a function, bound slots for a module.
+    pub(crate) fn locals_dict(&mut self) -> RunResult<Value> {
+        let dict_id = match self.current_frame.namespace.as_deref() {
+            Some(
+                FrameNamespace::Snippet { locals: Some(dict), .. }
+                | FrameNamespace::Snippet {
+                    globals: FrameGlobals::Dict(dict),
+                    locals: None,
+                },
+            ) => {
+                let dict = *dict;
+                self.heap.inc_ref(dict);
+                dict
+            }
+            Some(FrameNamespace::Snippet {
+                globals: FrameGlobals::Slots,
+                locals: None,
+            }) => self.snapshot_globals()?,
+            Some(FrameNamespace::Function { .. }) => self.snapshot_locals()?,
+            None if self.current_frame.function_id.is_none() => self.snapshot_globals()?,
+            None => self.snapshot_locals()?,
+        };
+        Ok(Value::Ref(dict_id))
+    }
+
+    /// A fresh dict of the bound module globals, for `locals()` at module scope.
+    fn snapshot_globals(&mut self) -> RunResult<HeapId> {
+        let dict_id = self.heap.allocate(HeapData::Dict(Dict::new()));
+        let bound: Vec<(StringId, Value)> = self
+            .global_names
+            .names()
+            .iter()
+            .zip(&self.globals)
+            .filter(|(_, value)| !matches!(value, Value::Undefined))
+            .map(|(name_id, value)| (*name_id, value.clone_with_heap(self.heap)))
+            .collect();
+        for (name_id, value) in bound {
+            self.namespace_set(dict_id, name_id, value)?;
+        }
+        Ok(dict_id)
+    }
+
     /// `LoadName`: resolves `name_id` through the frame's namespace and pushes it.
     ///
     /// With slot globals the tail of the lookup is [`load_global`](Self::load_global)
@@ -169,7 +299,6 @@ impl VM<'_> {
     /// (PEP 667 semantics — writes to the dict never reach the frame).
     ///
     /// Returns an owned reference to the new dict.
-    #[expect(dead_code, reason = "used by eval()/exec(), which land next")]
     pub(crate) fn snapshot_locals(&mut self) -> RunResult<HeapId> {
         let dict_id = self.heap.allocate(HeapData::Dict(Dict::new()));
         let code = Rc::clone(&self.current_frame.code);

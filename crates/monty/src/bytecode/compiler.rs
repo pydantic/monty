@@ -21,7 +21,7 @@ use super::{
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     builtins::{Builtins, BuiltinsFunctions},
-    exception_private::ExcType,
+    exception_private::{ExcType, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CaptureSource, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier,
         Literal, NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
@@ -32,7 +32,7 @@ use crate::{
     modules::StandardLib,
     name_map::NameMap,
     namespace::NamespaceId,
-    parse::{CodeRange, ExceptHandler, Try},
+    parse::{CodeRange, ExceptHandler, Try, syntax_error_in_snippet},
     run::CompileOptions,
     source_map::{SourceMap, StackFrameExt},
     value::{EitherStr, Value},
@@ -559,7 +559,6 @@ impl<'a> Compiler<'a> {
     /// whose `await`s are rejected and whose global references compile by name
     /// when `globals_by_name` (an explicit globals dict). Rolls back the
     /// function table on failure like [`compile_module`](Self::compile_module).
-    #[expect(dead_code, reason = "used by eval()/exec(), which land next")]
     pub(crate) fn compile_snippet(
         nodes: &[PreparedNode],
         interns: &mut Interns,
@@ -614,7 +613,7 @@ impl<'a> Compiler<'a> {
     /// compiled to bytecode with an implicit `return None` at the end if there's
     /// no explicit return statement.
     fn compile_function_body(
-        body: &[PreparedNode],
+        func_def: &PreparedFunctionDef,
         interns: &mut Interns,
         num_locals: u16,
         flags: ScopeFlags,
@@ -623,7 +622,16 @@ impl<'a> Compiler<'a> {
         // comp-var load/store opcodes use `num_locals + offset` to skip past
         // the locals region into the operand-stack region.
         let mut compiler = Compiler::new(interns, false, num_locals, flags);
-        compiler.compile_block(body)?;
+        // Parameters, and the cells captured parameters live in, are named up
+        // front: a body that never mentions one still reports it from `locals()`.
+        let param_names: Vec<StringId> = func_def.signature.slot_names().collect();
+        compiler.code.register_local_names(&param_names);
+        for (cell_slot, param_index) in func_def.cell_var_slots.iter().zip(&func_def.cell_param_indices) {
+            if let Some(name) = param_index.and_then(|index| param_names.get(index)) {
+                compiler.code.register_local_name(cell_slot.as_u16(), *name);
+            }
+        }
+        compiler.compile_block(&func_def.body)?;
 
         // Implicit return None if no explicit return
         compiler.code.emit(Opcode::LoadNone)?;
@@ -877,7 +885,7 @@ impl<'a> Compiler<'a> {
     fn emit_make_function(&mut self, func_def: &PreparedFunctionDef, what: &'static str) -> Result<(), CompileError> {
         let flags = self.flags;
         self.emit_make_callable(func_def, what, |interns, namespace_size| {
-            Self::compile_function_body(&func_def.body, interns, namespace_size, flags)
+            Self::compile_function_body(func_def, interns, namespace_size, flags)
         })
     }
 
@@ -1615,6 +1623,8 @@ impl<'a> Compiler<'a> {
                 self.code.emit_name_op(Opcode::StoreName, slot, target.name_id, 0)
             }
             NameScope::Cell => {
+                // Named so `locals()` reports a cell the body only ever assigns.
+                self.code.register_local_name(slot, target.name_id);
                 // Emit local slot index — the VM reads the cell HeapId from the stack
                 self.code.emit_u16(Opcode::StoreCell, slot)
             }
@@ -3987,6 +3997,15 @@ impl CompileError {
             message: message.into(),
             position,
             exc_type: ExcType::NotImplementedError,
+        }
+    }
+
+    /// Converts to the exception an `eval()` / `exec()` call raises for its
+    /// snippet; see `ParseError::into_run_error`.
+    pub(crate) fn into_run_error(self, source: &str) -> RunError {
+        match self.exc_type {
+            ExcType::SyntaxError => syntax_error_in_snippet(&self.message, self.position, source),
+            exc_type => SimpleException::new_msg(exc_type, self.message).into(),
         }
     }
 

@@ -412,3 +412,29 @@ fn run_progress_complete_round_trip() {
 
     assert_eq!(loaded.into_complete().unwrap(), MontyObject::Int(3));
 }
+
+#[test]
+fn run_progress_round_trip_inside_exec() {
+    let runner = MontyRun::new(
+        "exec('v = ext(1)\\nraise ValueError(str(v))')".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+
+    // Suspended inside the snippet's frame: its code and source must travel.
+    let call = round_trip_progress(&progress)
+        .into_function_call()
+        .expect("expected function call");
+    assert_eq!(call.function_name, "ext");
+
+    let err = call.resume(MontyObject::Int(7), PrintWriter::Stdout).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    exec('v = ext(1)\\nraise ValueError(str(v))')\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n  File \"<string>\", line 2, in <module>\nValueError: 7"
+    );
+}

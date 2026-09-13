@@ -112,7 +112,6 @@ pub(crate) fn prepare_with_existing_names(
 }
 
 /// How the top-level names of an `eval()` / `exec()` snippet bind.
-#[expect(dead_code, reason = "used by eval()/exec(), which land next")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SnippetNames {
     /// An ordinary module compile against the session `NameMap` (`LoadGlobal`):
@@ -133,7 +132,6 @@ pub(crate) enum SnippetNames {
 /// it returns itself. `globals` is the session map for the slot modes and a
 /// scratch map under [`SnippetNames::NameOverDict`], so names that only exist
 /// inside a dict-namespaced snippet never consume session slots.
-#[expect(dead_code, reason = "used by eval()/exec(), which land next")]
 pub(crate) fn prepare_snippet(
     nodes: Vec<ParseNode>,
     interner: &Interns,

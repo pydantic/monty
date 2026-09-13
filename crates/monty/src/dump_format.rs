@@ -197,7 +197,7 @@ mod tests {
         );
         assert_eq!(
             static_strings_fingerprint(),
-            0xa946_9719_1535_83c8,
+            0x9a80_2f01_b5e0_c68c,
             "static strings changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(
@@ -227,7 +227,7 @@ mod tests {
         // is append-only: a new builtin goes after the last variant.
         assert_eq!(
             variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
-            0xd5ef_68ff_fc6b_f752,
+            0xcdd8_09b1_2adc_3852,
             "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}"
         );
     }

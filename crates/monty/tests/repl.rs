@@ -2004,3 +2004,28 @@ fn call_builtin_via_session() {
         .unwrap();
     assert_eq!(result, MontyObject::Int(2));
 }
+
+#[test]
+fn repl_eval_suspends_at_external_call() {
+    let (repl, _) = init_repl("");
+
+    // The snippet compiles against the session tables, so an external
+    // function is reached exactly as from compiled code.
+    let progress = repl
+        .feed_start("eval('ext_fn(41) + 1')", vec![], PrintWriter::Stdout)
+        .unwrap();
+    let call = progress.into_function_call().expect("expected function call");
+    assert_eq!(call.function_name, "ext_fn");
+    assert_eq!(call.args, vec![MontyObject::Int(41)]);
+
+    let progress = call.resume(MontyObject::Int(41), PrintWriter::Stdout).unwrap();
+    let (mut repl, value) = progress.into_complete().expect("expected completion");
+    assert_eq!(value, MontyObject::Int(42));
+
+    // What an exec'd snippet defines outlives the feed.
+    assert_eq!(
+        feed_run_print(&mut repl, "exec('def double(n):\\n    return n * 2')").unwrap(),
+        MontyObject::None
+    );
+    assert_eq!(feed_run_print(&mut repl, "double(21)").unwrap(), MontyObject::Int(42));
+}
