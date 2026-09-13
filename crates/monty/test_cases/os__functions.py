@@ -355,10 +355,9 @@ if sys.platform != 'win32':
     assert os.system('true') == 0
     assert os.system(b'true') == 0
 
-# CPython routes these through the `posix` module, so arity errors carry the
-# 'posix.' prefix; os.system is clinic-parsed without one.
-# the arity wording names the platform module: posix.* on unix, nt.* on
-# windows — monty always uses the posix form, so this block is unix-only
+# the arity wording names the platform module: CPython routes these through
+# `posix` on unix, `nt` on windows — monty always uses the posix form, so this
+# block is unix-only. os.system is clinic-parsed without a module prefix.
 if sys.platform != 'win32':
     try:
         os.cpu_count(1)

@@ -3,8 +3,9 @@
 //! Environment access (`getenv`, `environ`), filesystem wrappers (`listdir`,
 //! `stat`, `mkdir`, `makedirs`, `remove`, `unlink`, `rmdir`, `rename`,
 //! `replace`), the pure `fspath`, the POSIX path constants (`sep`,
-//! `linesep`, `name`, ...), and the host-answered system-identity calls
-//! (`uname`, `getcwd`, `cpu_count`, `getpid`, `system`). The sandbox always
+//! `linesep`, `name`, ...), the VM-owned working directory (`getcwd`,
+//! `getcwdb`, `chdir`), and the host-answered system-identity calls
+//! (`uname`, `cpu_count`, `getpid`, `system`). The sandbox always
 //! presents a POSIX view regardless of host OS, so the constants are fixed.
 //!
 //! Filesystem functions never touch the host directly: they yield an

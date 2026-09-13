@@ -163,6 +163,10 @@ class AbstractOS(ABC):
     with via `pathlib.Path`, `os`, `date.today()`, and `datetime.now()`.
 
     Pass an instance as the `os` parameter to `Monty.run()`.
+
+    The instance lives host-side: sandbox code never receives a reference to
+    it, so implementing these methods grants no capability until the host
+    passes the instance in — that pass is the capability grant.
     """
 
     def __call__(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:

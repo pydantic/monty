@@ -200,9 +200,10 @@ anything.
     ```
 
 A separate `os=` callback handles operations no mount covers: the remaining `pathlib` operations, `os.getenv`,
-`os.environ`, `date.today()`, `datetime.now()` and the system-identity calls `os.uname()`, `os.getcwd()`,
-`os.cpu_count()`, `os.getpid()` and `os.system()` — the last of which hands the command string to the host and never
-executes anything itself. `os.system` fails closed: with no handler the sandbox raises
+`os.environ`, `date.today()`, `datetime.now()` and the system-identity calls `os.uname()`, `os.cpu_count()`,
+`os.getpid()` and `os.system()` — the last of which hands the command string to the host and never
+executes anything itself. (`os.getcwd()` is not on the list: the VM owns the working directory, per #828.)
+`os.system` fails closed: with no handler the sandbox raises
 `RuntimeError` — never a fake success. If your `os` handler chooses to run the command it
 receives, it is acting with your process's full authority — that is a hole you cut, not monty.
 [`AbstractOS`][pydantic_monty.AbstractOS] is the typed form of that callback; [`OSAccess`][pydantic_monty.OSAccess] implements it over in-memory files and an `environ` mapping
@@ -374,7 +375,9 @@ Host functions, the methods, lazy attributes and constructors exposed through [`
 callback, and [`CallbackFile`][pydantic_monty.CallbackFile] in the Python [`OSAccess`][pydantic_monty.OSAccess] helper all execute in the host process.
 `OSAccess` backed by [`MemoryFile`][pydantic_monty.MemoryFile] objects is fully sandboxed; `OSAccess` backed by `CallbackFile` is exactly as
 sandboxed as the callback you wrote.
-An `OSAccess` built over `MemoryFile`s only is fully sandboxed; any hook that reaches out
+An `OSAccess` built over `MemoryFile`s only is fully sandboxed, with one disclosure: an in-process run's wall clock is
+the host's unless the host pins it (see [the clock](#the-clock)) — `date.today()`/`datetime.now()` reveal the host's
+UTC offset and current date. Any hook that reaches out
 (`CallbackFile`, a `system_handler`-style command hook) runs in the host with full authority.
 
 ### In-process execution

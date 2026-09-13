@@ -1208,33 +1208,19 @@ fn os_system_passes_command_to_host() {
 #[test]
 fn os_system_carries_cwd_kwarg_to_host() {
     // the VM's working directory rides along as a kw-only arg so hosts can
-    // run the command in the sandbox's current directory
-    let runner = MontyRun::new(
-        "import os\nos.system('ls')".to_owned(),
-        "test.py",
-        vec![],
-        CompileOptions::default(),
-    )
-    .unwrap();
-    let progress = runner
-        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
-        .unwrap();
-    let RunProgress::OsCall(call) = progress else {
-        panic!("expected OsCall");
-    };
-    let (_, kwargs) = call.function_call.clone().to_args();
+    // run the command in the sandbox's current directory — a non-default cwd
+    // proves the value is propagated, not defaulted
+    let function_call = run_to_oscall_in("import os\nos.system('ls')", "/workdir");
+    assert_eq!(function_call.name(), "os.system");
+    let (args, kwargs) = function_call.to_args();
+    assert_eq!(args, vec![MontyObject::String("ls".to_owned())]);
     assert_eq!(
         kwargs,
         vec![(
             MontyObject::String("cwd".to_owned()),
-            MontyObject::String("/".to_owned())
+            MontyObject::String("/workdir".to_owned())
         )]
     );
-    // drain the call like any other: resuming keeps the ref-count audit happy
-    let resumed = call
-        .resume(ExtFunctionResult::Return(MontyObject::Int(0)), PrintWriter::Stdout)
-        .unwrap();
-    resumed.into_complete().expect("expected Complete after resume");
 }
 
 #[test]
