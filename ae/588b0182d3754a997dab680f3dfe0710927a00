@@ -1,0 +1,19 @@
+docs/limitations/resource_limits.md
+  s_cf82a11b868667::t_da1091db47f27a 188-194
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ae588b0182d3754a997dab680f3dfe0710927a00",
+  "prompts": {},
+  "sessions": {
+    "s_cf82a11b868667": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "28310e93-f46a-4004-a073-06215719db05",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
