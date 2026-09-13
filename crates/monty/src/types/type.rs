@@ -237,6 +237,8 @@ pub enum Type {
     ItertoolsBatched,
     #[strum(serialize = "itertools.zip_longest")]
     ItertoolsZipLongest,
+    /// Iterator produced by a generator expression.
+    Generator,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -393,6 +395,7 @@ impl Type {
                 | Self::ItertoolsDropWhile
                 | Self::ItertoolsFilterFalse
                 | Self::ItertoolsStarMap
+                | Self::Generator
                 | Self::ItertoolsAccumulate
                 | Self::ItertoolsBatched
                 | Self::ItertoolsZipLongest

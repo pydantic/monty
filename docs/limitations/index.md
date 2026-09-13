@@ -27,7 +27,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `@dataclass`, with the `eq=` and `frozen=` options only (every other option raises `NotImplementedError`, and
     there is no `field()`, `fields()` or `asdict()`), plus host class instances passed in and out (and host classes the
     sandbox may instantiate when granted)
-- List, dict and set comprehensions
+- List, dict and set comprehensions, and lazy, single-pass generator expressions
+    ([limitations](generator_expressions.md))
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
@@ -42,7 +43,6 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - Class inheritance and metaclasses (`class Foo(Bar):`)
 - Decorators on methods — so no `@classmethod`, `@staticmethod`, `@property`
 - `yield` / `yield from` — there are no generator functions.
-    Generator *expressions* parse, but currently materialise to a `list`
 - `match` statements
 - `del`, both `del x` and `del d[k]`
 - `try*` / `except*` exception groups
