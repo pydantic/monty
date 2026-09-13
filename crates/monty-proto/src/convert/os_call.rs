@@ -4,7 +4,7 @@
 
 use monty_types::{
     GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
-    PathStringDataArgs, RenameCallArgs,
+    PathStringDataArgs, RenameCallArgs, SystemCallArgs,
 };
 
 use crate::{
@@ -55,6 +55,13 @@ impl From<OsFunctionCall> for os_call::Call {
                     offset_seconds: tz.offset_seconds,
                     name: tz.name,
                 }),
+            }),
+            OsFunctionCall::Uname => Self::Uname(Unit {}),
+            OsFunctionCall::CpuCount => Self::CpuCount(Unit {}),
+            OsFunctionCall::Getpid => Self::Getpid(Unit {}),
+            OsFunctionCall::System(a) => Self::System(os_call::System {
+                command: a.command,
+                cwd: a.cwd,
             }),
         }
     }
@@ -109,6 +116,13 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
                 offset_seconds: tz.offset_seconds,
                 name: tz.name,
             })),
+            os_call::Call::Uname(_) => Self::Uname,
+            os_call::Call::CpuCount(_) => Self::CpuCount,
+            os_call::Call::Getpid(_) => Self::Getpid,
+            os_call::Call::System(s) => Self::System(SystemCallArgs {
+                command: s.command,
+                cwd: s.cwd,
+            }),
         })
     }
 }

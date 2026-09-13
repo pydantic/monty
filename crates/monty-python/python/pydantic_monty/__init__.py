@@ -46,6 +46,7 @@ from .os_access import (
     OSAccess,
     OsFunction,
     StatResult,
+    uname_result,
 )
 
 __all__ = (
@@ -99,6 +100,7 @@ __all__ = (
     'AsyncFutureSnapshot',
     # os_access
     'StatResult',
+    'uname_result',
     'OsFunction',
     'NOT_HANDLED',
     'AbstractOS',

@@ -7,13 +7,21 @@ interact with through the `os=` callback surface.
 
 import datetime
 from pathlib import PurePosixPath
+from typing import cast
 
 import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
 import pydantic_monty
-from pydantic_monty import NOT_HANDLED, AbstractOS, MontyFileHandle, StatResult
+from pydantic_monty import (
+    NOT_HANDLED,
+    AbstractOS,
+    MontyFileHandle,
+    OsFunction,
+    StatResult,
+    uname_result,
+)
 from pydantic_monty.os_access import path_from_arg
 
 
@@ -605,3 +613,87 @@ def test_path_py_to_monty(monty_run: RunMonty):
     p = PurePosixPath('/foo/bar/thing.txt')
     result = monty_run('f"type={type(p)} {p=}"', inputs={'p': p})
     assert result == snapshot("type=<class 'PosixPath'> p=PosixPath('/foo/bar/thing.txt')")
+
+
+# === the identity/system hooks: opt-in by default ============================
+
+
+def test_identity_hooks_default_not_handled():
+    """The new hooks (uname/getcwd/cpu_count/getpid/system) raise
+    NotImplementedError by default, which the adapter reports as NOT_HANDLED
+    — the sandbox then raises the no-handler RuntimeError."""
+
+    class Bare(AbstractOS):
+        def path_exists(self, path: PurePosixPath) -> bool:
+            return False
+
+        def path_is_file(self, path: PurePosixPath) -> bool:
+            return False
+
+        def path_is_dir(self, path: PurePosixPath) -> bool:
+            return False
+
+        def path_is_symlink(self, path: PurePosixPath) -> bool:
+            return False
+
+        def path_read_text(self, path: PurePosixPath | MontyFileHandle) -> str:
+            raise FileNotFoundError(path)
+
+        def path_read_bytes(self, path: PurePosixPath | MontyFileHandle) -> bytes:
+            raise FileNotFoundError(path)
+
+        def path_write_text(self, path: PurePosixPath | MontyFileHandle, data: str) -> int:
+            raise FileNotFoundError(path)
+
+        def path_write_bytes(self, path: PurePosixPath | MontyFileHandle, data: bytes) -> int:
+            raise FileNotFoundError(path)
+
+        def path_mkdir(self, path: PurePosixPath, parents: bool, exist_ok: bool) -> None:
+            raise FileNotFoundError(path)
+
+        def path_unlink(self, path: PurePosixPath) -> None:
+            raise FileNotFoundError(path)
+
+        def path_rmdir(self, path: PurePosixPath) -> None:
+            raise FileNotFoundError(path)
+
+        def path_iterdir(self, path: PurePosixPath) -> list[PurePosixPath]:
+            raise FileNotFoundError(path)
+
+        def path_stat(self, path: PurePosixPath) -> StatResult:
+            raise FileNotFoundError(path)
+
+        def path_rename(self, path: PurePosixPath, target: PurePosixPath) -> None:
+            raise FileNotFoundError(path)
+
+        def path_resolve(self, path: PurePosixPath) -> str:
+            return str(path)
+
+        def path_absolute(self, path: PurePosixPath) -> str:
+            return str(path)
+
+        def getenv(self, key: str, default: str | None = None) -> str | None:
+            return default
+
+        def get_environ(self) -> dict[str, str]:
+            return {}
+
+    bare = Bare()
+    for call in ('os.uname', 'os.cpu_count', 'os.getpid'):
+        assert bare(cast(OsFunction, call), ()) == NOT_HANDLED, call
+    # os.system takes a required command; monty validates that before the
+    # host ever sees the call, so the hook is only exercised with one
+    assert bare(cast(OsFunction, 'os.system'), ('ls',)) == NOT_HANDLED
+
+    # an override answers, and the value crosses the boundary
+    class WithOverrides(Bare):
+        def uname(self) -> uname_result:
+            return uname_result('Linux', 'test-host', '1.0', '#1', 'x86_64')
+
+        def system(self, command: str, cwd: str = '.') -> int:
+            return 7
+
+    host = WithOverrides()
+    assert host(cast(OsFunction, 'os.uname'), ()) == uname_result('Linux', 'test-host', '1.0', '#1', 'x86_64')
+    assert host(cast(OsFunction, 'os.system'), ('cmd',)) == 7
+    assert host(cast(OsFunction, 'os.system'), ('cmd',), {'cwd': '/tmp'}) == 7

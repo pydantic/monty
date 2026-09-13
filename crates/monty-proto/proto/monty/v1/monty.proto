@@ -710,6 +710,13 @@ message OsCall {
     Unit date_today = 23; // date.today()
     // datetime.now(tz) — the timezone argument (absent for a naive result).
     DateTimeNow date_time_now = 24;
+
+    // ---- System identity (host-answered; nothing is ever executed) --------
+    Unit uname = 25; // os.uname()
+    // tag 26 reserved: os.getcwd was dropped for #828's VM-owned cwd
+    Unit cpu_count = 27; // os.cpu_count()
+    Unit getpid = 28; // os.getpid()
+    System system = 29; // os.system
   }
 
   message TextWrite {
@@ -745,6 +752,14 @@ message OsCall {
   message DateTimeNow {
     // Fixed-offset timezone for an aware result; absent for a naive one.
     optional TimeZone tz = 1;
+  }
+  // os.system(command) — the command string passes through verbatim; the
+  // host alone decides what to do with it and answers with the exit-status
+  // int sandbox code should observe. `cwd` is the VM's working directory at
+  // call time, so the host can run the command in the sandbox's place.
+  message System {
+    string command = 1;
+    string cwd = 2;
   }
 }
 

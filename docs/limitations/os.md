@@ -23,6 +23,15 @@ whether each call is permitted.
 - `os.getcwdb()` — pure: the same directory as UTF-8 bytes (virtual paths
     are always UTF-8, so no filesystem encoding is involved).
 - `os.chdir(path)` — validated through a `Path.stat` host call (see below).
+- `os.uname()` — yields to the host, which answers with a 5-field named
+    tuple (`sysname`, `nodename`, `release`, `version`, `machine`); attribute
+    and index access both work.
+- `os.cpu_count()`, `os.getpid()` — yield to the host, which answers with the
+    values sandbox code should observe.
+- `os.system(command)` — yields to the host with the command string verbatim.
+    Nothing is ever executed by the interpreter (or by any mount backend); the
+    host alone decides what the command means and answers with the exit-status
+    int sandbox code should observe.
 - Constants (fixed POSIX values on every host OS, matching the sandbox's
     POSIX-only path model): `os.sep == '/'`, `os.altsep is None`,
     `os.extsep == '.'`, `os.curdir == '.'`, `os.pardir == '..'`,
@@ -107,6 +116,25 @@ whether each call is permitted.
 - **Error side-effects differ slightly for `os.makedirs`**: Monty validates
     `mode` up front, while CPython only fails when it reaches the final
     `mkdir`, after creating parent directories.
+- **The system-identity calls answer whatever the host provides** —
+    `os.uname()`, `os.cpu_count()`, `os.getpid()` and
+    `os.system()` have no built-in values. With no `os` handler they raise
+    `RuntimeError: 'os.uname' is not supported in this environment` (the
+    no-handler error; the FS calls raise `PermissionError` instead). A host
+    can present a fully synthetic machine — see
+    a synthetic-OS host — with no host facts leaking in.
+- **`os.uname()` results print as `uname_result(...)`**, not
+    `posix.uname_result(...)` (same named-tuple repr divergence as
+    `os.stat` above).
+- **`os.system`'s bad-type error always uses the posix converter's wording**
+    (`expected str, bytes or os.PathLike object, not int`); windows CPython names
+    the argument (`system() argument 'command' must be str, not int`). The `posix.`-prefixed
+    arity errors for `os.cpu_count` and `os.getpid` get an `nt.` prefix on windows CPython —
+    `os.uname` has no windows wording at all: windows CPython does not implement it.
+- **`os.system` decodes `bytes` commands lossily.** CPython decodes bytes
+    with `surrogateescape`; Monty replaces invalid UTF-8 with U+FFFD, because
+    sandbox strings cannot hold surrogates. `os.system` also cannot be called
+    in a synchronous context (see [open.md](open.md)) — like every OS call.
 
 ## Not implemented
 
@@ -114,10 +142,10 @@ Everything else, including but not limited to: `os.path.*` (use
 `pathlib.Path` instead), `os.fchdir`, `os.walk`, `os.scandir`,
 `os.removedirs`, `os.renames`, `os.lstat`, `os.access`, `os.symlink`,
 `os.readlink`, `os.link`, `os.chmod`, `os.chown`, `os.umask`, `os.truncate`,
-`os.utime`, `os.system`, `os.popen`, `os.fork`, `os.exec*`, `os.spawn*`,
+`os.utime`, `os.popen`, `os.fork`, `os.exec*`, `os.spawn*`,
 `os.kill`, `os.pipe`, `os.read`, `os.write`, `os.open`, `os.close`,
-`os.dup`, `os.fsync`, `os.urandom`, `os.cpu_count`, `os.getpid`,
-`os.getuid`, `os.getgid`, `os.uname`, `os.terminal_size`, `os.get_terminal_size`.
+`os.dup`, `os.fsync`, `os.urandom`, `os.getuid`, `os.getgid`,
+`os.terminal_size`, `os.get_terminal_size`.
 
 `subprocess`, `signal`, `socket`, `threading`, `multiprocessing` are not
 importable either (see [modules.md](modules.md)).

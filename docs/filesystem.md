@@ -241,7 +241,8 @@ handler at all.
 The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`, `open`,
 `Path.read_text`, `Path.read_bytes`, `Path.write_text`, `Path.write_bytes`, `Path.append_text`, `Path.append_bytes`,
 `Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.stat`, `Path.rename`, `Path.resolve`, `Path.absolute`,
-`os.getenv`, `os.environ`, `date.today` and `datetime.now`.
+`os.getenv`, `os.environ`, `date.today`, `datetime.now`, `os.uname`, `os.cpu_count`, `os.getpid` and
+`os.system`.
 
 `os` callbacks run in your process with your process's authority.
 Everything in [designing a safe tool surface](host-functions.md#designing-a-safe-tool-surface) applies.
@@ -304,6 +305,11 @@ JavaScript has no equivalent class, so the TypeScript tab answers the same opera
 
 [`OSAccess`][pydantic_monty.OSAccess] backed by [`MemoryFile`][pydantic_monty.MemoryFile] objects is fully sandboxed: content lives in host memory, path traversal cannot escape
 to real files, and `os.getenv` sees only the `environ` mapping you passed.
+
+The identity calls (`os.uname()`, `os.cpu_count()`, `os.getpid()`) and `os.system` are answered by the same
+`os=` handler — a host can present a fully synthetic machine (hostname, kernel, CPU count, even an
+`os.system` that records commands and answers exit status `0` without executing anything) by
+subclassing `OSAccess` and overriding the hooks.
 
 [`CallbackFile`][pydantic_monty.CallbackFile] read and write callbacks run in the host and can reach real resources.
 That is the point of it, but it means an `OSAccess` containing a `CallbackFile` is exactly as sandboxed as the callback

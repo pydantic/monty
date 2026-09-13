@@ -1212,6 +1212,21 @@ pub enum StaticStrings {
     /// `header` parameter of the `binascii` quoted-printable pair.
     #[strum(serialize = "header")]
     Header,
+
+    // ==========================
+    // `os` system-identity functions. Appended at the enum end like every
+    // block before it: discriminants are serialized `StringId`s, so inserting
+    // beside the earlier `os` names would shift every later serialized id.
+    /// `os.uname()` function.
+    Uname,
+    /// `os.cpu_count()` function.
+    CpuCount,
+    /// `os.getpid()` function.
+    Getpid,
+    /// `os.system()` function.
+    System,
+    /// `command` parameter of `os.system()`.
+    Command,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

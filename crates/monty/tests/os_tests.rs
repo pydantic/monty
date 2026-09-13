@@ -78,6 +78,10 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
             offset_seconds: None,
             timezone_name: None,
         }),
+        OsFunctionCall::Uname => monty_types::uname_result("Linux", "mock-host", "6.1.0", "#1 SMP", "x86_64"),
+        OsFunctionCall::CpuCount => MontyObject::Int(4),
+        OsFunctionCall::Getpid => MontyObject::Int(4242),
+        OsFunctionCall::System(_) => MontyObject::Int(0),
     }
 }
 
@@ -1153,6 +1157,135 @@ fn os_unsupported_path_kinds() {
         (
             "import os\nos.remove(1)",
             "TypeError: remove: path should be string, bytes or os.PathLike, not int",
+        ),
+    ];
+    for (code, expected) in cases {
+        assert_eq!(run_to_error(code), expected, "code: {code}");
+    }
+}
+
+#[test]
+fn os_system_identity_calls_suspend_with_no_args() {
+    // The host-answered identity calls: each yields its own variant with an
+    // empty arg projection, like the other non-FS calls.
+    for (code, expected_name) in [
+        ("import os\nos.uname()", "os.uname"),
+        ("import os\nos.cpu_count()", "os.cpu_count"),
+        ("import os\nos.getpid()", "os.getpid"),
+    ] {
+        let (func, args) = run_to_oscall(code);
+        assert_eq!(func, expected_name);
+        assert!(args.is_empty(), "{expected_name}");
+    }
+}
+
+#[test]
+fn os_uname_resume_returns_named_tuple() {
+    // The host's uname_result keeps its field names across the boundary, so
+    // sandbox code gets attribute access (u.sysname), not just indexing.
+    let (func, args, result) = run_oscall_with_result(
+        "import os\nu = os.uname()\nu.sysname",
+        monty_types::uname_result("Linux", "mock-host", "6.1.0", "#1 SMP", "x86_64"),
+    );
+    assert_eq!(func, "os.uname");
+    assert!(args.is_empty());
+    assert_eq!(result, MontyObject::String("Linux".to_owned()));
+}
+
+#[test]
+fn os_system_passes_command_to_host() {
+    // The command string crosses verbatim; the host's int answer becomes the
+    // exit status Python observes. Nothing is executed by the interpreter.
+    let (func, args, result) = run_oscall_with_result(
+        "import os\nos.system('apt-get install -y nothing')",
+        MontyObject::Int(0),
+    );
+    assert_eq!(func, "os.system");
+    assert_eq!(args, vec![MontyObject::String("apt-get install -y nothing".to_owned())]);
+    assert_eq!(result, MontyObject::Int(0));
+}
+
+#[test]
+fn os_system_carries_cwd_kwarg_to_host() {
+    // the VM's working directory rides along as a kw-only arg so hosts can
+    // run the command in the sandbox's current directory — a non-default cwd
+    // proves the value is propagated, not defaulted
+    let function_call = run_to_oscall_in("import os\nos.system('ls')", "/workdir");
+    assert_eq!(function_call.name(), "os.system");
+    let (args, kwargs) = function_call.to_args();
+    assert_eq!(args, vec![MontyObject::String("ls".to_owned())]);
+    assert_eq!(
+        kwargs,
+        vec![(
+            MontyObject::String("cwd".to_owned()),
+            MontyObject::String("/workdir".to_owned())
+        )]
+    );
+}
+
+#[test]
+fn os_identity_calls_fail_closed_with_no_handler() {
+    // the obvious-safety property: a host that declines (not_handled) makes
+    // every new call raise the no-handler error — never a fabricated
+    // success. os.system in particular can never be smuggled into doing
+    // anything by calling it uninvited: declining it is the safe default.
+    let cases = [
+        "import os\nos.uname()",
+        "import os\nos.cpu_count()",
+        "import os\nos.getpid()",
+        "import os\nos.system('ls')",
+    ];
+    for code in cases {
+        let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let progress = runner
+            .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap();
+        let RunProgress::OsCall(call) = progress else {
+            panic!("expected OsCall for {code}");
+        };
+        // the parent's decline: the call's own no-handler exception
+        let decline = call.function_call.on_no_handler();
+        let error = call
+            .resume(ExtFunctionResult::Error(decline), PrintWriter::Stdout)
+            .err()
+            .unwrap_or_else(|| panic!("expected the no-handler error for {code}"));
+        assert!(
+            error.to_string().ends_with("is not supported in this environment"),
+            "{code}: {error}"
+        );
+    }
+}
+
+#[test]
+fn os_system_accepts_bytes_and_pathlike_commands() {
+    // CPython's converter takes str/bytes/PathLike; bytes cross as their
+    // utf-8 text (lossily decoded — sandbox strings cannot hold surrogates).
+    let (func, args, _result) = run_oscall_with_result("import os\nos.system(b'apt-get update')", MontyObject::Int(0));
+    assert_eq!(func, "os.system");
+    assert_eq!(args, vec![MontyObject::String("apt-get update".to_owned())]);
+
+    let (func, args, _result) = run_oscall_with_result(
+        "import os\nfrom pathlib import Path\nos.system(Path('/usr/bin/true'))",
+        MontyObject::Int(0),
+    );
+    assert_eq!(func, "os.system");
+    assert_eq!(args, vec![MontyObject::String("/usr/bin/true".to_owned())]);
+}
+
+#[test]
+fn os_system_wordings_match_cpython() {
+    let cases = [
+        (
+            "import os\nos.system()",
+            "TypeError: system() missing required argument 'command' (pos 1)",
+        ),
+        (
+            "import os\nos.system('x', foo=1)",
+            "TypeError: system() takes at most 1 argument (2 given)",
+        ),
+        (
+            "import os\nos.system('a', 'b')",
+            "TypeError: system() takes at most 1 argument (2 given)",
         ),
     ];
     for (code, expected) in cases {

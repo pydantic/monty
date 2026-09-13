@@ -39,7 +39,7 @@ pub use crate::{
     },
     os::{
         GetenvArgs, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-        RenameCallArgs, dir_stat, file_stat, stat_result, symlink_stat,
+        RenameCallArgs, SystemCallArgs, dir_stat, file_stat, stat_result, symlink_stat, uname_result,
     },
     resource::{
         BASELINE_MEMORY, DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MAX_SUSPENSIONS, LARGE_RESULT_THRESHOLD, LIVE_MEMORY,

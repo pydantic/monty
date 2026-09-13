@@ -510,6 +510,22 @@ enum Pending {
     Futures,
 }
 
+/// Decodes a wire `OsCall` arm into the surfaced `(function_name, typed call)`.
+///
+/// The `None` arm is the forward-compat case: a NEWER child speaking an arm
+/// this parent doesn't know. It surfaces as the unnameable `os.unknown` (with
+/// no typed call), which the mounts skip and the `os` handler declines —
+/// version skew degrades to the child's own no-handler error instead of
+/// killing the session. A KNOWN arm with a malformed payload stays a violation.
+pub(crate) fn decode_os_call(
+    call: Option<pb::os_call::Call>,
+) -> Result<(String, Option<Box<OsFunctionCall>>), monty_proto::ProtoConvertError> {
+    match call {
+        None => Ok(("os.unknown".to_owned(), None)),
+        Some(kind) => OsFunctionCall::try_from(kind).map(|call| (call.name().to_owned(), Some(Box::new(call)))),
+    }
+}
+
 impl Checkout {
     /// Sends `Configure` on a fresh worker (the worker materializes the repl
     /// lazily on the first feed, or restores one via `load_snapshot` instead).
@@ -755,10 +771,11 @@ impl Checkout {
         let Some(Pending::Call { os_call, .. }) = &mut self.pending else {
             return Err(PoolError::Protocol("no suspended call to resume".into()));
         };
+        // An unknown-arm call (a newer child; see the decode above) has no
+        // typed call for the mounts to route — skip them and let the caller's
+        // `os` handler decline it, degrading to the child's no-handler error.
         let Some(call) = os_call.take() else {
-            return Err(PoolError::Protocol(
-                "resume_from_mounts is only valid answering an OS call".into(),
-            ));
+            return Ok(None);
         };
         // The call is *moved* into the table so a covered write's payload
         // reaches overlay storage without a copy; an uncovered call comes back
@@ -1345,24 +1362,31 @@ impl Checkout {
                     // `restore`) decodes into a typed `OsFunctionCall`; a
                     // payload the child could never legitimately produce is a
                     // protocol violation.
-                    let function_call = match call.call {
-                        None => return Err(self.protocol_violation("OsCall event with no call")),
-                        Some(kind) => match OsFunctionCall::try_from(kind) {
-                            Ok(function_call) => function_call,
-                            Err(err) => {
-                                return Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
-                            }
-                        },
+                    //
+                    // EXCEPT the forward-compat case: an arm this parent
+                    // doesn't know (a NEWER child) decodes as `None`. That is
+                    // not malformation, it is version skew — surface it as an
+                    // unnameable call the mounts skip and the `os` handler
+                    // declines, so the child raises its own no-handler error
+                    // and the session survives the skew.
+                    let (function_name, function_call) = decode_os_call(call.call)
+                        .map_err(|err| self.protocol_violation(format!("invalid OS call payload: {err}")))?;
+                    // Every OS call surfaces, mount-covered or not: the caller
+                    // decides how to answer it, and reaches this feed's mounts
+                    // through `resume_from_mounts`. The typed call is retained
+                    // for that; the caller-facing `(name, args, kwargs)` shape
+                    // is projected from a clone.
+                    let (args, kwargs) = match &function_call {
+                        Some(call) => {
+                            let (args, kwargs) = call.clone().to_args();
+                            (args, kwargs)
+                        }
+                        None => (vec![], vec![]),
                     };
-                    // The caller can answer any OS call or use `resume_from_mounts`.
-                    // Retain the raw typed call for mount validation; `to_args`
-                    // normalizes only the clone presented to callbacks.
-                    let function_name = function_call.name().to_owned();
-                    let (args, kwargs) = function_call.clone().to_args();
                     self.pending = Some(Pending::Call {
                         call_id,
                         function_name: function_name.clone(),
-                        os_call: Some(Box::new(function_call)),
+                        os_call: function_call,
                     });
                     return Ok(ControlEvent::Turn(TurnEvent::OsCall {
                         function_name,
@@ -1773,4 +1797,37 @@ fn build_mount_table(mounts: Vec<MountSpec>) -> MountTable {
         table.push_mount(mount);
     }
     table
+}
+
+#[cfg(test)]
+mod os_call_decode {
+    //! Unit tests for the parent's os-call decode — the forward-compat seam
+    //! between a newer child's arms and this parent's policy.
+
+    use super::*;
+
+    #[test]
+    fn known_arm_decodes_typed() {
+        let (name, call) = decode_os_call(Some(pb::os_call::Call::Uname(pb::Unit {}))).unwrap();
+        assert_eq!(name, "os.uname");
+        assert!(call.is_some());
+        assert_eq!(call.unwrap().name(), "os.uname");
+    }
+
+    #[test]
+    fn unknown_arm_is_version_skew_not_violation() {
+        // a NEWER child's arm this parent cannot name decodes to `None`
+        let (name, call) = decode_os_call(None).unwrap();
+        assert_eq!(name, "os.unknown");
+        assert!(call.is_none()); // the mounts skip it; the os handler declines
+    }
+
+    #[test]
+    fn malformed_payload_is_a_violation() {
+        let getenv = pb::os_call::Getenv {
+            key: "K".into(),
+            default: None, // the wire requires a default value
+        };
+        assert!(decode_os_call(Some(pb::os_call::Call::Getenv(getenv))).is_err());
+    }
 }

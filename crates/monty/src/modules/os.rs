@@ -2,9 +2,11 @@
 //!
 //! Environment access (`getenv`, `environ`), filesystem wrappers (`listdir`,
 //! `stat`, `mkdir`, `makedirs`, `remove`, `unlink`, `rmdir`, `rename`,
-//! `replace`), the pure `fspath`, and the POSIX path constants (`sep`,
-//! `linesep`, `name`, ...). The sandbox always presents a POSIX view
-//! regardless of host OS, so the constants are fixed.
+//! `replace`), the pure `fspath`, the POSIX path constants (`sep`,
+//! `linesep`, `name`, ...), the VM-owned working directory (`getcwd`,
+//! `getcwdb`, `chdir`), and the host-answered system-identity calls
+//! (`uname`, `cpu_count`, `getpid`, `system`). The sandbox always
+//! presents a POSIX view regardless of host OS, so the constants are fixed.
 //!
 //! Filesystem functions never touch the host directly: they yield an
 //! [`OsFunctionCall`] (the same variants `pathlib.Path` methods use) for the
@@ -16,7 +18,7 @@
 //! parity but rejected with the `NotImplementedError` CPython raises on
 //! platforms without them — Monty never supports fd-relative paths.
 
-use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs};
+use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs, SystemCallArgs};
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
@@ -27,7 +29,7 @@ use crate::{
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     object_bridge::MontyObjectExt,
-    os_dispatch::{PreConversionEffect, value_to_owned_string},
+    os_dispatch::{PreConversionEffect, value_to_owned_bytes, value_to_owned_string},
     types::{Bytes, Module, Property, Type, property::ZeroArgOsProperty, str::allocate_string},
     value::Value,
     virtual_path::posix_join,
@@ -51,6 +53,11 @@ pub(crate) enum OsFunctions {
     Getcwd,
     Getcwdb,
     Chdir,
+    Uname,
+    #[strum(serialize = "cpu_count")]
+    CpuCount,
+    Getpid,
+    System,
 }
 
 /// Creates the `os` module and allocates it on the heap.
@@ -83,6 +90,10 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         (StaticStrings::Getcwdb, function(OsFunctions::Getcwdb)),
         (StaticStrings::Chdir, function(OsFunctions::Chdir)),
         (StaticStrings::OsFspath, function(OsFunctions::Fspath)),
+        (StaticStrings::Uname, function(OsFunctions::Uname)),
+        (StaticStrings::CpuCount, function(OsFunctions::CpuCount)),
+        (StaticStrings::Getpid, function(OsFunctions::Getpid)),
+        (StaticStrings::System, function(OsFunctions::System)),
         // os.environ — property that yields the host environment as a dict.
         (
             StaticStrings::Environ,
@@ -126,6 +137,10 @@ pub(super) fn call(vm: &mut VM<'_>, functions: OsFunctions, args: ArgValues) -> 
         OsFunctions::Getcwd => getcwd(vm, args),
         OsFunctions::Getcwdb => getcwdb(vm, args),
         OsFunctions::Chdir => chdir(vm, args),
+        OsFunctions::Uname => uname(vm, args),
+        OsFunctions::CpuCount => cpu_count(vm, args),
+        OsFunctions::Getpid => getpid(vm, args),
+        OsFunctions::System => system(vm, args),
     }
 }
 
@@ -493,6 +508,73 @@ fn fspath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
             Err(ExcType::type_error_fspath(&type_name))
         }
     }
+}
+
+// =============================================================================
+// System-identity functions — host-answered, no filesystem involvement.
+// =============================================================================
+
+/// Implementation of `os.uname()` — the host answers with the 5-field
+/// `uname_result` (sysname, nodename, release, version, machine).
+///
+/// With no handler the call raises the generic no-handler `RuntimeError`, so
+/// sandbox code can detect the capability instead of a missing attribute.
+fn uname(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    args.check_zero_args("posix.uname", vm.heap)?;
+    Ok(CallResult::OsCall(OsFunctionCall::Uname))
+}
+
+/// Implementation of `os.cpu_count()` — host-answered.
+fn cpu_count(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    args.check_zero_args("posix.cpu_count", vm.heap)?;
+    Ok(CallResult::OsCall(OsFunctionCall::CpuCount))
+}
+
+/// Implementation of `os.getpid()` — host-answered.
+fn getpid(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    args.check_zero_args("posix.getpid", vm.heap)?;
+    Ok(CallResult::OsCall(OsFunctionCall::Getpid))
+}
+
+/// `os.system(command)` argument shape — clinic-parsed positional-only,
+/// matching CPython's `system() missing required argument 'command' (pos 1)`
+/// and `system() takes at most 1 argument (2 given)` wordings.
+#[derive(FromArgs)]
+#[from_args(name = "system", style = c_named, at_most_total)]
+struct SystemArgs {
+    command: Value,
+}
+
+/// Implementation of `os.system(command)`.
+///
+/// The command string is handed to the host verbatim and the interpreter
+/// never executes anything: the host alone decides what the command means
+/// and answers with the exit-status int sandbox code should observe. With no
+/// handler this FAILS CLOSED — the sandbox raises the no-handler error,
+/// never a fake success.
+///
+/// CPython accepts `str`, `bytes` and `os.PathLike` commands (the `U:system`
+/// converter wording has no function prefix); `bytes` are decoded lossily —
+/// see `limitations/os.md`.
+fn system(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let SystemArgs { command } = SystemArgs::from_args(args, vm)?;
+    defer_drop!(command, vm);
+    let command = if let Some(s) = value_to_owned_string(command, vm.heap, vm.interns) {
+        s
+    } else if let Some(b) = value_to_owned_bytes(command, vm.heap, vm.interns) {
+        String::from_utf8_lossy(&b).into_owned()
+    } else {
+        let type_name = command.py_type_name_heap(vm.heap, vm.interns).into_owned();
+        return Err(ExcType::type_error(format!(
+            "expected str, bytes or os.PathLike object, not {type_name}"
+        )));
+    };
+    Ok(CallResult::OsCall(OsFunctionCall::System(SystemCallArgs {
+        command,
+        // the VM's working directory rides along so the host can run the
+        // command where the sandbox is, not where the host happens to be
+        cwd: vm.env.cwd.to_string(),
+    })))
 }
 
 /// Extracts a virtual path from a `str`/`Path` value for an os function,

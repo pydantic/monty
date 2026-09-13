@@ -20,6 +20,7 @@ See [filesystem access](../../filesystem.md) for how these fit together.
             - MemoryFile
             - CallbackFile
             - StatResult
+            - uname_result
             - MontyFileHandle
             - OsHandler
             - OsFunction

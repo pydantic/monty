@@ -19,6 +19,7 @@ __all__ = (
     'CallbackFile',
     'OSAccess',
     'StatResult',
+    'uname_result',
     'path_from_arg',
 )
 
@@ -46,6 +47,10 @@ OsFunction = Literal[
     'os.environ',
     'date.today',
     'datetime.now',
+    'os.uname',
+    'os.cpu_count',
+    'os.getpid',
+    'os.system',
 ]
 
 
@@ -125,6 +130,31 @@ class StatResult(NamedTuple):
     """time of last change"""
 
 
+class uname_result(NamedTuple):
+    """Equivalent to the named tuple `os.uname()` returns.
+
+    Fields are also accessible by index (e.g. `u[0]`). Return this from an
+    `uname()` override; sandbox-side `repr` shows `uname_result(...)`, and
+    CPython's own is `posix.uname_result(...)` — the same divergence the
+    stat tuple has.
+    """
+
+    sysname: str
+    """Operating system name (e.g. `'Linux'`)."""
+
+    nodename: str
+    """Hostname."""
+
+    release: str
+    """Operating system release (e.g. `'6.8.0-45-generic'`)."""
+
+    version: str
+    """Kernel build string."""
+
+    machine: str
+    """Hardware identifier (e.g. `'x86_64'`)."""
+
+
 class AbstractOS(ABC):
     """Abstract base class for implementing virtual filesystems and host OS access.
 
@@ -133,6 +163,10 @@ class AbstractOS(ABC):
     with via `pathlib.Path`, `os`, `date.today()`, and `datetime.now()`.
 
     Pass an instance as the `os` parameter to `Monty.run()`.
+
+    The instance lives host-side: sandbox code never receives a reference to
+    it, so implementing these methods grants no capability until the host
+    passes the instance in — that pass is the capability grant.
     """
 
     def __call__(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
@@ -223,6 +257,14 @@ class AbstractOS(ABC):
                 return self.date_today()
             case 'datetime.now':
                 return self.datetime_now(*args)
+            case 'os.uname':
+                return self.uname()
+            case 'os.cpu_count':
+                return self.cpu_count()
+            case 'os.getpid':
+                return self.getpid()
+            case 'os.system':
+                return self.system(*args, **kwargs)
             case _:  # pyright: ignore[reportUnnecessaryComparison]
                 raise NotImplementedError(f'Unknown OS function: {function_name}')
 
@@ -544,6 +586,44 @@ class AbstractOS(ABC):
         any provided timezone through to `datetime.datetime.now()`.
         """
         return datetime.datetime.now(tz=tz)
+
+    def uname(self) -> uname_result:
+        """Return the system identity for Monty's `os.uname()` callback.
+
+        Override this to present a synthetic system. The default raises
+        `NotImplementedError`, which reports NOT_HANDLED — the sandbox then
+        raises `RuntimeError: 'os.uname' is not supported in this environment`.
+        """
+        raise NotImplementedError
+
+    def cpu_count(self) -> int:
+        """Return the CPU count for Monty's `os.cpu_count()` callback.
+
+        Override this to present a synthetic machine. The default raises
+        `NotImplementedError` (NOT_HANDLED).
+        """
+        raise NotImplementedError
+
+    def getpid(self) -> int:
+        """Return the process ID for Monty's `os.getpid()` callback.
+
+        Override this to present a synthetic process. The default raises
+        `NotImplementedError` (NOT_HANDLED).
+        """
+        raise NotImplementedError
+
+    def system(self, command: str, cwd: str = '.') -> int:
+        """Answer Monty's `os.system(command)` callback.
+
+        Nothing is ever executed by Monty itself — the command string arrives
+        here verbatim and the host alone decides what it means. `cwd` is the
+        sandbox's working directory at call time, so hosts can run the
+        command where the sandbox code is. Return the exit-status int sandbox
+        code should observe; raising an exception surfaces it inside the
+        sandbox. The default raises `NotImplementedError` (NOT_HANDLED), so
+        `os.system` stays unavailable unless the host opts in.
+        """
+        raise NotImplementedError
 
 
 class AbstractFile(Protocol):
