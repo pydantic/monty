@@ -260,7 +260,7 @@ class AbstractOS(ABC):
             case 'os.getpid':
                 return self.getpid()
             case 'os.system':
-                return self.system(*args)
+                return self.system(*args, **kwargs)
             case _:  # pyright: ignore[reportUnnecessaryComparison]
                 raise NotImplementedError(f'Unknown OS function: {function_name}')
 
@@ -608,15 +608,16 @@ class AbstractOS(ABC):
         """
         raise NotImplementedError
 
-    def system(self, command: str) -> int:
+    def system(self, command: str, cwd: str = '.') -> int:
         """Answer Monty's `os.system(command)` callback.
 
         Nothing is ever executed by Monty itself — the command string arrives
-        here verbatim and the host alone decides what it means. Return the
-        exit-status int sandbox code should observe; raising an exception
-        surfaces it inside the sandbox. The default raises
-        `NotImplementedError` (NOT_HANDLED), so `os.system` stays unavailable
-        unless the host opts in.
+        here verbatim and the host alone decides what it means. `cwd` is the
+        sandbox's working directory at call time, so hosts can run the
+        command where the sandbox code is. Return the exit-status int sandbox
+        code should observe; raising an exception surfaces it inside the
+        sandbox. The default raises `NotImplementedError` (NOT_HANDLED), so
+        `os.system` stays unavailable unless the host opts in.
         """
         raise NotImplementedError
 

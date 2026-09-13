@@ -690,9 +690,10 @@ def test_identity_hooks_default_not_handled():
         def uname(self) -> uname_result:
             return uname_result('Linux', 'test-host', '1.0', '#1', 'x86_64')
 
-        def system(self, command: str) -> int:
+        def system(self, command: str, cwd: str = '.') -> int:
             return 7
 
     host = WithOverrides()
     assert host(cast(OsFunction, 'os.uname'), ()) == uname_result('Linux', 'test-host', '1.0', '#1', 'x86_64')
     assert host(cast(OsFunction, 'os.system'), ('cmd',)) == 7
+    assert host(cast(OsFunction, 'os.system'), ('cmd',), {'cwd': '/tmp'}) == 7
