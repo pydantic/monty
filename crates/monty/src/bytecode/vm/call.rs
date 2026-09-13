@@ -237,6 +237,10 @@ impl VM<'_> {
     /// Pops the object, positional args, and keyword args from the stack,
     /// builds the appropriate `ArgValues`, and calls the attribute.
     /// Returns a `CallResult` which may indicate an OS or external call.
+    ///
+    /// Out-of-line: uncommon call shape; keeps `VM::run`'s dispatch loop
+    /// small (I-cache/register pressure).
+    #[inline(never)]
     pub(super) fn exec_call_attr_kw(
         &mut self,
         name_id: StringId,

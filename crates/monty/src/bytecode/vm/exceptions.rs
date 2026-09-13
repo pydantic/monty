@@ -245,6 +245,10 @@ impl VM<'_> {
     /// [`handle_exception`](Self::handle_exception) reusing an already-built
     /// exception instead of reallocating an identical one per level; this also
     /// preserves its identity, as CPython does. Owned: dropped if unused.
+    ///
+    /// Out-of-line: raise/unwind path expanded at many `catch_sync!` sites;
+    /// keeps `VM::run` small.
+    #[inline(never)]
     pub(super) fn handle_exception_with_value(
         &mut self,
         mut error: RunError,
@@ -443,6 +447,9 @@ impl VM<'_> {
     /// on the first match: an invalid element raises the `TypeError` even when an
     /// earlier element already matched (e.g. `except (TypeError, (ValueError,))`
     /// raising `TypeError` still raises the `TypeError` about catching classes).
+    ///
+    /// Out-of-line: only runs in `except` clauses; keeps `VM::run`'s dispatch loop small.
+    #[inline(never)]
     pub(super) fn check_exc_match(&self, exception: &Value, exc_type: &Value) -> Result<bool, RunError> {
         let exc_type_enum = exception.py_type(self);
         match exc_type {

@@ -169,6 +169,10 @@ impl VM<'_> {
     ///
     /// Uses `defer_drop!` for `mapping` (always dropped) and `DropGuard` for
     /// `dict_ref` (pushed back on success, dropped on error).
+    ///
+    /// Out-of-line: cold opcode; keeps `VM::run`'s dispatch loop
+    /// small (I-cache/register pressure).
+    #[inline(never)]
     pub(super) fn dict_merge(&mut self, func_name_id: u16) -> Result<(), RunError> {
         let func_name = func_name_for_dict_merge(func_name_id, self);
         self.dict_merge_inner(&func_name)
@@ -180,6 +184,10 @@ impl VM<'_> {
     /// kwargs_dict, mapping]`), since the call body hasn't issued any pops
     /// yet. Produces e.g. `list.sort() got multiple values for keyword
     /// argument 'key'` to match CPython.
+    ///
+    /// Out-of-line: cold opcode; keeps `VM::run`'s dispatch loop small
+    /// (I-cache/register pressure).
+    #[inline(never)]
     pub(super) fn method_dict_merge(&mut self, func_name_id: u16) -> Result<(), RunError> {
         let func_name = if func_name_id == 0xFFFF {
             "<unknown>".to_string()
@@ -527,6 +535,10 @@ impl VM<'_> {
     ///
     /// For example, `first, *rest, last = [1, 2, 3, 4, 5]` has before=1, after=1.
     /// After execution, the stack has: first (top), rest_list, last.
+    ///
+    /// Out-of-line: cold opcode; keeps `VM::run`'s dispatch loop small
+    /// (I-cache/register pressure).
+    #[inline(never)]
     pub(super) fn unpack_ex(&mut self, before: usize, after: usize) -> Result<(), RunError> {
         let this = self;
 
