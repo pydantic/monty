@@ -1,0 +1,19 @@
+crates/monty/src/dump_format.rs
+  s_cae9b6fccafbfa::t_72488fb3c4e42d 29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e9275be1c965c892064a990819b57baf5314f481",
+  "prompts": {},
+  "sessions": {
+    "s_cae9b6fccafbfa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e68a7f25-4b93-4b23-872f-faf46ae0ba92",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
