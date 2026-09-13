@@ -11,7 +11,7 @@ use crate::{
         NameScope, Node, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
-    intern::{InternerBuilder, StringId},
+    intern::{Interns, StringId},
     name_map::{NameMap, namespace_overflow},
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, RawFunctionDef, Try},
@@ -65,8 +65,8 @@ pub struct PrepareResult {
     /// The prepared AST nodes with all names resolved to namespace indices.
     /// Function definitions are inline as `PreparedFunctionDef` variants.
     pub nodes: Vec<PreparedNode>,
-    /// The string interner containing all interned identifiers and filenames.
-    pub interner: InternerBuilder,
+    /// The intern table containing all interned identifiers and filenames.
+    pub interns: Interns,
 }
 
 /// Prepares parsed nodes for compilation by resolving names and building the initial namespace.
@@ -74,13 +74,13 @@ pub struct PrepareResult {
 /// The namespace will be converted to runtime Objects when execution begins and the heap is available.
 /// At module level, the local namespace IS the global namespace.
 pub(crate) fn prepare(parse_result: ParseResult, input_names: Vec<String>) -> Result<PrepareResult, ParseError> {
-    let ParseResult { nodes, mut interner } = parse_result;
-    let mut globals = build_initial_globals(input_names, &mut interner)?;
-    let nodes = prepare_with_existing_names(nodes, &interner, &mut globals)?;
+    let ParseResult { nodes, mut interns } = parse_result;
+    let mut globals = build_initial_globals(input_names, &mut interns)?;
+    let nodes = prepare_with_existing_names(nodes, &interns, &mut globals)?;
     Ok(PrepareResult {
         globals,
         nodes,
-        interner,
+        interns,
     })
 }
 
@@ -92,7 +92,7 @@ pub(crate) fn prepare(parse_result: ParseResult, input_names: Vec<String>) -> Re
 /// (plus any slots already appended, which are stable and harmless).
 pub(crate) fn prepare_with_existing_names(
     nodes: Vec<ParseNode>,
-    interner: &InternerBuilder,
+    interner: &Interns,
     globals: &mut NameMap,
 ) -> Result<Vec<PreparedNode>, ParseError> {
     let mut prepared_nodes = Prepare::new_module(globals, interner).prepare_nodes(nodes)?;
@@ -120,7 +120,7 @@ pub(crate) fn prepare_with_existing_names(
 /// Returns a `ParseError` if more than `u16::MAX + 1` input names are
 /// supplied. Practically only reachable via misuse by the embedder, since
 /// `input_names` is supplied programmatically, not from user source.
-fn build_initial_globals(input_names: Vec<String>, interner: &mut InternerBuilder) -> Result<NameMap, ParseError> {
+fn build_initial_globals(input_names: Vec<String>, interner: &mut Interns) -> Result<NameMap, ParseError> {
     let mut globals = NameMap::with_capacity(input_names.len());
     for name in input_names {
         let name_id = interner.intern(&name);
@@ -141,7 +141,7 @@ fn build_initial_globals(input_names: Vec<String>, interner: &mut InternerBuilde
 /// allocated during prepare.
 struct Prepare<'i, 'g> {
     /// String interner for resolving names in error messages.
-    interner: &'i InternerBuilder,
+    interner: &'i Interns,
     /// Live mutable handle to the module's global [`NameMap`].
     ///
     /// At module scope this points to the same `NameMap` that PrepareState
@@ -512,7 +512,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// in `PrepareResult.globals`); the preparer borrows it via
     /// `GlobalsRef` so every nested function preparer can extend it
     /// in-place when new globals are discovered.
-    fn new_module(globals: &'g mut NameMap, interner: &'i InternerBuilder) -> Self {
+    fn new_module(globals: &'g mut NameMap, interner: &'i Interns) -> Self {
         Self {
             interner,
             globals: GlobalsRef { globals },
@@ -553,7 +553,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         globals: GlobalsRef<'g>,
         enclosing_locals: AHashSet<StringId>,
         cell_var_names: &AHashSet<StringId>,
-        interner: &'i InternerBuilder,
+        interner: &'i Interns,
     ) -> Result<Self, ParseError> {
         // Reject duplicate parameter names while building `locals`.
         // Ruff's parser accepts `def f(x, x)` that CPython rejects at
@@ -2290,11 +2290,7 @@ fn build_cell_slots(
 ///
 /// This information is used to determine whether each name reference should resolve
 /// to the local namespace, global namespace, or an enclosing scope via cells.
-fn collect_function_scope_info(
-    nodes: &[ParseNode],
-    params: &[StringId],
-    interner: &InternerBuilder,
-) -> FunctionScopeInfo {
+fn collect_function_scope_info(nodes: &[ParseNode], params: &[StringId], interner: &Interns) -> FunctionScopeInfo {
     let mut global_names = AHashSet::new();
     let mut nonlocal_names = AHashSet::new();
     let mut assigned_names = AHashSet::new();
@@ -2361,7 +2357,7 @@ fn collect_scope_info_from_node(
     global_names: &mut AHashSet<StringId>,
     nonlocal_names: &mut AHashSet<StringId>,
     assigned_names: &mut AHashSet<StringId>,
-    interner: &InternerBuilder,
+    interner: &Interns,
 ) {
     match node {
         Node::Global { names, .. } => {
@@ -2558,11 +2554,7 @@ fn collect_scope_info_from_node(
 /// Per PEP 572, walrus operator targets are assignments in the enclosing scope.
 /// This function recursively scans expressions to find all `Named` expression targets.
 /// It does NOT recurse into lambda bodies as those have their own scope.
-fn collect_assigned_names_from_expr(
-    expr: &ExprLoc,
-    assigned_names: &mut AHashSet<StringId>,
-    interner: &InternerBuilder,
-) {
+fn collect_assigned_names_from_expr(expr: &ExprLoc, assigned_names: &mut AHashSet<StringId>, interner: &Interns) {
     match &expr.expr {
         Expr::Named { target, value } => {
             // The target of a walrus operator is assigned in this scope
@@ -2678,11 +2670,7 @@ fn collect_assigned_names_from_expr(
 }
 
 /// Helper to collect assigned names from argument expressions.
-fn collect_assigned_names_from_args(
-    args: &ArgExprs,
-    assigned_names: &mut AHashSet<StringId>,
-    interner: &InternerBuilder,
-) {
+fn collect_assigned_names_from_args(args: &ArgExprs, assigned_names: &mut AHashSet<StringId>, interner: &Interns) {
     match args {
         ArgExprs::Empty => {}
         ArgExprs::One(arg) => collect_assigned_names_from_expr(arg, assigned_names, interner),
@@ -2754,7 +2742,7 @@ fn collect_cell_vars_from_node(
     node: &ParseNode,
     our_locals: &AHashSet<StringId>,
     cell_vars: &mut AHashSet<StringId>,
-    interner: &InternerBuilder,
+    interner: &Interns,
 ) {
     match node {
         Node::FunctionDef {
@@ -2897,7 +2885,7 @@ fn collect_cell_vars_from_function(
     body: &[ParseNode],
     our_locals: &AHashSet<StringId>,
     cell_vars: &mut AHashSet<StringId>,
-    interner: &InternerBuilder,
+    interner: &Interns,
 ) {
     // This nested function's *default* expressions are evaluated in OUR
     // scope at definition time, not inside the nested function — so any
@@ -3002,7 +2990,7 @@ fn collect_cell_vars_from_expr(
     expr: &ExprLoc,
     our_locals: &AHashSet<StringId>,
     cell_vars: &mut AHashSet<StringId>,
-    interner: &InternerBuilder,
+    interner: &Interns,
 ) {
     use crate::expressions::Expr;
     match &expr.expr {
@@ -3152,7 +3140,7 @@ fn collect_cell_vars_from_args(
     args: &ArgExprs,
     our_locals: &AHashSet<StringId>,
     cell_vars: &mut AHashSet<StringId>,
-    interner: &InternerBuilder,
+    interner: &Interns,
 ) {
     match args {
         ArgExprs::Empty => {}
@@ -3219,11 +3207,7 @@ fn collect_cell_vars_from_args(
 /// Collects all names referenced (read) in a node and its descendants.
 ///
 /// This is used to find what names a nested function references from enclosing scopes.
-fn collect_referenced_names_from_node(
-    node: &ParseNode,
-    referenced: &mut AHashSet<StringId>,
-    interner: &InternerBuilder,
-) {
+fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSet<StringId>, interner: &Interns) {
     match node {
         Node::Expr(expr) | Node::Return(Some(expr)) | Node::Raise(Some(expr)) => {
             collect_referenced_names_from_expr(expr, referenced, interner);
@@ -3377,7 +3361,7 @@ fn collect_nested_function_references(
     signature: &ParsedSignature,
     body: &[ParseNode],
     referenced: &mut AHashSet<StringId>,
-    interner: &InternerBuilder,
+    interner: &Interns,
 ) {
     // First collect everything the nested function references — this recurses
     // into still-deeper FunctionDefs via the same path, so the transitive
@@ -3405,7 +3389,7 @@ fn collect_nested_function_references(
     }
 }
 
-fn collect_referenced_names_from_expr(expr: &ExprLoc, referenced: &mut AHashSet<StringId>, interner: &InternerBuilder) {
+fn collect_referenced_names_from_expr(expr: &ExprLoc, referenced: &mut AHashSet<StringId>, interner: &Interns) {
     match &expr.expr {
         Expr::Name(ident) => {
             referenced.insert(ident.name_id);
@@ -3551,7 +3535,7 @@ fn collect_referenced_names_from_comprehension(
     elt: Option<&ExprLoc>,
     key_value: Option<(&ExprLoc, &ExprLoc)>,
     referenced: &mut AHashSet<StringId>,
-    interner: &InternerBuilder,
+    interner: &Interns,
 ) {
     // Track loop variable names (these are local to the comprehension)
     let mut comp_locals: AHashSet<StringId> = AHashSet::new();
@@ -3600,11 +3584,7 @@ fn collect_referenced_names_from_comprehension(
 }
 
 /// Collects referenced names from argument expressions.
-fn collect_referenced_names_from_args(
-    args: &ArgExprs,
-    referenced: &mut AHashSet<StringId>,
-    interner: &InternerBuilder,
-) {
+fn collect_referenced_names_from_args(args: &ArgExprs, referenced: &mut AHashSet<StringId>, interner: &Interns) {
     match args {
         ArgExprs::Empty => {}
         ArgExprs::One(e) => collect_referenced_names_from_expr(e, referenced, interner),
@@ -3671,7 +3651,7 @@ fn collect_referenced_names_from_args(
 fn collect_referenced_names_from_fstring_parts(
     parts: &[FStringPart],
     referenced: &mut AHashSet<StringId>,
-    interner: &InternerBuilder,
+    interner: &Interns,
 ) {
     for part in parts {
         if let FStringPart::Interpolation { expr, format_spec, .. } = part {
@@ -3709,7 +3689,7 @@ fn collect_names_from_unpack_target(target: &UnpackTarget, names: &mut AHashSet<
 fn collect_assigned_names_from_assign_target(
     target: &AssignTarget,
     assigned_names: &mut AHashSet<StringId>,
-    interner: &InternerBuilder,
+    interner: &Interns,
 ) {
     match target {
         AssignTarget::Name(ident) => {
@@ -3739,7 +3719,7 @@ fn collect_cell_vars_from_assign_target(
     target: &AssignTarget,
     our_locals: &AHashSet<StringId>,
     cell_vars: &mut AHashSet<StringId>,
-    interner: &InternerBuilder,
+    interner: &Interns,
 ) {
     match target {
         AssignTarget::Subscript { target, index, .. } => {
@@ -3761,7 +3741,7 @@ fn collect_cell_vars_from_assign_target(
 fn collect_referenced_names_from_assign_target(
     target: &AssignTarget,
     referenced: &mut AHashSet<StringId>,
-    interner: &InternerBuilder,
+    interner: &Interns,
 ) {
     match target {
         AssignTarget::Subscript { target, index, .. } => {

@@ -1416,172 +1416,27 @@ impl FunctionId {
     }
 }
 
-/// A string, bytes, and long integer interner that stores unique values and returns indices for lookup.
-///
-/// Interns are deduplicated on insertion - interning the same string twice returns
-/// the same `StringId`. Bytes and long integers are NOT deduplicated (rare enough that it's not worth it).
-/// The interner owns all strings/bytes/long integers and provides lookup by index.
-///
-/// # Thread Safety
-///
-/// The interner is not thread-safe. It's designed to be used single-threaded during
-/// parsing/preparation, then the values are accessed read-only during execution.
-#[derive(Debug, Default, Clone)]
-pub struct InternerBuilder {
-    /// Maps strings to their indices for deduplication during interning.
-    string_map: AHashMap<String, StringId>,
-    /// Storage for interned strings, indexed by `StringId`. Each entry pairs
-    /// the string with its precomputed [`HashValue`] (see [`WithHash`]) so
-    /// `str_hash(id)` is a plain index lookup at runtime.
-    strings: Vec<WithHash<String>>,
-    /// Storage for interned bytes literals, indexed by `BytesId`. Each
-    /// entry carries its precomputed [`HashValue`].
-    /// Not deduplicated since bytes literals are rare.
-    bytes: Vec<WithHash<Vec<u8>>>,
-    /// Storage for interned long integer literals, indexed by `LongIntId`.
-    /// Each entry carries its precomputed [`HashValue`].
-    /// Not deduplicated since long integer literals are rare.
-    long_ints: Vec<WithHash<BigInt>>,
-}
-
-impl InternerBuilder {
-    /// Creates a new string interner with pre-interned strings.
-    ///
-    /// Clones from a lazily-initialized base interner that contains all pre-interned
-    /// strings (`<module>`, attribute names, ASCII chars). This avoids rebuilding
-    /// the base set on every call.
-    ///
-    /// # Arguments
-    /// * `code` - The code being parsed, used for a very rough guess at how many
-    ///   additional strings will be interned beyond the base set.
-    ///
-    /// Pre-interns (via `BASE_INTERNER`):
-    /// - Index 0: `"<module>"` for module-level code
-    /// - Indices 1-MAX_ATTR_ID: Known attribute names (append, insert, get, join, etc.)
-    /// - Indices MAX_ATTR_ID+1..: ASCII single-character strings
-    pub fn new(code: &str) -> Self {
-        // Reserve capacity for code-specific strings
-        // Rough guess: count quotes and divide by 2 (open+close per string)
-        let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
-        Self {
-            string_map: AHashMap::with_capacity(capacity),
-            strings: Vec::with_capacity(capacity),
-            bytes: Vec::new(),
-            long_ints: Vec::new(),
-        }
-    }
-
-    /// Interns a string, returning its `StringId`.
-    ///
-    /// * If the string is ascii, return the pre-interned string id
-    /// * If the string is a known static string, return the pre-interned string id
-    /// * If the string was already interned, returns the existing string id
-    /// * Otherwise, stores the string and returns a new string id
-    pub fn intern(&mut self, s: &str) -> StringId {
-        intern_str(&mut self.string_map, &mut self.strings, s)
-    }
-
-    /// Looks up the `StringId` for a string already interned (or ascii/static).
-    ///
-    /// Mirrors [`Interns::get_string_id_by_name`] so the compiler can resolve
-    /// builtin names before the runtime table is built.
-    pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
-        get_string_id_by_name(&self.string_map, s)
-    }
-
-    /// Interns bytes, returning its `BytesId`.
-    ///
-    /// Unlike interns, bytes are not deduplicated (bytes literals are rare).
-    pub fn intern_bytes(&mut self, b: &[u8]) -> BytesId {
-        let id = BytesId(self.bytes.len().try_into().expect("BytesId overflow"));
-        self.bytes.push(WithHash::for_bytes(b.to_vec()));
-        id
-    }
-
-    /// Interns a long integer, returning its `LongIntId`.
-    ///
-    /// Big integers are not deduplicated since literals exceeding i64 are rare.
-    pub fn intern_long_int(&mut self, bi: BigInt) -> LongIntId {
-        let id = LongIntId(self.long_ints.len().try_into().expect("LongIntId overflow"));
-        self.long_ints.push(WithHash::for_long_int(bi));
-        id
-    }
-
-    /// Looks up a string by its `StringId`.
-    #[inline]
-    pub fn get_str(&self, id: StringId) -> &str {
-        get_str(&self.strings, id)
-    }
-}
-
-/// Interns `s` into a `string_map`/`strings` pair, shared by [`InternerBuilder`]
-/// and [`Interns`] so both tables allocate ids identically.
-///
-/// Single-ASCII and [`StaticStrings`] values resolve to their reserved ids
-/// without touching the pool; everything else is deduplicated via `string_map`.
-fn intern_str(string_map: &mut AHashMap<String, StringId>, strings: &mut Vec<WithHash<String>>, s: &str) -> StringId {
-    if s.len() == 1 {
-        StringId::from_ascii(s.as_bytes()[0])
-    } else if let Ok(ss) = StaticStrings::from_str(s) {
-        ss.into()
-    } else {
-        *string_map.entry(s.to_owned()).or_insert_with(|| {
-            let string_id = strings.len() + INTERN_STRING_ID_OFFSET;
-            let id = StringId(string_id.try_into().expect("StringId overflow"));
-            strings.push(WithHash::for_str(s.to_owned()));
-            id
-        })
-    }
-}
-
-/// Reverse of [`get_str`]: the `StringId` for `s`, or `None` if never interned.
-///
-/// Single ASCII char and [`StaticStrings`] ids live in reserved slot ranges
-/// below [`INTERN_STRING_ID_OFFSET`], never in `string_map` — the cheap
-/// branches come first.
-fn get_string_id_by_name(string_map: &AHashMap<String, StringId>, s: &str) -> Option<StringId> {
-    if s.len() == 1 {
-        Some(StringId::from_ascii(s.as_bytes()[0]))
-    } else if let Ok(ss) = StaticStrings::from_str(s) {
-        Some(ss.into())
-    } else {
-        string_map.get(s).copied()
-    }
-}
-
-/// Looks up a string by its `StringId`.
-///
-/// # Panics
-///
-/// Panics if the `StringId` is invalid - not from this interner or ascii chars or StaticStrings.
-fn get_str(strings: &[WithHash<String>], id: StringId) -> &str {
-    if let Some(ascii_str) = ASCII_STRS.get(id.index()) {
-        ascii_str
-    } else if let Some(intern_index) = id.index().checked_sub(INTERN_STRING_ID_OFFSET) {
-        strings[intern_index].value()
-    } else {
-        let static_str = StaticStrings::from_string_id(id).expect("Invalid static string ID");
-        static_str.into()
-    }
-}
-
 /// Storage for interned strings, bytes, long integers and compiled functions.
 ///
-/// This provides lookup by `StringId`, `BytesId`, `LongIntId` and `FunctionId` for interned literals and functions.
+/// One table serves the whole pipeline: the parser interns names and literals
+/// into it, the compiler appends [`Function`]s, and the VM reads it during
+/// execution. Strings are deduplicated on insertion; bytes and long integers
+/// are not (literals are rare).
 ///
 /// # Append-only ownership in the REPL
 ///
 /// Ids are stable and only ever appended, so a REPL session never copies this
-/// table: it hands it to each snippet via [`into_builder`](Self::into_builder)
-/// (or extends it in place with [`intern`](Self::intern)) and takes the extended
-/// table back afterwards — whether the snippet succeeded or not.
+/// table: each snippet parses and compiles against the session's table in
+/// place, whether the snippet succeeds or not. Only the function table is
+/// rolled back on a failed compile (see
+/// [`truncate_functions`](Self::truncate_functions)); ids appended by a failed
+/// parse are unreferenced and harmless.
 ///
 /// # Hash tables
 ///
 /// Each entry in `strings`/`bytes`/`long_ints` is a [`WithHash`] pairing
 /// the value with its precomputed [`HashValue`] — populated eagerly at
-/// intern time by [`InternerBuilder`]. `str_hash` / `bytes_hash` /
-/// `long_int_hash` are plain index lookups.
+/// intern time. `str_hash` / `bytes_hash` / `long_int_hash` are plain index lookups.
 ///
 /// # Reverse string lookup
 ///
@@ -1646,7 +1501,7 @@ impl From<InternsWire> for Interns {
 
 /// Builds the `String → StringId` reverse map from the `strings` vector.
 ///
-/// Used both at fresh [`Interns::new`] time and after deserialization. The
+/// Used after deserialization. The
 /// ids start at [`INTERN_STRING_ID_OFFSET`] because slots `< OFFSET` are
 /// reserved for ASCII single-character strings and the [`StaticStrings`]
 /// table — those are handled by the cheap branches at the top of
@@ -1666,52 +1521,89 @@ fn build_string_id_by_name(strings: &[WithHash<String>]) -> AHashMap<String, Str
 }
 
 impl Interns {
-    /// Builds the runtime table from a finished parse/prepare interner and the
-    /// functions compiled against it.
-    pub fn new(interner: InternerBuilder, functions: Vec<Function>) -> Self {
-        // `InternerBuilder` already maintains the `String → StringId` map
-        // during the parse/prepare phase to deduplicate `intern` calls;
-        // we move it across so `Interns::get_string_id_by_name` doesn't
-        // have to rebuild the same table from `strings`.
+    /// Creates an empty table sized for the code about to be parsed.
+    ///
+    /// `code` gives a rough guess (half its quote count) at how many strings
+    /// will be interned beyond the reserved ASCII / static ranges.
+    pub(crate) fn with_capacity_for(code: &str) -> Self {
+        let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
         Self {
-            strings: interner.strings,
-            bytes: interner.bytes,
-            long_ints: interner.long_ints,
-            functions,
-            string_id_by_name: interner.string_map,
+            strings: Vec::with_capacity(capacity),
+            bytes: Vec::new(),
+            long_ints: Vec::new(),
+            functions: Vec::new(),
+            string_id_by_name: AHashMap::with_capacity(capacity),
         }
     }
 
-    /// Inverse of [`new`](Self::new): moves the tables back into a builder so
-    /// the next REPL snippet can parse against them, with the function table
-    /// alongside for the compiler to extend. Nothing is copied or rehashed.
-    pub(crate) fn into_builder(self) -> (InternerBuilder, Vec<Function>) {
-        let builder = InternerBuilder {
-            string_map: self.string_id_by_name,
-            strings: self.strings,
-            bytes: self.bytes,
-            long_ints: self.long_ints,
-        };
-        (builder, self.functions)
+    /// Interns a string, returning its `StringId`.
+    ///
+    /// Single-ASCII and [`StaticStrings`] values resolve to their reserved ids
+    /// without touching the pool; everything else is deduplicated via the
+    /// reverse map, so interning the same string twice returns the same id.
+    pub(crate) fn intern(&mut self, s: &str) -> StringId {
+        if s.len() == 1 {
+            StringId::from_ascii(s.as_bytes()[0])
+        } else if let Ok(ss) = StaticStrings::from_str(s) {
+            ss.into()
+        } else {
+            *self.string_id_by_name.entry(s.to_owned()).or_insert_with(|| {
+                let string_id = self.strings.len() + INTERN_STRING_ID_OFFSET;
+                let id = StringId(string_id.try_into().expect("StringId overflow"));
+                self.strings.push(WithHash::for_str(s.to_owned()));
+                id
+            })
+        }
     }
 
-    /// Interns a string directly into the runtime table.
-    ///
-    /// For synthetic REPL inputs that need a couple of ids (a filename, a
-    /// slot name) without going through a parse; same rules as
-    /// [`InternerBuilder::intern`].
-    pub(crate) fn intern(&mut self, s: &str) -> StringId {
-        intern_str(&mut self.string_id_by_name, &mut self.strings, s)
+    /// Interns bytes, returning its `BytesId`; not deduplicated (bytes literals are rare).
+    pub(crate) fn intern_bytes(&mut self, b: &[u8]) -> BytesId {
+        let id = BytesId(self.bytes.len().try_into().expect("BytesId overflow"));
+        self.bytes.push(WithHash::for_bytes(b.to_vec()));
+        id
+    }
+
+    /// Interns a long integer, returning its `LongIntId`; not deduplicated
+    /// (literals exceeding `i64` are rare).
+    pub(crate) fn intern_long_int(&mut self, bi: BigInt) -> LongIntId {
+        let id = LongIntId(self.long_ints.len().try_into().expect("LongIntId overflow"));
+        self.long_ints.push(WithHash::for_long_int(bi));
+        id
+    }
+
+    /// Appends a compiled function and returns its index, which is its `FunctionId`.
+    pub(crate) fn push_function(&mut self, function: Function) -> usize {
+        self.functions.push(function);
+        self.functions.len() - 1
+    }
+
+    /// Number of compiled functions; record it before a compile so
+    /// [`truncate_functions`](Self::truncate_functions) can roll back on failure.
+    pub(crate) fn functions_len(&self) -> usize {
+        self.functions.len()
+    }
+
+    /// Drops the functions appended since `len` was recorded, so a rejected
+    /// snippet cannot consume `FunctionId`s.
+    pub(crate) fn truncate_functions(&mut self, len: usize) {
+        self.functions.truncate(len);
     }
 
     /// Looks up a string by its `StringId`.
     ///
     /// # Panics
     ///
-    /// Panics if the `StringId` is invalid.
+    /// Panics if the `StringId` is invalid - not from this table, an ascii char or a `StaticStrings`.
     #[inline]
     pub fn get_str(&self, id: StringId) -> &str {
-        get_str(&self.strings, id)
+        if let Some(ascii_str) = ASCII_STRS.get(id.index()) {
+            ascii_str
+        } else if let Some(intern_index) = id.index().checked_sub(INTERN_STRING_ID_OFFSET) {
+            self.strings[intern_index].value()
+        } else {
+            let static_str = StaticStrings::from_string_id(id).expect("Invalid static string ID");
+            static_str.into()
+        }
     }
 
     /// Looks up bytes by their `BytesId`.
@@ -1834,6 +1726,14 @@ impl Interns {
     ///
     /// Returns `None` if the string was never interned.
     pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
-        get_string_id_by_name(&self.string_id_by_name, s)
+        // Single ASCII char and `StaticStrings` ids live in reserved ranges
+        // below `INTERN_STRING_ID_OFFSET`, never in the map.
+        if s.len() == 1 {
+            Some(StringId::from_ascii(s.as_bytes()[0]))
+        } else if let Ok(ss) = StaticStrings::from_str(s) {
+            Some(ss.into())
+        } else {
+            self.string_id_by_name.get(s).copied()
+        }
     }
 }

@@ -1098,15 +1098,14 @@ mod tests {
     use crate::{
         bytecode::Code,
         heap::{Heap, HeapReader},
-        intern::{InternerBuilder, Interns},
+        intern::Interns,
         run::VmEnv,
         types::LongInt,
     };
 
     /// Creates a minimal Interns for testing.
     fn create_test_interns() -> Interns {
-        let interner = InternerBuilder::new("");
-        Interns::new(interner, vec![])
+        Interns::default()
     }
 
     /// Creates a heap with a list and a LongInt index, bypassing into_value() demotion.
