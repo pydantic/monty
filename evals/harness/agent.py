@@ -8,13 +8,15 @@ API key.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage
 
-__all__ = ('CodeAgent', 'DryRunAgent', 'Reply', 'SubModel', 'extract_code', 'load_prompt')
+__all__ = ('CodeAgent', 'DryRunAgent', 'Reply', 'SubModel', 'extract_code', 'load_prompt', 'render_messages')
 
 PROMPTS_DIR = Path(__file__).parent.parent / 'prompts'
 
@@ -66,11 +68,15 @@ class CodeAgent:
 
     model: str
     system_prompt: str
+    tools: dict[str, Callable[..., Any]] = field(default_factory=dict)
+    """Tools the model calls directly, for tasks that split tools between model and code."""
     _agent: Agent[None, str] = field(init=False)
     _history: list[ModelMessage] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
-        self._agent = Agent(self.model, instructions=self.system_prompt, output_type=str)
+        self._agent = Agent(
+            self.model, instructions=self.system_prompt, output_type=str, tools=list(self.tools.values())
+        )
 
     async def respond(self, user_text: str) -> Reply:
         """Send one user turn and return the code the model wants executed."""
@@ -129,3 +135,16 @@ class SubModel:
         self.prompt_tokens += usage.input_tokens or 0
         self.completion_tokens += usage.output_tokens or 0
         return result.output
+
+    async def call_llm(self, messages: list[dict[str, str]]) -> str:
+        """Answer a conversation the sandbox assembled; the agent-loop host function.
+
+        Messages are rendered as `role: text` lines into one prompt, so the loop,
+        history and stop condition all live in the sandboxed code.
+        """
+        return await self.llm_query(render_messages(messages))
+
+
+def render_messages(messages: list[dict[str, str]]) -> str:
+    """Flatten `[{'role': ..., 'content': ...}]` into the single prompt `call_llm` sends."""
+    return '\n\n'.join(f'{m.get("role", "user")}: {m.get("content", "")}' for m in messages)

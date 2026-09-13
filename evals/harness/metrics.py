@@ -24,6 +24,7 @@ class METRIC:
     CODE_LINES = 'code_lines'
     MAX_NESTING = 'max_nesting'
     FOLLOW_UP_EXTERNAL_CALLS = 'follow_up_external_calls'
+    SNAPSHOTS = 'snapshots'
 
 
 class ATTR:

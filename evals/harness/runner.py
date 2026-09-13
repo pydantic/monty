@@ -29,9 +29,9 @@ from pydantic_evals.reporting import EvaluationReport
 
 from pydantic_monty import MontyTypingError
 
-from .agent import CodeAgent, DryRunAgent, Reply, SubModel, load_prompt
+from .agent import CodeAgent, DryRunAgent, Reply, SubModel, load_prompt, render_messages
 from .classify import classify
-from .evaluators import DATASET_EVALUATORS
+from .evaluators import DATASET_EVALUATORS, expected_error_hit
 from .executor import ExecutionOutcome, MontyExecutor
 from .metrics import ATTR, METRIC, code_shape
 from .registry import all_tasks, load_task
@@ -94,14 +94,14 @@ class Solver:
         agent: _Agent = (
             DryRunAgent([task.reference_solution] + ([task.follow_up.reference_solution] if task.follow_up else []))
             if self.dry_run
-            else CodeAgent(model=self.model, system_prompt=system_prompt)
+            else CodeAgent(model=self.model, system_prompt=system_prompt, tools=task.model_tools)
         )
         turn_cap = 1 if (self.mode == 'single' or self.dry_run) else self.max_turns
         repl = self.mode == 'repl'
         sub_model = None if self.dry_run or task.sub_model_stub is None else SubModel(self.model)
         extra_tools = _llm_tools(task, sub_model)
 
-        async with MontyExecutor(task, extra_tools) as executor:
+        async with MontyExecutor(task, extra_tools, snapshot_at=task.snapshot_at) as executor:
             primary = await _drive(agent, executor, task.prompt, turn_cap, repl=repl)
             set_eval_attribute(ATTR.FIRST_ATTEMPT_RUNS, primary.first_attempt_ran)
             set_eval_attribute(ATTR.TYPE_CHECK_PASSED, primary.type_check_passed)
@@ -118,10 +118,15 @@ class Solver:
             increment_eval_metric(METRIC.EXTERNAL_CALLS, outcome.external_calls)
             increment_eval_metric(METRIC.CALL_BATCHES, outcome.call_batches)
             increment_eval_metric(METRIC.RESULT_BYTES, outcome.result_bytes)
+            increment_eval_metric(METRIC.SNAPSHOTS, executor.snapshots)
             set_eval_attribute(ATTR.CODE, outcome.code)
             set_eval_attribute(ATTR.ERROR, outcome.error_message)
+            if self.dry_run:
+                # No model to call `model_tools`, so replay the calls the reference relies on.
+                for name, kwargs in task.reference_model_tool_calls:
+                    task.model_tools[name](**kwargs)
 
-            if task.follow_up is not None and outcome.ok:
+            if task.follow_up is not None and (outcome.ok or expected_error_hit(task, outcome.error_message)):
                 follow_up = await _drive(agent, executor, task.follow_up.prompt, turn_cap, repl=repl)
                 gaps += follow_up.gaps
                 if follow_up.outcome is None:
@@ -139,7 +144,7 @@ class Solver:
 
 
 def _llm_tools(task: Task, sub_model: SubModel | None) -> dict[str, Any]:
-    """The `llm_query` host function for an RLM-style task, or nothing for the rest."""
+    """The `llm_query` and `call_llm` host functions for a sub-model task, or nothing for the rest."""
     if task.sub_model_stub is None:
         return {}
     if sub_model is None:
@@ -149,8 +154,12 @@ def _llm_tools(task: Task, sub_model: SubModel | None) -> dict[str, Any]:
             await asyncio.sleep(STUB_LATENCY)
             return stub(prompt)
 
-        return {'llm_query': llm_query}
-    return {'llm_query': sub_model.llm_query}
+        async def call_llm(messages: list[dict[str, str]]) -> str:
+            await asyncio.sleep(STUB_LATENCY)
+            return stub(render_messages(messages))
+
+        return {'llm_query': llm_query, 'call_llm': call_llm}
+    return {'llm_query': sub_model.llm_query, 'call_llm': sub_model.call_llm}
 
 
 @dataclass

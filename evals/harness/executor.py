@@ -21,9 +21,12 @@ from types import TracebackType
 from typing import Any, Self
 
 from pydantic_monty import (
+    AsyncFunctionSnapshot,
     AsyncMonty,
     AsyncMontySession,
+    AsyncSnapshot,
     CollectStreams,
+    MontyComplete,
     MontyError,
     MontyRuntimeError,
     MontySyntaxError,
@@ -173,25 +176,45 @@ class MontyExecutor:
     is allowed to write.
     """
 
-    def __init__(self, task: Task, extra_tools: dict[str, Callable[..., Any]] | None = None) -> None:
+    def __init__(
+        self,
+        task: Task,
+        extra_tools: dict[str, Callable[..., Any]] | None = None,
+        *,
+        snapshot_at: str | None = None,
+    ) -> None:
         self._task = task
         self._extra_tools = extra_tools or {}
         """Host functions the runner supplies on top of the task's own, e.g. `llm_query`."""
+        self._snapshot_at = snapshot_at
+        """Sync host function at whose call the run is dumped and restored in a fresh session."""
         self._stack = AsyncExitStack()
+        self._pool: AsyncMonty | None = None
         self._session: AsyncMontySession | None = None
+        self._session_stack = AsyncExitStack()
         self.calls: list[CallRecord] = []
+        self.snapshots = 0
+        """Times the run was dumped and restored in a fresh session."""
 
     async def __aenter__(self) -> Self:
-        pool = await self._stack.enter_async_context(AsyncMonty())
-        self._session = await self._stack.enter_async_context(
-            pool.checkout(
+        self._pool = await self._stack.enter_async_context(AsyncMonty())
+        await self._checkout()
+        return self
+
+    async def _checkout(self) -> AsyncMontySession:
+        """Open a fresh session, closing the current one first; sessions are never shared."""
+        assert self._pool is not None
+        await self._session_stack.aclose()
+        self._session_stack = AsyncExitStack()
+        self._session = await self._session_stack.enter_async_context(
+            self._pool.checkout(
                 script_name=f'{self._task.name}.py',
                 limits=self._task.limits,
                 type_check=True,
                 type_check_stubs=self._task.stubs,
             )
         )
-        return self
+        return self._session
 
     async def __aexit__(
         self,
@@ -199,6 +222,7 @@ class MontyExecutor:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        await self._session_stack.aclose()
         await self._stack.__aexit__(exc_type, exc, tb)
 
     async def feed(self, code: str) -> ExecutionOutcome:
@@ -214,13 +238,16 @@ class MontyExecutor:
         started = time.perf_counter()
         outcome = ExecutionOutcome(code=code)
         try:
-            outcome.result = await self._session.feed_run(
-                code,
-                inputs=self._task.inputs or None,
-                external_lookup=self._wrapped_tools(),
-                print_callback=streams,
-                mount=self._task.mounts or None,
-            )
+            if self._snapshot_at is None:
+                outcome.result = await self._session.feed_run(
+                    code,
+                    inputs=self._task.inputs or None,
+                    external_lookup=self._wrapped_tools(),
+                    print_callback=streams,
+                    mount=self._task.mounts or None,
+                )
+            else:
+                outcome.result = await self._feed_with_snapshot(code, streams)
         except MontyError as exc:
             outcome.error = exc
         outcome.duration = time.perf_counter() - started
@@ -228,6 +255,37 @@ class MontyExecutor:
         outcome.stderr = ''.join(text for stream, text in streams.output if stream == 'stderr')
         outcome.calls = self.calls[before:]
         return outcome
+
+    async def _feed_with_snapshot(self, code: str, streams: CollectStreams) -> Any:
+        """Drive `code` by snapshots, moving it to a fresh session at every `snapshot_at` call.
+
+        Everything else resumes automatically. At the gate the suspended interpreter is
+        dumped, the session discarded, the dump restored elsewhere, and the gate's host
+        function answered there, which is what an approval or a worker restart looks like.
+        """
+        assert self._session is not None
+        tools = self._wrapped_tools()
+        gate = tools[self._snapshot_at or '']
+        snapshot: AsyncSnapshot = await self._session.feed_start(
+            code,
+            inputs=self._task.inputs or None,
+            external_lookup=tools,
+            print_callback=streams,
+            mount=self._task.mounts or None,
+        )
+        while not isinstance(snapshot, MontyComplete):
+            if isinstance(snapshot, AsyncFunctionSnapshot) and snapshot.function_name == self._snapshot_at:
+                state = snapshot.dump()
+                session = await self._checkout()
+                restored = await session.load_snapshot(
+                    state, external_lookup=tools, print_callback=streams, mount=self._task.mounts or None
+                )
+                assert isinstance(restored, AsyncFunctionSnapshot)
+                self.snapshots += 1
+                snapshot = await restored.resume({'return_value': gate(*snapshot.args, **snapshot.kwargs)})
+            else:
+                snapshot = await snapshot.resume_auto()
+        return snapshot.output
 
     def _wrapped_tools(self) -> dict[str, Callable[..., Any]]:
         tools = {**self._task.tools, **self._extra_tools}

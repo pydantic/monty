@@ -10,6 +10,7 @@ into assertions; each returns `{}` when the task pins nothing, so it is skipped.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -66,7 +67,8 @@ class Predicate(Evaluator[Task, Any, Any]):
         return EvaluationReason(passed, self.description)
 
     def get_default_evaluation_name(self) -> str:
-        return 'predicate'
+        # Named from the description so two predicates on one case get separate columns.
+        return 'predicate_' + re.sub(r'[^a-z0-9]+', '_', self.description.lower()).strip('_')[:40]
 
 
 @dataclass
@@ -75,10 +77,16 @@ class RunOutcome(Evaluator[Task, Any, Any]):
 
     def evaluate(self, ctx: EvaluatorContext[Task, Any, Any]) -> dict[str, EvaluationReason]:
         error = ctx.attributes.get(ATTR.ERROR)
-        return {
-            ATTR.FIRST_ATTEMPT_RUNS: EvaluationReason(bool(ctx.attributes.get(ATTR.FIRST_ATTEMPT_RUNS)), error),
+        # An error the task asked for is the run doing its job, not failing to run.
+        ran = bool(ctx.attributes.get(ATTR.FIRST_ATTEMPT_RUNS)) or expected_error_hit(ctx.inputs, error)
+        out = {
+            ATTR.FIRST_ATTEMPT_RUNS: EvaluationReason(ran, error),
             ATTR.TYPE_CHECK_PASSED: EvaluationReason(bool(ctx.attributes.get(ATTR.TYPE_CHECK_PASSED, True))),
         }
+        if ctx.inputs.expect_error is not None:
+            # The task wants a particular failure; getting it is the pass condition.
+            out['expected_error'] = EvaluationReason(expected_error_hit(ctx.inputs, error), error)
+        return out
 
 
 @dataclass
@@ -152,6 +160,11 @@ DATASET_EVALUATORS: tuple[Evaluator[Task, Any, Any], ...] = (
     FollowUp(),
 )
 """Applied to every case; each skips itself when the task pins nothing for it."""
+
+
+def expected_error_hit(task: Task, error: object) -> bool:
+    """Whether `error` (the rendered `Type: message` line) is the failure `task.expect_error` names."""
+    return task.expect_error is not None and isinstance(error, str) and error.startswith(f'{task.expect_error}:')
 
 
 def approx_equal(a: Any, b: Any, rel_tol: float, abs_tol: float) -> bool:

@@ -70,10 +70,37 @@ class Task:
     """Called before each attempt; required for any task whose tools keep state."""
 
     sub_model_stub: Callable[[str], str] | None = None
-    """Declares an RLM-style task: the runner adds an `llm_query(prompt)` host function.
+    """Declares a task with sub-model calls: the runner adds `llm_query(prompt)` and
+    `call_llm(messages)` host functions.
 
-    With a model it is backed by that model; under `--dry-run` this deterministic
+    With a model both are backed by that model; under `--dry-run` this deterministic
     stand-in answers instead, so it must understand the reference solution's prompts.
+    `call_llm` renders its messages as `role: text` lines before calling the stub.
+    """
+
+    expect_error: str | None = None
+    """Exception name the primary request is expected to end with, e.g. `MemoryError`.
+
+    The run then counts as having run, and the follow-up still goes ahead, so a task
+    can check that the session survives a resource limit.
+    """
+
+    model_tools: dict[str, Callable[..., Any]] = field(default_factory=dict)
+    """Tools only the model may call directly, never from sandbox code.
+
+    They are registered on the pydantic-ai agent as ordinary tools. `--dry-run` has
+    no model, so it replays `reference_model_tool_calls` after the reference code.
+    """
+
+    reference_model_tool_calls: tuple[tuple[str, dict[str, Any]], ...] = ()
+    """`(tool name, kwargs)` pairs the dry run invokes in place of a model calling `model_tools`."""
+
+    snapshot_at: str | None = None
+    """Name of a sync host function at which the executor snapshots the run.
+
+    On reaching the call the executor dumps the suspended interpreter, discards the
+    session, restores the dump in a fresh one and resumes with the function's result,
+    so the case proves the run survives moving between workers.
     """
 
     @property
