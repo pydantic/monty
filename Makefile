@@ -235,7 +235,6 @@ complete-tests: ## Fill in incomplete test expectations using CPython
 .PHONY: generate-unicode-type
 generate-unicode-type: ## Regenerate the str character-property tables from the current CPython
 	uv run scripts/gen_unicode_type.py
-	cargo +nightly fmt -p monty
 
 .PHONY: update-typeshed
 update-typeshed: ## Update vendored typeshed from upstream

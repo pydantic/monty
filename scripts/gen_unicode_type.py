@@ -4,7 +4,7 @@ of CPython's `unicodectype.c`, read from the running CPython so they share its U
 
 Every code point gets a record holding its full lower, upper, title and casefold mappings plus the flags
 behind the `str.is*()` predicates and `Final_Sigma`; identical records and identical 128-code-point blocks
-are shared. Run with `make generate-unicode-type`.
+are shared. The output is final, no rustfmt pass is needed; run with `make generate-unicode-type`.
 """
 
 import sys
@@ -108,7 +108,7 @@ def main() -> None:
         '    pub flags: u16,',
         '}',
         '',
-        'pub(super) static RECORDS: &[TypeRecord] = &[',
+        '#[rustfmt::skip] // one record per line\npub(super) static RECORDS: &[TypeRecord] = &[',
     ]
     for lower, upper, title, fold, flag in records:
         lines.append(
@@ -121,10 +121,12 @@ def main() -> None:
         lines.append('    "' + ''.join(f'\\u{{{ord(ch):x}}}' for ch in mapped) + '",')
     lines.append('];')
     lines.append('')
+    lines.append('#[rustfmt::skip]')
     lines.append(f'pub(super) static INDEX1: &[{int_type(max(index1))}] = &[')
     lines.extend(wrap(index1))
     lines.append('];')
     lines.append('')
+    lines.append('#[rustfmt::skip]')
     lines.append(f'pub(super) static INDEX2: &[{int_type(max(index2))}] = &[')
     lines.extend(wrap(index2))
     lines.append('];')
