@@ -348,6 +348,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          # `pyo3-ffi` bakes in the ABI of the interpreter it was built against, and
+          # free-threaded builds lay `PyObject` out differently. Without the version in
+          # the key every entry in this matrix shares one cache, breaking 3.14t
+          key: ${{ matrix.python-version }}
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
 
