@@ -568,7 +568,12 @@ fn system(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
             "expected str, bytes or os.PathLike object, not {type_name}"
         )));
     };
-    Ok(CallResult::OsCall(OsFunctionCall::System(SystemCallArgs { command })))
+    Ok(CallResult::OsCall(OsFunctionCall::System(SystemCallArgs {
+        command,
+        // the VM's working directory rides along so the host can run the
+        // command where the sandbox is, not where the host happens to be
+        cwd: vm.env.cwd.to_string(),
+    })))
 }
 
 /// Extracts a virtual path from a `str`/`Path` value for an os function,

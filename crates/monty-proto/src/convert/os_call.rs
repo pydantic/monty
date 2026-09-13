@@ -59,7 +59,10 @@ impl From<OsFunctionCall> for os_call::Call {
             OsFunctionCall::Uname => Self::Uname(Unit {}),
             OsFunctionCall::CpuCount => Self::CpuCount(Unit {}),
             OsFunctionCall::Getpid => Self::Getpid(Unit {}),
-            OsFunctionCall::System(a) => Self::System(os_call::System { command: a.command }),
+            OsFunctionCall::System(a) => Self::System(os_call::System {
+                command: a.command,
+                cwd: a.cwd,
+            }),
         }
     }
 }
@@ -116,7 +119,10 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             os_call::Call::Uname(_) => Self::Uname,
             os_call::Call::CpuCount(_) => Self::CpuCount,
             os_call::Call::Getpid(_) => Self::Getpid,
-            os_call::Call::System(s) => Self::System(SystemCallArgs { command: s.command }),
+            os_call::Call::System(s) => Self::System(SystemCallArgs {
+                command: s.command,
+                cwd: s.cwd,
+            }),
         })
     }
 }

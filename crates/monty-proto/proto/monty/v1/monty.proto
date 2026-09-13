@@ -755,9 +755,11 @@ message OsCall {
   }
   // os.system(command) — the command string passes through verbatim; the
   // host alone decides what to do with it and answers with the exit-status
-  // int sandbox code should observe.
+  // int sandbox code should observe. `cwd` is the VM's working directory at
+  // call time, so the host can run the command in the sandbox's place.
   message System {
     string command = 1;
+    string cwd = 2;
   }
 }
 

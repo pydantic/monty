@@ -1206,6 +1206,33 @@ fn os_system_passes_command_to_host() {
 }
 
 #[test]
+fn os_system_carries_cwd_kwarg_to_host() {
+    // the VM's working directory rides along as a kw-only arg so hosts can
+    // run the command in the sandbox's current directory
+    let runner = MontyRun::new(
+        "import os\nos.system('ls')".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected OsCall");
+    };
+    let (_, kwargs) = call.function_call.clone().to_args();
+    assert_eq!(
+        kwargs,
+        vec![(
+            MontyObject::String("cwd".to_owned()),
+            MontyObject::String("/".to_owned())
+        )]
+    );
+}
+
+#[test]
 fn os_identity_calls_fail_closed_with_no_handler() {
     // the obvious-safety property: a host that declines (not_handled) makes
     // every new call raise the no-handler error — never a fabricated

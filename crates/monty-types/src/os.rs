@@ -413,9 +413,14 @@ pub struct GetenvArgs {
 /// `os.system(command)` shape — the command is passed through verbatim; the
 /// host alone decides what (if anything) to do with it. Monty never executes
 /// it; a handler that chooses to is acting with its own full host authority.
+/// `cwd` is kw-only so [`ToArgs`](crate::args::ToArgs) emits it as a kwarg
+/// (matching CPython): the VM's working directory at call time, so hosts can
+/// run the command in the sandbox's current directory.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct SystemCallArgs {
     pub command: String,
+    #[from_args(kw_only)]
+    pub cwd: String,
 }
 
 // =============================================================================

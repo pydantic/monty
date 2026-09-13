@@ -886,11 +886,14 @@ pub mod os_call {
     }
     /// os.system(command) — the command string passes through verbatim; the
     /// host alone decides what to do with it and answers with the exit-status
-    /// int sandbox code should observe.
+    /// int sandbox code should observe. `cwd` is the VM's working directory at
+    /// call time, so the host can run the command in the sandbox's place.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct System {
         #[prost(string, tag = "1")]
         pub command: ::prost::alloc::string::String,
+        #[prost(string, tag = "2")]
+        pub cwd: ::prost::alloc::string::String,
     }
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
