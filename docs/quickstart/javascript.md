@@ -304,6 +304,8 @@ await using pool = await Monty.create()
 ```
 
 A bundler resolving the `browser` condition on the main entry point gets this build automatically.
+[`examples/antigravity`](https://github.com/pydantic/monty/tree/main/examples/antigravity) is a worked browser example,
+built with Vite.
 
 Differences from the native path:
 

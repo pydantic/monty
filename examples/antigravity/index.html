@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Monty antigravity</title>
+    <link rel="icon" href="./antigravity.svg" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>antigravity</h1>
+      <p>
+        After <a href="https://xkcd.com/353/">xkcd 353</a> and the
+        <a href="https://github.com/pyscript/examples/tree/main/antigravity">PyScript example</a>. The flight path is
+        computed by Python running in a Monty sandbox — WebAssembly, in a Web Worker, in this tab. The sandbox has no
+        DOM: it returns numbers and this page draws them.
+      </p>
+    </header>
+
+    <main>
+      <section class="stage">
+        <div id="canvas"></div>
+        <p class="status">
+          <button id="launch" type="button" disabled>Launch</button>
+          <span id="status">loading the sandbox…</span>
+        </p>
+      </section>
+
+      <section class="panel">
+        <label for="code">Sandbox code — edit it and launch again</label>
+        <textarea id="code" spellcheck="false"></textarea>
+        <label for="log">Output</label>
+        <pre id="log"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
