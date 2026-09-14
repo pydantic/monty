@@ -7,8 +7,8 @@
 //! properties of the `f64` it stores floats in, the Unicode range, and the
 //! fact that it has no install tree, no `__pycache__` and no command line.
 //! Structseqs describing CPython's C implementation (`hash_info`, `int_info`,
-//! `thread_info`, `flags`) are deliberately absent rather than fabricated;
-//! see `limitations/sys.md`.
+//! `thread_info`) are deliberately absent rather than fabricated; see
+//! `limitations/sys.md`.
 //!
 //! Under the `test-hooks` feature one callable is also exposed:
 //! - `setrecursionlimit(n)`: tighten the active recursion ceiling so fixtures

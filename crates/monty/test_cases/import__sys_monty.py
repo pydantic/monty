@@ -86,6 +86,15 @@ import sys as reimported_sys
 
 assert reimported_sys.argv == ['import__sys_monty.py']
 
+# CPython 3.14 carries three more flags outside the sequence; they describe the
+# GIL and thread-context machinery Monty has no equivalent of
+for missing_flag in ('gil', 'thread_inherit_context', 'context_aware_warnings'):
+    try:
+        getattr(sys.flags, missing_flag)
+        assert False, f'expected sys.flags.{missing_flag} to raise AttributeError'
+    except AttributeError as exc:
+        assert str(exc) == f"'sys.flags' object has no attribute '{missing_flag}'"
+
 # === Attributes describing CPython internals stay absent ===
 for missing in ('hash_info', 'int_info', 'thread_info', 'ps1', 'ps2'):
     try:

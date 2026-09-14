@@ -98,7 +98,10 @@ assert list(sys.builtin_module_names) == sorted(sys.builtin_module_names)
 
 # === sys.flags ===
 # Same 18 fields as CPython 3.14, in the same order
+# CPython keeps three further fields outside the sequence, so 18 is the length
+# on both engines
 assert len(sys.flags) == 18
+assert len(tuple(sys.flags)) == 18
 assert sys.flags[0] == sys.flags.debug
 assert sys.flags[-1] == sys.flags.int_max_str_digits
 assert sys.flags.debug == 0

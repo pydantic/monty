@@ -53,7 +53,12 @@ access raises `AttributeError`.
     `sys.dont_write_bytecode`, and `hash_randomization` is `0` because Monty
     seeds no hashes — CPython reports `1` by default. `int_max_str_digits` is
     `4300`, the limit Monty enforces, but there is no
-    `sys.set_int_max_str_digits` to change it.
+    `sys.set_int_max_str_digits` to change it. CPython 3.14 carries three
+    further fields *outside* the sequence — `gil`, `thread_inherit_context` and
+    `context_aware_warnings`, reachable by name but not by index and not
+    counted by `len()`. They describe the GIL and thread-context machinery
+    Monty does not have, so they raise `AttributeError`; the 18-element
+    sequence itself matches CPython's.
 - `sys.stdout` / `sys.stderr` — opaque marker objects with no methods. They
     cannot be written to via `.write()`, and `sys.stdout.flush()` and the rest
     raise `AttributeError`. They are useful only as `print(..., file=...)`,
