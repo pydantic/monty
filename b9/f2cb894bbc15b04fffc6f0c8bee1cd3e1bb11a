@@ -1,0 +1,22 @@
+docs/examples.md
+  s_d4e8bedce3c69b::t_7ec37bfc8330e2 110-111
+pyproject.toml
+  s_d4e8bedce3c69b::t_f2ed5dcbd512d3 181,184-186
+  s_d4e8bedce3c69b::t_580305668757cc 182-183,187-190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b9f2cb894bbc15b04fffc6f0c8bee1cd3e1bb11a",
+  "prompts": {},
+  "sessions": {
+    "s_d4e8bedce3c69b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20b5c1de-f094-4ef4-928e-a151ac7a8011",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
