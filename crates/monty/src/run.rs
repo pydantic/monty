@@ -273,7 +273,6 @@ pub(crate) struct Program {
     pub(crate) assert_repr_max_bytes: u32,
     /// The options the program was compiled with; `eval()` / `exec()` compile
     /// their snippets the same way.
-    #[serde(default)]
     pub(crate) options: CompileOptions,
     /// Clock serving `date.today()` / `datetime.now()` on the non-suspending
     /// path; `System` unless the embedder chose otherwise.

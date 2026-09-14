@@ -132,7 +132,6 @@ pub(crate) struct SerializedTaskFrame {
     #[serde(default)]
     pub is_initializer: bool,
     /// Frame namespace, owning its dict references (see `CallFrame.namespace`).
-    #[serde(default)]
     pub namespace: Option<Box<FrameNamespace>>,
 }
 

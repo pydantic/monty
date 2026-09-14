@@ -1496,7 +1496,6 @@ pub(crate) struct Interns {
     /// Every compiled `Code`'s instructions and constants, flattened into two
     /// session-wide arenas that each `Code` records a base into. Flat so a
     /// running frame carries bases rather than handles; see [`CodeArenas`].
-    #[serde(default)]
     arenas: CodeArenas,
     /// `str → StringId` reverse lookup for [`Self::get_string_id_by_name`];
     /// each key shares the `Rc<str>` allocation of its `strings` entry.
@@ -1517,9 +1516,7 @@ struct InternsWire {
     bytes: Vec<WithHash<Rc<[u8]>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Rc<Function>>,
-    #[serde(default)]
     eval_sources: Vec<(StringId, Arc<str>)>,
-    #[serde(default)]
     arenas: CodeArenas,
 }
 

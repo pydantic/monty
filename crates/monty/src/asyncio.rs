@@ -101,7 +101,6 @@ pub(crate) struct Coroutine {
     pub state: CoroutineState,
     /// Owned reference to the `exec()` / `eval()` globals dict the async
     /// function was defined under; `None` when its globals are module slots.
-    #[serde(default)]
     pub globals: Option<HeapId>,
 }
 impl Coroutine {

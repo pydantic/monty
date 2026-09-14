@@ -365,7 +365,6 @@ pub(crate) struct Closure {
     pub defaults: Box<[Value]>,
     /// Owned reference to the `exec()` / `eval()` globals dict the closure was
     /// defined under; `None` when its globals are module slots.
-    #[serde(default)]
     pub globals: Option<HeapId>,
 }
 
@@ -383,7 +382,6 @@ pub(crate) struct FunctionDefaults {
     pub defaults: Vec<Value>,
     /// Owned reference to the `exec()` / `eval()` globals dict the function
     /// was defined under; `None` when its globals are module slots.
-    #[serde(default)]
     pub globals: Option<HeapId>,
 }
 

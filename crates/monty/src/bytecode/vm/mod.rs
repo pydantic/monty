@@ -598,7 +598,6 @@ pub struct SerializedFrame {
 
     /// Frame namespace, with ownership of its dict references (see
     /// `CallFrame.namespace`).
-    #[serde(default)]
     namespace: Option<Box<FrameNamespace>>,
 }
 
