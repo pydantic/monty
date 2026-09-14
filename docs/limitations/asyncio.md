@@ -77,10 +77,12 @@ Either way the results are the same.
 
 `delay` accepts only real numbers, matching CPython's `delay <= 0`: an
 `__index__`-able class is rejected here although `time.sleep()` accepts it.
-A negative or NaN delay waits zero seconds instead of raising, as CPython
+A negative delay waits zero seconds instead of raising, as CPython
 effectively does, and one past ~9223372036.85 seconds is clamped to that
 maximum rather than raising the `OverflowError` `time.sleep()` raises (see
 [time.md](time.md)).
+A NaN delay raises CPython's `ValueError: Invalid delay: NaN (not a number)`,
+but at the call rather than at the `await`.
 
 ## Concurrency model
 

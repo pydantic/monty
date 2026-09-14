@@ -32,9 +32,16 @@ async def wait_then(value):
 assert await asyncio.gather(wait_then(1), wait_then(2), wait_then(3)) == [2, 4, 6]  # pyright: ignore
 
 # === delays CPython accepts unchanged ===
-# both return immediately rather than raising, as they do on CPython
+# a negative delay returns immediately rather than raising, as it does on CPython
 assert await asyncio.sleep(-5, 'negative') == 'negative'  # pyright: ignore
-assert await asyncio.sleep(float('nan'), 'nan') == 'nan'  # pyright: ignore
+
+# NaN is the one delay CPython refuses, though Monty raises it at the call
+# rather than at the await
+try:
+    await asyncio.sleep(float('nan'), 'nan')  # pyright: ignore
+    raise AssertionError('expected failure')
+except ValueError as exc:
+    assert str(exc) == 'Invalid delay: NaN (not a number)'
 
 # === signature errors ===
 check(lambda: asyncio.sleep(), "TypeError: sleep() missing 1 required positional argument: 'delay'")
