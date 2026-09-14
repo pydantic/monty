@@ -1,0 +1,19 @@
+crates/monty/src/bytecode/vm/async_exec.rs
+  s_8893e77bad01b6::t_bebba70f7db0dc 37-38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6ab0f6908b40e2c9cdbf58d3e2808f78956a1e9c",
+  "prompts": {},
+  "sessions": {
+    "s_8893e77bad01b6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "338e4b50-cd2d-42ec-bb5a-ea3da0310b6a",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
