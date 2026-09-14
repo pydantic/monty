@@ -1,30 +1,14 @@
 # `itertools` module
 
-Monty implements a small subset of `itertools`. The implemented callables match
-CPython 3.14 for arguments, values, `repr()` and error messages, apart from the
-notes below.
+Monty implements the whole of `itertools`, matching CPython 3.14 for
+arguments, values, `repr()` and error messages apart from the notes below.
 
 ## Implemented
 
-`count(start=0, step=1)`, `repeat(object, times=?)`, `pairwise(iterable)`,
-`compress(data, selectors)`, `islice(iterable, [start,] stop[, step])`,
-`chain(*iterables)`, `chain.from_iterable(iterable)`, `cycle(iterable)`,
-`takewhile(predicate, iterable)`, `dropwhile(predicate, iterable)`,
-`filterfalse(predicate, iterable)`, `starmap(function, iterable)`,
-`accumulate(iterable, func=None, *, initial=None)`,
-`batched(iterable, n, *, strict=False)`,
-`zip_longest(*iterables, fillvalue=None)`, `combinations(iterable, r)`,
-`combinations_with_replacement(iterable, r)`,
-`permutations(iterable, r=None)`, `product(*iterables, repeat=1)`,
-`groupby(iterable, key=None)`.
-
-## Not implemented
-
-`tee` is the only `itertools` callable Monty does not implement.
-
-It is absent from the module namespace rather than stubbed, so it is
-rejected at type-check time (`Module 'itertools' has no member 'tee'`) and
-raises `AttributeError` at runtime.
+Every name CPython's `itertools` exports, including the private
+`_grouper`, `_tee` and `_tee_dataobject`. As in CPython, all of them are type
+objects except `tee`, which is a plain function — so `isinstance(x, count)`,
+`type(x) is chain` and `chain[int]` all work.
 
 ## Behavioural divergences
 
@@ -88,11 +72,23 @@ raises `AttributeError` at runtime.
     `itertools.chain.from_iterable is itertools.chain.from_iterable` is `False`.
     Monty resolves the attribute to one function value, so the `repr` reads
     `<function from_iterable at 0x...>` and the identity check is `True`. The
-    attribute is also reachable only through the `chain` callable itself: an
+    attribute is also reachable only through the `chain` type itself: an
     instance does not carry it, so `itertools.chain([1]).from_iterable([[2]])`
     raises `AttributeError: 'itertools.chain' object has no attribute 'from_iterable'`
-    where CPython accepts it. The stub types it as a plain function for the same
-    reason.
+    where CPython accepts it. Its element type is also lost in type checking,
+    since the vendored typeshed stub declares it as a classmethod.
+- **The private types cannot be constructed.** `_grouper`, `_tee` and
+    `_tee_dataobject` are exposed under their CPython names, so `type()` and
+    `isinstance()` work, but calling one raises
+    `TypeError: cannot create 'itertools._tee' instances`. CPython builds them
+    from the arguments its internals use (`_tee([1, 2])` gives a working
+    iterator). They are only ever handed out by `groupby` and `tee` here.
+- **A discarded `tee` iterator still holds the buffer back.** Each iterator of
+    a group has a slot in the shared read-ahead, and buffered items are dropped
+    once every slot has passed them. A slot whose iterator is released keeps its
+    position, so the items it had not reached stay buffered until the whole
+    group goes. CPython releases them with the iterator. Values are unaffected,
+    only how long the memory is held.
 - **`groupby` never releases its source.** This matches CPython, but note that
     the [resource limits](resource_limits.md) apply to the skip between groups:
     a source whose key never changes (`groupby(repeat(1))`) makes the second

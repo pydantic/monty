@@ -270,6 +270,8 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::ItertoolsProduct,
             MontyType::ItertoolsGroupBy,
             MontyType::ItertoolsGrouper,
+            MontyType::ItertoolsTee,
+            MontyType::ItertoolsTeeDataObject,
             MontyType::Tuple,
             MontyType::Dict,
             MontyType::Set,
@@ -550,6 +552,8 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         MontyType::ItertoolsProduct => cached!("itertools", "product"),
         MontyType::ItertoolsGroupBy => cached!("itertools", "groupby"),
         MontyType::ItertoolsGrouper => cached!("itertools", "_grouper"),
+        MontyType::ItertoolsTee => cached!("itertools", "_tee"),
+        MontyType::ItertoolsTeeDataObject => cached!("itertools", "_tee_dataobject"),
         // Consistent with the Path *instance* arm, which marshals as PurePosixPath
         // and is instantiable on every host OS (unlike PosixPath on Windows).
         MontyType::Path => get_pure_posix_path(py).map(|b| b.clone().unbind()),

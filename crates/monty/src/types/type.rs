@@ -10,7 +10,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
-    modules::collections,
+    modules::{collections, itertools, itertools::ItertoolsFunctions},
     types::{
         Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Range, Set, Slice, Str,
         TimeZone, Tuple,
@@ -260,6 +260,15 @@ pub enum Type {
     /// `itertools._grouper`, named as such so `type()` matches.
     #[strum(serialize = "itertools._grouper")]
     ItertoolsGrouper,
+    /// The iterator `tee()` hands out — CPython's private `itertools._tee`,
+    /// which it nonetheless exposes on the module.
+    #[strum(serialize = "itertools._tee")]
+    ItertoolsTee,
+    /// The read-ahead buffer those iterators share, CPython's
+    /// `itertools._tee_dataobject`. Never reachable from Python except as
+    /// that name.
+    #[strum(serialize = "itertools._tee_dataobject")]
+    ItertoolsTeeDataObject,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -409,6 +418,9 @@ impl Type {
                 | Self::Partial
                 | Self::RePattern
                 | Self::ReMatch
+                // The one `itertools` type CPython gives a
+                // `__class_getitem__`; the rest reject a subscript.
+                | Self::ItertoolsChain
         )
     }
 
@@ -449,6 +461,8 @@ impl Type {
                 | Self::ItertoolsProduct
                 | Self::ItertoolsGroupBy
                 | Self::ItertoolsGrouper
+                | Self::ItertoolsTee
+                | Self::ItertoolsTeeDataObject
         )
     }
 
@@ -552,6 +566,10 @@ impl Type {
             (Self::DefaultDict, m) if m == StaticStrings::Fromkeys => {
                 dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value)
             }
+            // `chain.from_iterable(iterable)`, CPython's one classmethod here.
+            (Self::ItertoolsChain, m) if m == StaticStrings::FromIterable => {
+                itertools::call(vm, ItertoolsFunctions::ChainFromIterable, args).map(CallResult::Value)
+            }
             // Counter deliberately disables the inherited classmethod.
             (Self::Counter, m) if m == StaticStrings::Fromkeys => {
                 args.drop_with(vm);
@@ -632,6 +650,31 @@ impl Type {
             Self::Iterator => super::iter::init(vm, args),
             Self::Path => Path::init(vm, args),
             Self::Partial => Partial::init(vm, args),
+
+            // Every `itertools` name but `tee` is a type, as in CPython, so
+            // `isinstance(x, itertools.count)` and `type(x) is count` hold.
+            Self::ItertoolsCount
+            | Self::ItertoolsRepeat
+            | Self::ItertoolsPairwise
+            | Self::ItertoolsCompress
+            | Self::ItertoolsIslice
+            | Self::ItertoolsChain
+            | Self::ItertoolsCycle
+            | Self::ItertoolsTakeWhile
+            | Self::ItertoolsDropWhile
+            | Self::ItertoolsFilterFalse
+            | Self::ItertoolsStarMap
+            | Self::ItertoolsAccumulate
+            | Self::ItertoolsBatched
+            | Self::ItertoolsZipLongest
+            | Self::ItertoolsCombinations
+            | Self::ItertoolsCombinationsWithReplacement
+            | Self::ItertoolsPermutations
+            | Self::ItertoolsProduct
+            | Self::ItertoolsGroupBy
+            | Self::ItertoolsGrouper
+            | Self::ItertoolsTee
+            | Self::ItertoolsTeeDataObject => itertools::construct(self, vm, args),
 
             // Primitive types - inline implementation
             Self::Int => int_init(vm, args),

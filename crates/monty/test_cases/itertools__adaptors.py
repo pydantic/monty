@@ -217,12 +217,39 @@ try:
 except TypeError as exc:
     assert str(exc) == 'chain() takes no keyword arguments'
 
+# === The names are types ===
+# Every `itertools` name but `tee` is a class, as in CPython, so it works with
+# `isinstance`, compares equal to `type(...)`, and reprs as a class.
+assert isinstance(itertools.count(), itertools.count)
+assert isinstance(itertools.chain([1]), itertools.chain)
+assert isinstance(itertools.pairwise([1, 2]), itertools.pairwise)
+assert not isinstance(itertools.count(), itertools.repeat)
+assert not isinstance([1], itertools.count)
+assert type(itertools.cycle([1])) is itertools.cycle
+assert str(itertools.count) == "<class 'itertools.count'>"
+assert itertools.count.__name__ == 'count'
+assert itertools.zip_longest.__name__ == 'zip_longest'
+# `chain` is the one with a `__class_getitem__`, as in CPython.
+assert str(itertools.chain[int]) == 'itertools.chain[int]'
+try:
+    itertools.count[int]
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "type 'itertools.count' is not subscriptable"
+
+# The private types are exposed under their CPython names but cannot be built.
+assert str(itertools._grouper) == "<class 'itertools._grouper'>"
+assert isinstance(next(itertools.groupby([1]))[1], itertools._grouper)
+
 # === chain.from_iterable ===
 assert list(itertools.chain.from_iterable([[1, 2], [3], ()])) == [1, 2, 3]
 assert list(itertools.chain.from_iterable([])) == []
 assert list(itertools.chain.from_iterable('ab')) == ['a', 'b']
 assert list(itertools.chain.from_iterable(['ab', 'cd'])) == ['a', 'b', 'c', 'd']
 assert list(itertools.chain.from_iterable([[], [1], []])) == [1]
+# It can be bound and called later, not only called in place.
+bound_from_iterable = itertools.chain.from_iterable
+assert list(bound_from_iterable([[1], [2]])) == [1, 2]
 # The result is an ordinary chain.
 assert str(type(itertools.chain.from_iterable([]))) == "<class 'itertools.chain'>"
 from_iterable_iter = itertools.chain.from_iterable([[1]])

@@ -1032,6 +1032,19 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("Expected int as r")
     }
 
+    /// Creates the RuntimeError a `tee` raises when one of its iterators is
+    /// stepped from inside the source read of another.
+    #[must_use]
+    fn tee_reentered() -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, "cannot re-enter the tee iterator").into()
+    }
+
+    /// Creates the ValueError `itertools.tee` raises for a negative `n`.
+    #[must_use]
+    fn tee_negative_n() -> RunError {
+        Self::value_error("n must be >= 0")
+    }
+
     /// Creates the ValueError `itertools.product` raises for a negative `repeat`.
     #[must_use]
     fn product_negative_repeat() -> RunError {

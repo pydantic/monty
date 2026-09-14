@@ -241,9 +241,10 @@ ITERTOOLS_TYPES: list[tuple[type[object], str]] = [
 if sys.version_info >= (3, 12):
     ITERTOOLS_TYPES.append((itertools.batched, 'itertools.batched([1, 2], 1)'))
 
-# `itertools._grouper` is private and unexported, so it is reached through the
-# `groupby` that yields one rather than imported by name.
+# The private types are reached through what hands them out rather than by
+# name, since only CPython lets you build one directly.
 ITERTOOLS_TYPES.append((type(next(itertools.groupby([1]))[1]), 'next(itertools.groupby([1]))[1]'))
+ITERTOOLS_TYPES.append((type(itertools.tee([1])[0]), 'itertools.tee([1])[0]'))
 
 
 @pytest.mark.parametrize(('ty', 'build'), ITERTOOLS_TYPES, ids=[ty.__name__ for ty, _ in ITERTOOLS_TYPES])

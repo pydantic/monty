@@ -53,6 +53,14 @@ assert reenter(lambda s: itertools.zip_longest(s, [9, 8])) == [
     '([6], None)',
 ]
 
+# `tee` is the one that refuses: a source that steps any iterator of the group
+# from inside the read that fills its buffer would drive that read again.
+try:
+    reenter(lambda s: itertools.tee(s)[0])
+    assert False, 'expected RuntimeError'
+except RuntimeError as exc:
+    assert str(exc) == 'cannot re-enter the tee iterator'
+
 # `accumulate` folds into the total the nested step installed, not into the one
 # that was there when the round began.
 assert reenter(itertools.accumulate) == [

@@ -9,6 +9,7 @@ use std::mem;
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
+    builtins::Builtins,
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -17,69 +18,59 @@ use crate::{
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
     types::{
-        ItertoolsIter, Module, Type,
+        ItertoolsIter, Module, TupleVec, Type, allocate_tuple,
         iter::collect_owned_iterable,
         itertools::{
             Accumulate, Batched, Chain, Combinations, Compress, Count, Cycle, DropWhile, FilterFalse, GroupBy, Islice,
-            Pairwise, Permutations, Product, Repeat, StarMap, TakeWhile, ZipLongest,
+            Pairwise, Permutations, Product, Repeat, StarMap, TakeWhile, ZipLongest, tee,
         },
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
-/// `itertools` module functions — each variant is a Python-visible callable.
+/// The `itertools` callables that are not type objects.
+///
+/// CPython models all but one of this module's names as classes, and so does
+/// Monty — `itertools.count` IS `Type::ItertoolsCount`, constructed through
+/// [`construct`]. Only `tee` is a plain function there, and `from_iterable` is
+/// reached through the `chain` type rather than the module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum ItertoolsFunctions {
-    Count,
-    Repeat,
-    Pairwise,
-    Compress,
-    Islice,
-    Chain,
-    Cycle,
-    Takewhile,
-    Dropwhile,
-    Filterfalse,
-    Starmap,
-    Accumulate,
-    Batched,
-    ZipLongest,
-    Combinations,
-    CombinationsWithReplacement,
-    Permutations,
-    Product,
-    Groupby,
-    /// `chain.from_iterable`, reached as an attribute of `chain` rather than
-    /// from the module namespace — see [`function_getattr`].
+    Tee,
+    /// `chain.from_iterable`, an attribute of the `chain` type rather than a
+    /// name in the module — resolved by `Value::py_getattr`.
     #[strum(serialize = "from_iterable")]
     ChainFromIterable,
 }
 
-/// Static mapping of attribute names to functions for module creation.
-const ITERTOOLS_FUNCTIONS: &[(StaticStrings, ItertoolsFunctions)] = &[
-    (StaticStrings::Count, ItertoolsFunctions::Count),
-    (StaticStrings::Repeat, ItertoolsFunctions::Repeat),
-    (StaticStrings::Pairwise, ItertoolsFunctions::Pairwise),
-    (StaticStrings::Compress, ItertoolsFunctions::Compress),
-    (StaticStrings::Islice, ItertoolsFunctions::Islice),
-    (StaticStrings::Chain, ItertoolsFunctions::Chain),
-    (StaticStrings::Cycle, ItertoolsFunctions::Cycle),
-    (StaticStrings::Takewhile, ItertoolsFunctions::Takewhile),
-    (StaticStrings::Dropwhile, ItertoolsFunctions::Dropwhile),
-    (StaticStrings::Filterfalse, ItertoolsFunctions::Filterfalse),
-    (StaticStrings::Starmap, ItertoolsFunctions::Starmap),
-    (StaticStrings::Accumulate, ItertoolsFunctions::Accumulate),
-    (StaticStrings::Batched, ItertoolsFunctions::Batched),
-    (StaticStrings::ZipLongest, ItertoolsFunctions::ZipLongest),
-    (StaticStrings::Combinations, ItertoolsFunctions::Combinations),
+/// The module's type objects, by the name each is bound to.
+const ITERTOOLS_TYPES: &[(StaticStrings, Type)] = &[
+    (StaticStrings::Count, Type::ItertoolsCount),
+    (StaticStrings::Repeat, Type::ItertoolsRepeat),
+    (StaticStrings::Pairwise, Type::ItertoolsPairwise),
+    (StaticStrings::Compress, Type::ItertoolsCompress),
+    (StaticStrings::Islice, Type::ItertoolsIslice),
+    (StaticStrings::Chain, Type::ItertoolsChain),
+    (StaticStrings::Cycle, Type::ItertoolsCycle),
+    (StaticStrings::Takewhile, Type::ItertoolsTakeWhile),
+    (StaticStrings::Dropwhile, Type::ItertoolsDropWhile),
+    (StaticStrings::Filterfalse, Type::ItertoolsFilterFalse),
+    (StaticStrings::Starmap, Type::ItertoolsStarMap),
+    (StaticStrings::Accumulate, Type::ItertoolsAccumulate),
+    (StaticStrings::Batched, Type::ItertoolsBatched),
+    (StaticStrings::ZipLongest, Type::ItertoolsZipLongest),
+    (StaticStrings::Combinations, Type::ItertoolsCombinations),
     (
         StaticStrings::CombinationsWithReplacement,
-        ItertoolsFunctions::CombinationsWithReplacement,
+        Type::ItertoolsCombinationsWithReplacement,
     ),
-    (StaticStrings::Permutations, ItertoolsFunctions::Permutations),
-    (StaticStrings::Product, ItertoolsFunctions::Product),
-    (StaticStrings::Groupby, ItertoolsFunctions::Groupby),
+    (StaticStrings::Permutations, Type::ItertoolsPermutations),
+    (StaticStrings::Product, Type::ItertoolsProduct),
+    (StaticStrings::Groupby, Type::ItertoolsGroupBy),
+    (StaticStrings::Grouper, Type::ItertoolsGrouper),
+    (StaticStrings::TeeType, Type::ItertoolsTee),
+    (StaticStrings::TeeDataObject, Type::ItertoolsTeeDataObject),
 ];
 
 /// Creates the `itertools` module on the heap.
@@ -89,52 +80,59 @@ const ITERTOOLS_FUNCTIONS: &[(StaticStrings, ItertoolsFunctions)] = &[
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Itertools);
 
-    for (name, func) in ITERTOOLS_FUNCTIONS {
-        module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Itertools(*func)), vm);
+    for (name, type_) in ITERTOOLS_TYPES {
+        module.set_attr(*name, Value::Builtin(Builtins::Type(*type_)), vm);
     }
+    module.set_attr(
+        StaticStrings::Tee,
+        Value::ModuleFunction(ModuleFunctions::Itertools(ItertoolsFunctions::Tee)),
+        vm,
+    );
 
     vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 
-/// Dispatches a call to an `itertools` module function.
-pub(super) fn call(vm: &mut VM<'_>, function: ItertoolsFunctions, args: ArgValues) -> RunResult<Value> {
+/// Dispatches a call to one of the module's two plain functions.
+pub(crate) fn call(vm: &mut VM<'_>, function: ItertoolsFunctions, args: ArgValues) -> RunResult<Value> {
     match function {
-        ItertoolsFunctions::Count => call_count(vm, args),
-        ItertoolsFunctions::Repeat => call_repeat(vm, args),
-        ItertoolsFunctions::Pairwise => call_pairwise(vm, args),
-        ItertoolsFunctions::Compress => call_compress(vm, args),
-        ItertoolsFunctions::Islice => call_islice(vm, args),
-        ItertoolsFunctions::Chain => call_chain(vm, args),
-        ItertoolsFunctions::Cycle => call_cycle(vm, args),
-        ItertoolsFunctions::Takewhile => call_takewhile(vm, args),
-        ItertoolsFunctions::Dropwhile => call_dropwhile(vm, args),
-        ItertoolsFunctions::Filterfalse => call_filterfalse(vm, args),
-        ItertoolsFunctions::Starmap => call_starmap(vm, args),
-        ItertoolsFunctions::Accumulate => call_accumulate(vm, args),
-        ItertoolsFunctions::Batched => call_batched(vm, args),
-        ItertoolsFunctions::ZipLongest => call_zip_longest(vm, args),
-        ItertoolsFunctions::Combinations => call_combinations(vm, args),
-        ItertoolsFunctions::CombinationsWithReplacement => call_combinations_with_replacement(vm, args),
-        ItertoolsFunctions::Permutations => call_permutations(vm, args),
-        ItertoolsFunctions::Product => call_product(vm, args),
-        ItertoolsFunctions::Groupby => call_groupby(vm, args),
+        ItertoolsFunctions::Tee => call_tee(vm, args),
         ItertoolsFunctions::ChainFromIterable => call_chain_from_iterable(vm, args),
     }
 }
 
-/// Resolves an attribute on an `itertools` function.
+/// Constructs one of the module's iterators, reached through [`Type::call`].
 ///
-/// Module functions carry no attributes as a rule; `chain.from_iterable` is
-/// the one exception, a classmethod in CPython reached through `chain`. `None`
-/// for anything else, which the caller reports as an `AttributeError`.
-pub(super) fn function_getattr(function: ItertoolsFunctions, attr: &EitherStr, vm: &VM<'_>) -> Option<Value> {
-    let is_from_iterable = attr.static_string().map_or_else(
-        || attr.as_str(vm.interns) == "from_iterable",
-        |name| name == StaticStrings::FromIterable,
-    );
-    (function == ItertoolsFunctions::Chain && is_from_iterable).then_some(Value::ModuleFunction(
-        ModuleFunctions::Itertools(ItertoolsFunctions::ChainFromIterable),
-    ))
+/// # Panics
+/// Panics on a type this module does not own, which `Type::call` never passes.
+pub(crate) fn construct(type_: Type, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    match type_ {
+        Type::ItertoolsCount => call_count(vm, args),
+        Type::ItertoolsRepeat => call_repeat(vm, args),
+        Type::ItertoolsPairwise => call_pairwise(vm, args),
+        Type::ItertoolsCompress => call_compress(vm, args),
+        Type::ItertoolsIslice => call_islice(vm, args),
+        Type::ItertoolsChain => call_chain(vm, args),
+        Type::ItertoolsCycle => call_cycle(vm, args),
+        Type::ItertoolsTakeWhile => call_takewhile(vm, args),
+        Type::ItertoolsDropWhile => call_dropwhile(vm, args),
+        Type::ItertoolsFilterFalse => call_filterfalse(vm, args),
+        Type::ItertoolsStarMap => call_starmap(vm, args),
+        Type::ItertoolsAccumulate => call_accumulate(vm, args),
+        Type::ItertoolsBatched => call_batched(vm, args),
+        Type::ItertoolsZipLongest => call_zip_longest(vm, args),
+        Type::ItertoolsCombinations => call_combinations(vm, args),
+        Type::ItertoolsCombinationsWithReplacement => call_combinations_with_replacement(vm, args),
+        Type::ItertoolsPermutations => call_permutations(vm, args),
+        Type::ItertoolsProduct => call_product(vm, args),
+        Type::ItertoolsGroupBy => call_groupby(vm, args),
+        // CPython exposes these two but refuses to construct them: they are
+        // only ever handed out by `groupby` and `tee`.
+        Type::ItertoolsGrouper | Type::ItertoolsTee | Type::ItertoolsTeeDataObject => {
+            args.drop_with(vm);
+            Err(ExcType::type_error_not_callable(&type_.name(vm.heap, vm.interns)))
+        }
+        other => unreachable!("{other} is not an itertools type"),
+    }
 }
 
 /// Argument shape for `count(start=0, step=1)`.
@@ -868,6 +866,66 @@ fn call_chain_from_iterable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value
     let outer = iterable.into_py_iter(vm)?;
     let iter = ItertoolsIter::Chain(Chain::from_iterable(outer));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+}
+
+/// Argument shape for `tee(iterable, n=2)`.
+///
+/// `PyArg_UnpackTuple` with a 1..2 arity, so arity errors read `tee expected at
+/// most 2 arguments, got 3`. The blanket keyword rejection is the one in this
+/// module that names the function with its module (`itertools.tee()`), hence
+/// the `kwarg_error_name`. `n` stays a raw `Value` for the `Py_ssize_t`
+/// conversion in the body, as `batched`'s does.
+#[derive(FromArgs)]
+#[from_args(name = "tee", style = unpack, kwarg_error_name = "itertools.tee")]
+struct TeeArgs {
+    #[from_args(pos_only)]
+    iterable: Value,
+    #[from_args(pos_only, default)]
+    n: Option<Value>,
+}
+
+/// `itertools.tee(iterable, n=2)` — `n` iterators over one source.
+fn call_tee(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let TeeArgs { iterable, n } = TeeArgs::from_args(args, vm)?;
+    let consumers = match n {
+        None => Ok(2),
+        Some(n) => {
+            let converted = tee_n(&n, vm);
+            n.drop_with(vm);
+            converted
+        }
+    };
+    let consumers = match consumers {
+        Ok(consumers) => consumers,
+        Err(error) => {
+            iterable.drop_with(vm);
+            return Err(error);
+        }
+    };
+
+    // An existing `_tee` is copied rather than drained, so the copies replay
+    // from where it stands — CPython reaches for `__copy__` for the same
+    // reason. Anything else becomes the source of a fresh group.
+    let tees = if let Some(tees) = tee::fork_group(&iterable, consumers, vm) {
+        iterable.drop_with(vm);
+        tees
+    } else {
+        let source = iterable.into_py_iter(vm)?;
+        tee::new_group(source, consumers, vm)
+    };
+    Ok(allocate_tuple(TupleVec::from_vec(tees), vm.heap))
+}
+
+/// Coerces `tee`'s `n` and enforces CPython's "not negative" floor.
+///
+/// The upper bound is the tuple of iterators it would have to build, which
+/// CPython reports as a bare `MemoryError` when the allocation fails.
+fn tee_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
+    let n = ssize_arg(value, vm)?;
+    let n = usize::try_from(n).map_err(|_| ExcType::tee_negative_n())?;
+    let bytes = index_bytes(n).ok_or_else(ExcType::allocation_too_large)?;
+    check_estimated_size(bytes.saturating_add(n.saturating_mul(VALUE_SIZE)), &vm.heap.tracker)?;
+    Ok(n)
 }
 
 /// Resolves the iterable while keeping the callable safe from the error path.

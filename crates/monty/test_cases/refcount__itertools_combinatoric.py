@@ -132,9 +132,25 @@ class Reentrant:
 reentrant_flat = itertools.chain.from_iterable(Reentrant())
 assert list(reentrant_flat) == [[1]]
 
+# A `tee` group: the buffer owns the source and everything read from it, and
+# each `_tee` owns the buffer. Nothing here is named except through them.
+teed = itertools.tee([[1], [2], [3]])
+next(teed[0])
+
+# Buffered items are released once the slowest consumer has passed them, so
+# draining both halves leaves the buffer holding nothing.
+drained_tee = itertools.tee([[1], [2]])
+assert [list(x) for x in drained_tee] == [[[1], [2]], [[1], [2]]]
+
+# The freeing path for both types, the buffer going only once its last `_tee`
+# does.
+gone_tee = itertools.tee([[1], [2]])
+next(gone_tee[0])
+gone_tee = None
+
 gone_flat = itertools.chain.from_iterable([[[1]]])
 next(gone_flat)
 gone_flat = None
 
 len('done')
-# ref-counts={'itertools': 1, 'Reentrant': 1, 'reentrant_flat': 1, 'combos': 1, 'yielding': 1, 'replaced': 1, 'permuted': 1, 'yielded': 1, 'product_live': 1, 'repeated': 1, 'survivor': 1, 'cyclic': 2, 'groupers': 2, 'grouped_group': 1, 'orphan_group': 1, 'keys_source': 2, 'drained_groupby': 1, 'flattened': 1, 'flat_source': 1, 'spent_flat': 1, 'bad_source': 1, 'failing_flat': 1}
+# ref-counts={'itertools': 1, 'Reentrant': 1, 'reentrant_flat': 1, 'teed': 1, 'drained_tee': 1, 'combos': 1, 'yielding': 1, 'replaced': 1, 'permuted': 1, 'yielded': 1, 'product_live': 1, 'repeated': 1, 'survivor': 1, 'cyclic': 2, 'groupers': 2, 'grouped_group': 1, 'orphan_group': 1, 'keys_source': 2, 'drained_groupby': 1, 'flattened': 1, 'flat_source': 1, 'spent_flat': 1, 'bad_source': 1, 'failing_flat': 1}

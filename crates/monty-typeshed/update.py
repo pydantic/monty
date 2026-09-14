@@ -136,6 +136,8 @@ COPY_FILES = [
     # ==============================
     'math.pyi',
     'datetime.pyi',
+    # Monty implements every `itertools` callable
+    'itertools.pyi',
 ]
 # content for typeshed's `VERSIONS` file
 VERSIONS = """\

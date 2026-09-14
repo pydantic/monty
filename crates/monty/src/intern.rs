@@ -1311,9 +1311,23 @@ pub enum StaticStrings {
     Product,
     /// `itertools.groupby()` function.
     Groupby,
-    /// `chain.from_iterable` — the one attribute an `itertools` function carries.
+    /// `chain.from_iterable` — the one attribute an `itertools` type carries.
     #[strum(serialize = "from_iterable")]
     FromIterable,
+
+    // ==========================
+    // `itertools.tee` and the private types CPython exposes alongside it.
+    /// `itertools.tee()` function.
+    Tee,
+    /// `itertools._tee`, the iterator `tee()` hands out.
+    #[strum(serialize = "_tee")]
+    TeeType,
+    /// `itertools._tee_dataobject`, the buffer those iterators share.
+    #[strum(serialize = "_tee_dataobject")]
+    TeeDataObject,
+    /// `itertools._grouper`, the sub-iterator `groupby` hands out.
+    #[strum(serialize = "_grouper")]
+    Grouper,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

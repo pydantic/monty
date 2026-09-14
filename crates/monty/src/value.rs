@@ -21,7 +21,7 @@ use crate::{
     heap_data::heap_subscript,
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
-    modules::ModuleFunctions,
+    modules::{ModuleFunctions, itertools::ItertoolsFunctions},
     percent_format::{copy_bytes_template, percent_format, percent_format_bytes},
     resource_checks::check_pow_size,
     types::{
@@ -1766,6 +1766,14 @@ impl Value {
                 // `object.__setattr__` is the only member `object` carries: it
                 // exists so a class that hooks attribute writes has a way to
                 // perform one (see `limitations/classes.md`).
+                // `chain.from_iterable`, the one attribute an `itertools`
+                // type carries. Handed out as a value so it can be bound and
+                // called later, not only called in place.
+                if *t == Type::ItertoolsChain && attr.as_str(vm.interns) == "from_iterable" {
+                    return Ok(CallResult::Value(Self::ModuleFunction(ModuleFunctions::Itertools(
+                        ItertoolsFunctions::ChainFromIterable,
+                    ))));
+                }
                 if *t == Type::Object && attr.as_str(vm.interns) == "__setattr__" {
                     return Ok(CallResult::Value(Self::Builtin(Builtins::Function(
                         BuiltinsFunctions::ObjectSetattr,
@@ -1777,11 +1785,6 @@ impl Value {
                     &t.name(vm.heap, vm.interns),
                     attr.as_str(vm.interns),
                 ));
-            }
-            Self::ModuleFunction(function) => {
-                if let Some(value) = function.py_getattr(attr, vm) {
-                    return Ok(CallResult::Value(value));
-                }
             }
             _ => {}
         }

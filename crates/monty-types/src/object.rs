@@ -976,6 +976,10 @@ pub enum MontyType {
     ItertoolsGroupBy,
     #[strum(serialize = "itertools._grouper")]
     ItertoolsGrouper,
+    #[strum(serialize = "itertools._tee")]
+    ItertoolsTee,
+    #[strum(serialize = "itertools._tee_dataobject")]
+    ItertoolsTeeDataObject,
 }
 
 impl fmt::Display for MontyType {

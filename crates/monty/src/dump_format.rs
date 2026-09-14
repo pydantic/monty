@@ -193,23 +193,20 @@ mod tests {
         assert_eq!(
             opcode_fingerprint(),
             0x0d57_34dd_be07_19ac,
-            "opcodes changed for dump version {}, actual: {:#x}",
-            DUMP_VERSION,
-            opcode_fingerprint()
+            "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(opcode_fingerprint())
         );
         assert_eq!(
             static_strings_fingerprint(),
-            0x7e1d_9b97_d135_f5dc,
-            "static strings changed for dump version {}, actual: {:#x}",
-            DUMP_VERSION,
-            static_strings_fingerprint()
+            0x6db_56c9_2c47_0eac,
+            "static strings changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(static_strings_fingerprint())
         );
         assert_eq!(
             comparison_operators_fingerprint(),
             0x8ecc_d26b_160d_9c0b,
-            "comparison operators changed for dump version {}, actual: {:#x}",
-            DUMP_VERSION,
-            comparison_operators_fingerprint()
+            "comparison operators changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(comparison_operators_fingerprint())
         );
         // `VariantNames` keeps the `#[strum(disabled)]` variants that `EnumString`
         // and `EnumIter` drop, which is what lets the two fingerprints below cover
@@ -221,27 +218,33 @@ mod tests {
 
         assert_eq!(
             variant_order_fingerprint(Type::VARIANTS),
-            0x4b5a_82ac_c92a_1205,
-            "Type variants changed for dump version {}, actual: {:#x}",
-            DUMP_VERSION,
-            variant_order_fingerprint(Type::VARIANTS)
+            0x7812_725f_a909_cd91,
+            "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(variant_order_fingerprint(Type::VARIANTS))
         );
         assert_eq!(
             variant_order_fingerprint(MontyType::VARIANTS),
-            0xb372_0f80_2b84_7bd5,
-            "MontyType variants changed for dump version {}, actual: {:#x}",
-            DUMP_VERSION,
-            variant_order_fingerprint(MontyType::VARIANTS)
+            0xbde0_3964_2ba2_2ce1,
+            "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(variant_order_fingerprint(MontyType::VARIANTS))
         );
         // Builtin discriminants are `CallBuiltinFunction` operands, so the enum
         // is append-only: a new builtin goes after the last variant.
         assert_eq!(
             variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
             0xd5ef_68ff_fc6b_f752,
-            "BuiltinsFunctions variants changed for dump version {}, actual: {:#x}",
-            DUMP_VERSION,
-            variant_order_fingerprint(BuiltinsFunctions::VARIANTS)
+            "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(variant_order_fingerprint(BuiltinsFunctions::VARIANTS))
         );
+    }
+
+    /// Formats an integer as hex with underscores between four-digit groups.
+    fn grouped_hex(n: u64) -> String {
+        let mut s = format!("{n:x}");
+        for i in (1..s.len()).rev().skip(3).step_by(4) {
+            s.insert(i, '_');
+        }
+        format!("0x{s}")
     }
 
     /// FNV-1a over variant names in declaration order.
