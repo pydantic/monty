@@ -132,6 +132,34 @@ key, group = next(grouped)
 assert list(group) == [1, 1]
 assert list(source) == [3]
 
+
+# A key function that advances the parent from inside a group's own step
+# leaves that group still yielding: the "is this still the current group?" test
+# happens when the group is entered, not again after the key call.
+def reentering_groupby(source, trigger):
+    holder = [None]
+    calls = [0]
+    depth = [0]
+    seen = []
+
+    def key(item):
+        calls[0] += 1
+        if calls[0] == trigger and depth[0] == 0 and holder[0] is not None:
+            depth[0] += 1
+            seen.append(next(holder[0], ('stop', None))[0])
+            depth[0] -= 1
+        return item
+
+    grouped = itertools.groupby(source, key)
+    holder[0] = grouped
+    first_key, first_group = next(grouped)
+    return first_key, [next(first_group, 'STOP') for _ in range(3)], seen
+
+
+assert reentering_groupby([1, 1, 1, 1], 2) == (1, [1, 1, 'STOP'], ['stop'])
+assert reentering_groupby([1, 1, 2, 1], 2) == (1, [1, 1, 'STOP'], [2])
+assert reentering_groupby([1, 1, 2, 2, 1], 3) == (1, [1, 1, 'STOP'], [2])
+
 # === Iterator protocol and types ===
 grouped = itertools.groupby([1])
 assert iter(grouped) is grouped

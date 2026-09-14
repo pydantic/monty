@@ -203,7 +203,10 @@ pub(super) fn grouper_next<'h>(
     };
 
     let groupby = groupby_ref(&parent, vm);
-    // A group left behind by advancing the parent is spent, not resumed.
+    // A group left behind by advancing the parent is spent, not resumed. Only
+    // on entry, as CPython's `_grouper_next` tests it: a key function that
+    // advances the parent mid-step leaves this group still yielding there, and
+    // re-testing afterwards would stop it a round early.
     if groupby.current_grouper != Some(own_id) {
         return Ok(None);
     }
