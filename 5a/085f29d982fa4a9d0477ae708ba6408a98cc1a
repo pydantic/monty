@@ -1,0 +1,168 @@
+crates/monty/tests/error_locations.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 14,29,52
+crates/monty/src/types/namedtuple.rs
+  s_48cfc37a3b381f::t_24af81af7e0b7b 362-363
+crates/monty/src/args/from_value.rs
+  s_48cfc37a3b381f::t_24af81af7e0b7b 146-152,163
+crates/monty/src/function.rs
+  s_48cfc37a3b381f::t_ead211b908f9ec 5,126-127,153,281
+crates/monty/src/run.rs
+  s_48cfc37a3b381f::t_900927713267b6 12,362,432-434,436,895,908,915,917
+  s_48cfc37a3b381f::t_bb958a85a881ad 685,687,2,82,103,120,125,132,144-146,152,162,197,203,230-232,234-249,251-258,291,372-376,378-385,392,398,443-447,449-457,517,519-521,523-531,546,551,556,565,569,574,579,597,604,634,639,654,661,686,688-696,698-710,712-713,715-755,758-788,809-810
+  s_48cfc37a3b381f::t_fefa7e295093f1 790,211,229,564,613,697,711,757,793-808
+  s_48cfc37a3b381f::t_d2d3727a189c99 38
+  s_48cfc37a3b381f::t_c3536fc02cc5ba 206-207,559-560,608-609
+  s_8893e77bad01b6::t_a62f3d87ecaa81 377,448
+crates/monty/tests/host_clock.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 55
+crates/monty-bench/benches/main.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 29,44,67,71,445
+crates/monty/src/types/instance.rs
+  s_48cfc37a3b381f::t_24af81af7e0b7b 285,287,487
+crates/monty/tests/math_module.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 6
+crates/monty/src/types/list.rs
+  s_48cfc37a3b381f::t_e6fdc0043a91d6 1100
+  s_48cfc37a3b381f::t_ac5f721cd0e430 1125-1126,1132-1133,1159-1160,1166-1167,1190-1191,1197-1198
+crates/fuzz/fuzz_targets/tokens_input_panic.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 546
+crates/monty/src/hash.rs
+  s_48cfc37a3b381f::t_c3536fc02cc5ba 31
+  s_48cfc37a3b381f::t_9f41be2141a6c7 202,204-205,235,247,252-255,279,285
+crates/monty/src/intern.rs
+  s_48cfc37a3b381f::t_9f41be2141a6c7 1416-1418,1523-1525,1639,1419-1428,1430-1431,1433-1436,1439,1476-1477,1496-1497,1526-1536,1538,1637,1640,1644-1645,1649-1652,1654,1668-1669,1673-1675
+  s_48cfc37a3b381f::t_3a50bb07db81f0 1443-1446,1451-1455,1461,1542,1562-1567,1569-1573,1577,1579-1581,1583-1587,1594-1599,1601-1608,1612-1613,1615-1627,1634,1638,1655,1799-1807,1437,1641,1653
+  s_48cfc37a3b381f::t_438bc45b3d1cf5 1609
+  s_48cfc37a3b381f::t_ead211b908f9ec 1696-1697,1429,1432,1438,1440,1479-1481,1499,1537,1539,1614,1642-1643,1646-1648,1670-1672,1676-1677,1698-1708,1717
+crates/monty/tests/asyncio.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 1183,1208,1243,1343
+crates/monty/tests/inputs.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 15,28,41,54,67,80,108,123,138,151,169,187,210,230,245,260,276,296,303,321,334,349,373,397,422,442,455,476,636,659,680,714,735,758,781,802,823,843
+  s_48cfc37a3b381f::t_fbb0c7f26838ab 93
+crates/monty/tests/main.rs
+  s_48cfc37a3b381f::t_fbb0c7f26838ab 9
+  s_48cfc37a3b381f::t_b398f42df690ca 22,37,71,118,135,162,190,223,260,287,325,349,366,446,465,492
+crates/monty/src/bytecode/vm/call.rs
+  s_48cfc37a3b381f::t_24af81af7e0b7b 377-378,382-383,928,931,975,986,1050,1070,1149-1152,1154
+crates/monty/src/types/dict.rs
+  s_48cfc37a3b381f::t_24af81af7e0b7b 1317,1319,1515,1517,1624,1626
+crates/monty-proto/tests/differential.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 562
+crates/monty/tests/assert_messages.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 14,117,133,151,165,246,255,273,286,337,382,390
+crates/monty/tests/collections.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 23,30,105,138,151
+crates/monty/README.md
+  s_48cfc37a3b381f::t_c3536fc02cc5ba 40,63
+crates/monty-datatest/src/main.rs
+  s_48cfc37a3b381f::t_415e038043b6c6 1349
+  s_48cfc37a3b381f::t_b398f42df690ca 1398
+crates/monty/tests/name_lookup.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 210,624
+  s_48cfc37a3b381f::t_bbb45de62d4fbf 627
+crates/monty/tests/dataclass_rejections.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 14,100,127
+crates/monty/tests/json_serde.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 18,173,200,228
+crates/monty-proto/tests/roundtrip.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 303
+crates/monty/src/types/host_class.rs
+  s_48cfc37a3b381f::t_24af81af7e0b7b 144-150,264-266,572,574
+crates/monty/tests/parse_errors.rs
+  s_48cfc37a3b381f::t_c3536fc02cc5ba 585-586
+  s_48cfc37a3b381f::t_b398f42df690ca 678
+crates/fuzz/fuzz_targets/string_input_panic.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 27
+crates/monty/src/types/class.rs
+  s_48cfc37a3b381f::t_24af81af7e0b7b 246,248
+crates/monty/src/modules/json/load.rs
+  s_48cfc37a3b381f::t_2789c4d9469173 6
+  s_48cfc37a3b381f::t_24af81af7e0b7b 91-110
+crates/monty/tests/binary_serde.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 48,64,77,125,143
+  s_48cfc37a3b381f::t_fbb0c7f26838ab 101
+  s_48cfc37a3b381f::t_bbb45de62d4fbf 402-403,407-410,412,414
+crates/monty/tests/bytecode_limits.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 109,124,136,148,164,196,281,366,376,404,424
+crates/monty/src/run_progress.rs
+  s_48cfc37a3b381f::t_24af81af7e0b7b 704,717,721-722,783
+  s_48cfc37a3b381f::t_c3536fc02cc5ba 877-890,1117-1119
+crates/monty/tests/external_function_identity.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 13,71,104
+crates/monty/tests/print_collect_limits.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 33,63,90,121,150,167,183,204,229
+crates/monty/src/bytecode/code.rs
+  s_8893e77bad01b6::t_ac88305b598c92 8
+  s_48cfc37a3b381f::t_f545d6467218b7 103
+crates/monty/src/object_bridge.rs
+  s_48cfc37a3b381f::t_24af81af7e0b7b 316
+crates/monty/tests/datetime_format.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 17,26
+crates/monty/tests/regex.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 17
+crates/monty/tests/resource_limits.rs
+  s_48cfc37a3b381f::t_415e038043b6c6 58,95,124,166,197,227,257,275,310,415,449
+  s_48cfc37a3b381f::t_b398f42df690ca 355,375,394,480,600,1384,1420,1442,1475,1516
+crates/monty/tests/try_from.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 12,20,29,38,46,54,62,76,84,98,106,114,122,130,138,146,154,162,170
+crates/monty/src/repl.rs
+  s_48cfc37a3b381f::t_68857a5ce55de7 31,225,312,392,521-522,851,964,1107,1196,1251,1255
+  s_48cfc37a3b381f::t_c3536fc02cc5ba 240-250,252-256,258,260-270,325-335,337-340,342,344-348,411-421,423-445,447-463,465-472,474-476,855-858,862-863,882-883,974-984,986-991,993,995-1005,1112-1129,1200-1203,1206-1207,1223-1224
+crates/monty/src/bytecode/vm/mod.rs
+  s_48cfc37a3b381f::t_c3536fc02cc5ba 18,40
+  s_48cfc37a3b381f::t_d30a8cde3e8530 44
+  s_48cfc37a3b381f::t_f1125b52b13ccb 395
+  s_48cfc37a3b381f::t_bc17dc0aec4165 404-405,432-433,501,504-505,509,513-514
+  s_48cfc37a3b381f::t_39cafd904110ad 406,466,579,714,717,722-728,758,831-834,837-838,842,850,864,870-873,876-877,881,883,888-889
+  s_8893e77bad01b6::t_a62f3d87ecaa81 495,498-499
+  s_48cfc37a3b381f::t_8483e7d2ef8627 532,536,540,1303
+  s_8893e77bad01b6::t_bf5b510d0fcdcb 2221-2223
+crates/monty/src/types/py_trait.rs
+  s_48cfc37a3b381f::t_24af81af7e0b7b 135
+crates/monty/src/value.rs
+  s_48cfc37a3b381f::t_24af81af7e0b7b 243,332,651,1400-1401,1403,1414
+  s_48cfc37a3b381f::t_2789c4d9469173 480,494-495,497,499-500,1263,1273,1282,1291
+  s_48cfc37a3b381f::t_3cf5ba8157530e 1404-1405
+  s_48cfc37a3b381f::t_c3536fc02cc5ba 1406-1407,1415-1418
+  s_48cfc37a3b381f::t_e6fdc0043a91d6 2662-2665
+  s_48cfc37a3b381f::t_ac5f721cd0e430 2688-2691,2704-2707,2722-2725,2740-2743,2757-2760,2773-2776,2789-2792,2806-2809,2823-2826
+crates/monty/tests/dataclass_fields.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 26,38
+crates/monty/tests/parse_large_literals.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 45,57,68,78,89,101,115,127,139,153
+crates/monty/tests/print_writer.rs
+  s_48cfc37a3b381f::t_b398f42df690ca 20,111,125,151,243,295
+docs/quickstart/rust.md
+  s_48cfc37a3b381f::t_c3536fc02cc5ba 162,185,200
+crates/monty/src/types/type.rs
+  s_48cfc37a3b381f::t_24af81af7e0b7b 285,287,299,312,628,630,730-731,749-750
+crates/monty/src/heap_data.rs
+  s_48cfc37a3b381f::t_24af81af7e0b7b 549
+crates/monty/src/bytecode/vm/async_exec.rs
+  s_48cfc37a3b381f::t_d30a8cde3e8530 9
+  s_48cfc37a3b381f::t_c3536fc02cc5ba 664-668
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "5a085f29d982fa4a9d0477ae708ba6408a98cc1a",
+  "prompts": {},
+  "sessions": {
+    "s_48cfc37a3b381f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4fb3c57f-2787-4903-bd11-4112173970ff",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_8893e77bad01b6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "338e4b50-cd2d-42ec-bb5a-ea3da0310b6a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
