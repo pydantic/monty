@@ -174,7 +174,11 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
             // `into_py_iter` consumes `raw` on both paths, and raises here for a
             // non-iterable source — matching CPython's lazy rejection.
             let resolved = into_py_iter_tracking(iter, raw, vm)?;
-            chain_mut(iter, vm).current = Some(resolved);
+            // Replaced rather than assigned: taking the source ran a user
+            // `__next__` or `__iter__`, which can step this same chain and
+            // leave a live iterator here. Overwriting that would leak it.
+            let displaced = chain_mut(iter, vm).current.replace(resolved);
+            displaced.drop_with(vm);
             continue;
         };
 

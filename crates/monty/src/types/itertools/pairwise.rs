@@ -77,7 +77,11 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
         let ItertoolsIter::Pairwise(pairwise) = iter.get_mut(vm.heap) else {
             unreachable!("dispatched on Kind::Pairwise")
         };
-        pairwise.previous = Some(first);
+        // Replaced rather than assigned: driving the source ran a user
+        // `__next__`, which can step this same adaptor and prime `previous`
+        // itself. Overwriting that would leak it.
+        let displaced = pairwise.previous.replace(first);
+        displaced.drop_with(vm);
     }
 
     let Some(second) = drive_source(iter, vm)? else {
@@ -89,7 +93,18 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
     let ItertoolsIter::Pairwise(pairwise) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::Pairwise")
     };
-    let first = pairwise.previous.replace(retained).expect("previous was primed above");
+    // Normally primed above, but a user `__next__` that exhausts this same
+    // adaptor takes `previous` with it — there is then no left half to pair,
+    // so the round ends rather than unwrapping a `None`.
+    let Some(first) = pairwise.previous.replace(retained) else {
+        let ItertoolsIter::Pairwise(pairwise) = iter.get_mut(vm.heap) else {
+            unreachable!("dispatched on Kind::Pairwise")
+        };
+        let orphan = pairwise.previous.take();
+        orphan.drop_with(vm);
+        second.drop_with(vm);
+        return Ok(None);
+    };
     Ok(Some(allocate_tuple([first, second].into_iter().collect(), vm.heap)))
 }
 

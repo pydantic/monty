@@ -108,9 +108,33 @@ try:
 except TypeError:
     pass
 
+
+# An outer source that steps the chain from inside its own `__next__` leaves a
+# live inner iterator behind, which the round that was already resolving one
+# must not overwrite without releasing.
+class Reentrant:
+    def __init__(self):
+        self.calls = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.calls += 1
+        if self.calls == 1:
+            next(reentrant_flat)
+            return [[1]]
+        if self.calls == 2:
+            return [[2], [3]]
+        raise StopIteration
+
+
+reentrant_flat = itertools.chain.from_iterable(Reentrant())
+assert list(reentrant_flat) == [[1]]
+
 gone_flat = itertools.chain.from_iterable([[[1]]])
 next(gone_flat)
 gone_flat = None
 
 len('done')
-# ref-counts={'itertools': 1, 'combos': 1, 'yielding': 1, 'replaced': 1, 'permuted': 1, 'yielded': 1, 'product_live': 1, 'repeated': 1, 'survivor': 1, 'cyclic': 2, 'groupers': 2, 'grouped_group': 1, 'orphan_group': 1, 'keys_source': 2, 'drained_groupby': 1, 'flattened': 1, 'flat_source': 1, 'spent_flat': 1, 'bad_source': 1, 'failing_flat': 1}
+# ref-counts={'itertools': 1, 'Reentrant': 1, 'reentrant_flat': 1, 'combos': 1, 'yielding': 1, 'replaced': 1, 'permuted': 1, 'yielded': 1, 'product_live': 1, 'repeated': 1, 'survivor': 1, 'cyclic': 2, 'groupers': 2, 'grouped_group': 1, 'orphan_group': 1, 'keys_source': 2, 'drained_groupby': 1, 'flattened': 1, 'flat_source': 1, 'spent_flat': 1, 'bad_source': 1, 'failing_flat': 1}

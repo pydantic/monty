@@ -87,13 +87,20 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
 
     let func = accumulate.func.clone_with_heap(vm.heap);
     let source = accumulate.source.clone_with_heap(vm.heap);
-    let total = accumulate.total.as_ref().map(|total| total.clone_with_heap(vm.heap));
     defer_drop!(func, vm);
-    defer_drop!(total, vm);
 
     let Some(item) = next_item(source, vm)? else {
         return Ok(None);
     };
+    // Read after the source ran, not before: a user `__next__` that steps this
+    // same adaptor installs a total of its own, and folding into a snapshot
+    // taken beforehand would both lose that and leak it. CPython reads
+    // `lz->total` after its `iternext` for the same reason.
+    let ItertoolsIter::Accumulate(accumulate) = iter.get(vm.heap) else {
+        unreachable!("dispatched on Kind::Accumulate")
+    };
+    let total = accumulate.total.as_ref().map(|total| total.clone_with_heap(vm.heap));
+    defer_drop!(total, vm);
     let combined = match total {
         // The first item becomes the total untouched — never `func(item)`.
         None => item,
