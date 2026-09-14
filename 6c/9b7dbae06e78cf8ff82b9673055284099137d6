@@ -1,0 +1,27 @@
+crates/monty-js/ts/worker/index.node.ts
+  s_d4e8bedce3c69b::t_f2f1e4df148ac8 9-12
+docs/quickstart/javascript.md
+  s_d4e8bedce3c69b::t_f2f1e4df148ac8 306-307
+crates/monty-js/ts/worker/index.browser.ts
+  s_d4e8bedce3c69b::t_f2f1e4df148ac8 9-12
+crates/monty-js/ts/worker/index.ts
+  s_d4e8bedce3c69b::t_f2f1e4df148ac8 50-60
+crates/monty-js/README.md
+  s_d4e8bedce3c69b::t_f2f1e4df148ac8 21-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6c9b7dbae06e78cf8ff82b9673055284099137d6",
+  "prompts": {},
+  "sessions": {
+    "s_d4e8bedce3c69b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20b5c1de-f094-4ef4-928e-a151ac7a8011",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
