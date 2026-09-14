@@ -13,6 +13,8 @@ api_version: int
 copyright: str
 builtin_module_names: tuple[str, ...]
 
+flags: _flags
+
 maxsize: int
 maxunicode: int
 byteorder: Literal['little', 'big']
@@ -92,3 +94,67 @@ class _float_info(structseq[float], tuple[float, int, int, float, int, int, int,
     def rounds(self) -> int: ...
 
 float_info: _float_info
+
+@final
+@type_check_only
+class _flags(
+    _UninstantiableStructseq,
+    tuple[int, int, int, int, int, int, int, int, int, int, int, int, int, bool, int, int, bool, int],
+):
+    __match_args__: Final = (
+        'debug',
+        'inspect',
+        'interactive',
+        'optimize',
+        'dont_write_bytecode',
+        'no_user_site',
+        'no_site',
+        'ignore_environment',
+        'verbose',
+        'bytes_warning',
+        'quiet',
+        'hash_randomization',
+        'isolated',
+        'dev_mode',
+        'utf8_mode',
+        'warn_default_encoding',
+        'safe_path',
+        'int_max_str_digits',
+    )
+
+    @property
+    def debug(self) -> int: ...
+    @property
+    def inspect(self) -> int: ...
+    @property
+    def interactive(self) -> int: ...
+    @property
+    def optimize(self) -> int: ...
+    @property
+    def dont_write_bytecode(self) -> int: ...
+    @property
+    def no_user_site(self) -> int: ...
+    @property
+    def no_site(self) -> int: ...
+    @property
+    def ignore_environment(self) -> int: ...
+    @property
+    def verbose(self) -> int: ...
+    @property
+    def bytes_warning(self) -> int: ...
+    @property
+    def quiet(self) -> int: ...
+    @property
+    def hash_randomization(self) -> int: ...
+    @property
+    def isolated(self) -> int: ...
+    @property
+    def dev_mode(self) -> bool: ...
+    @property
+    def utf8_mode(self) -> int: ...
+    @property
+    def warn_default_encoding(self) -> int: ...
+    @property
+    def safe_path(self) -> bool: ...
+    @property
+    def int_max_str_digits(self) -> int: ...

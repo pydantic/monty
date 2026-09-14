@@ -69,8 +69,14 @@ assert tuple(name for name in sys.builtin_module_names if name != 'gc') == (
     'unicodedata',
 )
 
+# === sys.flags: Monty is started with no switches ===
+# The two fields that describe the sandbox rather than an unset switch
+assert sys.flags.dont_write_bytecode == 1
+assert sys.flags.hash_randomization == 0
+assert sys.flags == (0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, False, 0, 0, False, 4300)
+
 # === Attributes describing CPython internals stay absent ===
-for missing in ('flags', 'hash_info', 'int_info', 'thread_info', 'ps1', 'ps2'):
+for missing in ('hash_info', 'int_info', 'thread_info', 'ps1', 'ps2'):
     try:
         getattr(sys, missing)
         assert False, f'expected sys.{missing} to raise AttributeError'

@@ -27,7 +27,7 @@ use crate::{
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    types::{Module, NamedTuple, allocate_tuple},
+    types::{Module, NamedTuple, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
     value::{Marker, Value},
 };
 
@@ -127,6 +127,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     module.set_attr(StaticStrings::Abiflags, StaticStrings::EmptyString.into(), vm);
     module.set_attr(StaticStrings::DontWriteBytecode, Value::Bool(true), vm);
     module.set_attr(StaticStrings::PycachePrefix, Value::None, vm);
+    module.set_attr(StaticStrings::Flags, flags(vm), vm);
 
     // sys.stdout / sys.stderr - markers for standard output/error
     module.set_attr(StaticStrings::Stdout, Value::Marker(Marker(StaticStrings::Stdout)), vm);
@@ -203,6 +204,66 @@ fn float_info(vm: &VM<'_>) -> Value {
         ],
     );
     Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named_tuple))))
+}
+
+/// Builds `sys.flags` — the switches the interpreter was started with.
+///
+/// Monty is started with none, so every switch reads `0`/`False`. Two fields
+/// are not merely "unset" but describe the sandbox: `dont_write_bytecode` is
+/// `1` to agree with `sys.dont_write_bytecode`, and `hash_randomization` is
+/// `0` because Monty seeds no hashes. `int_max_str_digits` reports the limit
+/// Monty actually enforces, though it has no `sys.set_int_max_str_digits` to
+/// change it.
+fn flags(vm: &VM<'_>) -> Value {
+    let named_tuple = NamedTuple::new(
+        StaticStrings::SysFlags,
+        vec![
+            StaticStrings::Debug.into(),
+            StaticStrings::Inspect.into(),
+            StaticStrings::Interactive.into(),
+            StaticStrings::Optimize.into(),
+            StaticStrings::DontWriteBytecode.into(),
+            StaticStrings::NoUserSite.into(),
+            StaticStrings::NoSite.into(),
+            StaticStrings::IgnoreEnvironment.into(),
+            StaticStrings::Verbose.into(),
+            StaticStrings::BytesWarning.into(),
+            StaticStrings::Quiet.into(),
+            StaticStrings::HashRandomization.into(),
+            StaticStrings::Isolated.into(),
+            StaticStrings::DevMode.into(),
+            StaticStrings::Utf8Mode.into(),
+            StaticStrings::WarnDefaultEncoding.into(),
+            StaticStrings::SafePath.into(),
+            StaticStrings::IntMaxStrDigits.into(),
+        ],
+        vec![
+            Value::Int(0),      // debug
+            Value::Int(0),      // inspect
+            Value::Int(0),      // interactive
+            Value::Int(0),      // optimize
+            Value::Int(1),      // dont_write_bytecode
+            Value::Int(0),      // no_user_site
+            Value::Int(0),      // no_site
+            Value::Int(0),      // ignore_environment
+            Value::Int(0),      // verbose
+            Value::Int(0),      // bytes_warning
+            Value::Int(0),      // quiet
+            Value::Int(0),      // hash_randomization
+            Value::Int(0),      // isolated
+            Value::Bool(false), // dev_mode
+            Value::Int(0),      // utf8_mode
+            Value::Int(0),      // warn_default_encoding
+            Value::Bool(false), // safe_path
+            int_max_str_digits(),
+        ],
+    );
+    Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named_tuple))))
+}
+
+/// `sys.flags.int_max_str_digits`, widened from the limit the runtime enforces.
+fn int_max_str_digits() -> Value {
+    i64::try_from(INT_MAX_STR_DIGITS).map_or(Value::Int(i64::MAX), Value::Int)
 }
 
 /// Builds the `sys.builtin_module_names` tuple from [`BUILTIN_MODULE_NAMES`].

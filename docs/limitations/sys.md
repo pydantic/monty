@@ -37,6 +37,15 @@ access raises `AttributeError`.
 - `sys.dont_write_bytecode` — `True`, where CPython defaults to `False`. Monty
     never writes bytecode to disk.
 - `sys.pycache_prefix` — always `None`.
+- `sys.flags` — the same 18 fields CPython 3.14 reports, in the same order.
+    Monty is started with no command line, so every switch reads `0` / `False`,
+    including `utf8_mode` and `safe_path` even though the sandbox has no other
+    encoding and no `sys.path`. Two fields describe Monty rather than an unset
+    switch: `dont_write_bytecode` is `1`, agreeing with
+    `sys.dont_write_bytecode`, and `hash_randomization` is `0` because Monty
+    seeds no hashes — CPython reports `1` by default. `int_max_str_digits` is
+    `4300`, the limit Monty enforces, but there is no
+    `sys.set_int_max_str_digits` to change it.
 - `sys.stdout` / `sys.stderr` — opaque marker objects with no methods. They
     cannot be written to via `.write()`, and `sys.stdout.flush()` and the rest
     raise `AttributeError`. They are useful only as `print(..., file=...)`,
@@ -53,12 +62,12 @@ Accessing an attribute the module does not define raises Monty's generic
 `getsizeof`, `getrefcount`, `intern`, `displayhook`, `excepthook`,
 `settrace`, `setprofile`, `stdin`, `__stdout__`, `_getframe`, `audit`.
 
-`flags`, `hash_info`, `int_info` and `thread_info` describe CPython's own C
-implementation — its command line, its string and integer hashing, its bignum
-digit layout, its thread library — none of which Monty shares, so they raise
-`AttributeError` rather than reporting fabricated values. In particular
-`hash_info` cannot be used to predict Monty's hashes, which differ from
-CPython's (see [builtins.md](builtins.md)).
+`hash_info`, `int_info` and `thread_info` describe CPython's own C
+implementation — its string and integer hashing, its bignum digit layout, its
+thread library — none of which Monty shares, so they raise `AttributeError`
+rather than reporting fabricated values. In particular `hash_info` cannot be
+used to predict Monty's hashes, which differ from CPython's (see
+[builtins.md](builtins.md)).
 
 `ps1` and `ps2` are absent, so `hasattr(sys, 'ps1')` correctly reports that the
 sandbox is not an interactive prompt.

@@ -308,6 +308,30 @@ pub enum StaticStrings {
     Rounds,
 
     // ==========================
+    // sys.flags fields
+    // `flags` itself reuses the `Flags` variant added for `pattern.flags`.
+    #[strum(serialize = "sys.flags")]
+    SysFlags,
+    Debug,
+    Inspect,
+    Interactive,
+    Optimize,
+    NoUserSite,
+    NoSite,
+    IgnoreEnvironment,
+    Verbose,
+    BytesWarning,
+    Quiet,
+    HashRandomization,
+    Isolated,
+    DevMode,
+    #[strum(serialize = "utf8_mode")]
+    Utf8Mode,
+    WarnDefaultEncoding,
+    SafePath,
+    IntMaxStrDigits,
+
+    // ==========================
     // os.stat_result fields
     #[strum(serialize = "StatResult")]
     OsStatResult,

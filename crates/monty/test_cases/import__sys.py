@@ -95,3 +95,26 @@ assert sys.pycache_prefix is None
 assert isinstance(sys.builtin_module_names, tuple)
 assert 'sys' in sys.builtin_module_names
 assert list(sys.builtin_module_names) == sorted(sys.builtin_module_names)
+
+# === sys.flags ===
+# Same 18 fields as CPython 3.14, in the same order
+assert len(sys.flags) == 18
+assert sys.flags[0] == sys.flags.debug
+assert sys.flags[-1] == sys.flags.int_max_str_digits
+assert sys.flags.debug == 0
+assert sys.flags.inspect == 0
+assert sys.flags.interactive == 0
+assert sys.flags.optimize == 0
+assert sys.flags.no_user_site == 0
+assert sys.flags.no_site == 0
+assert sys.flags.ignore_environment == 0
+assert sys.flags.verbose == 0
+assert sys.flags.bytes_warning == 0
+assert sys.flags.quiet == 0
+assert sys.flags.isolated == 0
+assert sys.flags.dev_mode is False
+assert sys.flags.utf8_mode == 0
+assert sys.flags.warn_default_encoding == 0
+assert sys.flags.safe_path is False
+assert sys.flags.int_max_str_digits == 4300
+assert repr(sys.flags).startswith('sys.flags(debug=0, ')
