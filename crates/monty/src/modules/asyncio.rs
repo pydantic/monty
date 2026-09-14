@@ -84,11 +84,11 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let result = MontyObject::export(result, vm);
     defer_drop!(delay, vm);
     let seconds = delay_seconds(delay, vm)?;
+    // NaN is the one delay CPython refuses; the rest clamp.
+    let delay =
+        sleep_duration_saturating(seconds).map_err(|_| ExcType::value_error("Invalid delay: NaN (not a number)"))?;
     Ok(CallResult::OsCallWithEffect {
-        call: OsFunctionCall::AsyncSleep(AsyncSleepArgs {
-            delay: sleep_duration_saturating(seconds),
-            result,
-        }),
+        call: OsFunctionCall::AsyncSleep(AsyncSleepArgs { delay, result }),
         effect: PostConversionEffect::SettleAwaitable.into(),
     })
 }

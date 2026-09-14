@@ -465,7 +465,7 @@ pub const MAX_SLEEP_SECONDS: f64 = 9_223_372_036.854_775;
 ///
 /// The caller picks the Python-level consequence: `time.sleep` raises
 /// (`ValueError` for the first two, `OverflowError` for the third) while
-/// `asyncio.sleep` clamps, since CPython accepts any delay there.
+/// `asyncio.sleep` raises only for NaN and clamps the rest, as CPython does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SleepError {
     /// The delay was NaN.
@@ -494,16 +494,16 @@ pub fn sleep_duration(seconds: f64) -> Result<Duration, SleepError> {
     }
 }
 
-/// Like [`sleep_duration`], but for `asyncio.sleep`, which CPython lets pass
-/// any delay: a NaN or negative one becomes no wait at all (CPython returns
-/// immediately for both) and an over-long one saturates at
-/// [`MAX_SLEEP_SECONDS`].
-#[must_use]
-pub fn sleep_duration_saturating(seconds: f64) -> Duration {
+/// Like [`sleep_duration`], but for `asyncio.sleep`, which clamps rather than
+/// raising: a negative delay becomes no wait at all (CPython returns
+/// immediately) and an over-long one saturates at [`MAX_SLEEP_SECONDS`]. Only
+/// NaN is refused, the one delay CPython rejects there.
+pub fn sleep_duration_saturating(seconds: f64) -> Result<Duration, SleepError> {
     match sleep_duration(seconds) {
-        Ok(delay) => delay,
-        Err(SleepError::NotANumber | SleepError::Negative) => Duration::ZERO,
-        Err(SleepError::TooLarge) => Duration::from_secs_f64(MAX_SLEEP_SECONDS),
+        Ok(delay) => Ok(delay),
+        Err(SleepError::Negative) => Ok(Duration::ZERO),
+        Err(SleepError::TooLarge) => Ok(Duration::from_secs_f64(MAX_SLEEP_SECONDS)),
+        Err(err @ SleepError::NotANumber) => Err(err),
     }
 }
 
