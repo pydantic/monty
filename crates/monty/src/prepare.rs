@@ -1473,7 +1473,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             }
             UnpackTarget::Starred(inner) => Ok(UnpackTarget::Starred(Box::new(self.prepare_unpack_target(*inner)?))),
             UnpackTarget::Attr { object, attr, position } => Ok(UnpackTarget::Attr {
-                object: self.prepare_expression(object)?,
+                object: Box::new(self.prepare_expression(*object)?),
                 attr,
                 position,
             }),
@@ -1482,8 +1482,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 index,
                 position,
             } => Ok(UnpackTarget::Subscript {
-                container: self.prepare_expression(container)?,
-                index: self.prepare_expression(index)?,
+                container: Box::new(self.prepare_expression(*container)?),
+                index: Box::new(self.prepare_expression(*index)?),
                 position,
             }),
             UnpackTarget::Tuple { targets, position } => {

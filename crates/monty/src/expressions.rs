@@ -376,6 +376,9 @@ pub enum Expr {
 /// single-target assignments would. Comprehension targets are the exception:
 /// their leaves live on the operand stack as comp-var slots, so only names
 /// reach that path (`prepare` rejects the rest).
+///
+/// Their expressions are boxed: `Node::For` and `Node::With` embed a target
+/// inline, so an inline `ExprLoc` here would grow every `Node`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum UnpackTarget {
     /// Single identifier: `a`
@@ -394,7 +397,7 @@ pub enum UnpackTarget {
     /// Attribute target: `obj.attr`.
     Attr {
         /// Expression evaluating to the object whose attribute is being set.
-        object: ExprLoc,
+        object: Box<ExprLoc>,
         /// The attribute name.
         attr: EitherStr,
         /// Position of the full attribute expression (for traceback carets).
@@ -403,9 +406,9 @@ pub enum UnpackTarget {
     /// Subscript target: `container[index]`.
     Subscript {
         /// Expression evaluating to the container object.
-        container: ExprLoc,
+        container: Box<ExprLoc>,
         /// Expression evaluating to the index/key.
-        index: ExprLoc,
+        index: Box<ExprLoc>,
         /// Position of the full subscript expression (for traceback carets).
         position: CodeRange,
     },

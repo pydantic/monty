@@ -1890,15 +1890,15 @@ impl<'a> Parser<'a> {
                 Ok(UnpackTarget::Tuple { targets, position })
             }
             AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(UnpackTarget::Attr {
-                object: self.parse_expression(*value)?,
+                object: Box::new(self.parse_expression(*value)?),
                 attr: EitherStr::Interned(self.interner.intern(attr.id())),
                 position: self.convert_range(range),
             }),
             AstExpr::Subscript(ast::ExprSubscript {
                 value, slice, range, ..
             }) => Ok(UnpackTarget::Subscript {
-                container: self.parse_expression(*value)?,
-                index: self.parse_expression(*slice)?,
+                container: Box::new(self.parse_expression(*value)?),
+                index: Box::new(self.parse_expression(*slice)?),
                 position: self.convert_range(range),
             }),
             other => Err(ParseError::syntax(
