@@ -107,8 +107,8 @@ Each directory under [`examples/`](https://github.com/pydantic/monty/tree/main/e
     ported from [PyScript](https://github.com/pyscript/examples/tree/main/antigravity), running in the browser on the
     WebAssembly build.
     The PyScript file runs unchanged apart from its imports, which are replaced by
-    [host objects](host-objects.md): the sandbox drives the comic through the DOM surface the page hands it, under
-    [resource limits](resource-limits.md).
+    [host objects](host-objects.md) and [host functions](host-functions.md): the page passes in the DOM methods the
+    program may call, and the program moves the figure through them, under [resource limits](resource-limits.md).
 - [`classes`](https://github.com/pydantic/monty/tree/main/examples/classes): one short file per behaviour of [host
     objects](host-objects.md), in Python and TypeScript: explicit policies, lazy attributes, sandbox-side copies,
     `convert_value` hooks, constructing host classes from the sandbox, and round-tripping sandbox-defined classes.

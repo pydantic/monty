@@ -175,11 +175,19 @@ exclude = [
     "examples/web_scraper/example_code.py",
     # two starred targets in one assignment is the SyntaxError under test
     "crates/monty/test_cases/unpack__err_multiple_starred.py",
-    # sandbox-side code: `pydom`, `DOMParser`, `open_url`, `set_interval` and
-    # `random` are bound by the host, not imported
-    "examples/antigravity/antigravity.py",
 ]
 venv = ".venv"
+
+# sandbox-side code copied verbatim from the PyScript example: `pydom`, `DOMParser`,
+# `open_url`, `set_interval` and `random` are bound by the host, not imported, and
+# the upstream file has no annotations; every other strict rule still applies
+[[tool.pyright.executionEnvironments]]
+root = "examples/antigravity"
+reportUndefinedVariable = false
+reportMissingParameterType = false
+reportUnknownParameterType = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
 
 # we include tests cases in type checking then switch off all rules that break
 # so the files don't show as errors in the IDE
