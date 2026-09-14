@@ -1,0 +1,9 @@
+crates/monty/test_cases/refcount__exec_namespace.py
+  ai_agent 17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a0cc55bbac55d998c4eb9edb2a3d644e1719c6cf",
+  "prompts": {}
+}
