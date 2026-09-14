@@ -10,6 +10,7 @@ use std::env;
 use std::{
     fmt, fs, io,
     process::ExitCode,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -33,8 +34,8 @@ use tracing::field::Empty;
 
 use crate::Cli;
 
-/// The clock the CLI lends to sandboxed code for `date.today()` and
-/// `datetime.now()`.
+/// The clock the CLI lends to sandboxed code for `date.today()`,
+/// `datetime.now()` and `time.time()`.
 ///
 /// The same clock a fresh [`MontyRun`] already has, named here so the CLI's
 /// choice does not quietly follow a change to that default.
@@ -630,11 +631,27 @@ impl SuspensionBudget {
 /// successful `MontyObject` or an exception for errors / unsupported
 /// operations.
 fn handle_os_call(call: OsFunctionCall, mount_table: &mut Option<MountTable>) -> ExtFunctionResult {
-    // The clock answers `date.today()` / `datetime.now()` here for the same
-    // reason it is granted to the non-suspending path: the CLI is the host, and
-    // a local script expecting CPython's clock should get one either way.
+    // The clock answers `date.today()` / `datetime.now()` / `time.time()` here
+    // for the same reason it is granted to the non-suspending path: the CLI is
+    // the host, and a local script expecting CPython's clock should get one
+    // either way.
     if let Some(now) = CLI_CLOCK.resolve(&call) {
         return now.into();
+    }
+    // Both sleeps wait on this thread, which is the script's own: a CLI run is
+    // one local script, so there is nothing else to run meanwhile and no
+    // deadline but the user's patience. `--max-suspensions` still bounds how
+    // many waits a run can ask for.
+    match call {
+        OsFunctionCall::Sleep(delay) => {
+            thread::sleep(delay);
+            return MontyObject::none().into();
+        }
+        OsFunctionCall::AsyncSleep(args) => {
+            thread::sleep(args.delay);
+            return args.result.into();
+        }
+        _ => {}
     }
     match mount_table.as_mut() {
         Some(mounts) => match mounts.handle_os_call(call) {

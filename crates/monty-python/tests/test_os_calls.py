@@ -448,6 +448,61 @@ def test_datetime_now_callback_with_timezone(monty_run: RunMonty):
     )
 
 
+def test_time_time_callback(monty_run: RunMonty):
+    """time.time() reaches the callback with no arguments and returns a float."""
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> float | None:
+        if function_name == 'time.time':
+            assert args == ()
+            return 1700000000.5
+        return None
+
+    assert monty_run('import time; time.time()', os=os_handler) == snapshot(1700000000.5)
+
+
+# =============================================================================
+# Sleeping (time.sleep / asyncio.sleep)
+# =============================================================================
+
+
+def test_time_sleep_callback(monty_run: RunMonty):
+    """time.sleep() passes the delay as float seconds and evaluates to None."""
+    calls: list[Any] = []
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        calls.append((function_name, args))
+        # the host decides how long to wait; waiting not at all is a valid choice
+        return None
+
+    assert monty_run('import time; time.sleep(1.5) is None', os=os_handler) == snapshot(True)
+    assert calls == snapshot([('time.sleep', (1.5,))])
+
+
+def test_time_sleep_can_be_refused(monty_run: RunMonty):
+    """A host that declines the wait leaves the sandbox with monty's own error."""
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        return NOT_HANDLED
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import time; time.sleep(30)', os=os_handler)
+    assert str(exc_info.value) == snapshot("RuntimeError: 'time.sleep' is not supported in this environment")
+
+
+def test_asyncio_sleep_callback(monty_run: RunMonty):
+    """asyncio.sleep() passes the delay and the value the await produces."""
+    calls: list[Any] = []
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        calls.append((function_name, args))
+        _, result = args
+        return result
+
+    code = "import asyncio; asyncio.run(asyncio.sleep(0.25, 'woken'))"
+    assert monty_run(code, os=os_handler) == snapshot('woken')
+    assert calls == snapshot([('asyncio.sleep', (0.25, 'woken'))])
+
+
 # =============================================================================
 # Entropy (os.urandom / random)
 # =============================================================================

@@ -816,6 +816,23 @@ impl<'h> VM<'h> {
         self.push(Value::Ref(future_id));
     }
 
+    /// Allocates an `ExternalFuture` already resolved with `value`, for an OS
+    /// call whose result the sandbox awaits (`asyncio.sleep`).
+    ///
+    /// The host answered immediately, so nothing is registered with the
+    /// scheduler — awaiting the future hands the value straight back, and
+    /// dropping it unawaited releases the value like any other awaitable. The
+    /// call id is allocated rather than reused so it stays unique if the
+    /// future is ever inspected.
+    pub(crate) fn settled_awaitable(&mut self, value: Value) -> Value {
+        let call_id = self.allocate_call_id();
+        let future = ExternalFuture {
+            call_id,
+            state: ExternalFutureState::Resolved(value),
+        };
+        Value::Ref(self.heap.allocate(HeapData::ExternalFuture(Box::new(future))))
+    }
+
     /// Gets the pending call IDs from the scheduler.
     pub fn get_pending_call_ids(&self) -> Vec<CallId> {
         self.scheduler.pending_call_ids()

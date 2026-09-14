@@ -9,7 +9,7 @@
 //! host bindings get a generic `(positional, keyword)` view via
 //! [`OsFunctionCall::to_args`].
 
-use std::{borrow::Cow, fmt, ops::Deref};
+use std::{borrow::Cow, fmt, ops::Deref, time::Duration};
 
 use crate::{
     args::{PushValue, ToArgs},
@@ -118,6 +118,22 @@ pub enum OsFunctionCall {
     /// how the `random` module seeds an unseeded generator).
     #[strum(serialize = "os.urandom")]
     Urandom(UrandomArgs),
+    /// Read the host clock as `time.time()` does: seconds since the Unix
+    /// epoch, answered with a [`MontyObject::Float`].
+    #[strum(serialize = "time.time")]
+    Time,
+    /// `time.sleep(seconds)` — the host waits, then answers with any value
+    /// (`time.sleep` discards it and evaluates to `None`).
+    #[strum(serialize = "time.sleep")]
+    Sleep(Duration),
+    /// `asyncio.sleep(delay, result)` — like [`Sleep`](Self::Sleep), except
+    /// the sandbox turns the answer into an awaitable, so a host that runs an
+    /// event loop should answer with a future (`ExtFunctionResult::Future`)
+    /// and resolve it when the delay elapses, letting sibling tasks run
+    /// meanwhile. Whatever the host answers with becomes the value of the
+    /// `await`, so echo `result` back.
+    #[strum(serialize = "asyncio.sleep")]
+    AsyncSleep(AsyncSleepArgs),
 }
 
 impl OsFunctionCall {
@@ -166,8 +182,14 @@ impl OsFunctionCall {
             Self::Getenv(a) => a.to_args(),
             Self::Urandom(a) => a.to_args(),
             // Unit & single-value non-FS variants.
-            Self::GetEnviron | Self::DateToday => CallArgs::new(),
+            Self::GetEnviron | Self::DateToday | Self::Time => CallArgs::new(),
             Self::DateTimeNow(tz) => single_arg(tz.map_or(MontyNode::None, MontyNode::TimeZone)),
+            Self::Sleep(delay) => single_arg(seconds_node(delay)),
+            Self::AsyncSleep(a) => {
+                let mut call = single_arg(seconds_node(a.delay));
+                call.push_arg(a.result);
+                call
+            }
         }
     }
 
@@ -266,7 +288,14 @@ impl OsFunctionCall {
             Self::Open(a) => Some(a.path.as_str()),
             Self::Mkdir(a) => Some(a.path.as_str()),
             Self::Rename(a) => Some(a.src.as_str()),
-            Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) | Self::Urandom(_) => None,
+            Self::Getenv(_)
+            | Self::GetEnviron
+            | Self::DateToday
+            | Self::DateTimeNow(_)
+            | Self::Urandom(_)
+            | Self::Time
+            | Self::Sleep(_)
+            | Self::AsyncSleep(_) => None,
         }
     }
 
@@ -304,9 +333,14 @@ impl OsFunctionCall {
             Self::Open(a) => (Some(&mut a.path), None),
             Self::Mkdir(a) => (Some(&mut a.path), None),
             Self::Rename(a) => (Some(&mut a.src), Some(&mut a.dst)),
-            Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) | Self::Urandom(_) => {
-                (None, None)
-            }
+            Self::Getenv(_)
+            | Self::GetEnviron
+            | Self::DateToday
+            | Self::DateTimeNow(_)
+            | Self::Urandom(_)
+            | Self::Time
+            | Self::Sleep(_)
+            | Self::AsyncSleep(_) => (None, None),
         };
         primary.into_iter().chain(dst)
     }
@@ -410,6 +444,72 @@ pub struct GetenvArgs {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct UrandomArgs {
     pub size: u64,
+}
+
+/// `asyncio.sleep(delay, result=None)` shape.
+///
+/// `result` is the value the `await` should produce; it rides along so a host
+/// answering the call — immediately or by resolving a future — has it to hand
+/// back without the sandbox having to remember anything across the suspension.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AsyncSleepArgs {
+    pub delay: Duration,
+    pub result: MontyObject,
+}
+
+/// Longest sleep the sleep calls accept, matching the point where CPython's
+/// `PyTime_t` (nanoseconds in an `i64`) overflows.
+pub const MAX_SLEEP_SECONDS: f64 = 9_223_372_036.854_775;
+
+/// Why a requested sleep length cannot be carried by an OS call.
+///
+/// The caller picks the Python-level consequence: `time.sleep` raises
+/// (`ValueError` for the first two, `OverflowError` for the third) while
+/// `asyncio.sleep` clamps, since CPython accepts any delay there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepError {
+    /// The delay was NaN.
+    NotANumber,
+    /// The delay was negative.
+    Negative,
+    /// The delay was past [`MAX_SLEEP_SECONDS`] (infinity included).
+    TooLarge,
+}
+
+/// Converts a Python sleep argument into the [`Duration`] an OS call carries.
+///
+/// Sleep payloads are `Duration` rather than raw seconds precisely so no host
+/// is ever handed a NaN, negative or unrepresentable span to convert — the
+/// obvious `Duration::from_secs_f64` panics on all three. Both producers, the
+/// interpreter and the wire decoder, go through here.
+pub fn sleep_duration(seconds: f64) -> Result<Duration, SleepError> {
+    if seconds.is_nan() {
+        Err(SleepError::NotANumber)
+    } else if seconds < 0.0 {
+        Err(SleepError::Negative)
+    } else if seconds > MAX_SLEEP_SECONDS {
+        Err(SleepError::TooLarge)
+    } else {
+        Duration::try_from_secs_f64(seconds).map_err(|_| SleepError::TooLarge)
+    }
+}
+
+/// Like [`sleep_duration`], but for `asyncio.sleep`, which CPython lets pass
+/// any delay: a NaN or negative one becomes no wait at all (CPython returns
+/// immediately for both) and an over-long one saturates at
+/// [`MAX_SLEEP_SECONDS`].
+#[must_use]
+pub fn sleep_duration_saturating(seconds: f64) -> Duration {
+    match sleep_duration(seconds) {
+        Ok(delay) => delay,
+        Err(SleepError::NotANumber | SleepError::Negative) => Duration::ZERO,
+        Err(SleepError::TooLarge) => Duration::from_secs_f64(MAX_SLEEP_SECONDS),
+    }
+}
+
+/// Projects a sleep length back to the `float` seconds a host callback sees.
+fn seconds_node(delay: Duration) -> MontyNode {
+    MontyNode::Float(delay.as_secs_f64())
 }
 
 // =============================================================================

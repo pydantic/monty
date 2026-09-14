@@ -200,7 +200,8 @@ anything.
     ```
 
 A separate `os=` callback handles operations no mount covers: the remaining `pathlib` operations, `os.getenv`,
-`os.environ`, `date.today()`, `datetime.now()` and `os.urandom()`.
+`os.environ`, the clock (`date.today()`, `datetime.now()`, `time.time()`), the waits (`time.sleep()`,
+`asyncio.sleep()`) and `os.urandom()`.
 [`AbstractOS`][pydantic_monty.AbstractOS] is the typed form of that callback; [`OSAccess`][pydantic_monty.OSAccess] implements it over in-memory files and an `environ` mapping
 you supply, and overriding one of its methods replaces one operation.
 JavaScript has only the callback form, so the TypeScript tab answers the same three operations by hand:
@@ -291,12 +292,12 @@ resolved inside the sandbox and reaches a mount as an absolute virtual path.
 
 ### The clock
 
-`date.today()` and `datetime.now()` are the only two calls that read a clock, and what answers them depends on how you
-run the sandbox.
+`date.today()`, `datetime.now()` and `time.time()` are the only calls that read a clock, and what answers them depends
+on how you run the sandbox.
 
 Through the pool — `pydantic_monty`, `@pydantic/monty`, or `monty-pool` — they reach your `os=` handler as OS calls like
-any other, so the sandbox reads no clock until you write a handler that gives it one, and a handler that answers neither
-makes both raise.
+any other, so the sandbox reads no clock until you write a handler that gives it one, and a handler that answers none of
+them makes all three raise.
 
 In-process Rust runs have no host loop to ask, so they read this machine's clock, as the `monty` CLI does.
 `MontyRun::with_host_clock` changes that: `HostClock::Denied` if sandboxed code should not read your wall time at all,
@@ -317,6 +318,58 @@ Python's default `AbstractOS.urandom()` raises `MemoryError` before allocating w
 `max_urandom_bytes`, 1 MiB by default; `OSAccess(max_urandom_bytes=...)` sets the cap.
 A custom handler allocates in the host process, outside the worker's memory limit, so it must apply its own cap.
 See [random](limitations/random.md).
+
+### Waiting
+
+`time.sleep()` and `asyncio.sleep()` are calls too: the sandbox cannot block, it can only ask the host to wait for it.
+A handler that answers them decides how long a wait it is willing to perform — cap it, scale it, or refuse it — and one
+that answers neither leaves both raising.
+
+A wait costs nothing against `max_duration`, which measures execution time and stops while the sandbox is suspended, so
+what bounds a sleeping session is `max_suspensions` (one per sleep) and your own turn deadline.
+See [resource limits](resource-limits.md).
+
+=== "Python"
+
+    ```python
+    import time
+    from typing import Any
+
+    from pydantic_monty import NOT_HANDLED, Monty
+
+
+    def host_os(name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        if name == 'time.sleep':
+            time.sleep(min(args[0], 0.05))  # never wait longer than 50ms
+            return None
+        return NOT_HANDLED
+
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            print(session.feed_run('import time\ntime.sleep(30)\n"awake"', os=host_os))
+            #> awake
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty, NOT_HANDLED } from '@pydantic/monty'
+
+    async function hostOs(name: string, args: unknown[]) {
+      if (name !== 'time.sleep') return NOT_HANDLED
+      const seconds = Math.min(args[0] as number, 0.05) // never wait longer than 50ms
+      await new Promise((resolve) => setTimeout(resolve, seconds * 1000))
+      return null
+    }
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    console.log(await session.feedRun('import time\ntime.sleep(30)\n"awake"', { os: hostOs })) // awake
+    ```
+
+`asyncio.sleep` arrives the same way, with the delay and the value the `await` should produce as its two arguments —
+return the second one back.
 
 ## Crash isolation
 

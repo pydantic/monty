@@ -117,6 +117,34 @@ def test_urandom_limit_must_be_int(limit: Any):
     assert str(exc_info.value) == f'max_urandom_bytes must be an int, not {type(limit).__name__}'
 
 
+def test_default_clock_and_sleeps(monty_run: RunMonty):
+    """OSAccess answers the clock and both sleeps from the host process."""
+    fs = OSAccess()
+
+    result = monty_run(
+        'import asyncio, time\n'
+        'start = time.time()\n'
+        'time.sleep(0.001)\n'
+        "woken = asyncio.run(asyncio.sleep(0.001, 'woken'))\n"
+        '(time.time() >= start, woken)',
+        os=fs,
+    )
+    assert result == snapshot((True, 'woken'))
+
+
+def test_sleep_can_be_capped(monty_run: RunMonty):
+    """Overriding sleep() is how a host bounds how long the sandbox can wait."""
+    waited: list[float] = []
+
+    class CappedSleep(OSAccess):
+        def sleep(self, seconds: float) -> None:
+            waited.append(seconds)
+            super().sleep(min(seconds, 0.001))
+
+    assert monty_run('import time; time.sleep(3600) is None', os=CappedSleep()) == snapshot(True)
+    assert waited == snapshot([3600.0])
+
+
 # =============================================================================
 # Path Existence Checks (via Monty)
 # =============================================================================

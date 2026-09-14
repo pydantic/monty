@@ -740,6 +740,14 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, pa
             }
         }
         Some(Call::Urandom(u)) => os_call!("urandom", args.size = u.size),
+        Some(Call::Time(_)) => os_call!("time"),
+        Some(Call::Sleep(s)) => os_call!("sleep", args.seconds = s.seconds),
+        Some(Call::AsyncSleep(s)) => {
+            let (result, cut) = attr_value(arena_nodes(os_call.values.as_ref()), NodeId(s.result));
+            let result = result.as_str().into_owned();
+            args_cut |= cut;
+            os_call!("async_sleep", args.delay = s.delay, args.result = result)
+        }
         None => os_call!(MISSING),
     });
     if args_cut {

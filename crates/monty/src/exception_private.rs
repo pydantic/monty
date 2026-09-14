@@ -968,6 +968,22 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("The only supported seed types are:\nNone, int, float, str, bytes, and bytearray.")
     }
 
+    /// The `OverflowError` `time.sleep()` raises for a length past the roughly
+    /// 292 years it can represent.
+    ///
+    /// CPython words it by where the conversion failed, which depends on the
+    /// argument's type: a float is rejected converting to the platform's
+    /// `time_t`, an int converting to `PyTime_t`.
+    #[must_use]
+    fn sleep_too_long(from_float: bool) -> RunError {
+        let message = if from_float {
+            "timestamp out of range for platform time_t"
+        } else {
+            "timestamp too large to convert to C PyTime_t"
+        };
+        SimpleException::new_msg(ExcType::OverflowError, message).into()
+    }
+
     /// Creates a TypeError for bytes() constructor with invalid type.
     ///
     /// Matches CPython's format: `TypeError: cannot convert '{type}' object to bytes`

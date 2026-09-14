@@ -740,9 +740,13 @@ message OsCall {
     DateTimeNow date_time_now = 24;
     // os.urandom(size), also how `random` seeds an unseeded generator.
     Urandom urandom = 25;
+    Unit time = 27; // time.time()
+    Sleep sleep = 28; // time.sleep(seconds)
+    AsyncSleep async_sleep = 29; // asyncio.sleep(delay, result)
   }
 
-  // The arena any value-typed argument (`Getenv.default`) indexes.
+  // The arena any value-typed argument (`Getenv.default`, `AsyncSleep.result`)
+  // indexes.
   Arena values = 26;
 
   message TextWrite {
@@ -784,6 +788,25 @@ message OsCall {
   // a negative count cannot be expressed on the wire.
   message Urandom {
     uint64 size = 1;
+  }
+  // time.sleep(seconds) — the parent waits, then answers (the sandbox
+  // evaluates the call to None whatever the answer carried). Answering with a
+  // future is refused: the call is a block by definition.
+  message Sleep {
+    // How long to wait. Always finite, non-negative, and small enough to be a
+    // duration of nanoseconds in an int64; a frame breaking that is rejected.
+    double seconds = 1;
+  }
+  // asyncio.sleep(delay, result) — the awaitable form. A parent running an
+  // event loop should answer `ExtFunctionResult.future` and resolve it with
+  // `result` once the delay elapses, so the sandbox's other tasks keep
+  // running; answering directly is equivalent to a wait that blocks them.
+  message AsyncSleep {
+    // How long to wait, under the same constraints as `Sleep.seconds`.
+    double delay = 1;
+    // The value the sandbox's `await` should produce: an index into the
+    // enclosing `OsCall.values`.
+    uint32 result = 2;
   }
 }
 

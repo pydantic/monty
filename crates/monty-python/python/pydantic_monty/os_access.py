@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import time
 from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, Protocol, Sequence, TypeAlias, TypeGuard
@@ -48,6 +49,9 @@ OsFunction = Literal[
     'date.today',
     'datetime.now',
     'os.urandom',
+    'time.time',
+    'time.sleep',
+    'asyncio.sleep',
 ]
 
 MAX_URANDOM_BYTES_DEFAULT: int = 1_048_576
@@ -69,8 +73,6 @@ class StatResult(NamedTuple):
             mtime: Modification time as Unix timestamp, defaults to Now.
 
         """
-        import time
-
         # If only permission bits provided (no file type), add regular file type
         if mode < 0o1000:
             mode = mode | 0o100_000
@@ -90,8 +92,6 @@ class StatResult(NamedTuple):
         Returns:
             A namedtuple with stat_result fields
         """
-        import time
-
         # If only permission bits provided (no file type), add directory type
         if mode < 0o1000:
             mode = mode | 0o040_000
@@ -233,6 +233,12 @@ class AbstractOS(ABC):
                 return self.datetime_now(*args)
             case 'os.urandom':
                 return self.urandom(*args)
+            case 'time.time':
+                return self.time()
+            case 'time.sleep':
+                return self.sleep(*args)
+            case 'asyncio.sleep':
+                return self.async_sleep(*args)
             case _:  # pyright: ignore[reportUnnecessaryComparison]
                 raise NotImplementedError(f'Unknown OS function: {function_name}')
 
@@ -565,6 +571,33 @@ class AbstractOS(ABC):
         if size > self.max_urandom_bytes:
             raise MemoryError(f'os.urandom() size exceeds max_urandom_bytes ({self.max_urandom_bytes})')
         return os.urandom(size)
+    def time(self) -> float:
+        """Return the epoch seconds for Monty's `time.time()` callback.
+
+        Override this alongside `date_today()` and `datetime_now()` when the
+        sandbox should observe a virtual or fixed clock.
+        """
+        return time.time()
+
+    def sleep(self, seconds: float) -> None:
+        """Wait for Monty's `time.sleep()` callback.
+
+        The wait happens in the host process, blocking this thread: override it
+        to cap, scale or refuse (raise, or return `NOT_HANDLED`) how long
+        sandboxed code can make the host wait.
+        """
+        time.sleep(seconds)
+
+    def async_sleep(self, delay: float, result: Any = None) -> Any:
+        """Wait for Monty's `asyncio.sleep()` callback, returning `result`.
+
+        `result` is the value the sandbox's `await` produces, so an override
+        that waits differently must still return it. The default waits exactly
+        as `sleep()` does, which means gathered sleeps run one after another
+        rather than concurrently.
+        """
+        self.sleep(delay)
+        return result
 
 
 class AbstractFile(Protocol):

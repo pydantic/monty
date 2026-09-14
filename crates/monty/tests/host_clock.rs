@@ -1,5 +1,5 @@
-//! [`HostClock`]: the opt-in clock that answers `date.today()` and
-//! `datetime.now()` on the non-suspending run paths.
+//! [`HostClock`]: the opt-in clock that answers `date.today()`,
+//! `datetime.now()` and `time.time()` on the non-suspending run paths.
 //!
 //! These can't live in `test_cases/`, which has no way to grant a clock and
 //! runs every fixture against a real CPython whose clock keeps moving. The
@@ -67,7 +67,7 @@ fn the_host_clock_is_the_default() {
 
 /// `Denied` is how an embedder takes the default clock away again.
 #[test]
-fn a_denied_clock_refuses_both_calls() {
+fn a_denied_clock_refuses_every_call() {
     assert_eq!(
         run("from datetime import datetime\ndatetime.now()", HostClock::Denied).unwrap_err(),
         "NotImplementedError: OS function 'datetime.now' not implemented with standard execution"
@@ -75,6 +75,33 @@ fn a_denied_clock_refuses_both_calls() {
     assert_eq!(
         run("from datetime import date\ndate.today()", HostClock::Denied).unwrap_err(),
         "NotImplementedError: OS function 'date.today' not implemented with standard execution"
+    );
+    assert_eq!(
+        run("import time\ntime.time()", HostClock::Denied).unwrap_err(),
+        "NotImplementedError: OS function 'time.time' not implemented with standard execution"
+    );
+}
+
+/// `time.time()` is the same instant as `datetime.now()`, read as epoch
+/// seconds rather than as local wall time — no timezone applies to it.
+#[test]
+fn fixed_clock_reads_epoch_seconds() {
+    assert_eq!(run("import time\ntime.time()", FIXED).unwrap(), {
+        MontyObject::float(1_700_000_000.123_456)
+    });
+}
+
+/// Sleeping is never served in-process, whatever the clock: a wait has to
+/// happen where a host can bound it.
+#[test]
+fn a_clock_does_not_grant_sleeping() {
+    assert_eq!(
+        run("import time\ntime.sleep(0)", HostClock::System).unwrap_err(),
+        "NotImplementedError: OS function 'time.sleep' not implemented with standard execution"
+    );
+    assert_eq!(
+        run("import asyncio\nasyncio.run(asyncio.sleep(0))", HostClock::System).unwrap_err(),
+        "NotImplementedError: OS function 'asyncio.sleep' not implemented with standard execution"
     );
 }
 

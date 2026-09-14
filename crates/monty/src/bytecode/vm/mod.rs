@@ -2019,6 +2019,11 @@ impl<'h> VM<'h> {
             Some(PendingEffect::Post(PostConversionEffect::SeedRandom { target, retry })) => {
                 apply_seed_random(target, retry, value, self)
             }
+            Some(PendingEffect::Post(PostConversionEffect::DiscardResult)) => {
+                value.drop_with(self);
+                Ok(Value::None)
+            }
+            Some(PendingEffect::Post(PostConversionEffect::SettleAwaitable)) => Ok(self.settled_awaitable(value)),
             // Any pre-conversion effect was consumed above.
             Some(PendingEffect::Pre(_)) | None => Ok(value),
         };
@@ -2075,7 +2080,12 @@ impl<'h> VM<'h> {
                     PostConversionEffect::SeedRandom { target, retry }.release(self.heap);
                 }
                 // Hold no state or heap references — nothing to roll back.
-                PendingEffect::Pre(_) | PendingEffect::Post(PostConversionEffect::OpenName { .. }) => {}
+                PendingEffect::Pre(_)
+                | PendingEffect::Post(
+                    PostConversionEffect::OpenName { .. }
+                    | PostConversionEffect::DiscardResult
+                    | PostConversionEffect::SettleAwaitable,
+                ) => {}
             }
         }
         // Use the normal exception handling mechanism

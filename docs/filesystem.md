@@ -241,7 +241,7 @@ handler at all.
 The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`, `open`,
 `Path.read_text`, `Path.read_bytes`, `Path.write_text`, `Path.write_bytes`, `Path.append_text`, `Path.append_bytes`,
 `Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.stat`, `Path.rename`, `Path.resolve`, `Path.absolute`,
-`os.getenv`, `os.environ`, `date.today`, `datetime.now` and `os.urandom`.
+`os.getenv`, `os.environ`, `date.today`, `datetime.now`, `os.urandom`, `time.time`, `time.sleep` and `asyncio.sleep`.
 `os.urandom` also arrives, for 2496 bytes, the first time an unseeded `random` generator draws a value
 (see [random](limitations/random.md)).
 
@@ -316,7 +316,8 @@ you wrote.
 
 For anything more specific, subclass `OSAccess` and override the methods you want to change, or implement every
 abstract method of `AbstractOS` yourself; the optional hooks (`path_open`, the append methods, `date_today`,
-`datetime_now`) report [`NOT_HANDLED`][pydantic_monty.NOT_HANDLED] to Monty if you make them raise `NotImplementedError`.
+`datetime_now`, `time`, `sleep`, `async_sleep`) report [`NOT_HANDLED`][pydantic_monty.NOT_HANDLED] to Monty if you make
+them raise `NotImplementedError`.
 
 ## Rust
 

@@ -43,9 +43,11 @@ monty --help
 - `--max-memory 10MB`, `--max-duration 0.5`, `--max-recursion-depth`,
   `--gc-interval`, `--max-suspensions` — sandbox resource limits
 
-`date.today()` and `datetime.now()` read this machine's clock and local
-timezone, as they do for any in-process run. `MontyRun::with_host_clock` is how
-an embedder chooses otherwise; the CLI has no flag for it. Nothing answers
+`date.today()`, `datetime.now()` and `time.time()` read this machine's clock and
+local timezone, as they do for any in-process run. `MontyRun::with_host_clock` is
+how an embedder chooses otherwise; the CLI has no flag for it. `time.sleep()` and
+`asyncio.sleep()` wait on the running thread, but only where the CLI drives
+suspensions, which is a run with at least one `-m` mount. Nothing answers
 `os.urandom()`, so it and any unseeded `random` draw raise `NotImplementedError`
 (or `RuntimeError` under `--mount`). Seed with an explicit value first, e.g.
 `random.seed(0)`: `random.seed()` with no argument also needs entropy.
