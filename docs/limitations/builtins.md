@@ -44,11 +44,15 @@ These raise `NameError`:
     and `list.__class_getitem__` cannot be assigned, passed as a callback or
     reached through `getattr`. Call them directly (`list.__class_getitem__(int)`).
 - **`hash(x)`** — Monty hashes `str`, `bytes`, `float` and every container with
-    its own algorithm, so the values differ from CPython's for everything except
-    `int` and `bool`. They are stable within a run and across runs of the same
-    build (Monty has no hash randomisation), but never persist a Monty hash or
-    compare one against a CPython hash. `sys.hash_info` is not exposed, so the
-    parameters CPython publishes are unavailable (see [sys.md](sys.md)).
+    its own algorithm, so the values differ from CPython's. Only `bool` and
+    small `int` agree: an `int` hashes to itself, which is what CPython does
+    while `abs(x) < 2**61 - 1`, but CPython reduces modulo `2**61 - 1` from
+    there up (`hash(2**62)` is `2` in CPython, `4611686018427387904` in Monty)
+    and Monty hashes an `int` too large for an `i64` differently again. Monty's
+    hashes are stable within a run and across runs of the same build (there is
+    no hash randomisation), but never persist one or compare one against a
+    CPython hash. `sys.hash_info` is not exposed, so the parameters CPython
+    publishes are unavailable (see [sys.md](sys.md)).
 - **`repr` of a dict being mutated by its own elements** — Monty iterates the
     live entries like CPython, but deletion compacts Monty's dense entry storage
     where CPython leaves a tombstone in place: a key deleted from inside a user

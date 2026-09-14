@@ -29,6 +29,7 @@ access raises `AttributeError`.
     Monty does not implement. See [modules.md](modules.md) for the module list.
 - `sys.maxsize` — `2**63 - 1` on every target, including 32-bit wasm where the
     real container ceiling is lower. Resource limits bind long before either.
+- `sys.maxunicode` — `1114111` (`U+10FFFF`), as in CPython.
 - `sys.byteorder` — always `"little"`; Monty builds for no big-endian target.
 - `sys.float_info` — the IEEE 754 binary64 properties of the `f64` Monty stores
     floats in, so the values match CPython. `rounds` is `1` (round-to-nearest)
