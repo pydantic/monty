@@ -11,10 +11,11 @@
     <header>
       <h1>antigravity</h1>
       <p>
-        After <a href="https://xkcd.com/353/">xkcd 353</a> and the
-        <a href="https://github.com/pyscript/examples/tree/main/antigravity">PyScript example</a>. The flight path is
-        computed by Python running in a Monty sandbox — WebAssembly, in a Web Worker, in this tab. The sandbox has no
-        DOM: it returns numbers and this page draws them.
+        After <a href="https://xkcd.com/353/">xkcd 353</a>, running the
+        <a href="https://github.com/pyscript/examples/tree/main/antigravity">PyScript example</a>'s Python unchanged
+        apart from its imports. It runs in a Monty sandbox — WebAssembly, in a Web Worker, in this tab — which has no
+        DOM of its own: <code>pydom</code>, <code>DOMParser</code>, <code>open_url</code>, <code>set_interval</code>
+        and <code>random</code> are objects this page hands it, and it reaches the comic through those.
       </p>
     </header>
 

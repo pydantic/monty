@@ -106,8 +106,9 @@ Each directory under [`examples/`](https://github.com/pydantic/monty/tree/main/e
 - [`antigravity`](https://github.com/pydantic/monty/tree/main/examples/antigravity): [xkcd 353](https://xkcd.com/353/)
     ported from [PyScript](https://github.com/pyscript/examples/tree/main/antigravity), running in the browser on the
     WebAssembly build.
-    Python computes the flight path in a Web Worker and the page draws it, one feed per animation frame; the code is
-    editable, so the page is also a demonstration of running untrusted code under
+    The PyScript file runs unchanged apart from its imports, which are replaced by
+    [host objects](host-objects.md) — the sandbox drives the comic through the DOM surface the page hands it. The code
+    is editable, so the page is also a demonstration of running untrusted code under
     [resource limits](resource-limits.md).
 - [`classes`](https://github.com/pydantic/monty/tree/main/examples/classes): one short file per behaviour of [host
     objects](host-objects.md), in Python and TypeScript: explicit policies, lazy attributes, sandbox-side copies,
