@@ -1,0 +1,25 @@
+crates/monty/test_cases/import__sys_monty.py
+  s_f62d7376b86b82::t_f552e0cb066687 89-97
+docs/limitations/sys.md
+  s_f62d7376b86b82::t_2b30990f2778a0 56-61
+crates/monty/test_cases/import__sys.py
+  s_f62d7376b86b82::t_f552e0cb066687 101-102,104
+crates/monty/src/modules/sys.rs
+  s_f62d7376b86b82::t_2b30990f2778a0 10-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7cba29378fd4b66b55d48646f7385064cae2896e",
+  "prompts": {},
+  "sessions": {
+    "s_f62d7376b86b82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "43c20ce5-f03e-40a5-aa48-7c457ddc12bf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
