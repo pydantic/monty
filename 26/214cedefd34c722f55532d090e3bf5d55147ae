@@ -1,0 +1,42 @@
+evals/harness/report.py
+  s_94bd17dac64411::t_60c4951177c63b 19
+evals/tasks/orchestration/paginate_and_count.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 13
+evals/harness/classify.py
+  s_94bd17dac64411::t_e5f20373b122a8 72
+evals/tasks/schema/large_result_filter.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 17
+evals/tasks/text/markdown_report.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 18
+evals/tasks/orchestration/retry_flaky.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 18
+evals/harness/task.py
+  s_94bd17dac64411::t_7fb267aa0f3662 24
+  s_94bd17dac64411::t_3edaf6090ca2e2 221-222
+evals/harness/executor.py
+  s_94bd17dac64411::t_3edaf6090ca2e2 127-128
+evals/tasks/text/log_parse.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 12
+evals/harness/runner.py
+  s_94bd17dac64411::t_ee6da0bd96f484 38-39,177-178
+  s_94bd17dac64411::t_3edaf6090ca2e2 44-45,147-148,150-151
+evals/README.md
+  s_94bd17dac64411::t_7827ca8b44291d 55,59,96,100,158
+  s_94bd17dac64411::t_f4fc51a8db0575 78,84,86,89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "26214cedefd34c722f55532d090e3bf5d55147ae",
+  "prompts": {},
+  "sessions": {
+    "s_94bd17dac64411": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f9be6770-bfa2-49ff-89f1-70bdc3b3655c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

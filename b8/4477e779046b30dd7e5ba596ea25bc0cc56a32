@@ -1,0 +1,138 @@
+evals/README.md
+  s_94bd17dac64411::t_7827ca8b44291d 46,54,99,101,126
+  s_94bd17dac64411::t_f4fc51a8db0575 84,86,88,97,1,6,8-10,12,15,17,34-36,38,42-43,45,49,52-53,71-72,74-75,85,87,98,100,102,104,107,109,112,114-115,117,122,124-125,127-128,131-140,142-145,147-150,152-155,157-159,162-164,166,171-172,178-179,63,81
+  s_94bd17dac64411::t_7c8d37ad656c00 40-41,47,69-70,76-77,105,129-130,160-161
+  s_94bd17dac64411::t_05ec5dfc805ca1 48,50,89-96
+  s_94bd17dac64411::t_489700d07c74cf 119-120,156
+  s_94bd17dac64411::t_286ec5185a31d5 3-4,18,21,28-32,55,57-62,64-67,79-80,82-83,110,141,146,151,167,173-177
+evals/tasks/artifacts/svg_bar_chart.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 18-21,116-119,126-127
+evals/tasks/numeric/expense_budget.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 16-17,157-158
+evals/tasks/orchestration/weather_fanout.md
+  s_94bd17dac64411::t_489700d07c74cf 1-2,5-9,11
+  s_94bd17dac64411::t_7c8d37ad656c00 3-4
+  s_94bd17dac64411::t_a4b6117068691f 10
+pyproject.toml
+  s_94bd17dac64411::t_cc9aac9b039165 29-34
+evals/tasks/stateful/followup_reuse.md
+  s_94bd17dac64411::t_489700d07c74cf 1-5,8
+  s_94bd17dac64411::t_a4b6117068691f 6-7,9
+evals/tasks/schema/large_result_filter.md
+  s_94bd17dac64411::t_489700d07c74cf 1-2,5-6,9
+  s_94bd17dac64411::t_7c8d37ad656c00 3-4
+  s_94bd17dac64411::t_a4b6117068691f 7-8
+evals/harness/metrics.py
+  s_94bd17dac64411::t_68005160b931fd 1,3-5,12,15-16,18-26,29-30,32-38,44,46
+evals/tasks/numeric/stats_summary.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 12-13,102-103
+evals/tasks/dates/schedule_conflicts.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 14-15,121-122
+evals/tasks/text/log_parse.md
+  s_94bd17dac64411::t_489700d07c74cf 1-2,6
+  s_94bd17dac64411::t_7c8d37ad656c00 3-5
+  s_94bd17dac64411::t_a4b6117068691f 7
+evals/tasks/wrangling/csv_json_join.md
+  s_94bd17dac64411::t_489700d07c74cf 1-2,5-7,10
+  s_94bd17dac64411::t_7c8d37ad656c00 3-4,8-9
+  s_94bd17dac64411::t_a4b6117068691f 11
+evals/harness/evaluators.py
+  s_94bd17dac64411::t_1e7276979bc3ac 1-63,65-68,70-77,80-154,157-175
+  s_94bd17dac64411::t_aa0a27f794d0bc 64
+  s_94bd17dac64411::t_4063574d4e8060 155-156
+evals/harness/runner.py
+  s_94bd17dac64411::t_ee6da0bd96f484 43-44,168-169,22-27,34,37,39,45-53,55,60-91,93-95,102-103,105-106,110-112,115,120-121,125,127-129,138-139,145,150-151,154,160,170-179,181-183,185-200,204,210,212,214-219,229-230,232-238,240-242
+  s_94bd17dac64411::t_3edaf6090ca2e2 58-59
+  s_94bd17dac64411::t_779ffd2736c518 18
+  s_94bd17dac64411::t_aa1d44c25822a7 98-101,104,107-109,113-114,118-119,122-124,126,131-132,135-137,146,156,158,167
+evals/tasks/text/markdown_report.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 20,102-103
+evals/tasks/artifacts/svg_bar_chart.md
+  s_94bd17dac64411::t_489700d07c74cf 1-2,5-8,13
+  s_94bd17dac64411::t_7c8d37ad656c00 3-4
+  s_94bd17dac64411::t_a4b6117068691f 9-12
+evals/tasks/wrangling/group_by_report.md
+  s_94bd17dac64411::t_489700d07c74cf 1-5
+  s_94bd17dac64411::t_a4b6117068691f 6
+evals/harness/classify.py
+  s_94bd17dac64411::t_e5f20373b122a8 77,73-76
+  s_94bd17dac64411::t_aaa0b2301047a8 24-25
+  s_94bd17dac64411::t_aa0a27f794d0bc 256
+evals/tasks/dates/schedule_conflicts.md
+  s_94bd17dac64411::t_489700d07c74cf 1-3,6-7,9-11
+  s_94bd17dac64411::t_7c8d37ad656c00 4-5,12-13
+  s_94bd17dac64411::t_a4b6117068691f 8
+evals/tasks/orchestration/paginate_and_count.md
+  s_94bd17dac64411::t_489700d07c74cf 1-4,7-8
+  s_94bd17dac64411::t_7c8d37ad656c00 5-6
+  s_94bd17dac64411::t_a4b6117068691f 9
+evals/tasks/orchestration/paginate_and_count.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 15,85-86
+evals/tasks/orchestration/retry_flaky.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 20,89-90
+evals/harness/agent.py
+  s_94bd17dac64411::t_364aa0f2feba2b 4-5,14-15
+  s_94bd17dac64411::t_3edaf6090ca2e2 69,79
+evals/tasks/schema/large_result_filter.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 19,76-77
+evals/tasks/orchestration/weather_fanout.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 14-15,98-99
+Makefile
+  s_94bd17dac64411::t_067c4ce9a6cee2 97
+  s_94bd17dac64411::t_e22c20a611775e 98
+  s_94bd17dac64411::t_aa0a27f794d0bc 140
+evals/tasks/stateful/followup_reuse.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 17-18,65-66,83
+evals/tasks/text/markdown_report.md
+  s_94bd17dac64411::t_489700d07c74cf 1-2,5,8
+  s_94bd17dac64411::t_7c8d37ad656c00 3-4,6
+  s_94bd17dac64411::t_05ec5dfc805ca1 7
+  s_94bd17dac64411::t_a4b6117068691f 9
+examples/web_scraper/main.py
+  s_94bd17dac64411::t_4054b08e10ec34 149
+evals/tasks/text/log_parse.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 14,105-106
+evals/harness/executor.py
+  s_94bd17dac64411::t_3edaf6090ca2e2 136-137
+  s_94bd17dac64411::t_b385fd9d4af391 56
+  s_94bd17dac64411::t_e578f872ce5200 91-97
+  s_94bd17dac64411::t_7c56313c36b47f 98
+evals/harness/report.py
+  s_94bd17dac64411::t_60c4951177c63b 19-21,28,30,32-49,55-56,59-60,63-91,93-95,100,105-108,113-121,126-131,137-139,143-148,153-154,165,167,170-172,174,182,184,186,190-191,197
+  s_94bd17dac64411::t_aa0a27f794d0bc 50-52,109-111,132-134
+evals/tasks/orchestration/retry_flaky.md
+  s_94bd17dac64411::t_489700d07c74cf 1-2,5-7,10
+  s_94bd17dac64411::t_7c8d37ad656c00 3-4,8-9
+  s_94bd17dac64411::t_a4b6117068691f 11
+evals/harness/task.py
+  s_94bd17dac64411::t_3edaf6090ca2e2 71
+  s_94bd17dac64411::t_7fb267aa0f3662 3-6,8-9,14,16,18-19,21,23,28,30-32,36,43,45-48,57-58,60,70,76-89
+evals/tasks/wrangling/csv_json_join.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 14-15,141-142
+evals/tasks/numeric/expense_budget.md
+  s_94bd17dac64411::t_489700d07c74cf 1-3,6-11,13-14
+  s_94bd17dac64411::t_7c8d37ad656c00 4-5
+  s_94bd17dac64411::t_a4b6117068691f 12
+evals/tasks/wrangling/group_by_report.py
+  s_94bd17dac64411::t_aa0a27f794d0bc 13-14,83-84
+evals/tasks/numeric/stats_summary.md
+  s_94bd17dac64411::t_489700d07c74cf 1-5,8
+  s_94bd17dac64411::t_7c8d37ad656c00 6-7
+  s_94bd17dac64411::t_a4b6117068691f 9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b84477e779046b30dd7e5ba596ea25bc0cc56a32",
+  "prompts": {},
+  "sessions": {
+    "s_94bd17dac64411": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f9be6770-bfa2-49ff-89f1-70bdc3b3655c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
