@@ -1,0 +1,19 @@
+examples/antigravity/vite.config.ts
+  s_d4e8bedce3c69b::t_c6dd388ad3175e 4-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ddae9d92c95fd21a47e7db6eb31b160e9367ff90",
+  "prompts": {},
+  "sessions": {
+    "s_d4e8bedce3c69b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20b5c1de-f094-4ef4-928e-a151ac7a8011",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
