@@ -11,7 +11,7 @@ use std::{mem, rc::Rc, task::Poll};
 use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
-use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM, function_namespace, stack_index};
+use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM, frame_ip, function_namespace, stack_index};
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
@@ -602,7 +602,7 @@ impl<'h> VM<'h> {
             .drain(..)
             .map(|f| SerializedTaskFrame {
                 function_id: f.function_id,
-                ip: f.ip,
+                ip: f.ip as usize,
                 stack_base: f.stack_base(),
                 locals_count: f.locals_count,
                 exception_stack_base: f.exception_stack_base(),
@@ -615,7 +615,7 @@ impl<'h> VM<'h> {
         let current = &mut self.current_frame;
         frames.push(SerializedTaskFrame {
             function_id: current.function_id,
-            ip: current.ip,
+            ip: current.ip as usize,
             stack_base: current.stack_base(),
             locals_count: current.locals_count,
             exception_stack_base: current.exception_stack_base(),
@@ -681,8 +681,9 @@ impl<'h> VM<'h> {
                     };
                     CallFrame {
                         bytecode: code.shared_bytecode(),
+                        constants_base: code.constants_base(),
                         code,
-                        ip: sf.ip,
+                        ip: frame_ip(sf.ip),
                         stack_base: stack_index(sf.stack_base),
                         locals_count: sf.locals_count,
                         exception_stack_base: stack_index(sf.exception_stack_base),

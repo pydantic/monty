@@ -12,7 +12,7 @@
 //! * 1000 to count(StaticStrings) - strings StaticStrings
 //! * 10_000+ - strings interned per executor
 
-use std::{ops::Deref, rc::Rc, slice::from_ref, str::FromStr, sync::Arc};
+use std::{mem, ops::Deref, rc::Rc, slice::from_ref, str::FromStr, sync::Arc};
 
 use ahash::AHashMap;
 use num_bigint::BigInt;
@@ -1492,6 +1492,12 @@ pub(crate) struct Interns {
     /// `<string>` filename id each call interns (ascending), so a traceback
     /// frame's byte offsets resolve to the right line of the right snippet.
     eval_sources: Vec<(StringId, Arc<str>)>,
+    /// Session-wide constant arena: every `Code`'s constants as one contiguous
+    /// block starting at its [`Code::constants_base`](crate::bytecode::code::Code::constants_base).
+    /// Flat so `LoadConst` reaches a value without dereferencing the `Code`;
+    /// see [`CallFrame::constants_base`](crate::bytecode::vm::CallFrame).
+    #[serde(default)]
+    constants: ConstArena,
     /// `str → StringId` reverse lookup for [`Self::get_string_id_by_name`];
     /// each key shares the `Rc<str>` allocation of its `strings` entry.
     ///
@@ -1504,6 +1510,20 @@ pub(crate) struct Interns {
     string_id_by_name: AHashMap<Rc<str>, StringId>,
 }
 
+/// The session's constant arena.
+///
+/// A newtype so it can be `Clone` where [`Value`] deliberately is not: every
+/// entry is a literal or an interned id, never a heap reference, so copying
+/// one needs no refcount (enforced by [`Value::copy_immediate`]).
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ConstArena(Vec<Value>);
+
+impl Clone for ConstArena {
+    fn clone(&self) -> Self {
+        Self(self.0.iter().map(Value::copy_immediate).collect())
+    }
+}
+
 /// Serialized form of [`Interns`]
 #[derive(serde::Deserialize)]
 struct InternsWire {
@@ -1513,6 +1533,8 @@ struct InternsWire {
     functions: Vec<Rc<Function>>,
     #[serde(default)]
     eval_sources: Vec<(StringId, Arc<str>)>,
+    #[serde(default)]
+    constants: ConstArena,
 }
 
 impl From<Interns> for InternsWire {
@@ -1523,6 +1545,7 @@ impl From<Interns> for InternsWire {
             long_ints: interns.long_ints,
             functions: interns.functions,
             eval_sources: interns.eval_sources,
+            constants: interns.constants,
         }
     }
 }
@@ -1536,6 +1559,7 @@ impl From<InternsWire> for Interns {
             long_ints: wire.long_ints,
             functions: wire.functions,
             eval_sources: wire.eval_sources,
+            constants: wire.constants,
             string_id_by_name,
         }
     }
@@ -1589,6 +1613,7 @@ impl Interns {
             long_ints: Vec::new(),
             functions: Vec::new(),
             eval_sources: Vec::new(),
+            constants: ConstArena::default(),
             string_id_by_name: AHashMap::with_capacity(capacity),
         }
     }
@@ -1660,6 +1685,19 @@ impl Interns {
     pub(crate) fn push_function(&mut self, function: Function) -> usize {
         self.functions.push(Rc::new(function));
         self.functions.len() - 1
+    }
+
+    /// Moves the constant arena out for the duration of a run, so the VM can
+    /// hold it inline. Must be paired with
+    /// [`restore_constants`](Self::restore_constants), which `VM::drop` does.
+    pub(crate) fn take_constants(&mut self) -> Vec<Value> {
+        mem::take(&mut self.constants.0)
+    }
+
+    /// Takes the arena back from a finished VM, including anything `eval()` /
+    /// `exec()` appended to it during the run.
+    pub(crate) fn restore_constants(&mut self, constants: Vec<Value>) {
+        self.constants.0 = constants;
     }
 
     /// Number of compiled functions; record it before a compile so

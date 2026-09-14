@@ -4,7 +4,7 @@
 //! forward jumps with patching, and tracking source locations for tracebacks.
 
 use super::{
-    code::{Code, ConstPool, ExceptionEntry, HandlerKind, LocationEntry},
+    code::{Code, ExceptionEntry, HandlerKind, LocationEntry},
     compiler::CompileError,
     op::{Opcode, Operand},
 };
@@ -453,25 +453,28 @@ impl CodeBuilder {
         self.current_stack_depth.is_none()
     }
 
-    /// Builds the final Code object.
+    /// Builds the final `Code`, moving this body's constants into `arena`.
     ///
-    /// Consumes the builder and returns a Code object containing the
-    /// compiled bytecode and all metadata.
-    #[must_use]
-    pub fn build(self, num_locals: u16) -> Code {
+    /// Constants accumulate in the builder first and land in the session-wide
+    /// arena as one contiguous block, so `LoadConst` operands stay `u16`
+    /// indices relative to the recorded base.
+    pub fn build(self, num_locals: u16, arena: &mut Vec<Value>) -> Result<Code, CompileError> {
+        let constants_base = u32::try_from(arena.len()).map_err(|_| self.constant_arena_full())?;
+
         // Convert local_names from Vec<Option<StringId>> to Vec<StringId>,
         // using StringId::default() for slots with no recorded name
         let local_names: Vec<StringId> = self.local_names.into_iter().map(Option::unwrap_or_default).collect();
+        arena.extend(self.constants);
 
-        Code::new(
+        Ok(Code::new(
             self.bytecode,
-            ConstPool::from_vec(self.constants),
+            constants_base,
             self.location_table,
             self.exception_table,
             num_locals,
             self.max_stack_depth,
             local_names,
-        )
+        ))
     }
 
     /// Records the current location in the location table if set.
@@ -638,6 +641,18 @@ impl CodeBuilder {
     fn kw_count_too_large(&self) -> CompileError {
         CompileError::new(
             format!("call has too many keyword arguments; maximum is {} per call", u8::MAX),
+            self.current_location.unwrap_or_default(),
+        )
+    }
+
+    /// Builds the `CompileError` for a session whose constant arena has grown
+    /// past the `u32` base recorded in each `Code`. Unreachable in practice:
+    /// a session hits its memory limit long before `4` billion constants.
+    #[cold]
+    #[inline(never)]
+    fn constant_arena_full(&self) -> CompileError {
+        CompileError::new(
+            format!("session has too many constants; maximum is {}", u32::MAX),
             self.current_location.unwrap_or_default(),
         )
     }
@@ -817,7 +832,7 @@ mod tests {
         builder.emit(Opcode::LoadNone).unwrap();
         builder.emit(Opcode::Pop).unwrap();
 
-        let code = builder.build(0);
+        let code = builder.build(0, &mut Vec::new()).unwrap();
         assert_eq!(code.bytecode(), &[Opcode::LoadNone as u8, Opcode::Pop as u8]);
     }
 
@@ -827,7 +842,7 @@ mod tests {
         builder.new_code_region(0);
         builder.emit_u8(Opcode::LoadLocal, 42).unwrap();
 
-        let code = builder.build(0);
+        let code = builder.build(0, &mut Vec::new()).unwrap();
         assert_eq!(code.bytecode(), &[Opcode::LoadLocal as u8, 42]);
     }
 
@@ -837,7 +852,7 @@ mod tests {
         builder.new_code_region(0);
         builder.emit_u16(Opcode::LoadConst, 0x1234).unwrap();
 
-        let code = builder.build(0);
+        let code = builder.build(0, &mut Vec::new()).unwrap();
         assert_eq!(code.bytecode(), &[Opcode::LoadConst as u8, 0x34, 0x12]);
     }
 
@@ -853,7 +868,7 @@ mod tests {
         builder.emit(Opcode::LoadNone).unwrap(); // Return value
         builder.emit(Opcode::ReturnValue).unwrap();
 
-        let code = builder.build(0);
+        let code = builder.build(0, &mut Vec::new()).unwrap();
         assert_eq!(
             code.bytecode(),
             &[
@@ -877,7 +892,7 @@ mod tests {
         builder.emit(Opcode::Pop).unwrap(); // offset 1, 1 byte
         builder.emit_jump_to(Opcode::Jump, loop_start).unwrap(); // offset 2, target 0
 
-        let code = builder.build(0);
+        let code = builder.build(0, &mut Vec::new()).unwrap();
         // Jump at offset 2, target at offset 0
         // Offset = 0 - (2 + 3) = -5
         let expected_offset = (-5i16).to_le_bytes();
@@ -904,7 +919,7 @@ mod tests {
         builder.emit_load_local(4).unwrap();
         builder.emit_load_local(256).unwrap();
 
-        let code = builder.build(0);
+        let code = builder.build(0, &mut Vec::new()).unwrap();
         assert_eq!(
             code.bytecode(),
             &[

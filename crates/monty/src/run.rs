@@ -372,8 +372,16 @@ impl Executor {
         // The compiler enforces the bytecode-format namespace-size limit and reports
         // it as a `SyntaxError` rather than panicking on the `u16` cast.
         let namespace_size = prepared.globals.len();
-        let module_code = Compiler::compile_module(&prepared.nodes, &mut prepared.interns, &prepared.globals, options)
-            .map_err(|e| e.into_python_exc(script_name, &code))?;
+        let mut constants = prepared.interns.take_constants();
+        let module_code = Compiler::compile_module(
+            &prepared.nodes,
+            &mut prepared.interns,
+            &mut constants,
+            &prepared.globals,
+            options,
+        )
+        .map_err(|e| e.into_python_exc(script_name, &code))?;
+        prepared.interns.restore_constants(constants);
 
         Ok(Self {
             tables: SessionTables {
@@ -522,13 +530,20 @@ impl Executor {
             .emit(Opcode::ReturnValue)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
+        let mut tables = SessionTables {
+            global_names: existing_globals,
+            interns: mem::take(interns),
+        };
+        let mut constants = tables.interns.take_constants();
+        let module_code = builder
+            .build(0, &mut constants)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+        tables.interns.restore_constants(constants);
+
         Ok(Self {
-            tables: SessionTables {
-                global_names: existing_globals,
-                interns: mem::take(interns),
-            },
+            tables,
             program: Program {
-                module_code: Rc::new(builder.build(0)),
+                module_code: Rc::new(module_code),
                 code: Arc::from(code),
                 input_slots: vec![args_slot],
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
@@ -927,8 +942,11 @@ fn compile_repl_snippet(
     let nodes = parse_with_interner(code, script_name, interns).map_err(|e| e.into_python_exc(script_name, code))?;
     let nodes =
         prepare_with_existing_names(nodes, interns, globals).map_err(|e| e.into_python_exc(script_name, code))?;
-    let module_code = Compiler::compile_module(&nodes, interns, globals, options)
-        .map_err(|e| e.into_python_exc(script_name, code))?;
+    let mut constants = interns.take_constants();
+    let module_code = Compiler::compile_module(&nodes, interns, &mut constants, globals, options)
+        .map_err(|e| e.into_python_exc(script_name, code));
+    interns.restore_constants(constants);
+    let module_code = module_code?;
     Ok((module_code, input_slots))
 }
 

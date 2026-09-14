@@ -145,7 +145,7 @@ fn run_snippet(
             prepare_snippet(nodes, vm.interns, &mut scratch, names)
                 .map_err(|e| e.into_run_error(source))
                 .and_then(|nodes| {
-                    Compiler::compile_snippet(&nodes, vm.interns, &scratch, options, true)
+                    Compiler::compile_snippet(&nodes, vm.interns, &mut vm.constants, &scratch, options, true)
                         .map_err(|e| e.into_run_error(source))
                 })
         }
@@ -154,7 +154,7 @@ fn run_snippet(
             let compiled = prepare_snippet(nodes, vm.interns, vm.global_names, names)
                 .map_err(|e| e.into_run_error(source))
                 .and_then(|nodes| {
-                    Compiler::compile_snippet(&nodes, vm.interns, vm.global_names, options, false)
+                    Compiler::compile_snippet(&nodes, vm.interns, &mut vm.constants, vm.global_names, options, false)
                         .map_err(|e| e.into_run_error(source))
                 });
             // A rejected snippet must not consume slots; an accepted one may

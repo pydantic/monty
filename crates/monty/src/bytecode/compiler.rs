@@ -258,6 +258,12 @@ pub struct Compiler<'a> {
     /// [`compile_module`](Self::compile_module) rolls back what a failure appended.
     interns: &'a mut Interns,
 
+    /// Session constant arena. Each body's constants land here as one block at
+    /// `build` time, so `LoadConst` operands stay `u16` offsets from the `Code`'s
+    /// recorded base. Threaded separately from `interns` because a run holds it
+    /// inline in the VM; see [`Interns::take_constants`].
+    constants: &'a mut Vec<Value>,
+
     /// Enclosing control blocks whose cleanup is emitted by non-local exits.
     /// This mirrors CPython's compiler `fblockinfo` stack and keeps each
     /// `finally` body masked while its inline copy is compiled.
@@ -517,12 +523,19 @@ impl<'a> Compiler<'a> {
     /// Creates a compiler for a module or function.
     /// `frame_locals` is zero at module scope or the function namespace size;
     /// comprehension slots follow it on the operand stack.
-    fn new(interns: &'a mut Interns, is_module_scope: bool, frame_locals: u16, flags: ScopeFlags) -> Self {
+    fn new(
+        interns: &'a mut Interns,
+        constants: &'a mut Vec<Value>,
+        is_module_scope: bool,
+        frame_locals: u16,
+        flags: ScopeFlags,
+    ) -> Self {
         let mut code = CodeBuilder::new();
         code.new_code_region(0);
         Self {
             code,
             interns,
+            constants,
             fblocks: Vec::new(),
             finally_copies: 0,
             is_module_scope,
@@ -537,19 +550,23 @@ impl<'a> Compiler<'a> {
     ///
     /// Every function compiled along the way is appended to `interns`, and its
     /// `FunctionId` is its index there — so a REPL passes its session table to
-    /// keep earlier ids stable. On failure the function table is restored to its
-    /// original length, so a rejected snippet can't consume `FunctionId`s. The
-    /// module implicitly returns the value of the last expression, or None if empty.
+    /// keep earlier ids stable. On failure the function table and the constant
+    /// arena are restored to their original lengths, so a rejected snippet can't
+    /// consume `FunctionId`s or arena space. The module implicitly returns the
+    /// value of the last expression, or None if empty.
     pub fn compile_module(
         nodes: &[PreparedNode],
         interns: &mut Interns,
+        constants: &mut Vec<Value>,
         globals: &NameMap,
         options: CompileOptions,
     ) -> Result<Code, CompileError> {
         let functions_len = interns.functions_len();
-        let result = Self::compile_module_inner(nodes, interns, globals, options, None);
+        let constants_len = constants.len();
+        let result = Self::compile_module_inner(nodes, interns, constants, globals, options, None);
         if result.is_err() {
             interns.truncate_functions(functions_len);
+            constants.truncate(constants_len);
         }
         result
     }
@@ -558,18 +575,22 @@ impl<'a> Compiler<'a> {
     /// [`prepare_snippet`](crate::prepare::prepare_snippet): module-style code
     /// whose `await`s are rejected and whose global references compile by name
     /// when `globals_by_name` (an explicit globals dict). Rolls back the
-    /// function table on failure like [`compile_module`](Self::compile_module).
+    /// function table and constant arena on failure like
+    /// [`compile_module`](Self::compile_module).
     pub(crate) fn compile_snippet(
         nodes: &[PreparedNode],
         interns: &mut Interns,
+        constants: &mut Vec<Value>,
         globals: &NameMap,
         options: CompileOptions,
         globals_by_name: bool,
     ) -> Result<Code, CompileError> {
         let functions_len = interns.functions_len();
-        let result = Self::compile_module_inner(nodes, interns, globals, options, Some(globals_by_name));
+        let constants_len = constants.len();
+        let result = Self::compile_module_inner(nodes, interns, constants, globals, options, Some(globals_by_name));
         if result.is_err() {
             interns.truncate_functions(functions_len);
+            constants.truncate(constants_len);
         }
         result
     }
@@ -580,6 +601,7 @@ impl<'a> Compiler<'a> {
     fn compile_module_inner(
         nodes: &[PreparedNode],
         interns: &mut Interns,
+        constants: &mut Vec<Value>,
         globals: &NameMap,
         options: CompileOptions,
         snippet: Option<bool>,
@@ -592,7 +614,7 @@ impl<'a> Compiler<'a> {
             assert_message_annotations: options.assert_message_annotations.enabled(),
             globals_by_name: snippet.unwrap_or(false),
         };
-        let mut compiler = Compiler::new(interns, true, 0, flags);
+        let mut compiler = Compiler::new(interns, constants, true, 0, flags);
         compiler.forbid_await = snippet.is_some();
 
         // All globals are "local names" in the module
@@ -604,7 +626,8 @@ impl<'a> Compiler<'a> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build(num_locals))
+        let Compiler { code, constants, .. } = compiler;
+        code.build(num_locals, constants)
     }
 
     /// Compiles a function body to bytecode, appending any nested functions to `interns`.
@@ -615,13 +638,14 @@ impl<'a> Compiler<'a> {
     fn compile_function_body(
         func_def: &PreparedFunctionDef,
         interns: &mut Interns,
+        constants: &mut Vec<Value>,
         num_locals: u16,
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
         // Function frames have `locals_count = num_locals` at runtime, so
         // comp-var load/store opcodes use `num_locals + offset` to skip past
         // the locals region into the operand-stack region.
-        let mut compiler = Compiler::new(interns, false, num_locals, flags);
+        let mut compiler = Compiler::new(interns, constants, false, num_locals, flags);
         // Parameters, and the cells captured parameters live in, are named up
         // front: a body that never mentions one still reports it from `locals()`.
         let param_names: Vec<StringId> = func_def.signature.slot_names().collect();
@@ -637,7 +661,8 @@ impl<'a> Compiler<'a> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build(num_locals))
+        let Compiler { code, constants, .. } = compiler;
+        code.build(num_locals, constants)
     }
 
     /// Compiles statements, retaining `finally` bodies for inline cleanup.
@@ -884,8 +909,8 @@ impl<'a> Compiler<'a> {
     /// variables are captured, the pushed cells are consumed by `MakeClosure`.
     fn emit_make_function(&mut self, func_def: &PreparedFunctionDef, what: &'static str) -> Result<(), CompileError> {
         let flags = self.flags;
-        self.emit_make_callable(func_def, what, |interns, namespace_size| {
-            Self::compile_function_body(func_def, interns, namespace_size, flags)
+        self.emit_make_callable(func_def, what, |interns, constants, namespace_size| {
+            Self::compile_function_body(func_def, interns, constants, namespace_size, flags)
         })
     }
 
@@ -906,7 +931,7 @@ impl<'a> Compiler<'a> {
         &mut self,
         func_def: &PreparedFunctionDef,
         what: &'static str,
-        compile_body: impl FnOnce(&mut Interns, u16) -> Result<Code, CompileError>,
+        compile_body: impl FnOnce(&mut Interns, &mut Vec<Value>, u16) -> Result<Code, CompileError>,
     ) -> Result<(), CompileError> {
         let func_pos = func_def.name.position;
 
@@ -917,7 +942,7 @@ impl<'a> Compiler<'a> {
 
         // 1. Compile the body recursively.
         let namespace_size = check_namespace_size_u16(func_def.namespace_size, what)?;
-        let body_code = compile_body(self.interns, namespace_size)?;
+        let body_code = compile_body(self.interns, self.constants, namespace_size)?;
 
         // 2. Create the compiled Function and add it to the table
         // `Function` retains the legacy numeric source metadata for serialized-code
@@ -1035,13 +1060,14 @@ impl<'a> Compiler<'a> {
         position: CodeRange,
     ) -> Result<(), CompileError> {
         let flags = self.flags;
-        self.emit_make_callable(body, "class body", |interns, namespace_size| {
+        self.emit_make_callable(body, "class body", |interns, constants, namespace_size| {
             Self::compile_class_body(
                 &body.body,
                 members,
                 class_name,
                 position,
                 interns,
+                constants,
                 namespace_size,
                 flags,
             )
@@ -1060,16 +1086,18 @@ impl<'a> Compiler<'a> {
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
     /// emits `LoadLocal`; it would transparently emit `LoadCell` if that ever
     /// changed, so no assumption is hard-coded here.
+    #[expect(clippy::too_many_arguments)]
     fn compile_class_body(
         body: &[PreparedNode],
         members: &[Identifier],
         class_name: &Identifier,
         position: CodeRange,
         interns: &mut Interns,
+        constants: &mut Vec<Value>,
         num_locals: u16,
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
-        let mut compiler = Compiler::new(interns, false, num_locals, flags);
+        let mut compiler = Compiler::new(interns, constants, false, num_locals, flags);
         compiler.compile_block(body)?;
 
         // Assembly errors (e.g. resource limits while building the dict)
@@ -1096,7 +1124,8 @@ impl<'a> Compiler<'a> {
             .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build(num_locals))
+        let Compiler { code, constants, .. } = compiler;
+        code.build(num_locals, constants)
     }
 
     /// Compiles an import statement.

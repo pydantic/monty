@@ -362,8 +362,15 @@ pub struct CallFrame {
     /// on every opcode and operand fetch.
     bytecode: Rc<[u8]>,
 
-    /// Instruction pointer within this frame's bytecode.
-    ip: usize,
+    /// Instruction pointer within this frame's bytecode. `u32` both to keep
+    /// the frame at 72 bytes and because every other bytecode offset (the
+    /// location and exception tables, `call_offset`) is already `u32`.
+    ip: u32,
+
+    /// Where this frame's constants start in the session constant arena,
+    /// copied from its `Code` so `LoadConst` adds its operand to a value
+    /// already in the frame instead of dereferencing the `Code`.
+    constants_base: u32,
 
     /// Base index into the VM stack for this frame's locals region.
     ///
@@ -415,6 +422,15 @@ pub struct CallFrame {
 
 const _: () = assert!(mem::size_of::<CallFrame>() <= 72);
 
+/// Narrows a serialized instruction pointer to the frame's `u32` field.
+///
+/// Bytecode length is capped at `u32::MAX` by the builder, so failure means a
+/// corrupt snapshot rather than a legitimately large frame.
+#[inline]
+pub(super) fn frame_ip(ip: usize) -> u32 {
+    u32::try_from(ip).expect("frame instruction pointer exceeds u32")
+}
+
 /// Narrows a VM stack index to the frame's `u32` field.
 ///
 /// The operand and exception stacks are bounded by the recursion limit and
@@ -432,6 +448,7 @@ impl CallFrame {
     pub fn new_module(code: Rc<Code>, exception_stack_base: usize) -> Self {
         Self {
             bytecode: code.shared_bytecode(),
+            constants_base: code.constants_base(),
             code,
             ip: 0,
             stack_base: 0,
@@ -460,6 +477,7 @@ impl CallFrame {
             && !Rc::ptr_eq(code, &self.code)
         {
             self.bytecode = code.shared_bytecode();
+            self.constants_base = code.constants_base();
             self.code = Rc::clone(code);
         }
         self.ip = 0;
@@ -493,6 +511,7 @@ impl CallFrame {
     ) -> Self {
         Self {
             bytecode: code.shared_bytecode(),
+            constants_base: code.constants_base(),
             code,
             ip: 0,
             stack_base: stack_index(stack_base),
@@ -509,6 +528,12 @@ impl CallFrame {
 }
 
 impl CallFrame {
+    /// Absolute arena index of this frame's constant `index`.
+    #[inline]
+    fn constant_index(&self, index: u16) -> usize {
+        self.constants_base as usize + index as usize
+    }
+
     /// Start of this frame's locals region on the VM stack.
     #[inline]
     pub(super) fn stack_base(&self) -> usize {
@@ -529,10 +554,10 @@ impl CallFrame {
     /// bounds check.
     #[inline]
     fn fetch_array<const N: usize>(&mut self) -> [u8; N] {
-        let Some(bytes) = self.bytecode.get(self.ip..).and_then(<[u8]>::first_chunk::<N>) else {
+        let Some(bytes) = self.bytecode.get(self.ip as usize..).and_then(<[u8]>::first_chunk::<N>) else {
             unreachable!("instruction IP is out of bounds of the bytecode")
         };
-        self.ip += N;
+        self.ip += u32::try_from(N).expect("operand width fits in u32");
         *bytes
     }
 
@@ -662,7 +687,7 @@ impl CallFrame {
         );
         SerializedFrame {
             function_id: self.function_id,
-            ip: self.ip,
+            ip: self.ip as usize,
             stack_base: self.stack_base(),
             locals_count: self.locals_count,
             exception_stack_base: self.exception_stack_base(),
@@ -804,6 +829,11 @@ pub struct VM<'h> {
     /// compiled at runtime (`eval()` / `exec()`) can be appended mid-run.
     pub(crate) interns: &'h mut Interns,
 
+    /// The session constant arena, moved in for the run so `LoadConst` reaches
+    /// a value with one load from this struct rather than chasing a pointer
+    /// into the intern table. Returned to `interns` by `Drop`.
+    pub(crate) constants: Vec<Value>,
+
     /// Module-level global names, slot by slot; extended alongside
     /// [`globals`](Self::globals) when runtime-compiled code binds a new name.
     pub(crate) global_names: &'h mut NameMap,
@@ -927,6 +957,7 @@ impl<'h> VM<'h> {
             current_frame: CallFrame::new_module(Rc::clone(&program.module_code), 0),
             suspended_frames: Vec::with_capacity(16),
             heap,
+            constants: interns.take_constants(),
             interns,
             global_names,
             print_writer,
@@ -971,8 +1002,9 @@ impl<'h> VM<'h> {
                 };
                 CallFrame {
                     bytecode: code.shared_bytecode(),
+                    constants_base: code.constants_base(),
                     code,
-                    ip: sf.ip,
+                    ip: frame_ip(sf.ip),
                     stack_base: stack_index(sf.stack_base),
                     locals_count: sf.locals_count,
                     exception_stack_base: stack_index(sf.exception_stack_base),
@@ -1000,6 +1032,7 @@ impl<'h> VM<'h> {
             current_frame,
             suspended_frames: frames,
             heap,
+            constants: interns.take_constants(),
             interns,
             global_names,
             print_writer,
@@ -1274,11 +1307,11 @@ impl<'h> VM<'h> {
             }
 
             // Track instruction IP for exception table lookup
-            self.instruction_ip = self.current_frame.ip;
+            self.instruction_ip = self.current_frame.ip as usize;
 
             // Fetch the opcode and advance the authoritative frame IP.
             let opcode = {
-                let byte = self.current_frame.bytecode[self.current_frame.ip];
+                let byte = self.current_frame.bytecode[self.current_frame.ip as usize];
                 self.current_frame.ip += 1;
                 Opcode::from_repr(byte).expect("invalid opcode in bytecode")
             };
@@ -1318,7 +1351,7 @@ impl<'h> VM<'h> {
                 // Constants & Literals
                 Opcode::LoadConst => {
                     let idx = self.current_frame.fetch_u16();
-                    let value = self.current_frame.code.constants().get(idx);
+                    let value = self.constant(idx);
                     // Handle InternLongInt specially - convert to heap-allocated LongInt
                     if let Value::InternLongInt(long_int_id) = value {
                         let bi = self.interns.get_long_int(*long_int_id).clone();
@@ -2044,7 +2077,7 @@ impl<'h> VM<'h> {
                 Opcode::RaiseImportError => {
                     // Fetch the module name from the constant pool and raise ModuleNotFoundError
                     let const_idx = self.current_frame.fetch_u16();
-                    let module_name = self.current_frame.code.constants().get(const_idx);
+                    let module_name = self.constant(const_idx);
                     // The constant should be an InternString from compile_import/compile_import_from
                     let name_str = match module_name {
                         Value::InternString(id) => self.interns.get_str(*id),
@@ -2226,6 +2259,13 @@ impl<'h> VM<'h> {
     /// Pushes the given frame onto the call stack.
     ///
     /// Returns an error if the recursion depth limit is exceeded by pushing this frame.
+    /// The running frame's constant at `index`, read straight from the session
+    /// arena — one indexed load, with no `Code` dereference on the way.
+    #[inline]
+    fn constant(&self, index: u16) -> &Value {
+        &self.constants[self.current_frame.constant_index(index)]
+    }
+
     pub(super) fn push_frame(&mut self, mut frame: CallFrame) -> RunResult<()> {
         if !self.current_frame.is_parked
             && let Err(e) = self.incr_recursion()
@@ -2251,7 +2291,7 @@ impl<'h> VM<'h> {
         self.cleanup_frame_state(&mut frame);
         // Sync instruction_ip to the restored caller so exception table lookups
         // target the correct frame after returning from a nested run() call.
-        self.instruction_ip = self.current_frame.ip;
+        self.instruction_ip = self.current_frame.ip as usize;
         if !self.current_frame.is_parked {
             self.decr_recursion();
         }
@@ -2705,5 +2745,6 @@ impl Drop for VM<'_> {
         self.scheduler.cleanup(self.heap);
         self.globals.drain(..).drop_with(self.heap);
         self.json_string_cache.drop_all(self.heap);
+        self.interns.restore_constants(mem::take(&mut self.constants));
     }
 }

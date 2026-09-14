@@ -2141,7 +2141,27 @@ impl Value {
     /// proper reference counting. Using `.clone()` directly will bypass reference counting
     /// and cause memory leaks or double-frees.
     #[must_use]
+    #[inline]
     pub fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
+        if let Self::Ref(id) = self {
+            heap.heap().inc_ref(*id);
+            Self::Ref(*id)
+        } else {
+            self.copy_immediate()
+        }
+    }
+
+    /// Copies a value that holds no heap reference, for contexts with no heap
+    /// to count against — the compiler's constant arena, which only ever holds
+    /// literals and interned ids.
+    ///
+    /// # Panics
+    ///
+    /// Panics on `Ref`, which must go through
+    /// [`clone_with_heap`](Self::clone_with_heap) to stay refcounted.
+    #[must_use]
+    #[inline]
+    pub fn copy_immediate(&self) -> Self {
         match self {
             Self::Undefined => Self::Undefined,
             Self::Ellipsis => Self::Ellipsis,
@@ -2158,10 +2178,7 @@ impl Value {
             Self::InternLongInt(bi) => Self::InternLongInt(*bi),
             Self::Marker(m) => Self::Marker(*m),
             Self::Property(p) => Self::Property(*p),
-            Self::Ref(id) => {
-                heap.heap().inc_ref(*id);
-                Self::Ref(*id)
-            }
+            Self::Ref(_) => panic!("heap reference copied without refcounting"),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot copy Dereferenced object"),
         }
