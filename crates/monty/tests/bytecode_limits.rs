@@ -106,7 +106,7 @@ mod local_variable_limits {
         let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert!(result.is_ok(), "255 locals should compile successfully");
 
-        let run = result.unwrap();
+        let mut run = result.unwrap();
         let result = run.run_no_limits(vec![]);
         assert!(result.is_ok(), "255 locals should run successfully");
     }
@@ -121,7 +121,7 @@ mod local_variable_limits {
             "256 locals should compile successfully (wide instructions)"
         );
 
-        let run = result.unwrap();
+        let mut run = result.unwrap();
         let result = run.run_no_limits(vec![]);
         assert!(result.is_ok(), "256 locals should run successfully");
     }
@@ -133,7 +133,7 @@ mod local_variable_limits {
         let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert!(result.is_ok(), "257 locals should compile (using wide instructions)");
 
-        let run = result.unwrap();
+        let mut run = result.unwrap();
         let result = run.run_no_limits(vec![]);
         assert!(result.is_ok(), "257 locals should run correctly with wide instructions");
     }
@@ -145,7 +145,7 @@ mod local_variable_limits {
         let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert!(result.is_ok(), "300 locals should compile successfully");
 
-        let run = result.unwrap();
+        let mut run = result.unwrap();
         let result = run.run_no_limits(vec![]);
         assert!(result.is_ok(), "300 locals should run successfully");
     }
@@ -161,7 +161,7 @@ mod function_argument_limits {
         let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert!(result.is_ok(), "255 positional args should compile successfully");
 
-        let run = result.unwrap();
+        let mut run = result.unwrap();
         let result = run.run_no_limits(vec![]);
         assert!(result.is_ok(), "255 positional args should run successfully");
     }
@@ -193,7 +193,7 @@ mod keyword_argument_limits {
         let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert!(result.is_ok(), "255 keyword args should compile successfully");
 
-        let run = result.unwrap();
+        let mut run = result.unwrap();
         let result = run.run_no_limits(vec![]);
         assert!(result.is_ok(), "255 keyword args should run successfully");
     }
@@ -278,7 +278,7 @@ mod function_parameter_limits {
         let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert!(result.is_ok(), "255 parameters should compile successfully");
 
-        let run = result.unwrap();
+        let mut run = result.unwrap();
         let result = run.run_no_limits(vec![]);
         assert!(result.is_ok(), "255 parameters should run successfully");
     }
@@ -363,7 +363,7 @@ mod stack_effect_limits {
     fn class_members_above_i16_stack_effect() {
         // 16384 members -> 32768+ pushed operands, past i16::MAX (32767)
         let code = generate_many_class_members(16384);
-        let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
+        let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
             .expect("16384 class members should compile");
         let result = run.run_no_limits(vec![]);
         assert!(result.is_ok(), "16384 class members should run: {result:?}");
@@ -373,7 +373,7 @@ mod stack_effect_limits {
     fn dict_literal_above_i16_stack_effect() {
         // 20000 entries -> 40000 pushed operands, past i16::MAX
         let code = generate_large_dict_literal(20000);
-        let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
+        let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
             .expect("20000-entry dict literal should compile");
         let result = run.run_no_limits(vec![]);
         assert!(result.is_ok(), "20000-entry dict literal should run: {result:?}");
@@ -401,7 +401,7 @@ mod finally_copy_limits {
     #[test]
     fn max_inline_finally_copies_compile_and_run() {
         let code = generate_many_finally_return_sites(1022);
-        let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
+        let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
             .expect("1024 inline finally copies should compile");
         let result = run.run_no_limits(vec![]);
         assert!(result.is_ok(), "1024 inline finally copies should run: {result:?}");
@@ -421,7 +421,7 @@ mod finally_copy_limits {
     #[test]
     fn nested_finally_amplification_below_limit_runs() {
         let code = generate_nested_finally_suites(9);
-        let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
+        let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
             .expect("nested finally expansion below the copy limit should compile");
         let result = run.run_no_limits(vec![]);
         assert!(result.is_ok(), "nested finally expansion should run: {result:?}");

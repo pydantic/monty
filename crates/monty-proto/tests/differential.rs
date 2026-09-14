@@ -559,7 +559,7 @@ fn hand_call_payloads_match_generated_encoding() {
 /// it exercises the `Cycle` placeholder arm end to end.
 #[test]
 fn executed_cycle_value_is_byte_compatible() {
-    let run = MontyRun::new(
+    let mut run = MontyRun::new(
         "a = []\na.append(a)\na".to_owned(),
         "test.py",
         vec![],

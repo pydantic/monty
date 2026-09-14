@@ -2,7 +2,7 @@ use std::{
     cell::OnceCell,
     cmp::Ordering,
     fmt::{self, Write},
-    sync::Arc,
+    rc::Rc,
 };
 
 use serde::{Deserialize, Deserializer, de::Error as _};
@@ -123,8 +123,8 @@ pub(crate) struct Function {
     /// than merely checked.
     #[serde(skip)]
     exact_positional_call: OnceCell<Option<ExactPositionalCall>>,
-    /// Compiled bytecode for this function body. Wrapped in `Arc` to avoid deep clone.
-    pub code: Arc<Code>,
+    /// Compiled bytecode for this function body, shared with every frame running it.
+    pub code: Rc<Code>,
 }
 
 /// Serialized fields for [`Function`], kept separate so untrusted dumps can be
@@ -150,7 +150,7 @@ struct FunctionFields {
     /// Whether calls create a coroutine rather than a frame.
     is_async: bool,
     /// Compiled function body.
-    code: Arc<Code>,
+    code: Rc<Code>,
 }
 
 impl FunctionFields {
@@ -278,7 +278,7 @@ impl Function {
             defaults_count,
             is_async,
             exact_positional_call: OnceCell::new(),
-            code: Arc::new(code),
+            code: Rc::new(code),
         }
     }
 

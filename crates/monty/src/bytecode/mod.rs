@@ -20,10 +20,11 @@ mod vm;
 
 pub(crate) use builder::CodeBuilder;
 pub use code::Code;
+pub(crate) use code::CodeArenas;
 pub use compiler::Compiler;
-pub(crate) use op::Opcode;
 #[cfg(test)]
 pub(crate) use op::opcode_fingerprint;
+pub(crate) use op::{NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode};
 pub(crate) use vm::{CallResult, ContainsVM, PendingLookupEffect, RecursionToken};
 pub use vm::{FrameExit, VM, VMSnapshot};
 

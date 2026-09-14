@@ -175,6 +175,28 @@ prefer a flags/operand encoding on one opcode (e.g. `Assert`/`FormatValue`) over
 of near-identical opcodes, unless the instruction is hot enough that decoding the
 discriminating operand would cost measurable dispatch time.
 
+### Code lives in session arenas, not per-`Code` buffers
+
+A `Code` owns no storage. Every compiled body's instructions and constants are
+appended to the two session-wide arenas in `CodeArenas`
+(`crates/monty/src/bytecode/code.rs`), and `Code` records only its
+`bytecode_base` / `constants_base`. A run moves the whole struct out of
+`Interns` (`take_arenas`, returned by `VM::drop`), so the dispatch loop reaches
+the instruction stream and `LoadConst` reaches a constant with one load from a
+`Vec` held inline in the executor.
+
+`CallFrame` therefore holds no handle to its `Code` — only `ip` (an absolute
+arena offset), `code_base` and `constants_base` — which keeps it at 56 bytes,
+copied four times per call. Cold paths that need the location table, exception
+table or local names resolve the `Code` through `VM::frame_code`, and convert
+`ip` back to a body-relative offset with `CallFrame::code_offset`. Jump operands
+stay body-relative `i16`s, so absolute `ip` needs no jump changes.
+
+Do not reintroduce per-`Code` storage or a frame-held code handle: it costs an
+allocation per compiled body, refcount traffic per call, and frame bytes.
+Compile paths thread `&mut CodeArenas` alongside `&mut Interns` because a run
+holds the arenas, so `eval()` / `exec()` must compile into the live ones.
+
 ### HeapReader API — Safe Heap Access
 
 All heap-allocated Python objects (lists, dicts, strings, etc.) are stored in a paged arena (`Heap`). The `HeapReader` API provides **compile-time safe** access to heap data. This is the primary mechanism for reading and mutating heap objects throughout the codebase.

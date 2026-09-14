@@ -26,7 +26,7 @@ static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 /// Runs a benchmark using the Monty interpreter.
 /// Parses once, then benchmarks repeated execution.
 fn run_monty(bench: &mut Bencher, code: &str, expected: i64) {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let r = ex.run_no_limits(vec![]).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, expected);
@@ -41,7 +41,7 @@ fn run_monty(bench: &mut Bencher, code: &str, expected: i64) {
 /// Runs a benchmark using the Monty interpreter with a single string input bound to `DATA`.
 /// Parses once, then benchmarks repeated execution with the same input.
 fn run_monty_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i64) {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["DATA".to_owned()],
@@ -64,11 +64,11 @@ fn run_monty_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i6
 /// budgets that never trip), measuring the amortized limit-checking path
 /// sandboxes actually run rather than the no-limits fast path.
 fn run_monty_limits(bench: &mut Bencher, code: &str, expected: i64) {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let limits = ResourceLimits::default()
         .max_duration(Duration::from_mins(10))
         .max_memory(1 << 40);
-    let run = |limits: &ResourceLimits| {
+    let mut run = |limits: &ResourceLimits| {
         let r = ex
             .run(vec![], ResourceTracker::new(limits.clone()), PrintWriter::Stdout)
             .unwrap();
@@ -442,7 +442,7 @@ r
 /// This is different from other benchmarks as it includes parsing in the loop.
 fn end_to_end_monty(bench: &mut Bencher) {
     bench.iter(|| {
-        let ex = MontyRun::new(
+        let mut ex = MontyRun::new(
             black_box("1 + 2").to_owned(),
             "test.py",
             vec![],

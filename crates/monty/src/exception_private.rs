@@ -2439,7 +2439,7 @@ impl ExceptionRaise {
     #[must_use]
     pub fn into_python_exception<'s>(
         self,
-        interns: &Interns,
+        interns: &'s Interns,
         source_for: impl Fn(&str) -> Option<&'s str>,
     ) -> MontyException {
         // Per-filename SourceMap cache. Typical tracebacks touch 1-3 unique
@@ -2453,15 +2453,22 @@ impl ExceptionRaise {
                 let mut current = Some(&frame);
                 while let Some(f) = current {
                     let fname_id = f.position.filename;
+                    // An `eval()` / `exec()` snippet resolves against its own
+                    // recorded source, never the host's, and prints no source
+                    // line: CPython has nothing to read back for `<string>`.
+                    let eval_source = interns.eval_source(fname_id);
                     let sm_idx = if let Some(i) = cache.iter().position(|(k, _)| *k == fname_id) {
                         i
                     } else {
-                        let fname = interns.get_str(fname_id);
-                        let src = source_for(fname).unwrap_or("");
+                        let src = eval_source.unwrap_or_else(|| source_for(interns.get_str(fname_id)).unwrap_or(""));
                         cache.push((fname_id, SourceMap::new(src)));
                         cache.len() - 1
                     };
-                    frames.push(StackFrame::from_raw(f, interns, &mut cache[sm_idx].1));
+                    let mut stack_frame = StackFrame::from_raw(f, interns, &mut cache[sm_idx].1);
+                    if eval_source.is_some() {
+                        stack_frame.preview_line = None;
+                    }
+                    frames.push(stack_frame);
                     current = f.parent.as_deref();
                 }
                 // Reverse so outermost frame is first (Python's "most recent call last" ordering)
@@ -2609,7 +2616,7 @@ impl RunError {
     #[must_use]
     pub fn into_python_exception<'s>(
         self,
-        interns: &Interns,
+        interns: &'s Interns,
         source_for: impl Fn(&str) -> Option<&'s str>,
     ) -> MontyException {
         match self {

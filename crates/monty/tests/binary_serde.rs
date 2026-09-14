@@ -45,7 +45,7 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
 fn monty_run_round_trip_simple() {
     // Create a runner, round-trip it, and verify it produces the same result
     let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let loaded = round_trip(&runner);
+    let mut loaded = round_trip(&runner);
 
     let result = loaded.run_no_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(3));
@@ -61,7 +61,7 @@ fn monty_run_round_trip_with_inputs() {
         CompileOptions::default(),
     )
     .unwrap();
-    let loaded = round_trip(&runner);
+    let mut loaded = round_trip(&runner);
 
     let result = loaded
         .run_no_limits(vec![MontyObject::Int(10), MontyObject::Int(5)])
@@ -74,7 +74,7 @@ fn monty_run_round_trip_preserves_code() {
     // Verify the code string is preserved
     let code = "def foo(x):\n    return x * 2\nfoo(21)".to_owned();
     let runner = MontyRun::new(code.clone(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let loaded = round_trip(&runner);
+    let mut loaded = round_trip(&runner);
 
     assert_eq!(loaded.code(), code);
     let result = loaded.run_no_limits(vec![]).unwrap();
@@ -98,7 +98,7 @@ result
     .to_owned();
 
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-    let loaded = round_trip(&runner);
+    let mut loaded = round_trip(&runner);
 
     let result = loaded.run_no_limits(vec![]).unwrap();
     // First 10 Fibonacci numbers: 0, 1, 1, 2, 3, 5, 8, 13, 21, 34
@@ -122,7 +122,7 @@ result
 fn monty_run_round_trip_comprehension_closure() {
     let code = "funcs = [lambda: item for item in ['first', 'second']]\nfuncs[0]()".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-    let loaded = round_trip(&runner);
+    let mut loaded = round_trip(&runner);
 
     assert_eq!(
         loaded.run_no_limits(vec![]).unwrap(),
@@ -140,7 +140,7 @@ fn monty_run_round_trip_multiple_runs() {
         CompileOptions::default(),
     )
     .unwrap();
-    let loaded = round_trip(&runner);
+    let mut loaded = round_trip(&runner);
 
     assert_eq!(
         loaded.run_no_limits(vec![MontyObject::Int(5)]).unwrap(),
@@ -411,4 +411,30 @@ fn run_progress_complete_round_trip() {
     let loaded: RunProgress = round_trip_progress(&progress);
 
     assert_eq!(loaded.into_complete().unwrap(), MontyObject::Int(3));
+}
+
+#[test]
+fn run_progress_round_trip_inside_exec() {
+    let runner = MontyRun::new(
+        "exec('v = ext(1)\\nraise ValueError(str(v))')".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+
+    // Suspended inside the snippet's frame: its code and source must travel.
+    let call = round_trip_progress(&progress)
+        .into_function_call()
+        .expect("expected function call");
+    assert_eq!(call.function_name, "ext");
+
+    let err = call.resume(MontyObject::Int(7), PrintWriter::Stdout).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    exec('v = ext(1)\\nraise ValueError(str(v))')\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n  File \"<string>\", line 2, in <module>\nValueError: 7"
+    );
 }

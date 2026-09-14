@@ -6,10 +6,11 @@ Python.
 
 ## Implemented builtin functions
 
-`abs`, `all`, `any`, `bin`, `chr`, `divmod`, `enumerate`, `filter`,
+`abs`, `all`, `any`, `bin`, `chr`, `divmod`, `enumerate`, `eval`, `exec`, `filter`,
 `format`, `getattr`, `hasattr`, `hash`, `hex`, `id`, `isinstance`, `iter`, `len`,
-`map`, `max`, `min`, `next`, `oct`, `open`, `ord`, `pow`, `print`, `repr`,
+`locals`, `map`, `max`, `min`, `next`, `oct`, `open`, `ord`, `pow`, `print`, `repr`,
 `reversed`, `round`, `setattr`, `sorted`, `sum`, `type`, `zip`.
+`eval`, `exec` and `locals` are described in [eval_exec.md](eval_exec.md).
 
 ## Implemented type constructors (also builtins)
 
@@ -21,9 +22,8 @@ Python.
 
 These raise `NameError`:
 
-- **Code execution**: `eval`, `exec`, `compile`, `__import__`. Deliberate:
-    sandboxed code must not be able to compile new code at runtime.
-- **Namespace introspection**: `globals`, `locals`, `vars`, `dir`.
+- **Code objects and imports**: `compile`, `__import__`.
+- **Namespace introspection**: `globals`, `vars`, `dir`.
 - **Interactive**: `input`, `breakpoint`, `help`.
 - **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`,
     `super`. (`@property` on functions is not recognized; use a method.)

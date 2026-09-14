@@ -3,7 +3,7 @@
 //! This module owns conversion from JSON bytes into Monty runtime values,
 //! including CPython-compatible `JSONDecodeError` construction.
 
-use std::{borrow::Cow, mem};
+use std::mem;
 
 use jiter::{Jiter, JiterError, JiterErrorType, JsonErrorType, NumberAny, NumberInt, Peek};
 
@@ -88,17 +88,26 @@ struct JsonLoadsArgs {
 /// `jiter` are copied into Monty's heap immediately before any further parser
 /// movement so borrowed tape-backed data never escapes.
 fn parse_json_input(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    let bytes: Cow<'_, [u8]> = match value {
-        Value::InternString(string_id) => Cow::Borrowed(vm.interns.get_str(*string_id).as_bytes()),
-        Value::InternBytes(bytes_id) => Cow::Borrowed(vm.interns.get_bytes(*bytes_id)),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(s) => Cow::Owned(s.as_str().as_bytes().to_vec()),
-            HeapData::Bytes(b) => Cow::Owned(b.as_slice().to_vec()),
-            _ => return Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
-        },
-        _ => return Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
-    };
-    parse_json_bytes(bytes.as_ref(), vm)
+    // Interned inputs are held by handle so the parser can borrow the VM mutably.
+    match value {
+        Value::InternString(string_id) => {
+            let s = vm.interns.get_str_handle(*string_id);
+            parse_json_bytes(s.as_bytes(), vm)
+        }
+        Value::InternBytes(bytes_id) => {
+            let b = vm.interns.get_bytes_handle(*bytes_id);
+            parse_json_bytes(&b, vm)
+        }
+        Value::Ref(heap_id) => {
+            let bytes = match vm.heap.get(*heap_id) {
+                HeapData::Str(s) => s.as_str().as_bytes().to_vec(),
+                HeapData::Bytes(b) => b.as_slice().to_vec(),
+                _ => return Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
+            };
+            parse_json_bytes(&bytes, vm)
+        }
+        _ => Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
+    }
 }
 
 /// Parses raw JSON bytes using `jiter` and converts the result to a Monty value.

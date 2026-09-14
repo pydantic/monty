@@ -15,7 +15,7 @@ use monty_types::{CompileOptions, ExcType, MontyObject};
 
 /// Evaluate a Python snippet under Monty and return its final value.
 fn eval(code: &str) -> MontyObject {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     ex.run_no_limits(vec![]).unwrap()
 }
 
@@ -170,7 +170,7 @@ fn json_deserialize_dict() {
 #[test]
 fn json_roundtrip() {
     // Values round-trip through JSON correctly
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "{'items': [1, 'two', None], 'flag': True}".to_owned(),
         "test.py",
         vec![],
@@ -197,7 +197,7 @@ fn json_roundtrip_empty() {
 #[test]
 fn cycle_equality_same_id() {
     // Multiple references to the same cyclic object should produce equal Cycle values
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "a = []; a.append(a); [a, a]".to_owned(),
         "test.py",
         vec![],
@@ -225,7 +225,7 @@ fn cycle_equality_same_id() {
 #[test]
 fn cycle_equality_different_ids() {
     // Two separate cyclic objects should produce unequal Cycle values
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "a = []; a.append(a); b = []; b.append(b); [a, b]".to_owned(),
         "test.py",
         vec![],

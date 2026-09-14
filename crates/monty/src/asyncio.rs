@@ -99,6 +99,9 @@ pub(crate) struct Coroutine {
     pub namespace: Vec<Value>,
     /// Current execution state.
     pub state: CoroutineState,
+    /// Owned reference to the `exec()` / `eval()` globals dict the async
+    /// function was defined under; `None` when its globals are module slots.
+    pub globals: Option<HeapId>,
 }
 impl Coroutine {
     /// Creates a new coroutine for an async function call.
@@ -106,11 +109,13 @@ impl Coroutine {
     /// # Arguments
     /// * `func_id` - The async function to execute
     /// * `namespace` - Pre-bound namespace with parameters and captured variables
-    pub fn new(func_id: FunctionId, namespace: Vec<Value>) -> Self {
+    /// * `globals` - The function's globals dict, already inc_ref'd for this coroutine
+    pub fn new(func_id: FunctionId, namespace: Vec<Value>, globals: Option<HeapId>) -> Self {
         Self {
             func_id,
             namespace,
             state: CoroutineState::New,
+            globals,
         }
     }
 }

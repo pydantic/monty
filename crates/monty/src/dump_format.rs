@@ -26,7 +26,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// rejected instead of decoding as their neighbour. That covers the
 /// interpreter's own types *and* everything reachable from [`Dump`] — notably
 /// [`TypeCheckingConfig`](monty_types::TypeCheckingConfig) in `monty-types`.
-pub const DUMP_VERSION: u16 = 9;
+pub const DUMP_VERSION: u16 = 10;
 
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
@@ -192,12 +192,12 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0x0d57_34dd_be07_19ac,
+            0x0ea2_2537_3017_048d,
             "opcodes changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(
             static_strings_fingerprint(),
-            0xa946_9719_1535_83c8,
+            0x9a80_2f01_b5e0_c68c,
             "static strings changed for dump version {DUMP_VERSION}"
         );
         assert_eq!(
@@ -227,7 +227,7 @@ mod tests {
         // is append-only: a new builtin goes after the last variant.
         assert_eq!(
             variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
-            0xd5ef_68ff_fc6b_f752,
+            0xcdd8_09b1_2adc_3852,
             "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}"
         );
     }

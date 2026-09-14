@@ -6,24 +6,56 @@
 
 use crate::{intern::StringId, parse::CodeRange, value::Value};
 
+/// The session's flat code storage, shared by every compiled [`Code`].
+///
+/// Both streams are session-wide so a running frame reaches them through one
+/// `Vec` held inline in the VM rather than dereferencing its `Code`: the frame
+/// carries only the bases. A run borrows the whole struct
+/// (`Interns::take_arenas`), and `eval()` / `exec()` append to the live one.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CodeArenas {
+    /// Every code object's instructions, concatenated. A frame's `ip` indexes
+    /// this directly, so switching frames costs nothing but setting `ip`.
+    pub(crate) bytecode: Vec<u8>,
+    /// Every code object's constants, concatenated. `LoadConst` adds its `u16`
+    /// operand to the running frame's base.
+    pub(crate) constants: Vec<Value>,
+}
+
+impl Clone for CodeArenas {
+    /// [`Value`] is deliberately not `Clone`; constants are always immediates,
+    /// so copying one needs no refcount.
+    fn clone(&self) -> Self {
+        Self {
+            bytecode: self.bytecode.clone(),
+            constants: self.constants.iter().map(Value::copy_immediate).collect(),
+        }
+    }
+}
+
 /// Compiled bytecode for a function or module.
 ///
 /// This is the output of the bytecode compiler and the input to the VM.
 /// Each function has its own Code object; module-level code also gets one.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Code {
-    /// Raw bytecode instructions as a byte vector.
+    /// Where this code object's instructions start in
+    /// [`CodeArenas::bytecode`]. A frame's `ip` starts here and stays an
+    /// absolute arena offset, so the dispatch loop never consults the `Code`.
     ///
     /// Opcodes are 1 byte each, followed by their operands (0-3 bytes depending
-    /// on the instruction). The variable-width encoding gives better cache locality
-    /// than fixed-width alternatives.
-    bytecode: Vec<u8>,
+    /// on the instruction); the variable-width encoding gives better cache
+    /// locality than fixed-width alternatives.
+    bytecode_base: u32,
 
-    /// Constant pool for this code object.
-    ///
-    /// Values referenced by `LoadConst` instructions. Includes numbers, strings
-    /// (as `Value::InternString`), and other literal values.
-    constants: ConstPool,
+    /// Length of this code object's block in [`CodeArenas::bytecode`], for the
+    /// offset arithmetic that turns an absolute `ip` back into the table-relative
+    /// offset the location and exception tables are keyed by.
+    bytecode_len: u32,
+
+    /// Where this code object's constants start in [`CodeArenas::constants`].
+    /// `LoadConst` adds its `u16` operand to the running frame's copy of this.
+    constants_base: u32,
 
     /// Source location table for tracebacks.
     ///
@@ -38,17 +70,6 @@ pub struct Code {
     /// innermost-first for nested try blocks.
     exception_table: Vec<ExceptionEntry>,
 
-    /// Number of local variables (namespace slots needed).
-    ///
-    /// Used to pre-allocate the namespace when entering this code.
-    num_locals: u16,
-
-    /// Maximum stack depth needed during execution.
-    ///
-    /// Used as a hint for pre-allocating the operand stack. Computed during
-    /// compilation by tracking push/pop operations.
-    stack_size: u16,
-
     /// Local variable names for error messages.
     ///
     /// Maps slot indices to variable names. Used to generate proper NameError
@@ -60,15 +81,7 @@ impl Code {
     /// Creates an empty code object for tests that only need VM context.
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
-        Self::new(
-            Vec::new(),
-            ConstPool::default(),
-            Vec::new(),
-            Vec::new(),
-            0,
-            0,
-            Vec::new(),
-        )
+        Self::new(0, 0, 0, Vec::new(), Vec::new(), Vec::new())
     }
 
     /// Creates a new Code object with all components.
@@ -76,35 +89,47 @@ impl Code {
     /// This is typically called by `CodeBuilder::build()` after compilation.
     #[must_use]
     pub fn new(
-        bytecode: Vec<u8>,
-        constants: ConstPool,
+        bytecode_base: u32,
+        bytecode_len: u32,
+        constants_base: u32,
         location_table: Vec<LocationEntry>,
         exception_table: Vec<ExceptionEntry>,
-        num_locals: u16,
-        stack_size: u16,
         local_names: Vec<StringId>,
     ) -> Self {
         Self {
-            bytecode,
-            constants,
+            bytecode_base,
+            bytecode_len,
+            constants_base,
             location_table,
             exception_table,
-            num_locals,
-            stack_size,
             local_names,
         }
     }
 
-    /// Returns the raw bytecode bytes.
-    #[must_use]
-    pub fn bytecode(&self) -> &[u8] {
-        &self.bytecode
+    /// This code object's slice of the session bytecode arena.
+    #[cfg(test)]
+    pub(crate) fn bytecode<'a>(&self, arenas: &'a CodeArenas) -> &'a [u8] {
+        let base = self.bytecode_base as usize;
+        &arenas.bytecode[base..base + self.bytecode_len as usize]
     }
 
-    /// Returns the constant pool.
+    /// Start of this code object's instructions in the session bytecode arena;
+    /// also the initial `ip` of any frame running it.
     #[must_use]
-    pub fn constants(&self) -> &ConstPool {
-        &self.constants
+    pub fn bytecode_base(&self) -> u32 {
+        self.bytecode_base
+    }
+
+    /// Length of this code object's instructions in the session bytecode arena.
+    #[must_use]
+    pub fn bytecode_len(&self) -> u32 {
+        self.bytecode_len
+    }
+
+    /// Start of this code object's block in the session-wide constant arena.
+    #[must_use]
+    pub fn constants_base(&self) -> u32 {
+        self.constants_base
     }
 
     /// Returns the local variable name for a given slot index.
@@ -145,38 +170,6 @@ impl Code {
     #[must_use]
     pub fn find_exception_handler(&self, offset: u32) -> Option<&ExceptionEntry> {
         self.exception_table.iter().find(|entry| entry.contains(offset))
-    }
-}
-
-/// TODO remove, this doesn't add any value
-/// Constant pool for a code object.
-///
-/// Stores literal values referenced by `LoadConst` instructions. Strings are stored
-/// as `Value::InternString(StringId)` pointing to the global `Interns` table, not
-/// duplicated here. At runtime, constants are loaded via `clone_with_heap()` to
-/// handle reference counting properly.
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ConstPool {
-    /// The constant values, indexed by the operand of `LoadConst`.
-    values: Vec<Value>,
-}
-
-impl ConstPool {
-    /// Creates a constant pool from a vector of values.
-    #[must_use]
-    pub fn from_vec(values: Vec<Value>) -> Self {
-        Self { values }
-    }
-
-    /// Returns the constant at the given index.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the index is out of bounds. This should never happen with
-    /// valid bytecode since indices come from the compiler.
-    #[must_use]
-    pub fn get(&self, index: u16) -> &Value {
-        &self.values[index as usize]
     }
 }
 

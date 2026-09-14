@@ -8,7 +8,7 @@ use std::mem;
 
 use monty_types::{MontyUuid, OsFunctionCall};
 
-use super::{CallFrame, VM, attr::PendingLookupEffect, recursion::RunReentryGuard};
+use super::{CallFrame, VM, attr::PendingLookupEffect, function_namespace, recursion::RunReentryGuard};
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
@@ -374,13 +374,13 @@ impl VM<'_> {
             }
             Value::InternString(string_id) => {
                 // Call string method on interned string literal using the unified dispatcher
-                let s = this.interns.get_str(string_id);
-                call_str_method(s, name_id, args, this).map(CallResult::Value)
+                let s = this.interns.get_str_handle(string_id);
+                call_str_method(&s, name_id, args, this).map(CallResult::Value)
             }
             Value::InternBytes(bytes_id) => {
                 // Call bytes method on interned bytes literal using the unified dispatcher
-                let b = this.interns.get_bytes(bytes_id);
-                call_bytes_method(b, name_id, args, this).map(CallResult::Value)
+                let b = this.interns.get_bytes_handle(bytes_id);
+                call_bytes_method(&b, name_id, args, this).map(CallResult::Value)
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
@@ -562,8 +562,8 @@ impl VM<'_> {
             Value::Builtin(builtin) => builtin.call(self, args),
             Value::ModuleFunction(mf) => mf.call(self, args),
             Value::DefFunction(func_id) => {
-                // Defined function without defaults or captured variables
-                self.call_def_function(*func_id, &[], &[], args)
+                // Defined function without defaults, captured variables or a globals dict
+                self.call_def_function(*func_id, &[], &[], None, args)
             }
             Value::Ref(heap_id) => {
                 // Could be a closure or function with defaults - check heap
@@ -590,7 +590,7 @@ impl VM<'_> {
         // its captured `self`. Both are dispatched before the closure/defaults
         // path because they don't fit the `(func_id, cells, defaults)` shape.
 
-        let (func_id, cells, defaults) = match self.heap.get(heap_id) {
+        let (func_id, cells, defaults, globals) = match self.heap.get(heap_id) {
             HeapData::Class(_) => return self.instantiate_class(heap_id, args),
             // Calling a host class type suspends to the host as a `__call__`
             // method call on the class's uuid; the host's own policy decides
@@ -614,13 +614,13 @@ impl VM<'_> {
                 return this.call_function(func, args.prepend(instance));
             }
             HeapData::Closure(closure) => {
-                let cloned_cells = closure.cells.clone();
+                let cloned_cells = closure.cells.to_vec();
                 let cloned_defaults: Vec<Value> = closure.defaults.iter().map(|v| v.clone_with_heap(self)).collect();
-                (closure.func_id, cloned_cells, cloned_defaults)
+                (closure.func_id, cloned_cells, cloned_defaults, closure.globals)
             }
             HeapData::FunctionDefaults(fd) => {
                 let cloned_defaults: Vec<Value> = fd.defaults.iter().map(|v| v.clone_with_heap(self)).collect();
-                (fd.func_id, Vec::new(), cloned_defaults)
+                (fd.func_id, Vec::new(), cloned_defaults, fd.globals)
             }
             HeapData::ExtFunction(function) => {
                 let name = function.clone_name();
@@ -680,7 +680,7 @@ impl VM<'_> {
 
         let this = self;
         defer_drop!(defaults, this);
-        this.call_def_function(func_id, &cells, defaults, args)
+        this.call_def_function(func_id, &cells, defaults, globals, args)
     }
 
     /// Calls a function with unpacked args tuple and optional kwargs dict.
@@ -903,37 +903,40 @@ impl VM<'_> {
         let func = self.interns.get_function(func_id);
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
-        let code = &func.code;
 
         let callable = self.stack.remove(callable_index);
         debug_assert_exact_callable(&callable, func_id);
         self.stack
             .resize_with(callable_index + namespace_size, || Value::Undefined);
 
+        // Re-borrow rather than hold `func` across the stack edits above: the
+        // frame copies out the code's arena bases and keeps no handle.
         let exc_stack_base = self.exception_stack.len();
-        self.push_frame(CallFrame::new_function(
-            code,
+        let frame = CallFrame::new_function(
+            &self.interns.get_function(func_id).code,
             callable_index,
             locals_count,
             exc_stack_base,
             func_id,
             call_offset,
-        ))?;
+            None,
+        );
+        self.push_frame(frame)?;
 
         Ok(CallResult::FramePushed)
     }
 
     /// Creates a coroutine by moving exact positional arguments into its namespace.
     fn create_exact_coroutine(&mut self, func_id: FunctionId, callable_index: usize) -> CallResult {
-        let func = self.interns.get_function(func_id);
+        let func = self.interns.function(func_id);
         let mut namespace = self.stack.split_off(callable_index + 1);
         namespace.reserve(func.namespace_size - namespace.len());
-        self.install_closure_cells(func, &[], &mut namespace);
+        self.install_closure_cells(&func, &[], &mut namespace);
 
         let callable = self.pop();
         debug_assert_exact_callable(&callable, func_id);
 
-        let coroutine = Coroutine::new(func_id, namespace);
+        let coroutine = Coroutine::new(func_id, namespace, None);
         let coroutine_id = self.heap.allocate(HeapData::Coroutine(coroutine));
         CallResult::Value(Value::Ref(coroutine_id))
     }
@@ -951,14 +954,15 @@ impl VM<'_> {
         func_id: FunctionId,
         cells: &[HeapId],
         defaults: &[Value],
+        globals: Option<HeapId>,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
         let func = self.interns.get_function(func_id);
 
         if func.is_async {
-            self.create_coroutine(func_id, cells, defaults, args)
+            self.create_coroutine(func_id, cells, defaults, globals, args)
         } else {
-            self.call_sync_function(func_id, cells, defaults, args)
+            self.call_sync_function(func_id, cells, defaults, globals, args)
         }
     }
 
@@ -970,9 +974,10 @@ impl VM<'_> {
         func_id: FunctionId,
         cells: &[HeapId],
         defaults: &[Value],
+        globals: Option<HeapId>,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
-        let func = self.interns.get_function(func_id);
+        let func = self.interns.function(func_id);
 
         // 1. Create namespace for the coroutine with bound arguments and captured cells.
         let namespace = Vec::with_capacity(func.namespace_size);
@@ -983,11 +988,14 @@ impl VM<'_> {
         func.signature.bind(args, defaults, this, func.name, namespace)?;
 
         // 3. Install owned cells and captured free-var cells at their slots.
-        this.install_closure_cells(func, cells, namespace);
+        this.install_closure_cells(&func, cells, namespace);
 
-        // 4. Create Coroutine on heap
+        // 4. Create Coroutine on heap; it carries its own reference to the globals dict.
         let (namespace, this) = namespace_guard.into_parts();
-        let coroutine = Coroutine::new(func_id, namespace);
+        if let Some(globals) = globals {
+            this.heap.inc_ref(globals);
+        }
+        let coroutine = Coroutine::new(func_id, namespace, globals);
         let coroutine_id = this.heap.allocate(HeapData::Coroutine(coroutine));
 
         Ok(CallResult::Value(Value::Ref(coroutine_id)))
@@ -1042,12 +1050,13 @@ impl VM<'_> {
         func_id: FunctionId,
         cells: &[HeapId],
         defaults: &[Value],
+        globals: Option<HeapId>,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
         let call_offset = self.current_offset();
         let stack_base = self.stack.len();
 
-        let func = self.interns.get_function(func_id);
+        let func = self.interns.function(func_id);
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 
@@ -1067,9 +1076,7 @@ impl VM<'_> {
         }
 
         // 3. Install owned cells and captured free-var cells at their slots.
-        this.install_closure_cells(func, cells, namespace);
-
-        let code = &func.code;
+        this.install_closure_cells(&func, cells, namespace);
 
         // 6. Commit the guard (no rollback) and push the frame. The operand
         // stack starts immediately above the locals region — comprehensions
@@ -1081,13 +1088,15 @@ impl VM<'_> {
         this.namespace_scratch = namespace;
 
         let exc_stack_base = this.exception_stack.len();
+        let namespace = function_namespace(globals, &*this.heap);
         this.push_frame(CallFrame::new_function(
-            code,
+            &func.code,
             stack_base,
             locals_count,
             exc_stack_base,
             func_id,
             call_offset,
+            namespace,
         ))?;
 
         Ok(CallResult::FramePushed)
@@ -1146,9 +1155,12 @@ impl VM<'_> {
             None if matches!(args, ArgValues::Empty) => Ok(CallResult::Value(Value::Ref(instance_id))),
             None => {
                 args.drop_with(self);
-                let name = class_name(class_id, self.heap, self.interns);
+                let err = ExcType::type_error(format!(
+                    "{}() takes no arguments",
+                    class_name(class_id, self.heap, self.interns)
+                ));
                 Value::Ref(instance_id).drop_with(self);
-                Err(ExcType::type_error(format!("{name}() takes no arguments")))
+                Err(err)
             }
             Some(init_func) => {
                 let this = self;
