@@ -810,6 +810,9 @@ fn os_call(call: Option<&Call>) -> &'static str {
         Some(Call::GetEnviron(_)) => "get_environ",
         Some(Call::DateToday(_)) => "date_today",
         Some(Call::DateTimeNow(_)) => "date_time_now",
+        Some(Call::Time(_)) => "time",
+        Some(Call::Sleep(_)) => "sleep",
+        Some(Call::AsyncSleep(_)) => "async_sleep",
         None => "unknown",
     }
 }

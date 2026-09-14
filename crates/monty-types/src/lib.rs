@@ -38,8 +38,9 @@ pub use crate::{
         MontyTimeDelta, MontyTimeZone, MontyType,
     },
     os::{
-        GetenvArgs, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-        RenameCallArgs, dir_stat, file_stat, stat_result, symlink_stat,
+        AsyncSleepArgs, GetenvArgs, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall,
+        PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, SleepError, dir_stat, file_stat, sleep_duration,
+        sleep_duration_saturating, stat_result, symlink_stat,
     },
     resource::{
         BASELINE_MEMORY, DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MAX_SUSPENSIONS, LARGE_RESULT_THRESHOLD, LIVE_MEMORY,

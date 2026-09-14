@@ -2011,6 +2011,11 @@ impl<'h> VM<'h> {
                 apply_write_position(file_id, value, self)
             }
             Some(PendingEffect::Post(PostConversionEffect::OpenName { name })) => apply_open_name(name, value, self),
+            Some(PendingEffect::Post(PostConversionEffect::DiscardResult)) => {
+                value.drop_with(self);
+                Ok(Value::None)
+            }
+            Some(PendingEffect::Post(PostConversionEffect::SettleAwaitable)) => Ok(self.settled_awaitable(value)),
             // Any pre-conversion effect was consumed above.
             Some(PendingEffect::Pre(_)) | None => Ok(value),
         };
@@ -2062,7 +2067,12 @@ impl<'h> VM<'h> {
                     self.heap.dec_ref(file_id);
                 }
                 // Hold no state or heap references — nothing to roll back.
-                PendingEffect::Pre(_) | PendingEffect::Post(PostConversionEffect::OpenName { .. }) => {}
+                PendingEffect::Pre(_)
+                | PendingEffect::Post(
+                    PostConversionEffect::OpenName { .. }
+                    | PostConversionEffect::DiscardResult
+                    | PostConversionEffect::SettleAwaitable,
+                ) => {}
             }
         }
         // Use the normal exception handling mechanism

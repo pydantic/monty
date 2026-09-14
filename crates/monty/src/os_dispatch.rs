@@ -72,8 +72,14 @@ impl PendingEffect {
         match self {
             Self::Pre(effect) => Some(effect.operation_name()),
             Self::Post(PostConversionEffect::OpenName { .. }) => Some("open"),
+            // `time.sleep` blocks by definition, so a future would leave the
+            // sandbox running before the wait it asked for finished.
+            Self::Post(PostConversionEffect::DiscardResult) => Some("time.sleep"),
             // A future strands these instead: the awaited value is the raw host reply.
             Self::Post(PostConversionEffect::BufferStore { .. } | PostConversionEffect::WritePosition { .. }) => None,
+            // `asyncio.sleep` wants the future: the pending awaitable a future
+            // answer pushes is exactly what this effect would have built.
+            Self::Post(PostConversionEffect::SettleAwaitable) => None,
         }
     }
 
@@ -164,6 +170,14 @@ pub(crate) enum PostConversionEffect {
     },
     /// Preserve `open()`'s filename while the returned handle supplies the I/O target.
     OpenName { name: FileName },
+    /// Drop the host's answer and evaluate to `None` (`time.sleep`, whose
+    /// CPython return value is always `None`).
+    DiscardResult,
+    /// Wrap the host's answer in an already-settled awaitable, so
+    /// `asyncio.sleep` is awaitable whether the host answered immediately or
+    /// with a future (a future arrives as a pending awaitable instead, and
+    /// this effect is released unused).
+    SettleAwaitable,
 }
 
 impl PostConversionEffect {
@@ -171,7 +185,7 @@ impl PostConversionEffect {
     pub(crate) fn pinned_file(&self) -> Option<HeapId> {
         match self {
             Self::BufferStore { file_id } | Self::WritePosition { file_id, .. } => Some(*file_id),
-            Self::OpenName { .. } => None,
+            Self::OpenName { .. } | Self::DiscardResult | Self::SettleAwaitable => None,
         }
     }
 }

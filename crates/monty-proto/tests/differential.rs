@@ -553,6 +553,29 @@ fn hand_call_payloads_match_generated_encoding() {
         pb::OsCall::decode(generated_now.encode_to_vec().as_slice()).expect("generated now call decodes"),
         hand_now
     );
+
+    // `AsyncSleep` embeds a `WireObject` next to a plain double, so it checks
+    // both halves of the hand-written encoding at once.
+    let result = MontyObject::String("woken".to_owned());
+    let hand_sleep = pb::OsCall {
+        call_id: 11,
+        call: Some(pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep {
+            delay: 0.25,
+            result: Some(WireObject::new(result.clone())),
+        })),
+    };
+    let generated_sleep = oracle::OsCall {
+        call_id: 11,
+        call: Some(oracle::os_call::Call::AsyncSleep(oracle::os_call::AsyncSleep {
+            delay: 0.25,
+            result: Some(to_oracle(&result)),
+        })),
+    };
+    assert_eq!(hand_sleep.encode_to_vec(), generated_sleep.encode_to_vec());
+    assert_eq!(
+        pb::OsCall::decode(generated_sleep.encode_to_vec().as_slice()).expect("generated sleep call decodes"),
+        hand_sleep
+    );
 }
 
 /// A cyclic value produced by real execution must agree byte-for-byte too —

@@ -83,6 +83,7 @@ The following modules are present:
 | `pathlib`     | [pathlib.md](pathlib.md)         |
 | `re`          | [re.md](re.md)                   |
 | `sys`         | [sys.md](sys.md)                 |
+| `time`        | [time.md](time.md)               |
 | `typing`      | [typing.md](typing.md)           |
 | `unicodedata` | [unicodedata.md](unicodedata.md) |
 
@@ -90,7 +91,7 @@ Each covers only part of its CPython surface — often a small part.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 
-Notably absent: `enum`, `contextlib`, `random`, `time`, `io`, `copy`, `string`, `struct`, `operator`,
+Notably absent: `enum`, `contextlib`, `random`, `io`, `copy`, `string`, `struct`, `operator`,
 `inspect`, `logging`, `traceback`, `hashlib`, `uuid`, `urllib`.
 Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.

@@ -4,10 +4,10 @@ use insta::assert_snapshot;
 use monty::MontyRun;
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use monty_types::{
-    CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
-    MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
-    MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, OpenCallArgs,
-    OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame,
+    AsyncSleepArgs, CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData,
+    MkdirCallArgs, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
+    MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult,
+    OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame,
     UnicodeErrorData,
 };
 use num_bigint::BigInt;
@@ -870,9 +870,64 @@ fn os_calls_round_trip_all_variants() {
             offset_seconds: 3600,
             name: Some("CET".to_owned()),
         })),
+        OsFunctionCall::Time,
+        OsFunctionCall::Sleep(Duration::ZERO),
+        OsFunctionCall::Sleep(Duration::from_nanos(1)),
+        OsFunctionCall::Sleep(Duration::from_millis(1_500)),
+        OsFunctionCall::AsyncSleep(AsyncSleepArgs {
+            delay: Duration::ZERO,
+            result: MontyObject::None,
+        }),
+        OsFunctionCall::AsyncSleep(AsyncSleepArgs {
+            delay: Duration::from_secs_f64(0.25),
+            result: MontyObject::List(vec![MontyObject::Int(1)]),
+        }),
     ] {
         assert_os_call_round_trip(call);
     }
+}
+
+/// A child that lies about a sleep length is refused rather than handed on: a
+/// host would convert these to its own duration type, and the obvious
+/// conversions panic on all three.
+#[test]
+fn os_call_conversion_rejects_impossible_sleep_lengths() {
+    for seconds in [f64::NAN, -1.0, f64::INFINITY, 1e18] {
+        let sleep = pb::os_call::Call::Sleep(pb::os_call::Sleep { seconds });
+        assert!(
+            matches!(
+                OsFunctionCall::try_from(sleep),
+                Err(ProtoConvertError::InvalidValue {
+                    field: "Sleep.seconds",
+                    ..
+                })
+            ),
+            "{seconds} should not decode as a sleep length"
+        );
+        let async_sleep = pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep {
+            delay: seconds,
+            result: Some(MontyObject::None.into()),
+        });
+        assert!(
+            matches!(
+                OsFunctionCall::try_from(async_sleep),
+                Err(ProtoConvertError::InvalidValue {
+                    field: "AsyncSleep.delay",
+                    ..
+                })
+            ),
+            "{seconds} should not decode as an async sleep delay"
+        );
+    }
+    // `asyncio.sleep` always carries the value its await produces.
+    let missing_result = pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep {
+        delay: 0.0,
+        result: None,
+    });
+    assert!(matches!(
+        OsFunctionCall::try_from(missing_result),
+        Err(ProtoConvertError::MissingField("AsyncSleep.result"))
+    ));
 }
 
 #[test]

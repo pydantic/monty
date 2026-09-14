@@ -189,8 +189,8 @@ assert!(err.to_string().contains("time limit exceeded"));
 
 ### Reading the clock
 
-`run` has no host to ask, so it answers `date.today()` and `datetime.now()` from a clock of its own — this machine's,
-unless you choose otherwise:
+`run` has no host to ask, so it answers `date.today()`, `datetime.now()` and `time.time()` from a clock of its own —
+this machine's, unless you choose otherwise:
 
 ```rust
 use monty::MontyRun;
@@ -207,6 +207,8 @@ could not read their wall time at all, and `HostClock::Fixed` freezes an instant
 
 `start` ignores this: there the call pauses and the host answers it, like any other OS call, and the same is true of
 every pool session (see [the clock](../security.md#the-clock)).
+`time.sleep()` and `asyncio.sleep()` always pause for the host, whatever the clock: waiting is something only a host can
+bound (see [`limitations/time.md`](https://github.com/pydantic/monty/blob/main/limitations/time.md)).
 
 ### Host functions and pausing
 

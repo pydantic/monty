@@ -18,7 +18,7 @@ use std::{
         mpsc::{self, RecvTimeoutError},
     },
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use ahash::AHashMap;
@@ -954,6 +954,26 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
         })
         .into(),
         OsFunctionCall::DateTimeNow(tz) => dispatch_datetime_now(tz.as_ref()).into(),
+        // The clock calls above are frozen for reproducibility, but `time.time()`
+        // is only ever asserted against loosely (and CPython runs the same case
+        // against the real clock), so it reads the host's.
+        OsFunctionCall::Time => MontyObject::Float(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0.0, |since_epoch| since_epoch.as_secs_f64()),
+        )
+        .into(),
+        // Both sleeps wait here, so a gathered `asyncio.sleep` runs in series
+        // rather than concurrently — fine for fixtures, which sleep for
+        // milliseconds at most.
+        OsFunctionCall::Sleep(delay) => {
+            thread::sleep(*delay);
+            MontyObject::None.into()
+        }
+        OsFunctionCall::AsyncSleep(args) => {
+            thread::sleep(args.delay);
+            args.result.clone().into()
+        }
         OsFunctionCall::GetEnviron => {
             let env_dict = vec![
                 (

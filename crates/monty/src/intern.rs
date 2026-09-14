@@ -1295,6 +1295,18 @@ pub enum StaticStrings {
     /// `__class_getitem__`, the classmethod behind `list[int]`.
     #[strum(serialize = "__class_getitem__")]
     ClassGetitem,
+
+    // ==========================
+    // `time` module strings, appended at the enum end like every block before
+    // it. The module name itself reuses [`Self::Time`], already interned as
+    // `datetime.time`, since both spell "time".
+    /// `time.sleep()` and `asyncio.sleep()`.
+    Sleep,
+    /// `delay` parameter of `asyncio.sleep()`.
+    Delay,
+    /// `result` parameter of `asyncio.sleep()`.
+    #[strum(serialize = "result")]
+    ResultArg,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

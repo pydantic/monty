@@ -741,6 +741,14 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, pa
                 os_call!("date_time_now")
             }
         }
+        Some(Call::Time(_)) => os_call!("time"),
+        Some(Call::Sleep(s)) => os_call!("sleep", args.seconds = s.seconds),
+        Some(Call::AsyncSleep(s)) => {
+            let (result, cut) = optional_attr(s.result.as_ref());
+            let result = result.map(|v| v.as_str().into_owned());
+            args_cut |= cut;
+            os_call!("async_sleep", args.delay = s.delay, args.result = result)
+        }
         None => os_call!(MISSING),
     });
     if args_cut {

@@ -319,3 +319,40 @@ test('printCallback with multiple prints', async () => {
 
   t.is(output.join(''), 'a\nb\nc\n')
 })
+
+// =============================================================================
+// Sleeping: `time.sleep` and `asyncio.sleep` reach the `os` callback
+// =============================================================================
+
+test('time.sleep reaches the os callback and evaluates to None', async () => {
+  const calls: unknown[] = []
+  const result = await run('import time\nrepr(time.sleep(1.5))', {
+    os: (name, args) => {
+      calls.push([name, args])
+      return null // the host decides how long to wait — here, not at all
+    },
+  })
+  t.is(result, 'None')
+  t.deepEqual(calls, [['time.sleep', [1.5]]])
+})
+
+test('an async os callback waits before answering asyncio.sleep', async () => {
+  const calls: unknown[] = []
+  const result = await run("import asyncio\nasyncio.run(asyncio.sleep(0.01, 'woken'))", {
+    os: async (name, args) => {
+      calls.push([name, args])
+      const [delay, value] = args as [number, unknown]
+      await new Promise((resolve) => setTimeout(resolve, delay * 1000))
+      return value
+    },
+  })
+  t.is(result, 'woken')
+  t.deepEqual(calls, [['asyncio.sleep', [0.01, 'woken']]])
+})
+
+test('sleeping without an os callback is refused', async () => {
+  const error = await t.throwsAsync(() => run('import time\ntime.sleep(30)'), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.message, "RuntimeError: 'time.sleep' is not supported in this environment")
+})
