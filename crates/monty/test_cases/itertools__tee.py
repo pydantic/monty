@@ -69,6 +69,30 @@ assert list(spent) == [1]
 assert list(spent) == []
 assert list(other) == [1]
 
+
+# The source is re-read rather than latched, so one that stops and later
+# yields again is picked up where it left off — and both consumers see the
+# same sequence.
+class Stuttering:
+    def __init__(self):
+        self.calls = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.calls += 1
+        if self.calls == 2 or self.calls > 4:
+            raise StopIteration
+        return self.calls
+
+
+stutter_a, stutter_b = itertools.tee(Stuttering())
+assert next(stutter_a) == 1
+assert next(stutter_a, 'STOP') == 'STOP'
+assert next(stutter_a) == 3
+assert [next(stutter_b, 'STOP') for _ in range(4)] == [1, 3, 4, 'STOP']
+
 # === Copying ===
 # `tee` of a `_tee` copies where it stands rather than draining it, so the
 # copies replay from there and advancing the original leaves them alone.

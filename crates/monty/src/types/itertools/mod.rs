@@ -52,7 +52,7 @@ pub(crate) use repeat::Repeat;
 use serde::{Deserialize, Serialize};
 pub(crate) use starmap::StarMap;
 pub(crate) use takewhile::TakeWhile;
-pub(crate) use tee::{Tee, TeeBuffer};
+pub(crate) use tee::{Tee, TeeBlock};
 pub(crate) use zip_longest::ZipLongest;
 
 // Only the 64-bit size budget below needs it.
@@ -100,8 +100,8 @@ pub(crate) enum ItertoolsIter {
     Grouper(Grouper),
     /// Inline: a `Value` and a slot index.
     Tee(Tee),
-    /// Boxed: a source, a deque of items and a position per consumer.
-    TeeBuffer(Box<TeeBuffer>),
+    /// Boxed: a source, the items read into this link and the link after it.
+    TeeBlock(Box<TeeBlock>),
 }
 
 // `Dict` is the widest `HeapData` payload on 64-bit hosts, so it — not a
@@ -147,7 +147,7 @@ pub(crate) enum Kind {
     GroupBy,
     Grouper,
     Tee,
-    TeeBuffer,
+    TeeBlock,
 }
 
 impl ItertoolsIter {
@@ -174,7 +174,7 @@ impl ItertoolsIter {
             Self::GroupBy(_) => Kind::GroupBy,
             Self::Grouper(_) => Kind::Grouper,
             Self::Tee(_) => Kind::Tee,
-            Self::TeeBuffer(_) => Kind::TeeBuffer,
+            Self::TeeBlock(_) => Kind::TeeBlock,
         }
     }
 
@@ -201,7 +201,7 @@ impl ItertoolsIter {
             Self::GroupBy(_) => Type::ItertoolsGroupBy,
             Self::Grouper(_) => Type::ItertoolsGrouper,
             Self::Tee(_) => Type::ItertoolsTee,
-            Self::TeeBuffer(_) => Type::ItertoolsTeeDataObject,
+            Self::TeeBlock(_) => Type::ItertoolsTeeDataObject,
         }
     }
 
@@ -231,7 +231,7 @@ impl ItertoolsIter {
             | Self::GroupBy(_)
             | Self::Grouper(_)
             | Self::Tee(_)
-            | Self::TeeBuffer(_) => true,
+            | Self::TeeBlock(_) => true,
         }
     }
 
@@ -260,7 +260,7 @@ impl ItertoolsIter {
             | Self::GroupBy(_)
             | Self::Grouper(_)
             | Self::Tee(_)
-            | Self::TeeBuffer(_) => 0,
+            | Self::TeeBlock(_) => 0,
             Self::Repeat(repeat) => repeat.size_hint(),
         }
     }
@@ -288,7 +288,7 @@ impl ItertoolsIter {
             Self::GroupBy(groupby) => groupby.for_each_child_id(on_child),
             Self::Grouper(grouper) => grouper.for_each_child_id(on_child),
             Self::Tee(tee) => tee.for_each_child_id(on_child),
-            Self::TeeBuffer(buffer) => buffer.for_each_child_id(on_child),
+            Self::TeeBlock(block) => block.for_each_child_id(on_child),
         }
     }
 }
@@ -317,7 +317,7 @@ impl HeapItem for ItertoolsIter {
             Self::GroupBy(groupby) => groupby.py_dec_ref_ids(stack),
             Self::Grouper(grouper) => grouper.py_dec_ref_ids(stack),
             Self::Tee(tee) => tee.py_dec_ref_ids(stack),
-            Self::TeeBuffer(buffer) => buffer.py_dec_ref_ids(stack),
+            Self::TeeBlock(block) => block.py_dec_ref_ids(stack),
         }
     }
 }
@@ -378,7 +378,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
             Kind::GroupBy => groupby::next(self, vm),
             Kind::Grouper => groupby::grouper_next(self, vm),
             Kind::Tee => tee::next(self, vm),
-            Kind::TeeBuffer => Ok(tee::buffer_next()),
+            Kind::TeeBlock => Ok(tee::block_next()),
         }
     }
 
@@ -406,7 +406,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
             | Kind::GroupBy
             | Kind::Grouper
             | Kind::Tee
-            | Kind::TeeBuffer => self.py_default_repr_fmt(f, vm),
+            | Kind::TeeBlock => self.py_default_repr_fmt(f, vm),
         }
     }
 }

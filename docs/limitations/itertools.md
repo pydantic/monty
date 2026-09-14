@@ -83,12 +83,6 @@ objects except `tee`, which is a plain function — so `isinstance(x, count)`,
     `TypeError: cannot create 'itertools._tee' instances`. CPython builds them
     from the arguments its internals use (`_tee([1, 2])` gives a working
     iterator). They are only ever handed out by `groupby` and `tee` here.
-- **A discarded `tee` iterator still holds the buffer back.** Each iterator of
-    a group has a slot in the shared read-ahead, and buffered items are dropped
-    once every slot has passed them. A slot whose iterator is released keeps its
-    position, so the items it had not reached stay buffered until the whole
-    group goes. CPython releases them with the iterator. Values are unaffected,
-    only how long the memory is held.
 - **`groupby` never releases its source.** This matches CPython, but note that
     the [resource limits](resource_limits.md) apply to the skip between groups:
     a source whose key never changes (`groupby(repeat(1))`) makes the second

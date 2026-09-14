@@ -1178,6 +1178,19 @@ fn tee_group_is_charged_before_it_is_built() {
     }
 }
 
+/// A consumer that is dropped stops holding the read-ahead back: the blocks it
+/// would have read are freed as the surviving consumer moves past them, so a
+/// long source costs a block at a time rather than all of it.
+#[test]
+fn a_dropped_tee_consumer_does_not_pin_the_read_ahead() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    // Buffering all 2M items would need ~32 MB against a 1 MiB limit.
+    let code = "import itertools\na, b = itertools.tee(range(2_000_000))\na = None\nsum(b)";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(1_999_999_000_000));
+    child.shutdown();
+}
+
 /// A group small enough to fit is untouched by that charge.
 #[test]
 fn small_tee_group_is_not_preflighted() {
