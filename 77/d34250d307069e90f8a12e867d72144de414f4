@@ -1,0 +1,23 @@
+crates/monty/tests/heap_reader_compile_fail_cases/cases.rs
+  s_8893e77bad01b6::t_c3c991ab8ac158 153-157,160-161
+crates/monty/tests/heap_reader_compile_fail_cases/smuggle_and_swap_reader.stderr
+  ai_agent 2,4,9
+crates/monty/tests/heap_reader_compile_fail_cases/smuggle_vm.stderr
+  s_8893e77bad01b6::t_c3c991ab8ac158 2,4-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "77d34250d307069e90f8a12e867d72144de414f4",
+  "prompts": {},
+  "sessions": {
+    "s_8893e77bad01b6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "338e4b50-cd2d-42ec-bb5a-ea3da0310b6a",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
