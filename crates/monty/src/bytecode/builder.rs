@@ -19,18 +19,6 @@ use crate::{intern::StringId, parse::CodeRange, value::Value};
 /// no bytes are written and no work is done.
 ///
 /// # Usage
-///
-/// ```ignore
-/// let mut builder = CodeBuilder::new();
-/// builder.enter_region(0); // open the initial region at depth 0
-/// builder.set_location(some_range, None);
-/// builder.emit(Opcode::LoadNone);
-/// builder.emit_u8(Opcode::LoadLocal, 0);
-/// let jump = builder.emit_jump(Opcode::JumpIfFalse);
-/// // ... emit more code ...
-/// builder.patch_jump(jump);
-/// let code = builder.build(num_locals);
-/// ```
 #[derive(Debug, Default)]
 pub struct CodeBuilder {
     /// The bytecode being built.
@@ -54,9 +42,6 @@ pub struct CodeBuilder {
     /// Operand-stack depth before the next opcode, or `None` in dead code.
     /// Unconditional terminators include `AssertFailed`, but not `Assert`.
     current_stack_depth: Option<u16>,
-
-    /// Maximum stack depth seen during compilation.
-    max_stack_depth: u16,
 
     /// Local variable names indexed by slot number.
     ///
@@ -459,7 +444,7 @@ impl CodeBuilder {
     /// Both accumulate in the builder first and land in their arena as one
     /// contiguous block, so jump offsets stay body-relative `i16`s and
     /// `LoadConst` operands stay `u16` indices from the recorded base.
-    pub fn build(self, num_locals: u16, arenas: &mut CodeArenas) -> Result<Code, CompileError> {
+    pub fn build(self, arenas: &mut CodeArenas) -> Result<Code, CompileError> {
         let constants_base = u32::try_from(arenas.constants.len()).map_err(|_| self.arena_full("constants"))?;
         let bytecode_base = u32::try_from(arenas.bytecode.len()).map_err(|_| self.arena_full("instructions"))?;
         let bytecode_len = u32::try_from(self.bytecode.len()).map_err(|_| self.arena_full("instructions"))?;
@@ -476,8 +461,6 @@ impl CodeBuilder {
             constants_base,
             self.location_table,
             self.exception_table,
-            num_locals,
-            self.max_stack_depth,
             local_names,
         ))
     }
@@ -516,7 +499,6 @@ impl CodeBuilder {
             }
             None => self.current_stack_depth = Some(depth),
         }
-        self.max_stack_depth = self.max_stack_depth.max(depth);
     }
 
     /// Adjusts the stack depth by the given delta.
@@ -533,7 +515,6 @@ impl CodeBuilder {
         debug_assert!(new_depth >= 0, "Stack depth went negative: {new_depth}");
         let new_depth = u16::try_from(new_depth.max(0)).map_err(|_| self.stack_too_large())?;
         self.current_stack_depth = Some(new_depth);
-        self.max_stack_depth = self.max_stack_depth.max(new_depth);
         Ok(())
     }
 
@@ -838,7 +819,7 @@ mod tests {
         builder.emit(Opcode::Pop).unwrap();
 
         let mut arenas = CodeArenas::default();
-        let code = builder.build(0, &mut arenas).unwrap();
+        let code = builder.build(&mut arenas).unwrap();
         assert_eq!(code.bytecode(&arenas), &[Opcode::LoadNone as u8, Opcode::Pop as u8]);
     }
 
@@ -849,7 +830,7 @@ mod tests {
         builder.emit_u8(Opcode::LoadLocal, 42).unwrap();
 
         let mut arenas = CodeArenas::default();
-        let code = builder.build(0, &mut arenas).unwrap();
+        let code = builder.build(&mut arenas).unwrap();
         assert_eq!(code.bytecode(&arenas), &[Opcode::LoadLocal as u8, 42]);
     }
 
@@ -860,7 +841,7 @@ mod tests {
         builder.emit_u16(Opcode::LoadConst, 0x1234).unwrap();
 
         let mut arenas = CodeArenas::default();
-        let code = builder.build(0, &mut arenas).unwrap();
+        let code = builder.build(&mut arenas).unwrap();
         assert_eq!(code.bytecode(&arenas), &[Opcode::LoadConst as u8, 0x34, 0x12]);
     }
 
@@ -877,7 +858,7 @@ mod tests {
         builder.emit(Opcode::ReturnValue).unwrap();
 
         let mut arenas = CodeArenas::default();
-        let code = builder.build(0, &mut arenas).unwrap();
+        let code = builder.build(&mut arenas).unwrap();
         assert_eq!(
             code.bytecode(&arenas),
             &[
@@ -902,7 +883,7 @@ mod tests {
         builder.emit_jump_to(Opcode::Jump, loop_start).unwrap(); // offset 2, target 0
 
         let mut arenas = CodeArenas::default();
-        let code = builder.build(0, &mut arenas).unwrap();
+        let code = builder.build(&mut arenas).unwrap();
         // Jump at offset 2, target at offset 0
         // Offset = 0 - (2 + 3) = -5
         let expected_offset = (-5i16).to_le_bytes();
@@ -930,7 +911,7 @@ mod tests {
         builder.emit_load_local(256).unwrap();
 
         let mut arenas = CodeArenas::default();
-        let code = builder.build(0, &mut arenas).unwrap();
+        let code = builder.build(&mut arenas).unwrap();
         assert_eq!(
             code.bytecode(&arenas),
             &[

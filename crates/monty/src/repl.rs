@@ -255,7 +255,7 @@ impl MontyRepl {
                     return Err(error);
                 }
 
-                let vm_result = vm.run_module();
+                let vm_result = vm.run_external();
 
                 // Convert while VM alive, then snapshot or reclaim globals
                 let converted = convert_frame_exit(vm_result, &mut vm);
@@ -430,7 +430,7 @@ impl MontyRepl {
                         let old = mem::replace(&mut vm.globals[args_slot], args_tuple);
                         old.drop_with(vm);
 
-                        let mut run_result = vm.run_module();
+                        let mut run_result = vm.run_external();
                         loop {
                             run_result = match run_result {
                                 Ok(FrameExit::Return(value)) => break Ok(MontyObject::new(value, vm)),

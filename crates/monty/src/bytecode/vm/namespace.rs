@@ -302,9 +302,16 @@ impl VM<'_> {
     /// Returns an owned reference to the new dict.
     pub(crate) fn snapshot_locals(&mut self) -> RunResult<HeapId> {
         let dict_id = self.heap.allocate(HeapData::Dict(Dict::new()));
-        let code = self.frame_code(&self.current_frame);
         let base = self.current_frame.stack_base();
         let count = usize::from(self.current_frame.locals_count);
+        // Resolved up front so the loops below are free to borrow `self` mutably.
+        let code = self.frame_code(&self.current_frame);
+        let names: Vec<Option<StringId>> = (0..count)
+            .map(|slot| {
+                code.local_name(u16::try_from(slot).expect("locals fit in u16"))
+                    .filter(|name_id| *name_id != StringId::default())
+            })
+            .collect();
         // Cell slots go last so a captured parameter's live cell value replaces
         // the stale copy left in its parameter slot under the same name.
         let cell_slots: AHashSet<usize> = self
@@ -320,17 +327,13 @@ impl VM<'_> {
                     .collect::<Vec<_>>()
             })
             .collect();
-        let named = |slot: usize| {
-            code.local_name(u16::try_from(slot).expect("locals fit in u16"))
-                .filter(|name_id| *name_id != StringId::default())
-        };
         for slot in (0..count).filter(|slot| !cell_slots.contains(slot)) {
-            let Some(name_id) = named(slot) else { continue };
+            let Some(name_id) = names[slot] else { continue };
             let value = self.stack[base + slot].clone_with_heap(self.heap);
             self.snapshot_entry(dict_id, name_id, value)?;
         }
         for slot in (0..count).filter(|slot| cell_slots.contains(slot)) {
-            let Some(name_id) = named(slot) else { continue };
+            let Some(name_id) = names[slot] else { continue };
             let value = match &self.stack[base + slot] {
                 Value::Ref(cell_id) => match self.heap.get(*cell_id) {
                     HeapData::Cell(cell) => cell.0.clone_with_heap(self.heap),

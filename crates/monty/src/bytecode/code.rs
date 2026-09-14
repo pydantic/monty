@@ -70,17 +70,6 @@ pub struct Code {
     /// innermost-first for nested try blocks.
     exception_table: Vec<ExceptionEntry>,
 
-    /// Number of local variables (namespace slots needed).
-    ///
-    /// Used to pre-allocate the namespace when entering this code.
-    num_locals: u16,
-
-    /// Maximum stack depth needed during execution.
-    ///
-    /// Used as a hint for pre-allocating the operand stack. Computed during
-    /// compilation by tracking push/pop operations.
-    stack_size: u16,
-
     /// Local variable names for error messages.
     ///
     /// Maps slot indices to variable names. Used to generate proper NameError
@@ -92,22 +81,19 @@ impl Code {
     /// Creates an empty code object for tests that only need VM context.
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
-        Self::new(0, 0, 0, Vec::new(), Vec::new(), 0, 0, Vec::new())
+        Self::new(0, 0, 0, Vec::new(), Vec::new(), Vec::new())
     }
 
     /// Creates a new Code object with all components.
     ///
     /// This is typically called by `CodeBuilder::build()` after compilation.
     #[must_use]
-    #[expect(clippy::too_many_arguments)]
     pub fn new(
         bytecode_base: u32,
         bytecode_len: u32,
         constants_base: u32,
         location_table: Vec<LocationEntry>,
         exception_table: Vec<ExceptionEntry>,
-        num_locals: u16,
-        stack_size: u16,
         local_names: Vec<StringId>,
     ) -> Self {
         Self {
@@ -116,8 +102,6 @@ impl Code {
             constants_base,
             location_table,
             exception_table,
-            num_locals,
-            stack_size,
             local_names,
         }
     }
@@ -134,6 +118,12 @@ impl Code {
     #[must_use]
     pub fn bytecode_base(&self) -> u32 {
         self.bytecode_base
+    }
+
+    /// Length of this code object's instructions in the session bytecode arena.
+    #[must_use]
+    pub fn bytecode_len(&self) -> u32 {
+        self.bytecode_len
     }
 
     /// Start of this code object's block in the session-wide constant arena.

@@ -670,14 +670,8 @@ impl<'h> VM<'h> {
                 .map(|sf| {
                     let code = match sf.function_id {
                         Some(func_id) => Rc::clone(&self.interns.get_function(func_id).code),
-                        None => {
-                            // This happens for the main task's module-level code
-                            Rc::clone(
-                                self.module_code
-                                    .as_ref()
-                                    .expect("module_code not set for main task frame"),
-                            )
-                        }
+                        // The main task's module-level code.
+                        None => Rc::clone(&self.module_code),
                     };
                     CallFrame {
                         ip: code.bytecode_base() + frame_ip(sf.ip),

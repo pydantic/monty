@@ -211,7 +211,7 @@ impl MontyRun {
                 populate_inputs(inputs, &mut vm)?;
 
                 // Start execution
-                let vm_result = vm.run_module();
+                let vm_result = vm.run_external();
 
                 // Three-phase conversion: convert while VM alive, then snapshot, then build progress
                 let converted = convert_frame_exit(vm_result, &mut vm);
@@ -535,7 +535,7 @@ impl Executor {
         };
         let mut arenas = tables.interns.take_arenas();
         let module_code = builder
-            .build(0, &mut arenas)
+            .build(&mut arenas)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
         tables.interns.restore_arenas(arenas);
 
@@ -637,7 +637,7 @@ impl Executor {
             populate_inputs(inputs, &mut vm)?;
             // Lookups are answered before the globals are taken below: an
             // armed `hasattr()` / `getattr()` effect runs the module on.
-            let frame_exit_result = answer_unserved_lookups(vm.run_module(), &mut vm);
+            let frame_exit_result = answer_unserved_lookups(vm.run_external(), &mut vm);
 
             // Tasks the module left running (a sibling detached from a failed
             // gather, say) hold real references, and are not reachable from
@@ -738,7 +738,7 @@ impl Program {
 
     /// Runs module code on an already-configured VM to completion.
     ///
-    /// Executes [`VM::run_module`], then answers the lookup and `ExternalCall`
+    /// Executes [`VM::run_external`], then answers the lookup and `ExternalCall`
     /// exits no host will serve by raising `NameError` / `AttributeError`
     /// through the VM so tracebacks are properly captured, and answers the
     /// clock OS calls from [`Program::clock`]. Finally converts the result via
@@ -747,7 +747,7 @@ impl Program {
     /// This is the shared non-iterative execution core used by both the standard
     /// `run` path and the REPL's `feed_run` path.
     pub(crate) fn run_to_completion(&self, vm: &mut VM<'_>) -> RunResult<MontyObject> {
-        let mut frame_exit_result = vm.run_module();
+        let mut frame_exit_result = vm.run_external();
 
         // In the non-iterative path there's no host to resolve names, lazy
         // attributes or external functions, so lookups are answered `Undefined`

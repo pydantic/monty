@@ -468,11 +468,9 @@ impl CallFrame {
 
     /// Turns this finished frame into the parked frame left between tasks,
     /// reusing its allocations; the namespace must already be released.
-    fn park(&mut self, module_code: Option<&Rc<Code>>) {
-        if let Some(code) = module_code {
-            self.code_base = code.bytecode_base();
-            self.constants_base = code.constants_base();
-        }
+    fn park(&mut self, module_code: &Code) {
+        self.code_base = module_code.bytecode_base();
+        self.constants_base = module_code.constants_base();
         self.ip = self.code_base;
         self.stack_base = 0;
         self.locals_count = 0;
@@ -792,7 +790,7 @@ pub struct VM<'h> {
     ///
     /// Stored here because the main task's frames have `function_id: None` and
     /// need a reference to the module code when being restored after task switching.
-    module_code: Option<Rc<Code>>,
+    module_code: Rc<Code>,
 
     /// Bytecode IP of the most recent `LoadGlobalCallable` that
     /// pushed an `ExtFunction` for an undefined name.
@@ -891,7 +889,7 @@ impl<'h> VM<'h> {
             instruction_ip: 0,
             scheduler: Scheduler::new(),
             ext_function_load_ip: None, // Set by LoadGlobalCallable
-            module_code: Some(Rc::clone(&program.module_code)),
+            module_code: Rc::clone(&program.module_code),
             json_string_cache: JsonStringCache::default(),
             pending_effect: None,
             pending_lookup_effect: None,
@@ -964,7 +962,7 @@ impl<'h> VM<'h> {
             exception_stack: snapshot.exception_stack,
             instruction_ip: snapshot.instruction_ip,
             scheduler: snapshot.scheduler,
-            module_code: Some(Rc::clone(&program.module_code)),
+            module_code: Rc::clone(&program.module_code),
             ext_function_load_ip: None,
             json_string_cache: JsonStringCache::default(),
             pending_effect: snapshot.pending_effect,
@@ -1030,11 +1028,6 @@ impl<'h> VM<'h> {
             // string), so a later `take_changed_cwd` on this VM stays honest.
             cwd: mem::replace(&mut self.env.cwd, Cow::Borrowed(self.env.initial_cwd)).into_owned(),
         }
-    }
-
-    /// Runs the module frame installed when the VM was constructed.
-    pub fn run_module(&mut self) -> Result<FrameExit, RunError> {
-        self.run_external()
     }
 
     /// Returns the `stack_base` of the current (topmost) call frame.
@@ -1187,7 +1180,7 @@ impl<'h> VM<'h> {
     /// call is needed.
     ///
     /// Private: host boundaries go through [`Self::run_external`] (directly
-    /// or via `run_module`/`resume`/`resume_with_exception`/
+    /// or via `run_external`/`resume`/`resume_with_exception`/
     /// `resume_with_resolved_futures`) so the execution clock is accounted;
     /// only VM-internal re-entry calls this raw loop.
     ///
@@ -1233,6 +1226,7 @@ impl<'h> VM<'h> {
             self.instruction_ip = self.current_frame.ip as usize;
 
             // Fetch the opcode and advance the authoritative frame IP.
+            debug_assert!(self.frame_ip_in_code(), "instruction IP left the running frame's code");
             let opcode = {
                 let byte = self.arenas.bytecode[self.current_frame.ip as usize];
                 self.current_frame.ip += 1;
@@ -2335,7 +2329,7 @@ impl<'h> VM<'h> {
             frame.namespace.drop_with(self.heap);
         }
         self.current_frame.namespace.take().drop_with(self.heap);
-        self.current_frame.park(self.module_code.as_ref());
+        self.current_frame.park(&self.module_code);
     }
 
     /// Runs the trial-deletion cycle collector.
@@ -2396,17 +2390,23 @@ impl<'h> VM<'h> {
     ///
     /// Frames carry arena offsets rather than a handle to their `Code`, so the
     /// cold paths that need its tables — tracebacks, exception lookup, local
-    /// names — resolve it here. Hands back an owned handle so the caller is
-    /// free of the borrow on `self`.
-    fn frame_code(&self, frame: &CallFrame) -> Rc<Code> {
+    /// names — resolve it here.
+    fn frame_code(&self, frame: &CallFrame) -> &Code {
         match frame.function_id {
-            Some(func_id) => Rc::clone(&self.interns.get_function(func_id).code),
-            None => Rc::clone(
-                self.module_code
-                    .as_ref()
-                    .expect("module code not set for a module-level frame"),
-            ),
+            Some(func_id) => &self.interns.get_function(func_id).code,
+            None => &self.module_code,
         }
+    }
+
+    /// Whether the running frame's `ip` is still inside its own code.
+    ///
+    /// The bytecode arena is shared, so a bad jump would read a neighbouring
+    /// body's bytes rather than trip the arena bounds check; the dispatch loop
+    /// asserts this in debug builds only, as it costs a `Code` lookup.
+    fn frame_ip_in_code(&self) -> bool {
+        let frame = &self.current_frame;
+        let end = frame.code_base + self.frame_code(frame).bytecode_len();
+        (frame.code_base..end).contains(&frame.ip)
     }
 
     /// Returns the source position for the instruction currently executing.

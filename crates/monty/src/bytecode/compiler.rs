@@ -611,7 +611,7 @@ impl<'a> Compiler<'a> {
         options: CompileOptions,
         snippet: Option<bool>,
     ) -> Result<Code, CompileError> {
-        let num_locals = check_namespace_size_u16(globals.len(), "module")?;
+        check_namespace_size_u16(globals.len(), "module")?;
         // Module frames have `locals_count = 0` at runtime (globals live in
         // `self.globals`), so comp-var offsets are emitted as plain operand-
         // stack indices.
@@ -632,7 +632,7 @@ impl<'a> Compiler<'a> {
         compiler.code.emit(Opcode::ReturnValue)?;
 
         let Compiler { code, arenas, .. } = compiler;
-        code.build(num_locals, arenas)
+        code.build(arenas)
     }
 
     /// Compiles a function body to bytecode, appending any nested functions to `interns`.
@@ -667,7 +667,7 @@ impl<'a> Compiler<'a> {
         compiler.code.emit(Opcode::ReturnValue)?;
 
         let Compiler { code, arenas, .. } = compiler;
-        code.build(num_locals, arenas)
+        code.build(arenas)
     }
 
     /// Compiles statements, retaining `finally` bodies for inline cleanup.
@@ -1130,7 +1130,7 @@ impl<'a> Compiler<'a> {
         compiler.code.emit(Opcode::ReturnValue)?;
 
         let Compiler { code, arenas, .. } = compiler;
-        code.build(num_locals, arenas)
+        code.build(arenas)
     }
 
     /// Compiles an import statement.
