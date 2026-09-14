@@ -1,0 +1,40 @@
+examples/antigravity/vite.config.ts
+  ai_agent 1-19
+examples/antigravity/antigravity.py
+  ai_agent 2,7,16,19,24,27,52-54,58
+examples/antigravity/index.html
+  ai_agent 1-7,9-13,18-21,36-40
+docs/quickstart/javascript.md
+  ai_agent 307-308
+docs/examples.md
+  ai_agent 93,106-108,111
+examples/antigravity/main.ts
+  ai_agent 1,9,11,13,16,19,150,154-155,160-161,166,172,186,188
+  s_d4e8bedce3c69b::t_ac0d57bb709ae2 22,27,76-78,98,100,109,111-112,119-120,125-127,132,144-145
+examples/antigravity/package.json
+  ai_agent 1-25
+examples/antigravity/README.md
+  ai_agent 1-2,8-16
+examples/antigravity/.gitignore
+  ai_agent 1-3
+examples/antigravity/tsconfig.json
+  ai_agent 1-3,5-13
+examples/antigravity/antigravity.svg
+  ai_agent 2,5,8,19-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c8813febcc64734a791a2e2ec80fe628a1c6ee9b",
+  "prompts": {},
+  "sessions": {
+    "s_d4e8bedce3c69b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20b5c1de-f094-4ef4-928e-a151ac7a8011",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
