@@ -448,6 +448,10 @@ impl CodeBuilder {
         let constants_base = u32::try_from(arenas.constants.len()).map_err(|_| self.arena_full("constants"))?;
         let bytecode_base = u32::try_from(arenas.bytecode.len()).map_err(|_| self.arena_full("instructions"))?;
         let bytecode_len = u32::try_from(self.bytecode.len()).map_err(|_| self.arena_full("instructions"))?;
+        // Frames hold absolute `u32` IPs, so the body's end must fit as well.
+        bytecode_base
+            .checked_add(bytecode_len)
+            .ok_or_else(|| self.arena_full("instructions"))?;
 
         // Convert local_names from Vec<Option<StringId>> to Vec<StringId>,
         // using StringId::default() for slots with no recorded name

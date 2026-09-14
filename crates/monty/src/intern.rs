@@ -14,7 +14,7 @@
 
 use std::{mem, ops::Deref, rc::Rc, slice::from_ref, str::FromStr, sync::Arc};
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use num_bigint::BigInt;
 #[cfg(test)]
 use strum::IntoEnumIterator;
@@ -1509,6 +1509,17 @@ pub(crate) struct Interns {
     string_id_by_name: AHashMap<Rc<str>, StringId>,
 }
 
+/// Table lengths recorded before a runtime compile, so a rejected snippet's
+/// interned strings, literals, functions and source can be dropped again.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InternsCheckpoint {
+    strings: usize,
+    bytes: usize,
+    long_ints: usize,
+    functions: usize,
+    eval_sources: usize,
+}
+
 /// Serialized form of [`Interns`]
 #[derive(serde::Deserialize)]
 struct InternsWire {
@@ -1535,7 +1546,7 @@ impl From<Interns> for InternsWire {
 
 impl From<InternsWire> for Interns {
     fn from(wire: InternsWire) -> Self {
-        let string_id_by_name = build_string_id_by_name(&wire.strings);
+        let string_id_by_name = build_string_id_by_name(&wire.strings, &wire.eval_sources);
         Self {
             strings: wire.strings,
             bytes: wire.bytes,
@@ -1568,17 +1579,23 @@ fn reserved_str(id: StringId) -> &'static str {
 /// ids start at [`INTERN_STRING_ID_OFFSET`] because slots `< OFFSET` are
 /// reserved for ASCII single-character strings and the [`StaticStrings`]
 /// table — those are handled by the cheap branches at the top of
-/// [`Interns::get_string_id_by_name`] and never enter this map.
-fn build_string_id_by_name(strings: &[WithHash<Rc<str>>]) -> AHashMap<Rc<str>, StringId> {
+/// [`Interns::get_string_id_by_name`] and never enter this map. Nor do the
+/// `<string>` filename ids from [`Interns::add_eval_source`]: they bypass
+/// [`Interns::intern`], so a `'<string>'` literal keeps its own id after a load.
+fn build_string_id_by_name(
+    strings: &[WithHash<Rc<str>>],
+    eval_sources: &[(StringId, Arc<str>)],
+) -> AHashMap<Rc<str>, StringId> {
+    let filenames: AHashSet<StringId> = eval_sources.iter().map(|(id, _)| *id).collect();
     strings
         .iter()
         .enumerate()
-        .map(|(index, entry)| {
+        .filter_map(|(index, entry)| {
             let id = StringId(
                 u32::try_from(INTERN_STRING_ID_OFFSET + index)
                     .expect("StringId overflow while building reverse interns map"),
             );
-            (Rc::clone(entry.value()), id)
+            (!filenames.contains(&id)).then(|| (Rc::clone(entry.value()), id))
         })
         .collect()
 }
@@ -1634,6 +1651,38 @@ impl Interns {
         let id = LongIntId(self.long_ints.len().try_into().expect("LongIntId overflow"));
         self.long_ints.push(WithHash::for_long_int(bi));
         id
+    }
+
+    /// Records the table lengths, for [`rollback`](Self::rollback).
+    pub(crate) fn checkpoint(&self) -> InternsCheckpoint {
+        InternsCheckpoint {
+            strings: self.strings.len(),
+            bytes: self.bytes.len(),
+            long_ints: self.long_ints.len(),
+            functions: self.functions.len(),
+            eval_sources: self.eval_sources.len(),
+        }
+    }
+
+    /// Drops everything appended since `checkpoint` was taken.
+    ///
+    /// A dropped string leaves the reverse map only where the map points at
+    /// its id: a filename from [`add_eval_source`](Self::add_eval_source)
+    /// never enters the map, and its text may belong to an older literal.
+    pub(crate) fn rollback(&mut self, checkpoint: InternsCheckpoint) {
+        for (index, entry) in self.strings.drain(checkpoint.strings..).enumerate() {
+            let id = StringId(
+                u32::try_from(INTERN_STRING_ID_OFFSET + checkpoint.strings + index).expect("StringId overflow"),
+            );
+            let text: &str = entry.value();
+            if self.string_id_by_name.get(text) == Some(&id) {
+                self.string_id_by_name.remove(text);
+            }
+        }
+        self.bytes.truncate(checkpoint.bytes);
+        self.long_ints.truncate(checkpoint.long_ints);
+        self.functions.truncate(checkpoint.functions);
+        self.eval_sources.truncate(checkpoint.eval_sources);
     }
 
     /// Records the source of an `eval()` / `exec()` snippet under a fresh

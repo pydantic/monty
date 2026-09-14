@@ -387,8 +387,8 @@ impl MontyRepl {
         }
 
         let input_script_name = self.next_input_script_name();
-        // The name map is cloned (it is small) so the temporary args slot is
-        // never committed; the interns move into the executor and back.
+        // The name map is cloned (it is small) so a failed setup leaves the
+        // session's intact; both it and the interns come back after the call.
         let mut executor = Executor::new_repl_function_call(
             name,
             name_id,
@@ -406,7 +406,6 @@ impl MontyRepl {
         .with_clock(self.clock);
         self.sources.insert(input_script_name, executor.program.code.clone());
 
-        let original_globals_len = self.globals.len();
         self.ensure_globals_size(executor.namespace_size());
         let result = HeapReader::with(
             &mut self.heap,
@@ -465,8 +464,11 @@ impl MontyRepl {
                     Err(error) => Err(error),
                 };
 
+                // The call may have bound new globals (`exec()` in the function),
+                // so the whole namespace is kept; only the argument tuple goes.
                 let mut globals = vm.take_globals();
-                globals.split_off(original_globals_len).drop_with(vm);
+                let args_slot = executor.program.input_slots[0].index();
+                mem::replace(&mut globals[args_slot], Value::Undefined).drop_with(vm);
                 self.globals = globals;
                 if let Some(cwd) = vm.take_changed_cwd() {
                     self.cwd = Arc::from(cwd);
@@ -474,6 +476,7 @@ impl MontyRepl {
                 result
             },
         );
+        self.global_names = executor.tables.global_names;
         self.interns = executor.tables.interns;
         result
     }

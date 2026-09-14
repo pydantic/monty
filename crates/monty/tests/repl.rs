@@ -1597,6 +1597,19 @@ fn call_function_survives_repl_round_trip() {
     );
 }
 
+/// A module global first bound by `exec()` inside the called function outlives
+/// the call, while the slot that carried the call's arguments stays hidden.
+#[test]
+fn call_function_keeps_globals_the_call_added() {
+    let mut repl = repl_with_code("def define():\n    exec('global added\\nadded = 41')");
+    assert_eq!(
+        repl.call_function("define", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::None
+    );
+    assert_eq!(feed_run_print(&mut repl, "added + 1").unwrap(), MontyObject::Int(42));
+    assert_eq!(repl.function_names(), vec!["define"]);
+}
+
 #[test]
 fn call_function_with_list() {
     let mut s = repl_with_code("def length(lst): return len(lst)");

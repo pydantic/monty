@@ -14,7 +14,7 @@ use crate::{
     expressions::{Identifier, Node},
     function::Function,
     heap::{DropGuard, HeapData, HeapId},
-    intern::{FunctionId, StaticStrings},
+    intern::{FunctionId, InternsCheckpoint, StaticStrings},
     name_map::NameMap,
     parse::{CodeRange, parse_expression_with_interner, parse_module_with_filename_id},
     prepare::{SnippetNames, prepare_snippet},
@@ -117,15 +117,31 @@ fn run_snippet(
             SimpleException::new_msg(ExcType::SyntaxError, "source code string cannot contain null bytes").into(),
         );
     }
+    // Everything a rejected snippet interned or compiled is dropped again, so
+    // a loop of failing calls does not grow the session.
+    let checkpoint = SnippetCheckpoint::take(vm);
     let filename_id = vm.interns.add_eval_source(Arc::clone(source));
 
-    // `eval` accepts an expression with leading blanks and newlines.
+    // `eval` accepts an expression with leading blanks and newlines; the
+    // parser sees the trimmed text, so its offsets are shifted back to the
+    // caller's before a line number is derived from them.
     let nodes = match builtin {
         Builtin::Exec => parse_module_with_filename_id(source, filename_id, vm.interns),
-        Builtin::Eval => parse_expression_with_interner(source.trim_start(), filename_id, vm.interns)
-            .map(|expr| vec![Node::Return(Some(expr))]),
-    }
-    .map_err(|e| e.into_run_error(source))?;
+        Builtin::Eval => {
+            let trimmed = source.trim_start();
+            let skipped = u32::try_from(source.len() - trimmed.len()).unwrap_or(u32::MAX);
+            parse_expression_with_interner(trimmed, filename_id, vm.interns)
+                .map(|expr| vec![Node::Return(Some(expr))])
+                .map_err(|e| e.shifted(skipped))
+        }
+    };
+    let nodes = match nodes {
+        Ok(nodes) => nodes,
+        Err(e) => {
+            checkpoint.restore(vm);
+            return Err(e.into_run_error(source));
+        }
+    };
 
     // The namespace owns its dict references from here; the guard releases
     // them if compilation fails.
@@ -166,7 +182,14 @@ fn run_snippet(
             }
             compiled
         }
-    }?;
+    };
+    let code = match code {
+        Ok(code) => code,
+        Err(e) => {
+            checkpoint.restore(vm);
+            return Err(e);
+        }
+    };
 
     // The snippet is a `<module>`-named function with no parameters or
     // locals, so its frame serializes and its traceback frames name it like
@@ -189,16 +212,45 @@ fn run_snippet(
         code,
     );
     let index = vm.interns.push_function(function);
-    let func_id = u16::try_from(index).map(FunctionId::from_index).map_err(|_| {
-        SimpleException::new_msg(
+    let Ok(func_id) = u16::try_from(index).map(FunctionId::from_index) else {
+        checkpoint.restore(vm);
+        return Err(SimpleException::new_msg(
             ExcType::SyntaxError,
             format!("session defines too many functions; maximum is {}", u16::MAX),
         )
-    })?;
+        .into());
+    };
 
     let (namespace, vm) = namespace_guard.into_parts();
     vm.push_snippet_frame(func_id, namespace)?;
     Ok(CallResult::FramePushed)
+}
+
+/// What a snippet appends to the session as it is parsed and compiled: intern
+/// table entries and code arena bytes. Taken before the parse so a rejected
+/// snippet can be dropped again in full.
+#[derive(Clone, Copy)]
+struct SnippetCheckpoint {
+    interns: InternsCheckpoint,
+    bytecode: usize,
+    constants: usize,
+}
+
+impl SnippetCheckpoint {
+    fn take(vm: &VM<'_>) -> Self {
+        Self {
+            interns: vm.interns.checkpoint(),
+            bytecode: vm.arenas.bytecode.len(),
+            constants: vm.arenas.constants.len(),
+        }
+    }
+
+    /// Drops everything appended since [`take`](Self::take).
+    fn restore(self, vm: &mut VM<'_>) {
+        vm.interns.rollback(self.interns);
+        vm.arenas.bytecode.truncate(self.bytecode);
+        vm.arenas.constants.truncate(self.constants);
+    }
 }
 
 /// The snippet's text: a `str`, or `bytes` decoded as UTF-8.

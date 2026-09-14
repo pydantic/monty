@@ -46,6 +46,12 @@ The snippet runs as a frame of its own: it can call host functions, `await`, and
     lists the keyword-only parameters first.
 - Inside a snippet it is the snippet's `locals` dict, or its `globals` dict when the two are the same, as in CPython.
 
+## Type checking
+
+Snippet source is never type-checked.
+A session with type checking enabled checks the code it is fed; `eval()` and `exec()` compile their strings at
+runtime, where no checker runs, so a call a host function stub would reject is only caught by the host function itself.
+
 ## Resource use
 
 Every call parses and compiles inside the VM, so the work is charged against `max_duration`, and the call's source,

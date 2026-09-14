@@ -476,10 +476,12 @@ impl Executor {
 
     /// Builds a synthetic REPL input that calls one existing global with host arguments.
     ///
-    /// The argument tuple occupies a temporary namespace slot whose name mapping
-    /// must not be committed, so `existing_globals` is a throwaway copy. The
-    /// session's [`Interns`] are extended in place (two ids, no parse) and moved
-    /// into the executor on success; on failure they stay with the caller.
+    /// The argument tuple occupies a namespace slot named `<monty-call-args>`,
+    /// which no Python source can spell; the caller commits the map back after
+    /// the call (the function may have bound new globals) and clears that slot,
+    /// so it is reused by the next call. The session's [`Interns`] are extended
+    /// in place (two ids, no parse) and moved into the executor on success; on
+    /// failure they stay with the caller.
     #[expect(
         clippy::too_many_arguments,
         reason = "synthetic calls combine existing REPL and call-site metadata"

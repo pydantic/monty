@@ -577,20 +577,6 @@ impl Signature {
         self.pos_arg_count() + self.arg_count() + self.kwarg_count()
     }
 
-    /// Parameter names in slot order — positional-only, positional-or-keyword,
-    /// `*args`, keyword-only, `**kwargs` — the layout `bind` fills, so a
-    /// frame's slot `i` (for `i < total_slots()`) holds the `i`th name here.
-    pub(crate) fn slot_names(&self) -> impl Iterator<Item = StringId> + '_ {
-        self.pos_args
-            .iter()
-            .flatten()
-            .chain(self.args.iter().flatten())
-            .chain(self.var_args.iter())
-            .chain(self.kwargs.iter().flatten())
-            .chain(self.var_kwargs.iter())
-            .copied()
-    }
-
     /// Returns the total number of namespace slots needed for parameters.
     ///
     /// This includes slots for:
@@ -699,7 +685,10 @@ impl Signature {
     /// Returns an iterator over all parameter names in namespace slot order.
     ///
     /// Order: pos_args, args, var_args (if present), kwargs, var_kwargs (if present)
-    fn param_names(&self) -> impl Iterator<Item = StringId> + '_ {
+    /// Parameter names in slot order — positional-only, positional-or-keyword,
+    /// `*args`, keyword-only, `**kwargs` — the layout `bind` fills, so a
+    /// frame's slot `i` (for `i < total_slots()`) holds the `i`th name here.
+    pub(crate) fn param_names(&self) -> impl Iterator<Item = StringId> + '_ {
         let pos_args = self.pos_args.iter().flat_map(|v| v.iter().copied());
         let args = self.args.iter().flat_map(|v| v.iter().copied());
         let var_args = self.var_args.iter().copied();

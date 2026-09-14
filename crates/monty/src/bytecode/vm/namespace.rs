@@ -15,7 +15,7 @@ use super::{CallFrame, VM};
 use crate::{
     bytecode::{FrameExit, NAME_CALLABLE, NAME_GLOBAL_ONLY},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::{FunctionId, StringId},
     prepare::SnippetNames,
     types::Dict,
@@ -217,18 +217,22 @@ impl VM<'_> {
     /// A fresh dict of the bound module globals, for `locals()` at module scope.
     fn snapshot_globals(&mut self) -> RunResult<HeapId> {
         let dict_id = self.heap.allocate(HeapData::Dict(Dict::new()));
-        let bound: Vec<(StringId, Value)> = self
+        // Owned by the guard until every entry is in, so a failed insert frees it.
+        let mut dict_guard = DropGuard::new(Value::Ref(dict_id), self);
+        let (_, this) = dict_guard.as_parts_mut();
+        let bound: Vec<(StringId, Value)> = this
             .global_names
             .names()
             .iter()
-            .zip(&self.globals)
+            .zip(&this.globals)
             .filter(|(_, value)| !matches!(value, Value::Undefined))
-            .map(|(name_id, value)| (*name_id, value.clone_with_heap(self.heap)))
+            .map(|(name_id, value)| (*name_id, value.clone_with_heap(this.heap)))
             .collect();
         for (name_id, value) in bound {
-            self.namespace_set(dict_id, name_id, value)?;
+            this.namespace_set(dict_id, name_id, value)?;
         }
-        Ok(dict_id)
+        let (dict, _) = dict_guard.into_parts();
+        Ok(dict.into_ref_id().expect("snapshot dict is a heap reference"))
     }
 
     /// `LoadName`: resolves `name_id` through the frame's namespace and pushes it.
@@ -302,10 +306,13 @@ impl VM<'_> {
     /// Returns an owned reference to the new dict.
     pub(crate) fn snapshot_locals(&mut self) -> RunResult<HeapId> {
         let dict_id = self.heap.allocate(HeapData::Dict(Dict::new()));
-        let base = self.current_frame.stack_base();
-        let count = usize::from(self.current_frame.locals_count);
-        // Resolved up front so the loops below are free to borrow `self` mutably.
-        let code = self.frame_code(&self.current_frame);
+        // Owned by the guard until every entry is in, so a failed insert frees it.
+        let mut dict_guard = DropGuard::new(Value::Ref(dict_id), self);
+        let (_, this) = dict_guard.as_parts_mut();
+        let base = this.current_frame.stack_base();
+        let count = usize::from(this.current_frame.locals_count);
+        // Resolved up front so the loops below are free to borrow `this` mutably.
+        let code = this.frame_code(&this.current_frame);
         let names: Vec<Option<StringId>> = (0..count)
             .map(|slot| {
                 code.local_name(u16::try_from(slot).expect("locals fit in u16"))
@@ -314,10 +321,10 @@ impl VM<'_> {
             .collect();
         // Cell slots go last so a captured parameter's live cell value replaces
         // the stale copy left in its parameter slot under the same name.
-        let cell_slots: AHashSet<usize> = self
+        let cell_slots: AHashSet<usize> = this
             .current_frame
             .function_id
-            .map(|id| self.interns.function(id))
+            .map(|id| this.interns.function(id))
             .into_iter()
             .flat_map(|func| {
                 func.cell_var_slots
@@ -329,21 +336,22 @@ impl VM<'_> {
             .collect();
         for slot in (0..count).filter(|slot| !cell_slots.contains(slot)) {
             let Some(name_id) = names[slot] else { continue };
-            let value = self.stack[base + slot].clone_with_heap(self.heap);
-            self.snapshot_entry(dict_id, name_id, value)?;
+            let value = this.stack[base + slot].clone_with_heap(this.heap);
+            this.snapshot_entry(dict_id, name_id, value)?;
         }
         for slot in (0..count).filter(|slot| cell_slots.contains(slot)) {
             let Some(name_id) = names[slot] else { continue };
-            let value = match &self.stack[base + slot] {
-                Value::Ref(cell_id) => match self.heap.get(*cell_id) {
-                    HeapData::Cell(cell) => cell.0.clone_with_heap(self.heap),
+            let value = match &this.stack[base + slot] {
+                Value::Ref(cell_id) => match this.heap.get(*cell_id) {
+                    HeapData::Cell(cell) => cell.0.clone_with_heap(this.heap),
                     _ => Value::Undefined,
                 },
                 _ => Value::Undefined,
             };
-            self.snapshot_entry(dict_id, name_id, value)?;
+            this.snapshot_entry(dict_id, name_id, value)?;
         }
-        Ok(dict_id)
+        let (dict, _) = dict_guard.into_parts();
+        Ok(dict.into_ref_id().expect("snapshot dict is a heap reference"))
     }
 
     /// Stores one `locals()` entry, skipping unbound slots.

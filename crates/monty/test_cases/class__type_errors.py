@@ -222,3 +222,18 @@ try:
     assert False, 'expected str to fail'
 except TypeError as exc:
     assert str(exc) == '__str__ returned non-string (type int)'
+
+
+# === the class behind an instance outlives the instance in an argument error ===
+def local_instance():
+    class Local:
+        pass
+
+    return Local()
+
+
+try:
+    len(local_instance())
+    assert False, 'expected len to fail'
+except TypeError as exc:
+    assert str(exc) == "object of type 'Local' has no len()"

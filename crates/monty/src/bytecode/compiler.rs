@@ -653,7 +653,7 @@ impl<'a> Compiler<'a> {
         let mut compiler = Compiler::new(interns, arenas, false, num_locals, flags);
         // Parameters, and the cells captured parameters live in, are named up
         // front: a body that never mentions one still reports it from `locals()`.
-        let param_names: Vec<StringId> = func_def.signature.slot_names().collect();
+        let param_names: Vec<StringId> = func_def.signature.param_names().collect();
         compiler.code.register_local_names(&param_names);
         for (cell_slot, param_index) in func_def.cell_var_slots.iter().zip(&func_def.cell_param_indices) {
             if let Some(name) = param_index.and_then(|index| param_names.get(index)) {

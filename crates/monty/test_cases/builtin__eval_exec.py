@@ -151,6 +151,13 @@ try:
     assert False, 'expected SyntaxError'
 except SyntaxError as e:
     assert str(e).endswith('(<string>, line 1)')
+# leading blank lines are skipped by eval but still counted in the line number
+for source, line in [('\n)', 2), ('\n\n  )', 3), ('  \n\n*', 3)]:
+    try:
+        eval(source)
+        assert False, 'expected SyntaxError'
+    except SyntaxError as e:
+        assert str(e).endswith(f'(<string>, line {line})')
 
 
 # === recursion through eval is bounded ===

@@ -920,17 +920,17 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // is preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [None] * 40_000\np()",
-            1_314_563,
+            1_313_412,
         ),
         // Reading `p.args` / `p.keywords` rebuilds them in full, so both are
         // preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [0] * 40_000\np.args",
-            1_314_563,
+            1_313_412,
         ),
         (
             "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0] * 30_000\np.keywords",
-            1_071_419,
+            1_070_187,
         ),
         // `deque.extend` preflights exact-hint iterators up front.
         (
@@ -967,6 +967,18 @@ fn overlapping_dict_merges_are_not_charged_for_absent_growth() {
     child.create_repl_with(configure_with_max_memory(23 * 1024 * 1024));
     child.feed_complete("a = dict.fromkeys(range(100_000))\nb = dict.fromkeys(range(100_000))");
     assert_eq!(child.feed_complete("x = a | b\nlen(x)"), MontyObject::Int(100_000));
+    child.shutdown();
+}
+
+/// A rejected `eval()` / `exec()` snippet leaves nothing behind: the filename,
+/// source and anything the failed parse interned are dropped again, so a loop
+/// of failing calls stays inside a budget that all their leftovers would blow.
+#[test]
+fn rejected_snippets_are_not_retained() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "for _ in range(20_000):\n    try:\n        eval('(')\n    except SyntaxError:\n        pass\n1 + 1";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(2));
     child.shutdown();
 }
 
