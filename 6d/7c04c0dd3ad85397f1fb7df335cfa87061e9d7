@@ -1,0 +1,48 @@
+crates/monty/src/bytecode/vm/async_exec.rs
+  s_8893e77bad01b6::t_a62f3d87ecaa81 14,599,612,678,680
+crates/monty/src/bytecode/compiler.rs
+  s_8893e77bad01b6::t_d04289e1642d33 526-532,538,560,565-566,569,583,589-590,593,604,617,629-630,641,648,664-665,912-913,934,945,1127-1128
+  s_8893e77bad01b6::t_03e9f677f599f9 1070
+  s_8893e77bad01b6::t_a62f3d87ecaa81 553-556,578-579
+  s_8893e77bad01b6::t_d4a6114204eb22 261-266,1063
+  s_8893e77bad01b6::t_23586865dc1db5 1096,1100
+crates/monty/src/bytecode/code.rs
+  s_8893e77bad01b6::t_5453de2bd36b61 66
+  s_8893e77bad01b6::t_a62f3d87ecaa81 9,25-29,75,84,105,107-108
+crates/monty/src/run.rs
+  s_8893e77bad01b6::t_23586865dc1db5 369-378,531,533,535
+  s_8893e77bad01b6::t_a62f3d87ecaa81 527-530,532,534,536,538,540
+  s_8893e77bad01b6::t_03e9f677f599f9 939-943
+crates/monty/src/bytecode/vm/exceptions.rs
+  s_8893e77bad01b6::t_a62f3d87ecaa81 301
+crates/monty/src/bytecode/builder.rs
+  s_8893e77bad01b6::t_a62f3d87ecaa81 7,456,458-463,467,469,471,477,648-659,835,845,855,871,895,922
+crates/monty/src/bytecode/vm/mod.rs
+  s_8893e77bad01b6::t_a62f3d87ecaa81 365-373,425-433,451,480,514,531-536,557,690,1005,1007,1310,1314,1354,2080,2262-2265,2267-2268,2294
+  s_8893e77bad01b6::t_b0804301a2ad46 832-834,836,960,1035,2266,2748
+  s_8893e77bad01b6::t_0ba69528689a58 835
+crates/monty/src/value.rs
+  s_8893e77bad01b6::t_a62f3d87ecaa81 2115,2117-2135,2152
+crates/monty/src/builtins/eval_exec.rs
+  s_8893e77bad01b6::t_23586865dc1db5 148,157
+crates/monty/src/intern.rs
+  s_8893e77bad01b6::t_9e26f458142732 1618-1619
+  s_8893e77bad01b6::t_a62f3d87ecaa81 1412-1417,1430-1443,1453-1454,1465,1479,1533
+  s_8893e77bad01b6::t_b0804301a2ad46 15,1607-1617
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6d7c04c0dd3ad85397f1fb7df335cfa87061e9d7",
+  "prompts": {},
+  "sessions": {
+    "s_8893e77bad01b6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "338e4b50-cd2d-42ec-bb5a-ea3da0310b6a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
