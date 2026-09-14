@@ -2797,8 +2797,13 @@ fn collect_cell_vars_from_node(
         }
         // Recurse into control flow structures
         Node::For {
-            iter, body, or_else, ..
+            target,
+            iter,
+            body,
+            or_else,
         } => {
+            // Attribute/subscript targets embed expressions that may hold lambdas.
+            collect_cell_vars_from_unpack_target(target, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(iter, our_locals, cell_vars, interner);
             for n in body {
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
@@ -2846,8 +2851,13 @@ fn collect_cell_vars_from_node(
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
         }
-        Node::With { context, body, .. } => {
+        Node::With {
+            context, target, body, ..
+        } => {
             collect_cell_vars_from_expr(context, our_locals, cell_vars, interner);
+            if let Some(target) = target {
+                collect_cell_vars_from_unpack_target(target, our_locals, cell_vars, interner);
+            }
             for n in body {
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
@@ -2857,7 +2867,13 @@ fn collect_cell_vars_from_node(
             collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
         }
         Node::Return(None) => {}
-        Node::Assign { object, .. } | Node::UnpackAssign { object, .. } => {
+        Node::Assign { object, .. } => {
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+        }
+        Node::UnpackAssign { targets, object, .. } => {
+            for target in targets {
+                collect_cell_vars_from_unpack_target(target, our_locals, cell_vars, interner);
+            }
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
         }
         Node::OpAssign { value, .. } => {

@@ -120,3 +120,18 @@ try:
     assert False, 'expected ValueError'
 except ValueError as exc:
     assert str(exc) == 'too many values to unpack (expected 2, got 3)'
+
+
+# === Closures inside a target expression capture enclosing locals ===
+def capture_in_targets():
+    obj = Point()
+    d = {}
+    ((lambda: obj)()).x, ((lambda: d)())['k'] = 7, 8
+    for (lambda: obj)().y in [9]:
+        pass
+    with CM(10) as (lambda: d)()['w']:
+        pass
+    return obj.x, obj.y, d
+
+
+assert capture_in_targets() == (7, 9, {'k': 8, 'w': 10})

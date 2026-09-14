@@ -435,7 +435,7 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 Ok(Node::For {
-                    target: self.parse_unpack_target(*target)?,
+                    target: self.parse_unpack_target_root(*target)?,
                     iter: self.parse_expression(*iter)?,
                     body: self.parse_statements(body)?,
                     or_else: self.parse_statements(orelse)?,
@@ -490,7 +490,7 @@ impl<'a> Parser<'a> {
                     .map(|item| -> Result<_, ParseError> {
                         let context = self.parse_expression(item.context_expr)?;
                         let target = match item.optional_vars {
-                            Some(expr) => Some(self.parse_unpack_target(*expr)?),
+                            Some(expr) => Some(self.parse_unpack_target_root(*expr)?),
                             None => None,
                         };
                         Ok((context, target))
@@ -1173,6 +1173,7 @@ impl<'a> Parser<'a> {
                     targets_position,
                 })
             }
+            AstExpr::Starred(ast::ExprStarred { range, .. }) => Err(starred_root_target(self.convert_range(range))),
             other => Ok(AssignTarget::Name(self.parse_identifier(other)?)),
         }
     }
@@ -1833,6 +1834,17 @@ impl<'a> Parser<'a> {
         ))
     }
 
+    /// Parses the outermost target of a `for`, `with ... as` or comprehension.
+    ///
+    /// A bare `*a` is only valid inside a tuple/list target, so it is rejected
+    /// here before [`Self::parse_unpack_target`] recurses into the elements.
+    fn parse_unpack_target_root(&mut self, ast: AstExpr) -> Result<UnpackTarget, ParseError> {
+        match ast {
+            AstExpr::Starred(ast::ExprStarred { range, .. }) => Err(starred_root_target(self.convert_range(range))),
+            other => self.parse_unpack_target(other),
+        }
+    }
+
     /// Parses an unpack target - either a single identifier or a nested tuple.
     ///
     /// Handles patterns like `a` (single variable), `a, b` (flat tuple), or `(a, b), c` (nested).
@@ -1938,7 +1950,7 @@ impl<'a> Parser<'a> {
                         self.convert_range(comp.range),
                     ));
                 }
-                let target = self.parse_unpack_target(comp.target)?;
+                let target = self.parse_unpack_target_root(comp.target)?;
                 let iter = self.parse_expression(comp.iter)?;
                 let ifs = comp
                     .ifs
@@ -2280,6 +2292,11 @@ fn contains_class_scope_walrus(expr: &AstExpr) -> bool {
     let mut finder = Finder { found: false };
     finder.visit_expr(expr);
     finder.found
+}
+
+/// The CPython error for a `*target` that is not an element of a tuple or list.
+fn starred_root_target(position: CodeRange) -> ParseError {
+    ParseError::syntax("starred assignment target must be in a list or tuple", position)
 }
 
 /// Rejects a second `*target` at one unpacking level, as CPython does.
