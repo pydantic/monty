@@ -75,6 +75,17 @@ assert sys.flags.dont_write_bytecode == 1
 assert sys.flags.hash_randomization == 0
 assert sys.flags == (0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, False, 0, 0, False, 4300)
 
+# === sys.argv holds the script name and nothing else ===
+assert sys.argv == ['import__sys_monty.py']
+# argv[0] is what __file__ places under the working directory
+assert __file__ == '/import__sys_monty.py'
+# The list is mutable, but a fresh module per import means edits do not survive one
+sys.argv.append('--flag')
+assert sys.argv == ['import__sys_monty.py', '--flag']
+import sys as reimported_sys
+
+assert reimported_sys.argv == ['import__sys_monty.py']
+
 # === Attributes describing CPython internals stay absent ===
 for missing in ('hash_info', 'int_info', 'thread_info', 'ps1', 'ps2'):
     try:

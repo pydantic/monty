@@ -27,7 +27,7 @@ use crate::{
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    types::{Module, NamedTuple, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
+    types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
     value::{Marker, Value},
 };
 
@@ -106,6 +106,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     module.set_attr(StaticStrings::ApiVersion, Value::Int(CPYTHON_API_VERSION), vm);
     module.set_attr(StaticStrings::Copyright, StaticStrings::MontyCopyright.into(), vm);
     module.set_attr(StaticStrings::BuiltinModuleNames, builtin_module_names(vm), vm);
+    module.set_attr(StaticStrings::Argv, argv(vm), vm);
 
     // Numeric and text limits of the value representations Monty actually uses.
     module.set_attr(StaticStrings::Maxsize, Value::Int(MAXSIZE), vm);
@@ -165,6 +166,19 @@ fn version_info(vm: &VM<'_>) -> Value {
         ],
     );
     Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named_tuple))))
+}
+
+/// Builds `sys.argv`, holding the script name and nothing else.
+///
+/// Monty runs no command line, so there are no arguments after `argv[0]`;
+/// host-supplied ones are not wired up yet. The name is the script's final
+/// path component, the same basis as `__file__`, so a host path never reaches
+/// the sandbox. Like CPython's, the list is mutable — but Monty builds a fresh
+/// module per `import`, so edits do not survive one (see
+/// `limitations/modules.md`).
+fn argv(vm: &VM<'_>) -> Value {
+    let script = allocate_string(vm.env.script_basename(), vm.heap);
+    Value::Ref(vm.heap.allocate(HeapData::List(List::new(vec![script]))))
 }
 
 /// Builds `sys.float_info` from Rust's `f64` constants.

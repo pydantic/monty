@@ -4,6 +4,14 @@ Monty ships a fixed set of built-in stdlib modules. `import` of anything
 else raises `ModuleNotFoundError`: there is no `sys.path`, no site-packages,
 and no way for sandboxed code to load additional modules.
 
+Every `import` builds a fresh module object; there is no `sys.modules` cache.
+So two imports of the same module are not the same object
+(`import math as a; import math as b` leaves `a is not b`), and a mutable
+attribute reverts on the next import — `sys.argv.append(...)` is not seen by a
+later `import sys`. Module attributes cannot be set at all
+(`sys.x = 1` raises `AttributeError`), so there is no way to share state
+through a module.
+
 ## Modules available
 
 | Module        | See                              |

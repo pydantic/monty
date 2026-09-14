@@ -7,6 +7,8 @@ from typing_extensions import TypeAlias
 stdout: TextIO | MaybeNone
 stderr: TextIO | MaybeNone
 
+argv: list[str]
+
 version: str
 hexversion: int
 api_version: int

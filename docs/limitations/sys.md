@@ -11,6 +11,13 @@ access raises `AttributeError`.
 - `sys.api_version` — `1013`, CPython 3.14's C API version. Monty has no C API,
     so nothing can be loaded against it; the number is reported only so
     version-gated code reads what it expects.
+- `sys.argv` — a one-element list holding the script name, with any host
+    directory component stripped (`['main.py']`), so `sys.argv[0]` is what
+    `__file__` places under the working directory. Monty runs no command line,
+    so there is never an argument after `argv[0]`; passing arguments from the
+    host is not supported yet. The list is mutable as in CPython, but `import`
+    builds a fresh module every time, so edits to it do not survive a second
+    `import sys` (see [modules.md](modules.md)).
 - `sys.platform` — the string `"monty"`, not `"linux"` / `"darwin"` /
     `"win32"`. Code that branches on the host OS will not work; the sandbox
     does not expose which OS it runs on.
@@ -58,7 +65,7 @@ Accessing an attribute the module does not define raises Monty's generic
 
 ## Not implemented
 
-`argv`, `path`, `modules`, `exit`, `exc_info`, `getrecursionlimit`,
+`path`, `modules`, `exit`, `exc_info`, `getrecursionlimit`,
 `getsizeof`, `getrefcount`, `intern`, `displayhook`, `excepthook`,
 `settrace`, `setprofile`, `stdin`, `__stdout__`, `_getframe`, `audit`.
 

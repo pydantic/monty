@@ -118,3 +118,8 @@ assert sys.flags.warn_default_encoding == 0
 assert sys.flags.safe_path is False
 assert sys.flags.int_max_str_digits == 4300
 assert repr(sys.flags).startswith('sys.flags(debug=0, ')
+
+# === sys.argv ===
+assert isinstance(sys.argv, list)
+assert len(sys.argv) >= 1
+assert isinstance(sys.argv[0], str)

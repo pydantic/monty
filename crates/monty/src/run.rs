@@ -310,14 +310,20 @@ pub(crate) struct VmEnv<'h> {
 }
 
 impl VmEnv<'_> {
-    /// `__file__`: the script name's final path component under the starting
-    /// working directory, computed on read since most runs never look at it.
-    /// Only the final component is kept because the script name is a host-side
-    /// label that may be a host path (`monty /home/me/app.py`), and host
-    /// directory structure must not leak into the sandbox.
+    /// `__file__`: the script name under the starting working directory,
+    /// computed on read since most runs never look at it.
     pub(crate) fn file(&self) -> String {
-        let name = self.script_name.rsplit(['/', '\\']).next().unwrap_or_default();
-        posix_join(self.initial_cwd, name)
+        posix_join(self.initial_cwd, self.script_basename())
+    }
+
+    /// The script name as the sandbox sees it — what `sys.argv[0]` reports and
+    /// what [`file`](Self::file) places under the working directory.
+    ///
+    /// Only the final path component is kept because the script name is a
+    /// host-side label that may be a host path (`monty /home/me/app.py`), and
+    /// host directory structure must not leak into the sandbox.
+    pub(crate) fn script_basename(&self) -> &str {
+        self.script_name.rsplit(['/', '\\']).next().unwrap_or_default()
     }
 }
 

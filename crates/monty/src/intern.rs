@@ -261,6 +261,7 @@ pub enum StaticStrings {
     #[strum(serialize = "3.14.0 (Monty)")]
     MontyVersionString,
     Monty,
+    Argv,
     Hexversion,
     ApiVersion,
     Copyright,
