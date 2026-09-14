@@ -91,6 +91,7 @@ known-first-party = ["pydantic_monty"]
     "E731", # Do not assign a lambda expression, use a def - needed for testing lambda expressions
     "F541", # f-string without any placeholders
     "F601", # duplicate dict literal key - tests duplicate-key replacement behavior
+    "F622", # two starred expressions in one assignment - the SyntaxError under test
     "F632", # ignore replace `is` with `==` - we have lots of these tests
     "F701", # break outside loop - needed for testing break error handling
     "F702", # continue not properly in loop - needed for testing continue error handling
@@ -172,6 +173,8 @@ exclude = [
     "crates/monty/test_cases/refcount__typing_union.py",
     "scripts/startup_performance.py",
     "examples/web_scraper/example_code.py",
+    # two starred targets in one assignment is the SyntaxError under test
+    "crates/monty/test_cases/unpack__err_multiple_starred.py",
 ]
 venv = ".venv"
 

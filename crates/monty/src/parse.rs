@@ -1161,23 +1161,13 @@ impl<'a> Parser<'a> {
                 attr: EitherStr::Interned(self.interner.intern(attr.id())),
                 target_position: self.convert_range(range),
             }),
-            AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) => {
+            AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) | AstExpr::List(ast::ExprList { elts, range, .. }) => {
                 let targets_position = self.convert_range(range);
                 let targets = elts
                     .into_iter()
                     .map(|e| self.parse_unpack_target(e))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(AssignTarget::Unpack {
-                    targets,
-                    targets_position,
-                })
-            }
-            AstExpr::List(ast::ExprList { elts, range, .. }) => {
-                let targets_position = self.convert_range(range);
-                let targets = elts
-                    .into_iter()
-                    .map(|e| self.parse_unpack_target(e))
-                    .collect::<Result<Vec<_>, _>>()?;
+                check_single_starred(&targets, targets_position)?;
                 Ok(AssignTarget::Unpack {
                     targets,
                     targets_position,
@@ -1866,27 +1856,13 @@ impl<'a> Parser<'a> {
                 if targets.is_empty() {
                     return Err(ParseError::syntax("empty tuple in unpack target", position));
                 }
-                // Validate at most one starred target
-                let starred_count = targets.iter().filter(|t| matches!(t, UnpackTarget::Starred(_))).count();
-                if starred_count > 1 {
-                    return Err(ParseError::syntax(
-                        "multiple starred expressions in assignment",
-                        position,
-                    ));
-                }
+                check_single_starred(&targets, position)?;
                 Ok(UnpackTarget::Tuple { targets, position })
             }
-            AstExpr::Starred(ast::ExprStarred { value, range, .. }) => {
-                // Starred target must be a simple name
-                match *value {
-                    AstExpr::Name(ast::ExprName { id, range, .. }) => {
-                        Ok(UnpackTarget::Starred(self.identifier(&id, range)))
-                    }
-                    _ => Err(ParseError::syntax(
-                        "starred assignment target must be a name",
-                        self.convert_range(range),
-                    )),
-                }
+            AstExpr::Starred(ast::ExprStarred { value, .. }) => {
+                // `*rest` captures into a list, which is then stored like any
+                // other target: `*a`, `*obj.x`, `*d[k]` and `*(a, b)` all work.
+                Ok(UnpackTarget::Starred(Box::new(self.parse_unpack_target(*value)?)))
             }
             AstExpr::List(ast::ExprList { elts, range, .. }) => {
                 // List unpacking target [a, b, *rest] - same as tuple
@@ -1898,16 +1874,21 @@ impl<'a> Parser<'a> {
                 if targets.is_empty() {
                     return Err(ParseError::syntax("empty list in unpack target", position));
                 }
-                // Validate at most one starred target
-                let starred_count = targets.iter().filter(|t| matches!(t, UnpackTarget::Starred(_))).count();
-                if starred_count > 1 {
-                    return Err(ParseError::syntax(
-                        "multiple starred expressions in assignment",
-                        position,
-                    ));
-                }
+                check_single_starred(&targets, position)?;
                 Ok(UnpackTarget::Tuple { targets, position })
             }
+            AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(UnpackTarget::Attr {
+                object: self.parse_expression(*value)?,
+                attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                position: self.convert_range(range),
+            }),
+            AstExpr::Subscript(ast::ExprSubscript {
+                value, slice, range, ..
+            }) => Ok(UnpackTarget::Subscript {
+                container: self.parse_expression(*value)?,
+                index: self.parse_expression(*slice)?,
+                position: self.convert_range(range),
+            }),
             other => Err(ParseError::syntax(
                 format!("invalid unpacking target: {}", describe_expr_kind(&other)),
                 self.convert_range(other.range()),
@@ -2299,6 +2280,22 @@ fn contains_class_scope_walrus(expr: &AstExpr) -> bool {
     let mut finder = Finder { found: false };
     finder.visit_expr(expr);
     finder.found
+}
+
+/// Rejects a second `*target` at one unpacking level, as CPython does.
+///
+/// `UnpackEx` encodes one starred slot as "n before, m after", so a second star
+/// has nowhere to go: without this check `a, *b, *c = xs` would bind silently
+/// wrong values instead of raising.
+fn check_single_starred(targets: &[UnpackTarget], position: CodeRange) -> Result<(), ParseError> {
+    if targets.iter().filter(|t| matches!(t, UnpackTarget::Starred(_))).count() > 1 {
+        Err(ParseError::syntax(
+            "multiple starred expressions in assignment",
+            position,
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// Short human-readable name for an `AstExpr` variant, for use in

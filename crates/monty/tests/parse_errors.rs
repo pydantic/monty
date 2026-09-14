@@ -717,20 +717,38 @@ fn starred_subscript_target_has_clean_message() {
 }
 
 #[test]
-fn for_loop_attribute_target_has_clean_message() {
-    // `for x.y in [1]: pass`: attribute as a for-loop target. CPython
-    // accepts this; Monty currently rejects at `parse_unpack_target_impl`.
-    // That rejection of valid Python is a separate issue; this test locks
-    // only that the error message does not leak `ExprAttribute` Debug.
+fn comprehension_attribute_target_is_rejected() {
+    // `[i for x.y in [1]]`: CPython allows an attribute as a comprehension
+    // target; Monty's comp vars are operand-stack slots, so it does not.
     let result = MontyRun::new(
-        "for x.y in [1]: pass".to_owned(),
+        "[i for x.y in [1]]".to_owned(),
         "test.py",
         vec![],
         CompileOptions::default(),
     );
     let exc = result.expect_err("expected parse error");
     assert_eq!(exc.exc_type(), ExcType::SyntaxError);
-    assert_snapshot!(exc.message().expect("has message"), @"invalid unpacking target: attribute");
+    assert_snapshot!(
+        exc.message().expect("has message"),
+        @"comprehension target must be a name, not an attribute"
+    );
+}
+
+#[test]
+fn comprehension_subscript_target_is_rejected() {
+    // The subscript form of the same restriction.
+    let result = MontyRun::new(
+        "[i for x[0] in [1]]".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    );
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(
+        exc.message().expect("has message"),
+        @"comprehension target must be a name, not a subscript"
+    );
 }
 
 #[test]
