@@ -462,7 +462,6 @@ impl Type {
                 | Self::ItertoolsGroupBy
                 | Self::ItertoolsGrouper
                 | Self::ItertoolsTee
-                | Self::ItertoolsTeeDataObject
         )
     }
 

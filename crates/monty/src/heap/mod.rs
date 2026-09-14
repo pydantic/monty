@@ -844,6 +844,13 @@ pub struct HeapEntry {
     color: Cell<CcColor>,
 }
 
+/// What one heap entry costs, payload and bookkeeping together.
+///
+/// For preflighting a burst of allocations whose count is caller-controlled:
+/// charging only the payloads would under-count by the refcount, reader count
+/// and collector colour every entry also carries.
+pub(crate) const HEAP_ENTRY_SIZE: usize = size_of::<HeapEntry>();
+
 /// This wrapper containing `UnsafeCell` exists to allow for data inside of `HeapValue`
 /// to be safely pointed to via the `HeapReader` API.
 ///

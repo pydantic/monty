@@ -142,11 +142,15 @@ next(teed[0])
 drained_tee = itertools.tee([[1], [2]])
 assert [list(x) for x in drained_tee] == [[[1], [2]], [[1], [2]]]
 
-# The freeing path for both types, the buffer going only once its last `_tee`
-# does.
+# The freeing path for both types. The buffer outlives the tuple and the other
+# consumer, going only with the last `_tee` that holds it — which has to still
+# work after they are gone.
 gone_tee = itertools.tee([[1], [2]])
 next(gone_tee[0])
+surviving_tee = gone_tee[1]
 gone_tee = None
+assert list(surviving_tee) == [[1], [2]]
+surviving_tee = None
 
 gone_flat = itertools.chain.from_iterable([[[1]]])
 next(gone_flat)

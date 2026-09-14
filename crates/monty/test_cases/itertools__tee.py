@@ -7,8 +7,10 @@ assert [list(x) for x in itertools.tee([1, 2, 3])] == [[1, 2, 3], [1, 2, 3]]
 assert [list(x) for x in itertools.tee('ab', 3)] == [['a', 'b'], ['a', 'b'], ['a', 'b']]
 assert [list(x) for x in itertools.tee([1, 2], 1)] == [[1, 2]]
 assert [list(x) for x in itertools.tee([], 2)] == [[], []]
-# `n` is the length of the tuple, so zero of them is an empty tuple.
+# `n` is the length of the tuple, so zero of them is an empty tuple — and with
+# no consumer to read it, the argument is never even iterated.
 assert itertools.tee([1], 0) == ()
+assert itertools.tee(5, 0) == ()
 assert type(itertools.tee([1])) is tuple
 assert len(itertools.tee([1, 2], 5)) == 5
 
@@ -53,6 +55,13 @@ source = iter([1, 2, 3])
 lazy, _lazy_other = itertools.tee(source)
 assert next(lazy) == 1
 assert list(source) == [2, 3]
+
+# A consumer released before the other is drained takes nothing with it: the
+# buffer belongs to the group, not to whichever iterator reached an item first.
+discarded, kept = itertools.tee(range(3))
+assert next(discarded) == 0
+discarded = None
+assert list(kept) == [0, 1, 2]
 
 # Exhaustion is per consumer and sticks.
 spent, other = itertools.tee([1])

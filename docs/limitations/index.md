@@ -86,7 +86,8 @@ The following modules are present:
 | `typing`      | [typing.md](typing.md)           |
 | `unicodedata` | [unicodedata.md](unicodedata.md) |
 
-Each covers only part of its CPython surface — often a small part.
+Each covers only part of its CPython surface — often a small part. `itertools`
+is the exception: every name it exports is implemented.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 

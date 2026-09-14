@@ -1159,6 +1159,35 @@ fn small_batched_n_is_not_preflighted() {
     child.shutdown();
 }
 
+/// A `tee` group costs a heap entry and a buffer slot per consumer, all built
+/// inside one builtin call, so the whole group is charged before any of it
+/// exists. Charging only the positions and the result tuple under-counted it
+/// by about four times, and an `n` in that window killed the worker rather
+/// than raising.
+#[test]
+fn tee_group_is_charged_before_it_is_built() {
+    for n in ["20_000", "200_000"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(1024 * 1024));
+        let code = format!("import itertools\nlen(itertools.tee([1], {n}))");
+        let (_, event) = child.feed(&code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+        // The session survives, which is what charging early buys.
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
+        child.shutdown();
+    }
+}
+
+/// A group small enough to fit is untouched by that charge.
+#[test]
+fn small_tee_group_is_not_preflighted() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "import itertools\nlen(list(itertools.tee(range(1000), 8)[0]))";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(1000));
+    child.shutdown();
+}
+
 /// An empty pool empties the whole product, so `itertools.product` allocates no
 /// index vector however large `repeat` is — the `repeat`-sized preflight must
 /// not refuse a call that costs nothing.

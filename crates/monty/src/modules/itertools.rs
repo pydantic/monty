@@ -13,7 +13,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId},
+    heap::{DropGuard, DropWithContext, HEAP_ENTRY_SIZE, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
@@ -903,6 +903,13 @@ fn call_tee(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         }
     };
 
+    // No consumers means nothing to read from, and CPython never looks at the
+    // iterable in that case: `tee(5, 0)` is the empty tuple, not a `TypeError`.
+    if consumers == 0 {
+        iterable.drop_with(vm);
+        return Ok(allocate_tuple(TupleVec::new(), vm.heap));
+    }
+
     // An existing `_tee` is copied rather than drained, so the copies replay
     // from where it stands — CPython reaches for `__copy__` for the same
     // reason. Anything else becomes the source of a fresh group.
@@ -918,13 +925,19 @@ fn call_tee(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// Coerces `tee`'s `n` and enforces CPython's "not negative" floor.
 ///
-/// The upper bound is the tuple of iterators it would have to build, which
-/// CPython reports as a bare `MemoryError` when the allocation fails.
+/// A group of `n` costs a heap entry and a buffer position per consumer, plus
+/// the tuple slot each is returned in — all of it inside one builtin call, so
+/// the whole group is charged before any of it is built. CPython reports an
+/// `n` too large as a bare `MemoryError` when its own allocation fails.
 fn tee_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
     let n = ssize_arg(value, vm)?;
     let n = usize::try_from(n).map_err(|_| ExcType::tee_negative_n())?;
-    let bytes = index_bytes(n).ok_or_else(ExcType::allocation_too_large)?;
-    check_estimated_size(bytes.saturating_add(n.saturating_mul(VALUE_SIZE)), &vm.heap.tracker)?;
+    let per_consumer = HEAP_ENTRY_SIZE + size_of::<usize>() + VALUE_SIZE;
+    let bytes = n
+        .checked_mul(per_consumer)
+        .filter(|bytes| *bytes <= isize::MAX.cast_unsigned())
+        .ok_or_else(ExcType::allocation_too_large)?;
+    check_estimated_size(bytes, &vm.heap.tracker)?;
     Ok(n)
 }
 
