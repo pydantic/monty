@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite'
 
 export default defineConfig({
+  // Asset URLs relative to the page rather than the site root, so `dist/` can
+  // be served under any path prefix.
+  base: './',
   // `@pydantic/monty` is a file: link to this repo's crate. Prebundling it
   // would flatten away the `new URL(..., import.meta.url)` references that
   // Vite needs to see in order to emit the component's wasm assets and the
