@@ -1,0 +1,68 @@
+crates/monty/src/modules/os.rs
+  s_8094673681c2fa::t_3337ff63063491 50-51,80-81,123-124,128-131,133-138,140-142,144,148-149,154-156,198
+  s_8094673681c2fa::t_497d5cc9fa640f 145,151-152
+  s_8094673681c2fa::t_639eb96569d08c 132
+crates/monty/src/repl.rs
+  s_8094673681c2fa::t_3b7ab32ca132bb 138,146-147,219-222,230,245,302-305,313,326,390-393,407,1186
+  s_8094673681c2fa::t_299cf67654c8da 831,944,1079,1153
+crates/monty/src/bytecode/vm/mod.rs
+  s_b1574f442ee6a4::t_03b43cdf26a6e8 22
+  s_8094673681c2fa::t_8f962fb85587be 43,47,656-658,881,962,1971,2045,2340-2343
+  s_8094673681c2fa::t_4c6be6572685da 848
+  s_8094673681c2fa::t_b92ba316d4a5cf 1036-1037
+  s_ef96740ae8813c::t_88ef4d4c38e3d2 1959
+  s_b1574f442ee6a4::t_d5effbc8fb690a 2000
+  s_8094673681c2fa::t_8288255acbbee3 18
+  s_8094673681c2fa::t_639eb96569d08c 825-829,840,859,897,904,2348
+  s_8094673681c2fa::t_e3defa1073d835 958-961
+crates/monty/tests/heap_reader_compile_fail_cases/smuggle_and_swap_reader.stderr
+  s_8094673681c2fa::t_642524904eba50 2,4,9
+crates/monty/src/run.rs
+  s_8094673681c2fa::t_010ecc99ac14d6 119-120,127-128,213,262,280-281,287,289,293,301-304,323-328,330-332,334,336-337,378,380,384-387,417-419,427,485,564,694,299,309-311
+  s_8094673681c2fa::t_03e8c2b3e7e572 313-316,320-322
+  s_8094673681c2fa::t_299cf67654c8da 3,288,290-292,294-295,298,300,305,307,312,317-319,379,381-383
+crates/monty/src/run_progress.rs
+  s_8094673681c2fa::t_299cf67654c8da 404,646,709,772,822
+  s_8094673681c2fa::t_81bff0ba4d1c0a 804-806
+crates/monty/tests/heap_reader_compile_fail_cases/cases.rs
+  s_8094673681c2fa::t_f0c14f8f0f2533 157,166
+  s_8094673681c2fa::t_45e7d05bec46a8 158-165
+crates/monty/src/types/path.rs
+  s_8094673681c2fa::t_6318a9c29725ae 307,310-312
+  s_8094673681c2fa::t_639eb96569d08c 309
+crates/monty/tests/heap_reader_compile_fail_cases/smuggle_vm.stderr
+  s_8094673681c2fa::t_f0c14f8f0f2533 1-2,17-21,23-28,32-36
+  s_8094673681c2fa::t_642524904eba50 4-15,29-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b345d87ee1fbd2e0ad10c777852b3b9549dc14a5",
+  "prompts": {},
+  "sessions": {
+    "s_8094673681c2fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf9081e0-d46f-481b-8256-a7fe2e23cafe",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_b1574f442ee6a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1add6492-fcb0-4b98-ba59-e70026a16c3b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_ef96740ae8813c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0789b-9e96-7862-b688-40db306bd662",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
