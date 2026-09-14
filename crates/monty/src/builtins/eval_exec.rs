@@ -166,18 +166,15 @@ fn run_snippet(
                 })
         }
         SnippetNames::Slots | SnippetNames::NameOverSlots => {
-            let names_len = vm.global_names.len();
             let compiled = prepare_snippet(nodes, vm.interns, vm.global_names, names)
                 .map_err(|e| e.into_run_error(source))
                 .and_then(|nodes| {
                     Compiler::compile_snippet(&nodes, vm.interns, &mut vm.arenas, vm.global_names, options, false)
                         .map_err(|e| e.into_run_error(source))
                 });
-            // A rejected snippet must not consume slots; an accepted one may
-            // have added globals the slot array has to cover.
-            if compiled.is_err() {
-                vm.global_names.truncate(names_len);
-            } else {
+            // An accepted snippet may have added globals the slot array has
+            // to cover; a rejected one gives its slots back with the rest.
+            if compiled.is_ok() {
                 vm.globals.resize_with(vm.global_names.len(), || Value::Undefined);
             }
             compiled
@@ -222,18 +219,25 @@ fn run_snippet(
     };
 
     let (namespace, vm) = namespace_guard.into_parts();
-    vm.push_snippet_frame(func_id, namespace)?;
+    // The push releases the namespace itself if it fails (recursion limit).
+    if let Err(e) = vm.push_snippet_frame(func_id, namespace) {
+        checkpoint.restore(vm);
+        return Err(e);
+    }
     Ok(CallResult::FramePushed)
 }
 
 /// What a snippet appends to the session as it is parsed and compiled: intern
-/// table entries and code arena bytes. Taken before the parse so a rejected
-/// snippet can be dropped again in full.
+/// table entries, code arena bytes and module global slots. Taken before the
+/// parse so a snippet rejected at any point up to its frame push can be
+/// dropped again in full.
 #[derive(Clone, Copy)]
 struct SnippetCheckpoint {
     interns: InternsCheckpoint,
     bytecode: usize,
     constants: usize,
+    global_names: usize,
+    globals: usize,
 }
 
 impl SnippetCheckpoint {
@@ -242,14 +246,19 @@ impl SnippetCheckpoint {
             interns: vm.interns.checkpoint(),
             bytecode: vm.arenas.bytecode.len(),
             constants: vm.arenas.constants.len(),
+            global_names: vm.global_names.len(),
+            globals: vm.globals.len(),
         }
     }
 
-    /// Drops everything appended since [`take`](Self::take).
+    /// Drops everything appended since [`take`](Self::take). The slots a
+    /// rejected snippet added are still `Undefined`: it never ran.
     fn restore(self, vm: &mut VM<'_>) {
         vm.interns.rollback(self.interns);
         vm.arenas.bytecode.truncate(self.bytecode);
         vm.arenas.constants.truncate(self.constants);
+        vm.global_names.truncate(self.global_names);
+        vm.globals.truncate(self.globals);
     }
 }
 
