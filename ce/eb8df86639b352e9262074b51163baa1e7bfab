@@ -1,0 +1,29 @@
+crates/monty/src/types/itertools/tee.rs
+  s_a3c32c8d91ab8c::t_30c5cdf0764e80 3-7,20,22-26,29-33,39,46,50,52-53,55-62,67-69,71-73,78,80-83,92,94-96,104,106-107,109-113,117,120-122,131,133-135,137,140-154,156-158,161-162,166-170,173-178,180-184,189-191,195,197-207,209-233,235-239,243-265,268-269,271-275,277-278,280,283,285-289,291-292,294
+  s_a3c32c8d91ab8c::t_71537bb465714b 15
+  s_a3c32c8d91ab8c::t_86c0f0d083126b 208,240-242
+  s_a3c32c8d91ab8c::t_93b4d456f61797 196
+crates/monty/src/types/itertools/mod.rs
+  s_a3c32c8d91ab8c::t_30c5cdf0764e80 55,103-104,150,177,204,234,263,291,320,381,409
+crates/monty-runtime/tests/subprocess.rs
+  s_a3c32c8d91ab8c::t_d0fc3e6d18b133 1181-1193
+crates/monty/test_cases/itertools__tee.py
+  s_a3c32c8d91ab8c::t_8ec450b6169409 72
+  s_a3c32c8d91ab8c::t_d5c96147cce5f6 73-95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ceeb8df86639b352e9262074b51163baa1e7bfab",
+  "prompts": {},
+  "sessions": {
+    "s_a3c32c8d91ab8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a942b6a0-ff12-4ada-bfcb-9fe0c572528b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
