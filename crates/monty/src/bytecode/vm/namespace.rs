@@ -175,7 +175,7 @@ impl VM<'_> {
         let stack_base = self.stack.len();
         let exc_stack_base = self.exception_stack.len();
         self.push_frame(CallFrame::new_function(
-            code,
+            &code,
             stack_base,
             0,
             exc_stack_base,
@@ -302,7 +302,7 @@ impl VM<'_> {
     /// Returns an owned reference to the new dict.
     pub(crate) fn snapshot_locals(&mut self) -> RunResult<HeapId> {
         let dict_id = self.heap.allocate(HeapData::Dict(Dict::new()));
-        let code = Rc::clone(&self.current_frame.code);
+        let code = self.frame_code(&self.current_frame);
         let base = self.current_frame.stack_base();
         let count = usize::from(self.current_frame.locals_count);
         // Cell slots go last so a captured parameter's live cell value replaces

@@ -34,8 +34,8 @@ use crate::{
 impl<'h> VM<'h> {
     /// Allows eager host resolution only for an immediate await with no competing work.
     pub(crate) fn allow_eager_await(&self) -> bool {
-        let frame = self.current_frame();
-        frame.bytecode.get(frame.ip) == Some(&(Opcode::Await as u8)) && self.scheduler.can_await_eagerly()
+        let next = self.arenas.bytecode.get(self.current_frame().ip as usize);
+        next == Some(&(Opcode::Await as u8)) && self.scheduler.can_await_eagerly()
     }
 
     /// Executes the Await opcode.
@@ -392,7 +392,7 @@ impl<'h> VM<'h> {
         let exc_stack_base = self.exception_stack.len();
         let namespace = function_namespace(globals, &*self.heap);
         self.push_frame(CallFrame::new_function(
-            code,
+            &code,
             stack_base,
             locals_count,
             exc_stack_base,
@@ -602,7 +602,7 @@ impl<'h> VM<'h> {
             .drain(..)
             .map(|f| SerializedTaskFrame {
                 function_id: f.function_id,
-                ip: f.ip as usize,
+                ip: f.body_offset(),
                 stack_base: f.stack_base(),
                 locals_count: f.locals_count,
                 exception_stack_base: f.exception_stack_base(),
@@ -615,7 +615,7 @@ impl<'h> VM<'h> {
         let current = &mut self.current_frame;
         frames.push(SerializedTaskFrame {
             function_id: current.function_id,
-            ip: current.ip as usize,
+            ip: current.body_offset(),
             stack_base: current.stack_base(),
             locals_count: current.locals_count,
             exception_stack_base: current.exception_stack_base(),
@@ -680,10 +680,9 @@ impl<'h> VM<'h> {
                         }
                     };
                     CallFrame {
-                        bytecode: code.shared_bytecode(),
+                        ip: code.bytecode_base() + frame_ip(sf.ip),
+                        code_base: code.bytecode_base(),
                         constants_base: code.constants_base(),
-                        code,
-                        ip: frame_ip(sf.ip),
                         stack_base: stack_index(sf.stack_base),
                         locals_count: sf.locals_count,
                         exception_stack_base: stack_index(sf.exception_stack_base),
@@ -768,7 +767,7 @@ impl<'h> VM<'h> {
         let exc_stack_base = self.exception_stack.len();
         let namespace = function_namespace(globals, &*self.heap);
         self.current_frame = CallFrame::new_function(
-            code,
+            &code,
             stack_base,
             locals_count,
             exc_stack_base,

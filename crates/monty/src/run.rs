@@ -372,16 +372,16 @@ impl Executor {
         // The compiler enforces the bytecode-format namespace-size limit and reports
         // it as a `SyntaxError` rather than panicking on the `u16` cast.
         let namespace_size = prepared.globals.len();
-        let mut constants = prepared.interns.take_constants();
+        let mut arenas = prepared.interns.take_arenas();
         let module_code = Compiler::compile_module(
             &prepared.nodes,
             &mut prepared.interns,
-            &mut constants,
+            &mut arenas,
             &prepared.globals,
             options,
         )
         .map_err(|e| e.into_python_exc(script_name, &code))?;
-        prepared.interns.restore_constants(constants);
+        prepared.interns.restore_arenas(arenas);
 
         Ok(Self {
             tables: SessionTables {
@@ -534,11 +534,11 @@ impl Executor {
             global_names: existing_globals,
             interns: mem::take(interns),
         };
-        let mut constants = tables.interns.take_constants();
+        let mut arenas = tables.interns.take_arenas();
         let module_code = builder
-            .build(0, &mut constants)
+            .build(0, &mut arenas)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
-        tables.interns.restore_constants(constants);
+        tables.interns.restore_arenas(arenas);
 
         Ok(Self {
             tables,
@@ -942,10 +942,10 @@ fn compile_repl_snippet(
     let nodes = parse_with_interner(code, script_name, interns).map_err(|e| e.into_python_exc(script_name, code))?;
     let nodes =
         prepare_with_existing_names(nodes, interns, globals).map_err(|e| e.into_python_exc(script_name, code))?;
-    let mut constants = interns.take_constants();
-    let module_code = Compiler::compile_module(&nodes, interns, &mut constants, globals, options)
+    let mut arenas = interns.take_arenas();
+    let module_code = Compiler::compile_module(&nodes, interns, &mut arenas, globals, options)
         .map_err(|e| e.into_python_exc(script_name, code));
-    interns.restore_constants(constants);
+    interns.restore_arenas(arenas);
     let module_code = module_code?;
     Ok((module_code, input_slots))
 }

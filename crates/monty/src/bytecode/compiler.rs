@@ -15,7 +15,7 @@ use monty_types::{MontyException, StackFrame};
 use super::{
     RESERVED_MODULE_DUNDERS,
     builder::{CodeBuilder, JumpLabel, JumpTarget, Offset},
-    code::{Code, HandlerKind},
+    code::{Code, CodeArenas, HandlerKind},
     op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode, assert_flags},
 };
 use crate::{
@@ -258,11 +258,12 @@ pub struct Compiler<'a> {
     /// [`compile_module`](Self::compile_module) rolls back what a failure appended.
     interns: &'a mut Interns,
 
-    /// Session constant arena. Each body's constants land here as one block at
-    /// `build` time, so `LoadConst` operands stay `u16` offsets from the `Code`'s
-    /// recorded base. Threaded separately from `interns` because a run holds it
-    /// inline in the VM; see [`Interns::take_constants`].
-    constants: &'a mut Vec<Value>,
+    /// Session code arenas. Each body's instructions and constants land here as
+    /// one block apiece at `build` time, so jump offsets stay body-relative and
+    /// `LoadConst` operands stay `u16`s from the `Code`'s recorded base.
+    /// Threaded separately from `interns` because a run holds them inline in the
+    /// VM; see [`Interns::take_arenas`].
+    arenas: &'a mut CodeArenas,
 
     /// Enclosing control blocks whose cleanup is emitted by non-local exits.
     /// This mirrors CPython's compiler `fblockinfo` stack and keeps each
@@ -525,7 +526,7 @@ impl<'a> Compiler<'a> {
     /// comprehension slots follow it on the operand stack.
     fn new(
         interns: &'a mut Interns,
-        constants: &'a mut Vec<Value>,
+        arenas: &'a mut CodeArenas,
         is_module_scope: bool,
         frame_locals: u16,
         flags: ScopeFlags,
@@ -535,7 +536,7 @@ impl<'a> Compiler<'a> {
         Self {
             code,
             interns,
-            constants,
+            arenas,
             fblocks: Vec::new(),
             finally_copies: 0,
             is_module_scope,
@@ -557,16 +558,18 @@ impl<'a> Compiler<'a> {
     pub fn compile_module(
         nodes: &[PreparedNode],
         interns: &mut Interns,
-        constants: &mut Vec<Value>,
+        arenas: &mut CodeArenas,
         globals: &NameMap,
         options: CompileOptions,
     ) -> Result<Code, CompileError> {
         let functions_len = interns.functions_len();
-        let constants_len = constants.len();
-        let result = Self::compile_module_inner(nodes, interns, constants, globals, options, None);
+        let constants_len = arenas.constants.len();
+        let bytecode_len = arenas.bytecode.len();
+        let result = Self::compile_module_inner(nodes, interns, arenas, globals, options, None);
         if result.is_err() {
             interns.truncate_functions(functions_len);
-            constants.truncate(constants_len);
+            arenas.constants.truncate(constants_len);
+            arenas.bytecode.truncate(bytecode_len);
         }
         result
     }
@@ -580,17 +583,19 @@ impl<'a> Compiler<'a> {
     pub(crate) fn compile_snippet(
         nodes: &[PreparedNode],
         interns: &mut Interns,
-        constants: &mut Vec<Value>,
+        arenas: &mut CodeArenas,
         globals: &NameMap,
         options: CompileOptions,
         globals_by_name: bool,
     ) -> Result<Code, CompileError> {
         let functions_len = interns.functions_len();
-        let constants_len = constants.len();
-        let result = Self::compile_module_inner(nodes, interns, constants, globals, options, Some(globals_by_name));
+        let constants_len = arenas.constants.len();
+        let bytecode_len = arenas.bytecode.len();
+        let result = Self::compile_module_inner(nodes, interns, arenas, globals, options, Some(globals_by_name));
         if result.is_err() {
             interns.truncate_functions(functions_len);
-            constants.truncate(constants_len);
+            arenas.constants.truncate(constants_len);
+            arenas.bytecode.truncate(bytecode_len);
         }
         result
     }
@@ -601,7 +606,7 @@ impl<'a> Compiler<'a> {
     fn compile_module_inner(
         nodes: &[PreparedNode],
         interns: &mut Interns,
-        constants: &mut Vec<Value>,
+        arenas: &mut CodeArenas,
         globals: &NameMap,
         options: CompileOptions,
         snippet: Option<bool>,
@@ -614,7 +619,7 @@ impl<'a> Compiler<'a> {
             assert_message_annotations: options.assert_message_annotations.enabled(),
             globals_by_name: snippet.unwrap_or(false),
         };
-        let mut compiler = Compiler::new(interns, constants, true, 0, flags);
+        let mut compiler = Compiler::new(interns, arenas, true, 0, flags);
         compiler.forbid_await = snippet.is_some();
 
         // All globals are "local names" in the module
@@ -626,8 +631,8 @@ impl<'a> Compiler<'a> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        let Compiler { code, constants, .. } = compiler;
-        code.build(num_locals, constants)
+        let Compiler { code, arenas, .. } = compiler;
+        code.build(num_locals, arenas)
     }
 
     /// Compiles a function body to bytecode, appending any nested functions to `interns`.
@@ -638,14 +643,14 @@ impl<'a> Compiler<'a> {
     fn compile_function_body(
         func_def: &PreparedFunctionDef,
         interns: &mut Interns,
-        constants: &mut Vec<Value>,
+        arenas: &mut CodeArenas,
         num_locals: u16,
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
         // Function frames have `locals_count = num_locals` at runtime, so
         // comp-var load/store opcodes use `num_locals + offset` to skip past
         // the locals region into the operand-stack region.
-        let mut compiler = Compiler::new(interns, constants, false, num_locals, flags);
+        let mut compiler = Compiler::new(interns, arenas, false, num_locals, flags);
         // Parameters, and the cells captured parameters live in, are named up
         // front: a body that never mentions one still reports it from `locals()`.
         let param_names: Vec<StringId> = func_def.signature.slot_names().collect();
@@ -661,8 +666,8 @@ impl<'a> Compiler<'a> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        let Compiler { code, constants, .. } = compiler;
-        code.build(num_locals, constants)
+        let Compiler { code, arenas, .. } = compiler;
+        code.build(num_locals, arenas)
     }
 
     /// Compiles statements, retaining `finally` bodies for inline cleanup.
@@ -909,8 +914,8 @@ impl<'a> Compiler<'a> {
     /// variables are captured, the pushed cells are consumed by `MakeClosure`.
     fn emit_make_function(&mut self, func_def: &PreparedFunctionDef, what: &'static str) -> Result<(), CompileError> {
         let flags = self.flags;
-        self.emit_make_callable(func_def, what, |interns, constants, namespace_size| {
-            Self::compile_function_body(func_def, interns, constants, namespace_size, flags)
+        self.emit_make_callable(func_def, what, |interns, arenas, namespace_size| {
+            Self::compile_function_body(func_def, interns, arenas, namespace_size, flags)
         })
     }
 
@@ -931,7 +936,7 @@ impl<'a> Compiler<'a> {
         &mut self,
         func_def: &PreparedFunctionDef,
         what: &'static str,
-        compile_body: impl FnOnce(&mut Interns, &mut Vec<Value>, u16) -> Result<Code, CompileError>,
+        compile_body: impl FnOnce(&mut Interns, &mut CodeArenas, u16) -> Result<Code, CompileError>,
     ) -> Result<(), CompileError> {
         let func_pos = func_def.name.position;
 
@@ -942,7 +947,7 @@ impl<'a> Compiler<'a> {
 
         // 1. Compile the body recursively.
         let namespace_size = check_namespace_size_u16(func_def.namespace_size, what)?;
-        let body_code = compile_body(self.interns, self.constants, namespace_size)?;
+        let body_code = compile_body(self.interns, self.arenas, namespace_size)?;
 
         // 2. Create the compiled Function and add it to the table
         // `Function` retains the legacy numeric source metadata for serialized-code
@@ -1060,14 +1065,14 @@ impl<'a> Compiler<'a> {
         position: CodeRange,
     ) -> Result<(), CompileError> {
         let flags = self.flags;
-        self.emit_make_callable(body, "class body", |interns, constants, namespace_size| {
+        self.emit_make_callable(body, "class body", |interns, arenas, namespace_size| {
             Self::compile_class_body(
                 &body.body,
                 members,
                 class_name,
                 position,
                 interns,
-                constants,
+                arenas,
                 namespace_size,
                 flags,
             )
@@ -1093,11 +1098,11 @@ impl<'a> Compiler<'a> {
         class_name: &Identifier,
         position: CodeRange,
         interns: &mut Interns,
-        constants: &mut Vec<Value>,
+        arenas: &mut CodeArenas,
         num_locals: u16,
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
-        let mut compiler = Compiler::new(interns, constants, false, num_locals, flags);
+        let mut compiler = Compiler::new(interns, arenas, false, num_locals, flags);
         compiler.compile_block(body)?;
 
         // Assembly errors (e.g. resource limits while building the dict)
@@ -1124,8 +1129,8 @@ impl<'a> Compiler<'a> {
             .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        let Compiler { code, constants, .. } = compiler;
-        code.build(num_locals, constants)
+        let Compiler { code, arenas, .. } = compiler;
+        code.build(num_locals, arenas)
     }
 
     /// Compiles an import statement.

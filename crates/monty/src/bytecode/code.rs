@@ -4,9 +4,34 @@
 //! bytecode instructions, a constant pool, source location information for tracebacks,
 //! and an exception handler table.
 
-use std::rc::Rc;
+use crate::{intern::StringId, parse::CodeRange, value::Value};
 
-use crate::{intern::StringId, parse::CodeRange};
+/// The session's flat code storage, shared by every compiled [`Code`].
+///
+/// Both streams are session-wide so a running frame reaches them through one
+/// `Vec` held inline in the VM rather than dereferencing its `Code`: the frame
+/// carries only the bases. A run borrows the whole struct
+/// (`Interns::take_arenas`), and `eval()` / `exec()` append to the live one.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CodeArenas {
+    /// Every code object's instructions, concatenated. A frame's `ip` indexes
+    /// this directly, so switching frames costs nothing but setting `ip`.
+    pub(crate) bytecode: Vec<u8>,
+    /// Every code object's constants, concatenated. `LoadConst` adds its `u16`
+    /// operand to the running frame's base.
+    pub(crate) constants: Vec<Value>,
+}
+
+impl Clone for CodeArenas {
+    /// [`Value`] is deliberately not `Clone`; constants are always immediates,
+    /// so copying one needs no refcount.
+    fn clone(&self) -> Self {
+        Self {
+            bytecode: self.bytecode.clone(),
+            constants: self.constants.iter().map(Value::copy_immediate).collect(),
+        }
+    }
+}
 
 /// Compiled bytecode for a function or module.
 ///
@@ -14,18 +39,22 @@ use crate::{intern::StringId, parse::CodeRange};
 /// Each function has its own Code object; module-level code also gets one.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Code {
-    /// Raw bytecode instructions.
+    /// Where this code object's instructions start in
+    /// [`CodeArenas::bytecode`]. A frame's `ip` starts here and stays an
+    /// absolute arena offset, so the dispatch loop never consults the `Code`.
     ///
     /// Opcodes are 1 byte each, followed by their operands (0-3 bytes depending
-    /// on the instruction). The variable-width encoding gives better cache locality
-    /// than fixed-width alternatives. Shared (`Rc`) so a call frame can hoist
-    /// the instruction stream and reach it with one load per fetch.
-    bytecode: Rc<[u8]>,
+    /// on the instruction); the variable-width encoding gives better cache
+    /// locality than fixed-width alternatives.
+    bytecode_base: u32,
 
-    /// Where this code object's constants start in the session-wide constant
-    /// arena ([`Interns::constants`](crate::intern::Interns::constants)).
-    /// `LoadConst` adds its `u16` operand to the running frame's copy of this,
-    /// so the arena is reached without touching the `Code` allocation.
+    /// Length of this code object's block in [`CodeArenas::bytecode`], for the
+    /// offset arithmetic that turns an absolute `ip` back into the table-relative
+    /// offset the location and exception tables are keyed by.
+    bytecode_len: u32,
+
+    /// Where this code object's constants start in [`CodeArenas::constants`].
+    /// `LoadConst` adds its `u16` operand to the running frame's copy of this.
     constants_base: u32,
 
     /// Source location table for tracebacks.
@@ -63,15 +92,17 @@ impl Code {
     /// Creates an empty code object for tests that only need VM context.
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
-        Self::new(Vec::new(), 0, Vec::new(), Vec::new(), 0, 0, Vec::new())
+        Self::new(0, 0, 0, Vec::new(), Vec::new(), 0, 0, Vec::new())
     }
 
     /// Creates a new Code object with all components.
     ///
     /// This is typically called by `CodeBuilder::build()` after compilation.
     #[must_use]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
-        bytecode: Vec<u8>,
+        bytecode_base: u32,
+        bytecode_len: u32,
         constants_base: u32,
         location_table: Vec<LocationEntry>,
         exception_table: Vec<ExceptionEntry>,
@@ -80,7 +111,8 @@ impl Code {
         local_names: Vec<StringId>,
     ) -> Self {
         Self {
-            bytecode: Rc::from(bytecode),
+            bytecode_base,
+            bytecode_len,
             constants_base,
             location_table,
             exception_table,
@@ -90,16 +122,18 @@ impl Code {
         }
     }
 
-    /// Returns the raw bytecode bytes; the VM reads them through a frame's
-    /// hoisted [`shared_bytecode`](Self::shared_bytecode) instead.
+    /// This code object's slice of the session bytecode arena.
     #[cfg(test)]
-    pub(crate) fn bytecode(&self) -> &[u8] {
-        &self.bytecode
+    pub(crate) fn bytecode<'a>(&self, arenas: &'a CodeArenas) -> &'a [u8] {
+        let base = self.bytecode_base as usize;
+        &arenas.bytecode[base..base + self.bytecode_len as usize]
     }
 
-    /// A shared handle to the instruction stream, for a frame to hoist.
-    pub(crate) fn shared_bytecode(&self) -> Rc<[u8]> {
-        Rc::clone(&self.bytecode)
+    /// Start of this code object's instructions in the session bytecode arena;
+    /// also the initial `ip` of any frame running it.
+    #[must_use]
+    pub fn bytecode_base(&self) -> u32 {
+        self.bytecode_base
     }
 
     /// Start of this code object's block in the session-wide constant arena.

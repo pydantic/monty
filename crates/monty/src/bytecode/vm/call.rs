@@ -4,7 +4,7 @@
 //! functions for executing function calls. The main entry points are the `exec_*`
 //! methods which are called from the VM's main dispatch loop.
 
-use std::{mem, rc::Rc};
+use std::mem;
 
 use monty_types::{MontyUuid, OsFunctionCall};
 
@@ -903,23 +903,25 @@ impl VM<'_> {
         let func = self.interns.get_function(func_id);
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
-        let code = Rc::clone(&func.code);
 
         let callable = self.stack.remove(callable_index);
         debug_assert_exact_callable(&callable, func_id);
         self.stack
             .resize_with(callable_index + namespace_size, || Value::Undefined);
 
+        // Re-borrow rather than hold `func` across the stack edits above: the
+        // frame copies out the code's arena bases and keeps no handle.
         let exc_stack_base = self.exception_stack.len();
-        self.push_frame(CallFrame::new_function(
-            code,
+        let frame = CallFrame::new_function(
+            &self.interns.get_function(func_id).code,
             callable_index,
             locals_count,
             exc_stack_base,
             func_id,
             call_offset,
             None,
-        ))?;
+        );
+        self.push_frame(frame)?;
 
         Ok(CallResult::FramePushed)
     }
@@ -1076,8 +1078,6 @@ impl VM<'_> {
         // 3. Install owned cells and captured free-var cells at their slots.
         this.install_closure_cells(&func, cells, namespace);
 
-        let code = Rc::clone(&func.code);
-
         // 6. Commit the guard (no rollback) and push the frame. The operand
         // stack starts immediately above the locals region — comprehensions
         // emit their own push/pop bytecode, so no frame-level region is
@@ -1090,7 +1090,7 @@ impl VM<'_> {
         let exc_stack_base = this.exception_stack.len();
         let namespace = function_namespace(globals, &*this.heap);
         this.push_frame(CallFrame::new_function(
-            code,
+            &func.code,
             stack_base,
             locals_count,
             exc_stack_base,
