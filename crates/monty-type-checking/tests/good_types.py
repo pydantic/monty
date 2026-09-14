@@ -381,6 +381,13 @@ def not_implemented() -> None:
 
 print(sys.version)
 print(sys.version_info)
+print(sys.argv[0])
+print(sys.maxsize + sys.maxunicode + sys.hexversion + sys.api_version)
+print(sys.byteorder, sys.copyright, sys.platlibdir, sys.abiflags)
+print(sys.executable, sys.prefix, sys.exec_prefix, sys.base_prefix, sys.base_exec_prefix)
+print(sys.dont_write_bytecode, sys.pycache_prefix, sys.builtin_module_names)
+print(sys.float_repr_style, sys.float_info.epsilon, sys.float_info.mant_dig)
+print(sys.flags.optimize, sys.flags.dev_mode, sys.flags.int_max_str_digits)
 print(None, file=sys.stdout)
 print(None, file=sys.stderr)
 

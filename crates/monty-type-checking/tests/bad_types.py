@@ -133,4 +133,4 @@ def loop_over_dict_items(mapping: dict[str, int]) -> None:
         takes_str(value)
 
 
-print(sys.copyright)
+print(sys.missing)
