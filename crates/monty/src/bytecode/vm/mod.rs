@@ -19,6 +19,7 @@ use std::{borrow::Cow, mem};
 
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
+pub(crate) use collections::unpack_exact;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
 pub(crate) use recursion::{ContainsVM, RecursionToken};
 use scheduler::Scheduler;

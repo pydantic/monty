@@ -28,7 +28,7 @@ use smallvec::SmallVec;
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::Builtins,
-    bytecode::{CallResult, VM},
+    bytecode::{CallResult, VM, unpack_exact},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
@@ -378,23 +378,9 @@ fn setstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
         }
     };
 
-    let items: Vec<Value> = collect_owned_iterable(state.clone_with_heap(vm), vm)?;
+    // `version, internalstate, self.gauss_next = state`
+    let items = unpack_exact(state, 3, vm)?;
     defer_drop!(items, vm);
-    match items.len().cmp(&3) {
-        Ordering::Less => {
-            return Err(ExcType::value_error(format!(
-                "not enough values to unpack (expected 3, got {})",
-                items.len()
-            )));
-        }
-        Ordering::Greater => {
-            return Err(ExcType::value_error(format!(
-                "too many values to unpack (expected 3, got {})",
-                items.len()
-            )));
-        }
-        Ordering::Equal => {}
-    }
     let internal = &items[1];
     let gauss_next = match &items[2] {
         Value::None => None,
@@ -425,6 +411,10 @@ fn setstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
         let Some(tuple) = tuple else {
             return Err(ExcType::type_error("state vector must be a tuple"));
         };
+        // Size first, so an oversized tuple is rejected before it is copied.
+        if tuple.as_slice().len() != Mt19937::state_len() + 1 {
+            return Err(ExcType::value_error("state vector is the wrong size"));
+        }
         tuple
             .as_slice()
             .iter()
@@ -958,10 +948,14 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
     let cumulative = if matches!(cum_weights, Value::None) {
         if matches!(weights, Value::None) {
             None
-        } else if let Value::Int(k) = weights {
-            // The common mistake `choices(pop, 5)`, which CPython names too.
+        } else if matches!(weights, Value::Int(_) | Value::Bool(_)) || weights.as_long_int(vm).is_some() {
+            // The common mistake `choices(pop, 5)`, which CPython names too,
+            // for any int (`k=True` for a bool, as CPython's f-string prints).
+            let k = weights.py_str(vm)?;
+            defer_drop!(k, vm);
             return Err(ExcType::type_error(format!(
-                "The number of choices must be a keyword argument: k={k}"
+                "The number of choices must be a keyword argument: k={}",
+                k.to_str_heap(vm.heap, vm.interns)?
             )));
         } else {
             Some(cumulative_weights(weights, vm)?)

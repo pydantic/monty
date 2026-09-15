@@ -188,11 +188,12 @@ letters = ['a', 'b', 'c', 'd']
 random.Random(3).shuffle(letters)
 assert [d[0], d[1], d[2], d[3]] == letters
 try:
-    random.shuffle({1: 'a', 5: 'b'})
+    # seed 1 draws index 0 for the single swap, which is not a key
+    random.Random(1).shuffle({1: 'a', 5: 'b'})
     assert False, 'expected KeyError'
 except KeyError as exc:
     # Monty's dict KeyError carries the key's str(), see exceptions.md
-    assert str(exc) in ('0', '1', "'0'", "'1'")
+    assert str(exc) in ('0', "'0'")
 
 # === sample() ===
 for population in ({1, 2, 3}, {1: 2}):
@@ -235,11 +236,12 @@ for counts in ([2**63 - 1, 1], [2**63 - 1] * 3):
 assert random.sample(['a'], 1, counts=[2**63 - 1]) == ['a']
 
 # === choices() ===
-try:
-    random.choices([1, 2], 5)
-    assert False, 'expected TypeError'
-except TypeError as exc:
-    assert str(exc) == 'The number of choices must be a keyword argument: k=5'
+for k in (5, True, -5, 2**70):
+    try:
+        random.choices([1, 2], k)
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == f'The number of choices must be a keyword argument: k={k}'
 try:
     random.choices([1, 2], weights=[1, 1], cum_weights=[1, 2])
     assert False, 'expected TypeError'
@@ -387,6 +389,12 @@ try:
     assert False, 'expected ValueError'
 except ValueError as exc:
     assert str(exc) == 'too many values to unpack (expected 3, got 4)'
+# the unpack stops at the fourth item; only list, tuple and dict report a total
+try:
+    random.setstate(b'\x03\x00\x00\x00')
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'too many values to unpack (expected 3)'
 try:
     random.setstate((3, [1] * 625, None))
     assert False, 'expected TypeError'
