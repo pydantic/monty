@@ -158,7 +158,9 @@ class PrimeDisplacing:
 
 
 prime_displacing = itertools.pairwise(PrimeDisplacing())
-assert len(list(prime_displacing)) == 1
+# The pair is `([3], [4])`, not `([1], [2])`: the re-entrant call consumed the
+# first two items, so a count alone would pass on a wrong left half.
+assert list(prime_displacing) == [([3], [4])]
 
 
 # The same window, but the re-entrant call runs the source DRY: that latches the
@@ -307,6 +309,36 @@ try:
     next(star_erroring)
 except ValueError:
     pass
+
+
+# Pulling an item runs user code that can step the same accumulate, advancing
+# `total` under the pass that made the pull. The outer fold reads the total left
+# behind and must release the one it displaces — that displaced total is named
+# by NOTHING, so losing the ref shows as an unreachable object, not as a count.
+class AccDisplacing:
+    def __init__(self):
+        self.calls = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.calls += 1
+        if self.calls == 2:
+            next(acc_displacing)
+        if self.calls > 4:
+            raise StopIteration
+        return [self.calls]
+
+
+acc_displacing = itertools.accumulate(AccDisplacing())
+# The re-entrant call advances `self.calls` as well as the total, so the item
+# the outer pull returns is `[3]` and it folds into the total that call left.
+assert list(acc_displacing) == [[1], [1, 3, 3], [1, 3, 3, 4]]
+# `AccDisplacing` counts 2: a spent `accumulate` keeps its source, as CPython's
+# does, so the instance holding the class stays live.
+
+
 # `accumulate`'s fold runs user code with both the total and the item held, so
 # a raising binop leaves through a `?` with two owned values live.
 acc_erroring = itertools.accumulate([[1], [2]], make_boom())
@@ -399,4 +431,4 @@ except TypeError:
     pass
 
 len('done')
-# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1, 'chain_drained_source': 1, 'chain_drained': 1, 'chain_unreached_source': 1, 'chain_failed': 1, 'Displacing': 1, 'displacing': 1, 'PrimeDisplacing': 1, 'prime_displacing': 1, 'PrimeExhausting': 1, 'prime_exhausting': 1, 'exhausted_item': 1, 'BoomLate': 1, 'take_live': 1, 'drop_live': 1, 'filter_live': 1, 'star_live': 1, 'filter_none': 1, 'rejected': 1, 'pred_erroring': 1, 'star_erroring': 1, 'take_pred': 1, 'take_source': 1, 'latched_take': 1, 'drop_pred': 2, 'drop_source': 2, 'past_drop': 1, 'fill_live': 1, 'zip_live': 1, 'bat_live': 1, 'acc_live': 1, 'bat_source': 1, 'spent_zip': 1, 'spent_bat': 1, 'zip_source': 1, 'strict_flag': 1, 'inspected_bat': 1, 'zip_resolved': 1, 'zip_unreached': 1}
+# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1, 'chain_drained_source': 1, 'chain_drained': 1, 'chain_unreached_source': 1, 'chain_failed': 1, 'Displacing': 1, 'displacing': 1, 'PrimeDisplacing': 1, 'prime_displacing': 1, 'PrimeExhausting': 1, 'prime_exhausting': 1, 'exhausted_item': 1, 'BoomLate': 1, 'take_live': 1, 'drop_live': 1, 'filter_live': 1, 'star_live': 1, 'filter_none': 1, 'rejected': 1, 'pred_erroring': 1, 'star_erroring': 1, 'take_pred': 1, 'take_source': 1, 'latched_take': 1, 'drop_pred': 2, 'drop_source': 2, 'past_drop': 1, 'fill_live': 1, 'zip_live': 1, 'bat_live': 1, 'acc_live': 1, 'AccDisplacing': 2, 'acc_displacing': 1, 'bat_source': 1, 'spent_zip': 1, 'spent_bat': 1, 'zip_source': 1, 'strict_flag': 1, 'inspected_bat': 1, 'zip_resolved': 1, 'zip_unreached': 1}

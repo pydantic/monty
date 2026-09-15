@@ -310,6 +310,45 @@ acc_late = itertools.accumulate(acc_late_src)
 assert list(acc_late) == [1, 3, 11, 16, 22]
 assert acc_late_src.inner == 7
 
+
+# A re-entrant call can also run the source DRY. The two adaptors part ways
+# here: CPython's `pairwise` re-reads `po->it` after priming and stops, so the
+# item the outer pull got is never paired, while `accumulate` does not re-check
+# and yields the item the pull returned.
+class Exhausting:
+    """Empties the adaptor named by `target` from its first `__next__`."""
+
+    def __init__(self, target):
+        self.calls = 0
+        self.target = target
+        self.inner = 'unset'
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.calls += 1
+        if self.calls == 1:
+            try:
+                self.inner = next(self.target())
+            except StopIteration:
+                self.inner = 'stopped'
+            return 5
+        raise StopIteration
+
+
+exhausting_src = Exhausting(lambda: exhausting_wise)
+exhausting_wise = itertools.pairwise(exhausting_src)
+assert list(exhausting_wise) == []
+assert exhausting_src.inner == 'stopped'
+assert exhausting_src.calls == 2
+
+acc_exhausting_src = Exhausting(lambda: acc_exhausting)
+acc_exhausting = itertools.accumulate(acc_exhausting_src)
+assert list(acc_exhausting) == [5]
+assert acc_exhausting_src.inner == 'stopped'
+assert acc_exhausting_src.calls == 3
+
 # === cycle ===
 assert list(itertools.islice(itertools.cycle([1, 2, 3]), 7)) == [1, 2, 3, 1, 2, 3, 1]
 assert list(itertools.islice(itertools.cycle('ab'), 5)) == ['a', 'b', 'a', 'b', 'a']
