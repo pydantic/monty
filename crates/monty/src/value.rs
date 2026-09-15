@@ -1766,7 +1766,7 @@ impl Value {
                 // `chain.from_iterable`, the one attribute an `itertools`
                 // type carries. Handed out as a value so it can be bound and
                 // called later, not only called in place.
-                if *t == Type::ItertoolsChain && attr.as_str(vm.interns) == "from_iterable" {
+                if *t == Type::ItertoolsChain && attr.matches(StaticStrings::FromIterable.into(), vm.interns) {
                     return Ok(CallResult::Value(Self::ModuleFunction(ModuleFunctions::Itertools(
                         ItertoolsFunctions::ChainFromIterable,
                     ))));
