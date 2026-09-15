@@ -287,12 +287,15 @@ impl<'h> HeapRead<'h, Deque> {
     }
 
     /// Preflights the ring growth a single-element push would cause, dropping
-    /// `item` if the deque cannot grow. A deque already at `maxlen` evicts
-    /// rather than grows, so it never allocates and never needs the check.
+    /// `item` if the deque cannot grow.
+    ///
+    /// Reaching `maxlen` is no exemption: `append` and `appendleft` push before
+    /// they evict, so a bounded deque whose ring is exactly full reallocates on
+    /// that push like any other — once, and by its whole length.
     fn check_push(&self, vm: &mut VM<'h>, item: Value) -> RunResult<Value> {
         let this = self.get(vm.heap);
         let (len, capacity) = (this.items.len(), this.items.capacity());
-        if this.maxlen.is_some_and(|maxlen| len >= maxlen) || len < capacity {
+        if len < capacity {
             Ok(item)
         } else {
             check_value_buffer_growth(vm, len, capacity, item)
