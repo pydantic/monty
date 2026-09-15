@@ -1,0 +1,47 @@
+crates/monty/tests/os_tests.rs
+  s_39113c86df7101::t_ff0d0ad04aa571 1547-1556,1564-1567
+  s_39113c86df7101::t_63ce7f26b5d8af 1557-1563,1568-1569
+crates/monty-python/tests/test_async.py
+  s_39113c86df7101::t_125736e939dc5b 1189-1196
+crates/monty-runtime/src/main.rs
+  s_39113c86df7101::t_125736e939dc5b 86-90,124-125,172-175,177-184
+  s_39113c86df7101::t_a6936e5a5b9d15 176
+crates/monty-runtime/tests/mounts.rs
+  s_39113c86df7101::t_125736e939dc5b 71-79,81-92
+  s_39113c86df7101::t_a6936e5a5b9d15 4,80
+docs/cli.md
+  s_39113c86df7101::t_61a1ed4fc283ab 37
+crates/monty-runtime/src/run.rs
+  s_39113c86df7101::t_125736e939dc5b 120,128-135,150,152,165,167,171,189,192,196-197,214,249,264,314,321,380,393,417,422-423,460,488-491,520,567,616-628,630-660
+docs/security.md
+  s_39113c86df7101::t_125736e939dc5b 314-315
+crates/monty-python/python/pydantic_monty/os_access.py
+  s_39113c86df7101::t_125736e939dc5b 151-157,602,605-606,608,623,626-628,899,911-913,922
+  s_39113c86df7101::t_ec79e592f725c4 639-643
+crates/monty-runtime/README.md
+  s_39113c86df7101::t_125736e939dc5b 45-46
+crates/monty-python/tests/test_os_access.py
+  s_39113c86df7101::t_125736e939dc5b 11,97-108,111,114,116
+docs/limitations/index.md
+  s_39113c86df7101::t_ec79e592f725c4 36
+crates/monty/src/heap/mod.rs
+  s_39113c86df7101::t_b7778dd77e943f 2120-2124,2250-2253,2255-2265
+docs/limitations/time.md
+  s_39113c86df7101::t_125736e939dc5b 64-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "15c0c39566f22071cddc1b0516873afd0e18365f",
+  "prompts": {},
+  "sessions": {
+    "s_39113c86df7101": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a6a907e-552e-489d-b040-c6ce4647bde1",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
