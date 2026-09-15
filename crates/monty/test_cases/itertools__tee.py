@@ -110,6 +110,26 @@ assert next(advanced) == 1
 (resumed,) = itertools.tee(advanced, 1)
 assert list(resumed) == [2, 3]
 
+
+# The argument is resolved BEFORE it is tested for copying, so an object whose
+# `__iter__` hands back a `_tee` is copied too rather than drained into a
+# second buffer behind it.
+wrapped, wrapped_sibling = itertools.tee([1, 2, 3, 4])
+assert next(wrapped) == 1
+
+
+class WrapsTee:
+    def __iter__(self):
+        return wrapped
+
+
+wrap_one, wrap_two = itertools.tee(WrapsTee())
+assert list(wrap_one) == [2, 3, 4]
+assert list(wrap_two) == [2, 3, 4]
+# Untouched by the copies, where draining it would have left it spent.
+assert next(wrapped) == 2
+assert list(wrapped_sibling) == [1, 2, 3, 4]
+
 # === Iterator protocol and types ===
 tee_iter = itertools.tee([1])[0]
 assert iter(tee_iter) is tee_iter

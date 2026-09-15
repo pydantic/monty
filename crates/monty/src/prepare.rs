@@ -1471,10 +1471,21 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 self.names_assigned_in_order.insert(ident.name_id);
                 Ok(UnpackTarget::Name(self.get_id(ident)?))
             }
-            UnpackTarget::Starred(ident) => {
-                self.names_assigned_in_order.insert(ident.name_id);
-                Ok(UnpackTarget::Starred(self.get_id(ident)?))
-            }
+            UnpackTarget::Starred(inner) => Ok(UnpackTarget::Starred(Box::new(self.prepare_unpack_target(*inner)?))),
+            UnpackTarget::Attr { object, attr, position } => Ok(UnpackTarget::Attr {
+                object: Box::new(self.prepare_expression(*object)?),
+                attr,
+                position,
+            }),
+            UnpackTarget::Subscript {
+                container,
+                index,
+                position,
+            } => Ok(UnpackTarget::Subscript {
+                container: Box::new(self.prepare_expression(*container)?),
+                index: Box::new(self.prepare_expression(*index)?),
+                position,
+            }),
             UnpackTarget::Tuple { targets, position } => {
                 let resolved_targets = targets
                     .into_iter()
@@ -1506,15 +1517,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     NameScope::CompVar,
                 )))
             }
-            UnpackTarget::Starred(ident) => {
-                let slot = self.alloc_comp_var_slot(ident.name_id, ident.position)?;
-                Ok(UnpackTarget::Starred(Identifier::new_with_scope(
-                    ident.name_id,
-                    ident.position,
-                    NamespaceId::new(usize::from(slot)).expect("comp-var slot fits in NamespaceId"),
-                    NameScope::CompVar,
-                )))
-            }
+            UnpackTarget::Starred(inner) => Ok(UnpackTarget::Starred(Box::new(
+                self.prepare_unpack_target_for_comprehension(*inner)?,
+            ))),
             UnpackTarget::Tuple { targets, position } => {
                 let resolved_targets = targets
                     .into_iter()
@@ -1525,6 +1530,16 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     position,
                 })
             }
+            // A comprehension's targets are its comp vars, which live in
+            // operand-stack slots; a store to an object has nowhere to go there.
+            UnpackTarget::Attr { position, .. } => Err(ParseError::syntax(
+                "comprehension target must be a name, not an attribute",
+                position,
+            )),
+            UnpackTarget::Subscript { position, .. } => Err(ParseError::syntax(
+                "comprehension target must be a name, not a subscript",
+                position,
+            )),
         }
     }
 
@@ -2382,7 +2397,7 @@ fn collect_scope_info_from_node(
         Node::UnpackAssign { targets, object, .. } => {
             // Recursively collect all names from nested unpack targets
             for target in targets {
-                collect_names_from_unpack_target(target, assigned_names);
+                collect_names_from_unpack_target(target, assigned_names, interner);
             }
             // Scan value expression for walrus operators
             collect_assigned_names_from_expr(object, assigned_names, interner);
@@ -2433,7 +2448,7 @@ fn collect_scope_info_from_node(
             or_else,
         } => {
             // For loop target is assigned - collect all names from the target
-            collect_names_from_unpack_target(target, assigned_names);
+            collect_names_from_unpack_target(target, assigned_names, interner);
             // Scan iter expression for walrus operators
             collect_assigned_names_from_expr(iter, assigned_names, interner);
             // Recurse into body and else
@@ -2518,7 +2533,7 @@ fn collect_scope_info_from_node(
         } => {
             // The `as TARGET` binds names like a for-loop target does.
             if let Some(t) = target {
-                collect_names_from_unpack_target(t, assigned_names);
+                collect_names_from_unpack_target(t, assigned_names, interner);
             }
             // Scan the context expression for walrus operators.
             collect_assigned_names_from_expr(context, assigned_names, interner);
@@ -2782,8 +2797,13 @@ fn collect_cell_vars_from_node(
         }
         // Recurse into control flow structures
         Node::For {
-            iter, body, or_else, ..
+            target,
+            iter,
+            body,
+            or_else,
         } => {
+            // Attribute/subscript targets embed expressions that may hold lambdas.
+            collect_cell_vars_from_unpack_target(target, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(iter, our_locals, cell_vars, interner);
             for n in body {
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
@@ -2831,8 +2851,13 @@ fn collect_cell_vars_from_node(
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
         }
-        Node::With { context, body, .. } => {
+        Node::With {
+            context, target, body, ..
+        } => {
             collect_cell_vars_from_expr(context, our_locals, cell_vars, interner);
+            if let Some(target) = target {
+                collect_cell_vars_from_unpack_target(target, our_locals, cell_vars, interner);
+            }
             for n in body {
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
@@ -2842,7 +2867,13 @@ fn collect_cell_vars_from_node(
             collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
         }
         Node::Return(None) => {}
-        Node::Assign { object, .. } | Node::UnpackAssign { object, .. } => {
+        Node::Assign { object, .. } => {
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+        }
+        Node::UnpackAssign { targets, object, .. } => {
+            for target in targets {
+                collect_cell_vars_from_unpack_target(target, our_locals, cell_vars, interner);
+            }
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
         }
         Node::OpAssign { value, .. } => {
@@ -3238,7 +3269,10 @@ fn collect_referenced_names_from_node(
         Node::Assign { object, .. } => {
             collect_referenced_names_from_expr(object, referenced, interner);
         }
-        Node::UnpackAssign { object, .. } => {
+        Node::UnpackAssign { targets, object, .. } => {
+            for target in targets {
+                collect_referenced_names_from_unpack_target(target, referenced, interner);
+            }
             collect_referenced_names_from_expr(object, referenced, interner);
         }
         Node::OpAssign { target, value, .. } => {
@@ -3275,8 +3309,12 @@ fn collect_referenced_names_from_node(
             collect_referenced_names_from_expr(object, referenced, interner);
         }
         Node::For {
-            iter, body, or_else, ..
+            target,
+            iter,
+            body,
+            or_else,
         } => {
+            collect_referenced_names_from_unpack_target(target, referenced, interner);
             collect_referenced_names_from_expr(iter, referenced, interner);
             for n in body {
                 collect_referenced_names_from_node(n, referenced, interner);
@@ -3350,7 +3388,12 @@ fn collect_referenced_names_from_node(
                 collect_referenced_names_from_node(n, referenced, interner);
             }
         }
-        Node::With { context, body, .. } => {
+        Node::With {
+            context, target, body, ..
+        } => {
+            if let Some(target) = target {
+                collect_referenced_names_from_unpack_target(target, referenced, interner);
+            }
             collect_referenced_names_from_expr(context, referenced, interner);
             for n in body {
                 collect_referenced_names_from_node(n, referenced, interner);
@@ -3573,7 +3616,7 @@ fn collect_referenced_names_from_comprehension(
         }
 
         // Add this generator's target(s) to local set
-        collect_names_from_unpack_target(&comp.target, &mut comp_locals);
+        collect_names_from_unpack_target(&comp.target, &mut comp_locals, interner);
 
         // Filter conditions can see prior loop variables - collect separately
         for cond in &comp.ifs {
@@ -3684,18 +3727,76 @@ fn collect_referenced_names_from_fstring_parts(
     }
 }
 
-/// Collects all names from an unpack target into the given set.
+/// Collects the names an unpack target binds into the given set.
 ///
-/// Recursively traverses nested tuples to find all identifier names.
-fn collect_names_from_unpack_target(target: &UnpackTarget, names: &mut AHashSet<StringId>) {
+/// Recursively traverses nested tuples to find all identifier names. Attribute
+/// and subscript targets bind no name; like their [`AssignTarget`] counterparts
+/// they are scanned for walrus assignments instead.
+fn collect_names_from_unpack_target(target: &UnpackTarget, names: &mut AHashSet<StringId>, interner: &InternerBuilder) {
     match target {
-        UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => {
+        UnpackTarget::Name(ident) => {
             names.insert(ident.name_id);
         }
+        UnpackTarget::Starred(inner) => collect_names_from_unpack_target(inner, names, interner),
         UnpackTarget::Tuple { targets, .. } => {
             for t in targets {
-                collect_names_from_unpack_target(t, names);
+                collect_names_from_unpack_target(t, names, interner);
             }
+        }
+        UnpackTarget::Attr { object, .. } => {
+            collect_assigned_names_from_expr(object, names, interner);
+        }
+        UnpackTarget::Subscript { container, index, .. } => {
+            collect_assigned_names_from_expr(container, names, interner);
+            collect_assigned_names_from_expr(index, names, interner);
+        }
+    }
+}
+
+/// Collects names read by an unpack target's own expressions.
+///
+/// Only attribute and subscript targets read anything: the object or container
+/// must be evaluated at store time, so `obj.x, y = pair` references `obj`.
+fn collect_referenced_names_from_unpack_target(
+    target: &UnpackTarget,
+    referenced: &mut AHashSet<StringId>,
+    interner: &InternerBuilder,
+) {
+    match target {
+        UnpackTarget::Name(_) => {}
+        UnpackTarget::Starred(inner) => collect_referenced_names_from_unpack_target(inner, referenced, interner),
+        UnpackTarget::Tuple { targets, .. } => {
+            for t in targets {
+                collect_referenced_names_from_unpack_target(t, referenced, interner);
+            }
+        }
+        UnpackTarget::Attr { object, .. } => collect_referenced_names_from_expr(object, referenced, interner),
+        UnpackTarget::Subscript { container, index, .. } => {
+            collect_referenced_names_from_expr(container, referenced, interner);
+            collect_referenced_names_from_expr(index, referenced, interner);
+        }
+    }
+}
+
+/// Collects cell vars captured by lambdas inside an unpack target's expressions.
+fn collect_cell_vars_from_unpack_target(
+    target: &UnpackTarget,
+    our_locals: &AHashSet<StringId>,
+    cell_vars: &mut AHashSet<StringId>,
+    interner: &InternerBuilder,
+) {
+    match target {
+        UnpackTarget::Name(_) => {}
+        UnpackTarget::Starred(inner) => collect_cell_vars_from_unpack_target(inner, our_locals, cell_vars, interner),
+        UnpackTarget::Tuple { targets, .. } => {
+            for t in targets {
+                collect_cell_vars_from_unpack_target(t, our_locals, cell_vars, interner);
+            }
+        }
+        UnpackTarget::Attr { object, .. } => collect_cell_vars_from_expr(object, our_locals, cell_vars, interner),
+        UnpackTarget::Subscript { container, index, .. } => {
+            collect_cell_vars_from_expr(container, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
         }
     }
 }
@@ -3724,7 +3825,7 @@ fn collect_assigned_names_from_assign_target(
         }
         AssignTarget::Unpack { targets, .. } => {
             for t in targets {
-                collect_names_from_unpack_target(t, assigned_names);
+                collect_names_from_unpack_target(t, assigned_names, interner);
             }
         }
     }
@@ -3749,7 +3850,12 @@ fn collect_cell_vars_from_assign_target(
         AssignTarget::Attr { object, .. } => {
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
         }
-        AssignTarget::Name(_) | AssignTarget::Unpack { .. } => {}
+        AssignTarget::Name(_) => {}
+        AssignTarget::Unpack { targets, .. } => {
+            for t in targets {
+                collect_cell_vars_from_unpack_target(t, our_locals, cell_vars, interner);
+            }
+        }
     }
 }
 
@@ -3771,6 +3877,11 @@ fn collect_referenced_names_from_assign_target(
         AssignTarget::Attr { object, .. } => {
             collect_referenced_names_from_expr(object, referenced, interner);
         }
-        AssignTarget::Name(_) | AssignTarget::Unpack { .. } => {}
+        AssignTarget::Name(_) => {}
+        AssignTarget::Unpack { targets, .. } => {
+            for t in targets {
+                collect_referenced_names_from_unpack_target(t, referenced, interner);
+            }
+        }
     }
 }

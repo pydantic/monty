@@ -128,13 +128,16 @@ fn check_comp_generators(count: usize, position: CodeRange) -> Result<(), Compil
 
 /// Returns a position that locates `target` in source for error reporting.
 ///
-/// `Name` / `Starred` carry the identifier's position; `Tuple` carries its
-/// own. Used by comp-target unpacking when the per-leaf position isn't
-/// available at the error point.
+/// `Name` carries the identifier's position, `Starred` its inner target's, and
+/// every other form its own. Used by comp-target unpacking when the per-leaf
+/// position isn't available at the error point.
 fn target_position(target: &UnpackTarget) -> CodeRange {
     match target {
-        UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => ident.position,
-        UnpackTarget::Tuple { position, .. } => *position,
+        UnpackTarget::Name(ident) => ident.position,
+        UnpackTarget::Starred(inner) => target_position(inner),
+        UnpackTarget::Tuple { position, .. }
+        | UnpackTarget::Attr { position, .. }
+        | UnpackTarget::Subscript { position, .. } => *position,
     }
 }
 
@@ -3204,8 +3207,20 @@ impl<'a> Compiler<'a> {
         };
 
         match target {
-            UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => {
+            UnpackTarget::Name(ident) => {
                 sim.push(SimItem::Leaf(ident.namespace_id().as_u16()));
+            }
+            UnpackTarget::Starred(inner) => {
+                sim.push(SimItem::Pending(inner));
+                self.process_unpack_sim(sim)?;
+            }
+            // `prepare` rejects these in a comprehension target, where a leaf
+            // has to be a comp-var slot rather than a store to an object.
+            UnpackTarget::Attr { position, .. } | UnpackTarget::Subscript { position, .. } => {
+                return Err(CompileError::new(
+                    "internal error: comprehension target must be a name",
+                    *position,
+                ));
             }
             UnpackTarget::Tuple { targets, position } => {
                 // Pick UNPACK_EX vs UNPACK_SEQUENCE based on whether a starred
@@ -3266,11 +3281,17 @@ impl<'a> Compiler<'a> {
                 // Single identifier - just store directly
                 self.compile_store(ident)?;
             }
-            UnpackTarget::Starred(ident) => {
-                // Starred target by itself (shouldn't happen at top level normally)
-                // Just store as if it were a name
-                self.compile_store(ident)?;
+            UnpackTarget::Starred(inner) => {
+                // `UnpackEx` has already built the list for this slot, so the
+                // captured value is stored like any other target.
+                self.compile_unpack_target(inner)?;
             }
+            UnpackTarget::Attr { object, attr, position } => self.emit_attr_store(object, attr, *position)?,
+            UnpackTarget::Subscript {
+                container,
+                index,
+                position,
+            } => self.emit_subscript_store(container, index, *position)?,
             UnpackTarget::Tuple { targets, position } => {
                 // Check if there's a starred target
                 let star_idx = targets.iter().position(|t| matches!(t, UnpackTarget::Starred(_)));

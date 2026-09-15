@@ -6,7 +6,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropWithContext, HeapId, HeapRead},
+    heap::{DropGuard, DropWithContext, HeapId, HeapRead},
     types::{
         itertools::{ItertoolsIter, step::next_source},
         tuple::allocate_tuple,
@@ -77,34 +77,56 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
         let ItertoolsIter::Pairwise(pairwise) = iter.get_mut(vm.heap) else {
             unreachable!("dispatched on Kind::Pairwise")
         };
-        // Replaced rather than assigned: driving the source ran a user
-        // `__next__`, which can step this same adaptor and prime `previous`
-        // itself. Overwriting that would leak it.
+        // Priming runs the source, which re-enters the VM, so a re-entrant
+        // `next()` on this same pairwise may have primed it too. CPython
+        // `Py_XSETREF`s here; release what that displaces rather than losing
+        // the ref.
         let displaced = pairwise.previous.replace(first);
         displaced.drop_with(vm);
+        // That same call may have run the source dry, which latches the adaptor
+        // and clears `previous`; the write above puts an item back on a spent
+        // pairwise. CPython re-reads `po->it` here and `Py_CLEAR`s `old`.
+        let ItertoolsIter::Pairwise(pairwise) = iter.get_mut(vm.heap) else {
+            unreachable!("dispatched on Kind::Pairwise")
+        };
+        if pairwise.source.is_none() {
+            let resurrected = pairwise.previous.take();
+            resurrected.drop_with(vm);
+            return Ok(None);
+        }
     }
 
-    let Some(second) = drive_source(iter, vm)? else {
+    // Cloned BEFORE the source runs, as CPython holds its own reference to
+    // `old` across the pull: a re-entrant `next()` that advances `previous`
+    // does not change which item this pass pairs.
+    let ItertoolsIter::Pairwise(pairwise) = iter.get(vm.heap) else {
+        unreachable!("dispatched on Kind::Pairwise")
+    };
+    let first = pairwise
+        .previous
+        .as_ref()
+        .expect("previous was primed above")
+        .clone_with_heap(vm.heap);
+
+    // Guarded rather than deferred: `first` is handed to the tuple on success,
+    // and released on both the exhausted and the raising path.
+    let mut first_guard = DropGuard::new(first, vm);
+    let (_, this) = first_guard.as_parts_mut();
+    let Some(second) = drive_source(iter, this)? else {
         return Ok(None);
     };
+    let (first, vm) = first_guard.into_parts();
+
     // Cloned before the `&mut`: `clone_with_heap` needs the heap shared, which
     // `get_mut` excludes. `second` is both yielded and retained.
     let retained = second.clone_with_heap(vm.heap);
     let ItertoolsIter::Pairwise(pairwise) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::Pairwise")
     };
-    // Normally primed above, but a user `__next__` that exhausts this same
-    // adaptor takes `previous` with it — there is then no left half to pair,
-    // so the round ends rather than unwrapping a `None`.
-    let Some(first) = pairwise.previous.replace(retained) else {
-        let ItertoolsIter::Pairwise(pairwise) = iter.get_mut(vm.heap) else {
-            unreachable!("dispatched on Kind::Pairwise")
-        };
-        let orphan = pairwise.previous.take();
-        orphan.drop_with(vm);
-        second.drop_with(vm);
-        return Ok(None);
-    };
+    // Whatever `previous` holds now is released, not carried into the pair:
+    // a re-entrant call may have moved it on since `first` was cloned.
+    let displaced = pairwise.previous.replace(retained);
+    displaced.drop_with(vm);
     Ok(Some(allocate_tuple([first, second].into_iter().collect(), vm.heap)))
 }
 

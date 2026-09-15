@@ -165,21 +165,32 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
             return Ok(None);
         }
 
-        let Some(current) = chain.current.as_ref().map(|c| c.clone_with_heap(vm.heap)) else {
+        // Cloned out first so the borrow of `chain` ends here: taking the next
+        // source re-enters the VM, which needs `iter` mutably.
+        let live = chain.current.as_ref().map(|c| c.clone_with_heap(vm.heap));
+        let current = if let Some(current) = live {
+            current
+        } else {
             // No live source: take the next one, or finish.
             let Some(raw) = next_raw_source(iter, vm)? else {
                 finish(iter, vm);
                 return Ok(None);
             };
-            // `into_py_iter` consumes `raw` on both paths, and raises here for a
-            // non-iterable source — matching CPython's lazy rejection.
+            // `into_py_iter` consumes `raw` on both paths, and raises here
+            // for a non-iterable source — matching CPython's lazy rejection.
             let resolved = into_py_iter_tracking(iter, raw, vm)?;
-            // Replaced rather than assigned: taking the source ran a user
-            // `__next__` or `__iter__`, which can step this same chain and
-            // leave a live iterator here. Overwriting that would leak it.
+            let working = resolved.clone_with_heap(vm.heap);
+            // Taking the source ran a user `__next__` or `__iter__`, which
+            // can step this same chain and leave a live iterator here.
+            // CPython overwrites its `active`; drop what that displaces
+            // rather than losing the ref.
             let displaced = chain_mut(iter, vm).current.replace(resolved);
             displaced.drop_with(vm);
-            continue;
+            // Drained WITHOUT re-testing `done`: a re-entrant call may also
+            // have ended the chain, and CPython's `chain_next` tests its
+            // source only at the top of the loop, so the source taken in
+            // this pass still yields one item before the chain stops.
+            working
         };
 
         defer_drop!(current, vm);

@@ -910,14 +910,17 @@ fn call_tee(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         return Ok(allocate_tuple(TupleVec::new(), vm.heap));
     }
 
+    // Resolved first, then tested: CPython calls `iter()` before it reaches for
+    // `__copy__`, so an object whose `__iter__` hands back an existing `_tee`
+    // is copied too rather than being drained into a second buffer.
+    let source = iterable.into_py_iter(vm)?;
     // An existing `_tee` is copied rather than drained, so the copies replay
     // from where it stands — CPython reaches for `__copy__` for the same
     // reason. Anything else becomes the source of a fresh group.
-    let tees = if let Some(tees) = tee::fork_group(&iterable, consumers, vm) {
-        iterable.drop_with(vm);
+    let tees = if let Some(tees) = tee::fork_group(&source, consumers, vm) {
+        source.drop_with(vm);
         tees
     } else {
-        let source = iterable.into_py_iter(vm)?;
         tee::new_group(source, consumers, vm)
     };
     Ok(allocate_tuple(TupleVec::from_vec(tees), vm.heap))
