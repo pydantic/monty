@@ -1,0 +1,49 @@
+docs/limitations/random.md
+  s_10577290207329::t_c720e7bf40248b 31,33-35,54-56,62,72-73
+docs/cli.md
+  s_10577290207329::t_c720e7bf40248b 70-74
+docs/limitations/modules.md
+  s_10577290207329::t_667db1280de865 14-16
+crates/monty-python/python/pydantic_monty/os_access.py
+  s_10577290207329::t_71679dc93a22cf 845
+  s_10577290207329::t_fbd9b9424e94f4 843,846
+crates/monty/tests/random_module.rs
+  s_10577290207329::t_c0d3a0e5fa27d2 212-213,216-222
+  s_10577290207329::t_667db1280de865 214-215
+crates/monty-proto/src/convert/os_call.rs
+  s_10577290207329::t_ee40900b57f19d 117
+  s_10577290207329::t_fbd9b9424e94f4 113-116,118-119
+crates/monty/src/modules/random.rs
+  s_10577290207329::t_ee40900b57f19d 33,1001,1029
+  s_10577290207329::t_667db1280de865 507-513,985-986
+  s_10577290207329::t_fbd9b9424e94f4 503-504,574-578,874-879,984,987,993,995-1000,1002,1022,1024-1028,1030,1093-1094,1096,1098-1103,1564-1568
+crates/monty/src/modules/os.rs
+  s_10577290207329::t_fbd9b9424e94f4 145-147,153,155-158
+crates/monty/test_cases/random__seeded.py
+  s_10577290207329::t_c0d3a0e5fa27d2 42-46
+crates/monty-proto/tests/roundtrip.rs
+  s_10577290207329::t_c0d3a0e5fa27d2 373-385,390-391
+  s_10577290207329::t_71679dc93a22cf 386-389
+crates/monty-python/tests/test_os_access.py
+  s_10577290207329::t_c0d3a0e5fa27d2 97,108-113
+crates/monty-runtime/README.md
+  s_10577290207329::t_c720e7bf40248b 48-50
+crates/monty/test_cases/random__errors.py
+  s_10577290207329::t_c0d3a0e5fa27d2 48-51,156-162,325-331
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1933fd368bb2caf3e7a857a0c275fc309c8d5e24",
+  "prompts": {},
+  "sessions": {
+    "s_10577290207329": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1261ccc8-72a0-427e-a761-c61ce77f710d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
