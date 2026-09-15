@@ -1,0 +1,37 @@
+crates/monty-proto/README.md
+  s_a1f481cef90e33::t_ea9eb54e0f5e3f 24-25,27,29,31-34,36-40,42-45
+crates/monty-doctest/src/lib.rs
+  s_a1f481cef90e33::t_2fd901fad163d5 1-3
+crates/monty-alloc/README.md
+  s_a1f481cef90e33::t_ea9eb54e0f5e3f 41-42,44-45
+CLAUDE.md
+  s_a1f481cef90e33::t_a8ef4f438f8711 1006-1007
+Makefile
+  s_a1f481cef90e33::t_a8ef4f438f8711 94-97
+crates/monty-macros/README.md
+  s_a1f481cef90e33::t_ea9eb54e0f5e3f 57-63,89-96,98-102,104-105,107-109,111,125-126
+crates/monty-runtime/README.md
+  s_a1f481cef90e33::t_ea9eb54e0f5e3f 34,36,38,40,42
+crates/monty-types/README.md
+  s_a1f481cef90e33::t_ea9eb54e0f5e3f 11-12,14,16-17,19-20,23
+crates/monty-runtime/README-crate.md
+  s_a1f481cef90e33::t_ea9eb54e0f5e3f 21,23,25,27,32-34,36
+crates/monty-pool/README.md
+  s_a1f481cef90e33::t_ea9eb54e0f5e3f 78-79,81-88,90-91,93,95-100,166-167,169-176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d4defac6f23919a05c6afa66e7f4b993c6c7baae",
+  "prompts": {},
+  "sessions": {
+    "s_a1f481cef90e33": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7fa23c1-b658-4a6b-aed6-13a3b8a7da35",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
