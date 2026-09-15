@@ -699,7 +699,6 @@ impl MontyTypeExt for MontyType {
             Self::Partial => Some(Type::Partial),
             Self::GenericAlias => Some(Type::GenericAlias),
             Self::Union => Some(Type::Union),
-            Self::Random => Some(Type::Random),
             Self::Tuple => Some(Type::Tuple),
             Self::NamedTuple => Some(Type::NamedTuple),
             Self::Dict => Some(Type::Dict),

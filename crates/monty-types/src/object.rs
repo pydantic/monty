@@ -980,9 +980,6 @@ pub enum MontyType {
     ItertoolsTee,
     #[strum(serialize = "itertools._tee_dataobject")]
     ItertoolsTeeDataObject,
-    /// `random.Random`, qualified the way CPython's `tp_name` is.
-    #[strum(serialize = "random.Random")]
-    Random,
 }
 
 impl fmt::Display for MontyType {
