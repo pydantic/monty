@@ -886,7 +886,12 @@ impl Set {
     /// it is preflighted: otherwise only the allocator's hard ceiling would
     /// stop `set(huge)`, killing the worker where a `MemoryError` belongs.
     fn from_iterable(iterable: Value, vm: &mut VM<'_>) -> RunResult<Self> {
-        let storage = match &iterable {
+        // The preflight can refuse the copy, so the owned argument rides in a
+        // guard: both it and the copy path release the source, and only the
+        // iterator path below reclaims it.
+        let mut guard = DropGuard::new(iterable, vm);
+        let (iterable, vm) = guard.as_parts();
+        let storage = match iterable {
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::Set(set) => Some(clone_storage_checked(&set.0, vm)?),
                 HeapData::FrozenSet(set) => Some(clone_storage_checked(&set.storage, vm)?),
@@ -895,10 +900,10 @@ impl Set {
             _ => None,
         };
         if let Some(storage) = storage {
-            iterable.drop_with(vm);
             return Ok(Self(storage));
         }
 
+        let (iterable, vm) = guard.into_parts();
         let iterator = iterable.into_py_iter(vm)?;
         defer_drop!(iterator, vm);
         let mut iterator = iterator.read(vm);

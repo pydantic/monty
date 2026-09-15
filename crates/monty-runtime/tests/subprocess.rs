@@ -1014,6 +1014,30 @@ fn copying_an_emptied_set_costs_nothing() {
     child.shutdown();
 }
 
+/// `set(s)` owns the argument it is handed, so a copy the memory limit refuses
+/// has to release it on the way out. Leaving it retained pins the source for
+/// the rest of the session: rebinding the name frees nothing and the room it
+/// occupied is gone for good, though the failure was catchable and the session
+/// lives on.
+#[test]
+fn refused_set_copy_releases_its_source() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
+    child.feed_complete("s = set(range(400_000))");
+
+    // the source fits, its copy does not
+    let (_, event) = child.feed("set(s)");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+
+    // so the name still holds the only reference, and rebinding it makes room again
+    child.feed_complete("s = None");
+    assert_eq!(
+        child.feed_complete("len(set(range(400_000)))"),
+        MontyObject::Int(400_000)
+    );
+    child.shutdown();
+}
+
 /// `inf` and `nan` print as they are, so a huge float precision costs nothing
 /// and must not be charged against the limit.
 #[test]
