@@ -981,6 +981,69 @@ fn overlapping_dict_merges_are_not_charged_for_absent_growth() {
     child.shutdown();
 }
 
+/// `set(s)` and `frozenset(s)` copy a set's storage wholesale, so the whole
+/// copy runs between two execution checkpoints and has to be charged first.
+/// The source is sized as a fraction of the limit: uncharged, one that fits
+/// under the soft limit jumps the hard ceiling and the worker is killed where
+/// a catchable `MemoryError` belongs.
+#[test]
+fn copying_a_large_set_fails_softly() {
+    for expr in ["set(s)", "frozenset(s)"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
+        // the source fits; its copy is what crosses the limit
+        child.feed_complete("s = set(range(400_000))");
+
+        let (_, event) = child.feed(expr);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{expr}");
+
+        // the session survives, i.e. the copy never reached the hard ceiling
+        assert_eq!(child.feed_complete("len(s)"), MontyObject::Int(400_000), "{expr}");
+        child.shutdown();
+    }
+}
+
+/// A set keeps the index table it grew to when its elements go, so copying one
+/// must index the copy afresh rather than reproduce that table: twenty copies
+/// of an emptied set hold nothing and must cost nothing.
+#[test]
+fn copying_an_emptied_set_costs_nothing() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
+    // grown, then emptied: the entries are gone, the table that indexed them is not
+    child.feed_complete("s = set(range(200_000))\ns.clear()");
+
+    assert_eq!(
+        child.feed_complete("copies = [set(s) for _ in range(20)]\nlen(copies)"),
+        MontyObject::Int(20)
+    );
+    assert_eq!(child.feed_complete("len(copies[0])"), MontyObject::Int(0));
+    child.shutdown();
+}
+
+/// `set(s)` owns the argument it is handed, so a copy the limit refuses has to
+/// release it on the way out. Retained, it pins the source for the rest of the
+/// session: rebinding the name would free nothing.
+#[test]
+fn refused_set_copy_releases_its_source() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
+    child.feed_complete("s = set(range(400_000))");
+
+    // the source fits, its copy does not
+    let (_, event) = child.feed("set(s)");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+
+    // so the name still holds the only reference, and rebinding it makes room again
+    child.feed_complete("s = None");
+    assert_eq!(
+        child.feed_complete("len(set(range(400_000)))"),
+        MontyObject::Int(400_000)
+    );
+    child.shutdown();
+}
+
 /// `inf` and `nan` print as they are, so a huge float precision costs nothing
 /// and must not be charged against the limit.
 #[test]
