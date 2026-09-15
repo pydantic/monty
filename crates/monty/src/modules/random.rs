@@ -7,10 +7,10 @@
 //! module-level functions and the `random.Random` methods share one
 //! dispatcher, [`random_dispatch`], parameterised by the [`RandomTarget`].
 //!
-//! Entropy is the host's: a generator nobody seeded suspends with an
-//! `os.urandom` call the first time it draws, and the resume
-//! ([`apply_seed_random`]) seeds it and re-runs the draw. See
-//! `limitations/random.md` for the divergences.
+//! Entropy comes from the host: an unseeded generator suspends with an
+//! `os.urandom` call on its first draw, and the resume ([`apply_seed_random`])
+//! seeds it and re-runs the draw. See `limitations/random.md` for the
+//! divergences.
 
 use std::{
     cmp::Ordering,

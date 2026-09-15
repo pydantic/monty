@@ -1,14 +1,14 @@
 //! The `random.Random` generator: CPython's MT19937 core plus the seeding and
-//! state that `random.py` layers on it.
+//! state that `random.py` adds to it.
 //!
 //! [`Mt19937`] reproduces `Modules/_randommodule.c` bit for bit (`init_by_array`
 //! seeding, `random()`'s 53-bit float, `getrandbits()`'s word packing), so a
-//! seeded Monty generator yields exactly CPython's sequence. [`Random`] wraps it
-//! with `gauss()`'s cached second value and an *unseeded* state: entropy comes
-//! from the host through `os.urandom`, requested only when an unseeded
-//! generator first draws (see `modules::random`), so seeded code never
-//! suspends. The module-level functions drive the generator on the VM
-//! ([`RandomTarget::Global`]); `random.Random(...)` instances live on the heap.
+//! seeded Monty generator yields exactly CPython's sequence. [`Random`] adds
+//! `gauss()`'s cached second value and an *unseeded* state: an unseeded
+//! generator requests entropy from the host through `os.urandom` on its first
+//! draw (see `modules::random`), so seeded code never suspends. The module-level
+//! functions use the generator stored on the VM ([`RandomTarget::Global`]);
+//! `random.Random(...)` instances are stored on the heap.
 
 use std::{fmt::Write, mem};
 

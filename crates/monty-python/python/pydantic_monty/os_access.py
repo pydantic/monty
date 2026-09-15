@@ -50,6 +50,9 @@ OsFunction = Literal[
     'os.urandom',
 ]
 
+MAX_URANDOM_BYTES_DEFAULT: int = 1_048_576
+"""Default maximum host allocation per `urandom()` call. 1 MiB."""
+
 
 class StatResult(NamedTuple):
     """Equivalent to os.stat_result."""
@@ -137,7 +140,7 @@ class AbstractOS(ABC):
     Pass an instance to `feed_run(code, os=...)`.
     """
 
-    max_urandom_bytes: int = 1_048_576
+    max_urandom_bytes: int = MAX_URANDOM_BYTES_DEFAULT
     """Maximum host allocation per `urandom()` call; defaults to 1 MiB."""
 
     def __call__(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
@@ -556,8 +559,8 @@ class AbstractOS(ABC):
         """Return `size` random bytes for Monty's `os.urandom(size)` host callback.
 
         Raises `MemoryError` before allocating if `size` exceeds `max_urandom_bytes`.
-        Unseeded `random` generators request 2496 bytes. Overrides that allocate
-        host memory must enforce their own limit.
+        An unseeded `random` generator requests 2496 bytes on its first draw.
+        An override that allocates host memory must apply its own limit.
         """
         if size > self.max_urandom_bytes:
             raise MemoryError(f'os.urandom() size exceeds max_urandom_bytes ({self.max_urandom_bytes})')
@@ -818,7 +821,7 @@ class OSAccess(AbstractOS):
         environ: dict[str, str] | None = None,
         *,
         root_dir: str | PurePosixPath = '/',
-        max_urandom_bytes: int = 1_048_576,
+        max_urandom_bytes: int = MAX_URANDOM_BYTES_DEFAULT,
     ):
         """Create a virtual filesystem with the given files.
 

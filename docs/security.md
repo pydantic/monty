@@ -307,14 +307,15 @@ and a naive `datetime.now()` is read in the host's local zone, which discloses i
 
 ### Entropy
 
-`os.urandom()` is the only call that reads entropy, and the `random` module gets its entropy the same way: a generator
-nobody seeded asks the host for 2496 bytes the first time it draws.
-Through the pool the call reaches your `os=` handler like any other, so an unseeded `random.random()` raises until you
-answer it — with real entropy, or with fixed bytes when a run has to be reproducible.
-Seeded code (`random.seed(42)`) never asks.
-Python's default `AbstractOS.urandom` caps each host allocation at 1 MiB.
-`OSAccess(max_urandom_bytes=...)` configures that cap; requests exceeding it raise `MemoryError` before allocation.
-Custom entropy handlers must bound their own host allocations, which are outside worker memory limits.
+`os.urandom()` is the only call that reads entropy.
+The `random` module uses the same call: an unseeded generator requests 2496 bytes from the host on its first draw.
+Through the pool the request reaches your `os=` handler like any other OS call.
+With no handler, an unseeded `random.random()` raises `RuntimeError`.
+Answer with fixed bytes when a run has to be reproducible.
+Seeded code (`random.seed(42)`) never makes the call.
+Python's default `AbstractOS.urandom()` raises `MemoryError` before allocating when a request exceeds
+`max_urandom_bytes`, 1 MiB by default; `OSAccess(max_urandom_bytes=...)` sets the cap.
+A custom handler allocates in the host process, outside the worker's memory limit, so it must apply its own cap.
 See [random](limitations/random.md).
 
 ## Crash isolation
