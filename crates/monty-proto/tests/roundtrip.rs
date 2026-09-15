@@ -370,6 +370,25 @@ fn invalid_stack_frame_coordinates_are_rejected() {
     StackFrame::try_from(frame(1, 6)).expect("in-range columns must convert");
 }
 
+/// The interpreter never asks for a negative byte count, so one on the wire
+/// is a malformed frame that must not reach the host's entropy handler.
+#[test]
+fn negative_urandom_size_is_rejected() {
+    let call = pb::os_call::Call::Urandom(pb::os_call::Urandom { size: -1 });
+    assert!(matches!(
+        OsFunctionCall::try_from(call),
+        Err(ProtoConvertError::InvalidValue {
+            field: "Urandom.size",
+            ..
+        })
+    ));
+    let call = pb::os_call::Call::Urandom(pb::os_call::Urandom { size: 0 });
+    assert!(matches!(
+        OsFunctionCall::try_from(call),
+        Ok(OsFunctionCall::Urandom(UrandomArgs { size: 0 }))
+    ));
+}
+
 /// Multi-line spans render their preview as a pre-computed block with no
 /// caret math, and legitimately end on a lower column than they start (a
 /// call closed by a hanging `)`), so the same-line column validation must

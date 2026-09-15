@@ -142,16 +142,20 @@ struct UrandomFnArgs {
 
 /// Implementation of `os.urandom(size)`: asks the host for `size` bytes of
 /// entropy. The host's reply is pushed as-is; `size` is checked here so a
-/// negative count never reaches a handler.
+/// negative count never reaches a handler, and the reply is charged to the
+/// memory limit before the call so an oversized request never leaves the
+/// sandbox when a limit is set. Hosts still cap it themselves.
 fn urandom(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let UrandomFnArgs { size } = UrandomFnArgs::from_args(args, vm)?;
     defer_drop!(size, vm);
     let size = size.as_int_with_overflow(vm, ExcType::overflow_c_ssize_t)?;
     if size < 0 {
-        Err(ExcType::value_error("negative argument not allowed"))
-    } else {
-        Ok(CallResult::OsCall(OsFunctionCall::Urandom(UrandomArgs { size })))
+        return Err(ExcType::value_error("negative argument not allowed"));
     }
+    vm.heap
+        .tracker
+        .check_allocation(usize::try_from(size).unwrap_or(usize::MAX))?;
+    Ok(CallResult::OsCall(OsFunctionCall::Urandom(UrandomArgs { size })))
 }
 
 /// Implementation of `os.getcwd()` — the sandbox's virtual working

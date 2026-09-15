@@ -28,10 +28,11 @@ Code that seeds explicitly never calls the host.
 Where nothing answers the call, the first unseeded draw raises
 `RuntimeError: 'os.urandom' is not supported in this environment`.
 That is the case in a pool session without an `os=` handler, in one whose handler returns `NOT_HANDLED`, and in the
-`monty` CLI.
+`monty` CLI with a `--mount`.
 In `pydantic_monty`, `AbstractOS.urandom()` returns the host's `os.urandom(size)` by default.
-Under Rust's non-suspending `MontyRun::run` the draw raises `NotImplementedError`, as every unanswered OS call does
-there.
+Under Rust's non-suspending `MontyRun::run`, which the CLI uses without a mount, the draw raises
+`NotImplementedError`, as every unanswered OS call does there.
+`getstate()` on a never-seeded generator makes the same call first, since there is no state to report until then.
 
 The module-level generator is session state like the globals: a seed set in one `feed_run` applies to the next, and
 it is included in a dump.
@@ -50,13 +51,15 @@ it is included in a dump.
     Module functions can be stored and passed as callbacks: `draw = random.random` works.
 - **Integer ranges are 64-bit.** `randrange`, `randint`, `choice` and `sample` raise
     `OverflowError: Python int too large to convert to C ssize_t` for bounds outside `i64`; CPython accepts any int.
-    `getrandbits(k)` for any `k` and `seed(big_int)` work as in CPython.
+    `seed(big_int)` accepts any int, as in CPython.
+    `getrandbits(k)` and `randbytes(n)` raise `OverflowError: Python int too large for C uint64_t` from `k >= 2**63`
+    and `n >= 2**60`, where CPython accepts up to `2**64` and then fails to allocate.
     The sum of `sample(counts=...)` must also fit in a signed 64-bit integer.
 - **Seeds.** `seed(x)` accepts `None`, `int`, `float`, `str` and `bytes`; there is no `bytearray`.
     `seed(float('nan'))` seeds from `0`, where CPython hashes the object's address.
     A `str`/`bytes` seed with a `version` other than `1` or `2` is hashed with Monty's own string hash, where CPython's
     hash is randomized per process.
-- **The distributions convert their arguments to float**, so a non-number raises `TypeError: must be real number, not   str` where CPython reports the arithmetic that failed (`unsupported operand type(s) for -`).
+- **The distributions convert their arguments to float**, so a non-number raises `TypeError: must be real number, not str` where CPython reports the arithmetic that failed (`unsupported operand type(s) for -`).
     `binomialvariate(n, p)` requires an int `n`.
 - **`sample`** accepts `list`, `tuple`, `str`, `bytes`, `range` and `deque` populations only (CPython accepts any
     `collections.abc.Sequence`).
@@ -66,6 +69,8 @@ it is included in a dump.
     any iterable of numbers.
 - **`setstate`** accepts version 3 and version 2 state tuples; the third element (`gauss_next`) must be a float or
     `None`, where CPython stores any object.
+    A state word in `2**63..2**64` is truncated to 32 bits as on 64-bit CPython; CPython on Windows raises
+    `OverflowError` for it.
 - **Argument errors on an unseeded generator are raised after the entropy call.** Whether a draw needs entropy is
     decided before its arguments are parsed, so `random.randint('a')` on a never-seeded generator requests entropy
     from the host and only then raises its `TypeError`.

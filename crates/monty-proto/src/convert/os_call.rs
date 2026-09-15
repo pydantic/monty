@@ -110,6 +110,13 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
                 offset_seconds: tz.offset_seconds,
                 name: tz.name,
             })),
+            // the interpreter never emits a negative size, so one is a malformed frame
+            os_call::Call::Urandom(u) if u.size < 0 => {
+                return Err(ProtoConvertError::InvalidValue {
+                    field: "Urandom.size",
+                    reason: "must be non-negative".to_owned(),
+                });
+            }
             os_call::Call::Urandom(u) => Self::Urandom(UrandomArgs { size: u.size }),
         })
     }

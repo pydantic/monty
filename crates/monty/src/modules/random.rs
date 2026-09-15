@@ -30,7 +30,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
@@ -500,9 +500,17 @@ fn state_word(entry: &Value, vm: &VM<'_>) -> RunResult<u32> {
                 Ok(*i as u32)
             }
         }
+        // Outside `i64`: `unsigned long` is 64 bits on the platforms CPython
+        // is compared against, so `2**63..2**64` converts and then truncates.
         _ => match entry.as_long_int(vm) {
             Some(big) if big.sign() == num_bigint::Sign::Minus => Err(overflow(NEGATIVE)),
-            Some(_) => Err(overflow(TOO_LARGE)),
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "truncation to 32 bits is the C behaviour"
+            )]
+            Some(big) => u64::try_from(big)
+                .map(|word| word as u32)
+                .map_err(|_| overflow(TOO_LARGE)),
             None => Err(ExcType::type_error("an integer is required")),
         },
     }
@@ -563,9 +571,13 @@ fn randbytes(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResul
     if n == 0 {
         return Ok(allocate_bytes(Vec::new(), vm.heap));
     }
+    let bits = u64::try_from(n)
+        .ok()
+        .and_then(|n| n.checked_mul(8))
+        .ok_or_else(ExcType::overflow_c_uint64)?;
+    // The word buffer and the bytes built from it.
     vm.heap.tracker.check_allocation(n.saturating_mul(2))?;
     let words = n.div_ceil(4);
-    let bits = u64::try_from(n).expect("usize fits u64") * 8;
     let words = target.with_generator(vm, |random, vm| {
         random.rng().getrandbits_words(bits, words, &vm.heap.tracker)
     })?;
@@ -845,8 +857,6 @@ fn sample_indices(target: RandomTarget, n: usize, k: i64, vm: &mut VM<'_>) -> Ru
         Ok(k) if k <= n => k,
         _ => return Err(ExcType::value_error("Sample larger than population or is negative")),
     };
-    vm.heap.tracker.check_allocation(k.saturating_mul(VALUE_SIZE))?;
-
     // `setsize = 21 + 4 ** ceil(log(k * 3, 4))` for k > 5: the point where a
     // k-sized set costs less than an n-sized pool.
     let setsize: usize = if k > 5 {
@@ -861,6 +871,12 @@ fn sample_indices(target: RandomTarget, n: usize, k: i64, vm: &mut VM<'_>) -> Ru
     } else {
         21
     };
+    // The index buffer, the result list built from it, and the pool if used.
+    let pool_bytes = if n <= setsize { n * mem::size_of::<usize>() } else { 0 };
+    vm.heap.tracker.check_allocation(
+        k.saturating_mul(VALUE_SIZE + mem::size_of::<usize>())
+            .saturating_add(pool_bytes),
+    )?;
 
     target.with_generator(vm, |random, vm| {
         let rng = random.rng();
@@ -965,17 +981,25 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
     };
     let k = k.as_int(vm)?;
     let k = usize::try_from(k).unwrap_or(0);
-    vm.heap.tracker.check_allocation(k.saturating_mul(VALUE_SIZE))?;
+    // The index buffer and the result list built from it.
+    vm.heap
+        .tracker
+        .check_allocation(k.saturating_mul(VALUE_SIZE + mem::size_of::<usize>()))?;
 
     let indices: Vec<usize> = match cumulative {
         None => {
             // `floor(random() * n)` with `n` as a float, as CPython computes it.
             let n_f = n as f64;
-            target.with_generator(vm, |random, _| {
+            target.with_generator(vm, |random, vm| {
                 let rng = random.rng();
-                #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "0 <= floor < n")]
-                (0..k).map(|_| (rng.random() * n_f).floor() as usize).collect()
-            })
+                let mut indices = Vec::with_capacity(k);
+                for i in 0..k {
+                    vm.heap.tracker.check_time_every(i)?;
+                    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "0 <= floor < n")]
+                    indices.push((rng.random() * n_f).floor() as usize);
+                }
+                Ok::<_, RunError>(indices)
+            })?
         }
         Some(cumulative) => {
             if cumulative.len() != n {
@@ -995,12 +1019,15 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
                 return Err(ExcType::value_error("Total of weights must be finite"));
             }
             let hi = n - 1;
-            target.with_generator(vm, |random, _| {
+            target.with_generator(vm, |random, vm| {
                 let rng = random.rng();
-                (0..k)
-                    .map(|_| bisect_right_f64(&cumulative, rng.random() * total, hi))
-                    .collect()
-            })
+                let mut indices = Vec::with_capacity(k);
+                for i in 0..k {
+                    vm.heap.tracker.check_time_every(i)?;
+                    indices.push(bisect_right_f64(&cumulative, rng.random() * total, hi));
+                }
+                Ok::<_, RunError>(indices)
+            })?
         }
     };
     let picks = collect_items(population, indices.into_iter(), vm)?;
@@ -1063,11 +1090,17 @@ fn is_sequence(ty: Type) -> bool {
     )
 }
 
-/// `len(value)`, with `len()`'s own `TypeError` for unsized values.
+/// `len(value)`, with `len()`'s own `TypeError` for unsized values and its
+/// `OverflowError` for a `range` longer than `ssize_t`.
 fn len_of(value: &Value, vm: &VM<'_>) -> RunResult<usize> {
-    value
+    let len = value
         .py_len(vm)
-        .ok_or_else(|| ExcType::type_error(format!("object of type '{}' has no len()", value.py_type_name(vm))))
+        .ok_or_else(|| ExcType::type_error(format!("object of type '{}' has no len()", value.py_type_name(vm))))?;
+    if i64::try_from(len).is_ok() {
+        Ok(len)
+    } else {
+        Err(ExcType::overflow_c_ssize_t())
+    }
 }
 
 /// A `randbelow` result, which always fits the `i64` length it was drawn below.
@@ -1528,7 +1561,11 @@ fn binomial_deviate(rng: &mut Mt19937, n: i64, p: f64, tracker: &ResourceTracker
         }
     }
 
-    // BTRS: transformed rejection with squeeze (Hörmann).
+    // BTRS: transformed rejection with squeeze (Hörmann). `random.py` asserts
+    // its precondition here, which only a NaN `p` can fail.
+    if !(n_f * p >= 10.0 && p <= 0.5) {
+        return Err(SimpleException::new(ExcType::AssertionError, None).into());
+    }
     let spq = (n_f * p * (1.0 - p)).sqrt();
     let b = 1.15 + 2.53 * spq;
     let a = -0.0873 + 0.0248 * b + 0.01 * p;

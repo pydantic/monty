@@ -39,10 +39,11 @@ assert x == [12, 7, 18, 11, 14, 19, 16, 9, 6, 15, 1, 17, 3, 2, 4, 10, 13, 5, 0, 
 # === sample(): the pool branch (small populations) and the set branch ===
 assert random.sample(range(100), 3) == [68, 15, 48]
 assert random.sample([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 8) == [2, 9, 5, 7, 6, 8, 3, 4]
-big_sample = random.sample(range(1000), 50)
-assert big_sample[:10] == [196, 721, 71, 46, 677, 233, 791, 296, 81, 875]
-assert big_sample[-4:] == [863, 786, 794, 57]
-assert len(set(big_sample)) == 50
+assert random.sample(range(1000), 50) == [
+    196, 721, 71, 46, 677, 233, 791, 296, 81, 875, 238, 887, 103, 389, 284, 464, 650, 854, 373, 166, 379, 363, 214,
+    686, 273, 718, 959, 699, 663, 73, 623, 175, 546, 746, 250, 167, 473, 388, 276, 947, 655, 704, 570, 224, 701, 332,
+    863, 786, 794, 57,
+]  # fmt: skip
 assert random.sample('abcdef', k=2) == ['b', 'a']
 assert random.sample(['red', 'blue'], counts=[4, 2], k=5) == ['red', 'red', 'blue', 'red', 'blue']
 

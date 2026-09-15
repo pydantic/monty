@@ -209,6 +209,18 @@ fn a_dump_taken_while_waiting_for_entropy_resumes_the_stashed_draw() {
 }
 
 #[test]
+fn setstate_truncates_words_between_2_63_and_2_64_like_64_bit_cpython() {
+    // Not a fixture: CPython on Windows has a 32-bit `unsigned long` and raises here.
+    let code =
+        "import random\nr = random.Random(0)\nr.setstate((3, (2**63 + 7,) * 624 + (0,), None))\nr.getstate()[1][:2]";
+    let progress = start(code);
+    assert_eq!(
+        progress.into_complete().unwrap(),
+        MontyObject::Tuple(vec![MontyObject::Int(7), MontyObject::Int(7)])
+    );
+}
+
+#[test]
 fn standard_execution_has_no_host_to_ask() {
     let err = MontyRun::new(
         "import random\nrandom.random()".to_owned(),

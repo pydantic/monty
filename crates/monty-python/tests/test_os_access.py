@@ -94,6 +94,7 @@ def test_urandom_limit(monty_run: RunMonty, monkeypatch: pytest.MonkeyPatch, lim
         with pytest.raises(MontyRuntimeError) as exc_info:
             monty_run(f'import os\nos.urandom({size})', os=fs)
         assert str(exc_info.value) == f'MemoryError: os.urandom() size exceeds max_urandom_bytes ({limit})'
+        assert isinstance(exc_info.value.exception(), MemoryError)
     entropy.assert_not_called()
 
 
@@ -102,6 +103,14 @@ def test_urandom_limit_default_and_validation():
     assert OSAccess().max_urandom_bytes == 1_048_576
     with pytest.raises(ValueError, match='^max_urandom_bytes must be non-negative$'):
         OSAccess(max_urandom_bytes=-1)
+
+
+@pytest.mark.parametrize('limit', [float('nan'), 1.5, '8', None])
+def test_urandom_limit_must_be_int(limit: Any):
+    """A non-int cap (a float NaN in particular) would compare false and disable the cap."""
+    with pytest.raises(TypeError) as exc_info:
+        OSAccess(max_urandom_bytes=limit)
+    assert str(exc_info.value) == f'max_urandom_bytes must be an int, not {type(limit).__name__}'
 
 
 # =============================================================================

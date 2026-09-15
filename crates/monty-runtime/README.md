@@ -45,9 +45,9 @@ monty --help
 
 `date.today()` and `datetime.now()` read this machine's clock and local
 timezone, as they do for any in-process run. `MontyRun::with_host_clock` is how
-an embedder chooses otherwise; the CLI has no flag for it. The CLI has no
-`os` handler, so `os.urandom()` and any unseeded `random` draw raise
-`RuntimeError`. Seed the generator first.
+an embedder chooses otherwise; the CLI has no flag for it. Nothing answers
+`os.urandom()`, so it and any unseeded `random` draw raise `NotImplementedError`
+(or `RuntimeError` under `--mount`); seed explicitly first, e.g. `random.seed(0)`.
 
 ## Worker mode
 

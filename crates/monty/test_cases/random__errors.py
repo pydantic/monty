@@ -45,6 +45,11 @@ try:
 except OverflowError as exc:
     assert str(exc) == 'Python int too large for C uint64_t'
 try:
+    random.randbytes(2**63 - 1)
+    assert False, 'expected OverflowError'
+except OverflowError as exc:
+    assert str(exc) == 'Python int too large for C uint64_t'
+try:
     random.randbytes(-1)
     assert False, 'expected ValueError'
 except ValueError as exc:
@@ -148,6 +153,13 @@ try:
 except TypeError as exc:
     assert str(exc) == "'set' object is not subscriptable"
 assert random.choice(range(3, 4)) == 3
+# len() of a range beyond ssize_t overflows before any draw
+for fn in (random.choice, random.shuffle, lambda r: random.choices(r, k=1), lambda r: random.sample(r, 1)):
+    try:
+        fn(range(-(2**63), 2**63 - 1))
+        assert False, 'expected OverflowError'
+    except OverflowError as exc:
+        assert str(exc) == 'Python int too large to convert to C ssize_t'
 try:
     random.shuffle((1, 2, 3))
     assert False, 'expected TypeError'
@@ -310,6 +322,13 @@ try:
 except ValueError as exc:
     assert str(exc) == 'p must be in the range 0.0 <= p <= 1.0'
 assert 0 <= random.binomialvariate(n=3, p=0.5) <= 3
+# a NaN p passes the range check and fails the BTRS precondition assertion
+try:
+    random.binomialvariate(2, float('nan'))
+    assert False, 'expected AssertionError'
+except AssertionError as exc:
+    assert str(exc) == ''
+assert random.binomialvariate(1, float('nan')) == 0
 assert 1 <= random.triangular(low=1, high=2, mode=1.5) <= 2
 # low == high with a mode returns low itself, int included
 assert type(random.triangular(5, 5, 5)) is int

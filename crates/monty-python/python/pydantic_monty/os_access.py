@@ -840,7 +840,10 @@ class OSAccess(AbstractOS):
             AssertionError: If root_dir is not an absolute path.
             ValueError: If a file path conflicts with another file (e.g., trying
                 to create a file inside another file's path), or `max_urandom_bytes` is negative.
+            TypeError: If `max_urandom_bytes` is not an int (a float `nan` would disable the cap).
         """
+        if not isinstance(max_urandom_bytes, int):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError(f'max_urandom_bytes must be an int, not {type(max_urandom_bytes).__name__}')
         if max_urandom_bytes < 0:
             raise ValueError('max_urandom_bytes must be non-negative')
         self.max_urandom_bytes = max_urandom_bytes
