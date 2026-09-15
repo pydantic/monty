@@ -33,10 +33,13 @@ fn resolve_lookups_with(
 /// for external function calls).
 fn resolve_as_functions(progress: RunProgress) -> Result<RunProgress, MontyException> {
     resolve_lookups_with(progress, |name| {
-        NameLookupResult::Value(MontyObject::Function {
-            name: name.to_string(),
-            docstring: None,
-        })
+        NameLookupResult::Value(
+            MontyObject::Function {
+                name: name.to_string(),
+                docstring: None,
+            }
+            .into(),
+        )
     })
 }
 
@@ -64,7 +67,7 @@ fn resolve_as_function_and_call() {
     // Should now be at a FunctionCall for ext(10)
     let call = progress.into_function_call().expect("expected FunctionCall");
     assert_eq!(call.function_name, "ext");
-    assert_eq!(call.args, vec![MontyObject::Int(10)]);
+    assert_eq!(call.args.into_objects().unwrap().0, vec![MontyObject::Int(10)]);
 
     // Resume with 42 → code evaluates 42 + 1 = 43
     let result = call.resume(MontyObject::Int(42), PrintWriter::Stdout).unwrap();
@@ -267,7 +270,7 @@ fn resolved_name_is_cached() {
             RunProgress::FunctionCall(call) => {
                 assert_eq!(call.function_name, "ext");
                 call_count += 1;
-                let val: i64 = (&call.args[0]).try_into().unwrap();
+                let val: i64 = (&call.args.arg(0).unwrap().into_object().unwrap()).try_into().unwrap();
                 progress = call.resume(MontyObject::Int(val * 10), PrintWriter::Stdout).unwrap();
             }
             RunProgress::Complete(result) => {
@@ -358,7 +361,7 @@ fn multiple_names_each_looked_up() {
         match progress {
             RunProgress::FunctionCall(call) => {
                 called_names.push(call.function_name.clone());
-                let val: i64 = (&call.args[0]).try_into().unwrap();
+                let val: i64 = (&call.args.arg(0).unwrap().into_object().unwrap()).try_into().unwrap();
                 progress = call.resume(MontyObject::Int(val * 100), PrintWriter::Stdout).unwrap();
             }
             RunProgress::Complete(result) => {
@@ -398,7 +401,7 @@ fn mixed_function_and_constant_lookups() {
             RunProgress::FunctionCall(call) => {
                 // ext goes directly to FunctionCall via LoadGlobalCallable
                 assert_eq!(call.function_name, "ext");
-                assert_eq!(call.args, vec![MontyObject::Int(100)]);
+                assert_eq!(call.args.into_objects().unwrap().0, vec![MontyObject::Int(100)]);
                 progress = call.resume(MontyObject::Int(999), PrintWriter::Stdout).unwrap();
             }
             RunProgress::Complete(result) => {
@@ -483,7 +486,7 @@ fn input_function_no_lookup() {
         .into_function_call()
         .expect("expected FunctionCall, not NameLookup");
     assert_eq!(call.function_name, "my_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(10)]);
+    assert_eq!(call.args.into_objects().unwrap().0, vec![MontyObject::Int(10)]);
 
     let result = call.resume(MontyObject::Int(99), PrintWriter::Stdout).unwrap();
     assert_eq!(result.into_complete().unwrap(), MontyObject::Int(99));
@@ -517,7 +520,7 @@ fn input_function_reassigned_then_called() {
         .into_function_call()
         .expect("expected FunctionCall, not NameLookup");
     assert_eq!(call.function_name, "my_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(5)]);
+    assert_eq!(call.args.into_objects().unwrap().0, vec![MontyObject::Int(5)]);
 
     let result = call.resume(MontyObject::Int(50), PrintWriter::Stdout).unwrap();
     assert_eq!(result.into_complete().unwrap(), MontyObject::Int(50));
@@ -557,7 +560,7 @@ fn input_function_with_looked_up_arg() {
     // Now should be at FunctionCall for my_fn(42)
     let call = progress.into_function_call().expect("expected FunctionCall");
     assert_eq!(call.function_name, "my_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(42)]);
+    assert_eq!(call.args.into_objects().unwrap().0, vec![MontyObject::Int(42)]);
 
     let result = call.resume(MontyObject::Int(100), PrintWriter::Stdout).unwrap();
     assert_eq!(result.into_complete().unwrap(), MontyObject::Int(100));
@@ -584,10 +587,13 @@ fn resolve_function_with_non_interned_name() {
     // Resolve with a function whose name is NOT 'foobar' — it won't be interned
     let progress = lookup
         .resume(
-            NameLookupResult::Value(MontyObject::Function {
-                name: "not_foobar".to_string(),
-                docstring: None,
-            }),
+            NameLookupResult::Value(
+                MontyObject::Function {
+                    name: "not_foobar".to_string(),
+                    docstring: None,
+                }
+                .into(),
+            ),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -597,8 +603,8 @@ fn resolve_function_with_non_interned_name() {
         .into_function_call()
         .expect("expected FunctionCall for 'not_foobar'");
     assert_eq!(call.function_name, "not_foobar");
-    assert!(call.args.is_empty());
-    assert!(call.kwargs.is_empty());
+    assert!(call.args.args.is_empty());
+    assert!(call.args.kwargs.is_empty());
 
     // Resume with a return value
     let result = call.resume(MontyObject::Int(42), PrintWriter::Stdout).unwrap();

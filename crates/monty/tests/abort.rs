@@ -22,7 +22,7 @@ fn start(code: &str) -> RunProgress {
         let name = lookup.name.clone();
         progress = lookup
             .resume(
-                NameLookupResult::Value(MontyObject::Function { name, docstring: None }),
+                NameLookupResult::Value(MontyObject::Function { name, docstring: None }.into()),
                 PrintWriter::Stdout,
             )
             .unwrap();
@@ -77,7 +77,7 @@ except Exception:
         position: 0,
     });
     let read = call
-        .resume(ExtFunctionResult::Return(handle), PrintWriter::Stdout)
+        .resume(ExtFunctionResult::Return(handle.into()), PrintWriter::Stdout)
         .unwrap()
         .into_os_call()
         .expect("read");
@@ -137,7 +137,7 @@ await main()
     };
     let state = state
         .resume(
-            vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::Int(1)))],
+            vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::Int(1).into()))],
             PrintWriter::Stdout,
         )
         .unwrap()
@@ -219,7 +219,7 @@ await main()
                 let name = lookup.name.clone();
                 lookup
                     .resume(
-                        NameLookupResult::Value(MontyObject::Function { name, docstring: None }),
+                        NameLookupResult::Value(MontyObject::Function { name, docstring: None }.into()),
                         PrintWriter::Stdout,
                     )
                     .unwrap()

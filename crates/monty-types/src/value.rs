@@ -79,6 +79,19 @@ impl MontyValue {
     }
 }
 
+impl PartialEq<MontyObject> for MontyValue {
+    /// Equal when the value expands (under the default limits) to `other`.
+    fn eq(&self, other: &MontyObject) -> bool {
+        self.into_object().is_ok_and(|object| object == *other)
+    }
+}
+
+impl PartialEq<MontyValue> for MontyObject {
+    fn eq(&self, other: &MontyValue) -> bool {
+        other == self
+    }
+}
+
 impl From<MontyObject> for MontyValue {
     fn from(object: MontyObject) -> Self {
         let mut graph = MontyGraph::new();
@@ -282,6 +295,13 @@ impl CallArgs {
     }
 }
 
+/// Positional-only arguments; concrete so an empty `vec![]` infers.
+impl From<Vec<MontyObject>> for CallArgs {
+    fn from(args: Vec<MontyObject>) -> Self {
+        Self::from((args, Vec::new()))
+    }
+}
+
 impl From<ArgObjects> for CallArgs {
     fn from((args, kwargs): ArgObjects) -> Self {
         let mut call = Self::new();
@@ -345,8 +365,9 @@ impl NamedValues {
     }
 }
 
-impl<V: PushValue> From<Vec<(String, V)>> for NamedValues {
-    fn from(pairs: Vec<(String, V)>) -> Self {
+/// Concrete rather than generic over [`PushValue`] so an empty `vec![]` infers.
+impl From<Vec<(String, MontyObject)>> for NamedValues {
+    fn from(pairs: Vec<(String, MontyObject)>) -> Self {
         let mut named = Self::new();
         for (name, value) in pairs {
             named.push(name, value);
