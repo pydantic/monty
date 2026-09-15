@@ -1,0 +1,19 @@
+crates/monty-proto/src/wire.rs
+  s_b29b52236f1291::t_843175975198fc 1587,1589-1598,1600,1603-1604,1607-1612,1630-1633,1636-1638,1640-1646
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "fd3ded276ea9f366dd8214ab9f1e7e8fb60e57ca",
+  "prompts": {},
+  "sessions": {
+    "s_b29b52236f1291": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3d637c53-2601-4ac8-b943-b5536c56e191",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
