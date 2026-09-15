@@ -617,7 +617,9 @@ class MontySession:
                 (if any) is converted to a Python object and returned.
             inputs: Values eagerly bound as globals before the snippet runs —
                 every entry is converted and bound once, whether or not it is
-                referenced.
+                referenced. An object appearing under two names, or twice
+                inside one value, is one sandbox object; a cyclic value
+                raises `ValueError`.
             external_lookup: Host values resolving names the snippet leaves
                 undefined, lazily and on demand: a callable entry becomes a host
                 function the sandbox can call, any other value is converted and
@@ -690,7 +692,9 @@ class MontySession:
                 (if any) is the `MontyComplete.output` when the feed completes.
             inputs: Values eagerly bound as globals before the snippet runs —
                 every entry is converted and bound once, whether or not it is
-                referenced.
+                referenced. An object appearing under two names, or twice
+                inside one value, is one sandbox object; a cyclic value
+                raises `ValueError`.
             external_lookup: Host functions and values, by name, that
                 `resume_auto()` resolves external calls and undefined names
                 against (as in `feed_run`). Captured for `resume_auto()`; not
@@ -990,7 +994,9 @@ class AsyncMontySession:
                 (if any) is converted to a Python object and returned.
             inputs: Values eagerly bound as globals before the snippet runs —
                 every entry is converted and bound once, whether or not it is
-                referenced.
+                referenced. An object appearing under two names, or twice
+                inside one value, is one sandbox object; a cyclic value
+                raises `ValueError`.
             external_lookup: Host values resolving names the snippet leaves
                 undefined, lazily and on demand: a callable entry (sync or a
                 coroutine function) becomes a host function the sandbox can call,
@@ -1048,7 +1054,9 @@ class AsyncMontySession:
                 (if any) is the `MontyComplete.output` when the feed completes.
             inputs: Values eagerly bound as globals before the snippet runs —
                 every entry is converted and bound once, whether or not it is
-                referenced.
+                referenced. An object appearing under two names, or twice
+                inside one value, is one sandbox object; a cyclic value
+                raises `ValueError`.
             external_lookup: Host functions and values, by name, that
                 `resume_auto()` resolves external calls and undefined names
                 against (as in `feed_run`). Callables may be coroutine
