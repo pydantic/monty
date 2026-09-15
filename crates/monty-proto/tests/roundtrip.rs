@@ -4,10 +4,10 @@ use insta::assert_snapshot;
 use monty::MontyRun;
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use monty_types::{
-    AsyncSleepArgs, CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData,
-    MkdirCallArgs, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
-    MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult,
-    OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame,
+    CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
+    MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
+    MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, OpenCallArgs,
+    OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame,
     UnicodeErrorData,
 };
 use num_bigint::BigInt;
@@ -874,14 +874,8 @@ fn os_calls_round_trip_all_variants() {
         OsFunctionCall::Sleep(Duration::ZERO),
         OsFunctionCall::Sleep(Duration::from_nanos(1)),
         OsFunctionCall::Sleep(Duration::from_millis(1_500)),
-        OsFunctionCall::AsyncSleep(AsyncSleepArgs {
-            delay: Duration::ZERO,
-            result: MontyObject::None,
-        }),
-        OsFunctionCall::AsyncSleep(AsyncSleepArgs {
-            delay: Duration::from_secs_f64(0.25),
-            result: MontyObject::List(vec![MontyObject::Int(1)]),
-        }),
+        OsFunctionCall::AsyncSleep(Duration::ZERO),
+        OsFunctionCall::AsyncSleep(Duration::from_secs_f64(0.25)),
     ] {
         assert_os_call_round_trip(call);
     }
@@ -904,10 +898,7 @@ fn os_call_conversion_rejects_impossible_sleep_lengths() {
             ),
             "{seconds} should not decode as a sleep length"
         );
-        let async_sleep = pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep {
-            delay: seconds,
-            result: Some(MontyObject::None.into()),
-        });
+        let async_sleep = pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep { delay: seconds });
         assert!(
             matches!(
                 OsFunctionCall::try_from(async_sleep),
@@ -919,15 +910,6 @@ fn os_call_conversion_rejects_impossible_sleep_lengths() {
             "{seconds} should not decode as an async sleep delay"
         );
     }
-    // `asyncio.sleep` always carries the value its await produces.
-    let missing_result = pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep {
-        delay: 0.0,
-        result: None,
-    });
-    assert!(matches!(
-        OsFunctionCall::try_from(missing_result),
-        Err(ProtoConvertError::MissingField("AsyncSleep.result"))
-    ));
 }
 
 #[test]

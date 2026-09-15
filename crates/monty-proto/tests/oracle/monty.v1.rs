@@ -901,18 +901,17 @@ pub mod os_call {
         #[prost(double, tag = "1")]
         pub seconds: f64,
     }
-    /// asyncio.sleep(delay, result) — the awaitable form. A parent running an
-    /// event loop should answer `ExtFunctionResult.future` and resolve it with
-    /// `result` once the delay elapses, so the sandbox's other tasks keep
-    /// running; answering directly is equivalent to a wait that blocks them.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    /// asyncio.sleep(delay) — the awaitable form. A parent running an event
+    /// loop should answer `ExtFunctionResult.future` and resolve it once the
+    /// delay elapses, so the sandbox's other tasks keep running; answering
+    /// directly is equivalent to a wait that blocks them. The answer's value is
+    /// ignored: the sandbox keeps the `result` argument itself and produces it
+    /// from the `await`.
+    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
     pub struct AsyncSleep {
         /// How long to wait, under the same constraints as `Sleep.seconds`.
         #[prost(double, tag = "1")]
         pub delay: f64,
-        /// The value the sandbox's `await` should produce.
-        #[prost(message, optional, tag = "2")]
-        pub result: ::core::option::Option<super::MontyObject>,
     }
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
@@ -994,7 +993,7 @@ pub mod os_call {
         /// time.sleep(seconds)
         #[prost(message, tag = "26")]
         Sleep(Sleep),
-        /// asyncio.sleep(delay, result)
+        /// asyncio.sleep(delay)
         #[prost(message, tag = "27")]
         AsyncSleep(AsyncSleep),
     }

@@ -67,6 +67,16 @@ export interface OsCallTurn extends CallbackTurn {
   args: unknown[]
   kwargs: [unknown, unknown][]
   callId: number
+  /** Whether `resumeFuture` is a valid answer: only `asyncio.sleep`, which the sandbox awaits. */
+  acceptsFuture: boolean
+}
+
+/**
+ * OS calls a host may answer with a future, for the wasm worker whose events
+ * carry no such flag. Mirrors `OsFunctionCall::accepts_future` in `monty-types`.
+ */
+export function osCallAcceptsFuture(functionName: string): boolean {
+  return functionName === 'asyncio.sleep'
 }
 
 /** The sandbox read an undefined name — answer with `resumeNameLookup`. */

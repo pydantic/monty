@@ -5,8 +5,8 @@
 use std::time::Duration;
 
 use monty_types::{
-    AsyncSleepArgs, GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall,
-    PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, sleep_duration,
+    GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
+    PathStringDataArgs, RenameCallArgs, sleep_duration,
 };
 
 use crate::{
@@ -62,9 +62,8 @@ impl From<OsFunctionCall> for os_call::Call {
             OsFunctionCall::Sleep(delay) => Self::Sleep(os_call::Sleep {
                 seconds: delay.as_secs_f64(),
             }),
-            OsFunctionCall::AsyncSleep(a) => Self::AsyncSleep(os_call::AsyncSleep {
-                delay: a.delay.as_secs_f64(),
-                result: Some(a.result.into()),
+            OsFunctionCall::AsyncSleep(delay) => Self::AsyncSleep(os_call::AsyncSleep {
+                delay: delay.as_secs_f64(),
             }),
         }
     }
@@ -121,13 +120,7 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             })),
             os_call::Call::Time(_) => Self::Time,
             os_call::Call::Sleep(s) => Self::Sleep(delay(s.seconds, "Sleep.seconds")?),
-            os_call::Call::AsyncSleep(s) => Self::AsyncSleep(AsyncSleepArgs {
-                delay: delay(s.delay, "AsyncSleep.delay")?,
-                result: s
-                    .result
-                    .ok_or(ProtoConvertError::MissingField("AsyncSleep.result"))?
-                    .into_object()?,
-            }),
+            os_call::Call::AsyncSleep(s) => Self::AsyncSleep(delay(s.delay, "AsyncSleep.delay")?),
         })
     }
 }

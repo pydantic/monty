@@ -121,17 +121,27 @@ pub enum OsFunctionCall {
     /// (`time.sleep` discards it and evaluates to `None`).
     #[strum(serialize = "time.sleep")]
     Sleep(Duration),
-    /// `asyncio.sleep(delay, result)` — like [`Sleep`](Self::Sleep), except
-    /// the sandbox turns the answer into an awaitable, so a host that runs an
+    /// `asyncio.sleep(delay)` — like [`Sleep`](Self::Sleep), except the
+    /// sandbox turns the answer into an awaitable, so a host that runs an
     /// event loop should answer with a future (`ExtFunctionResult::Future`)
     /// and resolve it when the delay elapses, letting sibling tasks run
-    /// meanwhile. Whatever the host answers with becomes the value of the
-    /// `await`, so echo `result` back.
+    /// meanwhile. The answer's value is ignored: the sandbox keeps the
+    /// `result` argument itself and produces it from the `await`.
     #[strum(serialize = "asyncio.sleep")]
-    AsyncSleep(AsyncSleepArgs),
+    AsyncSleep(Duration),
 }
 
 impl OsFunctionCall {
+    /// Whether a host may answer this call with `ExtFunctionResult::Future`
+    /// and resolve it later, letting the sandbox's other tasks run meanwhile.
+    ///
+    /// Only `asyncio.sleep` qualifies: every other call is a value the
+    /// calling code is waiting on, so the host must answer it in place.
+    #[must_use]
+    pub fn accepts_future(&self) -> bool {
+        matches!(self, Self::AsyncSleep(_))
+    }
+
     /// Stable string name for this OS function — surfaces in
     /// [`Self::on_no_handler`] errors, host `os` callbacks, and serialised
     /// snapshots. The strum `serialize` string on each variant.
@@ -178,8 +188,7 @@ impl OsFunctionCall {
             // Unit & single-value non-FS variants.
             Self::GetEnviron | Self::DateToday | Self::Time => (vec![], vec![]),
             Self::DateTimeNow(tz) => (vec![tz.map_or(MontyObject::None, MontyObject::TimeZone)], vec![]),
-            Self::Sleep(delay) => (vec![seconds_object(delay)], vec![]),
-            Self::AsyncSleep(a) => (vec![seconds_object(a.delay), a.result], vec![]),
+            Self::Sleep(delay) | Self::AsyncSleep(delay) => (vec![seconds_object(delay)], vec![]),
         }
     }
 
@@ -417,17 +426,6 @@ pub struct RenameCallArgs {
 pub struct GetenvArgs {
     pub key: String,
     pub default: MontyObject,
-}
-
-/// `asyncio.sleep(delay, result=None)` shape.
-///
-/// `result` is the value the `await` should produce; it rides along so a host
-/// answering the call — immediately or by resolving a future — has it to hand
-/// back without the sandbox having to remember anything across the suspension.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AsyncSleepArgs {
-    pub delay: Duration,
-    pub result: MontyObject,
 }
 
 /// Longest sleep the sleep calls accept, matching the point where CPython's

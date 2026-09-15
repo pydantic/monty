@@ -890,12 +890,14 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             args,
             kwargs,
             call_id,
+            accepts_future,
         }) => {
             obj.set("kind", "osCall")?;
             obj.set("functionName", function_name)?;
             obj.set("args", values_to_js(env, &args)?)?;
             obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;
             obj.set("callId", call_id)?;
+            obj.set("acceptsFuture", accepts_future)?;
         }
         TurnOutcome::Event(TurnEvent::NameLookup { name, object_id }) => {
             obj.set("kind", "nameLookup")?;

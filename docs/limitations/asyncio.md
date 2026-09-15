@@ -53,7 +53,7 @@ time (see [language.md](language.md)).
 CPython's `asyncio.sleep()` returns a coroutine that does nothing until it is
 awaited. Monty's suspends to the host at the call itself — the wait belongs to
 the host, which is also the only side that can run anything else meanwhile — and
-the `await` then consumes what the host answered with. What follows from that:
+the `await` then produces `result` once the host has answered. What follows from that:
 
 - `asyncio.sleep(...)` whose result is never awaited has still asked the host to
     wait, where CPython runs nothing and warns that the coroutine was never
@@ -70,10 +70,11 @@ the `await` then consumes what the host answered with. What follows from that:
 
 How much concurrency a gathered sleep gets is the host's choice. A host that
 answers the call with a pending future lets sibling tasks run while the delay
-elapses; one that waits inline and answers with a value (what
-`pydantic_monty`'s `AbstractOS` and the `monty` CLI do) runs gathered sleeps one
-after another, so `gather(sleep(1), sleep(1))` takes two seconds rather than one.
-Either way the results are the same.
+elapses: `AsyncMonty` and `@pydantic/monty` do this when the `os` callback is
+async (`OSAccess` is, by default, under `AsyncMonty`). A host that waits inline
+— the sync `Monty`, a sync callback, or the `monty` CLI — runs gathered sleeps
+one after another, so `gather(sleep(1), sleep(1))` takes two seconds rather
+than one. Either way the results are the same.
 
 `delay` accepts only real numbers, matching CPython's `delay <= 0`: an
 `__index__`-able class is rejected here although `time.sleep()` accepts it.

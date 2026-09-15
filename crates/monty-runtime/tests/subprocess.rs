@@ -595,14 +595,11 @@ fn sleep_calls_bubble_to_parent() {
     };
     assert_eq!(
         call.call,
-        Some(pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep {
-            delay: 0.25,
-            result: Some(WireObject::new(MontyObject::String("woken".to_owned()))),
-        }))
+        Some(pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep { delay: 0.25 }))
     );
     let (_, event) = child.resume_call(
         call.call_id,
-        pb::ext_function_result::Kind::ReturnValue(WireObject::new(MontyObject::String("woken".to_owned()))),
+        pb::ext_function_result::Kind::ReturnValue(WireObject::new(MontyObject::None)),
     );
     assert_eq!(expect_complete(event), MontyObject::String("woken".to_owned()));
 
