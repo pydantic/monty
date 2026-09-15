@@ -1,0 +1,19 @@
+crates/monty/tests/os_tests.rs
+  s_39113c86df7101::t_68ed211c25d545 1529-1530,1533-1538,1548-1549
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d3744cbad5e6e13abebd732b109a06d6ecd5e9de",
+  "prompts": {},
+  "sessions": {
+    "s_39113c86df7101": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a6a907e-552e-489d-b040-c6ce4647bde1",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
