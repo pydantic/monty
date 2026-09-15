@@ -1,0 +1,22 @@
+crates/monty-fs/tests/fs_security.rs
+  s_ca283a3ffb9206::t_0cc209793719ac 148-159,168-169,1179-1206,1208-1210,1215-1216,1218-1239,1241-1248
+  s_ca283a3ffb9206::t_11132c00219a24 1207,1211-1214
+  s_ca283a3ffb9206::t_3103d0e0ce5902 1217
+  s_ca283a3ffb9206::t_a47f944ec7528a 1240
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "cc564d033aa5dd2e79d2c6a9c6b707e5799eeb19",
+  "prompts": {},
+  "sessions": {
+    "s_ca283a3ffb9206": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8a98136-7d8b-491f-8651-2dd8b0e6bb3f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
