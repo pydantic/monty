@@ -995,6 +995,25 @@ fn copying_a_large_set_fails_softly() {
     }
 }
 
+/// A set keeps the index table it grew to when its elements go, so copying one
+/// must index the copy afresh rather than reproduce that table. Twenty copies
+/// of an emptied set hold nothing and have to fit in a limit the source alone
+/// once filled a third of.
+#[test]
+fn copying_an_emptied_set_costs_nothing() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
+    // grown, then emptied: the entries are gone, the table that indexed them is not
+    child.feed_complete("s = set(range(200_000))\ns.clear()");
+
+    assert_eq!(
+        child.feed_complete("copies = [set(s) for _ in range(20)]\nlen(copies)"),
+        MontyObject::Int(20)
+    );
+    assert_eq!(child.feed_complete("len(copies[0])"), MontyObject::Int(0));
+    child.shutdown();
+}
+
 /// `inf` and `nan` print as they are, so a huge float precision costs nothing
 /// and must not be charged against the limit.
 #[test]

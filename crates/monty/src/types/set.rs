@@ -67,12 +67,26 @@ impl SetStorage {
     /// contents and then perform operations requiring mutable heap access.
     /// The caller is responsible for handling reference counting.
     fn from_entries(entries: Vec<(Value, u64)>) -> Self {
-        let mut storage = Self::with_capacity(entries.len());
-        for (idx, (value, hash)) in entries.into_iter().enumerate() {
-            storage.entries.push(SetEntry { value, hash });
-            storage.indices.insert_unique(hash, idx, |&i| storage.entries[i].hash);
+        Self::from_entry_vec(
+            entries
+                .into_iter()
+                .map(|(value, hash)| SetEntry { value, hash })
+                .collect(),
+        )
+    }
+
+    /// Indexes entries that already carry their hashes, in the order given.
+    ///
+    /// The index table is sized to the entry count, which is what keeps a
+    /// rebuilt set's memory proportional to the elements it actually holds:
+    /// a `HashTable` keeps the buckets it grew to across `clear` and `remove`,
+    /// so anything that copies one wholesale carries that ballast with it.
+    fn from_entry_vec(entries: Vec<SetEntry>) -> Self {
+        let mut indices = HashTable::with_capacity(entries.len());
+        for (idx, entry) in entries.iter().enumerate() {
+            indices.insert_unique(entry.hash, idx, |&i| entries[i].hash);
         }
-        storage
+        Self { indices, entries }
     }
 
     /// Clones entries with proper reference counting.
@@ -202,18 +216,22 @@ impl<'h> HeapRead<'h, SetStorage> {
 
 impl SetStorage {
     /// Creates a deep clone with proper reference counting.
+    ///
+    /// The copy is indexed from scratch instead of cloning `indices`, which
+    /// `HashTable` would reproduce at the source's bucket count: a set that
+    /// grew large and was then cleared or pared down would hand its copy a
+    /// table sized for elements the copy does not hold, and the callers that
+    /// preflight a copy against the memory limit charge only its entries.
     fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
-        Self {
-            indices: self.indices.clone(),
-            entries: self
-                .entries
+        Self::from_entry_vec(
+            self.entries
                 .iter()
                 .map(|entry| SetEntry {
                     value: entry.value.clone_with_heap(heap),
                     hash: entry.hash,
                 })
                 .collect(),
-        }
+        )
     }
 }
 
@@ -1675,12 +1693,7 @@ impl serde::Serialize for SetStorage {
 impl<'de> serde::Deserialize<'de> for SetStorage {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let entries: Vec<SetEntry> = serde::Deserialize::deserialize(deserializer)?;
-        // Rebuild the indices hash table from the entries
-        let mut indices = HashTable::with_capacity(entries.len());
-        for (idx, entry) in entries.iter().enumerate() {
-            indices.insert_unique(entry.hash, idx, |&i| entries[i].hash);
-        }
-        Ok(Self { indices, entries })
+        Ok(Self::from_entry_vec(entries))
     }
 }
 
