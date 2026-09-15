@@ -389,13 +389,40 @@ impl ResourceTracker {
     /// merge, say — leaves the same window open.
     #[inline]
     pub fn check_growth(&self, len: usize, capacity: usize, elem_size: usize) -> Result<(), ResourceError> {
+        self.check_pending_allocation(Self::growth_bytes(len, capacity, elem_size))
+    }
+
+    /// The bytes [`check_growth`](Self::check_growth) would preflight: what one
+    /// more push onto a dense buffer allocates, and zero if it allocates
+    /// nothing.
+    ///
+    /// Split out for containers that grow two buffers on a single insertion —
+    /// a dict or set growing its entry vector and its index table together.
+    /// Checking each increment on its own passes both while their sum clears
+    /// the headroom, so such a caller sums the increments and hands the total
+    /// to [`check_pending_allocation`](Self::check_pending_allocation).
+    #[inline]
+    #[must_use]
+    pub fn growth_bytes(len: usize, capacity: usize, elem_size: usize) -> usize {
         if len < capacity {
-            Ok(())
+            0
         } else {
             // `max(1)` covers the first push into an empty buffer, whose
             // capacity would otherwise make the increment zero.
             let new_capacity = capacity.saturating_mul(2).max(len.saturating_add(1)).max(1);
-            self.check_allocation(new_capacity.saturating_sub(capacity).saturating_mul(elem_size))
+            new_capacity.saturating_sub(capacity).saturating_mul(elem_size)
+        }
+    }
+
+    /// [`check_allocation`](Self::check_allocation) for a preflight whose
+    /// increment may be zero, skipping the memory probe when nothing will be
+    /// allocated.
+    #[inline]
+    pub fn check_pending_allocation(&self, additional: usize) -> Result<(), ResourceError> {
+        if additional == 0 {
+            Ok(())
+        } else {
+            self.check_allocation(additional)
         }
     }
 
