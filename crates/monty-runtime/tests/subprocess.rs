@@ -937,6 +937,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
             16_031_971,
         ),
+        // A `range` population can be as long as `i64::MAX` while costing nothing,
+        // so `sample` must saturate its size arithmetic and refuse the pick buffer.
+        (
+            "import random\nrandom.seed(0)\nrandom.sample(range(2**63 - 1), 2**63 - 1)",
+            u64::MAX,
+        ),
         // `itertools.batched` preflights one batch, capped at `n`.
         (
             "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",

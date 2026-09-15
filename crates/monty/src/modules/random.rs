@@ -843,8 +843,10 @@ fn sample_indices(target: RandomTarget, n: usize, k: i64, vm: &mut VM<'_>) -> Ru
     };
     // `setsize = 21 + 4 ** ceil(log(k * 3, 4))` for k > 5: the point where a
     // k-sized set costs less than an n-sized pool.
+    // `k` can be a `range` length near `i64::MAX`, so the arithmetic here must
+    // not overflow before `check_allocation` refuses the request.
     let setsize: usize = if k > 5 {
-        let exponent = ((k * 3) as f64).ln() / 4f64.ln();
+        let exponent = (k.saturating_mul(3) as f64).ln() / 4f64.ln();
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -856,7 +858,11 @@ fn sample_indices(target: RandomTarget, n: usize, k: i64, vm: &mut VM<'_>) -> Ru
         21
     };
     // The index buffer, the result list built from it, and the pool if used.
-    let pool_bytes = if n <= setsize { n * mem::size_of::<usize>() } else { 0 };
+    let pool_bytes = if n <= setsize {
+        n.saturating_mul(mem::size_of::<usize>())
+    } else {
+        0
+    };
     vm.heap.tracker.check_allocation(
         k.saturating_mul(VALUE_SIZE + mem::size_of::<usize>())
             .saturating_add(pool_bytes),
