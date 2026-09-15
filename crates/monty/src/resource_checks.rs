@@ -115,24 +115,44 @@ pub(crate) fn check_value_buffer_growth(vm: &mut VM<'_>, len: usize, capacity: u
     }
 }
 
-/// Pre-checks the reallocation an insertion into a full index table would cause.
+/// Pre-checks the reallocation one insertion into a dict or set would cause,
+/// across both of the buffers it grows.
+///
+/// The dense entry vector and the `HashTable<usize>` indexing it reallocate
+/// independently, and an insertion that fills both grows both with no
+/// allocation in between. Checking each increment against the same
+/// pre-insertion usage passes both while their sum clears the allocator's hard
+/// headroom, so the two are summed into one check — see
+/// [`ResourceTracker::check_growth`] for what that headroom costs when it is
+/// crossed.
+pub(crate) fn check_entry_table_growth(
+    entries_len: usize,
+    entries_capacity: usize,
+    entry_size: usize,
+    indices: &HashTable<usize>,
+    tracker: &ResourceTracker,
+) -> Result<(), ResourceError> {
+    let pending =
+        ResourceTracker::growth_bytes(entries_len, entries_capacity, entry_size).saturating_add(table_growth(indices));
+    tracker.check_pending_allocation(pending)
+}
+
+/// The bytes an insertion into a full index table would allocate, and zero if
+/// the table has room.
 ///
 /// hashbrown rehashes into a table of roughly double the current allocation and
 /// keeps the old one live until the move finishes, so the increment is about
-/// twice `allocation_size()` — large enough at scale to carry live memory from
-/// below the soft limit past the allocator's hard ceiling in one allocation.
-/// [`ResourceTracker::check_growth`] covers the dense entry vector beside it.
-pub(crate) fn check_table_growth(indices: &HashTable<usize>, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+/// twice `allocation_size()`.
+fn table_growth(indices: &HashTable<usize>) -> usize {
     let current = indices.allocation_size();
     // A table that has never allocated reports `allocation_size() == 0` while
     // also reporting `len == capacity == 0`, so the doubling model has nothing
     // to work from. Its first table is a few dozen bytes — far too small to
-    // clear the hard-limit headroom this check exists for — and charging zero
-    // would only probe memory to fail once usage is already over the limit.
+    // clear the hard-limit headroom this check exists for.
     if current == 0 || indices.len() < indices.capacity() {
-        Ok(())
+        0
     } else {
-        tracker.check_allocation(current.saturating_mul(2))
+        current.saturating_mul(2)
     }
 }
 

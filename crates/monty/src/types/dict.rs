@@ -31,7 +31,7 @@ use crate::{
         },
         defaultdict::defaultdict_missing,
     },
-    resource_checks::check_table_growth,
+    resource_checks::check_entry_table_growth,
     types::Type,
     value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };
@@ -168,12 +168,17 @@ enum GrowthCheck {
 
 /// Preflights the growth one insertion would cause in a dict's two buffers.
 ///
-/// The dense entry vector and the `HashTable<usize>` beside it double
-/// independently, and either increment can straddle the memory limit — see
-/// [`ResourceTracker::check_growth`] for why that has to be caught up front.
+/// The dense entry vector and the `HashTable<usize>` beside it can both
+/// reallocate on the same insertion, so their increments are checked together —
+/// see [`check_entry_table_growth`] for why they cannot be checked apart.
 fn check_dict_growth(dict: &Dict, tracker: &ResourceTracker) -> Result<(), ResourceError> {
-    tracker.check_growth(dict.entries.len(), dict.entries.capacity(), mem::size_of::<DictEntry>())?;
-    check_table_growth(&dict.indices, tracker)
+    check_entry_table_growth(
+        dict.entries.len(),
+        dict.entries.capacity(),
+        mem::size_of::<DictEntry>(),
+        &dict.indices,
+        tracker,
+    )
 }
 
 impl Dict {
