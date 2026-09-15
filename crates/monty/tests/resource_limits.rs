@@ -1235,6 +1235,27 @@ fn erroring_turns_still_hit_limits_at_exit() {
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
 
+/// A caller-supplied generator state or NaN can make a rejection loop run forever.
+#[test]
+fn random_rejection_loops_observe_deadlines() {
+    for expression in [
+        "rng.normalvariate()",
+        "rng.lognormvariate(0, 1)",
+        "rng.gammavariate(2, 1)",
+        "rng.gammavariate(float('nan'), 1)",
+        "rng.betavariate(2, 3)",
+        "rng.vonmisesvariate(0, float('nan'))",
+        "rng.binomialvariate(5, 0.1)",
+        "rng.binomialvariate(100, 0.5)",
+        "rng.sample(range(100), 2)",
+    ] {
+        let code = format!(
+            "import random\nrng = random.Random(0)\nrng.setstate((3, (0,) * 625, None))\ninterrupt()\n{expression}"
+        );
+        assert_timeout_promptly(&code, expression);
+    }
+}
+
 /// Helper: runs `code` up to its `interrupt()` call without a time limit,
 /// then resumes under a short one and asserts the rest raises `TimeoutError`
 /// promptly — the native loop after `interrupt()` (a `repr()`, a union

@@ -156,6 +156,8 @@ caps the dump's, so a worker cannot report a looser one.
 - **Mount memory.** Each [mount](filesystem.md) has its own `memory_usage_limit`, defaulting to 100 MB, shared between
     retained overlay data and transient results.
 - **`json.loads` nesting**, capped at 200 levels independently of the recursion limit.
+- **Host entropy.** Python's `OSAccess(max_urandom_bytes=1_048_576)` caps each `os.urandom()` allocation at 1 MiB by default.
+    Requests above the cap raise `MemoryError` before allocating; custom entropy callbacks must enforce their own caps.
 - **The host instance store.** Every [`ClassInstance`][pydantic_monty.ClassInstance]/[`ClassType`][pydantic_monty.ClassType] wrapper sent into a session (nested wrappers,
     `init=True` constructions and `convert_value` wraps included) is retained in the host process until the session
     ends; re-sending a wrapper with the same id reuses its entry, distinct wrappers accumulate; see

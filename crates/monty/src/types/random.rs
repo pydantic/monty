@@ -12,6 +12,7 @@
 
 use std::{fmt::Write, mem};
 
+use monty_types::ResourceTracker;
 use num_bigint::{BigInt, BigUint};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
@@ -495,13 +496,16 @@ impl Mt19937 {
 
     /// `_randbelow_with_getrandbits(n)`: an int in `[0, n)` for `n > 0`, by
     /// rejection sampling `bit_length(n)` bits at a time.
-    pub(crate) fn randbelow(&mut self, n: u128) -> u128 {
+    pub(crate) fn randbelow(&mut self, n: u128, tracker: &ResourceTracker) -> RunResult<u128> {
         debug_assert!(n > 0, "randbelow(0) is an empty range");
         let k = 128 - n.leading_zeros();
+        let mut attempts = 0usize;
         loop {
+            tracker.check_time_every(attempts)?;
+            attempts = attempts.wrapping_add(1);
             let r = self.getrandbits_u128(k);
             if r < n {
-                return r;
+                return Ok(r);
             }
         }
     }

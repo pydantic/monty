@@ -57,7 +57,7 @@ fn math_domain_error() -> RunError {
 
 /// Returns an `OverflowError` with the standard CPython "math range error" message.
 fn math_range_error() -> RunError {
-    SimpleException::new_msg(ExcType::OverflowError, "math range error").into()
+    ExcType::overflow_math_range()
 }
 
 /// Checks whether a computation overflowed (finite input produced infinite result).

@@ -90,5 +90,9 @@ The directory then persists across feeds, including successful `os.chdir(path=..
 `os.getcwd()` and `Path.cwd()` report it, and relative `open()`, `os`, and `pathlib` requests resolve against it.
 Setting `cwd` does not grant filesystem access; provide `mount=` or `os=` to handle filesystem operations.
 
+`OSAccess(max_urandom_bytes=1_048_576)` limits each `os.urandom()` host allocation to 1 MiB by default.
+Requests above the configured cap raise `MemoryError` before allocating.
+Set the cap to zero to reject nonempty entropy requests, including the 2496-byte request from an unseeded `random` generator.
+
 See the [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) README for
 more details.

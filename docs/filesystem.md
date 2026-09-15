@@ -247,6 +247,8 @@ The last also arrives, for 2496 bytes, the first time an unseeded `random` gener
 
 `os` callbacks run in your process with your process's authority.
 Everything in [designing a safe tool surface](host-functions.md#designing-a-safe-tool-surface) applies.
+Python's `OSAccess(max_urandom_bytes=1_048_576)` caps each host entropy allocation at 1 MiB by default.
+Larger requests raise `MemoryError` before allocating; see [os limitations](limitations/os.md).
 
 ### Resolution order
 

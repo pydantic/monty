@@ -20,7 +20,7 @@ use std::{
 };
 
 use ahash::AHashSet;
-use monty_types::{OsFunctionCall, UrandomArgs};
+use monty_types::{OsFunctionCall, ResourceTracker, UrandomArgs};
 use num_bigint::{BigInt, BigUint};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -43,7 +43,7 @@ use crate::{
         random::{Mt19937, RandomTarget, SEED_BYTES, seed_key_from_value},
         tuple::{TupleVec, allocate_tuple},
     },
-    value::{VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value, float_pow},
 };
 
 /// `random` module functions, each also a method of `random.Random`.
@@ -572,7 +572,9 @@ fn randrange(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResul
         return if istart > 0 {
             Ok(int_value(istart_plus(
                 0,
-                target.with_generator(vm, |random, _| random.rng().randbelow(as_u128(istart))),
+                target.with_generator(vm, |random, vm| {
+                    random.rng().randbelow(as_u128(istart), &vm.heap.tracker)
+                })?,
             )))
         } else {
             Err(ExcType::value_error("empty range for randrange()"))
@@ -587,7 +589,9 @@ fn randrange(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResul
     };
     if istep == 1 {
         return if width > 0 {
-            let offset = target.with_generator(vm, |random, _| random.rng().randbelow(as_u128(width)));
+            let offset = target.with_generator(vm, |random, vm| {
+                random.rng().randbelow(as_u128(width), &vm.heap.tracker)
+            })?;
             Ok(int_value(istart_plus(istart, offset)))
         } else {
             Err(ExcType::value_error(format!(
@@ -612,7 +616,7 @@ fn randrange(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResul
             int_arg_str(step)
         )));
     }
-    let offset = target.with_generator(vm, |random, _| random.rng().randbelow(as_u128(n)));
+    let offset = target.with_generator(vm, |random, vm| random.rng().randbelow(as_u128(n), &vm.heap.tracker))?;
     Ok(int_value(
         istart + istep * i128::try_from(offset).expect("offset below n"),
     ))
@@ -636,7 +640,9 @@ fn randint(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
     if b < a {
         return Err(ExcType::value_error(format!("empty range in randint({a}, {b})")));
     }
-    let offset = target.with_generator(vm, |random, _| random.rng().randbelow(as_u128(b - a + 1)));
+    let offset = target.with_generator(vm, |random, vm| {
+        random.rng().randbelow(as_u128(b - a + 1), &vm.heap.tracker)
+    })?;
     Ok(int_value(istart_plus(a, offset)))
 }
 
@@ -690,7 +696,7 @@ fn choice(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<V
     if len == 0 {
         return Err(ExcType::index_error("Cannot choose from an empty sequence"));
     }
-    let index = target.with_generator(vm, |random, _| random.rng().randbelow(len as u128));
+    let index = target.with_generator(vm, |random, vm| random.rng().randbelow(len as u128, &vm.heap.tracker))?;
     seq.py_getitem(&Value::Int(index_value(index)), vm)
 }
 
@@ -714,7 +720,7 @@ fn shuffle(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
         Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::List(_)) => *id,
         _ if len < 2 => return Ok(Value::None),
         other => {
-            target.with_generator(vm, |random, _| random.rng().randbelow(len as u128));
+            target.with_generator(vm, |random, vm| random.rng().randbelow(len as u128, &vm.heap.tracker))?;
             return Err(ExcType::type_error_not_sub_assignment(&other.py_type_name(vm)));
         }
     };
@@ -724,7 +730,7 @@ fn shuffle(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
     target.with_generator(vm, |random, vm| {
         for i in (1..len).rev() {
             vm.heap.tracker.check_time_every(i)?;
-            let j = index_value(random.rng().randbelow(i as u128 + 1));
+            let j = index_value(random.rng().randbelow(i as u128 + 1, &vm.heap.tracker)?);
             list.get_mut(vm.heap)
                 .as_vec_mut()
                 .swap(i, usize::try_from(j).expect("j <= i"));
@@ -774,7 +780,8 @@ fn sample(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<V
         if total < 0 {
             return Err(ExcType::value_error("Counts must be non-negative"));
         }
-        let total = usize::try_from(total).expect("non-negative");
+        let total = i64::try_from(total).map_err(|_| ExcType::overflow_c_ssize_t())?;
+        let total = usize::try_from(total).map_err(|_| ExcType::overflow_c_ssize_t())?;
         let selections = sample_indices(target, total, k, vm)?;
         let indices = selections
             .into_iter()
@@ -815,18 +822,21 @@ fn sample_indices(target: RandomTarget, n: usize, k: i64, vm: &mut VM<'_>) -> Ru
             let mut pool: Vec<usize> = (0..n).collect();
             for i in 0..k {
                 vm.heap.tracker.check_time_every(i)?;
-                let j = index_value(rng.randbelow((n - i) as u128));
+                let j = index_value(rng.randbelow((n - i) as u128, &vm.heap.tracker)?);
                 let j = usize::try_from(j).expect("j < n");
                 result.push(pool[j]);
                 pool[j] = pool[n - i - 1];
             }
         } else {
             let mut selected = AHashSet::with_capacity(k);
+            let mut attempts = 0usize;
             for i in 0..k {
                 vm.heap.tracker.check_time_every(i)?;
-                let mut j = index_value(rng.randbelow(n as u128));
+                let mut j = index_value(rng.randbelow(n as u128, &vm.heap.tracker)?);
                 while selected.contains(&j) {
-                    j = index_value(rng.randbelow(n as u128));
+                    vm.heap.tracker.check_time_every(attempts)?;
+                    attempts = attempts.wrapping_add(1);
+                    j = index_value(rng.randbelow(n as u128, &vm.heap.tracker)?);
                 }
                 selected.insert(j);
                 result.push(usize::try_from(j).expect("j < n"));
@@ -1081,7 +1091,7 @@ fn triangular(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResu
     Ok(Value::Float(low + (high - low) * (u * c).sqrt()))
 }
 
-/// `normalvariate(mu=0.0, sigma=1.0)` / `gauss(mu=0.0, sigma=1.0)` — Python `def`s.
+/// `normalvariate(mu=0.0, sigma=1.0)` — a Python `def`.
 #[derive(FromArgs)]
 #[from_args(name = "Random.normalvariate", style = def)]
 struct NormalArgs {
@@ -1097,30 +1107,42 @@ fn normalvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunR
     defer_drop!(mu, vm);
     defer_drop!(sigma, vm);
     let (mu, sigma) = (to_float(mu, vm)?, to_float(sigma, vm)?);
-    Ok(Value::Float(target.with_generator(vm, |random, _| {
-        mu + normal_deviate(random.rng()) * sigma
-    })))
+    let z = target.with_generator(vm, |random, vm| normal_deviate(random.rng(), &vm.heap.tracker))?;
+    Ok(Value::Float(mu + z * sigma))
 }
 
 /// One standard normal deviate by `normalvariate`'s rejection loop.
-fn normal_deviate(rng: &mut Mt19937) -> f64 {
+fn normal_deviate(rng: &mut Mt19937, tracker: &ResourceTracker) -> RunResult<f64> {
     // `NV_MAGICCONST = 4 * exp(-0.5) / sqrt(2.0)`, evaluated the same way.
     let nv_magicconst = 4.0 * (-0.5f64).exp() / 2f64.sqrt();
+    let mut attempts = 0usize;
     loop {
+        tracker.check_time_every(attempts)?;
+        attempts = attempts.wrapping_add(1);
         let u1 = rng.random();
         let u2 = 1.0 - rng.random();
         let z = nv_magicconst * (u1 - 0.5) / u2;
         let zz = z * z / 4.0;
         if zz <= -u2.ln() {
-            return z;
+            return Ok(z);
         }
     }
+}
+
+/// `gauss(mu=0.0, sigma=1.0)` — parsed separately to preserve its error messages.
+#[derive(FromArgs)]
+#[from_args(name = "Random.gauss", style = def)]
+struct GaussArgs {
+    #[from_args(default = Value::Float(0.0))]
+    mu: Value,
+    #[from_args(default = Value::Float(1.0))]
+    sigma: Value,
 }
 
 /// `gauss(mu=0.0, sigma=1.0)`: Box–Muller, keeping the second deviate for
 /// the next call.
 fn gauss(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let NormalArgs { mu, sigma } = NormalArgs::from_args(args, vm)?;
+    let GaussArgs { mu, sigma } = GaussArgs::from_args(args, vm)?;
     defer_drop!(mu, vm);
     defer_drop!(sigma, vm);
     let (mu, sigma) = (to_float(mu, vm)?, to_float(sigma, vm)?);
@@ -1152,9 +1174,14 @@ fn lognormvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> Run
     defer_drop!(mu, vm);
     defer_drop!(sigma, vm);
     let (mu, sigma) = (to_float(mu, vm)?, to_float(sigma, vm)?);
-    Ok(Value::Float(target.with_generator(vm, |random, _| {
-        (mu + normal_deviate(random.rng()) * sigma).exp()
-    })))
+    let z = target.with_generator(vm, |random, vm| normal_deviate(random.rng(), &vm.heap.tracker))?;
+    let exponent = mu + z * sigma;
+    let result = exponent.exp();
+    if result.is_infinite() && exponent.is_finite() {
+        Err(ExcType::overflow_math_range())
+    } else {
+        Ok(Value::Float(result))
+    }
 }
 
 /// `expovariate(lambd=1.0)` — a Python `def`.
@@ -1193,14 +1220,17 @@ fn vonmisesvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> Ru
     defer_drop!(mu, vm);
     defer_drop!(kappa, vm);
     let (mu, kappa) = (to_float(mu, vm)?, to_float(kappa, vm)?);
-    Ok(Value::Float(target.with_generator(vm, |random, _| {
+    target.with_generator(vm, |random, vm| {
         let rng = random.rng();
         if kappa <= 1e-6 {
-            return TAU * rng.random();
+            return Ok(Value::Float(TAU * rng.random()));
         }
         let s = 0.5 / kappa;
         let r = s + (1.0 + s * s).sqrt();
+        let mut attempts = 0usize;
         let z = loop {
+            vm.heap.tracker.check_time_every(attempts)?;
+            attempts = attempts.wrapping_add(1);
             let u1 = rng.random();
             let z = (PI * u1).cos();
             let d = z / (r + z);
@@ -1212,18 +1242,19 @@ fn vonmisesvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> Ru
         let q = 1.0 / r;
         let f = (q + z) / (1.0 + q * z);
         let u3 = rng.random();
-        if u3 > 0.5 {
+        let result = if u3 > 0.5 {
             py_fmod(mu + f.acos(), TAU)
         } else {
             py_fmod(mu - f.acos(), TAU)
-        }
-    })))
+        };
+        Ok(Value::Float(result))
+    })
 }
 
-/// `gammavariate(alpha, beta)` / `betavariate(alpha, beta)` / `weibullvariate(alpha, beta)` — Python `def`s.
+/// `gammavariate(alpha, beta)` — a Python `def`.
 #[derive(FromArgs)]
 #[from_args(name = "Random.gammavariate", style = def)]
-struct AlphaBetaArgs {
+struct GammaArgs {
     alpha: Value,
     beta: Value,
 }
@@ -1231,16 +1262,18 @@ struct AlphaBetaArgs {
 /// `gammavariate(alpha, beta)`: the gamma distribution, by Cheng's method
 /// above `alpha == 1`, exponential at it, and Kennedy & Gentle's below.
 fn gammavariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let AlphaBetaArgs { alpha, beta } = AlphaBetaArgs::from_args(args, vm)?;
+    let GammaArgs { alpha, beta } = GammaArgs::from_args(args, vm)?;
     defer_drop!(alpha, vm);
     defer_drop!(beta, vm);
     let (alpha, beta) = (to_float(alpha, vm)?, to_float(beta, vm)?);
     if alpha <= 0.0 || beta <= 0.0 {
         return Err(ExcType::value_error("gammavariate: alpha and beta must be > 0.0"));
     }
-    Ok(Value::Float(target.with_generator(vm, |random, _| {
-        gamma_deviate(random.rng(), alpha, beta)
-    })))
+    target
+        .with_generator(vm, |random, vm| {
+            gamma_deviate(random.rng(), alpha, beta, &vm.heap.tracker)
+        })
+        .map(Value::Float)
 }
 
 /// The `gammavariate` body for validated `alpha`/`beta`.
@@ -1248,14 +1281,17 @@ fn gammavariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunRe
     clippy::float_cmp,
     reason = "`alpha == 1.0` is the exact branch condition in random.py"
 )]
-fn gamma_deviate(rng: &mut Mt19937, alpha: f64, beta: f64) -> f64 {
+fn gamma_deviate(rng: &mut Mt19937, alpha: f64, beta: f64, tracker: &ResourceTracker) -> RunResult<f64> {
     let log4 = 4f64.ln();
     let sg_magicconst = 1.0 + 4.5f64.ln();
+    let mut attempts = 0usize;
     if alpha > 1.0 {
         let ainv = (2.0 * alpha - 1.0).sqrt();
         let bbb = alpha - log4;
         let ccc = alpha + ainv;
         loop {
+            tracker.check_time_every(attempts)?;
+            attempts = attempts.wrapping_add(1);
             let u1 = rng.random();
             if !(1e-7 < u1 && u1 < 0.999_999_9) {
                 continue;
@@ -1266,13 +1302,15 @@ fn gamma_deviate(rng: &mut Mt19937, alpha: f64, beta: f64) -> f64 {
             let z = u1 * u1 * u2;
             let r = bbb + ccc * v - x;
             if r + sg_magicconst - 4.5 * z >= 0.0 || r >= z.ln() {
-                return x * beta;
+                return Ok(x * beta);
             }
         }
     } else if alpha == 1.0 {
-        -(1.0 - rng.random()).ln() * beta
+        Ok(-(1.0 - rng.random()).ln() * beta)
     } else {
         loop {
+            tracker.check_time_every(attempts)?;
+            attempts = attempts.wrapping_add(1);
             let u = rng.random();
             let b = (E + alpha) / E;
             let p = b * u;
@@ -1288,15 +1326,23 @@ fn gamma_deviate(rng: &mut Mt19937, alpha: f64, beta: f64) -> f64 {
                 u1 <= (-x).exp()
             };
             if accept {
-                return x * beta;
+                return Ok(x * beta);
             }
         }
     }
 }
 
+/// `betavariate(alpha, beta)` — parsed separately to preserve its error messages.
+#[derive(FromArgs)]
+#[from_args(name = "Random.betavariate", style = def)]
+struct BetaArgs {
+    alpha: Value,
+    beta: Value,
+}
+
 /// `betavariate(alpha, beta)`: a ratio of two gamma deviates.
 fn betavariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let AlphaBetaArgs { alpha, beta } = AlphaBetaArgs::from_args(args, vm)?;
+    let BetaArgs { alpha, beta } = BetaArgs::from_args(args, vm)?;
     defer_drop!(alpha, vm);
     defer_drop!(beta, vm);
     let (alpha, beta) = (to_float(alpha, vm)?, to_float(beta, vm)?);
@@ -1305,14 +1351,18 @@ fn betavariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunRes
     if alpha <= 0.0 {
         return Err(ExcType::value_error("gammavariate: alpha and beta must be > 0.0"));
     }
-    let y = target.with_generator(vm, |random, _| gamma_deviate(random.rng(), alpha, 1.0));
+    let y = target.with_generator(vm, |random, vm| {
+        gamma_deviate(random.rng(), alpha, 1.0, &vm.heap.tracker)
+    })?;
     if y == 0.0 {
         return Ok(Value::Float(0.0));
     }
     if beta <= 0.0 {
         return Err(ExcType::value_error("gammavariate: alpha and beta must be > 0.0"));
     }
-    let z = target.with_generator(vm, |random, _| gamma_deviate(random.rng(), beta, 1.0));
+    let z = target.with_generator(vm, |random, vm| {
+        gamma_deviate(random.rng(), beta, 1.0, &vm.heap.tracker)
+    })?;
     Ok(Value::Float(y / (y + z)))
 }
 
@@ -1329,17 +1379,25 @@ fn paretovariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunR
     defer_drop!(alpha, vm);
     let alpha = to_float(alpha, vm)?;
     let u = 1.0 - target.with_generator(vm, |random, _| random.rng().random());
-    Ok(Value::Float(u.powf(float_div(-1.0, alpha)?)))
+    float_pow(u, float_div(-1.0, alpha)?).map(Value::Float)
+}
+
+/// `weibullvariate(alpha, beta)` — parsed separately to preserve its error messages.
+#[derive(FromArgs)]
+#[from_args(name = "Random.weibullvariate", style = def)]
+struct WeibullArgs {
+    alpha: Value,
+    beta: Value,
 }
 
 /// `weibullvariate(alpha, beta)`: `alpha * (-log(1 - random())) ** (1 / beta)`.
 fn weibullvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let AlphaBetaArgs { alpha, beta } = AlphaBetaArgs::from_args(args, vm)?;
+    let WeibullArgs { alpha, beta } = WeibullArgs::from_args(args, vm)?;
     defer_drop!(alpha, vm);
     defer_drop!(beta, vm);
     let (alpha, beta) = (to_float(alpha, vm)?, to_float(beta, vm)?);
     let u = 1.0 - target.with_generator(vm, |random, _| random.rng().random());
-    Ok(Value::Float(alpha * (-u.ln()).powf(float_div(1.0, beta)?)))
+    Ok(Value::Float(alpha * float_pow(-u.ln(), float_div(1.0, beta)?)?))
 }
 
 /// `binomialvariate(n=1, p=0.5)` — a Python `def`.
@@ -1376,9 +1434,9 @@ fn binomialvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> Ru
             Err(ExcType::value_error("p must be in the range 0.0 <= p <= 1.0"))
         };
     }
-    Ok(Value::Int(
-        target.with_generator(vm, |random, _| binomial_deviate(random.rng(), n, p)),
-    ))
+    target
+        .with_generator(vm, |random, vm| binomial_deviate(random.rng(), n, p, &vm.heap.tracker))
+        .map(Value::Int)
 }
 
 /// The `binomialvariate` body for validated `n` and `0 < p < 1`.
@@ -1388,32 +1446,35 @@ fn binomialvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> Ru
     clippy::many_single_char_names,
     reason = "the paper's names, as random.py keeps them"
 )]
-fn binomial_deviate(rng: &mut Mt19937, n: i64, p: f64) -> i64 {
+fn binomial_deviate(rng: &mut Mt19937, n: i64, p: f64, tracker: &ResourceTracker) -> RunResult<i64> {
     if n == 1 {
-        return i64::from(rng.random() < p);
+        return Ok(i64::from(rng.random() < p));
     }
     // Exploit symmetry to establish p <= 0.5.
     if p > 0.5 {
-        return n - binomial_deviate(rng, n, 1.0 - p);
+        return Ok(n - binomial_deviate(rng, n, 1.0 - p, tracker)?);
     }
     let n_f = n as f64;
+    let mut attempts = 0usize;
     if n_f * p < 10.0 {
         // BG: Devroye's geometric method, O(np).
         let mut x: i64 = 0;
         let mut y: i64 = 0;
         let c = (1.0 - p).log2();
         if c == 0.0 {
-            return x;
+            return Ok(x);
         }
         loop {
+            tracker.check_time_every(attempts)?;
+            attempts = attempts.wrapping_add(1);
             let r = rng.random();
             if r == 0.0 {
-                // `log2(0.0)` raises in CPython, which retries.
+                // Retry zero draws before taking their logarithm.
                 continue;
             }
             y = y.saturating_add((r.log2() / c).floor() as i64).saturating_add(1);
             if y > n {
-                return x;
+                return Ok(x);
             }
             x += 1;
         }
@@ -1427,10 +1488,12 @@ fn binomial_deviate(rng: &mut Mt19937, n: i64, p: f64) -> i64 {
     let vr = 0.92 - 4.2 / b;
     let mut setup: Option<(f64, f64, f64, f64)> = None;
     loop {
+        tracker.check_time_every(attempts)?;
+        attempts = attempts.wrapping_add(1);
         let u = rng.random() - 0.5;
         let us = 0.5 - u.abs();
         if us == 0.0 {
-            // A zero `us` divides by zero in CPython, which retries.
+            // Retry before dividing by zero in the proposal below.
             continue;
         }
         let k = ((2.0 * a / us + b) * u + c).floor();
@@ -1440,7 +1503,7 @@ fn binomial_deviate(rng: &mut Mt19937, n: i64, p: f64) -> i64 {
         let k_int = k as i64;
         let mut v = rng.random();
         if us >= 0.07 && v <= vr {
-            return k_int;
+            return Ok(k_int);
         }
         let (alpha, lpq, m, h) = *setup.get_or_insert_with(|| {
             let alpha = (2.83 + 5.1 / b) * spq;
@@ -1451,7 +1514,7 @@ fn binomial_deviate(rng: &mut Mt19937, n: i64, p: f64) -> i64 {
         });
         v *= alpha / (a / (us * us) + b);
         if v.ln() <= h - libm::lgamma(k + 1.0) - libm::lgamma(n_f - k + 1.0) + (k - m) * lpq {
-            return k_int;
+            return Ok(k_int);
         }
     }
 }

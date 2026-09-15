@@ -45,10 +45,14 @@ The module-level generator is session state like the globals: a seed set in one
     no class inheritance, see [classes.md](classes.md)). `random.Random.VERSION`
     on the class raises `AttributeError`; on an instance it is `3`. Instances
     have no `gauss_next` attribute.
+- **Instance methods require a direct call**, as on other native objects such as `re.Pattern`.
+    `rng.random()` works, but `draw = rng.random` and `getattr(rng, 'random')` raise `AttributeError`.
+    Module functions can be saved and passed as callbacks: `draw = random.random` works.
 - **Integer ranges are 64-bit.** `randrange`, `randint`, `choice` and friends
     raise `OverflowError: Python int too large to convert to C ssize_t` for
     bounds outside `i64`; CPython accepts any int. `getrandbits(k)` for any `k`
     and `seed(big_int)` work as in CPython.
+    The sum of `sample(counts=...)` must also fit in a signed 64-bit integer.
 - **Seeds.** `seed(x)` accepts `None`, `int`, `float`, `str` and `bytes`;
     there is no `bytearray`. `seed(float('nan'))` seeds from `0`, where CPython
     hashes the object's address. A `str`/`bytes` seed with a `version` other
@@ -80,6 +84,7 @@ The module-level generator is session state like the globals: a seed set in one
     values can differ in the last bits between operating systems.
     `binomialvariate` uses the `libm` crate's `lgamma` where CPython carries its
     own implementation, which can move a borderline acceptance test.
+    Float-power overflow messages use glibc's `(34, 'Numerical result out of range')` on every platform.
 - **Arity errors do not count `self`.** `random.seed(1, 2, 3)` reports
     `takes from 0 to 2 positional arguments but 3 were given` where CPython,
     calling a bound method, says `from 1 to 3 ... but 4`. `getstate(1)` reports

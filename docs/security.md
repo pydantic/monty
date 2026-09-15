@@ -312,6 +312,9 @@ nobody seeded asks the host for 2496 bytes the first time it draws.
 Through the pool the call reaches your `os=` handler like any other, so an unseeded `random.random()` raises until you
 answer it — with real entropy, or with fixed bytes when a run has to be reproducible.
 Seeded code (`random.seed(42)`) never asks.
+Python's default `AbstractOS.urandom` caps each host allocation at 1 MiB.
+`OSAccess(max_urandom_bytes=...)` configures that cap; requests exceeding it raise `MemoryError` before allocation.
+Custom entropy handlers must bound their own host allocations, which are outside worker memory limits.
 See [random](limitations/random.md).
 
 ## Crash isolation

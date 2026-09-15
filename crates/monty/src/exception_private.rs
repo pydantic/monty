@@ -1673,6 +1673,12 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "int too large to convert to float").into()
     }
 
+    /// Creates the OverflowError raised when a math function overflows on a finite input.
+    #[must_use]
+    fn overflow_math_range() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "math range error").into()
+    }
+
     /// Creates the OverflowError raised when a float power overflows.
     ///
     /// CPython reports C's `ERANGE` through `strerror`, whose wording depends on the host libc;

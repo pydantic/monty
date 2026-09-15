@@ -181,6 +181,15 @@ except TypeError as exc:
 assert random.sample([1, 2], counts=[0, 0], k=0) == []
 assert random.sample([], 0) == []
 
+# The virtual population must fit in a sequence length even when each count does.
+for counts in ([2**63 - 1, 1], [2**63 - 1] * 3):
+    try:
+        random.sample(list(range(len(counts))), 1, counts=counts)
+        assert False, 'expected OverflowError'
+    except OverflowError as exc:
+        assert str(exc) == 'Python int too large to convert to C ssize_t'
+assert random.sample(['a'], 1, counts=[2**63 - 1]) == ['a']
+
 # === choices() ===
 try:
     random.choices([1, 2], 5)
@@ -271,6 +280,37 @@ except ValueError as exc:
 assert 0 <= random.binomialvariate(n=3, p=0.5) <= 3
 assert 1 <= random.triangular(low=1, high=2, mode=1.5) <= 2
 assert random.gauss(mu=1, sigma=0) == 1.0
+
+# Shared parameter shapes must still name the function actually called.
+for name in ('gauss', 'betavariate', 'weibullvariate'):
+    try:
+        getattr(random, name)(unknown=1)
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == f"Random.{name}() got an unexpected keyword argument 'unknown'"
+
+try:
+    random.lognormvariate(1000, 0)
+    assert False, 'expected OverflowError'
+except OverflowError as exc:
+    assert str(exc) == 'math range error'
+
+# CPython's float-power overflow wording comes from the host libc.
+for name, args in [('paretovariate', (0.00001,)), ('weibullvariate', (1, 0.00001))]:
+    random.seed(0)
+    try:
+        getattr(random, name)(*args)
+        assert False, 'expected OverflowError'
+    except OverflowError as exc:
+        assert str(exc) in {"(34, 'Numerical result out of range')", "(34, 'Result too large')"}
+
+# Infinite inputs or exponents propagate; they are not finite-input overflow.
+assert random.lognormvariate(float('inf'), 0) == float('inf')
+assert random.weibullvariate(float('inf'), 1) == float('inf')
+random.seed(0)
+assert random.paretovariate(1e-310) == float('inf')
+random.seed(0)
+assert random.weibullvariate(1, 1e-310) == float('inf')
 
 # === setstate() ===
 try:

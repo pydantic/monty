@@ -134,8 +134,11 @@ class AbstractOS(ABC):
     filesystem and selected host-backed operations that Monty code can interact
     with via `pathlib.Path`, `os`, `date.today()`, and `datetime.now()`.
 
-    Pass an instance as the `os` parameter to `Monty.run()`.
+    Pass an instance to `feed_run(code, os=...)`.
     """
+
+    max_urandom_bytes: int = 1_048_576
+    """Maximum host allocation per `urandom()` call; defaults to 1 MiB."""
 
     def __call__(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
         """Adapter used by Monty's `os=` callback surface.
@@ -552,11 +555,12 @@ class AbstractOS(ABC):
     def urandom(self, size: int) -> bytes:
         """Return `size` random bytes for Monty's `os.urandom(size)` host callback.
 
-        The `random` module also calls this once, for 2496 bytes, the first time an
-        unseeded generator draws a value; returning fixed bytes there makes unseeded
-        runs reproducible. `size` is chosen by sandboxed code, so an override that
-        allocates should cap it. The default proxies to the host's `os.urandom`.
+        Raises `MemoryError` before allocating if `size` exceeds `max_urandom_bytes`.
+        Unseeded `random` generators request 2496 bytes. Overrides that allocate
+        host memory must enforce their own limit.
         """
+        if size > self.max_urandom_bytes:
+            raise MemoryError(f'os.urandom() size exceeds max_urandom_bytes ({self.max_urandom_bytes})')
         return os.urandom(size)
 
 
@@ -801,6 +805,7 @@ class OSAccess(AbstractOS):
     Attributes:
         files: List of AbstractFile objects registered with this filesystem.
         environ: Dictionary of environment variables accessible via os.getenv().
+        max_urandom_bytes: Maximum bytes per host entropy request.
     """
 
     files: list[AbstractFile]
@@ -813,6 +818,7 @@ class OSAccess(AbstractOS):
         environ: dict[str, str] | None = None,
         *,
         root_dir: str | PurePosixPath = '/',
+        max_urandom_bytes: int = 1_048_576,
     ):
         """Create a virtual filesystem with the given files.
 
@@ -824,12 +830,17 @@ class OSAccess(AbstractOS):
                 Isolated from the real environment.
             root_dir: Base directory for normalizing relative file paths. Relative
                 paths in files will be prefixed with this. Default is '/'.
+            max_urandom_bytes: Maximum bytes per `os.urandom()` call, defaulting to 1 MiB.
+                Zero rejects nonempty requests, including unseeded `random` draws.
 
         Raises:
             AssertionError: If root_dir is not an absolute path.
             ValueError: If a file path conflicts with another file (e.g., trying
-                to create a file inside another file's path).
+                to create a file inside another file's path), or `max_urandom_bytes` is negative.
         """
+        if max_urandom_bytes < 0:
+            raise ValueError('max_urandom_bytes must be non-negative')
+        self.max_urandom_bytes = max_urandom_bytes
         self.files = list(files) if files else []
         self.environ = environ or {}
         # Initialize tree with root directory - / is always present
