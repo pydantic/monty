@@ -196,18 +196,7 @@ fn assert_write_blocked(mt: &mut MountTable, op: PathOp, path: &str) {
         }),
         other => panic!("assert_write_blocked: unexpected op {other:?}"),
     };
-    let result = dispatch(mt, call_variant);
-    match result {
-        Some(Err(
-            MountError::PathEscape { .. }
-            | MountError::NoMountPoint(_)
-            | MountError::Io(_, _)
-            | MountError::EmbeddedNullByte(_),
-        ))
-        | None => {}
-        Some(Ok(val)) => panic!("expected write blocked, got Ok({val:?}) for path: {path}"),
-        Some(Err(other)) => panic!("unexpected error variant for write to {path}: {other}"),
-    }
+    assert_result_blocked(dispatch(mt, call_variant), path);
 }
 
 /// Asserts that `open(path, mode)` is blocked at open time.
@@ -1235,16 +1224,21 @@ mod symlink_tests {
                 }),
             );
 
-            // Ground truth on disk: nothing outside the mount changed, and
-            // nothing from outside arrived in it.
+            // Ground truth on disk: nothing outside the mount changed.
             let mut outside_names: Vec<String> = fs::read_dir(outside.path())
                 .unwrap()
                 .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
                 .collect();
             outside_names.sort();
             assert_eq!(outside_names, ["empty", "secret.txt", "victim.txt"]);
-            assert!(!dir.path().join("stolen.txt").exists());
-            assert!(dir.path().join("hello.txt").exists());
+            // Nothing from outside arrived in the mount, and nothing left it —
+            // checked through the mount, since an overlay's writes live in
+            // memory rather than on disk.
+            assert_invisible(&mut mt, PathOp::Exists, "/mnt/stolen.txt");
+            assert_eq!(
+                call(&mut mt, PathOp::Exists, "/mnt/hello.txt").unwrap().unwrap(),
+                MontyObject::Bool(true)
+            );
         }
     }
 
