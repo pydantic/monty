@@ -109,3 +109,19 @@ test('a time round-trips through the wasm transport', async (ctx) => {
   t.deepEqual(await session.feedRun('x', { inputs: { x: utc } }), utc)
   t.is(await session.feedRun('x.isoformat()', { inputs: { x: utc } }), '12:00:00+00:00')
 })
+
+test('shared and cyclic values keep their shape over the wasm transport', async (ctx) => {
+  skipIfBrowser(ctx)
+  await using pool = await Monty.create()
+  await using session = await pool.checkout({})
+
+  // a sub-object the sandbox references twice arrives as one host object
+  const shared = (await session.feedRun('x = [1]\n[x, x]')) as unknown[]
+  t.deepEqual(shared, [[1], [1]])
+  t.is(shared[0], shared[1])
+  // a host object passed twice is one sandbox object
+  const y = [1]
+  t.is(await session.feedRun('a is b', { inputs: { a: y, b: y } }), true)
+  // a cycle arrives as its placeholder
+  t.deepEqual(await session.feedRun('x = []\nx.append(x)\nx'), ['[...]'])
+})
