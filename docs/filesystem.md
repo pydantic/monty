@@ -199,8 +199,9 @@ and [`limitations/open.md`](limitations/open.md).
 
 ## The `os` callback
 
-Operations no mount covers fall through to the `os=` handler.
-It is called as `(function_name, args, kwargs)` and its return value is handed back to the sandbox:
+Operations no mount covers fall through to the `os=` handler, an [`OsHandler`][pydantic_monty.OsHandler].
+It is called with keyword arguments, `name`, `args`, `kwargs` and `is_async`, and its return value is handed back to the sandbox.
+Absorb the arguments you do not use with `**_future_kwargs`, so a later version can pass more:
 
 === "Python"
 
@@ -208,8 +209,8 @@ It is called as `(function_name, args, kwargs)` and its return value is handed b
     from pydantic_monty import NOT_HANDLED, Monty
 
 
-    def handle_os(function_name, args, kwargs):
-        if function_name == 'os.getenv' and args[0] == 'STAGE':
+    def handle_os(*, name, args, **_future_kwargs):
+        if name == 'os.getenv' and args[0] == 'STAGE':
             return 'production'
         return NOT_HANDLED
 

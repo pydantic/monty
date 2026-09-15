@@ -16,7 +16,6 @@ import pytest
 from inline_snapshot import snapshot
 
 from pydantic_monty import (
-    ASYNC_HOST,
     AsyncMonty,
     AsyncMontySession,
     MemoryFile,
@@ -245,7 +244,7 @@ async def test_os_callback_paths_are_normalized(asession: AsyncMontySession):
     """Async sessions use the same canonical callback paths as sync sessions."""
     calls: list[tuple[Any, ...]] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bool:
         calls.append(args)
         return True
 
@@ -1125,8 +1124,8 @@ async def test_async_os_callback_answers_asyncio_sleep_as_a_future(asession: Asy
     """A coroutine answer to asyncio.sleep runs alongside the sandbox's other tasks."""
     calls: list[Any] = []
 
-    async def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        calls.append((function_name, args))
+    async def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append((name, args))
         await asyncio.sleep(args[0])
         return 'ignored'
 
@@ -1164,13 +1163,13 @@ asyncio.run(main())
     assert elapsed < 0.28
 
 
-async def test_async_host_is_visible_to_sync_callbacks(asession: AsyncMontySession):
-    """A sync callback reads `ASYNC_HOST` to decide whether it may hand back a coroutine."""
+async def test_is_async_is_passed_to_sync_callbacks(asession: AsyncMontySession):
+    """A sync callback reads `is_async` to decide whether it may hand back a coroutine."""
     seen: list[bool] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        seen.append(ASYNC_HOST.get())
-        return asyncio.sleep(args[0]) if ASYNC_HOST.get() else None
+    def os_handler(*, name: str, args: tuple[Any, ...], is_async: bool, **_: Any) -> Any:
+        seen.append(is_async)
+        return asyncio.sleep(args[0]) if is_async else None
 
     code = "import asyncio\nasyncio.run(asyncio.sleep(0.001, 'woken'))"
     assert await asession.feed_run(code, os=os_handler) == snapshot('woken')
@@ -1180,7 +1179,7 @@ async def test_async_host_is_visible_to_sync_callbacks(asession: AsyncMontySessi
 async def test_async_os_callback_for_time_sleep_is_awaited_in_place(asession: AsyncMontySession):
     """Any call but asyncio.sleep waits for the coroutine before the sandbox resumes."""
 
-    async def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    async def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
         await asyncio.sleep(0.001)
         return 'ignored'
 

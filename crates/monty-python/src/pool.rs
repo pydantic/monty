@@ -67,7 +67,7 @@ use crate::{
     callback_context::{self, CallbackContext},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
     external::{CallResult, ExternalLookup, dispatch_object_call, is_coroutine, resolve_object_attr},
-    get_async_host, get_not_handled,
+    get_not_handled,
     limits::extract_limits,
     mount::PyMountDir,
     print_target::PrintTarget,
@@ -1354,7 +1354,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                         continue;
                     }
                     None => {
-                        match dispatch_os_parts(py, &function_name, &args, &kwargs, os.as_ref(), &instances, false)? {
+                        match dispatch_os_parts(py, &function_name, &args, &kwargs, os.as_ref(), &instances, false) {
                             OsDispatch::Answer(value) => TurnAnswer::Call(value),
                             OsDispatch::Coroutine(coro) => {
                                 // Closed so CPython does not warn that it was never awaited.
@@ -1584,7 +1584,15 @@ async fn drive_async_inner(
                 }
                 let dispatched = Python::attach(|py| {
                     let _guard = callback_context.enter(py, &native)?;
-                    dispatch_os_parts(py, &function_name, &args, &kwargs, os.as_ref(), &instances, true)
+                    Ok::<_, PyErr>(dispatch_os_parts(
+                        py,
+                        &function_name,
+                        &args,
+                        &kwargs,
+                        os.as_ref(),
+                        &instances,
+                        true,
+                    ))
                 })?;
                 match dispatched {
                     OsDispatch::Answer(value) => TurnAnswer::Call(value),
@@ -1865,14 +1873,11 @@ pub(crate) fn dispatch_os_parts(
     kwargs: &[(MontyObject, MontyObject)],
     os: Option<&Py<PyAny>>,
     instances: &InstanceStore,
-    async_host: bool,
-) -> PyResult<OsDispatch> {
+    is_async: bool,
+) -> OsDispatch {
     let Some(os_callback) = os else {
-        return Ok(OsDispatch::Answer(ResumeValue::NotHandled));
+        return OsDispatch::Answer(ResumeValue::NotHandled);
     };
-    // Scoped to this callback: `callback_context.enter` gave it its own
-    // contextvars copy, so nothing is reset afterwards.
-    get_async_host(py)?.bind(py).call_method1("set", (async_host,))?;
     let call = || -> PyResult<OsDispatch> {
         let py_args: Vec<Py<PyAny>> = args
             .iter()
@@ -1883,7 +1888,14 @@ pub(crate) fn dispatch_os_parts(
         for (k, v) in kwargs {
             py_kwargs.set_item(monty_to_py(py, k, instances)?, monty_to_py(py, v, instances)?)?;
         }
-        let result = callback_context::call(py, || os_callback.bind(py).call1((function_name, py_args, py_kwargs)))?;
+        // The `OsHandler` protocol: keyword arguments only, so a handler can
+        // name the ones it uses and absorb the rest.
+        let handler_kwargs = PyDict::new(py);
+        handler_kwargs.set_item("name", function_name)?;
+        handler_kwargs.set_item("args", py_args)?;
+        handler_kwargs.set_item("kwargs", py_kwargs)?;
+        handler_kwargs.set_item("is_async", is_async)?;
+        let result = callback_context::call(py, || os_callback.bind(py).call((), Some(&handler_kwargs)))?;
         if result.is(get_not_handled(py)?.bind(py)) {
             return Ok(OsDispatch::Answer(ResumeValue::NotHandled));
         }
@@ -1895,7 +1907,7 @@ pub(crate) fn dispatch_os_parts(
             Err(exc) => ResumeValue::Error(exc),
         }))
     };
-    Ok(call().unwrap_or_else(|err| OsDispatch::Answer(ResumeValue::Error(exc_py_to_monty(py, &err)))))
+    call().unwrap_or_else(|err| OsDispatch::Answer(ResumeValue::Error(exc_py_to_monty(py, &err))))
 }
 
 /// What an `os=` callback answered with. A coroutine is the drive loop's to

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from types import EllipsisType
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Protocol
 
 from typing_extensions import NotRequired, TypeAlias, TypedDict
 
 from ._monty import (
-    ASYNC_HOST,
     NOT_HANDLED,
     AsyncFunctionSnapshot,
     AsyncFutureSnapshot,
@@ -102,7 +101,6 @@ __all__ = (
     'StatResult',
     'OsFunction',
     'NOT_HANDLED',
-    'ASYNC_HOST',
     'AbstractOS',
     'AbstractFile',
     'MemoryFile',
@@ -252,11 +250,35 @@ Picked by `checkout(type_check_format=...)`, not on the raised error: the type
 checker runs inside the worker and its structured diagnostics never leave it,
 so only the already-rendered text crosses the wire."""
 
-OsHandler: TypeAlias = Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS
-"""OS-call handler shared by `feed_run` / `feed_start`."""
-
 SyncSnapshot: TypeAlias = FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete
 """What `MontySession.feed_start` (and each sync `resume` / `resume_auto`) yields."""
 
 AsyncSnapshot: TypeAlias = AsyncFunctionSnapshot | AsyncNameLookupSnapshot | AsyncFutureSnapshot | MontyComplete
 """What `AsyncMontySession.feed_start` (and each async `resume` / `resume_auto`) yields."""
+
+
+class OsHandler(Protocol):
+    def __call__(
+        self,
+        *,
+        name: OsFunction,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        is_async: bool,
+        **_future_kwargs: Any,
+    ) -> Any:
+        """What `os=` accepts: a callable answering the OS calls no mount covers.
+
+        Return `NOT_HANDLED` to leave the call to Monty's default error.
+
+        Args:
+            name: The OS function name
+            args: Positional arguments
+            kwargs: Keyword arguments
+            is_async: True under `AsyncMonty`, where the handler
+                may return a coroutine. `Monty` has no event loop and rejects a coroutine.
+            _future_kwargs: Absorbs future keyword arguments
+
+        Returns:
+            The result of the OS call, or `NOT_HANDLED` to leave it to Monty's default error.
+        """

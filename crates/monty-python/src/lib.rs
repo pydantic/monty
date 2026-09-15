@@ -31,11 +31,7 @@ pub use exceptions::{
 pub use mount::PyMountDir;
 pub use pool::{PyAsyncMonty, PyAsyncMontySession, PyAsyncMontyWebsocket, PyMonty, PyMontySession};
 pub use print_target::{PyCollectStreams, PyCollectString};
-use pyo3::{
-    prelude::*,
-    sync::PyOnceLock,
-    types::{PyAny, PyDict},
-};
+use pyo3::{prelude::*, sync::PyOnceLock, types::PyAny};
 pub use snapshot::{
     MontyComplete, PyAsyncFunctionSnapshot, PyAsyncFutureSnapshot, PyAsyncNameLookupSnapshot, PyFunctionSnapshot,
     PyFutureSnapshot, PyNameLookupSnapshot,
@@ -76,23 +72,6 @@ pub(crate) fn get_not_handled(py: Python<'_>) -> PyResult<&Py<PyAny>> {
     static NOT_HANDLED: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
     NOT_HANDLED.get_or_try_init(py, || Py::new(py, NotHandledSentinel).map(Py::into_any))
-}
-
-/// Returns the process-wide `ASYNC_HOST` contextvar: `True` inside an `os=`
-/// callback that `AsyncMonty` is driving, so `AbstractOS.async_sleep` knows an
-/// awaitable answer will be awaited rather than refused.
-pub(crate) fn get_async_host(py: Python<'_>) -> PyResult<&Py<PyAny>> {
-    static ASYNC_HOST: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
-
-    ASYNC_HOST.get_or_try_init(py, || {
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("default", false)?;
-        let var = py
-            .import("contextvars")?
-            .getattr("ContextVar")?
-            .call(("pydantic_monty.ASYNC_HOST",), Some(&kwargs))?;
-        Ok(var.unbind())
-    })
 }
 
 /// Monty - A sandboxed Python interpreter written in Rust.
@@ -163,14 +142,13 @@ mod _monty {
     use super::PyNameLookupSnapshot as NameLookupSnapshot;
     #[pymodule_export]
     use super::telemetry::_install_telemetry;
-    use super::{get_async_host, get_not_handled, get_version};
+    use super::{get_not_handled, get_version};
 
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
         let py = m.py();
         m.add("__version__", get_version())?;
         m.add("NOT_HANDLED", get_not_handled(py)?.clone_ref(py))?;
-        m.add("ASYNC_HOST", get_async_host(py)?.clone_ref(py))?;
         Ok(())
     }
 }
