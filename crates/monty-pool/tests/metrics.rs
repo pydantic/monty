@@ -446,6 +446,7 @@ async fn raw_turns_are_instrumented_like_typed_ones() {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "print('hi')\n6 * 7".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
         })),
@@ -473,7 +474,7 @@ async fn eager_coroutine_metrics_match_sync_outcomes() {
         let (pool, capture) = pool_with_metrics(PoolConfig::subprocess(monty_binary())).await;
         let mut checkout = pool.checkout(&ReplConfig::default()).await.unwrap();
         for result in [
-            ResumeValue::Return(MontyObject::Int(42)),
+            ResumeValue::Return(MontyObject::Int(42).into()),
             ResumeValue::Error(MontyException::new(ExcType::ValueError, Some("failed".to_owned()))),
         ] {
             let event = checkout

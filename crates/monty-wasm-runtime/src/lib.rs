@@ -9,10 +9,11 @@
 use std::{cell::RefCell, io};
 
 use monty_proto::{
-    DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, exceeds_max_frame_len, pb,
+    DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, WireArena, exceeds_max_frame_len,
+    os_call_from_proto, pb,
     worker::{Child, EventSink, HandleOutcome, protocol_violation},
 };
-use monty_types::{ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid, OsFunctionCall};
+use monty_types::{CallArgs, ExcType, MONTY_VERSION, MontyException, MontyNode, MontyUuid};
 
 #[expect(
     clippy::same_length_and_capacity,
@@ -25,8 +26,9 @@ mod bindings {
 mod value;
 
 use bindings::exports::pydantic::monty::worker::{
-    CallResult, ConfigureRequest, DispatchResult, Event, FunctionCallEvent, Guest, NameLookupEvent, NameLookupResult,
-    OsCallEvent, PrintEvent, RaisedError, RaisedException, Request, StackFrame, Status, TypeCheckFormat, ValuePair,
+    CallResult, CompleteEvent, ConfigureRequest, DispatchResult, Event, FunctionCallEvent, Guest, NameLookupEvent,
+    NameLookupResult, OsCallEvent, PrintEvent, RaisedError, RaisedException, Request, StackFrame, Status,
+    TypeCheckFormat,
 };
 
 thread_local! {
@@ -146,7 +148,7 @@ impl EventSink for ComponentEventSink {
                         check_event_value_budget(event.values_host_size())?;
                         event.into_component()
                     }
-                    Err(event) => event,
+                    Err(message) => invalid_event(&message),
                 },
                 kind => {
                     event.kind = kind;
@@ -171,84 +173,62 @@ fn check_event_value_budget(size: usize) -> Result<(), FrameError> {
     }
 }
 
-/// Estimates the expanded host size of values before lifting them into JS.
+/// Estimates the expanded host size of an event's arena before lifting it
+/// into JS.
 fn event_values_host_size(event: &pb::ChildEvent) -> usize {
     match &event.kind {
-        Some(pb::child_event::Kind::Complete(complete)) => complete
-            .value
-            .as_ref()
-            .and_then(|value| value.0.as_ref())
-            .map_or(0, MontyObject::deep_host_size),
-        Some(pb::child_event::Kind::FunctionCall(call)) => values_host_size(
-            call.args
-                .iter()
-                .chain(call.kwargs.iter().flat_map(|(key, value)| [key, value])),
-        ),
+        Some(pb::child_event::Kind::Complete(complete)) => {
+            complete.values.as_ref().map_or(0, |arena| nodes_host_size(&arena.0))
+        }
+        Some(pb::child_event::Kind::FunctionCall(call)) => nodes_host_size(&call.values.0),
         _ => 0,
     }
 }
 
-/// Totals the recursively expanded host footprint of boundary values.
-fn values_host_size<'a>(values: impl Iterator<Item = &'a MontyObject>) -> usize {
-    values.fold(0, |size, value| size.saturating_add(value.deep_host_size()))
+/// Totals the host footprint of an arena's nodes.
+fn nodes_host_size(nodes: &[MontyNode]) -> usize {
+    nodes.iter().fold(0, |size, node| size.saturating_add(node.host_size()))
 }
 
 /// An OS call projected once into the generic callback values lifted to JS.
 struct PreparedOsEvent {
     function_name: String,
-    args: Vec<MontyObject>,
-    kwargs: Vec<(MontyObject, MontyObject)>,
+    args: CallArgs,
     call_id: u32,
 }
 
 impl PreparedOsEvent {
-    /// Validates and projects a typed protocol call without building WIT arenas.
-    fn from_proto(call: pb::OsCall) -> Result<Self, Event> {
-        let call_id = call.call_id;
-        match call.call.map(OsFunctionCall::try_from) {
-            Some(Ok(call)) => {
-                let function_name = call.name().to_owned();
-                let (args, kwargs) = call.to_args();
-                Ok(Self {
-                    function_name,
-                    args,
-                    kwargs,
-                    call_id,
-                })
-            }
-            Some(Err(error)) => Err(invalid_event(&format!("invalid OS call: {error}"))),
-            None => Err(invalid_event("OsCall carried no call")),
-        }
+    /// Validates and projects a typed protocol call without building WIT
+    /// arenas; the error names what was wrong with the call.
+    fn from_proto(call: pb::OsCall) -> Result<Self, String> {
+        let (call_id, call) = os_call_from_proto(call).map_err(|error| format!("invalid OS call: {error}"))?;
+        Ok(Self {
+            function_name: call.name().to_owned(),
+            args: call.to_args(),
+            call_id,
+        })
     }
 
-    /// Returns the collective host footprint of every positional and keyword value.
+    /// Returns the host footprint of the call's arena.
     fn values_host_size(&self) -> usize {
-        values_host_size(
-            self.args
-                .iter()
-                .chain(self.kwargs.iter().flat_map(|(key, value)| [key, value])),
-        )
+        self.args.values.host_size()
     }
 
-    /// Moves the already-budgeted values into semantic component arenas.
+    /// Moves the already-budgeted values into the semantic component arena.
     fn into_component(self) -> Event {
         Event::OsCall(OsCallEvent {
             function_name: self.function_name,
-            args: self.args.into_iter().map(value::into_component).collect(),
-            kwargs: self
-                .kwargs
-                .into_iter()
-                .map(|(key, value)| ValuePair {
-                    key: value::into_component(key),
-                    value: value::into_component(value),
-                })
-                .collect(),
+            values: value::into_component(self.args.values.into_nodes()),
+            args: value::raw_ids(self.args.args),
+            kwargs: value::raw_pairs(self.args.kwargs),
             call_id: self.call_id,
         })
     }
 }
 
-/// Converts a semantic component request into the child state machine's type.
+/// Converts a semantic component request into the child state machine's
+/// type. A request's arena is validated here; the roots the request names
+/// are checked by the child, like any wire frame's.
 fn request_from_component(request: Request) -> Result<pb::ParentRequest, String> {
     let mut budget = value::DecodeBudget::default();
     let kind = match request {
@@ -258,42 +238,43 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
             inputs: request
                 .inputs
                 .into_iter()
-                .map(|input| {
-                    Ok(pb::NamedValue {
-                        name: input.name,
-                        value: Some(value::from_component(input.value, &mut budget)?.into()),
-                    })
+                .map(|input| pb::NamedRef {
+                    name: input.name,
+                    value: input.value,
                 })
-                .collect::<Result<_, String>>()?,
+                .collect(),
+            values: Some(WireArena::new(value::from_component(request.values, &mut budget)?)),
             skip_type_check: request.skip_type_check,
             cwd: request.cwd,
         }),
         Request::ResumeCall(request) => pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: request.call_id,
-            result: Some(call_result_from_component(request.outcome, &mut budget)?),
+            result: Some(call_result_from_component(request.outcome)),
+            values: Some(WireArena::new(value::from_component(request.values, &mut budget)?)),
         }),
-        Request::ResumeNameLookup(result) => {
-            let kind = match result {
-                NameLookupResult::Value(value) => {
-                    pb::resume_name_lookup::Kind::Value(value::from_component(value, &mut budget)?.into())
-                }
+        Request::ResumeNameLookup(request) => {
+            let kind = match request.outcome {
+                NameLookupResult::Value(root) => pb::resume_name_lookup::Kind::Value(root),
                 NameLookupResult::Undefined => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
                 NameLookupResult::Error(error) => {
                     pb::resume_name_lookup::Kind::Error(raised_exception_from_component(error))
                 }
             };
-            pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup { kind: Some(kind) })
+            pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+                values: Some(WireArena::new(value::from_component(request.values, &mut budget)?)),
+                kind: Some(kind),
+            })
         }
-        Request::ResumeFutures(results) => pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
-            results: results
+        Request::ResumeFutures(request) => pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+            results: request
+                .results
                 .into_iter()
-                .map(|result| {
-                    Ok(pb::FutureResult {
-                        call_id: result.call_id,
-                        result: Some(call_result_from_component(result.outcome, &mut budget)?),
-                    })
+                .map(|result| pb::FutureResult {
+                    call_id: result.call_id,
+                    result: Some(call_result_from_component(result.outcome)),
                 })
-                .collect::<Result<_, String>>()?,
+                .collect(),
+            values: Some(WireArena::new(value::from_component(request.values, &mut budget)?)),
         }),
         Request::AbortFeed(error) => pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
             exception: Some(raised_exception_from_component(error)),
@@ -348,21 +329,17 @@ fn type_check_format_from_component(format: TypeCheckFormat) -> pb::TypeCheckFor
     }
 }
 
-/// Converts a host call outcome into the child state machine's result type.
-fn call_result_from_component(
-    result: CallResult,
-    budget: &mut value::DecodeBudget,
-) -> Result<pb::ExtFunctionResult, String> {
+/// Converts a host call outcome into the child state machine's result type;
+/// a returned value stays the index into the request's arena.
+fn call_result_from_component(result: CallResult) -> pb::ExtFunctionResult {
     let kind = match result {
-        CallResult::ReturnValue(value) => {
-            pb::ext_function_result::Kind::ReturnValue(value::from_component(value, budget)?.into())
-        }
+        CallResult::ReturnValue(root) => pb::ext_function_result::Kind::ReturnValue(root),
         CallResult::Error(error) => pb::ext_function_result::Kind::Error(raised_exception_from_component(error)),
         CallResult::PendingFuture(call_id) => pb::ext_function_result::Kind::Future(call_id),
         CallResult::NotFound(name) => pb::ext_function_result::Kind::NotFound(name),
         CallResult::NotHandled => pb::ext_function_result::Kind::NotHandled(pb::Unit {}),
     };
-    Ok(pb::ExtFunctionResult { kind: Some(kind) })
+    pb::ExtFunctionResult { kind: Some(kind) }
 }
 
 /// Converts a host-raised error into the protocol's exception message; the
@@ -384,15 +361,9 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
             let object_id = call.object_id.map(|uuid| uuid.to_string());
             Event::FunctionCall(FunctionCallEvent {
                 function_name: call.function_name,
-                args: call.args.into_iter().map(value::into_component).collect(),
-                kwargs: call
-                    .kwargs
-                    .into_iter()
-                    .map(|(key, value)| ValuePair {
-                        key: value::into_component(key),
-                        value: value::into_component(value),
-                    })
-                    .collect(),
+                values: value::into_component(call.values.0),
+                args: value::raw_ids(call.args),
+                kwargs: value::raw_pairs(call.kwargs),
                 call_id: call.call_id,
                 object_id,
                 allow_eager_await: call.allow_eager_await,
@@ -408,11 +379,15 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
                 .map(|uuid| uuid.to_string()),
         }),
         Some(pb::child_event::Kind::ResolveFutures(futures)) => Event::ResolveFutures(futures.pending_call_ids),
-        Some(pb::child_event::Kind::Complete(complete)) => complete
-            .value
-            .and_then(|value| value.0)
-            .map(value::into_component)
-            .map_or_else(|| invalid_event("Complete event carried no value"), Event::Complete),
+        Some(pb::child_event::Kind::Complete(complete)) => complete.values.map_or_else(
+            || invalid_event("Complete event carried no values"),
+            |arena| {
+                Event::Complete(CompleteEvent {
+                    values: value::into_component(arena.0),
+                    value: complete.value,
+                })
+            },
+        ),
         Some(pb::child_event::Kind::Error(error)) => error
             .exception
             .map(exception_from_proto)

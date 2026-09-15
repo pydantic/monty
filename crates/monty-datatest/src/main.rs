@@ -29,8 +29,8 @@ use monty::{Dump, Session, SessionRef, dump};
 use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
-    CompileOptions, DictPairs, ExcType, ExtFunctionResult, FileMode, MontyClassInstance, MontyClassType, MontyDate,
-    MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyTimeZone, MontyUuid, NameLookupResult,
+    CompileOptions, DictPairs, ExcType, ExpandError, ExtFunctionResult, FileMode, MontyClassInstance, MontyClassType,
+    MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyTimeZone, MontyUuid, NameLookupResult,
     OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -707,7 +707,7 @@ fn dispatch_instance_attr(name: &str, instance_id: MontyUuid, registry: &Fixture
     };
     match (fixture.class_name, name) {
         // Class attribute mirrored by `dimensions = 2` on the Python fixtures
-        ("Point" | "MutablePoint", "dimensions") => NameLookupResult::Value(MontyObject::Int(2)),
+        ("Point" | "MutablePoint", "dimensions") => NameLookupResult::from(MontyObject::Int(2)),
         // The `MutablePoint.boom` property raises KeyError('boom') on the
         // host; the sandbox raises it where the attribute was read
         ("MutablePoint", "boom") => MontyException::new(ExcType::KeyError, Some("boom".to_owned())).into(),
@@ -1088,7 +1088,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
             };
             if let Some(v) = value {
                 MontyObject::String(v.to_owned()).into()
-            } else if matches!(args.default, MontyObject::None) {
+            } else if args.default == MontyObject::None {
                 MontyObject::None.into()
             } else {
                 args.default.clone().into()
@@ -1779,7 +1779,7 @@ fn run_mount_fs_iter_loop(
 
     loop {
         match progress {
-            RunProgress::Complete(result) => return Ok(result),
+            RunProgress::Complete(result) => return result.into_object().map_err(expand_error),
             RunProgress::FunctionCall(call) => {
                 // No external function calls expected in mount-fs tests.
                 panic!("unexpected FunctionCall in mount-fs test: {}", call.function_name);
@@ -1789,7 +1789,7 @@ fn run_mount_fs_iter_loop(
             }
             RunProgress::NameLookup(lookup) => {
                 let result = match lookup.name.as_str() {
-                    "root" => NameLookupResult::Value(MontyObject::Path("/mnt".to_owned())),
+                    "root" => NameLookupResult::from(MontyObject::Path("/mnt".to_owned())),
                     _ => NameLookupResult::Undefined,
                 };
                 progress = lookup.resume(result, PrintWriter::Stdout)?;
@@ -1797,7 +1797,7 @@ fn run_mount_fs_iter_loop(
             RunProgress::OsCall(call) => {
                 // Dispatch through the mount table first.
                 progress = call.resume_with(PrintWriter::Stdout, |fc| match mount_table.handle_os_call(fc) {
-                    MountCallOutcome::Handled(Ok(obj)) => ExtFunctionResult::Return(obj),
+                    MountCallOutcome::Handled(Ok(obj)) => ExtFunctionResult::Return(obj.into()),
                     MountCallOutcome::Handled(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
                     // Non-filesystem operation — dispatch to the regular handler.
                     MountCallOutcome::NotHandled(function_call) => dispatch_os_call(&function_call),
@@ -1840,27 +1840,27 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
         }
 
         match progress {
-            RunProgress::Complete(result) => return Ok(result),
+            RunProgress::Complete(result) => return result.into_object().map_err(expand_error),
             RunProgress::FunctionCall(call) => {
                 // Method calls on host-backed objects are routed by the
                 // receiver uuid; unknown methods return AttributeError, and
                 // an unregistered id (e.g. a class-uuid receiver — the
                 // harness registers no class types) answers the documented
                 // store-miss RuntimeError like a real host.
+                let (args, kwargs) = call.args.into_objects().expect("call arguments expand");
                 if let Some(object_id) = call.object_id {
-                    let result =
-                        dispatch_method_call(&call.function_name, object_id, &call.args, &call.kwargs, &mut registry);
+                    let result = dispatch_method_call(&call.function_name, object_id, &args, &kwargs, &mut registry);
                     progress = call.resume(result, PrintWriter::Stdout)?;
                     continue;
                 }
-                let dispatch_result = dispatch_external_call(&call.function_name, call.args.clone(), &mut registry);
+                let dispatch_result = dispatch_external_call(&call.function_name, args, &mut registry);
                 match dispatch_result {
                     DispatchResult::Sync(return_value) => {
                         progress = call.resume(return_value, PrintWriter::Stdout)?;
                     }
                     DispatchResult::Async(result_value) => {
                         // Store the success result for later resolution
-                        pending_results.push((call.call_id, ExtFunctionResult::Return(result_value)));
+                        pending_results.push((call.call_id, ExtFunctionResult::Return(result_value.into())));
                         // Continue execution with a pending future
                         progress = call.resume_pending(PrintWriter::Stdout)?;
                     }
@@ -1905,23 +1905,23 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
                     // External functions — resolved as callable Function objects
                     "add_ints" | "concat_strings" | "return_value" | "get_list" | "raise_error" | "make_point"
                     | "make_mutable_point" | "make_user" | "make_empty" | "async_call" | "async_fail" => {
-                        NameLookupResult::Value(MontyObject::Function {
+                        NameLookupResult::from(MontyObject::Function {
                             name: lookup.name.clone(),
                             docstring: None,
                         })
                     }
                     // Non-function constants — resolved as plain values
-                    "CONST_INT" => NameLookupResult::Value(MontyObject::Int(42)),
-                    "CONST_STR" => NameLookupResult::Value(MontyObject::String("hello".to_string())),
+                    "CONST_INT" => NameLookupResult::from(MontyObject::Int(42)),
+                    "CONST_STR" => NameLookupResult::from(MontyObject::String("hello".to_string())),
                     #[expect(clippy::approx_constant, reason = "3.14 is the intended test value")]
-                    "CONST_FLOAT" => NameLookupResult::Value(MontyObject::Float(3.14)),
-                    "CONST_BOOL" => NameLookupResult::Value(MontyObject::Bool(true)),
-                    "CONST_LIST" => NameLookupResult::Value(MontyObject::List(vec![
+                    "CONST_FLOAT" => NameLookupResult::from(MontyObject::Float(3.14)),
+                    "CONST_BOOL" => NameLookupResult::from(MontyObject::Bool(true)),
+                    "CONST_LIST" => NameLookupResult::from(MontyObject::List(vec![
                         MontyObject::Int(1),
                         MontyObject::Int(2),
                         MontyObject::Int(3),
                     ])),
-                    "CONST_NONE" => NameLookupResult::Value(MontyObject::None),
+                    "CONST_NONE" => NameLookupResult::from(MontyObject::None),
                     // Unknown names → NameError
                     _ => NameLookupResult::Undefined,
                 };
@@ -1933,6 +1933,12 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
             }
         }
     }
+}
+
+/// Reports a result the harness cannot expand into a tree (too large or too
+/// deep) as a `RuntimeError`, as the in-process API does.
+fn expand_error(err: ExpandError) -> MontyException {
+    MontyException::new(ExcType::RuntimeError, Some(err.to_string()))
 }
 
 /// Dumps a suspended run and reloads it, so every test case exercises the real

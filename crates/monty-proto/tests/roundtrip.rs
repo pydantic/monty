@@ -867,10 +867,13 @@ fn os_calls_round_trip_all_variants() {
 fn os_call_urandom_size_above_i64_converts_exactly() {
     let call = OsFunctionCall::Urandom(UrandomArgs { size: u64::MAX });
     assert_os_call_round_trip(call.clone());
-    let (args, kwargs) = call.to_args();
+    let (args, kwargs) = call.to_args().into_objects().unwrap();
     assert_eq!(args, vec![MontyObject::BigInt(BigInt::from(u64::MAX))]);
     assert!(kwargs.is_empty());
-    let (args, _) = OsFunctionCall::Urandom(UrandomArgs { size: 2496 }).to_args();
+    let (args, _) = OsFunctionCall::Urandom(UrandomArgs { size: 2496 })
+        .to_args()
+        .into_objects()
+        .unwrap();
     assert_eq!(args, vec![MontyObject::Int(2496)]);
 }
 

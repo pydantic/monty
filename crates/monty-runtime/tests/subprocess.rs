@@ -13,9 +13,11 @@ use std::{
 
 use monty_proto::{
     FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireFunctionCall,
-    WireObject, exceeds_max_frame_len, pb, write_frame,
+    exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
 };
-use monty_types::{MontyDate, MontyDateTime, MontyObject};
+use monty_types::{
+    CallArgs, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, MontyValue, NameLookupResult, NamedValues,
+};
 
 /// How long a death-expecting helper waits for the child to exit. Generous:
 /// the regression it guards is "the child never dies", so the only cost of a
@@ -110,13 +112,15 @@ impl ChildProc {
 
     /// Feeds a snippet and returns `(prints, turn-ending event)`.
     fn feed(&mut self, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind) {
-        self.feed_with(code, vec![])
+        self.feed_with(code, NamedValues::new())
     }
 
-    fn feed_with(&mut self, code: &str, inputs: Vec<pb::NamedValue>) -> (Vec<pb::Print>, pb::child_event::Kind) {
+    fn feed_with(&mut self, code: &str, inputs: NamedValues) -> (Vec<pb::Print>, pb::child_event::Kind) {
+        let (inputs, values) = named_values_to_proto(inputs);
         self.send(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
             inputs,
+            values: Some(values),
             skip_type_check: false,
             cwd: "/".to_owned(),
         }));
@@ -138,6 +142,18 @@ impl ChildProc {
         self.send(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id,
             result: Some(pb::ExtFunctionResult { kind: Some(result) }),
+            values: None,
+        }));
+        self.recv_turn()
+    }
+
+    /// Answers a suspended call with a returned value.
+    fn resume_return(&mut self, call_id: u32, value: MontyObject) -> (Vec<pb::Print>, pb::child_event::Kind) {
+        let (result, values) = ext_result_to_proto(ExtFunctionResult::Return(value.into()));
+        self.send(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id,
+            result: Some(result),
+            values,
         }));
         self.recv_turn()
     }
@@ -149,6 +165,7 @@ impl ChildProc {
         self.send(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
         }));
@@ -223,12 +240,16 @@ impl Drop for ChildProc {
 
 #[track_caller]
 fn expect_complete(event: pb::child_event::Kind) -> MontyObject {
+    expect_complete_value(event)
+        .into_object()
+        .expect("complete value expands")
+}
+
+/// The completed value as its arena, for assertions about its shape.
+#[track_caller]
+fn expect_complete_value(event: pb::child_event::Kind) -> MontyValue {
     match event {
-        pb::child_event::Kind::Complete(complete) => complete
-            .value
-            .expect("complete has no value")
-            .into_object()
-            .expect("invalid complete value"),
+        pb::child_event::Kind::Complete(complete) => MontyValue::try_from(complete).expect("invalid complete value"),
         other => panic!("expected Complete, got {other:?}"),
     }
 }
@@ -241,12 +262,15 @@ fn expect_error(event: pb::child_event::Kind) -> pb::RaisedException {
     }
 }
 
-fn int_value(i: i64) -> WireObject {
-    WireObject::new(MontyObject::Int(i))
-}
-
-fn str_value(s: &str) -> WireObject {
-    WireObject::new(MontyObject::String(s.to_owned()))
+/// The positional arguments of an announced call, expanded into trees.
+#[track_caller]
+fn call_args(call: &WireFunctionCall) -> Vec<MontyObject> {
+    call.clone()
+        .into_call_args()
+        .expect("valid call arguments")
+        .into_objects()
+        .expect("arguments expand")
+        .0
 }
 
 // =============================================================================
@@ -267,10 +291,7 @@ fn session_state_persists_across_feeds() {
 fn inputs_are_injected() {
     let mut child = ChildProc::spawn();
     child.create_repl();
-    let inputs = vec![pb::NamedValue {
-        name: "a".to_owned(),
-        value: Some(int_value(20)),
-    }];
+    let inputs = NamedValues::from(vec![("a".to_owned(), MontyObject::Int(20))]);
     let (_, event) = child.feed_with("a + 1", inputs);
     assert_eq!(expect_complete(event), MontyObject::Int(21));
     child.shutdown();
@@ -322,9 +343,9 @@ fn external_function_round_trip() {
     };
     assert_eq!(call.function_name, "add");
     assert_eq!(call.object_id, None);
-    assert_eq!(call.args, vec![MontyObject::Int(1), MontyObject::Int(2)]);
+    assert_eq!(call_args(&call), vec![MontyObject::Int(1), MontyObject::Int(2)]);
 
-    let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::ReturnValue(int_value(3)));
+    let (_, event) = child.resume_return(call.call_id, MontyObject::Int(3));
     assert_eq!(expect_complete(event), MontyObject::Int(3));
     child.shutdown();
 }
@@ -372,14 +393,13 @@ fn abort_feed_round_trip() {
 #[test]
 fn near_limit_suspension_is_refused_cleanly() {
     let announcement = |arg_len: usize| pb::ChildEvent {
-        kind: Some(pb::child_event::Kind::FunctionCall(WireFunctionCall {
-            function_name: "f".to_owned(),
-            args: vec![MontyObject::String("x".repeat(arg_len))],
-            kwargs: vec![],
-            call_id: 1,
-            object_id: None,
-            allow_eager_await: false,
-        })),
+        kind: Some(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+            "f".to_owned(),
+            CallArgs::from(vec![MontyObject::String("x".repeat(arg_len))]),
+            1,
+            None,
+            false,
+        ))),
         ..Default::default()
     };
     // Size the argument so the unstamped announcement is exactly
@@ -432,9 +452,9 @@ fn name_lookup_round_trip() {
         panic!("expected NameLookup, got {event:?}");
     };
     assert_eq!(lookup.name, "answer");
-    child.send(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
-        kind: Some(pb::resume_name_lookup::Kind::Value(int_value(41))),
-    }));
+    child.send(pb::parent_request::Kind::ResumeNameLookup(
+        NameLookupResult::from(MontyObject::Int(41)).into(),
+    ));
     let (_, event) = child.recv_turn();
     assert_eq!(expect_complete(event), MontyObject::Int(42));
     child.shutdown();
@@ -459,6 +479,7 @@ fn name_lookup_error_raises_in_sandbox() {
         data: None,
     };
     child.send(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+        values: None,
         kind: Some(pb::resume_name_lookup::Kind::Error(exc.clone())),
     }));
     let (_, event) = child.recv_turn();
@@ -470,6 +491,7 @@ fn name_lookup_error_raises_in_sandbox() {
     let (_, event) = child.feed("secret");
     assert!(matches!(event, pb::child_event::Kind::NameLookup(_)));
     child.send(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+        values: None,
         kind: Some(pb::resume_name_lookup::Kind::Error(exc)),
     }));
     let (_, event) = child.recv_turn();
@@ -522,10 +544,7 @@ fn clock_calls_bubble_to_parent() {
         panic!("expected OsCall, got {event:?}");
     };
     assert_eq!(call.call, Some(pb::os_call::Call::DateToday(pb::Unit {})));
-    let (_, event) = child.resume_call(
-        call.call_id,
-        pb::ext_function_result::Kind::ReturnValue(WireObject::new(MontyObject::Date(today.clone()))),
-    );
+    let (_, event) = child.resume_return(call.call_id, MontyObject::Date(today.clone()));
     assert_eq!(expect_complete(event), MontyObject::Date(today));
 
     let now = MontyDateTime {
@@ -547,10 +566,7 @@ fn clock_calls_bubble_to_parent() {
         call.call,
         Some(pb::os_call::Call::DateTimeNow(pb::os_call::DateTimeNow { tz: None }))
     );
-    let (_, event) = child.resume_call(
-        call.call_id,
-        pb::ext_function_result::Kind::ReturnValue(WireObject::new(MontyObject::DateTime(now.clone()))),
-    );
+    let (_, event) = child.resume_return(call.call_id, MontyObject::DateTime(now.clone()));
     assert_eq!(expect_complete(event), MontyObject::DateTime(now));
 
     child.shutdown();
@@ -566,10 +582,7 @@ fn os_call_bubbles_to_parent_without_mounts() {
     };
     assert_eq!(call.call, Some(pb::os_call::Call::ReadText("/data.txt".to_owned())));
 
-    let (_, event) = child.resume_call(
-        call.call_id,
-        pb::ext_function_result::Kind::ReturnValue(str_value("hello")),
-    );
+    let (_, event) = child.resume_return(call.call_id, MontyObject::String("hello".to_owned()));
     assert_eq!(expect_complete(event), MontyObject::String("hello".to_owned()));
     child.shutdown();
 }
@@ -588,7 +601,7 @@ fn suspended_call_keeps_its_arguments_for_a_dump() {
         panic!("expected FunctionCall, got {event:?}");
     };
     assert_eq!(
-        call.args,
+        call_args(&call),
         vec![MontyObject::String("hello".to_owned()), MontyObject::Int(1)]
     );
 
@@ -789,10 +802,7 @@ fn large_unnested_format_spec_preserves_the_worker() {
     for junk_len in [5_000_000, 10_000_000] {
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(16 * 1024 * 1024));
-        let inputs = vec![pb::NamedValue {
-            name: "template".to_owned(),
-            value: Some(str_value(&template)),
-        }];
+        let inputs = NamedValues::from(vec![("template".to_owned(), MontyObject::String(template.clone()))]);
         // The smaller filler reaches tracked error rendering without room for
         // another spec copy. The larger one requires a preflighted receiver copy.
         let code = format!("junk = 'j' * {junk_len}\ntemplate.format(0)");
@@ -1099,10 +1109,7 @@ fn iterdir_joins_are_preflighted() {
         panic!("expected OsCall, got {event:?}");
     };
     let entries = MontyObject::List(vec![MontyObject::String("x".to_owned()); 20]);
-    let (_, event) = child.resume_call(
-        call.call_id,
-        pb::ext_function_result::Kind::ReturnValue(WireObject::new(entries)),
-    );
+    let (_, event) = child.resume_return(call.call_id, entries);
     let error = expect_error(event);
     assert_eq!(error.exc_type, "MemoryError");
     let message = error.message.expect("MemoryError should have a message");
@@ -1128,12 +1135,11 @@ fn large_host_call_arguments_survive_being_announced() {
     let pb::child_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
-    assert_eq!(call.args.len(), 1);
-    assert_eq!(call.args[0], MontyObject::String("A".repeat(ARG)));
+    assert_eq!(call_args(&call), vec![MontyObject::String("A".repeat(ARG))]);
 
     // the session is still usable afterwards, i.e. nothing overshot into a
     // soft-limit `MemoryError` on the next checkpoint either
-    let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::ReturnValue(int_value(7)));
+    let (_, event) = child.resume_return(call.call_id, MontyObject::Int(7));
     assert_eq!(expect_complete(event), MontyObject::Int(7));
     assert_eq!(
         child.feed_complete("len(s)"),
@@ -1162,7 +1168,7 @@ fn a_returnable_value_can_also_be_passed_to_a_host_function() {
     let pb::child_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
-    assert_eq!(string_len(&call.args[0]), ARG);
+    assert_eq!(string_len(&call_args(&call)[0]), ARG);
     child.shutdown();
 }
 
@@ -1846,10 +1852,7 @@ fn dump_then_load_into_fresh_child_resumes() {
     assert_eq!(restored.function_name, "ext");
     assert_eq!(restored.call_id, call.call_id);
 
-    let (_, event) = fresh.resume_call(
-        restored.call_id,
-        pb::ext_function_result::Kind::ReturnValue(int_value(2)),
-    );
+    let (_, event) = fresh.resume_return(restored.call_id, MontyObject::Int(2));
     assert_eq!(expect_complete(event), MontyObject::Int(2));
     // session globals survived the round trip through the dump
     assert_eq!(fresh.feed_complete("base + 2"), MontyObject::Int(42));
@@ -1994,10 +1997,7 @@ fn protocol_violations_keep_the_child_alive() {
     let pb::child_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
-    let (_, event) = child.resume_call(
-        call.call_id + 1,
-        pb::ext_function_result::Kind::ReturnValue(int_value(0)),
-    );
+    let (_, event) = child.resume_return(call.call_id + 1, MontyObject::Int(0));
     let error = expect_error(event);
     assert!(error.message.unwrap().starts_with("protocol violation"));
 
@@ -2137,6 +2137,7 @@ fn killed_child_is_detected_as_eof() {
     child.send(pb::parent_request::Kind::Feed(pb::Feed {
         code: "while True:\n    pass".to_owned(),
         inputs: vec![],
+        values: None,
         skip_type_check: false,
         cwd: "/".to_owned(),
     }));

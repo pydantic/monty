@@ -32,7 +32,8 @@ use monty_pool::{
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
 use monty_types::{
-    ExcType, MontyException, MontyObject, PrintStream, ResourceLimits, TypeCheckingConfig, TypeCheckingFormat,
+    CallArgs, ExcType, MontyException, MontyObject, NameLookupResult, PrintStream, ResourceLimits, TypeCheckingConfig,
+    TypeCheckingFormat,
 };
 use tokio::time::sleep;
 
@@ -74,7 +75,7 @@ fn no_print(_: PrintStream, _: &str) -> PrintFuture {
 #[track_caller]
 fn expect_complete(event: TurnEvent) -> MontyObject {
     match event {
-        TurnEvent::Complete(value) => value,
+        TurnEvent::Complete(value) => value.into_object().expect("complete value expands"),
         other => panic!("expected Complete, got {other:?}"),
     }
 }
@@ -167,7 +168,7 @@ async fn allow_eager_await_validates_replies_before_sending() {
     assert!(allow_eager_await);
     for results in [
         vec![],
-        vec![(call_id + 1, ResumeValue::Return(MontyObject::Int(42)))],
+        vec![(call_id + 1, ResumeValue::Return(MontyObject::Int(42).into()))],
         vec![(call_id, ResumeValue::Future)],
         vec![(call_id, ResumeValue::NotFound)],
     ] {
@@ -178,7 +179,7 @@ async fn allow_eager_await_validates_replies_before_sending() {
     }
     let done = session
         .resume_futures(
-            vec![(call_id, ResumeValue::Return(MontyObject::Int(42)))],
+            vec![(call_id, ResumeValue::Return(MontyObject::Int(42).into()))],
             &mut no_print,
         )
         .await
@@ -246,7 +247,10 @@ async fn feed_and_finish_reuses_the_worker() {
     assert_eq!(session.pid().unwrap(), first_pid);
     let event = session.feed("x", vec![], vec![], false, &mut no_print).await.unwrap();
     assert!(matches!(event, TurnEvent::NameLookup { name, .. } if name == "x"));
-    let err = session.resume_name_lookup(None, &mut no_print).await.unwrap_err();
+    let err = session
+        .resume_name_lookup(NameLookupResult::Undefined, &mut no_print)
+        .await
+        .unwrap_err();
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
     };
@@ -318,7 +322,7 @@ async fn cyclic_return_value_decodes_and_keeps_the_worker_alive() {
     let pairs: Vec<_> = pairs.into_iter().collect();
     assert_eq!(pairs.len(), 1);
     assert_eq!(pairs[0].0, MontyObject::String("self".to_owned()));
-    assert!(matches!(&pairs[0].1, MontyObject::Cycle(_, placeholder) if placeholder == "{...}"));
+    assert!(matches!(&pairs[0].1, MontyObject::Cycle(placeholder) if placeholder == "{...}"));
     // the session must still be usable on the same worker
     let event = session
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
@@ -329,8 +333,10 @@ async fn cyclic_return_value_decodes_and_keeps_the_worker_alive() {
     assert_eq!(pool.idle_workers(), 1);
 }
 
+/// The arena has no nesting bound: a lookup answer nested a hundred lists
+/// deep crosses the wire and comes back the same shape.
 #[tokio::test]
-async fn name_lookup_value_too_deep_for_the_wire_is_rejected_cleanly() {
+async fn deeply_nested_name_lookup_value_crosses_the_wire() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let event = session
@@ -338,20 +344,12 @@ async fn name_lookup_value_too_deep_for_the_wire_is_rejected_cleanly() {
         .await
         .unwrap();
     assert!(matches!(event, TurnEvent::NameLookup { ref name, .. } if name == "missing"));
-    // a value nested past the wire depth bound would produce a frame the
-    // worker cannot decode; it must fail as a session-preserving error
-    let deep = (0..=monty_pool::MAX_VALUE_DEPTH).fold(MontyObject::Int(1), |inner, _| MontyObject::List(vec![inner]));
-    let err = session.resume_name_lookup(Some(deep), &mut no_print).await.unwrap_err();
-    let PoolError::Runtime(exc) = err else {
-        panic!("expected Runtime, got {err:?}");
-    };
-    assert_eq!(exc.message(), Some("Max input depth exceeded"));
-    // the suspension is still pending, so a sendable answer completes the feed
+    let deep = (0..100).fold(MontyObject::Int(1), |inner, _| MontyObject::List(vec![inner]));
     let event = session
-        .resume_name_lookup(Some(MontyObject::Int(7)), &mut no_print)
+        .resume_name_lookup(Some(deep.clone()), &mut no_print)
         .await
         .unwrap();
-    assert_eq!(expect_complete(event), MontyObject::Int(7));
+    assert_eq!(expect_complete(event), deep);
     session.finish().await.unwrap();
 }
 
@@ -801,10 +799,13 @@ covered + ':' + Path('/elsewhere/file.txt').read_text()";
         panic!("expected OsCall, got {event:?}");
     };
     assert_eq!(function_name, "Path.read_text");
-    assert_eq!(args, vec![MontyObject::Path("/elsewhere/file.txt".to_owned())]);
+    assert_eq!(
+        args,
+        CallArgs::from(vec![MontyObject::Path("/elsewhere/file.txt".to_owned())])
+    );
     let event = session
         .resume(
-            ResumeValue::Return(MontyObject::String("uncovered".to_owned())),
+            ResumeValue::Return(MontyObject::String("uncovered".to_owned()).into()),
             &mut no_print,
         )
         .await
@@ -849,10 +850,13 @@ external + ' ' + Path('/mnt/data.txt').read_text()";
         panic!("expected OsCall, got {event:?}");
     };
     assert_eq!(function_name, "Path.read_text");
-    assert_eq!(args, &vec![MontyObject::Path("/external/answer.txt".to_owned())]);
+    assert_eq!(
+        args,
+        &CallArgs::from(vec![MontyObject::Path("/external/answer.txt".to_owned())])
+    );
     let result = restored
         .resume(
-            ResumeValue::Return(MontyObject::String("hello".to_owned())),
+            ResumeValue::Return(MontyObject::String("hello".to_owned()).into()),
             &mut no_print,
         )
         .await;
@@ -1031,7 +1035,7 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
     assert!(matches!(event, TurnEvent::FunctionCall { .. }), "got {event:?}");
     let huge = MontyObject::String("x".repeat(OVERSIZE));
     let err = session
-        .resume(ResumeValue::Return(huge), &mut no_print)
+        .resume(ResumeValue::Return(huge.into()), &mut no_print)
         .await
         .unwrap_err();
     let PoolError::Runtime(exc) = err else {
@@ -1046,7 +1050,7 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
     // the same suspension still answers to a value that fits
     let event = session
         .resume(
-            ResumeValue::Return(MontyObject::String("small".to_owned())),
+            ResumeValue::Return(MontyObject::String("small".to_owned()).into()),
             &mut no_print,
         )
         .await
@@ -1088,7 +1092,7 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
     assert!(matches!(event, TurnEvent::ResolveFutures { .. }), "got {event:?}");
     let huge = MontyObject::String("x".repeat(OVERSIZE));
     let err = session
-        .resume_futures(vec![(call_id, ResumeValue::Return(huge))], &mut no_print)
+        .resume_futures(vec![(call_id, ResumeValue::Return(huge.into()))], &mut no_print)
         .await
         .unwrap_err();
     let PoolError::Runtime(exc) = err else {
@@ -1102,7 +1106,7 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
     );
     let event = session
         .resume_futures(
-            vec![(call_id, ResumeValue::Return(MontyObject::Int(99)))],
+            vec![(call_id, ResumeValue::Return(MontyObject::Int(99).into()))],
             &mut no_print,
         )
         .await
@@ -1139,7 +1143,7 @@ async fn oversize_dump_while_suspended_fails_cleanly_and_resumes() {
 
     // the suspension is untouched: resuming completes the feed
     let event = session
-        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::None.into()), &mut no_print)
         .await
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(300 * 1024 * 1024));
@@ -1363,10 +1367,10 @@ async fn external_function_round_trip() {
         panic!("expected FunctionCall, got {event:?}");
     };
     assert_eq!(function_name, "fetch");
-    assert_eq!(args, vec![MontyObject::String("https://x".to_owned())]);
+    assert_eq!(args, CallArgs::from(vec![MontyObject::String("https://x".to_owned())]));
     let event = session
         .resume(
-            ResumeValue::Return(MontyObject::String("body".to_owned())),
+            ResumeValue::Return(MontyObject::String("body".to_owned()).into()),
             &mut no_print,
         )
         .await
@@ -1658,6 +1662,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
         })),
@@ -1701,6 +1706,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
         })),
@@ -1748,6 +1754,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
         })),
@@ -1876,7 +1883,7 @@ async fn suspension_time_does_not_consume_the_duration_budget() {
 
     let event = session
         .resume(
-            ResumeValue::Return(MontyObject::String("body".to_owned())),
+            ResumeValue::Return(MontyObject::String("body".to_owned()).into()),
             &mut no_print,
         )
         .await
@@ -1953,7 +1960,7 @@ async fn restored_session_readopts_its_suspension_limit() {
     // the re-announced suspension is the restored checkout's first
     assert!(matches!(event, Some(TurnEvent::FunctionCall { .. })), "got {event:?}");
     let event = restored
-        .resume(ResumeValue::Return(MontyObject::Int(1)), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::Int(1).into()), &mut no_print)
         .await
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(1));
@@ -2275,7 +2282,7 @@ async fn cancelled_turn_discards_the_worker_on_resume_from_mounts() {
 
     // the discard already happened: every later call reports the dead checkout
     let err = session
-        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::None.into()), &mut no_print)
         .await
         .unwrap_err();
     assert!(matches!(err, PoolError::Finished), "got {err:?}");
@@ -2325,7 +2332,7 @@ async fn dump_survives_worker_death_and_loads_elsewhere() {
     };
     assert_eq!(function_name, "ext");
     let event = restored
-        .resume(ResumeValue::Return(MontyObject::Int(2)), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::Int(2).into()), &mut no_print)
         .await
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(42));

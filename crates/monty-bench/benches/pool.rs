@@ -76,7 +76,7 @@ fn no_print(_: PrintStream, _: &str) -> PrintFuture {
 #[track_caller]
 fn expect_complete(event: TurnEvent) -> MontyObject {
     match event {
-        TurnEvent::Complete(value) => value,
+        TurnEvent::Complete(value) => value.into_object().expect("complete value expands"),
         other => panic!("expected Complete, got {other:?}"),
     }
 }
@@ -87,10 +87,10 @@ fn expect_complete(event: TurnEvent) -> MontyObject {
 async fn drive_answering_calls(session: &mut Checkout, mut event: TurnEvent) -> MontyObject {
     loop {
         match event {
-            TurnEvent::Complete(value) => break value,
+            TurnEvent::Complete(value) => break value.into_object().expect("complete value expands"),
             TurnEvent::FunctionCall { .. } => {
                 event = session
-                    .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+                    .resume(ResumeValue::Return(MontyObject::None.into()), &mut no_print)
                     .await
                     .unwrap();
             }
@@ -229,10 +229,10 @@ fn ext_call_rows(bench: &mut Bencher) {
             .unwrap();
         let value = loop {
             match event {
-                TurnEvent::Complete(value) => break value,
+                TurnEvent::Complete(value) => break value.into_object().expect("complete value expands"),
                 TurnEvent::FunctionCall { .. } => {
                     event = session
-                        .resume(ResumeValue::Return(rows.clone()), &mut no_print)
+                        .resume(ResumeValue::Return(rows.clone().into()), &mut no_print)
                         .await
                         .unwrap();
                 }

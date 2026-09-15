@@ -1,23 +1,26 @@
-//! Conversion between component-model value arenas and [`MontyObject`].
+//! Conversion between component-model node arenas and [`MontyGraph`].
 //!
-//! WIT cannot express recursive value types, so the component boundary uses a
-//! flat node arena whose container nodes hold indexes. Protobuf remains an
-//! internal detail of `monty-proto`; no wire bytes cross into JavaScript.
+//! WIT cannot express recursive value types, so the component boundary uses
+//! the same flat post-order arena the wire does: one per message, container
+//! nodes holding the indexes of their (lower-numbered) children. Conversion
+//! is node for node; the arena's invariants are checked by
+//! [`MontyGraph::from_nodes`]. Protobuf remains an internal detail of
+//! `monty-proto`; no wire bytes cross into JavaScript.
 
 use std::borrow::Cow;
 
-use monty_proto::{DEFAULT_MAX_DECODE_BYTES, MAX_VALUE_DEPTH, exceeds_max_value_depth};
+use monty_proto::DEFAULT_MAX_DECODE_BYTES;
 use monty_types::{
-    DictPairs, FileMode, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject,
-    MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
+    ClassTypeNode as MontyClassTypeNode, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyGraph, MontyNode,
+    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NodeId,
 };
 
 use crate::bindings::exports::pydantic::monty::worker::{
-    ClassInstanceNode, ClassTypeNode, CycleNode, DateNode, DatetimeNode, ExceptionValueNode, FileHandleNode,
-    FunctionNode, NamedTupleNode, NodePair, TimeNode, TimedeltaNode, TimezoneNode, Value, ValueNode,
+    Arena, ClassInstanceNode, ClassTypeNode, DateNode, DatetimeNode, ExceptionValueNode, FileHandleNode, FunctionNode,
+    NamedTupleNode, NodePair, TimeNode, TimedeltaNode, TimezoneNode, ValueNode,
 };
 
-/// Remaining expanded-value allowance shared by every arena in one request.
+/// Remaining expanded-value allowance for one request's arena.
 pub struct DecodeBudget {
     remaining: usize,
 }
@@ -31,7 +34,7 @@ impl Default for DecodeBudget {
 }
 
 impl DecodeBudget {
-    /// Charges an arena before conversion allocates its `MontyObject` tree.
+    /// Charges an arena before conversion allocates its nodes.
     fn charge(&mut self, nodes: &[ValueNode]) -> Result<usize, String> {
         let bytes = nodes
             .iter()
@@ -45,117 +48,113 @@ impl DecodeBudget {
     }
 }
 
-/// Converts one component value arena into an owned Monty boundary value.
-pub fn from_component(value: Value, budget: &mut DecodeBudget) -> Result<MontyObject, String> {
-    let Value { root, nodes } = value;
-    let estimated_size = budget.charge(&nodes)?;
-    let mut nodes = nodes.into_iter().map(Some).collect::<Vec<_>>();
-    let object = read_node(root, &mut nodes, 0)?;
-    if let Some(index) = nodes.iter().position(Option::is_some) {
-        Err(format!("value node index {index} is unreachable from the root"))
-    } else if exceeds_max_value_depth(&object) {
-        Err("value exceeds the maximum nesting depth".to_owned())
-    } else if object.deep_host_size() > estimated_size {
+/// Converts one component arena into a validated Monty arena.
+pub fn from_component(arena: Arena, budget: &mut DecodeBudget) -> Result<MontyGraph, String> {
+    let estimated_size = budget.charge(&arena.nodes)?;
+    let nodes = arena
+        .nodes
+        .into_iter()
+        .map(node_from_component)
+        .collect::<Result<Vec<_>, _>>()?;
+    let graph = MontyGraph::from_nodes(nodes).map_err(|err| err.to_string())?;
+    if graph.host_size() > estimated_size {
         Err("component value host-memory estimate is smaller than its decoded value".to_owned())
     } else {
-        Ok(object)
+        Ok(graph)
     }
 }
 
-/// Conservatively estimates one node using `MontyObject::host_size` accounting.
+/// Conservatively estimates one node using `MontyNode::host_size` accounting.
 fn node_host_size(node: &ValueNode) -> usize {
     let strings_size = |strings: &[String]| {
         strings.iter().fold(0usize, |size, value| {
             size.saturating_add(MontyObject::host_metadata_string_size(value))
         })
     };
+    let indexes = |count: usize| count.saturating_mul(size_of::<NodeId>());
+    let pairs = |count: usize| count.saturating_mul(size_of::<(NodeId, NodeId)>());
     let payload = match node {
         // Two decimal digits per byte is a conservative bound for the parsed
         // binary integer without allocating it merely to measure its bits.
         ValueNode::Bigint(value) => value.len().div_ceil(2),
-        ValueNode::Text(value) | ValueNode::Path(value) | ValueNode::Repr(value) => value.len(),
+        ValueNode::Text(value) | ValueNode::Path(value) | ValueNode::Repr(value) | ValueNode::Cycle(value) => {
+            value.len()
+        }
         ValueNode::Bytes(value) => value.len(),
-        ValueNode::NamedTuple(value) => value.type_name.len().saturating_add(strings_size(&value.field_names)),
+        ValueNode::ListValue(items)
+        | ValueNode::TupleValue(items)
+        | ValueNode::Set(items)
+        | ValueNode::FrozenSet(items) => indexes(items.len()),
+        ValueNode::NamedTuple(value) => value
+            .type_name
+            .len()
+            .saturating_add(strings_size(&value.field_names))
+            .saturating_add(indexes(value.items.len())),
+        ValueNode::Dict(value) => pairs(value.len()),
         ValueNode::Datetime(value) => value.timezone_name.as_ref().map_or(0, String::len),
         ValueNode::Time(value) => value.timezone_name.as_ref().map_or(0, String::len),
         ValueNode::Timezone(value) => value.name.as_ref().map_or(0, String::len),
         ValueNode::Exception(value) => value.message.as_ref().map_or(0, String::len),
         ValueNode::FileHandle(value) => value.path.len(),
-        // The boxed payloads charge their allocation like `host_size` does;
-        // the class name is charged by the class-type node, which an instance
-        // always carries as a separate node (an over-estimate for instances,
-        // which embed the class type in their own allocation).
-        ValueNode::ClassInstance(_) => size_of::<MontyClassInstance>(),
-        ValueNode::ClassType(value) => size_of::<MontyClassType>().saturating_add(value.name.len()),
+        ValueNode::ClassInstance(value) => pairs(value.attrs.len()),
+        ValueNode::ClassType(value) => size_of::<MontyClassTypeNode>()
+            .saturating_add(value.name.len())
+            .saturating_add(pairs(value.attrs.len())),
         ValueNode::Function(value) => value
             .name
             .len()
             .saturating_add(value.docstring.as_ref().map_or(0, String::len)),
-        ValueNode::Cycle(value) => value.placeholder.len(),
         ValueNode::Ellipsis
         | ValueNode::NotImplemented
         | ValueNode::None
         | ValueNode::Boolean(_)
         | ValueNode::Integer(_)
         | ValueNode::Float(_)
-        | ValueNode::ListValue(_)
-        | ValueNode::TupleValue(_)
-        | ValueNode::Dict(_)
-        | ValueNode::Set(_)
-        | ValueNode::FrozenSet(_)
         | ValueNode::Date(_)
         | ValueNode::Timedelta(_)
         | ValueNode::TypeName(_)
         | ValueNode::BuiltinFunction(_) => 0,
     };
-    MontyObject::host_base_size().saturating_add(payload)
+    size_of::<MontyNode>().saturating_add(payload)
 }
 
-/// Converts one owned Monty boundary value into a component value arena.
-pub fn into_component(object: MontyObject) -> Value {
-    let mut nodes = Vec::new();
-    let root = push_node(object, &mut nodes);
-    Value { root, nodes }
-}
-
-/// Reads one arena node, rejecting bad indexes, cycles, and excessive nesting.
-fn read_node(index: u32, nodes: &mut [Option<ValueNode>], depth: usize) -> Result<MontyObject, String> {
-    if depth > MAX_VALUE_DEPTH {
-        return Err("value exceeds the maximum nesting depth".to_owned());
+/// Converts one Monty arena's nodes into a component arena.
+pub fn into_component(nodes: Vec<MontyNode>) -> Arena {
+    Arena {
+        nodes: nodes.into_iter().map(node_into_component).collect(),
     }
-    let index = usize::try_from(index).map_err(|_| "value node index does not fit in usize")?;
-    let node = nodes
-        .get_mut(index)
-        .ok_or_else(|| format!("value node index {index} is out of bounds"))?
-        .take()
-        .ok_or_else(|| format!("value node index {index} is referenced more than once"))?;
-    let object = match node {
-        ValueNode::Ellipsis => MontyObject::Ellipsis,
-        ValueNode::NotImplemented => MontyObject::NotImplemented,
-        ValueNode::None => MontyObject::None,
-        ValueNode::Boolean(value) => MontyObject::Bool(value),
-        ValueNode::Integer(value) => MontyObject::Int(value),
-        ValueNode::Bigint(value) => MontyObject::BigInt(
+}
+
+/// Converts one component node, validating its leaf payloads; child indexes
+/// are checked once the whole arena is assembled.
+fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
+    Ok(match node {
+        ValueNode::Ellipsis => MontyNode::Ellipsis,
+        ValueNode::NotImplemented => MontyNode::NotImplemented,
+        ValueNode::None => MontyNode::None,
+        ValueNode::Boolean(value) => MontyNode::Bool(value),
+        ValueNode::Integer(value) => MontyNode::Int(value),
+        ValueNode::Bigint(value) => MontyNode::BigInt(
             value
                 .parse()
                 .map_err(|_| format!("invalid arbitrary-precision integer {value:?}"))?,
         ),
-        ValueNode::Float(value) => MontyObject::Float(value),
-        ValueNode::Text(value) => MontyObject::String(value),
-        ValueNode::Bytes(value) => MontyObject::Bytes(value),
-        ValueNode::ListValue(items) => MontyObject::List(read_items(items, nodes, depth)?),
-        ValueNode::TupleValue(items) => MontyObject::Tuple(read_items(items, nodes, depth)?),
-        ValueNode::NamedTuple(value) => MontyObject::NamedTuple {
+        ValueNode::Float(value) => MontyNode::Float(value),
+        ValueNode::Text(value) => MontyNode::String(value),
+        ValueNode::Bytes(value) => MontyNode::Bytes(value),
+        ValueNode::ListValue(items) => MontyNode::List(ids(items)),
+        ValueNode::TupleValue(items) => MontyNode::Tuple(ids(items)),
+        ValueNode::NamedTuple(value) => MontyNode::NamedTuple {
             type_name: value.type_name,
             field_names: value.field_names,
-            values: read_items(value.items, nodes, depth)?,
+            values: ids(value.items),
         },
-        ValueNode::Dict(pairs) => MontyObject::Dict(read_pairs(pairs, nodes, depth)?.into()),
-        ValueNode::Set(items) => MontyObject::Set(read_items(items, nodes, depth)?),
-        ValueNode::FrozenSet(items) => MontyObject::FrozenSet(read_items(items, nodes, depth)?),
+        ValueNode::Dict(pairs) => MontyNode::Dict(id_pairs(pairs)),
+        ValueNode::Set(items) => MontyNode::Set(ids(items)),
+        ValueNode::FrozenSet(items) => MontyNode::FrozenSet(ids(items)),
         ValueNode::Date(value) => {
             validate_date(value.year, value.month, value.day, "Date")?;
-            MontyObject::Date(MontyDate {
+            MontyNode::Date(MontyDate {
                 year: value.year,
                 month: value.month,
                 day: value.day,
@@ -163,7 +162,7 @@ fn read_node(index: u32, nodes: &mut [Option<ValueNode>], depth: usize) -> Resul
         }
         ValueNode::Datetime(value) => {
             validate_datetime(&value)?;
-            MontyObject::DateTime(MontyDateTime {
+            MontyNode::DateTime(MontyDateTime {
                 year: value.year,
                 month: value.month,
                 day: value.day,
@@ -177,7 +176,7 @@ fn read_node(index: u32, nodes: &mut [Option<ValueNode>], depth: usize) -> Resul
         }
         ValueNode::Time(value) => {
             validate_time(&value)?;
-            MontyObject::Time(MontyTime {
+            MontyNode::Time(MontyTime {
                 hour: value.hour,
                 minute: value.minute,
                 second: value.second,
@@ -189,17 +188,17 @@ fn read_node(index: u32, nodes: &mut [Option<ValueNode>], depth: usize) -> Resul
         }
         ValueNode::Timedelta(value) => {
             validate_timedelta(&value)?;
-            MontyObject::TimeDelta(MontyTimeDelta {
+            MontyNode::TimeDelta(MontyTimeDelta {
                 days: value.days,
                 seconds: value.seconds,
                 microseconds: value.microseconds,
             })
         }
-        ValueNode::Timezone(value) => MontyObject::TimeZone(MontyTimeZone {
+        ValueNode::Timezone(value) => MontyNode::TimeZone(MontyTimeZone {
             offset_seconds: value.offset_seconds,
             name: value.name,
         }),
-        ValueNode::Exception(value) => MontyObject::Exception {
+        ValueNode::Exception(value) => MontyNode::Exception {
             exc_type: value
                 .exc_type
                 .parse()
@@ -207,55 +206,160 @@ fn read_node(index: u32, nodes: &mut [Option<ValueNode>], depth: usize) -> Resul
             arg: value.message,
         },
         ValueNode::TypeName(value) => {
-            MontyObject::Type(MontyType::from_type_name(&value).ok_or_else(|| format!("unknown type name {value:?}"))?)
+            MontyNode::Type(MontyType::from_type_name(&value).ok_or_else(|| format!("unknown type name {value:?}"))?)
         }
-        ValueNode::ClassType(value) => MontyObject::Type(read_class_type(value, nodes, depth)?),
-        ValueNode::BuiltinFunction(value) => MontyObject::builtin_function_from_name(&value)
-            .ok_or_else(|| format!("unknown builtin function {value:?}"))?,
-        ValueNode::Path(value) => MontyObject::Path(value),
-        ValueNode::FileHandle(value) => MontyObject::FileHandle(MontyFileHandle {
+        ValueNode::ClassType(value) => MontyNode::ClassType(Box::new(MontyClassTypeNode {
+            name: value.name,
+            id: parse_uuid(&value.id)?,
+            host_defined: value.host_defined,
+            is_dataclass: value.is_dataclass,
+            attrs: id_pairs(value.attrs),
+        })),
+        ValueNode::BuiltinFunction(value) => match MontyObject::builtin_function_from_name(&value) {
+            Some(MontyObject::BuiltinFunction(function)) => MontyNode::BuiltinFunction(function),
+            _ => return Err(format!("unknown builtin function {value:?}")),
+        },
+        ValueNode::Path(value) => MontyNode::Path(value),
+        ValueNode::FileHandle(value) => MontyNode::FileHandle(MontyFileHandle {
             path: value.path,
             mode: value.mode.parse::<FileMode>().map_err(Cow::into_owned)?,
             position: value.position,
         }),
-        ValueNode::ClassInstance(value) => {
-            // The class node is read like any other child, so the
-            // reachable-exactly-once arena invariant covers it too.
-            let class_node = take_node(value.class_type, nodes)?;
-            let ValueNode::ClassType(class_node) = class_node else {
-                return Err("class-instance node's class-type index is not a class-type node".to_owned());
-            };
-            let MontyType::Instance(class_type) = read_class_type(class_node, nodes, depth)? else {
-                unreachable!("read_class_type on a MontyClassType node always yields Instance");
-            };
-            MontyObject::ClassInstance(Box::new(MontyClassInstance {
-                class_type: *class_type,
-                instance_id: parse_uuid(&value.instance_id)?,
-                attrs: read_pairs(value.attrs, nodes, depth)?.into(),
-            }))
-        }
-        ValueNode::Function(value) => MontyObject::Function {
+        ValueNode::ClassInstance(value) => MontyNode::ClassInstance {
+            class_type: NodeId(value.class_type),
+            instance_id: parse_uuid(&value.instance_id)?,
+            attrs: id_pairs(value.attrs),
+        },
+        ValueNode::Function(value) => MontyNode::Function {
             name: value.name,
             docstring: value.docstring,
         },
-        ValueNode::Repr(value) => MontyObject::Repr(value),
-        ValueNode::Cycle(value) => MontyObject::Cycle(
-            usize::try_from(value.identity).map_err(|_| "cycle identity does not fit in usize")?,
-            value.placeholder,
-        ),
-    };
-    Ok(object)
+        ValueNode::Repr(value) => MontyNode::Repr(value),
+        ValueNode::Cycle(value) => MontyNode::Cycle(value),
+    })
 }
 
-/// Takes one node out of the arena by index, enforcing the
-/// reachable-exactly-once invariant (same rules as `read_node`).
-fn take_node(index: u32, nodes: &mut [Option<ValueNode>]) -> Result<ValueNode, String> {
-    let index = usize::try_from(index).map_err(|_| "value node index does not fit in usize")?;
-    nodes
-        .get_mut(index)
-        .ok_or_else(|| format!("value node index {index} is out of bounds"))?
-        .take()
-        .ok_or_else(|| format!("value node index {index} is referenced more than once"))
+/// Converts one Monty node into its component twin.
+fn node_into_component(node: MontyNode) -> ValueNode {
+    match node {
+        MontyNode::Ellipsis => ValueNode::Ellipsis,
+        MontyNode::NotImplemented => ValueNode::NotImplemented,
+        MontyNode::None => ValueNode::None,
+        MontyNode::Bool(value) => ValueNode::Boolean(value),
+        MontyNode::Int(value) => ValueNode::Integer(value),
+        MontyNode::BigInt(value) => ValueNode::Bigint(value.to_string()),
+        MontyNode::Float(value) => ValueNode::Float(value),
+        MontyNode::String(value) => ValueNode::Text(value),
+        MontyNode::Bytes(value) => ValueNode::Bytes(value),
+        MontyNode::List(items) => ValueNode::ListValue(raw_ids(items)),
+        MontyNode::Tuple(items) => ValueNode::TupleValue(raw_ids(items)),
+        MontyNode::NamedTuple {
+            type_name,
+            field_names,
+            values,
+        } => ValueNode::NamedTuple(NamedTupleNode {
+            type_name,
+            field_names,
+            items: raw_ids(values),
+        }),
+        MontyNode::Dict(pairs) => ValueNode::Dict(raw_pairs(pairs)),
+        MontyNode::Set(items) => ValueNode::Set(raw_ids(items)),
+        MontyNode::FrozenSet(items) => ValueNode::FrozenSet(raw_ids(items)),
+        MontyNode::Date(value) => ValueNode::Date(DateNode {
+            year: value.year,
+            month: value.month,
+            day: value.day,
+        }),
+        MontyNode::DateTime(value) => ValueNode::Datetime(DatetimeNode {
+            year: value.year,
+            month: value.month,
+            day: value.day,
+            hour: value.hour,
+            minute: value.minute,
+            second: value.second,
+            microsecond: value.microsecond,
+            offset_seconds: value.offset_seconds,
+            timezone_name: value.timezone_name,
+        }),
+        MontyNode::Time(value) => ValueNode::Time(TimeNode {
+            hour: value.hour,
+            minute: value.minute,
+            second: value.second,
+            microsecond: value.microsecond,
+            offset_seconds: value.offset_seconds,
+            timezone_name: value.timezone_name,
+            fold: value.fold,
+        }),
+        MontyNode::TimeDelta(value) => ValueNode::Timedelta(TimedeltaNode {
+            days: value.days,
+            seconds: value.seconds,
+            microseconds: value.microseconds,
+        }),
+        MontyNode::TimeZone(value) => ValueNode::Timezone(TimezoneNode {
+            offset_seconds: value.offset_seconds,
+            name: value.name,
+        }),
+        MontyNode::Exception { exc_type, arg } => ValueNode::Exception(ExceptionValueNode {
+            exc_type: exc_type.to_string(),
+            message: arg,
+        }),
+        MontyNode::Type(value) => ValueNode::TypeName(value.to_string()),
+        MontyNode::ClassType(class) => ValueNode::ClassType(ClassTypeNode {
+            name: class.name,
+            id: class.id.to_string(),
+            host_defined: class.host_defined,
+            is_dataclass: class.is_dataclass,
+            attrs: raw_pairs(class.attrs),
+        }),
+        MontyNode::BuiltinFunction(value) => ValueNode::BuiltinFunction(value.to_string()),
+        MontyNode::Path(value) => ValueNode::Path(value),
+        MontyNode::FileHandle(value) => ValueNode::FileHandle(FileHandleNode {
+            path: value.path,
+            mode: value.mode.as_str().to_owned(),
+            position: value.position,
+        }),
+        MontyNode::ClassInstance {
+            class_type,
+            instance_id,
+            attrs,
+        } => ValueNode::ClassInstance(ClassInstanceNode {
+            class_type: class_type.0,
+            instance_id: instance_id.to_string(),
+            attrs: raw_pairs(attrs),
+        }),
+        MontyNode::Function { name, docstring } => ValueNode::Function(FunctionNode { name, docstring }),
+        MontyNode::Repr(value) => ValueNode::Repr(value),
+        MontyNode::Cycle(placeholder) => ValueNode::Cycle(placeholder),
+    }
+}
+
+/// Wraps raw child indexes.
+fn ids(items: Vec<u32>) -> Vec<NodeId> {
+    items.into_iter().map(NodeId).collect()
+}
+
+/// Wraps raw key/value index pairs.
+fn id_pairs(pairs: Vec<NodePair>) -> Vec<(NodeId, NodeId)> {
+    pairs
+        .into_iter()
+        .map(|pair| (NodeId(pair.key), NodeId(pair.value)))
+        .collect()
+}
+
+/// Unwraps child indexes.
+pub(crate) fn raw_ids(items: Vec<NodeId>) -> Vec<u32> {
+    items.into_iter().map(|id| id.0).collect()
+}
+
+/// Unwraps key/value index pairs.
+pub(crate) fn raw_pairs(pairs: Vec<(NodeId, NodeId)>) -> Vec<NodePair> {
+    pairs
+        .into_iter()
+        .map(|(key, value)| NodePair {
+            key: key.0,
+            value: value.0,
+        })
+        .collect()
 }
 
 /// Parses a canonical uuid string from the component boundary.
@@ -263,48 +367,7 @@ fn parse_uuid(value: &str) -> Result<MontyUuid, String> {
     MontyUuid::parse(value).ok_or_else(|| format!("invalid uuid {value:?}"))
 }
 
-/// Reads a class-type node into `MontyType::Instance`, resolving the eager
-/// class attrs recursively.
-fn read_class_type(node: ClassTypeNode, nodes: &mut [Option<ValueNode>], depth: usize) -> Result<MontyType, String> {
-    if depth > MAX_VALUE_DEPTH {
-        return Err("value exceeds the maximum nesting depth".to_owned());
-    }
-    let attrs = read_pairs(node.attrs, nodes, depth)?;
-    Ok(MontyType::Instance(Box::new(MontyClassType {
-        name: node.name,
-        id: parse_uuid(&node.id)?,
-        host_defined: node.host_defined,
-        is_dataclass: node.is_dataclass,
-        attrs: attrs.into(),
-    })))
-}
-
-/// Reads a list of child indexes from an arena.
-fn read_items(items: Vec<u32>, nodes: &mut [Option<ValueNode>], depth: usize) -> Result<Vec<MontyObject>, String> {
-    items
-        .into_iter()
-        .map(|index| read_node(index, nodes, depth + 1))
-        .collect()
-}
-
-/// Reads key/value indexes from an arena while preserving pair order.
-fn read_pairs(
-    pairs: Vec<NodePair>,
-    nodes: &mut [Option<ValueNode>],
-    depth: usize,
-) -> Result<Vec<(MontyObject, MontyObject)>, String> {
-    pairs
-        .into_iter()
-        .map(|pair| {
-            Ok((
-                read_node(pair.key, nodes, depth + 1)?,
-                read_node(pair.value, nodes, depth + 1)?,
-            ))
-        })
-        .collect()
-}
-
-/// Validates date components before they enter a `MontyObject`.
+/// Validates date components before they enter a node.
 fn validate_date(year: i32, month: u8, day: u8, type_name: &str) -> Result<(), String> {
     if !(1..=9999).contains(&year) {
         Err(format!("{type_name}.year {year} is outside the range 1..=9999"))
@@ -386,127 +449,4 @@ fn days_in_month(year: i32, month: u8) -> u8 {
         4 | 6 | 9 | 11 => 30,
         _ => 31,
     }
-}
-
-/// Appends one object and all its children to an arena, returning its index.
-fn push_node(object: MontyObject, nodes: &mut Vec<ValueNode>) -> u32 {
-    let node = match object {
-        MontyObject::Ellipsis => ValueNode::Ellipsis,
-        MontyObject::NotImplemented => ValueNode::NotImplemented,
-        MontyObject::None => ValueNode::None,
-        MontyObject::Bool(value) => ValueNode::Boolean(value),
-        MontyObject::Int(value) => ValueNode::Integer(value),
-        MontyObject::BigInt(value) => ValueNode::Bigint(value.to_string()),
-        MontyObject::Float(value) => ValueNode::Float(value),
-        MontyObject::String(value) => ValueNode::Text(value),
-        MontyObject::Bytes(value) => ValueNode::Bytes(value),
-        MontyObject::List(items) => ValueNode::ListValue(push_items(items, nodes)),
-        MontyObject::Tuple(items) => ValueNode::TupleValue(push_items(items, nodes)),
-        MontyObject::NamedTuple {
-            type_name,
-            field_names,
-            values,
-        } => ValueNode::NamedTuple(NamedTupleNode {
-            type_name,
-            field_names,
-            items: push_items(values, nodes),
-        }),
-        MontyObject::Dict(pairs) => ValueNode::Dict(push_pairs(pairs, nodes)),
-        MontyObject::Set(items) => ValueNode::Set(push_items(items, nodes)),
-        MontyObject::FrozenSet(items) => ValueNode::FrozenSet(push_items(items, nodes)),
-        MontyObject::Date(value) => ValueNode::Date(DateNode {
-            year: value.year,
-            month: value.month,
-            day: value.day,
-        }),
-        MontyObject::DateTime(value) => ValueNode::Datetime(DatetimeNode {
-            year: value.year,
-            month: value.month,
-            day: value.day,
-            hour: value.hour,
-            minute: value.minute,
-            second: value.second,
-            microsecond: value.microsecond,
-            offset_seconds: value.offset_seconds,
-            timezone_name: value.timezone_name,
-        }),
-        MontyObject::Time(value) => ValueNode::Time(TimeNode {
-            hour: value.hour,
-            minute: value.minute,
-            second: value.second,
-            microsecond: value.microsecond,
-            offset_seconds: value.offset_seconds,
-            timezone_name: value.timezone_name,
-            fold: value.fold,
-        }),
-        MontyObject::TimeDelta(value) => ValueNode::Timedelta(TimedeltaNode {
-            days: value.days,
-            seconds: value.seconds,
-            microseconds: value.microseconds,
-        }),
-        MontyObject::TimeZone(value) => ValueNode::Timezone(TimezoneNode {
-            offset_seconds: value.offset_seconds,
-            name: value.name,
-        }),
-        MontyObject::Exception { exc_type, arg } => ValueNode::Exception(ExceptionValueNode {
-            exc_type: exc_type.to_string(),
-            message: arg,
-        }),
-        MontyObject::Type(MontyType::Instance(class_type)) => ValueNode::ClassType(push_class_type(*class_type, nodes)),
-        MontyObject::Type(value) => ValueNode::TypeName(value.to_string()),
-        MontyObject::BuiltinFunction(value) => ValueNode::BuiltinFunction(value.to_string()),
-        MontyObject::Path(value) => ValueNode::Path(value),
-        MontyObject::FileHandle(value) => ValueNode::FileHandle(FileHandleNode {
-            path: value.path,
-            mode: value.mode.as_str().to_owned(),
-            position: value.position,
-        }),
-        MontyObject::ClassInstance(instance) => {
-            let class_node = push_class_type(instance.class_type, nodes);
-            let class_index = u32::try_from(nodes.len()).expect("component value arena exceeds u32::MAX nodes");
-            nodes.push(ValueNode::ClassType(class_node));
-            ValueNode::ClassInstance(ClassInstanceNode {
-                class_type: class_index,
-                instance_id: instance.instance_id.to_string(),
-                attrs: push_pairs(instance.attrs, nodes),
-            })
-        }
-        MontyObject::Function { name, docstring } => ValueNode::Function(FunctionNode { name, docstring }),
-        MontyObject::Repr(value) => ValueNode::Repr(value),
-        MontyObject::Cycle(identity, placeholder) => ValueNode::Cycle(CycleNode {
-            identity: u64::try_from(identity).expect("usize always fits in u64"),
-            placeholder,
-        }),
-    };
-    let index = u32::try_from(nodes.len()).expect("component value arena exceeds u32::MAX nodes");
-    nodes.push(node);
-    index
-}
-
-/// Builds a class-type node, appending its eager attr nodes to the arena.
-fn push_class_type(class_type: MontyClassType, nodes: &mut Vec<ValueNode>) -> ClassTypeNode {
-    let attrs = push_pairs(class_type.attrs, nodes);
-    ClassTypeNode {
-        name: class_type.name,
-        id: class_type.id.to_string(),
-        host_defined: class_type.host_defined,
-        is_dataclass: class_type.is_dataclass,
-        attrs,
-    }
-}
-
-/// Appends a sequence's child values and returns their indexes.
-fn push_items(items: Vec<MontyObject>, nodes: &mut Vec<ValueNode>) -> Vec<u32> {
-    items.into_iter().map(|item| push_node(item, nodes)).collect()
-}
-
-/// Appends a mapping's keys and values and returns their index pairs.
-fn push_pairs(pairs: DictPairs, nodes: &mut Vec<ValueNode>) -> Vec<NodePair> {
-    pairs
-        .into_iter()
-        .map(|(key, value)| NodePair {
-            key: push_node(key, nodes),
-            value: push_node(value, nodes),
-        })
-        .collect()
 }
