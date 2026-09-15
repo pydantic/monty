@@ -7,8 +7,8 @@
 
 use monty::{DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
 use monty_proto::{
-    FrameReader, PROTOCOL_VERSION, WireFeed, WireFunctionCall, pb,
-    worker::{Child, HandleOutcome, dispatch_frame},
+    FrameReader, MAX_FEED_INPUTS, PROTOCOL_VERSION, WireFeed, WireFunctionCall, pb,
+    worker::{Child, HandleOutcome, VecEventSink, dispatch_frame},
     write_frame,
 };
 use monty_types::{CompileOptions, MONTY_VERSION, MontyObject, PrintWriter, ResourceTracker};
@@ -208,6 +208,40 @@ fn create_repl_with_flush_interval(child: &mut Child, print_flush_interval_ms: O
         matches!(decode_events(&bytes).as_slice(), [pb::child_event::Kind::Ok(_)]),
         "Configure should answer with a single Ok"
     );
+}
+
+/// The input cap must hold when a request reaches the child without being
+/// frame-decoded (the wasm component builds `WireFeed` directly), so the
+/// check lives in the child too, not only in the decoder.
+#[test]
+fn feed_over_the_input_cap_is_refused_without_frame_decoding() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let request = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(WireFeed {
+            code: "v0".to_owned(),
+            inputs: (0..=MAX_FEED_INPUTS)
+                .map(|i| (format!("v{i}"), MontyObject::Int(1)))
+                .collect(),
+            skip_type_check: false,
+            cwd: "/".to_owned(),
+        })),
+        trace_parent: None,
+    };
+    let mut sink = VecEventSink::new();
+    let outcome = child.handle(request, &mut sink).expect("the sink cannot fail");
+    assert_eq!(outcome, HandleOutcome::Continue);
+    let (_, event) = split_turn(&sink.take());
+    let pb::child_event::Kind::Error(error) = event else {
+        panic!("expected an Error event, got {event:?}");
+    };
+    assert_eq!(
+        error.exception.unwrap().message.unwrap(),
+        "protocol violation: feed has more than 256 inputs"
+    );
+    // the session survives: a feed at the cap runs
+    let (_, event) = feed(&mut child, "1 + 1");
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
 }
 
 fn feed(child: &mut Child, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind) {

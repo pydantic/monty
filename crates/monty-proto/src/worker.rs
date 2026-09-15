@@ -30,7 +30,7 @@ use monty_types::{
 };
 
 use super::{
-    DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError, WireFeed,
+    DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FEED_INPUTS, MAX_FRAME_LEN, ProtoConvertError, WireFeed,
     WireFunctionCall, check_protocol_version, exceeds_max_frame_len, exceeds_max_value_depth,
     future_results_from_proto, pb, write_frame,
 };
@@ -509,6 +509,11 @@ impl Child {
         if !matches!(self.state, SessionState::Ready(_)) {
             // ensure_repl left it un-Ready only when mid-suspension
             return protocol_violation("Feed without a session ready for input");
+        }
+        // Frames stop at the cap while decoding; this holds it for transports
+        // that build the request directly (the wasm component).
+        if feed.inputs.len() > MAX_FEED_INPUTS {
+            return protocol_violation(&format!("feed has more than {MAX_FEED_INPUTS} inputs"));
         }
         if !feed.skip_type_check
             && let Some(event) = self.type_check_feed(&feed.code)
