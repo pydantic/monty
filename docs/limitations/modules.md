@@ -58,10 +58,9 @@ are unimplemented and may appear over time.
 
 Some available modules cover only part of their CPython surface: `functools`
 implements only `reduce` and `partial`, and `collections` only the four types
-above (`itertools` is complete). The absent names are missing from
-the module namespace rather than stubbed, so they fail type checking as well
-as raising `AttributeError` at runtime; see each module's page for the
-specifics.
+above. The absent names are missing from the module namespace rather than
+stubbed, so they fail type checking as well as raising `AttributeError` at
+runtime; see each module's page for the specifics.
 
 ## Modules the type checker resolves but the runtime does not
 
