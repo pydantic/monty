@@ -91,7 +91,8 @@ await session.feedRun('greeting + name', {
 
 `externalLookup` is the lazy counterpart to `inputs`, which eagerly binds every
 entry as a global whether or not it is referenced; a name in both is served by
-the eager `inputs` binding.
+the eager `inputs` binding. A feed accepts at most 256 `inputs` entries; more
+reject with a `MontyRuntimeError`.
 
 For function entries, keyword arguments arrive as a trailing object; thrown
 errors cross into the sandbox as Python exceptions (the error's `name` is used

@@ -9,7 +9,7 @@
 use std::{cell::RefCell, io};
 
 use monty_proto::{
-    DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, exceeds_max_frame_len, pb,
+    DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, WireFeed, exceeds_max_frame_len, pb,
     worker::{Child, EventSink, HandleOutcome, protocol_violation},
 };
 use monty_types::{ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid, OsFunctionCall};
@@ -253,17 +253,12 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
     let mut budget = value::DecodeBudget::default();
     let kind = match request {
         Request::Configure(request) => pb::parent_request::Kind::Configure(configure_from_component(request)),
-        Request::Feed(request) => pb::parent_request::Kind::Feed(pb::Feed {
+        Request::Feed(request) => pb::parent_request::Kind::Feed(WireFeed {
             code: request.code,
             inputs: request
                 .inputs
                 .into_iter()
-                .map(|input| {
-                    Ok(pb::NamedValue {
-                        name: input.name,
-                        value: Some(value::from_component(input.value, &mut budget)?.into()),
-                    })
-                })
+                .map(|input| Ok((input.name, value::from_component(input.value, &mut budget)?)))
                 .collect::<Result<_, String>>()?,
             skip_type_check: request.skip_type_check,
             cwd: request.cwd,

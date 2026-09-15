@@ -15,7 +15,9 @@ use std::{
 };
 
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
-use monty_proto::{FrameError, PROTOCOL_VERSION, exceeds_max_value_depth, pb, validate_requirement};
+use monty_proto::{
+    FrameError, MAX_FEED_INPUTS, PROTOCOL_VERSION, WireFeed, exceeds_max_value_depth, pb, validate_requirement,
+};
 use monty_types::{
     AssertMessageAnnotations, DEFAULT_MAX_SUSPENSIONS, ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid,
     NameLookupResult, OsFunctionCall, PrintStream, ResourceLimits, TypeCheckingConfig, validate_cwd,
@@ -664,6 +666,17 @@ impl Checkout {
                 "feed called while a suspension is awaiting an answer".into(),
             ));
         }
+        // Count first: it is O(1), and an over-cap feed is refused for that
+        // reason whatever its values hold.
+        if inputs.len() > MAX_FEED_INPUTS {
+            return Err(PoolError::Runtime(MontyException::new(
+                ExcType::RuntimeError,
+                Some(format!(
+                    "too many inputs: {} exceeds the limit of {MAX_FEED_INPUTS}",
+                    inputs.len()
+                )),
+            )));
+        }
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
         let cwd = match cwd {
             Some(cwd) => checked_cwd(cwd)?,
@@ -674,15 +687,9 @@ impl Checkout {
                 .map_or_else(|| "/".to_owned(), |mount| mount.virtual_path().to_owned()),
         };
         self.feed_mounts = Self::build_feed_mounts(mounts);
-        let request = request(pb::parent_request::Kind::Feed(pb::Feed {
+        let request = request(pb::parent_request::Kind::Feed(WireFeed {
             code: code.into(),
-            inputs: inputs
-                .into_iter()
-                .map(|(name, value)| pb::NamedValue {
-                    name,
-                    value: Some(value.into()),
-                })
-                .collect(),
+            inputs,
             skip_type_check,
             cwd,
         }));

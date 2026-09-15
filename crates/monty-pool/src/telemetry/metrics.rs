@@ -848,7 +848,7 @@ mod tests {
     };
 
     use logfire::{Logfire, config::MetricsOptions};
-    use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
+    use monty_proto::{WireFeed, WireFunctionCall, pb, pb::os_call::Call};
     use monty_types::MontyObject;
     use opentelemetry::{
         KeyValue,
@@ -1075,7 +1075,7 @@ mod tests {
     }
 
     fn feed() -> pb::ParentRequest {
-        request(pb::parent_request::Kind::Feed(pb::Feed {
+        request(pb::parent_request::Kind::Feed(WireFeed {
             code: "double(2)".to_owned(),
             inputs: vec![],
             skip_type_check: false,

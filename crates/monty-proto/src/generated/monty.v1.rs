@@ -423,7 +423,7 @@ pub mod parent_request {
         #[prost(message, tag = "2")]
         InstallDependencies(super::InstallDependencies),
         #[prost(message, tag = "3")]
-        Feed(super::Feed),
+        Feed(crate::WireFeed),
         #[prost(message, tag = "4")]
         ResumeCall(super::ResumeCall),
         #[prost(message, tag = "5")]
@@ -501,23 +501,6 @@ pub struct Configure {
     /// the field trades streaming latency for event volume and nothing else.
     #[prost(uint32, optional, tag = "10")]
     pub print_flush_interval_ms: ::core::option::Option<u32>,
-}
-/// Executes one snippet against the session. Turn ends with `Complete`,
-/// `Error`, `TypingError`, or a suspension event.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Feed {
-    #[prost(string, tag = "1")]
-    pub code: ::prost::alloc::string::String,
-    #[prost(message, repeated, tag = "2")]
-    pub inputs: ::prost::alloc::vec::Vec<NamedValue>,
-    /// Skip type checking for this feed even when the session enables it.
-    #[prost(bool, tag = "3")]
-    pub skip_type_check: bool,
-    /// Absolute virtual working directory to switch the session to before the
-    /// feed, resolved by the parent (an explicit choice, or the first mount on
-    /// the session's first feed). Empty keeps the session's current directory.
-    #[prost(string, tag = "4")]
-    pub cwd: ::prost::alloc::string::String,
 }
 /// Ends a pending suspension by raising `exception` uncatchably at its site.
 /// The session returns ready in an `Error` event. Hosts use this to stop a feed,

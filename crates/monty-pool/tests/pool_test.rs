@@ -30,7 +30,7 @@ use monty_pool::{
 };
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
-use monty_proto::{encode_framed_into, pb};
+use monty_proto::{WireFeed, encode_framed_into, pb};
 use monty_types::{
     ExcType, MontyException, MontyObject, PrintStream, ResourceLimits, TypeCheckingConfig, TypeCheckingFormat,
 };
@@ -327,6 +327,53 @@ async fn cyclic_return_value_decodes_and_keeps_the_worker_alive() {
     assert_eq!(expect_complete(event), MontyObject::Int(2));
     session.finish().await.unwrap();
     assert_eq!(pool.idle_workers(), 1);
+}
+
+#[tokio::test]
+async fn too_many_inputs_are_rejected_before_sending() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let numbered = |count: usize| -> Vec<(String, MontyObject)> {
+        (0..count).map(|i| (format!("v{i}"), MontyObject::Int(1))).collect()
+    };
+    // the worker refuses a feed over the cap while decoding it, so the host
+    // must refuse first, as a session-preserving error
+    let err = session
+        .feed(
+            "1",
+            numbered(monty_pool::MAX_FEED_INPUTS + 1),
+            vec![],
+            false,
+            &mut no_print,
+        )
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("too many inputs: 257 exceeds the limit of 256"));
+    // the count is checked before the values are walked, so an over-cap feed
+    // is refused for its count whatever it carries
+    let mut deep = numbered(monty_pool::MAX_FEED_INPUTS + 1);
+    deep[0].1 = (0..=monty_pool::MAX_VALUE_DEPTH).fold(MontyObject::Int(1), |inner, _| MontyObject::List(vec![inner]));
+    let err = session.feed("1", deep, vec![], false, &mut no_print).await.unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("too many inputs: 257 exceeds the limit of 256"));
+    // the session is intact and a feed at the cap runs
+    let event = session
+        .feed(
+            "v0 + v255",
+            numbered(monty_pool::MAX_FEED_INPUTS),
+            vec![],
+            false,
+            &mut no_print,
+        )
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
+    session.finish().await.unwrap();
 }
 
 #[tokio::test]
@@ -1655,7 +1702,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
         .await
         .expect("the stand-in answers Configure with Ok");
     let request = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        kind: Some(pb::parent_request::Kind::Feed(WireFeed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
@@ -1698,7 +1745,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
         .await
         .expect("the stand-in answers Configure with Ok");
     let request = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        kind: Some(pb::parent_request::Kind::Feed(WireFeed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
@@ -1745,7 +1792,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
         .await
         .expect("the stand-in answers Configure with Ok");
     let request = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        kind: Some(pb::parent_request::Kind::Feed(WireFeed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,

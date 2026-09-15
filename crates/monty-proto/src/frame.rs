@@ -33,15 +33,15 @@ pub const MAX_FRAME_LEN: u32 = 256 * 1024 * 1024;
 /// could turn a ≤256 MiB frame into multiple GiB on the host. The budget caps
 /// decoded size so amplification is bounded regardless of frame contents.
 ///
-/// The budget bounds bytes *resident* at once. The decoder materializes every
-/// payload straight into its final type — containers via `ObjectList`/
-/// `PairList`/`NamedTupleBody`/`ClassInstanceBody`, and function-call args &
-/// kwargs via `WireFunctionCall` — so no path builds an
-/// intermediate `Vec<WireObject>`/`Vec<Pair>` and then converts it; only a
-/// single per-element value is transient at any moment. The host *peak* is
-/// therefore ~1× the budget plus the ≤256 MiB frame buffer (~1.25 GiB); the 4×
-/// multiplier keeps the hard 1 GiB ceiling comfortably below host limits.
-/// Multiplies per concurrent worker.
+/// The budget bounds bytes *resident* at once, vector capacity included: the
+/// decoder materializes every payload straight into its final type —
+/// containers via `ObjectList`/`PairList`/`NamedTupleBody`/`ClassInstanceBody`,
+/// function-call args & kwargs via `WireFunctionCall`, feed inputs via
+/// `WireFeed` — and charges each vector's slots as it grows, so no path builds
+/// an intermediate `Vec` and then converts it, and unused slack is paid for.
+/// The host *peak* is therefore ~1× the budget plus the ≤256 MiB frame buffer
+/// (~1.25 GiB); the 4× multiplier keeps the hard 1 GiB ceiling comfortably
+/// below host limits. Multiplies per concurrent worker.
 pub const DEFAULT_MAX_DECODE_BYTES: usize = 4 * MAX_FRAME_LEN as usize;
 
 /// Framing or decoding failure while reading or writing protocol messages.

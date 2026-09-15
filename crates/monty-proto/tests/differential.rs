@@ -16,7 +16,7 @@
 //! messages a misbehaving peer produces.
 
 use monty::MontyRun;
-use monty_proto::{WireFunctionCall, WireObject, pb};
+use monty_proto::{MAX_FEED_INPUTS, WireFeed, WireFunctionCall, WireObject, pb};
 use monty_types::{
     CompileOptions, DictPairs, ExcType, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle,
     MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
@@ -552,6 +552,93 @@ fn hand_call_payloads_match_generated_encoding() {
     assert_eq!(
         pb::OsCall::decode(generated_now.encode_to_vec().as_slice()).expect("generated now call decodes"),
         hand_now
+    );
+}
+
+/// `Feed` is hand-written too (`WireFeed`): its `(name, value)` inputs must
+/// agree with the oracle's `NamedValue` wrappers in both directions, and the
+/// wrapper shapes only the oracle can produce — an entry with no value, and
+/// more entries than `MAX_FEED_INPUTS` — must be refused during decode.
+#[test]
+fn hand_feed_payloads_match_generated_encoding() {
+    // An empty name exercises implicit string presence (skipped on the wire).
+    let inputs = vec![
+        ("x".to_owned(), MontyObject::Int(1)),
+        (String::new(), MontyObject::List(vec![MontyObject::None])),
+    ];
+    let oracle_inputs = |inputs: &[(String, MontyObject)]| -> Vec<oracle::NamedValue> {
+        inputs
+            .iter()
+            .map(|(name, value)| oracle::NamedValue {
+                name: name.clone(),
+                value: Some(to_oracle(value)),
+            })
+            .collect()
+    };
+    for skip_type_check in [false, true] {
+        let hand_feed = WireFeed {
+            code: "x + 1".to_owned(),
+            inputs: inputs.clone(),
+            skip_type_check,
+            cwd: "/work".to_owned(),
+        };
+        let generated_feed = oracle::Feed {
+            code: "x + 1".to_owned(),
+            inputs: oracle_inputs(&inputs),
+            skip_type_check,
+            cwd: "/work".to_owned(),
+        };
+        assert_eq!(hand_feed.encode_to_vec(), generated_feed.encode_to_vec());
+        assert_eq!(
+            WireFeed::decode(generated_feed.encode_to_vec().as_slice()).expect("generated feed decodes"),
+            hand_feed
+        );
+        assert_eq!(
+            oracle::Feed::decode(hand_feed.encode_to_vec().as_slice())
+                .expect("hand feed decodes")
+                .encode_to_vec(),
+            generated_feed.encode_to_vec()
+        );
+    }
+
+    let missing_value = oracle::Feed {
+        inputs: vec![oracle::NamedValue {
+            name: "x".to_owned(),
+            value: None,
+        }],
+        ..oracle::Feed::default()
+    };
+    assert_eq!(
+        WireFeed::decode(missing_value.encode_to_vec().as_slice())
+            .expect_err("an input without a value must be rejected")
+            .to_string(),
+        "failed to decode Protobuf message: missing required field NamedValue.value"
+    );
+
+    let numbered = |count: usize| -> Vec<(String, MontyObject)> {
+        (0..count)
+            .map(|i| (format!("v{i}"), MontyObject::Int(i64::try_from(i).unwrap())))
+            .collect()
+    };
+    let at_cap = oracle::Feed {
+        inputs: oracle_inputs(&numbered(MAX_FEED_INPUTS)),
+        ..oracle::Feed::default()
+    };
+    assert_eq!(
+        WireFeed::decode(at_cap.encode_to_vec().as_slice())
+            .expect("a feed at the cap decodes")
+            .inputs,
+        numbered(MAX_FEED_INPUTS)
+    );
+    let over_cap = oracle::Feed {
+        inputs: oracle_inputs(&numbered(MAX_FEED_INPUTS + 1)),
+        ..oracle::Feed::default()
+    };
+    assert_eq!(
+        WireFeed::decode(over_cap.encode_to_vec().as_slice())
+            .expect_err("a feed over the cap must be rejected")
+            .to_string(),
+        "failed to decode Protobuf message: feed has more than 256 inputs"
     );
 }
 

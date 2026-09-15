@@ -12,8 +12,8 @@ use std::{
 };
 
 use monty_proto::{
-    FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireFunctionCall,
-    WireObject, exceeds_max_frame_len, pb, write_frame,
+    FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireFeed,
+    WireFunctionCall, WireObject, exceeds_max_frame_len, pb, write_frame,
 };
 use monty_types::{MontyDate, MontyDateTime, MontyObject};
 
@@ -113,8 +113,8 @@ impl ChildProc {
         self.feed_with(code, vec![])
     }
 
-    fn feed_with(&mut self, code: &str, inputs: Vec<pb::NamedValue>) -> (Vec<pb::Print>, pb::child_event::Kind) {
-        self.send(pb::parent_request::Kind::Feed(pb::Feed {
+    fn feed_with(&mut self, code: &str, inputs: Vec<(String, MontyObject)>) -> (Vec<pb::Print>, pb::child_event::Kind) {
+        self.send(pb::parent_request::Kind::Feed(WireFeed {
             code: code.to_owned(),
             inputs,
             skip_type_check: false,
@@ -146,7 +146,7 @@ impl ChildProc {
     /// event arrives — EOF (the usual case) or a truncated frame instead.
     #[track_caller]
     fn feed_expecting_death(&mut self, code: &str) {
-        self.send(pb::parent_request::Kind::Feed(pb::Feed {
+        self.send(pb::parent_request::Kind::Feed(WireFeed {
             code: code.to_owned(),
             inputs: vec![],
             skip_type_check: false,
@@ -267,10 +267,7 @@ fn session_state_persists_across_feeds() {
 fn inputs_are_injected() {
     let mut child = ChildProc::spawn();
     child.create_repl();
-    let inputs = vec![pb::NamedValue {
-        name: "a".to_owned(),
-        value: Some(int_value(20)),
-    }];
+    let inputs = vec![("a".to_owned(), MontyObject::Int(20))];
     let (_, event) = child.feed_with("a + 1", inputs);
     assert_eq!(expect_complete(event), MontyObject::Int(21));
     child.shutdown();
@@ -789,10 +786,7 @@ fn large_unnested_format_spec_preserves_the_worker() {
     for junk_len in [5_000_000, 10_000_000] {
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(16 * 1024 * 1024));
-        let inputs = vec![pb::NamedValue {
-            name: "template".to_owned(),
-            value: Some(str_value(&template)),
-        }];
+        let inputs = vec![("template".to_owned(), MontyObject::String(template.clone()))];
         // The smaller filler reaches tracked error rendering without room for
         // another spec copy. The larger one requires a preflighted receiver copy.
         let code = format!("junk = 'j' * {junk_len}\ntemplate.format(0)");
@@ -1853,7 +1847,7 @@ fn killed_child_is_detected_as_eof() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     // run forever (no limits), then kill the child mid-execution
-    child.send(pb::parent_request::Kind::Feed(pb::Feed {
+    child.send(pb::parent_request::Kind::Feed(WireFeed {
         code: "while True:\n    pass".to_owned(),
         inputs: vec![],
         skip_type_check: false,

@@ -146,6 +146,18 @@ def test_input_deep(monty_run: RunMonty):
     assert str(exc_info.value) == snapshot('RuntimeError: Max input depth exceeded')
 
 
+def test_inputs_at_the_cap(monty_run: RunMonty):
+    inputs = {f'v{i}': 1 for i in range(256)}
+    assert monty_run('v0 + v255', inputs=inputs) == snapshot(2)
+
+
+def test_too_many_inputs(monty_run: RunMonty):
+    inputs = {f'v{i}': 1 for i in range(257)}
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('v0', inputs=inputs)
+    assert str(exc_info.value) == snapshot('RuntimeError: too many inputs: 257 exceeds the limit of 256')
+
+
 def test_output_deep(monty_run: RunMonty):
     # Sandbox code that iteratively builds a deeply nested list bypasses the
     # Python-level recursion limit (the `for` loop never pushes a call frame).

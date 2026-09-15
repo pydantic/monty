@@ -20,7 +20,7 @@ use monty_pool::{
     Checkout, CheckoutOptions, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
     ResumeValue, TurnEvent,
 };
-use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, WireObject, decode_frame, encode_to_capped_vec, pb};
+use monty_proto::{MAX_FRAME_LEN, WireFeed, WireFunctionCall, WireObject, decode_frame, encode_to_capped_vec, pb};
 use monty_types::{MontyObject, PrintStream, ResourceLimits};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
@@ -600,7 +600,7 @@ async fn duration_backstop_arms_on_the_raw_path() {
         .await
         .expect("checkout");
     let request = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        kind: Some(pb::parent_request::Kind::Feed(WireFeed {
             code: "while True:\n    pass".to_owned(),
             inputs: vec![],
             skip_type_check: false,
@@ -663,7 +663,7 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
     };
     checkout.turn_raw(&load, &mut on_event).await.expect("load");
     let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        kind: Some(pb::parent_request::Kind::Feed(WireFeed {
             code: "while True:\n    pass".to_owned(),
             inputs: vec![],
             skip_type_check: false,
@@ -723,7 +723,7 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
     }
     // the session survived every refusal
     let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        kind: Some(pb::parent_request::Kind::Feed(WireFeed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
@@ -778,7 +778,7 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let err = checkout.turn_raw(&load, &mut on_event).await.unwrap_err();
     assert!(matches!(err, PoolError::Runtime(_)), "got {err:?}");
     let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        kind: Some(pb::parent_request::Kind::Feed(WireFeed {
             code: "while True:\n    pass".to_owned(),
             inputs: vec![],
             skip_type_check: false,
@@ -821,7 +821,7 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
     let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let request = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        kind: Some(pb::parent_request::Kind::Feed(WireFeed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
@@ -1136,7 +1136,7 @@ async fn suspension_limit_is_enforced_on_the_raw_path() {
         .expect("checkout");
     let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
     let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        kind: Some(pb::parent_request::Kind::Feed(WireFeed {
             code: "fetch()".to_owned(),
             inputs: vec![],
             skip_type_check: false,
@@ -1240,7 +1240,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
         .expect("checkout");
     let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
     let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        kind: Some(pb::parent_request::Kind::Feed(WireFeed {
             code: "fetch()".to_owned(),
             inputs: vec![],
             skip_type_check: false,
@@ -1455,7 +1455,7 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
         "got {event:?}"
     );
     let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        kind: Some(pb::parent_request::Kind::Feed(WireFeed {
             code: "fetch()".to_owned(),
             inputs: vec![],
             skip_type_check: false,

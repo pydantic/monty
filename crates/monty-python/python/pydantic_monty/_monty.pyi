@@ -618,6 +618,7 @@ class MontySession:
             inputs: Values eagerly bound as globals before the snippet runs —
                 every entry is converted and bound once, whether or not it is
                 referenced.
+                At most 256 entries; more raise `RuntimeError`.
             external_lookup: Host values resolving names the snippet leaves
                 undefined, lazily and on demand: a callable entry becomes a host
                 function the sandbox can call, any other value is converted and
@@ -691,6 +692,7 @@ class MontySession:
             inputs: Values eagerly bound as globals before the snippet runs —
                 every entry is converted and bound once, whether or not it is
                 referenced.
+                At most 256 entries; more raise `RuntimeError`.
             external_lookup: Host functions and values, by name, that
                 `resume_auto()` resolves external calls and undefined names
                 against (as in `feed_run`). Captured for `resume_auto()`; not
@@ -985,6 +987,7 @@ class AsyncMontySession:
             inputs: Values eagerly bound as globals before the snippet runs —
                 every entry is converted and bound once, whether or not it is
                 referenced.
+                At most 256 entries; more raise `RuntimeError`.
             external_lookup: Host values resolving names the snippet leaves
                 undefined, lazily and on demand: a callable entry (sync or a
                 coroutine function) becomes a host function the sandbox can call,
@@ -1043,6 +1046,7 @@ class AsyncMontySession:
             inputs: Values eagerly bound as globals before the snippet runs —
                 every entry is converted and bound once, whether or not it is
                 referenced.
+                At most 256 entries; more raise `RuntimeError`.
             external_lookup: Host functions and values, by name, that
                 `resume_auto()` resolves external calls and undefined names
                 against (as in `feed_run`). Callables may be coroutine
