@@ -34,7 +34,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    os_dispatch::PostConversionEffect,
+    os_dispatch::{PostConversionEffect, urandom_reply_error},
     types::{
         List, LongInt, Module, PyTrait, Type,
         bytes::allocate_bytes,
@@ -211,20 +211,14 @@ fn seed_from_reply(
     defer_drop!(reply, vm);
     let seeded = match value_as_bytes(reply, vm) {
         Some(bytes) if bytes.len() == SEED_BYTES => Ok(Mt19937::from_entropy(bytes)),
-        Some(bytes) => Err(format!(
-            "'os.urandom' returned {} bytes, expected {SEED_BYTES}",
-            bytes.len()
-        )),
-        None => Err(format!(
-            "'os.urandom' must return bytes, not {}",
-            reply.py_type_name(vm)
-        )),
+        Some(bytes) => Err(urandom_reply_error(Ok(bytes.len()), SEED_BYTES)),
+        None => Err(urandom_reply_error(Err(&reply.py_type_name(vm)), SEED_BYTES)),
     };
     let rng = match seeded {
         Ok(rng) => rng,
-        Err(message) => {
+        Err(err) => {
             retry.drop_with(vm);
-            return Err(SimpleException::new_msg(ExcType::RuntimeError, message).into());
+            return Err(err);
         }
     };
     target.reseed(vm, rng);

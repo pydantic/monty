@@ -279,12 +279,23 @@ pub(crate) fn listdir_names(obj: MontyObject) -> Result<MontyObject, RunError> {
 
 /// Accepts an `os.urandom` reply only as `bytes` of the requested length.
 fn urandom_reply(obj: MontyObject, size: usize) -> Result<MontyObject, RunError> {
-    let message = match &obj {
-        MontyObject::Bytes(bytes) if bytes.len() == size => return Ok(obj),
-        MontyObject::Bytes(bytes) => format!("'os.urandom' returned {} bytes, expected {size}", bytes.len()),
-        other => format!("'os.urandom' must return bytes, not {}", other.type_name()),
+    match &obj {
+        MontyObject::Bytes(bytes) if bytes.len() == size => Ok(obj),
+        MontyObject::Bytes(bytes) => Err(urandom_reply_error(Ok(bytes.len()), size)),
+        other => Err(urandom_reply_error(Err(other.type_name()), size)),
+    }
+}
+
+/// The `RuntimeError` for an `os.urandom` reply that is not `bytes` of
+/// `expected` length: `Ok(len)` for `bytes` of the wrong length, `Err(type)`
+/// for any other type. Shared with `random`'s seeding path so the contract
+/// and its wording stay identical.
+pub(crate) fn urandom_reply_error(actual: Result<usize, &str>, expected: usize) -> RunError {
+    let message = match actual {
+        Ok(len) => format!("'os.urandom' returned {len} bytes, expected {expected}"),
+        Err(type_name) => format!("'os.urandom' must return bytes, not {type_name}"),
     };
-    Err(SimpleException::new_msg(ExcType::RuntimeError, message).into())
+    SimpleException::new_msg(ExcType::RuntimeError, message).into()
 }
 
 /// Rebuilds host entries using the caller's original relative or absolute directory path.

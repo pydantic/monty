@@ -153,7 +153,8 @@ fn urandom(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     if size < 0 {
         return Err(ExcType::value_error("negative argument not allowed"));
     }
-    let len = usize::try_from(size).unwrap_or(usize::MAX);
+    // `ssize_t` is the platform's word, so a 32-bit target rejects here as CPython does.
+    let len = usize::try_from(size).map_err(|_| ExcType::overflow_c_ssize_t())?;
     vm.heap.tracker.check_allocation(len)?;
     Ok(CallResult::OsCallWithEffect {
         call: OsFunctionCall::Urandom(UrandomArgs { size }),
