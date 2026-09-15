@@ -13,11 +13,10 @@ use std::{
 
 use monty_proto::{
     FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireFunctionCall,
-    exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, os_call_from_proto, pb, write_frame,
+    exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
 };
 use monty_types::{
     CallArgs, ExtFunctionResult, MontyDate, MontyDateTime, MontyNode, MontyObject, NameLookupResult, NamedValues,
-    OsFunctionCall,
 };
 
 /// How long a death-expecting helper waits for the child to exit. Generous:
@@ -597,13 +596,11 @@ fn sleep_calls_bubble_to_parent() {
     let pb::child_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
-    let (call_id, call) = os_call_from_proto(call).expect("the sleep call converts");
-    let OsFunctionCall::AsyncSleep(args) = call else {
-        panic!("expected asyncio.sleep, got {call:?}");
-    };
-    assert_eq!(args.delay, Duration::from_millis(250));
-    assert_eq!(args.result, MontyObject::string("woken"));
-    let (_, event) = child.resume_return(call_id, MontyObject::string("woken"));
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep { delay: 0.25 }))
+    );
+    let (_, event) = child.resume_return(call.call_id, MontyObject::none());
     assert_eq!(expect_complete(event), MontyObject::string("woken"));
 
     child.shutdown();

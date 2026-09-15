@@ -960,13 +960,9 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
         // Both sleeps wait here, so a gathered `asyncio.sleep` runs in series
         // rather than concurrently — fine for fixtures, which sleep for
         // milliseconds at most.
-        OsFunctionCall::Sleep(delay) => {
+        OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay) => {
             thread::sleep(*delay);
             MontyObject::none().into()
-        }
-        OsFunctionCall::AsyncSleep(args) => {
-            thread::sleep(args.delay);
-            args.result.clone().into()
         }
         OsFunctionCall::GetEnviron => {
             let env_dict = vec![

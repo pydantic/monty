@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import os
 import time
 from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, Protocol, Sequence, TypeAlias, TypeGuard
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Literal,
+    NamedTuple,
+    Protocol,
+    Sequence,
+    TypeAlias,
+    TypeGuard,
+)
 
-from ._monty import NOT_HANDLED, MontyFileHandle
+from ._monty import ASYNC_HOST, NOT_HANDLED, MontyFileHandle
 
 if TYPE_CHECKING:
     # Self is 3.11+, hence this
@@ -588,16 +600,20 @@ class AbstractOS(ABC):
         """
         time.sleep(seconds)
 
-    def async_sleep(self, delay: float, result: Any = None) -> Any:
-        """Wait for Monty's `asyncio.sleep()` callback, returning `result`.
+    def async_sleep(self, delay: float) -> Awaitable[None] | None:
+        """Wait for Monty's `asyncio.sleep()` callback.
 
-        `result` is the value the sandbox's `await` produces, so an override
-        that waits differently must still return it. The default waits exactly
-        as `sleep()` does, which means gathered sleeps run one after another
-        rather than concurrently.
+        Under `AsyncMonty` (`ASYNC_HOST` is true) the default returns
+        `asyncio.sleep(delay)`, which the pool awaits while the sandbox's other
+        tasks keep running, so gathered sleeps overlap. Under `Monty`, which has
+        no event loop, it waits with `sleep()` and the sandbox is blocked for the
+        delay. An override may return `None` once it has waited, or an awaitable
+        when `ASYNC_HOST` is true. The return value is never the `await`'s
+        result: the sandbox keeps the `result` argument of `asyncio.sleep()`.
         """
-        self.sleep(delay)
-        return result
+        if ASYNC_HOST.get():
+            return asyncio.sleep(delay)
+        return self.sleep(delay)
 
 
 class AbstractFile(Protocol):

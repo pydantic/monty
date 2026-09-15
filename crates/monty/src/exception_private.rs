@@ -969,19 +969,10 @@ pub(crate) trait ExcTypeExt: Sized {
     }
 
     /// The `OverflowError` `time.sleep()` raises for a length past the roughly
-    /// 292 years it can represent.
-    ///
-    /// CPython words it by where the conversion failed, which depends on the
-    /// argument's type: a float is rejected converting to the platform's
-    /// `time_t`, an int converting to `PyTime_t`.
+    /// 292 years `PyTime_t` can represent: `timestamp out of range for C PyTime_t`.
     #[must_use]
-    fn sleep_too_long(from_float: bool) -> RunError {
-        let message = if from_float {
-            "timestamp out of range for platform time_t"
-        } else {
-            "timestamp too large to convert to C PyTime_t"
-        };
-        SimpleException::new_msg(ExcType::OverflowError, message).into()
+    fn sleep_too_long() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range for C PyTime_t").into()
     }
 
     /// Creates a TypeError for bytes() constructor with invalid type.
@@ -1677,6 +1668,18 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(
             ExcType::TypeError,
             format!("'{type_}' object cannot be interpreted as an integer"),
+        )
+        .into()
+    }
+
+    /// The `TypeError` CPython's `_PyTime_FromSecondsObject` raises for a
+    /// non-numeric length (`time.sleep`): `'{type}' object cannot be
+    /// interpreted as an integer or float`.
+    #[must_use]
+    fn type_error_not_integer_or_float(type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("'{type_}' object cannot be interpreted as an integer or float"),
         )
         .into()
     }

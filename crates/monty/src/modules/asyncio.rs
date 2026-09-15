@@ -8,7 +8,7 @@
 //! Other asyncio functions (`create_task`, `wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
 
-use monty_types::{AsyncSleepArgs, MontyObject, OsFunctionCall, sleep_duration_saturating};
+use monty_types::{OsFunctionCall, sleep_duration_saturating};
 use num_traits::ToPrimitive;
 
 use crate::{
@@ -18,9 +18,9 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{Heap, HeapData, HeapId},
+    heap_traits::DropGuard,
     intern::StaticStrings,
     modules::ModuleFunctions,
-    object_bridge::MontyObjectExt,
     os_dispatch::PostConversionEffect,
     types::Module,
     value::Value,
@@ -74,22 +74,24 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
 /// a coroutine that starts on `await`: the wait is the host's to schedule, and
 /// only it knows whether it can run other tasks meanwhile. A host with an
 /// event loop should answer with a pending future so sibling tasks keep
-/// running; one without can wait inline and answer with `result`, which
-/// [`PostConversionEffect::SettleAwaitable`] turns into an already-settled
-/// awaitable so the `await` works either way. See `limitations/asyncio.md`.
+/// running; one without can wait inline and answer with anything. Either way
+/// [`PostConversionEffect::SleepResult`] keeps `result` in the sandbox and
+/// makes it the value of the `await`. See `limitations/asyncio.md`.
 fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let SleepArgs { delay, result } = SleepArgs::from_args(args, vm)?;
-    // Converted first so the only value still holding a heap reference past
-    // this point is `delay`, which the guard covers.
-    let result = MontyObject::export(result, vm);
-    defer_drop!(delay, vm);
-    let seconds = delay_seconds(delay, vm)?;
-    // NaN is the one delay CPython refuses; the rest clamp.
-    let delay =
-        sleep_duration_saturating(seconds).map_err(|_| ExcType::value_error("Invalid delay: NaN (not a number)"))?;
+    // `result` outlives `delay`: it moves into the effect once the delay is valid.
+    let mut result_guard = DropGuard::new(result, vm);
+    let delay = {
+        let (_, vm) = result_guard.as_parts_mut();
+        defer_drop!(delay, vm);
+        let seconds = delay_seconds(delay, vm)?;
+        // NaN is the one delay CPython refuses; the rest clamp.
+        sleep_duration_saturating(seconds).map_err(|_| ExcType::value_error("Invalid delay: NaN (not a number)"))?
+    };
+    let (result, _) = result_guard.into_parts();
     Ok(CallResult::OsCallWithEffect {
-        call: OsFunctionCall::AsyncSleep(AsyncSleepArgs { delay, result }),
-        effect: PostConversionEffect::SettleAwaitable.into(),
+        call: OsFunctionCall::AsyncSleep(delay),
+        effect: PostConversionEffect::SleepResult { result }.into(),
     })
 }
 

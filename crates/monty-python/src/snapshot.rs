@@ -55,7 +55,7 @@ use crate::{
     exceptions::MontyError,
     external::{CallResult, ExternalLookup, resolve_object_attr, wire_call_arguments},
     pool::{
-        FeedArgs, SharedCheckout, TurnFuture, block_on_sync, discard_checkout, discard_checkout_sync,
+        FeedArgs, OsDispatch, SharedCheckout, TurnFuture, block_on_sync, discard_checkout, discard_checkout_sync,
         dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync, turn_fn,
     },
     print_target::PrintTarget,
@@ -269,6 +269,7 @@ pub(crate) fn build_snapshot(
                 args,
                 call_id,
                 is_os_function: false,
+                accepts_future: false,
                 object_id,
                 allow_eager_await,
             };
@@ -278,12 +279,14 @@ pub(crate) fn build_snapshot(
             function_name,
             args,
             call_id,
+            accepts_future,
         } => {
             let call = FunctionCallData {
                 function_name,
                 args,
                 call_id,
                 is_os_function: true,
+                accepts_future,
                 object_id: None,
                 allow_eager_await: false,
             };
@@ -536,6 +539,9 @@ struct FunctionCallData {
     args: CallArgs,
     call_id: u32,
     is_os_function: bool,
+    /// An OS call the worker lets an async host answer with a future
+    /// (`asyncio.sleep`); see `OsFunctionCall::accepts_future`.
+    accepts_future: bool,
     /// Uuid of the routed receiver — an instance or class type; `None` for
     /// plain external functions and OS calls.
     object_id: Option<MontyUuid>,
@@ -685,7 +691,22 @@ impl PyFunctionSnapshot {
             if let Some(event) = try_mounts_sync(py, &ctx)? {
                 return build_snapshot(py, ctx, event, false);
             }
-            dispatch_os_parts(py, &call.function_name, &call.args, ctx.os.as_ref(), &ctx.instances)
+            match dispatch_os_parts(
+                py,
+                &call.function_name,
+                &call.args,
+                ctx.os.as_ref(),
+                &ctx.instances,
+                false,
+            )? {
+                OsDispatch::Answer(value) => value,
+                OsDispatch::Coroutine(coro) => {
+                    // As for external functions below: closed rather than leaked.
+                    let _ = coro.bind(py).call_method0(intern!(py, "close"));
+                    discard_checkout_sync(py, &ctx.checkout);
+                    return Err(PyRuntimeError::new_err("async os callbacks require AsyncMonty"));
+                }
+            }
         } else {
             match dispatch_function_call(
                 &call.function_name,
@@ -805,24 +826,40 @@ impl PyAsyncFunctionSnapshot {
             // asyncio task-locals that `future_into_py`'s scope establishes.
             let answer: PyResult<ResumeValue> = if call.is_os_function {
                 // mounts get first refusal, then the captured `os=`
-                match run_turn_async(
+                let mounted = run_turn_async(
                     &ctx.checkout,
                     &ctx.print_target,
                     turn_fn(|c, p| Box::pin(c.resume_from_mounts(p))),
                 )
-                .await?
-                {
-                    Some(event) => return Python::attach(|py| build_snapshot(py, ctx, event, true)),
-                    None => Python::attach(|py| {
-                        let _guard = context.enter(py, &native)?;
-                        Ok(dispatch_os_parts(
-                            py,
-                            &call.function_name,
-                            &call.args,
-                            ctx.os.as_ref(),
-                            &ctx.instances,
-                        ))
-                    }),
+                .await?;
+                if let Some(event) = mounted {
+                    return Python::attach(|py| build_snapshot(py, ctx, event, true));
+                }
+                let dispatched = Python::attach(|py| {
+                    let _guard = context.enter(py, &native)?;
+                    dispatch_os_parts(
+                        py,
+                        &call.function_name,
+                        &call.args,
+                        ctx.os.as_ref(),
+                        &ctx.instances,
+                        true,
+                    )
+                });
+                match dispatched {
+                    Ok(OsDispatch::Answer(value)) => Ok(value),
+                    // `asyncio.sleep` runs alongside the sandbox's other
+                    // tasks; any other call is awaited in place.
+                    Ok(OsDispatch::Coroutine(coro)) if call.accepts_future => {
+                        let mut join_set = ctx.pending_futures.lock().await;
+                        spawn_coroutine_task(&mut join_set, call.call_id, coro, &ctx.instances)
+                            .map(|()| ResumeValue::Future)
+                    }
+                    Ok(OsDispatch::Coroutine(coro)) => match coroutine_future(coro, &ctx.instances) {
+                        Ok(future) => Ok(ext_result_to_resume(future.await)),
+                        Err(err) => Err(err),
+                    },
+                    Err(err) => Err(err),
                 }
             } else {
                 let mut join_set = ctx.pending_futures.lock().await;

@@ -7,7 +7,7 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
-import { MontyRuntimeError } from '@pydantic/monty'
+import { MontyRuntimeError, NOT_HANDLED } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run } = setupPool()
@@ -336,18 +336,48 @@ test('time.sleep reaches the os callback and evaluates to None', async () => {
   t.deepEqual(calls, [['time.sleep', [1.5]]])
 })
 
-test('an async os callback waits before answering asyncio.sleep', async () => {
+test('an async os callback answers asyncio.sleep as a future, so gathered sleeps overlap', async () => {
   const calls: unknown[] = []
-  const result = await run("import asyncio\nasyncio.run(asyncio.sleep(0.01, 'woken'))", {
+  const code = [
+    'import asyncio',
+    'async def main():',
+    "    return await asyncio.gather(asyncio.sleep(0.15, 'a'), asyncio.sleep(0.15, 'b'))",
+    'asyncio.run(main())',
+  ].join('\n')
+  const start = performance.now()
+  const result = await run(code, {
     os: async (name, args) => {
       calls.push([name, args])
-      const [delay, value] = args as [number, unknown]
+      const [delay] = args as [number]
       await new Promise((resolve) => setTimeout(resolve, delay * 1000))
-      return value
+      return 'ignored' // the sandbox keeps `result` itself
     },
   })
-  t.is(result, 'woken')
-  t.deepEqual(calls, [['asyncio.sleep', [0.01, 'woken']]])
+  const elapsed = (performance.now() - start) / 1000
+  t.deepEqual(result, ['a', 'b'])
+  t.deepEqual(calls, [
+    ['asyncio.sleep', [0.15]],
+    ['asyncio.sleep', [0.15]],
+  ])
+  t.true(elapsed < 0.28, `in series the sleeps would take 0.3s, took ${elapsed}s`)
+})
+
+test('an async os callback answering time.sleep is awaited before the sandbox resumes', async () => {
+  const result = await run('import time\nrepr(time.sleep(0.001))', {
+    os: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1))
+      return 'ignored'
+    },
+  })
+  t.is(result, 'None')
+})
+
+test('an async os callback settling to NOT_HANDLED refuses asyncio.sleep', async () => {
+  const error = await t.throwsAsync(
+    () => run('import asyncio\nasyncio.run(asyncio.sleep(0))', { os: async () => NOT_HANDLED }),
+    { instanceOf: MontyRuntimeError },
+  )
+  t.is(error.message, "RuntimeError: 'asyncio.sleep' is not supported in this environment")
 })
 
 test('sleeping without an os callback is refused', async () => {

@@ -742,11 +742,10 @@ message OsCall {
     Urandom urandom = 25;
     Unit time = 27; // time.time()
     Sleep sleep = 28; // time.sleep(seconds)
-    AsyncSleep async_sleep = 29; // asyncio.sleep(delay, result)
+    AsyncSleep async_sleep = 29; // asyncio.sleep(delay)
   }
 
-  // The arena any value-typed argument (`Getenv.default`, `AsyncSleep.result`)
-  // indexes.
+  // The arena any value-typed argument (`Getenv.default`) indexes.
   Arena values = 26;
 
   message TextWrite {
@@ -797,16 +796,15 @@ message OsCall {
     // duration of nanoseconds in an int64; a frame breaking that is rejected.
     double seconds = 1;
   }
-  // asyncio.sleep(delay, result) — the awaitable form. A parent running an
-  // event loop should answer `ExtFunctionResult.future` and resolve it with
-  // `result` once the delay elapses, so the sandbox's other tasks keep
-  // running; answering directly is equivalent to a wait that blocks them.
+  // asyncio.sleep(delay) — the awaitable form. A parent running an event
+  // loop should answer `ExtFunctionResult.future` and resolve it once the
+  // delay elapses, so the sandbox's other tasks keep running; answering
+  // directly is equivalent to a wait that blocks them. The answer's value is
+  // ignored: the sandbox keeps the `result` argument itself and produces it
+  // from the `await`.
   message AsyncSleep {
     // How long to wait, under the same constraints as `Sleep.seconds`.
     double delay = 1;
-    // The value the sandbox's `await` should produce: an index into the
-    // enclosing `OsCall.values`.
-    uint32 result = 2;
   }
 }
 

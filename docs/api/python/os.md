@@ -24,3 +24,4 @@ See [filesystem access](../../filesystem.md) for how these fit together.
             - OsHandler
             - OsFunction
             - NOT_HANDLED
+            - ASYNC_HOST

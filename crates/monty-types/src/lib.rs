@@ -40,9 +40,9 @@ pub use crate::{
         NamedValues, ObjectRef,
     },
     os::{
-        AsyncSleepArgs, GetenvArgs, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall,
-        PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, SleepError, UrandomArgs, dir_stat, file_stat,
-        sleep_duration, sleep_duration_saturating, stat_result, symlink_stat,
+        GetenvArgs, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
+        PathStringDataArgs, RenameCallArgs, SleepError, UrandomArgs, dir_stat, file_stat, sleep_duration,
+        sleep_duration_saturating, stat_result, symlink_stat,
     },
     resource::{
         BASELINE_MEMORY, DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MAX_SUSPENSIONS, LARGE_RESULT_THRESHOLD, LIVE_MEMORY,

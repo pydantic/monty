@@ -685,6 +685,13 @@ class TurnAnswerer {
       const [args, kwargs] = restoreCallArgs(call, this.instances)
       returned = this.os(call.functionName, args, kwargsToRecord(kwargs))
       if (isThenable(returned)) {
+        if (call.acceptsFuture) {
+          // `asyncio.sleep`: the sandbox's other tasks run while the host waits.
+          this.registerFuture(call.callId, Promise.resolve(returned).then(rejectNotHandled(call.functionName)))
+          return await this.native.resumeFuture(onPrint)
+        }
+        // Every other OS call is a value the sandbox is waiting on, so the
+        // wait happens here and only this session is held up.
         returned = await returned
       }
     } catch (err) {
@@ -1230,6 +1237,20 @@ function jsErrorParts(err: unknown): { excType: string; message: string } {
     return { excType, message: err.message }
   }
   return { excType: 'RuntimeError', message: String(err) }
+}
+
+/**
+ * A future cannot decline a call the way `resumeNotHandled` does, so an async
+ * `os` callback that settles to `NOT_HANDLED` raises the sandbox's own
+ * no-handler error for that call instead.
+ */
+function rejectNotHandled(functionName: string): (value: unknown) => unknown {
+  return (value) => {
+    if (value === NOT_HANDLED) {
+      throw new Error(`'${functionName}' is not supported in this environment`)
+    }
+    return value
+  }
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {

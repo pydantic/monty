@@ -81,8 +81,8 @@ impl HostClock {
                     timezone_name: tz.as_ref().and_then(|tz| tz.name.clone()),
                 }))
             }
-            // `time.time()` is the raw epoch offset, so neither the local
-            // zone nor `datetime`'s year range applies to it.
+            // `time.time()` is the raw epoch offset, so the local zone does
+            // not apply to it.
             OsFunctionCall::Time => {
                 let (utc, _) = self.instant()?;
                 let epoch = utc.and_utc();

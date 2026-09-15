@@ -79,12 +79,11 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let seconds = args
         .reject_kwargs("time.sleep", vm.heap)?
         .get_one_arg("time.sleep", vm.heap)?;
-    let from_float = matches!(seconds, Value::Float(_));
     let result = sleep_seconds(&seconds, vm).and_then(|secs| {
         sleep_duration(secs).map_err(|err| match err {
             SleepError::NotANumber => ExcType::value_error("Invalid value NaN (not a number)"),
             SleepError::Negative => ExcType::value_error("sleep length must be non-negative"),
-            SleepError::TooLarge => ExcType::sleep_too_long(from_float),
+            SleepError::TooLarge => ExcType::sleep_too_long(),
         })
     });
     seconds.drop_with(vm.heap);
@@ -116,7 +115,7 @@ fn sleep_seconds(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
                 index.drop_with(vm);
                 Ok(seconds)
             }
-            None => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
+            None => Err(ExcType::type_error_not_integer_or_float(&value.py_type_name(vm))),
         },
     }
 }

@@ -6,6 +6,7 @@ from typing import Any, Callable, Literal
 from typing_extensions import NotRequired, TypeAlias, TypedDict
 
 from ._monty import (
+    ASYNC_HOST,
     NOT_HANDLED,
     AsyncFunctionSnapshot,
     AsyncFutureSnapshot,
@@ -101,6 +102,7 @@ __all__ = (
     'StatResult',
     'OsFunction',
     'NOT_HANDLED',
+    'ASYNC_HOST',
     'AbstractOS',
     'AbstractFile',
     'MemoryFile',

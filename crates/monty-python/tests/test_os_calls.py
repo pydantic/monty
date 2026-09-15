@@ -15,7 +15,7 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import NOT_HANDLED, Monty, MontyFileHandle, MontyRuntimeError, StatResult
+from pydantic_monty import ASYNC_HOST, NOT_HANDLED, Monty, MontyFileHandle, MontyRuntimeError, StatResult
 
 # =============================================================================
 # Basic os= callback dispatch
@@ -490,17 +490,38 @@ def test_time_sleep_can_be_refused(monty_run: RunMonty):
 
 
 def test_asyncio_sleep_callback(monty_run: RunMonty):
-    """asyncio.sleep() passes the delay and the value the await produces."""
+    """asyncio.sleep() passes only the delay; the await produces `result` whatever the host returns."""
     calls: list[Any] = []
 
     def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
         calls.append((function_name, args))
-        _, result = args
-        return result
+        assert ASYNC_HOST.get() is False
+        return 'ignored'
 
     code = "import asyncio; asyncio.run(asyncio.sleep(0.25, 'woken'))"
     assert monty_run(code, os=os_handler) == snapshot('woken')
-    assert calls == snapshot([('asyncio.sleep', (0.25, 'woken'))])
+    assert calls == snapshot([('asyncio.sleep', (0.25,))])
+
+
+def test_asyncio_sleep_result_stays_in_the_sandbox(monty_run: RunMonty):
+    """`result` never crosses the host boundary, so values with no wire form survive."""
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        return None
+
+    code = 'import asyncio\ndef f():\n    return 42\nasyncio.run(asyncio.sleep(0, f))()'
+    assert monty_run(code, os=os_handler) == snapshot(42)
+
+
+def test_async_os_callback_requires_async_monty(monty_run: RunMonty):
+    """The sync pool has no event loop to run a coroutine answer on."""
+
+    async def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        return None
+
+    with pytest.raises(RuntimeError) as exc_info:
+        monty_run('import time; time.sleep(0)', os=os_handler)
+    assert str(exc_info.value) == snapshot('async os callbacks require AsyncMonty')
 
 
 # =============================================================================

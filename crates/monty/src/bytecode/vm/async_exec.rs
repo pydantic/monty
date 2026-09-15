@@ -684,12 +684,21 @@ impl<'h> VM<'h> {
         let this = self;
         defer_drop!(fut_val, this);
 
-        let mut value_guard = DropGuard::new(value, this);
-        let (value, this) = value_guard.as_parts_mut();
-
         let HeapReadOutput::ExternalFuture(mut fut) = this.heap.read(future_id) else {
             panic!("pending_externals entry doesn't point to an ExternalFuture")
         };
+
+        // `asyncio.sleep(delay, result)`: the host's value was only the
+        // wake-up signal, `result` is what the await produces.
+        let value = match fut.get_mut(this.heap).sleep_result.take() {
+            Some(result) => {
+                value.drop_with(this);
+                result
+            }
+            None => value,
+        };
+        let mut value_guard = DropGuard::new(value, this);
+        let (value, this) = value_guard.as_parts_mut();
 
         let awaiter_and_value = match &mut fut.get_mut(this.heap).state {
             ExternalFutureState::Pending { awaiter } => awaiter.take().map(|a| (a, value.clone_with_heap(this.heap))),
@@ -795,7 +804,10 @@ impl<'h> VM<'h> {
                 panic!("fail_future: future was already resolved")
             }
         };
+        // A failed sleep never produces its result.
+        let sleep_result = fut.get_mut(this.heap).sleep_result.take();
         drop(fut);
+        sleep_result.drop_with(this);
         if let Some(awaiter) = awaiter {
             this.deliver_awaiter_failure(awaiter, error);
         }
@@ -809,9 +821,25 @@ impl<'h> VM<'h> {
     /// the stack is the user's reference, which travels with the value until
     /// it's awaited or dropped.
     pub fn add_pending_call(&mut self, call_id: CallId) {
+        self.push_pending_future(call_id, None);
+    }
+
+    /// Like [`Self::add_pending_call`], for a host answering `asyncio.sleep`
+    /// with a future: the awaitable resolves with `result`, the value the
+    /// call was given, rather than with whatever the host resolves it with.
+    pub(crate) fn add_pending_sleep(&mut self, call_id: CallId, result: Value) {
+        self.push_pending_future(call_id, Some(result));
+    }
+
+    /// Allocates the pending `ExternalFuture`, indexes it for the host's
+    /// resolution and pushes it as the call's value.
+    fn push_pending_future(&mut self, call_id: CallId, sleep_result: Option<Value>) {
         let future_id = self
             .heap
-            .allocate(HeapData::ExternalFuture(Box::new(ExternalFuture::new_pending(call_id))));
+            .allocate(HeapData::ExternalFuture(Box::new(ExternalFuture::new_pending(
+                call_id,
+                sleep_result,
+            ))));
         self.scheduler.add_pending_external(call_id, future_id, self.heap);
         self.push(Value::Ref(future_id));
     }
@@ -829,6 +857,7 @@ impl<'h> VM<'h> {
         let future = ExternalFuture {
             call_id,
             state: ExternalFutureState::Resolved(value),
+            sleep_result: None,
         };
         Value::Ref(self.heap.allocate(HeapData::ExternalFuture(Box::new(future))))
     }

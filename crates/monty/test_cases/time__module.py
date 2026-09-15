@@ -38,9 +38,9 @@ check(lambda: time.sleep(secs=0), 'TypeError: time.sleep() takes no keyword argu
 # === bad sleep lengths ===
 # a float passes straight through, anything else must be an integer, so a type
 # with only __float__ is rejected the same way a str is
-check(lambda: time.sleep('a'), "TypeError: 'str' object cannot be interpreted as an integer")
-check(lambda: time.sleep(None), "TypeError: 'NoneType' object cannot be interpreted as an integer")
-check(lambda: time.sleep([0]), "TypeError: 'list' object cannot be interpreted as an integer")
+check(lambda: time.sleep('a'), "TypeError: 'str' object cannot be interpreted as an integer or float")
+check(lambda: time.sleep(None), "TypeError: 'NoneType' object cannot be interpreted as an integer or float")
+check(lambda: time.sleep([0]), "TypeError: 'list' object cannot be interpreted as an integer or float")
 # an __index__-able class is an acceptable length, a __float__-only one is not
 
 
@@ -55,10 +55,11 @@ class Float:
 
 
 assert time.sleep(Index()) is None
-check(lambda: time.sleep(Float()), "TypeError: 'Float' object cannot be interpreted as an integer")
+check(lambda: time.sleep(Float()), "TypeError: 'Float' object cannot be interpreted as an integer or float")
 
 check(lambda: time.sleep(-1), 'ValueError: sleep length must be non-negative')
 check(lambda: time.sleep(-0.001), 'ValueError: sleep length must be non-negative')
 check(lambda: time.sleep(float('nan')), 'ValueError: Invalid value NaN (not a number)')
-check(lambda: time.sleep(1e18), 'OverflowError: timestamp out of range for platform time_t')
-check(lambda: time.sleep(float('inf')), 'OverflowError: timestamp out of range for platform time_t')
+check(lambda: time.sleep(1e18), 'OverflowError: timestamp out of range for C PyTime_t')
+check(lambda: time.sleep(float('inf')), 'OverflowError: timestamp out of range for C PyTime_t')
+check(lambda: time.sleep(10**30), 'OverflowError: timestamp out of range for C PyTime_t')

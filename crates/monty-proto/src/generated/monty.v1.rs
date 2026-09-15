@@ -805,8 +805,7 @@ pub struct Print {
 pub struct OsCall {
     #[prost(uint32, tag = "1")]
     pub call_id: u32,
-    /// The arena any value-typed argument (`Getenv.default`, `AsyncSleep.result`)
-    /// indexes.
+    /// The arena any value-typed argument (`Getenv.default`) indexes.
     #[prost(message, optional, tag = "26")]
     pub values: ::core::option::Option<crate::WireArena>,
     #[prost(
@@ -890,19 +889,17 @@ pub mod os_call {
         #[prost(double, tag = "1")]
         pub seconds: f64,
     }
-    /// asyncio.sleep(delay, result) — the awaitable form. A parent running an
-    /// event loop should answer `ExtFunctionResult.future` and resolve it with
-    /// `result` once the delay elapses, so the sandbox's other tasks keep
-    /// running; answering directly is equivalent to a wait that blocks them.
+    /// asyncio.sleep(delay) — the awaitable form. A parent running an event
+    /// loop should answer `ExtFunctionResult.future` and resolve it once the
+    /// delay elapses, so the sandbox's other tasks keep running; answering
+    /// directly is equivalent to a wait that blocks them. The answer's value is
+    /// ignored: the sandbox keeps the `result` argument itself and produces it
+    /// from the `await`.
     #[derive(Clone, Copy, PartialEq, ::prost::Message)]
     pub struct AsyncSleep {
         /// How long to wait, under the same constraints as `Sleep.seconds`.
         #[prost(double, tag = "1")]
         pub delay: f64,
-        /// The value the sandbox's `await` should produce: an index into the
-        /// enclosing `OsCall.values`.
-        #[prost(uint32, tag = "2")]
-        pub result: u32,
     }
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
@@ -987,7 +984,7 @@ pub mod os_call {
         /// time.sleep(seconds)
         #[prost(message, tag = "28")]
         Sleep(Sleep),
-        /// asyncio.sleep(delay, result)
+        /// asyncio.sleep(delay)
         #[prost(message, tag = "29")]
         AsyncSleep(AsyncSleep),
     }

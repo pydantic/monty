@@ -21,12 +21,12 @@ forms), `time_ns`, `struct_time`, `localtime`, `gmtime`, `mktime`, `strftime`,
 raising:
 
 - Through the pool (`pydantic_monty`, `@pydantic/monty`, `monty-pool`) they
-    reach the `os=` handler. With no handler, `RuntimeError: 'time.time' is not   supported in this environment`.
+    reach the `os=` handler. With no handler, `RuntimeError: 'time.time' is not supported in this environment`.
 - Under standard (non-suspending) execution — `MontyRun::run`, and so the
     `monty` CLI running a file without mounts — `time.time()` is answered from
     the runner's `HostClock` (the machine's clock by default, `HostClock::Denied`
     raising `NotImplementedError`), but `time.sleep()` always raises
-    `NotImplementedError: OS function 'time.sleep' not implemented with standard   execution`. Nothing waits inside the interpreter: a wait has to happen where
+    `NotImplementedError: OS function 'time.sleep' not implemented with standard execution`. Nothing waits inside the interpreter: a wait has to happen where
     a deadline can be enforced.
 
 Since the host performs the wait, how long `time.sleep()` actually sleeps is the
@@ -54,10 +54,8 @@ rather than on `MemoryError`/time limits. See
 
 ## `time.sleep()` arguments
 
-The `OverflowError` past ~9223372036.85 seconds is CPython's, in both its
-wordings — `timestamp out of range for platform time_t` for a float and
-`timestamp too large to convert to C PyTime_t` for an integer. What does not
-happen is the `OSError: [Errno 22] Invalid argument` CPython's platform sleep
+The `OverflowError` past ~9223372036.85 seconds is CPython's,
+`timestamp out of range for C PyTime_t`. What does not happen is the `OSError: [Errno 22] Invalid argument` CPython's platform sleep
 raises for a delay just *under* that boundary: Monty accepts it and passes it
 to the host, where it becomes a wait that outlives any turn deadline.
 

@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import Mapping
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Literal, NoReturn, final
 
@@ -20,6 +21,7 @@ from .os_access import AbstractOS, OsFunction
 __all__ = [
     '__version__',
     '_install_telemetry',
+    'ASYNC_HOST',
     'NOT_HANDLED',
     'AsyncMonty',
     'AsyncMontySession',
@@ -55,6 +57,15 @@ __version__: str
 def _install_telemetry(tracer: Any | None, meter: Any | None, logger: Any | None) -> None: ...
 
 NOT_HANDLED = object()
+
+ASYNC_HOST: ContextVar[bool]
+"""True inside an `os=` callback that `AsyncMonty` is driving, false under `Monty`.
+
+An `AsyncMonty` callback may return a coroutine: for `asyncio.sleep` it runs alongside the
+sandbox's other tasks, for any other call it is awaited before the sandbox resumes.
+`Monty` has no event loop and rejects a coroutine, so a handler shared by both pools
+checks this before returning one, as `AbstractOS.async_sleep()` does.
+"""
 
 @final
 class CollectStreams:

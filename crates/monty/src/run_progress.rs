@@ -19,7 +19,7 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
     object_bridge::MontyObjectExt,
-    os_dispatch::{PendingEffect, release_pending_effect},
+    os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect},
     run::Executor,
     value::Value,
 };
@@ -857,7 +857,17 @@ pub(crate) fn resume_with_result(
                         .into(),
                     )
                 } else {
-                    vm.add_pending_call(CallId::new(raw_call_id));
+                    // `asyncio.sleep` hands its result to the awaitable; no
+                    // other effect survives a future answer.
+                    match vm.pending_effect.take() {
+                        Some(PendingEffect::Post(PostConversionEffect::SleepResult { result })) => {
+                            vm.add_pending_sleep(CallId::new(raw_call_id), result);
+                        }
+                        effect => {
+                            release_pending_effect(effect, vm.heap);
+                            vm.add_pending_call(CallId::new(raw_call_id));
+                        }
+                    }
                     vm.run_external()
                 }
             }
@@ -955,10 +965,10 @@ impl ConvertedExit {
 /// while the VM (and its heap/interns) are still accessible.
 pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) -> ConvertedExit {
     // An effect still armed on arrival belongs to an OS call that was answered
-    // without consuming it — a host may reply `ExtFunctionResult::Future`,
-    // whose resume never takes it. It can never apply to whatever suspends
-    // next, so release it here rather than let it reshape an unrelated result
-    // (or leak its file pin when the next OS call overwrites the slot).
+    // without consuming it — an eager `resume_with_resolved_futures` never
+    // takes it. It can never apply to whatever suspends next, so release it
+    // here rather than let it reshape an unrelated result (or leak what it
+    // holds when the next OS call overwrites the slot).
     // Arming for *this* exit happens below, after the slot is clear.
     release_pending_effect(vm.pending_effect.take(), vm.heap);
     vm.pending_lookup_effect.take().drop_with(vm.heap);

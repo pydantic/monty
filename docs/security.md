@@ -329,6 +329,12 @@ A wait costs nothing against `max_duration`, which measures execution time and s
 what bounds a sleeping session is `max_suspensions` (one per sleep) and your own turn deadline.
 See [resource limits](resource-limits.md).
 
+Under [`AsyncMonty`][pydantic_monty.AsyncMonty] and in JavaScript the handler may be `async`.
+Its answer to `asyncio.sleep()` then runs alongside the sandbox's other tasks, so gathered sleeps overlap;
+its answer to any other call is awaited before that session resumes, holding up nothing else.
+[`AbstractOS.async_sleep()`][pydantic_monty.AbstractOS.async_sleep] does this by default, consulting
+[`ASYNC_HOST`][pydantic_monty.ASYNC_HOST] to tell the two pools apart.
+
 === "Python"
 
     ```python
@@ -368,8 +374,8 @@ See [resource limits](resource-limits.md).
     console.log(await session.feedRun('import time\ntime.sleep(30)\n"awake"', { os: hostOs })) // awake
     ```
 
-`asyncio.sleep` arrives the same way, with the delay and the value the `await` should produce as its two arguments —
-return the second one back.
+`asyncio.sleep` arrives the same way, with the delay as its only argument.
+Its return value is ignored: the sandbox itself produces the `result` argument of `asyncio.sleep()` from the `await`.
 
 ## Crash isolation
 

@@ -642,16 +642,9 @@ fn handle_os_call(call: OsFunctionCall, mount_table: &mut Option<MountTable>) ->
     // one local script, so there is nothing else to run meanwhile and no
     // deadline but the user's patience. `--max-suspensions` still bounds how
     // many waits a run can ask for.
-    match call {
-        OsFunctionCall::Sleep(delay) => {
-            thread::sleep(delay);
-            return MontyObject::none().into();
-        }
-        OsFunctionCall::AsyncSleep(args) => {
-            thread::sleep(args.delay);
-            return args.result.into();
-        }
-        _ => {}
+    if let OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay) = call {
+        thread::sleep(delay);
+        return MontyObject::none().into();
     }
     match mount_table.as_mut() {
         Some(mounts) => match mounts.handle_os_call(call) {

@@ -1,13 +1,13 @@
 //! Conversions for `OsCall` suspensions: the typed wire arms of
 //! `monty.v1.OsCall` and [`OsFunctionCall`] map 1:1, so payloads (write data,
-//! paths) *move* between the wire and the call — never clone. The value-typed
-//! arguments (`Getenv.default`, `AsyncSleep.result`) index the message's arena.
+//! paths) *move* between the wire and the call — never clone. The one
+//! value-typed argument (`Getenv.default`) indexes the message's arena.
 
 use std::time::Duration;
 
 use monty_types::{
-    AsyncSleepArgs, GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall,
-    PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, UrandomArgs, sleep_duration,
+    GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
+    PathStringDataArgs, RenameCallArgs, UrandomArgs, sleep_duration,
 };
 
 use crate::{
@@ -19,8 +19,8 @@ use crate::{
     wire::WireArena,
 };
 
-/// Builds the `OsCall` envelope: call id, typed arm and, for the value-carrying
-/// arms, the arena their value indexes.
+/// Builds the `OsCall` envelope: call id, typed arm and, for `Getenv`, the
+/// arena its default indexes.
 #[must_use]
 pub fn os_call_to_proto(call_id: u32, call: OsFunctionCall) -> pb::OsCall {
     let (call, values) = call_to_proto(call);
@@ -39,18 +39,14 @@ pub fn os_call_from_proto(call: pb::OsCall) -> Result<(u32, OsFunctionCall), Pro
             key: g.key,
             default: root_object(call.values, g.default, "OsCall.values")?,
         }),
-        os_call::Call::AsyncSleep(s) => OsFunctionCall::AsyncSleep(AsyncSleepArgs {
-            delay: delay(s.delay, "AsyncSleep.delay")?,
-            result: root_object(call.values, s.result, "OsCall.values")?,
-        }),
         other => other.try_into()?,
     };
     Ok((call.call_id, function_call))
 }
 
-/// The typed wire arm of a call, with the arena a value-typed argument indexes
+/// The typed wire arm of a call, with the arena `Getenv.default` indexes
 /// (`None` for the value-free arms). Private so no caller can send a
-/// value-carrying arm without its arena.
+/// `Getenv` without its arena.
 fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
     let mut values = None;
     let call = match call {
@@ -103,19 +99,15 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
         OsFunctionCall::Sleep(delay) => Call::Sleep(os_call::Sleep {
             seconds: delay.as_secs_f64(),
         }),
-        OsFunctionCall::AsyncSleep(a) => {
-            values = Some(WireArena::new(a.result.graph));
-            Call::AsyncSleep(os_call::AsyncSleep {
-                delay: a.delay.as_secs_f64(),
-                result: a.result.root.0,
-            })
-        }
+        OsFunctionCall::AsyncSleep(delay) => Call::AsyncSleep(os_call::AsyncSleep {
+            delay: delay.as_secs_f64(),
+        }),
     };
     (call, values)
 }
 
-/// The value-free arms; `Getenv` and `AsyncSleep` need the envelope's arena,
-/// see [`os_call_from_proto`].
+/// The value-free arms; `Getenv` needs the envelope's arena, see
+/// [`os_call_from_proto`].
 impl TryFrom<os_call::Call> for OsFunctionCall {
     type Error = ProtoConvertError;
 
@@ -167,12 +159,7 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             os_call::Call::Urandom(u) => Self::Urandom(UrandomArgs { size: u.size }),
             os_call::Call::Time(_) => Self::Time,
             os_call::Call::Sleep(s) => Self::Sleep(delay(s.seconds, "Sleep.seconds")?),
-            os_call::Call::AsyncSleep(_) => {
-                return Err(ProtoConvertError::InvalidValue {
-                    field: "OsCall.async_sleep",
-                    reason: "asyncio.sleep carries a value and must be converted with its arena".to_owned(),
-                });
-            }
+            os_call::Call::AsyncSleep(s) => Self::AsyncSleep(delay(s.delay, "AsyncSleep.delay")?),
         })
     }
 }
