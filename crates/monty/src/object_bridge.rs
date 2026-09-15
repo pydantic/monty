@@ -15,7 +15,7 @@ use crate::{
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
-    exception_private::{RunError, SimpleException},
+    exception_private::{RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     modules::dataclasses,
     types::{
@@ -40,7 +40,12 @@ use crate::{
 pub(crate) trait MontyObjectExt: Sized {
     /// Converts a `Value` into a `MontyObject`, properly handling reference
     /// counting: takes ownership of the `Value` and drops it via `drop_with`.
-    fn new(value: Value, vm: &mut VM<'_>) -> Self;
+    ///
+    /// The exported graph is charged against the session's `max_memory` as it
+    /// is built, so a small but heavily shared sandbox value (which the tree
+    /// wire form re-exports once per reference) fails with `MemoryError`
+    /// rather than expanding unbudgeted after execution.
+    fn new(value: Value, vm: &mut VM<'_>) -> RunResult<Self>;
 
     /// Converts this `MontyObject` into a `Value`, allocating on the heap if
     /// needed. Fails with `InvalidInputError` on output-only variants
@@ -51,10 +56,20 @@ pub(crate) trait MontyObjectExt: Sized {
 
     /// Top-level entry into [`from_value_inner`](Self::from_value_inner),
     /// allocating the visited-set used for cycle detection.
-    fn from_value(object: &Value, vm: &mut VM<'_>) -> Self;
+    fn from_value(object: &Value, vm: &mut VM<'_>) -> RunResult<Self>;
 
     /// Converts a `Value` to a `MontyObject` with cycle detection via `visited`.
-    fn from_value_inner(object: &Value, vm: &mut VM<'_>, visited: &mut AHashSet<HeapId>) -> Self;
+    ///
+    /// `mem` accumulates the first memory-budget failure: each node is charged
+    /// as it is built, and once the budget is spent the conversion returns
+    /// truncated placeholders rather than growing further, leaving the error
+    /// for the top-level caller to surface.
+    fn from_value_inner(
+        object: &Value,
+        vm: &mut VM<'_>,
+        visited: &mut AHashSet<HeapId>,
+        mem: &mut RunResult<()>,
+    ) -> Self;
 }
 
 impl MontyObjectExt for MontyObject {
@@ -64,7 +79,7 @@ impl MontyObjectExt for MontyObject {
     /// then properly drops the Value via `drop_with` to maintain reference counting.
     ///
     /// The `interns` parameter is used to look up interned string/bytes content.
-    fn new(value: Value, vm: &mut VM<'_>) -> Self {
+    fn new(value: Value, vm: &mut VM<'_>) -> RunResult<Self> {
         let py_obj = Self::from_value(&value, vm);
         value.drop_with(vm);
         py_obj
@@ -288,9 +303,11 @@ impl MontyObjectExt for MontyObject {
 
     /// Top-level entry into [`from_value_inner`], allocating the visited-set used
     /// for cycle detection.
-    fn from_value(object: &Value, vm: &mut VM<'_>) -> Self {
+    fn from_value(object: &Value, vm: &mut VM<'_>) -> RunResult<Self> {
         let mut visited = AHashSet::new();
-        Self::from_value_inner(object, vm, &mut visited)
+        let mut mem = Ok(());
+        let obj = Self::from_value_inner(object, vm, &mut visited, &mut mem);
+        mem.map(|()| obj)
     }
 
     /// Internal helper for converting Value to MontyObject with cycle detection.
@@ -306,12 +323,30 @@ impl MontyObjectExt for MontyObject {
     /// even if that `__repr__` mutates the container. Immutable containers
     /// (tuple, namedtuple, frozenset) clone per-item: their length and slots
     /// cannot change mid-iteration.
-    fn from_value_inner(object: &Value, vm: &mut VM<'_>, visited: &mut AHashSet<HeapId>) -> Self {
+    fn from_value_inner(
+        object: &Value,
+        vm: &mut VM<'_>,
+        visited: &mut AHashSet<HeapId>,
+        mem: &mut RunResult<()>,
+    ) -> Self {
         // Check depth limit before processing
         let Ok(mut guard) = vm.recursion_guard() else {
             return Self::Repr("<deeply nested>".to_owned());
         };
         let vm = &mut *guard;
+
+        // Each exported node is a real host allocation, so charge the graph
+        // against `max_memory` as it is built: a small but heavily shared
+        // value re-exports once per reference, and the tree can be far larger
+        // than the heap it came from. Once the budget is spent, stop recursing
+        // and let the top-level caller surface the `MemoryError`.
+        if mem.is_err() {
+            return Self::Repr("<truncated>".to_owned());
+        }
+        if let Err(err) = vm.heap.tracker.check_allocation(0) {
+            *mem = Err(err.into());
+            return Self::Repr("<truncated>".to_owned());
+        }
 
         let interns = vm.interns;
         match object {
@@ -354,7 +389,7 @@ impl MontyObjectExt for MontyObject {
                             .map(|item| item.clone_with_heap(vm.heap))
                             .collect();
                         defer_drop!(children, vm);
-                        Self::List(values_to_objects(children, vm, visited))
+                        Self::List(values_to_objects(children, vm, visited, mem))
                     }
                     // A deque exports as a host list: there is no host-side deque
                     // *value* type, so it degrades to the nearest structural one
@@ -370,7 +405,7 @@ impl MontyObjectExt for MontyObject {
                             .map(|item| item.clone_with_heap(vm.heap))
                             .collect();
                         defer_drop!(children, vm);
-                        Self::List(values_to_objects(children, vm, visited))
+                        Self::List(values_to_objects(children, vm, visited, mem))
                     }
                     HeapReadOutput::Tuple(tuple) => {
                         let len = tuple.get(vm.heap).as_slice().len();
@@ -378,7 +413,7 @@ impl MontyObjectExt for MontyObject {
                         for i in 0..len {
                             let item = tuple.get(vm.heap).as_slice()[i].clone_with_heap(vm.heap);
                             defer_drop!(item, vm);
-                            items.push(Self::from_value_inner(item, vm, visited));
+                            items.push(Self::from_value_inner(item, vm, visited, mem));
                         }
                         Self::Tuple(items)
                     }
@@ -395,7 +430,7 @@ impl MontyObjectExt for MontyObject {
                         for i in 0..len {
                             let item = nt.get(vm.heap).as_vec()[i].clone_with_heap(vm.heap);
                             defer_drop!(item, vm);
-                            values.push(Self::from_value_inner(item, vm, visited));
+                            values.push(Self::from_value_inner(item, vm, visited, mem));
                         }
                         Self::NamedTuple {
                             type_name,
@@ -407,7 +442,7 @@ impl MontyObjectExt for MontyObject {
                         // Snapshot before recursing: a nested `__repr__` may mutate this dict.
                         let children = snapshot_dict_pairs(dict.get(vm.heap), vm.heap);
                         defer_drop!(children, vm);
-                        Self::Dict(pairs_to_objects(children, vm, visited).into())
+                        Self::Dict(pairs_to_objects(children, vm, visited, mem).into())
                     }
                     HeapReadOutput::Set(set) => {
                         // Snapshot before recursing: a nested `__repr__` may mutate this set.
@@ -424,7 +459,7 @@ impl MontyObjectExt for MontyObject {
                                 .collect()
                         };
                         defer_drop!(children, vm);
-                        Self::Set(values_to_objects(children, vm, visited))
+                        Self::Set(values_to_objects(children, vm, visited, mem))
                     }
                     HeapReadOutput::FrozenSet(fs) => {
                         let len = fs.get(vm.heap).len();
@@ -437,7 +472,7 @@ impl MontyObjectExt for MontyObject {
                                 .expect("index in range")
                                 .clone_with_heap(vm.heap);
                             defer_drop!(item, vm);
-                            items.push(Self::from_value_inner(item, vm, visited));
+                            items.push(Self::from_value_inner(item, vm, visited, mem));
                         }
                         Self::FrozenSet(items)
                     }
@@ -446,7 +481,7 @@ impl MontyObjectExt for MontyObject {
                     HeapReadOutput::Cell(cell) => {
                         let inner = cell.get(vm.heap).0.clone_with_heap(vm.heap);
                         defer_drop!(inner, vm);
-                        Self::from_value_inner(inner, vm, visited)
+                        Self::from_value_inner(inner, vm, visited, mem)
                     }
                     HeapReadOutput::Date(d) => {
                         let (year, month, day) = date_type::to_ymd(*d.get(vm.heap));
@@ -522,7 +557,7 @@ impl MontyObjectExt for MontyObject {
                         Self::ClassInstance(Box::new(MontyClassInstance {
                             class_type,
                             instance_id,
-                            attrs: pairs_to_objects(children, vm, visited).into(),
+                            attrs: pairs_to_objects(children, vm, visited, mem).into(),
                         }))
                     }
                     // The type object of a host class crosses out with its
@@ -533,7 +568,7 @@ impl MontyObjectExt for MontyObject {
                         let mut class_type = ty.get(vm.heap).class_type(vm.interns);
                         let children = snapshot_dict_pairs(ty.get(vm.heap).attrs(), vm.heap);
                         defer_drop!(children, vm);
-                        class_type.attrs = pairs_to_objects(children, vm, visited).into();
+                        class_type.attrs = pairs_to_objects(children, vm, visited, mem).into();
                         Self::Type(MontyType::Instance(Box::new(class_type)))
                     }
                     // Sandbox-defined class instances cross out structured
@@ -552,7 +587,7 @@ impl MontyObjectExt for MontyObject {
                         Self::ClassInstance(Box::new(MontyClassInstance {
                             class_type,
                             instance_id,
-                            attrs: pairs_to_objects(children, vm, visited).into(),
+                            attrs: pairs_to_objects(children, vm, visited, mem).into(),
                         }))
                     }
                     // Iterators are internal objects — represent as a fixed type
@@ -938,10 +973,15 @@ fn convert_set(
 /// Taking a `&[Value]` snapshot (cloned and guarded by the caller) is what
 /// keeps [`from_value_inner`](MontyObjectExt::from_value_inner) safe against a
 /// nested `__repr__` mutating the source container mid-iteration.
-fn values_to_objects(children: &[Value], vm: &mut VM<'_>, visited: &mut AHashSet<HeapId>) -> Vec<MontyObject> {
+fn values_to_objects(
+    children: &[Value],
+    vm: &mut VM<'_>,
+    visited: &mut AHashSet<HeapId>,
+    mem: &mut RunResult<()>,
+) -> Vec<MontyObject> {
     children
         .iter()
-        .map(|child| MontyObject::from_value_inner(child, vm, visited))
+        .map(|child| MontyObject::from_value_inner(child, vm, visited, mem))
         .collect()
 }
 
@@ -951,13 +991,14 @@ fn pairs_to_objects(
     children: &[(Value, Value)],
     vm: &mut VM<'_>,
     visited: &mut AHashSet<HeapId>,
+    mem: &mut RunResult<()>,
 ) -> Vec<(MontyObject, MontyObject)> {
     children
         .iter()
         .map(|(key, value)| {
             (
-                MontyObject::from_value_inner(key, vm, visited),
-                MontyObject::from_value_inner(value, vm, visited),
+                MontyObject::from_value_inner(key, vm, visited, mem),
+                MontyObject::from_value_inner(value, vm, visited, mem),
             )
         })
         .collect()

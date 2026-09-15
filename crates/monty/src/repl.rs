@@ -425,7 +425,13 @@ impl MontyRepl {
                     let mut run_result = vm.run_module();
                     loop {
                         run_result = match run_result {
-                            Ok(FrameExit::Return(value)) => break Ok(MontyObject::new(value, vm)),
+                            Ok(FrameExit::Return(value)) => {
+                                break MontyObject::new(value, vm).map_err(|error| {
+                                    error.into_python_exception(&executor.interns, |fname| {
+                                        self.sources.get(fname).map(|source| &**source)
+                                    })
+                                });
+                            }
                             // No host answers inside a host-driven call, so the
                             // lookup is `Undefined`: `hasattr()` is False,
                             // `getattr()` yields its default.

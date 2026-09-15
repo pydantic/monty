@@ -69,6 +69,12 @@ without one is unlimited.
     `max_memory`, not all of it — well under the limit for ordinary payloads, but
     a multi-MiB argument under a tight budget can cross the hard ceiling while
     announcing the call.
+- **A shared sub-object is exported once per reference.** The host-side form is a
+    tree with no shared references, so a value reached through two edges is
+    converted twice, and a heavily shared graph can be far larger crossing out
+    than it was on the heap. The conversion is charged against `max_memory` as it
+    is built, so an over-budget export fails with a graceful `MemoryError` and the
+    session survives, rather than expanding unbudgeted after execution.
 - **It binds the worker's allocator, not the process.** Only bytes requested
     from Rust's global allocator are counted, which is everything sandboxed code
     can cause to be allocated, but not memory obtained another way: thread stacks,

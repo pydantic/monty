@@ -81,6 +81,9 @@ threshold, including integer multiplication, division and `divmod`, left shift, 
 an iterator into a container, and f-string, `str.format()` or `%` formatting with a dynamic width or precision.
 So `'x' * 10**12` fails immediately rather than after consuming the machine's memory.
 
+Returning a value or passing an argument to a host function converts it to a host-side tree, which is charged against `max_memory` as it is built.
+Because that tree has no shared references, a heavily shared sandbox graph is exported once per reference and can be far larger than the heap it came from; an over-budget export fails with a `MemoryError` and the session survives.
+
 A few integer operations carry their own caps regardless of `max_memory`:
 
 - `base ** exp` with an exponent above `u32::MAX` raises `OverflowError`, except for bases 0, 1 and -1.

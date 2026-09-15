@@ -966,7 +966,10 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
     release_pending_effect(vm.pending_effect.take(), vm.heap);
     vm.pending_lookup_effect.take().drop_with(vm.heap);
     match result {
-        Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::new(value, vm)),
+        Ok(FrameExit::Return(value)) => match MontyObject::new(value, vm) {
+            Ok(obj) => ConvertedExit::Complete(obj),
+            Err(err) => ConvertedExit::Error(err),
+        },
         Ok(FrameExit::ExternalCall {
             function_name,
             args,
@@ -974,7 +977,10 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             ..
         }) => {
             let name = function_name.into_string(vm.interns);
-            let (args_py, kwargs_py) = args.into_py_objects(vm);
+            let (args_py, kwargs_py) = match args.into_py_objects(vm) {
+                Ok(pair) => pair,
+                Err(err) => return ConvertedExit::Error(err),
+            };
             ConvertedExit::FunctionCall {
                 function_name: name,
                 args: args_py,
@@ -1004,7 +1010,10 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             object_id,
         }) => {
             let name = method_name.into_string(vm.interns);
-            let (args_py, kwargs_py) = args.into_py_objects(vm);
+            let (args_py, kwargs_py) = match args.into_py_objects(vm) {
+                Ok(pair) => pair,
+                Err(err) => return ConvertedExit::Error(err),
+            };
             ConvertedExit::FunctionCall {
                 function_name: name,
                 args: args_py,

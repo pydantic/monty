@@ -968,6 +968,55 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
     }
 }
 
+/// HackMonty 5Xp8QGM: the sandbox heap shares object identity, but the wire
+/// form is a tree, so a value reached through two sibling edges is exported
+/// twice. A tiny shared graph (each `[x, x]` doubles the exported subtree)
+/// blows up into a far larger tree while being converted *after* execution.
+/// The conversion charges each node against `max_memory`, so the burst fails
+/// with a graceful `MemoryError` and the worker survives to serve the session.
+#[test]
+fn exporting_a_shared_graph_is_charged_against_max_memory() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(4 * 1024 * 1024));
+    // 20 unary wrappers then 15 shared binary wrappers around one list: 36
+    // heap objects that export as 753,663 nodes.
+    let code = "x = [0]\nfor _ in range(20):\n    x = [x]\nfor _ in range(15):\n    x = [x, x]\nx";
+    let (_, event) = child.feed(code);
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    // the worker and its session survive the graceful rejection
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// The same graph returned as a small value still round-trips intact, so the
+/// export budget did not change output for graphs that fit.
+#[test]
+fn exporting_a_small_shared_graph_still_succeeds() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(64 * 1024 * 1024));
+    // `[x, x]` at depth 3 is a 15-node tree from 4 heap objects.
+    let value = child.feed_complete("x = [0]\nfor _ in range(3):\n    x = [x, x]\nx");
+    // Each level doubles: [[[0]-pair squared]...]; assert the shape survives.
+    assert_eq!(
+        value,
+        MontyObject::List(vec![
+            {
+                let leaf = || MontyObject::List(vec![MontyObject::Int(0)]);
+                let d1 = || MontyObject::List(vec![leaf(), leaf()]);
+                let d2 = || MontyObject::List(vec![d1(), d1()]);
+                d2()
+            },
+            {
+                let leaf = || MontyObject::List(vec![MontyObject::Int(0)]);
+                let d1 = || MontyObject::List(vec![leaf(), leaf()]);
+                let d2 = || MontyObject::List(vec![d1(), d1()]);
+                d2()
+            },
+        ])
+    );
+    child.shutdown();
+}
+
 /// A merge charges the pairs it copies out, but not room for every one of them
 /// in the target: `a | b` over keys `a` already holds grows the result by
 /// nothing, so charging per source pair refused merges that comfortably fit.
