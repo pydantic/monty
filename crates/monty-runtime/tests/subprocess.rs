@@ -1172,6 +1172,77 @@ fn a_returnable_value_can_also_be_passed_to_a_host_function() {
     child.shutdown();
 }
 
+// =============================================================================
+// Value arenas
+// =============================================================================
+
+/// The HackMonty shape: 36 heap objects that a tree export expands to
+/// 753,663 nodes. As an arena it is one node per object plus the `0`, so it
+/// completes under a small memory limit and leaves the session usable.
+#[test]
+fn exporting_a_shared_graph_is_linear_in_heap_objects() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(4 * 1024 * 1024));
+    let code = "x = [0]\nfor _ in range(20):\n    x = [x]\nfor _ in range(15):\n    x = [x, x]\nx";
+    let (_, event) = child.feed(code);
+    let value = expect_complete_value(event);
+    assert_eq!(value.graph.len(), 37);
+    // the session survives: nothing overshot into a soft-limit `MemoryError`
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// A small shared graph is one node per object, and expands to the tree a
+/// host expects.
+#[test]
+fn exporting_a_small_shared_graph_round_trips() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let (_, event) = child.feed("x = [0]\nx = [x, x]\nx = [x, x]\nx");
+    let value = expect_complete_value(event);
+    // `0`, `[0]`, `[[0], [0]]` and the outer list: sharing costs nothing
+    assert_eq!(value.graph.len(), 4);
+    let leaf = MontyObject::List(vec![MontyObject::Int(0)]);
+    let pair = MontyObject::List(vec![leaf.clone(), leaf]);
+    assert_eq!(
+        value.into_object().expect("expands"),
+        MontyObject::List(vec![pair.clone(), pair])
+    );
+    child.shutdown();
+}
+
+/// A call's arguments share one arena: an object passed twice (positionally
+/// and by keyword) is one node, so the host receives one object.
+#[test]
+fn call_arguments_share_one_arena() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let (_, event) = child.feed("x = [1, 2]\nf(x, x, y=x)");
+    let pb::child_event::Kind::FunctionCall(call) = event else {
+        panic!("expected FunctionCall, got {event:?}");
+    };
+    assert_eq!(call.args.len(), 2);
+    assert_eq!(call.args[0], call.args[1]);
+    assert_eq!(call.kwargs.len(), 1);
+    assert_eq!(call.kwargs[0].1, call.args[0]);
+    // `1`, `2`, the list and the keyword name
+    assert_eq!(call.values.0.len(), 4);
+    child.shutdown();
+}
+
+/// Inputs naming the same node arrive as one sandbox object.
+#[test]
+fn shared_inputs_are_one_sandbox_object() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let mut inputs = NamedValues::new();
+    let id = inputs.push("a", MontyObject::List(vec![MontyObject::Int(1)]));
+    inputs.names.push(("b".to_owned(), id));
+    let (_, event) = child.feed_with("a is b and a == [1]", inputs);
+    assert_eq!(expect_complete(event), MontyObject::Bool(true));
+    child.shutdown();
+}
+
 /// The length of a `str` value, for assertions that care only about its size —
 /// printing a multi-megabyte string on failure helps nobody.
 #[track_caller]

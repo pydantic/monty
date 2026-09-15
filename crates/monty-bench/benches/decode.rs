@@ -8,7 +8,7 @@ use codspeed_criterion_compat::{BenchmarkId, Criterion, Throughput, black_box, c
 #[cfg(not(codspeed))]
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use monty_proto::{decode_frame, encode_to_capped_vec, pb};
-use monty_types::{MontyObject, MontyValue};
+use monty_types::{MontyGraph, MontyNode, MontyObject, MontyValue};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 
@@ -24,7 +24,8 @@ fn decode_benchmark(c: &mut Criterion) {
     let payloads = [64 * KIB, 4 * MIB, 64 * MIB, 192 * MIB]
         .map(|size| ("str", size, str_frame(size)))
         .into_iter()
-        .chain([64 * KIB, 4 * MIB, 64 * MIB].map(|size| ("rows", size, rows_frame(size))));
+        .chain([64 * KIB, 4 * MIB, 64 * MIB].map(|size| ("rows", size, rows_frame(size))))
+        .chain([64 * KIB, 4 * MIB, 64 * MIB].map(|size| ("dag", size, dag_frame(size))));
     for (shape, size, frame) in payloads {
         group.throughput(Throughput::Bytes(frame.len() as u64));
         group.bench_with_input(BenchmarkId::new(shape, size_label(size)), &frame, |bench, frame| {
@@ -57,6 +58,25 @@ fn str_frame(target: usize) -> Vec<u8> {
 fn rows_frame(target: usize) -> Vec<u8> {
     let per_row = complete_frame(rows(1024).into()).len() / 1024;
     complete_frame(rows((target / per_row).try_into().expect("row count fits i64")).into())
+}
+
+/// A frame of roughly `target` bytes of shared structure: `[0]` wrapped in
+/// `[x, x]` levels, one node per level. A tree would be exponential in the
+/// levels; the arena decodes in one pass over its nodes.
+fn dag_frame(target: usize) -> Vec<u8> {
+    let per_level = complete_frame(dag(1024)).len() / 1024;
+    complete_frame(dag(target / per_level))
+}
+
+/// `[0]` wrapped in `levels` `[x, x]` lists, every level sharing the one below.
+fn dag(levels: usize) -> MontyValue {
+    let mut graph = MontyGraph::new();
+    let zero = graph.push(MontyNode::Int(0));
+    let mut root = graph.push(MontyNode::List(vec![zero]));
+    for _ in 0..levels {
+        root = graph.push(MontyNode::List(vec![root, root]));
+    }
+    MontyValue::new(graph, root).expect("the last node pushed is the root")
 }
 
 /// A list of `n` dicts shaped like a SQL tool reply (short string keys,
