@@ -1,0 +1,33 @@
+crates/monty-python/tests/test_os_calls.py
+  s_1b47e62302c8ac::t_17ee971cb16bd9 520-533
+crates/monty/src/dump_format.rs
+  s_1b47e62302c8ac::t_17ee971cb16bd9 223
+docs/limitations/random.md
+  s_1b47e62302c8ac::t_17ee971cb16bd9 44-46
+crates/monty/src/types/random.rs
+  s_1b47e62302c8ac::t_c1065a4f14740d 54-56
+crates/monty-python/README.md
+  s_1b47e62302c8ac::t_17ee971cb16bd9 97-99
+crates/monty/tests/random_module.rs
+  s_1b47e62302c8ac::t_47f912ec4461c1 1-2
+  s_1b47e62302c8ac::t_17ee971cb16bd9 10,28-46
+crates/monty/src/object_bridge.rs
+  s_1b47e62302c8ac::t_17ee971cb16bd9 613-616,634,636,729-730,780,817,820-822,824
+  s_1b47e62302c8ac::t_47f912ec4461c1 725,728
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6d12dcce50c055910ea8bd384337730ad3da6721",
+  "prompts": {},
+  "sessions": {
+    "s_1b47e62302c8ac": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a46c-06ef-70e2-bf7f-2bda47120d23",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
