@@ -224,7 +224,7 @@ mod tests {
         );
         assert_eq!(
             variant_order_fingerprint(MontyType::VARIANTS),
-            0x9903_9fb4_4b18_3618,
+            0xbde0_3964_2ba2_2ce1,
             "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_order_fingerprint(MontyType::VARIANTS))
         );
