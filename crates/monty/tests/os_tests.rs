@@ -1515,12 +1515,16 @@ fn asyncio_sleep_awaited_at_once_allows_an_eager_answer() {
 }
 
 /// The eager hint needs an immediate `await`: a sleep passed to `asyncio.run`
-/// is not awaited by the calling frame, and `time.sleep` never is.
+/// is not awaited by the calling frame, and `time.sleep` never is. Each call
+/// is answered rather than dropped, so the run releases what it holds.
 #[test]
 fn only_an_immediately_awaited_asyncio_sleep_allows_an_eager_answer() {
-    for code in [
-        "import asyncio\nasyncio.run(asyncio.sleep(0, 'x'))",
-        "import time\ntime.sleep(0)",
+    for (code, expected) in [
+        (
+            "import asyncio\nasyncio.run(asyncio.sleep(0, 'x'))",
+            MontyObject::string("x"),
+        ),
+        ("import time\ntime.sleep(0)", MontyObject::none()),
     ] {
         let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
         let progress = runner
@@ -1530,6 +1534,8 @@ fn only_an_immediately_awaited_asyncio_sleep_allows_an_eager_answer() {
             panic!("expected the sleep, got {progress:?}")
         };
         assert!(!call.allow_eager_await, "{code}");
+        let progress = call.resume(MontyObject::none(), PrintWriter::Stdout).unwrap();
+        assert_eq!(progress.into_complete().expect("expected Complete"), expected, "{code}");
     }
 }
 

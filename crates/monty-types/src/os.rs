@@ -119,7 +119,7 @@ pub enum OsFunctionCall {
     #[strum(serialize = "os.urandom")]
     Urandom(UrandomArgs),
     /// Read the host clock as `time.time()` does: seconds since the Unix
-    /// epoch, answered with a [`MontyObject::Float`].
+    /// epoch, answered with a [`MontyNode::Float`].
     #[strum(serialize = "time.time")]
     Time,
     /// `time.sleep(seconds)` — the host waits, then answers with any value

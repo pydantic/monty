@@ -610,6 +610,7 @@ class AbstractOS(ABC):
         if size > self.max_urandom_bytes:
             raise MemoryError(f'os.urandom() size exceeds max_urandom_bytes ({self.max_urandom_bytes})')
         return os.urandom(size)
+
     def time(self) -> float:
         """Return the epoch seconds for Monty's `time.time()` callback.
 
