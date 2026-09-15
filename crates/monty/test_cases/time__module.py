@@ -63,3 +63,7 @@ check(lambda: time.sleep(float('nan')), 'ValueError: Invalid value NaN (not a nu
 check(lambda: time.sleep(1e18), 'OverflowError: timestamp out of range for C PyTime_t')
 check(lambda: time.sleep(float('inf')), 'OverflowError: timestamp out of range for C PyTime_t')
 check(lambda: time.sleep(10**30), 'OverflowError: timestamp out of range for C PyTime_t')
+# out of range outranks negative, as CPython converts before checking the sign
+check(lambda: time.sleep(float('-inf')), 'OverflowError: timestamp out of range for C PyTime_t')
+check(lambda: time.sleep(-1e18), 'OverflowError: timestamp out of range for C PyTime_t')
+check(lambda: time.sleep(-(10**30)), 'OverflowError: timestamp out of range for C PyTime_t')

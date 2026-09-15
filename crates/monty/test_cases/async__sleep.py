@@ -34,6 +34,7 @@ assert await asyncio.gather(wait_then(1), wait_then(2), wait_then(3)) == [2, 4, 
 # === delays CPython accepts unchanged ===
 # a negative delay returns immediately rather than raising, as it does on CPython
 assert await asyncio.sleep(-5, 'negative') == 'negative'  # pyright: ignore
+assert await asyncio.sleep(float('-inf'), 'negative') == 'negative'  # pyright: ignore
 
 # NaN is the one delay CPython refuses, though Monty raises it at the call
 # rather than at the await

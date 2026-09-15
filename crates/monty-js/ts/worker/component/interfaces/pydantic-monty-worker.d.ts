@@ -427,6 +427,7 @@ export interface OsCallEvent {
   args: Array<Value>
   kwargs: Array<ValuePair>
   callId: number
+  allowEagerAwait: boolean
 }
 export type Event =
   | EventPrint

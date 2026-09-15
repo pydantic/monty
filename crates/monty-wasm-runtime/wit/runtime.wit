@@ -331,6 +331,9 @@ interface worker {
         args: list<value>,
         kwargs: list<value-pair>,
         call-id: u32,
+        /// As on `function-call-event`: the host may await its wait and answer
+        /// with `resume-futures`. Only ever set on `asyncio.sleep`.
+        allow-eager-await: bool,
     }
 
     /// A semantic event emitted by the child.

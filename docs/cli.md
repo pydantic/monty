@@ -66,7 +66,7 @@ Only the file argument's name is used, so `monty ./scripts/run.py` and `monty /a
 
 ## The clock
 
-`date.today()`, `datetime.now()` and `time.time()` read the machine's clock and local timezone.
+`date.today()` and `datetime.now()` read the machine's clock and local timezone; `time.time()` reads the machine's clock as Unix epoch seconds.
 
 ```console
 $ monty -c "from datetime import datetime; print(datetime.now())"

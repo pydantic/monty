@@ -45,7 +45,9 @@ CPython.
 suspended — so a sleep costs nothing against it, however long it lasts. What
 bounds sleeping instead:
 
-- `max_suspensions` (default 1000), since each sleep is one suspension.
+- `max_suspensions` (default 1000), since each sleep is one suspension (two
+    when an `asyncio.sleep()` answered with a future is awaited later). The
+    pools and the CLI enforce it; a direct Rust host counts suspensions itself.
 - The host's own turn deadline (`request_timeout` for the pools).
 
 A sandbox that sleeps in a loop therefore ends its turn on the host's deadline

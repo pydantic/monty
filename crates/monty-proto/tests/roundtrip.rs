@@ -4,11 +4,11 @@ use insta::assert_snapshot;
 use monty::MontyRun;
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use monty_types::{
-    CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
-    MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
-    MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, OpenCallArgs,
-    OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame,
-    UnicodeErrorData,
+    CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData,
+    MAX_SLEEP_SECONDS, MkdirCallArgs, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException,
+    MontyFileHandle, MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
+    NameLookupResult, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs,
+    ResourceLimits, StackFrame, UnicodeErrorData, sleep_duration, sleep_duration_saturating,
 };
 use num_bigint::BigInt;
 use prost::Message;
@@ -877,6 +877,9 @@ fn os_calls_round_trip_all_variants() {
         OsFunctionCall::Sleep(Duration::from_millis(1_500)),
         OsFunctionCall::AsyncSleep(Duration::ZERO),
         OsFunctionCall::AsyncSleep(Duration::from_secs_f64(0.25)),
+        // the longest length either sleep accepts survives the f64 seconds on the wire
+        OsFunctionCall::Sleep(sleep_duration(MAX_SLEEP_SECONDS).unwrap()),
+        OsFunctionCall::AsyncSleep(sleep_duration_saturating(f64::INFINITY).unwrap()),
     ] {
         assert_os_call_round_trip(call);
     }

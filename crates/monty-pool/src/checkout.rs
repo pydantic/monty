@@ -1386,12 +1386,15 @@ impl Checkout {
                     // normalizes only the clone presented to callbacks.
                     let function_name = function_call.name().to_owned();
                     let accepts_future = function_call.accepts_future();
+                    // The child is untrusted: an eager bit on a call no future
+                    // may answer is dropped rather than exposed.
+                    let allow_eager_await = call.allow_eager_await && accepts_future;
                     let (args, kwargs) = function_call.clone().to_args();
                     self.pending = Some(Pending::Call {
                         call_id,
                         function_name: function_name.clone(),
                         os_call: Some(Box::new(function_call)),
-                        allow_eager_await: call.allow_eager_await,
+                        allow_eager_await,
                     });
                     return Ok(ControlEvent::Turn(TurnEvent::OsCall {
                         function_name,
@@ -1399,7 +1402,7 @@ impl Checkout {
                         kwargs,
                         call_id,
                         accepts_future,
-                        allow_eager_await: call.allow_eager_await,
+                        allow_eager_await,
                     }));
                 }
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {

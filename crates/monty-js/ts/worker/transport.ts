@@ -374,6 +374,7 @@ export class WorkerTransport {
           kwargs: event.val.kwargs.map(({ key, value }) => [decodeValue(key), decodeValue(value)]),
           callId: event.val.callId,
           acceptsFuture: osCallAcceptsFuture(event.val.functionName),
+          allowEagerAwait: event.val.allowEagerAwait,
         }
       case 'name-lookup':
         return { kind: 'nameLookup', name: event.val.name, objectId: event.val.objectId ?? null }

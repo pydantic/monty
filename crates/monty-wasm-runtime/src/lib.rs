@@ -199,21 +199,26 @@ struct PreparedOsEvent {
     args: Vec<MontyObject>,
     kwargs: Vec<(MontyObject, MontyObject)>,
     call_id: u32,
+    allow_eager_await: bool,
 }
 
 impl PreparedOsEvent {
     /// Validates and projects a typed protocol call without building WIT arenas.
     fn from_proto(call: pb::OsCall) -> Result<Self, Event> {
         let call_id = call.call_id;
+        let eager_bit = call.allow_eager_await;
         match call.call.map(OsFunctionCall::try_from) {
             Some(Ok(call)) => {
                 let function_name = call.name().to_owned();
+                // The eager bit is only meaningful on a call a future may answer.
+                let allow_eager_await = eager_bit && call.accepts_future();
                 let (args, kwargs) = call.to_args();
                 Ok(Self {
                     function_name,
                     args,
                     kwargs,
                     call_id,
+                    allow_eager_await,
                 })
             }
             Some(Err(error)) => Err(invalid_event(&format!("invalid OS call: {error}"))),
@@ -234,6 +239,7 @@ impl PreparedOsEvent {
     fn into_component(self) -> Event {
         Event::OsCall(OsCallEvent {
             function_name: self.function_name,
+            allow_eager_await: self.allow_eager_await,
             args: self.args.into_iter().map(value::into_component).collect(),
             kwargs: self
                 .kwargs

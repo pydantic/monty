@@ -1446,6 +1446,17 @@ fn asyncio_sleep_answered_by_value_is_awaitable() {
     assert_eq!(result, MontyObject::String("woken".to_owned()));
 }
 
+/// Both sleeps ignore the host's answer, so one with no sandbox form (a
+/// host object's repr) completes them rather than failing conversion.
+#[test]
+fn sleeps_ignore_an_unconvertible_answer() {
+    let repr = || MontyObject::Repr("<host object>".to_owned());
+    let (_, _, result) = run_oscall_with_result("import time\ntime.sleep(0)", repr());
+    assert_eq!(result, MontyObject::None);
+    let (_, _, result) = run_oscall_with_result("import asyncio\nasyncio.run(asyncio.sleep(0, 'woken'))", repr());
+    assert_eq!(result, MontyObject::String("woken".to_owned()));
+}
+
 /// `result` never crosses the host boundary, so a value that has no wire
 /// form — a function — survives, as in CPython.
 #[test]
