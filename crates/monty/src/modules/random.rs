@@ -559,14 +559,19 @@ fn randbytes(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResul
         .ok()
         .and_then(|n| n.checked_mul(8))
         .ok_or_else(ExcType::overflow_c_uint64)?;
-    // The word buffer and the bytes built from it.
-    vm.heap.tracker.check_allocation(n.saturating_mul(2))?;
+    // The word buffer plus the exactly-sized byte buffer built from it.
     let words = n.div_ceil(4);
+    vm.heap
+        .tracker
+        .check_allocation(words.saturating_mul(4).saturating_add(n))?;
     let words = target.with_generator(vm, |random, vm| {
         random.rng().getrandbits_words(bits, words, &vm.heap.tracker)
     })?;
-    let mut bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
-    bytes.truncate(n);
+    let mut bytes = Vec::with_capacity(n);
+    for word in &words {
+        let take = (n - bytes.len()).min(4);
+        bytes.extend_from_slice(&word.to_le_bytes()[..take]);
+    }
     Ok(allocate_bytes(bytes, vm.heap))
 }
 

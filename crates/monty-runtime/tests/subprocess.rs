@@ -937,6 +937,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
             16_031_971,
         ),
+        // `randbytes` charges its word buffer and the byte buffer it fills.
+        ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_236_172),
         // A `range` population can be as long as `i64::MAX` while costing nothing,
         // so `sample` must saturate its size arithmetic and refuse the pick buffer.
         (
