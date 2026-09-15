@@ -9,6 +9,7 @@ mod clock;
 mod exceptions;
 mod file_mode;
 pub mod format;
+mod graph;
 mod io;
 mod object;
 mod os;
@@ -17,6 +18,7 @@ mod results;
 mod run_options;
 mod type_checking;
 mod uuid;
+mod value;
 mod virtual_path;
 
 pub use crate::{
@@ -28,6 +30,7 @@ pub use crate::{
     },
     file_mode::FileMode,
     format::{FormatFloat, StringRepr, bytes_repr, bytes_repr_fmt, string_repr_fmt, utf8_error_reason},
+    graph::{ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
     io::{
         COLLECT_STREAMS_ENTRY_OVERHEAD, CollectedStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES, PrintStream, PrintWriter,
         PrintWriterCallback, check_print_collect_limit,
@@ -49,5 +52,9 @@ pub use crate::{
     run_options::{AssertMessageAnnotations, CompileOptions},
     type_checking::{TypeCheckState, TypeCheckingConfig, TypeCheckingFormat},
     uuid::MontyUuid,
+    value::{
+        ArgObjects, CallArgs, DEFAULT_EXPAND_BYTES, DEFAULT_EXPAND_DEPTH, ExpandError, ExpandLimits, MontyValue,
+        NamedValues, ValueRef,
+    },
     virtual_path::{normalize_virtual_path, validate_cwd},
 };

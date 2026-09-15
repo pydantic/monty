@@ -12,11 +12,13 @@
 use std::{borrow::Cow, fmt, ops::Deref};
 
 use crate::{
-    args::{ToArgs, ToMontyObject},
+    args::{PushValue, ToArgs},
     exceptions::{ExcType, MontyException},
     file_mode::FileMode,
     format::StringRepr,
+    graph::{MontyGraph, MontyNode, NodeId},
     object::{MontyObject, MontyTimeZone},
+    value::{CallArgs, MontyValue},
     virtual_path::normalize_virtual_path,
 };
 // =============================================================================
@@ -128,13 +130,13 @@ impl OsFunctionCall {
         self.into()
     }
 
-    /// Projects this call's args into `(positional, keyword)` [`MontyObject`](crate::MontyObject)
-    /// vectors for delivery to a host callback, with lexically normalized paths.
-    /// Empty paths stay empty. The interpreter checks NUL bytes before dispatch;
-    /// hosts constructing calls must use [`Self::check_path_null_bytes`] first.
-    /// Mounts must validate length limits on the original typed call.
+    /// Projects this call's args into the [`CallArgs`] delivered to a host
+    /// callback, with lexically normalized paths. Empty paths stay empty. The
+    /// interpreter checks NUL bytes before dispatch; hosts constructing calls
+    /// must use [`Self::check_path_null_bytes`] first. Mounts must validate
+    /// length limits on the original typed call.
     #[must_use]
-    pub fn to_args(mut self) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
+    pub fn to_args(mut self) -> CallArgs {
         for path in self.fs_paths_mut() {
             if !path.is_empty()
                 && let Cow::Owned(normalized) = normalize_virtual_path(path)
@@ -155,7 +157,7 @@ impl OsFunctionCall {
             | Self::Resolve(p)
             | Self::Absolute(p)
             | Self::Unlink(p)
-            | Self::Rmdir(p) => (vec![p.into_monty_object()], vec![]),
+            | Self::Rmdir(p) => single_arg(p),
             // Multi-field variants delegate to their derived `ToArgs`.
             Self::WriteText(a) | Self::AppendText(a) => a.to_args(),
             Self::WriteBytes(a) | Self::AppendBytes(a) => a.to_args(),
@@ -165,8 +167,8 @@ impl OsFunctionCall {
             Self::Getenv(a) => a.to_args(),
             Self::Urandom(a) => a.to_args(),
             // Unit & single-value non-FS variants.
-            Self::GetEnviron | Self::DateToday => (vec![], vec![]),
-            Self::DateTimeNow(tz) => (vec![tz.map_or(MontyObject::None, MontyObject::TimeZone)], vec![]),
+            Self::GetEnviron | Self::DateToday => CallArgs::new(),
+            Self::DateTimeNow(tz) => single_arg(tz.map_or(MontyNode::None, MontyNode::TimeZone)),
         }
     }
 
@@ -338,12 +340,19 @@ impl fmt::Display for OsFunctionCall {
         f.write_str(self.name())
     }
 }
+/// A call with one positional argument.
+fn single_arg(value: impl PushValue) -> CallArgs {
+    let mut call = CallArgs::new();
+    call.push_arg(value);
+    call
+}
+
 // =============================================================================
 // Args structs — per-variant payloads carried by `OsFunctionCall`.
 // =============================================================================
 //
 // Each variant carries a struct that derives `ToArgs` for projection to
-// `(positional, keyword)` MontyObjects. Zero-arg variants use empty structs so
+// `CallArgs`. Zero-arg variants use empty structs so
 // `to_args()` has no special arms. Producers construct these directly via
 // struct literals (see `types/path.rs`, `builtins/open.rs`, etc.).
 
@@ -363,7 +372,7 @@ pub struct PathBytesDataArgs {
 
 /// `open(path, mode)` shape. The mode is parsed into [`FileMode`] before
 /// construction so the fs/ backend doesn't re-parse; [`ToArgs`](crate::args::ToArgs) re-serialises
-/// it back to a [`MontyObject::String`](crate::MontyObject::String) for the host.
+/// it back to a [`MontyNode::String`] for the host.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct OpenCallArgs {
     pub path: MontyPath,
@@ -393,7 +402,7 @@ pub struct RenameCallArgs {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct GetenvArgs {
     pub key: String,
-    pub default: MontyObject,
+    pub default: MontyValue,
 }
 
 /// `os.urandom(size)` shape. The interpreter rejects a negative `size` before
@@ -411,8 +420,8 @@ pub struct UrandomArgs {
 /// Owned virtual (sandbox) path carried by OS-call args.
 ///
 /// Preserves the supplied string, including invalid components, for host validation.
-/// Derefs to `&str` for routing; [`ToMontyObject`](crate::args::ToMontyObject)
-/// projects it back to [`MontyObject::Path`] at the host boundary.
+/// Derefs to `&str` for routing; [`PushValue`](crate::args::PushValue)
+/// projects it back to a [`MontyNode::Path`] at the host boundary.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MontyPath(String);
 
@@ -456,9 +465,9 @@ impl From<&str> for MontyPath {
     }
 }
 
-impl ToMontyObject for MontyPath {
-    fn into_monty_object(self) -> MontyObject {
-        MontyObject::Path(self.0)
+impl PushValue for MontyPath {
+    fn push_into(self, graph: &mut MontyGraph) -> NodeId {
+        graph.push(MontyNode::Path(self.0))
     }
 }
 // =============================================================================

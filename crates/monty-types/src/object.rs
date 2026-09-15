@@ -142,24 +142,22 @@ pub enum MontyObject {
     ///
     /// This is output-only and cannot be used as an input to the interpreter.
     Repr(String),
-    /// Represents a cycle detected during Value-to-MontyObject conversion.
+    /// A reference back to a container that encloses this value, as the
+    /// placeholder its repr shows (`"[...]"` for lists, `"{...}"` for dicts, ...).
     ///
-    /// When converting cyclic structures (e.g., `a = []; a.append(a)`), this variant
-    /// is used to break the infinite recursion. Contains an opaque identity token
-    /// (the raw heap index of the object the cycle points back to — meaningful only
-    /// for equality, and only within the result that produced it) and the
-    /// type-specific placeholder string (e.g., `"[...]"` for lists, `"{...}"` for
-    /// dicts). Two `Cycle` values compare equal if they refer to the same object.
+    /// Cyclic structures (e.g., `a = []; a.append(a)`) cross the boundary as a
+    /// flat arena ([`MontyGraph`](crate::MontyGraph)); expanding one into a tree
+    /// puts this marker where the cycle closes.
     ///
     /// This is output-only and cannot be used as an input to the interpreter.
-    Cycle(usize, String),
+    Cycle(String),
 }
 
 impl fmt::Display for MontyObject {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::String(s) => f.write_str(s),
-            Self::Cycle(_, placeholder) => f.write_str(placeholder),
+            Self::Cycle(placeholder) => f.write_str(placeholder),
             Self::Type(t) => write!(f, "<class '{t}'>"),
             Self::Function { name, .. } => write!(f, "<function '{name}' external>"),
             _ => self.repr_fmt(f),
@@ -211,7 +209,7 @@ impl MontyObject {
 
         let payload = match self {
             Self::String(s) | Self::Path(s) | Self::Repr(s) => s.len(),
-            Self::Cycle(_, placeholder) => placeholder.len(),
+            Self::Cycle(placeholder) => placeholder.len(),
             Self::Bytes(b) => b.len(),
             // Saturate rather than truncate on a 32-bit `usize`: an over-large
             // estimate only trips the budget sooner, which is the safe direction.
@@ -515,7 +513,7 @@ impl MontyObject {
             Self::BuiltinFunction(func) => write!(f, "<built-in function {func}>"),
             Self::Function { name, .. } => write!(f, "<function '{name}' external>"),
             Self::Repr(s) => write!(f, "Repr({})", StringRepr(s)),
-            Self::Cycle(_, placeholder) => f.write_str(placeholder),
+            Self::Cycle(placeholder) => f.write_str(placeholder),
         }
     }
 
@@ -554,9 +552,7 @@ impl MontyObject {
             Self::Path(_) => true,           // Path instances are always truthy
             Self::FileHandle { .. } => true, // File objects are always truthy
             Self::ClassInstance(_) => true,  // class instances are always truthy
-            Self::Type(_) | Self::BuiltinFunction(_) | Self::Function { .. } | Self::Repr(_) | Self::Cycle(_, _) => {
-                true
-            }
+            Self::Type(_) | Self::BuiltinFunction(_) | Self::Function { .. } | Self::Repr(_) | Self::Cycle(_) => true,
         }
     }
 
@@ -594,7 +590,7 @@ impl MontyObject {
             Self::BuiltinFunction(_) => "builtin_function_or_method",
             Self::Function { .. } => "function",
             Self::Repr(_) => "repr",
-            Self::Cycle(_, _) => "cycle",
+            Self::Cycle(_) => "cycle",
         }
     }
 }
@@ -638,7 +634,7 @@ impl Hash for MontyObject {
                 position.hash(state);
             }
             Self::Type(t) => t.name().hash(state),
-            Self::Cycle(_, _) => panic!("cycle values are not hashable"),
+            Self::Cycle(_) => panic!("cycle values are not hashable"),
             _ => panic!("{} python values are not hashable", self.type_name()),
         }
     }
@@ -720,7 +716,7 @@ impl PartialEq for MontyObject {
                 },
             ) => a_name == b_name && a_doc == b_doc,
             (Self::Repr(a), Self::Repr(b)) => a == b,
-            (Self::Cycle(a, _), Self::Cycle(b, _)) => a == b,
+            (Self::Cycle(a), Self::Cycle(b)) => a == b,
             (Self::Type(a), Self::Type(b)) => a == b,
             // matches Python, where builtins are singletons: `len == len` is True
             (Self::BuiltinFunction(a), Self::BuiltinFunction(b)) => a == b,
