@@ -19,7 +19,7 @@ from typing import (
     TypeGuard,
 )
 
-from ._monty import ASYNC_HOST, NOT_HANDLED, MontyFileHandle
+from ._monty import NOT_HANDLED, MontyFileHandle
 
 if TYPE_CHECKING:
     # Self is 3.11+, hence this
@@ -83,7 +83,6 @@ class StatResult(NamedTuple):
             size: File size in bytes
             mode: File permissions as octal (e.g., 0o644) or full mode with file type
             mtime: Modification time as Unix timestamp, defaults to Now.
-
         """
         # If only permission bits provided (no file type), add regular file type
         if mode < 0o1000:
@@ -155,23 +154,37 @@ class AbstractOS(ABC):
     max_urandom_bytes: int = MAX_URANDOM_BYTES_DEFAULT
     """Maximum host allocation per `urandom()` call; defaults to 1 MiB."""
 
-    def __call__(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
-        """Adapter used by Monty's `os=` callback surface.
+    def __call__(
+        self,
+        *,
+        name: OsFunction,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        is_async: bool,
+        **_future_kwargs: Any,
+    ) -> Any:
+        """The `OsHandler` entrypoint Monty calls; see `OsHandler`.
 
-        Monty calls `__call__` directly, so this method stays as the public
-        callable entrypoint. Override `dispatch()` when you want to customize
-        routing or return `NOT_HANDLED`.
+        Override `dispatch()` when you want to customize routing or return
+        `NOT_HANDLED`.
 
         Returns:
             The OS operation result, or `NOT_HANDLED` to let Monty apply its
             standard unhandled-operation behavior.
         """
         try:
-            return self.dispatch(function_name, args, kwargs)
+            return self.dispatch(name, args, kwargs, is_async=is_async)
         except NotImplementedError:
             return NOT_HANDLED
 
-    def dispatch(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
+    def dispatch(
+        self,
+        function_name: OsFunction,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any] | None = None,
+        *,
+        is_async: bool = False,
+    ) -> Any:
         """Dispatch an OS operation to the appropriate method.
 
         This handles Monty's built-in `pathlib.Path`, `os`, and host clock
@@ -182,6 +195,7 @@ class AbstractOS(ABC):
             function_name: The OS operation being called (e.g., 'Path.exists').
             args: The arguments passed to the method.
             kwargs: The keyword arguments passed to the method.
+            is_async: Whether the caller can await a coroutine answer; see `OsHandler`.
 
         Returns:
             The result of the OS operation.
@@ -250,7 +264,7 @@ class AbstractOS(ABC):
             case 'time.sleep':
                 return self.sleep(*args)
             case 'asyncio.sleep':
-                return self.async_sleep(*args)
+                return self.async_sleep(*args, is_async=is_async)
             case _:  # pyright: ignore[reportUnnecessaryComparison]
                 raise NotImplementedError(f'Unknown OS function: {function_name}')
 
@@ -600,18 +614,18 @@ class AbstractOS(ABC):
         """
         time.sleep(seconds)
 
-    def async_sleep(self, delay: float) -> Awaitable[None] | None:
+    def async_sleep(self, delay: float, *, is_async: bool) -> Awaitable[None] | None:
         """Wait for Monty's `asyncio.sleep()` callback.
 
-        Under `AsyncMonty` (`ASYNC_HOST` is true) the default returns
+        Under `AsyncMonty` (`is_async` is true) the default returns
         `asyncio.sleep(delay)`, which the pool awaits while the sandbox's other
         tasks keep running, so gathered sleeps overlap. Under `Monty`, which has
         no event loop, it waits with `sleep()` and the sandbox is blocked for the
         delay. An override may return `None` once it has waited, or an awaitable
-        when `ASYNC_HOST` is true. The return value is never the `await`'s
+        when `is_async` is true. The return value is never the `await`'s
         result: the sandbox keeps the `result` argument of `asyncio.sleep()`.
         """
-        if ASYNC_HOST.get():
+        if is_async:
             return asyncio.sleep(delay)
         return self.sleep(delay)
 

@@ -332,8 +332,8 @@ See [resource limits](resource-limits.md).
 Under [`AsyncMonty`][pydantic_monty.AsyncMonty] and in JavaScript the handler may be `async`.
 Its answer to `asyncio.sleep()` then runs alongside the sandbox's other tasks, so gathered sleeps overlap;
 its answer to any other call is awaited before that session resumes, holding up nothing else.
-[`AbstractOS.async_sleep()`][pydantic_monty.AbstractOS.async_sleep] does this by default, consulting
-[`ASYNC_HOST`][pydantic_monty.ASYNC_HOST] to tell the two pools apart.
+The handler's `is_async` argument says which pool is calling, and
+[`AbstractOS.async_sleep()`][pydantic_monty.AbstractOS.async_sleep] uses it to do this by default.
 
 === "Python"
 
@@ -344,7 +344,7 @@ its answer to any other call is awaited before that session resumes, holding up 
     from pydantic_monty import NOT_HANDLED, Monty
 
 
-    def host_os(name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    def host_os(*, name: str, args: tuple[Any, ...], **_future_kwargs: Any) -> Any:
         if name == 'time.sleep':
             time.sleep(min(args[0], 0.05))  # never wait longer than 50ms
             return None

@@ -283,7 +283,7 @@ def test_abstract_os_dispatch_not_handled():
             raise NotImplementedError
 
     fs = PartialOS()
-    result = fs('Path.exists', (PurePosixPath('/tmp'),), {})
+    result = fs(name='Path.exists', args=(PurePosixPath('/tmp'),), kwargs={}, is_async=False)
 
     assert result is NOT_HANDLED
 
@@ -297,10 +297,12 @@ def test_abstract_os_dispatch_not_handled_falls_back_in_run(monty_run: RunMonty)
             function_name: pydantic_monty.OsFunction,
             args: tuple[object, ...],
             kwargs: dict[str, object] | None = None,
+            *,
+            is_async: bool = False,
         ) -> object:
             if function_name == 'Path.exists':
                 return NOT_HANDLED
-            return super().dispatch(function_name, args, kwargs)
+            return super().dispatch(function_name, args, kwargs, is_async=is_async)
 
     fs = PartialOS()
     code = """

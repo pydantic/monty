@@ -699,7 +699,7 @@ impl PyFunctionSnapshot {
                 ctx.os.as_ref(),
                 &ctx.instances,
                 false,
-            )? {
+            ) {
                 OsDispatch::Answer(value) => value,
                 OsDispatch::Coroutine(coro) => {
                     // As for external functions below: closed rather than leaked.
@@ -838,14 +838,14 @@ impl PyAsyncFunctionSnapshot {
                 }
                 let dispatched = Python::attach(|py| {
                     let _guard = context.enter(py, &native)?;
-                    dispatch_os_parts(
+                    Ok::<_, PyErr>(dispatch_os_parts(
                         py,
                         &call.function_name,
                         &call.args,
                         ctx.os.as_ref(),
                         &ctx.instances,
                         true,
-                    )
+                    ))
                 });
                 match dispatched {
                     Ok(OsDispatch::Answer(value)) => Ok(value),

@@ -15,7 +15,7 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import ASYNC_HOST, NOT_HANDLED, Monty, MontyFileHandle, MontyRuntimeError, StatResult
+from pydantic_monty import NOT_HANDLED, Monty, MontyFileHandle, MontyRuntimeError, StatResult
 
 # =============================================================================
 # Basic os= callback dispatch
@@ -26,8 +26,8 @@ def test_os_basic(monty_run: RunMonty):
     """os receives function name and args, return value is used."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
-        calls.append((function_name, args))
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bool:
+        calls.append((name, args))
         return True
 
     result = monty_run('from pathlib import Path; Path("/tmp/test.txt").exists()', os=os_handler)
@@ -41,13 +41,13 @@ def test_os_callback_paths_are_normalized(monty_run: RunMonty, cwd: str):
     """Callbacks receive canonical paths for relative inputs and both rename endpoints."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        calls.append((function_name, args))
-        if function_name == 'Path.iterdir':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append((name, args))
+        if name == 'Path.iterdir':
             return []
-        if function_name == 'open':
+        if name == 'open':
             return MontyFileHandle(str(args[0]), 'r')
-        if function_name == 'Path.read_text':
+        if name == 'Path.read_text':
             return 'hello'
         return True
 
@@ -79,7 +79,7 @@ def test_relative_paths_survive_os_callbacks(monty_run: RunMonty):
     """Python results retain relative spelling while callbacks see absolute requests."""
     calls: list[Any] = []
 
-    def os_handler(name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
         calls.append((name, args))
         if name == 'Path.iterdir':
             return [PurePosixPath('/data/file.txt')]
@@ -124,7 +124,7 @@ def test_nul_paths_rejected_before_callback(monty_run: RunMonty, with_callback: 
     """Cancelled NUL components raise without dispatching, even with no mounts."""
     calls: list[Any] = []
 
-    def os_handler(*args: Any) -> bool:
+    def os_handler(*, args: tuple[Any, ...], **_: Any) -> bool:
         calls.append(args)
         return True
 
@@ -149,7 +149,7 @@ def test_nul_paths_rejected_before_callback(monty_run: RunMonty, with_callback: 
 def test_no_handler_uses_normalized_path(monty_run: RunMonty, with_callback: bool, code: str, path: str):
     """Missing and declining callbacks report the same normalized permission error."""
 
-    def os_handler(*args: object) -> object:
+    def os_handler(**_: object) -> object:
         return NOT_HANDLED
 
     with pytest.raises(MontyRuntimeError) as exc_info:
@@ -161,7 +161,7 @@ def test_path_concatenation(monty_run: RunMonty):
     """Path concatenation with / operator produces the correct path argument."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bool:
         calls.append(args)
         return False
 
@@ -179,8 +179,8 @@ def test_multiple_path_calls(monty_run: RunMonty):
     """Multiple Path method calls reach the callback in sequence."""
     calls: list[str] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
-        calls.append(function_name)
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bool:
+        calls.append(name)
         return True
 
     code = """
@@ -199,9 +199,9 @@ def test_os_multiple_calls(monty_run: RunMonty):
     """os is called for each OS operation, including inside conditionals."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool | str | None:
-        calls.append(function_name)
-        match function_name:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bool | str | None:
+        calls.append(name)
+        match name:
             case 'Path.exists':
                 return True
             case 'Path.read_text':
@@ -232,8 +232,8 @@ result
 def test_os_stat(monty_run: RunMonty):
     """os can return stat_result for Path.stat(), accessible by field and index."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'Path.stat':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'Path.stat':
             return StatResult.file_stat(1024, 0o644, 1234567890.0)
         return None
 
@@ -250,7 +250,7 @@ info = Path('/tmp/file.txt').stat()
 def test_stat_result_returned_from_monty(monty_run: RunMonty):
     """stat_result returned from Monty is accessible in Python."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
         return StatResult.file_stat(2048, 0o100_755, 1700000000.0)
 
     stat_result = monty_run('from pathlib import Path\nPath("/tmp/file.txt").stat()', os=os_handler)
@@ -268,7 +268,7 @@ def test_stat_result_returned_from_monty(monty_run: RunMonty):
 def test_stat_result_repr(monty_run: RunMonty):
     """stat_result repr shows field names and values."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
         return StatResult.file_stat(512, 0o644, 0.0)
 
     result = monty_run('from pathlib import Path\nPath("/tmp/file.txt").stat()', os=os_handler)
@@ -303,8 +303,8 @@ def test_not_callable(monty_run: RunMonty):
 def test_not_handled_sentinel_filesystem_callback(monty_run: RunMonty):
     """Returning NOT_HANDLED from an os callback uses the filesystem fallback error."""
 
-    def os_callback(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> object:
-        del function_name, args, kwargs
+    def os_callback(*, name: str, args: tuple[Any, ...], kwargs: dict[str, Any], **_: Any) -> object:
+        del name, args, kwargs
         return NOT_HANDLED
 
     code = """
@@ -324,8 +324,8 @@ message
 def test_not_handled_sentinel_non_filesystem_callback(monty_run: RunMonty):
     """Returning NOT_HANDLED from an os callback uses the non-filesystem fallback error."""
 
-    def os_callback(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> object:
-        del function_name, args, kwargs
+    def os_callback(*, name: str, args: tuple[Any, ...], kwargs: dict[str, Any], **_: Any) -> object:
+        del name, args, kwargs
         return NOT_HANDLED
 
     code = """
@@ -351,9 +351,9 @@ def test_os_getenv_callback(monty_run: RunMonty):
     """os.getenv() forwards key (and None default) to the callback."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
-        calls.append((function_name, args))
-        if function_name == 'os.getenv':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> str | None:
+        calls.append((name, args))
+        if name == 'os.getenv':
             key, default = args
             env = {'HOME': '/home/user', 'USER': 'testuser'}
             return env.get(key, default)
@@ -367,8 +367,8 @@ def test_os_getenv_callback(monty_run: RunMonty):
 def test_os_getenv_callback_missing(monty_run: RunMonty):
     """os.getenv() returns None for missing env var when no default."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
-        if function_name == 'os.getenv':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> str | None:
+        if name == 'os.getenv':
             key, default = args
             env: dict[str, str] = {}
             return env.get(key, default)
@@ -382,9 +382,9 @@ def test_os_getenv_callback_with_default(monty_run: RunMonty):
     """os.getenv() forwards the default and uses it when the env var is missing."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> str | None:
         calls.append(args)
-        if function_name == 'os.getenv':
+        if name == 'os.getenv':
             key, default = args
             env: dict[str, str] = {}
             return env.get(key, default)
@@ -403,8 +403,8 @@ def test_os_getenv_callback_with_default(monty_run: RunMonty):
 def test_date_today_callback(monty_run: RunMonty):
     """date.today() works through the direct os callback with no arguments."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> datetime.date | None:
-        if function_name == 'date.today':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> datetime.date | None:
+        if name == 'date.today':
             assert args == ()
             return datetime.date(2024, 1, 15)
         return None
@@ -416,8 +416,8 @@ def test_date_today_callback(monty_run: RunMonty):
 def test_datetime_now_callback_naive(monty_run: RunMonty):
     """datetime.now() passes None as the timezone argument."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> datetime.datetime | None:
-        if function_name == 'datetime.now':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> datetime.datetime | None:
+        if name == 'datetime.now':
             (tzinfo,) = args
             assert tzinfo is None
             return datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)
@@ -432,8 +432,8 @@ def test_datetime_now_callback_naive(monty_run: RunMonty):
 def test_datetime_now_callback_with_timezone(monty_run: RunMonty):
     """datetime.now() works through the direct os callback and receives tzinfo."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> datetime.datetime | None:
-        if function_name == 'datetime.now':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> datetime.datetime | None:
+        if name == 'datetime.now':
             (tzinfo,) = args
             assert tzinfo == datetime.timezone.utc
             return datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=tzinfo)
@@ -451,8 +451,8 @@ def test_datetime_now_callback_with_timezone(monty_run: RunMonty):
 def test_time_time_callback(monty_run: RunMonty):
     """time.time() reaches the callback with no arguments and returns a float."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> float | None:
-        if function_name == 'time.time':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> float | None:
+        if name == 'time.time':
             assert args == ()
             return 1700000000.5
         return None
@@ -469,8 +469,8 @@ def test_time_sleep_callback(monty_run: RunMonty):
     """time.sleep() passes the delay as float seconds and evaluates to None."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        calls.append((function_name, args))
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append((name, args))
         # the host decides how long to wait; waiting not at all is a valid choice
         return None
 
@@ -481,7 +481,7 @@ def test_time_sleep_callback(monty_run: RunMonty):
 def test_time_sleep_can_be_refused(monty_run: RunMonty):
     """A host that declines the wait leaves the sandbox with monty's own error."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
         return NOT_HANDLED
 
     with pytest.raises(MontyRuntimeError) as exc_info:
@@ -493,9 +493,9 @@ def test_asyncio_sleep_callback(monty_run: RunMonty):
     """asyncio.sleep() passes only the delay; the await produces `result` whatever the host returns."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        calls.append((function_name, args))
-        assert ASYNC_HOST.get() is False
+    def os_handler(*, name: str, args: tuple[Any, ...], is_async: bool, **_: Any) -> Any:
+        calls.append((name, args))
+        assert is_async is False
         return 'ignored'
 
     code = "import asyncio; asyncio.run(asyncio.sleep(0.25, 'woken'))"
@@ -506,7 +506,7 @@ def test_asyncio_sleep_callback(monty_run: RunMonty):
 def test_asyncio_sleep_result_stays_in_the_sandbox(monty_run: RunMonty):
     """`result` never crosses the host boundary, so values with no wire form survive."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
         return None
 
     code = 'import asyncio\ndef f():\n    return 42\nasyncio.run(asyncio.sleep(0, f))()'
@@ -516,7 +516,7 @@ def test_asyncio_sleep_result_stays_in_the_sandbox(monty_run: RunMonty):
 def test_async_os_callback_requires_async_monty(monty_run: RunMonty):
     """The sync pool has no event loop to run a coroutine answer on."""
 
-    async def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    async def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
         return None
 
     with pytest.raises(RuntimeError) as exc_info:
@@ -535,8 +535,8 @@ def test_os_urandom_callback(monty_run: RunMonty):
     """os.urandom(n) reaches the host as `os.urandom` with the byte count."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bytes:
-        calls.append((function_name, args))
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bytes:
+        calls.append((name, args))
         return bytes(range(args[0]))
 
     result = monty_run('import os\nos.urandom(4)', os=os_handler)
@@ -548,8 +548,8 @@ def test_random_unseeded_draws_ask_for_entropy_once(monty_run: RunMonty):
     """An unseeded generator asks for one 2496-byte state vector, then draws are local."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bytes:
-        calls.append((function_name, args))
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bytes:
+        calls.append((name, args))
         return SEED_BYTES
 
     code = 'import random\n[random.random(), random.randint(1, 100), random.Random(1).random()]'
@@ -559,8 +559,8 @@ def test_random_unseeded_draws_ask_for_entropy_once(monty_run: RunMonty):
 
 
 def test_random_seeded_never_calls_host(monty_run: RunMonty):
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bytes:
-        raise AssertionError(f'unexpected OS call {function_name}')
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bytes:
+        raise AssertionError(f'unexpected OS call {name}')
 
     assert monty_run('import random\nrandom.seed(42)\nrandom.random()', os=os_handler) == snapshot(0.6394267984578837)
 
@@ -569,7 +569,7 @@ def test_random_seeded_never_calls_host(monty_run: RunMonty):
 def test_random_without_entropy_raises(monty_run: RunMonty, with_callback: bool):
     """A missing or declining handler leaves an unseeded draw with no entropy."""
 
-    def os_handler(*args: object) -> object:
+    def os_handler(**_: Any) -> object:
         return NOT_HANDLED
 
     with pytest.raises(MontyRuntimeError) as exc_info:
@@ -578,7 +578,7 @@ def test_random_without_entropy_raises(monty_run: RunMonty, with_callback: bool)
 
 
 def test_random_rejects_short_entropy(monty_run: RunMonty):
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bytes:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bytes:
         return b'abc'
 
     with pytest.raises(MontyRuntimeError) as exc_info:
@@ -616,9 +616,9 @@ def test_os_environ_key_access(monty_run: RunMonty):
     """os.environ['KEY'] works correctly after getting environ dict."""
     calls: list[str] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        calls.append(function_name)
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append(name)
+        if name == 'os.environ':
             return {'HOME': '/home/user', 'USER': 'testuser'}
         return None
 
@@ -630,8 +630,8 @@ def test_os_environ_key_access(monty_run: RunMonty):
 def test_os_environ_key_missing_raises(monty_run: RunMonty):
     """os.environ['MISSING'] raises KeyError."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'os.environ':
             return {}
         return None
 
@@ -643,8 +643,8 @@ def test_os_environ_key_missing_raises(monty_run: RunMonty):
 def test_os_environ_get_method(monty_run: RunMonty):
     """os.environ.get() works correctly."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'os.environ':
             return {'HOME': '/home/user'}
         return None
 
@@ -655,8 +655,8 @@ def test_os_environ_get_method(monty_run: RunMonty):
 def test_os_environ_get_with_default(monty_run: RunMonty):
     """os.environ.get() with default for missing key."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'os.environ':
             return {}
         return None
 
@@ -667,8 +667,8 @@ def test_os_environ_get_with_default(monty_run: RunMonty):
 def test_os_environ_len(monty_run: RunMonty):
     """len(os.environ) returns correct count."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'os.environ':
             return {'A': '1', 'B': '2', 'C': '3'}
         return None
 
@@ -679,8 +679,8 @@ def test_os_environ_len(monty_run: RunMonty):
 def test_os_environ_contains(monty_run: RunMonty):
     """'KEY' in os.environ works correctly."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'os.environ':
             return {'HOME': '/home/user'}
         return None
 
@@ -691,8 +691,8 @@ def test_os_environ_contains(monty_run: RunMonty):
 def test_os_environ_keys(monty_run: RunMonty):
     """os.environ.keys() returns keys."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'os.environ':
             return {'HOME': '/home', 'USER': 'test'}
         return None
 
@@ -703,8 +703,8 @@ def test_os_environ_keys(monty_run: RunMonty):
 def test_os_environ_values(monty_run: RunMonty):
     """os.environ.values() returns values."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'os.environ':
             return {'A': '1', 'B': '2'}
         return None
 
@@ -721,8 +721,8 @@ def test_path_write_text_callback(monty_run: RunMonty):
     """Path.write_text() with os callback works correctly."""
     written_files: dict[str, str] = {}
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> int | None:
-        if function_name == 'Path.write_text':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> int | None:
+        if name == 'Path.write_text':
             path, content = args
             written_files[str(path)] = content
             return len(content.encode('utf-8'))
@@ -738,8 +738,8 @@ def test_path_write_bytes_callback(monty_run: RunMonty):
     """Path.write_bytes() reaches the callback with the path and raw bytes."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> int | None:
-        calls.append((function_name, args))
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> int | None:
+        calls.append((name, args))
         return 3
 
     result = monty_run('from pathlib import Path; Path("/tmp/data.bin").write_bytes(b"\\x00\\x01\\x02")', os=os_handler)
@@ -763,8 +763,8 @@ def test_path_mkdir_kwargs_callback(monty_run: RunMonty, call: str, expected_kwa
     defaults to interpret the call."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
-        calls.append((function_name, args, kwargs))
+    def os_handler(*, name: str, args: tuple[Any, ...], kwargs: dict[str, Any], **_: Any) -> None:
+        calls.append((name, args, kwargs))
         return None
 
     monty_run(f'from pathlib import Path; Path("/tmp/newdir").{call}', os=os_handler)
@@ -776,8 +776,8 @@ def test_path_remove_and_rename_callbacks(monty_run: RunMonty):
     """unlink(), rmdir(), and rename() reach the callback with the right paths."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
-        calls.append((function_name, args))
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> None:
+        calls.append((name, args))
         return None
 
     code = """
@@ -801,9 +801,9 @@ def test_write_operations_callback(monty_run: RunMonty):
     """Multiple write operations work with os callback."""
     operations: list[tuple[str, tuple[Any, ...]]] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        operations.append((function_name, args))
-        match function_name:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        operations.append((name, args))
+        match name:
             case 'Path.mkdir':
                 return None
             case 'Path.write_text':

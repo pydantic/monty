@@ -179,7 +179,7 @@ def test_os_call_surfaces_without_handler(session: MontySession):
 def test_os_handler_used_by_resume_auto(session: MontySession):
     """`feed_start` surfaces the OS call even with `os=`; `resume_auto` answers it."""
 
-    def handle_os(name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
+    def handle_os(*, name: OsFunction, args: tuple[Any, ...], **_: Any) -> str:
         assert name == 'Path.read_text'
         return 'file body'
 
@@ -697,7 +697,7 @@ async def test_async_resume_auto_awaits_asyncio_sleep_eagerly():
     """An `asyncio.sleep` awaited at once is settled in place, with no future snapshot."""
     waited: list[float] = []
 
-    async def handle_os(name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+    async def handle_os(*, name: OsFunction, args: tuple[Any, ...], **_: Any) -> None:
         waited.append(args[0])
         await asyncio.sleep(args[0])
 
