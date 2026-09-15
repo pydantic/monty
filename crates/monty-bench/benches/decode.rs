@@ -7,8 +7,8 @@
 use codspeed_criterion_compat::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use monty_proto::{WireObject, decode_frame, encode_to_capped_vec, pb};
-use monty_types::MontyObject;
+use monty_proto::{decode_frame, encode_to_capped_vec, pb};
+use monty_types::{MontyObject, MontyValue};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 
@@ -36,29 +36,27 @@ fn decode_benchmark(c: &mut Criterion) {
 
 /// Encodes a `Complete` turn event carrying `value` — byte-identical to the
 /// frame body `Worker::recv` hands to `decode_frame`.
-fn complete_frame(value: MontyObject) -> Vec<u8> {
+fn complete_frame(value: MontyValue) -> Vec<u8> {
     let event = pb::ChildEvent {
         total_execution_micros: 0,
         max_duration_micros: None,
         max_suspensions: None,
         restored_script_name: None,
-        kind: Some(pb::child_event::Kind::Complete(pb::Complete {
-            value: Some(WireObject(Some(value))),
-        })),
+        kind: Some(pb::child_event::Kind::Complete(pb::Complete::from(value))),
     };
     encode_to_capped_vec(&event).expect("frame within MAX_FRAME_LEN")
 }
 
 /// A frame whose payload is a single string of roughly `target` bytes.
 fn str_frame(target: usize) -> Vec<u8> {
-    complete_frame(MontyObject::String("x".repeat(target)))
+    complete_frame(MontyObject::String("x".repeat(target)).into())
 }
 
 /// A frame of roughly `target` bytes of row dicts, sized by measuring the
 /// encoded cost of a small batch first.
 fn rows_frame(target: usize) -> Vec<u8> {
-    let per_row = complete_frame(rows(1024)).len() / 1024;
-    complete_frame(rows((target / per_row).try_into().expect("row count fits i64")))
+    let per_row = complete_frame(rows(1024).into()).len() / 1024;
+    complete_frame(rows((target / per_row).try_into().expect("row count fits i64")).into())
 }
 
 /// A list of `n` dicts shaped like a SQL tool reply (short string keys,

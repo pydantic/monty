@@ -10,8 +10,8 @@
 //! the session's [`InstanceStore`] to the original wrapped object or class,
 //! not `external_lookup`.
 
-use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty, py_to_monty_value};
-use monty_types::{ExtFunctionResult, MontyObject, MontyUuid, NameLookupResult};
+use monty_proto::python::{DecodedArena, InstanceStore, exc_py_to_monty, py_to_monty, py_to_monty_value};
+use monty_types::{CallArgs, ExtFunctionResult, MontyNode, MontyUuid, MontyValue, NameLookupResult};
 use pyo3::{
     exceptions::PyAttributeError,
     prelude::*,
@@ -28,11 +28,10 @@ pub fn dispatch_object_call(
     py: Python<'_>,
     function_name: &str,
     object_id: &MontyUuid,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &CallArgs,
     instances: &InstanceStore,
 ) -> ExtFunctionResult {
-    match dispatch_object_call_inner(py, function_name, object_id, args, kwargs, instances) {
+    match dispatch_object_call_inner(py, function_name, object_id, args, instances) {
         Ok(result) => ExtFunctionResult::Return(result),
         Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
     }
@@ -43,12 +42,11 @@ fn dispatch_object_call_inner(
     py: Python<'_>,
     function_name: &str,
     object_id: &MontyUuid,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &CallArgs,
     instances: &InstanceStore,
-) -> PyResult<MontyObject> {
-    let result = call_object_method_raw(py, function_name, object_id, args, kwargs, instances)?;
-    py_to_monty(&result, instances, 0)
+) -> PyResult<MontyValue> {
+    let result = call_object_method_raw(py, function_name, object_id, args, instances)?;
+    py_to_monty(&result, instances)
 }
 
 /// Converts the wire args/kwargs and invokes `wrapper.call_method` through the
@@ -58,33 +56,30 @@ fn call_object_method_raw<'py>(
     py: Python<'py>,
     function_name: &str,
     object_id: &MontyUuid,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &CallArgs,
     instances: &InstanceStore,
 ) -> PyResult<Bound<'py, PyAny>> {
     validate_host_method_name(function_name)?;
-    let (py_args_tuple, py_kwargs) = wire_call_arguments(py, args, kwargs, instances)?;
+    let (py_args_tuple, py_kwargs) = wire_call_arguments(py, args, instances)?;
     callback_context::call(py, || {
         instances.call_method(py, object_id, function_name, &py_args_tuple, &py_kwargs)
     })
     .map(|obj| obj.into_bound(py))
 }
 
-/// Converts wire args/kwargs into the Python tuple/dict a host call needs.
+/// Converts a call's arguments into the Python tuple/dict a host call needs.
+/// The arena is decoded once, so an object passed twice arrives twice as one
+/// Python object.
 pub(crate) fn wire_call_arguments<'py>(
     py: Python<'py>,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &CallArgs,
     instances: &InstanceStore,
 ) -> PyResult<(Bound<'py, PyTuple>, Bound<'py, PyDict>)> {
-    let py_args: PyResult<Vec<Py<PyAny>>> = args.iter().map(|arg| monty_to_py(py, arg, instances)).collect();
-    let py_args_tuple = PyTuple::new(py, py_args?)?;
-
+    let arena = DecodedArena::new(py, &args.values, instances)?;
+    let py_args_tuple = PyTuple::new(py, args.args.iter().map(|id| arena.get(py, *id)))?;
     let py_kwargs = PyDict::new(py);
-    for (key, value) in kwargs {
-        let py_key = monty_to_py(py, key, instances)?;
-        let py_value = monty_to_py(py, value, instances)?;
-        py_kwargs.set_item(py_key, py_value)?;
+    for (key, value) in &args.kwargs {
+        py_kwargs.set_item(arena.get(py, *key), arena.get(py, *value))?;
     }
     Ok((py_args_tuple, py_kwargs))
 }
@@ -153,35 +148,26 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     /// because `external_lookup` may hold untrusted values, an unrepresentable
     /// type surfaces as the dedicated `MontyConversionError` (a `MontyError`),
     /// not a masquerading `NameError`.
-    pub fn resolve_name(&self, name: &str) -> PyResult<Option<MontyObject>> {
+    pub fn resolve_name(&self, name: &str) -> PyResult<Option<MontyValue>> {
         let Some(lookup) = self.lookup else {
             return Ok(None);
         };
         let Some(value) = lookup.get_item(name)? else {
             return Ok(None);
         };
-        let obj = match py_to_monty_value(&value, self.instances)
-            .map_err(|exc| MontyConversionError::value_conversion_err(self.py, exc))?
-        {
-            MontyObject::Function { docstring, .. } => MontyObject::Function {
-                name: name.to_owned(),
-                docstring,
-            },
-            other => other,
-        };
-        Ok(Some(obj))
+        let mut value = py_to_monty_value(&value, self.instances)
+            .map_err(|exc| MontyConversionError::value_conversion_err(self.py, exc))?;
+        if let MontyNode::Function { name: proxy_name, .. } = value.graph.node_mut(value.root) {
+            name.clone_into(proxy_name);
+        }
+        Ok(Some(value))
     }
 
     /// Calls an external function by name, converting args/kwargs from Monty
     /// format and the result back. A raised exception becomes a Monty exception
     /// that will be re-raised inside Monty execution.
-    pub fn call(
-        &self,
-        function_name: &str,
-        args: &[MontyObject],
-        kwargs: &[(MontyObject, MontyObject)],
-    ) -> ExtFunctionResult {
-        match self.call_inner(function_name, args, kwargs) {
+    pub fn call(&self, function_name: &str, args: &CallArgs) -> ExtFunctionResult {
+        match self.call_inner(function_name, args) {
             Ok(Some(result)) => ExtFunctionResult::Return(result),
             Ok(None) => ExtFunctionResult::NotFound(function_name.to_owned()),
             Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
@@ -190,32 +176,22 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
 
     /// `PyResult`-returning core of [`call`](Self::call); `Ok(None)` means the
     /// name was not found (an absent dict or an absent key).
-    fn call_inner(
-        &self,
-        function_name: &str,
-        args: &[MontyObject],
-        kwargs: &[(MontyObject, MontyObject)],
-    ) -> PyResult<Option<MontyObject>> {
+    fn call_inner(&self, function_name: &str, args: &CallArgs) -> PyResult<Option<MontyValue>> {
         let Some(lookup) = self.lookup else {
             return Ok(None);
         };
         let Some(callable) = lookup.get_item(function_name)? else {
             return Ok(None);
         };
-        let (py_args_tuple, py_kwargs) = wire_call_arguments(self.py, args, kwargs, self.instances)?;
+        let (py_args_tuple, py_kwargs) = wire_call_arguments(self.py, args, self.instances)?;
         let result = callback_context::call(self.py, || callable.call(&py_args_tuple, Some(&py_kwargs)))?;
-        py_to_monty(&result, self.instances, 0).map(Some)
+        py_to_monty(&result, self.instances).map(Some)
     }
 
     /// Like [`call`](Self::call) but returns `CallResult::Coroutine` (for the
     /// async loop to spawn) when the callable returns a coroutine.
-    pub fn call_or_coroutine(
-        &self,
-        function_name: &str,
-        args: &[MontyObject],
-        kwargs: &[(MontyObject, MontyObject)],
-    ) -> CallResult {
-        match self.call_inner_raw(function_name, args, kwargs) {
+    pub fn call_or_coroutine(&self, function_name: &str, args: &CallArgs) -> CallResult {
+        match self.call_inner_raw(function_name, args) {
             Ok(Some(result)) => result_to_call_result(self.py, &result, self.instances),
             Ok(None) => CallResult::Sync(ExtFunctionResult::NotFound(function_name.to_owned())),
             Err(err) => CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(self.py, &err))),
@@ -224,12 +200,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
 
     /// Core of [`call_or_coroutine`](Self::call_or_coroutine), returning the raw
     /// Python result so the caller can check for a coroutine.
-    fn call_inner_raw<'b>(
-        &self,
-        function_name: &str,
-        args: &[MontyObject],
-        kwargs: &[(MontyObject, MontyObject)],
-    ) -> PyResult<Option<Bound<'b, PyAny>>>
+    fn call_inner_raw<'b>(&self, function_name: &str, args: &CallArgs) -> PyResult<Option<Bound<'b, PyAny>>>
     where
         'py: 'b,
     {
@@ -239,7 +210,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         let Some(callable) = lookup.get_item(function_name)? else {
             return Ok(None);
         };
-        let (py_args_tuple, py_kwargs) = wire_call_arguments(self.py, args, kwargs, self.instances)?;
+        let (py_args_tuple, py_kwargs) = wire_call_arguments(self.py, args, self.instances)?;
         callback_context::call(self.py, || callable.call(&py_args_tuple, Some(&py_kwargs))).map(Some)
     }
 }
@@ -260,11 +231,10 @@ pub fn dispatch_object_call_or_coroutine(
     py: Python<'_>,
     function_name: &str,
     object_id: &MontyUuid,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &CallArgs,
     instances: &InstanceStore,
 ) -> CallResult {
-    match call_object_method_raw(py, function_name, object_id, args, kwargs, instances) {
+    match call_object_method_raw(py, function_name, object_id, args, instances) {
         Ok(result) => result_to_call_result(py, &result, instances),
         Err(err) => CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(py, &err))),
     }

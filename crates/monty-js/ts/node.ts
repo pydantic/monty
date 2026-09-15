@@ -59,4 +59,3 @@ export {
   type MontyInstrumentationConfig,
   type TelemetryComponents,
 } from './telemetry.js'
-export { MAX_VALUE_DEPTH } from '../native-addon.js'
