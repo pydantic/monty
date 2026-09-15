@@ -1240,6 +1240,49 @@ fn full_bounded_deque_growth_stays_graceful() {
     child.shutdown();
 }
 
+/// `re.split` must preflight the pieces it collects, not only the list it
+/// builds from them.
+///
+/// The pieces are 16 bytes each and bounded only by the subject, and the whole
+/// `Vec` was collected before the first check ran — splitting a 1.5 MB subject
+/// on a comma killed the worker.
+#[test]
+fn oversized_split_stays_graceful() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    let (_, event) = child.feed("import re\nlen(re.split(',', ',' * 1_500_000))");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// A refused `findall` must leave nothing of its partial result behind.
+///
+/// Its scan allocates no heap values, only borrowed slices, so a refusal has
+/// nothing to strand — which matters because it could not release them anyway:
+/// that needs `&mut Heap`, and the compiled pattern is borrowed out of the heap
+/// for as long as the match iterator lives. The allocation afterwards fits only
+/// if the session got its memory back.
+#[test]
+fn refused_findall_leaves_no_partial_result() {
+    for pattern in ["'ab'", "'(a)(b)'"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        assert_eq!(
+            child.feed_complete("import re\ns = 'ab' * 1_000_000\nlen(s)"),
+            MontyObject::Int(2_000_000)
+        );
+        let (_, event) = child.feed(&format!("len(re.findall({pattern}, s))"));
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{pattern}");
+        assert_eq!(
+            child.feed_complete("len([0] * 500_000)"),
+            MontyObject::Int(500_000),
+            "{pattern}"
+        );
+        child.shutdown();
+    }
+}
+
 /// Assert a `memory limit exceeded` message reports roughly `expected` bytes
 /// used against a 1 MiB limit.
 ///
