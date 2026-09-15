@@ -1584,23 +1584,32 @@ pub fn decode_budget_remaining() -> usize {
 /// [`decode_field`] — the choke point every value routes through — and per
 /// vector growth from [`push_charged`], so it bounds total host memory
 /// incrementally, rejecting an over-budget frame before its tree is built.
+#[inline]
 fn charge_decode(bytes: usize) -> Result<(), DecodeError> {
-    DECODE_BUDGET.with(|budget| match budget.get().checked_sub(bytes) {
-        Some(remaining) => {
-            budget.set(remaining);
-            Ok(())
-        }
-        None => Err(to_decode_err("frame exceeds decode memory budget")),
-    })
+    adjust_decode_budget(bytes, 0)
 }
 
-/// Hands `bytes` back to the budget: the inline part of an element that
-/// [`decode_field`] charged and a vector slot now covers. Never exceeds the
-/// frame's full budget, so a credit can only undo an earlier charge.
-fn credit_decode(bytes: usize) {
-    DECODE_BUDGET.with(|budget| {
-        budget.set(budget.get().saturating_add(bytes).min(DEFAULT_MAX_DECODE_BYTES));
-    });
+/// Moves the budget by `credit - charge` in one thread-local access, the only
+/// budget traffic on the per-element decode path. The credit is applied first
+/// and capped at a fresh frame's budget, so it can only undo an earlier charge.
+#[inline]
+fn adjust_decode_budget(charge: usize, credit: usize) -> Result<(), DecodeError> {
+    let credited = DECODE_BUDGET.get().saturating_add(credit).min(DEFAULT_MAX_DECODE_BYTES);
+    match credited.checked_sub(charge) {
+        Some(remaining) => {
+            DECODE_BUDGET.set(remaining);
+            Ok(())
+        }
+        None => Err(decode_budget_exceeded()),
+    }
+}
+
+/// The over-budget error, kept out of line so the hot path stays small enough
+/// to inline into every element decode.
+#[cold]
+#[inline(never)]
+fn decode_budget_exceeded() -> DecodeError {
+    to_decode_err("frame exceeds decode memory budget")
 }
 
 /// Smallest capacity a decoded vector grows to, matching `Vec`'s own floor.
@@ -1618,16 +1627,24 @@ const MIN_DECODED_CAPACITY: usize = 4;
 /// Every slot is charged on this frame: capacity a vector already holds on
 /// its first push (a message reused after `clear()`, a pre-sized vector) is
 /// charged then, so a credit never refunds a slot the frame did not pay for.
+///
+/// Inlined because `T` is up to two `MontyObject`s wide: passing `item` to an
+/// out-of-line call would copy it once more on every element.
+#[inline]
 fn push_charged<T>(items: &mut Vec<T>, item: T, credit: usize) -> Result<(), DecodeError> {
     let capacity = items.capacity();
-    if items.len() == capacity {
-        let grown = (capacity * 2).max(MIN_DECODED_CAPACITY);
-        charge_decode((grown - capacity) * size_of::<T>())?;
-        items.reserve_exact(grown - items.len());
+    let (grow_by, new_slots) = if items.len() == capacity {
+        let grow_by = (capacity * 2).max(MIN_DECODED_CAPACITY) - capacity;
+        (grow_by, grow_by)
     } else if items.is_empty() {
-        charge_decode(capacity * size_of::<T>())?;
+        (0, capacity)
+    } else {
+        (0, 0)
+    };
+    adjust_decode_budget(new_slots * size_of::<T>(), credit)?;
+    if grow_by > 0 {
+        items.reserve_exact(grow_by);
     }
     items.push(item);
-    credit_decode(credit);
     Ok(())
 }
