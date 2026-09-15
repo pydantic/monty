@@ -67,8 +67,8 @@ it is included in a dump.
     `'float' object cannot be interpreted as an integer` instead of CPython's sequence-multiplication error.
 - **`choices`** accumulates `weights` as floats, so int weights above `2**53` lose precision; `cum_weights` may be
     any iterable of numbers.
-- **`setstate`** accepts version 3 and version 2 state tuples; the third element (`gauss_next`) must be a float or
-    `None`, where CPython stores any object.
+- **`setstate`** accepts version 3 and version 2 state tuples; the third element (`gauss_next`) must be `None` or
+    a `float`, `int` or `bool`, and is stored as a float, where CPython stores any object.
     A state word in `2**63..2**64` is truncated to 32 bits as on 64-bit CPython; CPython on Windows raises
     `OverflowError` for it.
 - **Argument errors on an unseeded generator are raised after the entropy call.** Whether a draw needs entropy is

@@ -142,10 +142,10 @@ struct UrandomFnArgs {
 
 /// Implementation of `os.urandom(size)`: asks the host for `size` bytes of
 /// entropy. `size` is checked here so a negative count never reaches a
-/// handler, and charged to the memory limit before the call so an oversized
-/// request never leaves the sandbox when a limit is set (hosts still cap it
-/// themselves). The reply must be exactly `size` bytes, enforced by
-/// [`PreConversionEffect::UrandomLength`] before it is converted.
+/// handler, and checked against the memory limit before the call so an
+/// oversized request never leaves the sandbox when a limit is set (hosts
+/// still cap it themselves). The reply must be exactly `size` bytes,
+/// enforced by [`PreConversionEffect::UrandomLength`] before it is converted.
 fn urandom(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let UrandomFnArgs { size } = UrandomFnArgs::from_args(args, vm)?;
     defer_drop!(size, vm);
@@ -157,7 +157,7 @@ fn urandom(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let len = usize::try_from(size).map_err(|_| ExcType::overflow_c_ssize_t())?;
     vm.heap.tracker.check_allocation(len)?;
     Ok(CallResult::OsCallWithEffect {
-        call: OsFunctionCall::Urandom(UrandomArgs { size }),
+        call: OsFunctionCall::Urandom(UrandomArgs { size: len as u64 }),
         effect: PreConversionEffect::UrandomLength { size: len }.into(),
     })
 }

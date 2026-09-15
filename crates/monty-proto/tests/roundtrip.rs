@@ -370,25 +370,6 @@ fn invalid_stack_frame_coordinates_are_rejected() {
     StackFrame::try_from(frame(1, 6)).expect("in-range columns must convert");
 }
 
-/// The interpreter never asks for a negative byte count, so one on the wire
-/// is a malformed frame that must not reach the host's entropy handler.
-#[test]
-fn negative_urandom_size_is_rejected() {
-    let call = pb::os_call::Call::Urandom(pb::os_call::Urandom { size: -1 });
-    assert!(matches!(
-        OsFunctionCall::try_from(call),
-        Err(ProtoConvertError::InvalidValue {
-            field: "Urandom.size",
-            ..
-        })
-    ));
-    let call = pb::os_call::Call::Urandom(pb::os_call::Urandom { size: 0 });
-    assert!(matches!(
-        OsFunctionCall::try_from(call),
-        Ok(OsFunctionCall::Urandom(UrandomArgs { size: 0 }))
-    ));
-}
-
 /// Multi-line spans render their preview as a pre-computed block with no
 /// caret math, and legitimately end on a lower column than they start (a
 /// call closed by a hanging `)`), so the same-line column validation must
@@ -893,6 +874,21 @@ fn os_calls_round_trip_all_variants() {
     ] {
         assert_os_call_round_trip(call);
     }
+}
+
+/// The byte count is unsigned on the wire, so the parent cannot see a
+/// negative one; a count above `i64::MAX` from a compromised child still
+/// converts, reaching the host handler as an exact `BigInt` for its cap to
+/// reject.
+#[test]
+fn os_call_urandom_size_above_i64_converts_exactly() {
+    let call = OsFunctionCall::Urandom(UrandomArgs { size: u64::MAX });
+    assert_os_call_round_trip(call.clone());
+    let (args, kwargs) = call.to_args();
+    assert_eq!(args, vec![MontyObject::BigInt(BigInt::from(u64::MAX))]);
+    assert!(kwargs.is_empty());
+    let (args, _) = OsFunctionCall::Urandom(UrandomArgs { size: 2496 }).to_args();
+    assert_eq!(args, vec![MontyObject::Int(2496)]);
 }
 
 #[test]

@@ -891,11 +891,12 @@ pub mod os_call {
         #[prost(message, optional, tag = "1")]
         pub tz: ::core::option::Option<super::TimeZone>,
     }
-    /// os.urandom(size) — the sandbox validated `size` as non-negative.
+    /// os.urandom(size) — the byte count the sandbox validated; unsigned so
+    /// a negative count cannot be expressed on the wire.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct Urandom {
-        #[prost(int64, tag = "1")]
-        pub size: i64,
+        #[prost(uint64, tag = "1")]
+        pub size: u64,
     }
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {

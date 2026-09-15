@@ -178,7 +178,7 @@ fn request_entropy(target: RandomTarget, retry: Option<RandomRetry>, vm: &mut VM
     }
     CallResult::OsCallWithEffect {
         call: OsFunctionCall::Urandom(UrandomArgs {
-            size: i64::try_from(SEED_BYTES).expect("seed size fits i64"),
+            size: SEED_BYTES as u64,
         }),
         effect: PostConversionEffect::SeedRandom { target, retry }.into(),
     }
@@ -1009,8 +1009,7 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
             let total = cumulative
                 .last()
                 .copied()
-                .ok_or_else(|| ExcType::index_error("list index out of range"))?
-                + 0.0;
+                .ok_or_else(|| ExcType::index_error("list index out of range"))?;
             if total <= 0.0 {
                 return Err(ExcType::value_error("Total of weights must be greater than zero"));
             }

@@ -397,11 +397,11 @@ pub struct GetenvArgs {
 }
 
 /// `os.urandom(size)` shape. The interpreter rejects a negative `size` before
-/// suspending; the host answers with exactly `size` bytes. `size` is
-/// sandbox-controlled, so a handler should cap it before allocating.
+/// suspending, so the count is unsigned; the host answers with exactly `size`
+/// bytes. `size` is sandbox-controlled, so a handler should cap it before allocating.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct UrandomArgs {
-    pub size: i64,
+    pub size: u64,
 }
 
 // =============================================================================

@@ -754,9 +754,10 @@ message OsCall {
     // Fixed-offset timezone for an aware result; absent for a naive one.
     optional TimeZone tz = 1;
   }
-  // os.urandom(size) — the sandbox validated `size` as non-negative.
+  // os.urandom(size) — the byte count the sandbox validated; unsigned so
+  // a negative count cannot be expressed on the wire.
   message Urandom {
-    int64 size = 1;
+    uint64 size = 1;
   }
 }
 

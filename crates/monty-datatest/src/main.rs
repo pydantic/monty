@@ -1247,9 +1247,9 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
 const DATETIME_FIXTURE_TIMESTAMP: i64 = 1_700_000_000;
 
 /// Answers `os.urandom(size)` with a fixed byte pattern of the requested length.
-fn fixture_entropy(size: i64) -> Vec<u8> {
-    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // reduced mod 256 first
-    (0..size.max(0)).map(|i| (i % 256) as u8).collect()
+fn fixture_entropy(size: u64) -> Vec<u8> {
+    #[expect(clippy::cast_possible_truncation)] // reduced mod 256 first
+    (0..size).map(|i| (i % 256) as u8).collect()
 }
 
 /// Dispatches a `DateTimeNow` OS call, returning a deterministic `MontyDateTime`.
