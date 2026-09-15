@@ -804,6 +804,7 @@ fn assert_os_call_round_trip(call: OsFunctionCall) {
     let expected = format!("{call:?}");
     let bytes = pb::OsCall {
         call_id: 3,
+        allow_eager_await: false,
         call: Some(call.into()),
     }
     .encode_to_vec();

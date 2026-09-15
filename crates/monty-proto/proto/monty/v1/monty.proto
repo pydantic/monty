@@ -721,6 +721,11 @@ message OsCall {
     AsyncSleep async_sleep = 27; // asyncio.sleep(delay)
   }
 
+  // As on `FunctionCall`: the parent may await a coroutine and answer with
+  // `ResumeFutures` for `call_id`. Only ever set on `async_sleep`, the one
+  // call a future may answer at all.
+  bool allow_eager_await = 28;
+
   message TextWrite {
     string path = 1;
     string data = 2;

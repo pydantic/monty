@@ -245,6 +245,10 @@ pub enum TurnEvent {
         /// Whether [`ResumeValue::Future`] is a valid answer (`asyncio.sleep`
         /// only); see `OsFunctionCall::accepts_future`.
         accepts_future: bool,
+        /// As on [`FunctionCall`](Self::FunctionCall): the caller may await
+        /// the wait and answer with [`Checkout::resume_futures`]. Implies
+        /// `accepts_future`.
+        allow_eager_await: bool,
     },
     /// The sandbox read an undefined name, or — when `object_id` is set — a
     /// lazy attribute on the host-backed object with that uuid (a class
@@ -1387,7 +1391,7 @@ impl Checkout {
                         call_id,
                         function_name: function_name.clone(),
                         os_call: Some(Box::new(function_call)),
-                        allow_eager_await: false,
+                        allow_eager_await: call.allow_eager_await,
                     });
                     return Ok(ControlEvent::Turn(TurnEvent::OsCall {
                         function_name,
@@ -1395,6 +1399,7 @@ impl Checkout {
                         kwargs,
                         call_id,
                         accepts_future,
+                        allow_eager_await: call.allow_eager_await,
                     }));
                 }
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {

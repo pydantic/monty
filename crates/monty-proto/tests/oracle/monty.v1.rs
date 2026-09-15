@@ -828,6 +828,11 @@ pub struct FunctionCall {
 pub struct OsCall {
     #[prost(uint32, tag = "1")]
     pub call_id: u32,
+    /// As on `FunctionCall`: the parent may await a coroutine and answer with
+    /// `ResumeFutures` for `call_id`. Only ever set on `async_sleep`, the one
+    /// call a future may answer at all.
+    #[prost(bool, tag = "28")]
+    pub allow_eager_await: bool,
     #[prost(
         oneof = "os_call::Call",
         tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27"

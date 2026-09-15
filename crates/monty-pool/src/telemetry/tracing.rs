@@ -1136,6 +1136,7 @@ mod tests {
         )));
         recorder.event(&event(pb::child_event::Kind::OsCall(pb::OsCall {
             call_id: 1,
+            allow_eager_await: false,
             call: Some(Call::WriteText(pb::os_call::TextWrite {
                 path: "/mnt/data/f.txt".to_owned(),
                 data: long.clone(),

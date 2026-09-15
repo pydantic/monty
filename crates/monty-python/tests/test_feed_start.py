@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -690,6 +691,26 @@ async def test_async_resume_auto_coroutine_external():
             done = await snap.resume_auto()
             assert isinstance(done, MontyComplete)
             assert done.output == snapshot(99)
+
+
+async def test_async_resume_auto_awaits_asyncio_sleep_eagerly():
+    """An `asyncio.sleep` awaited at once is settled in place, with no future snapshot."""
+    waited: list[float] = []
+
+    async def handle_os(name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        waited.append(args[0])
+        await asyncio.sleep(args[0])
+
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap = await session.feed_start("import asyncio\nawait asyncio.sleep(0.001, 'woken')", os=handle_os)
+            assert isinstance(snap, AsyncFunctionSnapshot)
+            assert snap.is_os_function
+            assert snap.allow_eager_await
+            done = await snap.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot('woken')
+            assert waited == snapshot([0.001])
 
 
 async def test_async_allow_eager_await_survives_snapshot_restore():

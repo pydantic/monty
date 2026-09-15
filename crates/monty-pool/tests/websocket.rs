@@ -432,6 +432,7 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
             &mut socket,
             &event_kind(pb::child_event::Kind::OsCall(pb::OsCall {
                 call_id: 7,
+                allow_eager_await: false,
                 call: Some(pb::os_call::Call::ReadText("/mnt/data.txt".to_owned())),
             })),
         );
@@ -503,6 +504,7 @@ async fn malformed_os_call_is_a_protocol_error() {
             &mut socket,
             &event_kind(pb::child_event::Kind::OsCall(pb::OsCall {
                 call_id: 3,
+                allow_eager_await: false,
                 call: Some(pb::os_call::Call::Open(pb::os_call::Open {
                     path: "/mnt/data.txt".to_owned(),
                     mode: "q".to_owned(),
@@ -1089,7 +1091,11 @@ async fn a_malformed_over_budget_os_call_is_a_protocol_violation() {
         send_event(
             &mut socket,
             &pb::ChildEvent {
-                kind: Some(pb::child_event::Kind::OsCall(pb::OsCall { call_id: 1, call: None })),
+                kind: Some(pb::child_event::Kind::OsCall(pb::OsCall {
+                    call_id: 1,
+                    call: None,
+                    allow_eager_await: false,
+                })),
                 max_suspensions: Some(0),
                 ..Default::default()
             },

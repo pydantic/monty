@@ -69,6 +69,8 @@ export interface OsCallTurn extends CallbackTurn {
   callId: number
   /** Whether `resumeFuture` is a valid answer: only `asyncio.sleep`, which the sandbox awaits. */
   acceptsFuture: boolean
+  /** As on `FunctionCallTurn`: the wait may settle before replying with `resolveFutures`. Implies `acceptsFuture`. */
+  allowEagerAwait?: boolean
 }
 
 /**
