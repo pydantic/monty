@@ -21,7 +21,7 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
     while let RunProgress::NameLookup(lookup) = progress {
         let name = lookup.name.clone();
         progress = lookup.resume(
-            NameLookupResult::Value(MontyObject::Function { name, docstring: None }),
+            NameLookupResult::Value(MontyObject::Function { name, docstring: None }.into()),
             PrintWriter::Stdout,
         )?;
     }

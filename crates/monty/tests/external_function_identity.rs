@@ -164,10 +164,13 @@ fn repl_extfunction_identity_across_feeds() {
     assert_eq!(lookup.name, "foobar");
     let progress = lookup
         .resume(
-            NameLookupResult::Value(MontyObject::Function {
-                name: "ext_fn".to_owned(),
-                docstring: None,
-            }),
+            NameLookupResult::Value(
+                MontyObject::Function {
+                    name: "ext_fn".to_owned(),
+                    docstring: None,
+                }
+                .into(),
+            ),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -185,10 +188,13 @@ fn repl_extfunction_identity_across_feeds() {
     assert_eq!(lookup.name, "barbaz");
     let progress = lookup
         .resume(
-            NameLookupResult::Value(MontyObject::Function {
-                name: "ext_fn".to_owned(),
-                docstring: None,
-            }),
+            NameLookupResult::Value(
+                MontyObject::Function {
+                    name: "ext_fn".to_owned(),
+                    docstring: None,
+                }
+                .into(),
+            ),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -245,14 +251,17 @@ fn resume_snapshot_identity_test(progress: RunProgress) -> MontyObject {
     let lookup = progress.into_name_lookup().expect("expected NameLookup for 'missing'");
     let progress = lookup
         .resume(
-            NameLookupResult::Value(MontyObject::Function {
-                name: "ext_fn".to_owned(),
-                docstring: None,
-            }),
+            NameLookupResult::Value(
+                MontyObject::Function {
+                    name: "ext_fn".to_owned(),
+                    docstring: None,
+                }
+                .into(),
+            ),
             PrintWriter::Stdout,
         )
         .unwrap();
-    progress.into_complete().unwrap()
+    progress.into_complete().unwrap().into_object().unwrap()
 }
 
 /// Dropping the last reference removes the weak-cache entry before slot reuse.
@@ -264,10 +273,13 @@ fn repl_extfunction_cache_does_not_retain_freed_id() {
     let lookup = progress.into_name_lookup().expect("expected NameLookup for 'foobar'");
     let progress = lookup
         .resume(
-            NameLookupResult::Value(MontyObject::Function {
-                name: "ext_fn".to_owned(),
-                docstring: None,
-            }),
+            NameLookupResult::Value(
+                MontyObject::Function {
+                    name: "ext_fn".to_owned(),
+                    docstring: None,
+                }
+                .into(),
+            ),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -288,10 +300,13 @@ fn repl_extfunction_cache_does_not_retain_freed_id() {
     let lookup = progress.into_name_lookup().expect("expected NameLookup for 'barbaz'");
     let progress = lookup
         .resume(
-            NameLookupResult::Value(MontyObject::Function {
-                name: "ext_fn".to_owned(),
-                docstring: None,
-            }),
+            NameLookupResult::Value(
+                MontyObject::Function {
+                    name: "ext_fn".to_owned(),
+                    docstring: None,
+                }
+                .into(),
+            ),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -341,10 +356,13 @@ y = missing
     assert_eq!(lookup.name, "missing");
     let progress = lookup
         .resume(
-            NameLookupResult::Value(MontyObject::Function {
-                name: "ext_fn".to_owned(),
-                docstring: None,
-            }),
+            NameLookupResult::Value(
+                MontyObject::Function {
+                    name: "ext_fn".to_owned(),
+                    docstring: None,
+                }
+                .into(),
+            ),
             PrintWriter::Stdout,
         )
         .unwrap();

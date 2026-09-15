@@ -26,7 +26,7 @@ fn run_to_oscall(code: &str) -> (&'static str, Vec<MontyObject>) {
         RunProgress::OsCall(call) => {
             let mock_result = mock_oscall_result(&call.function_call);
             let function = call.function_call.name();
-            let (args, _) = call.function_call.clone().to_args();
+            let (args, _) = call.function_call.clone().to_args().into_objects().unwrap();
             let _ = call.resume(mock_result, PrintWriter::Stdout);
             (function, args)
         }
@@ -92,9 +92,13 @@ fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (&'static str
     match progress {
         RunProgress::OsCall(call) => {
             let function = call.function_call.name();
-            let (args, _) = call.function_call.clone().to_args();
+            let (args, _) = call.function_call.clone().to_args().into_objects().unwrap();
             let resumed = call.resume(mock_result, PrintWriter::Stdout).unwrap();
-            let final_result = resumed.into_complete().expect("expected Complete after resume");
+            let final_result = resumed
+                .into_complete()
+                .expect("expected Complete after resume")
+                .into_object()
+                .unwrap();
             (function, args, final_result)
         }
         _ => panic!("expected OsCall, got {progress:?}"),
@@ -272,12 +276,14 @@ fn run_chdir(code: &str, reply: impl Into<ExtFunctionResult>) -> Result<MontyObj
     {
         RunProgress::OsCall(call) => {
             assert_eq!(call.function_call.name(), "Path.stat");
-            let (args, _) = call.function_call.clone().to_args();
+            let (args, _) = call.function_call.clone().to_args().into_objects().unwrap();
             assert_eq!(args, vec![MontyObject::Path("/data/sub".to_owned())]);
             Ok(call
                 .resume(reply, PrintWriter::Stdout)?
                 .into_complete()
-                .expect("expected Complete after resume"))
+                .expect("expected Complete after resume")
+                .into_object()
+                .unwrap())
         }
         progress => panic!("expected OsCall, got {progress:?}"),
     }
@@ -298,7 +304,7 @@ fn os_chdir_adopts_a_directory() {
     let RunProgress::OsCall(absolute) = call.resume(dir_stat(0o755, 0.0), PrintWriter::Stdout).unwrap() else {
         panic!("expected a second OsCall");
     };
-    let (args, _) = absolute.function_call.clone().to_args();
+    let (args, _) = absolute.function_call.clone().to_args().into_objects().unwrap();
     assert_eq!(args, vec![MontyObject::Path("/data/sub/x".to_owned())]);
     let result = absolute
         .resume(MontyObject::Path("/data/sub/x".to_owned()), PrintWriter::Stdout)
@@ -1196,7 +1202,11 @@ fn run_oscall_sequence(code: &str, steps: Vec<(&str, MontyObject)>) -> MontyObje
         assert_eq!(call.function_call.name(), expected);
         progress = call.resume(result, PrintWriter::Stdout).unwrap();
     }
-    progress.into_complete().expect("expected Complete")
+    progress
+        .into_complete()
+        .expect("expected Complete")
+        .into_object()
+        .unwrap()
 }
 
 /// A read-mode handle for `path`, the host's answer to an `open` OS call.

@@ -16,7 +16,7 @@
 //! parity but rejected with the `NotImplementedError` CPython raises on
 //! platforms without them — Monty never supports fd-relative paths.
 
-use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs, UrandomArgs};
+use monty_types::{GetenvArgs, MkdirCallArgs, MontyPath, MontyValue, OsFunctionCall, RenameCallArgs, UrandomArgs};
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
@@ -26,7 +26,7 @@ use crate::{
     heap::{HeapData, HeapId},
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
-    object_bridge::MontyObjectExt,
+    object_bridge::MontyValueExt,
     os_dispatch::{PreConversionEffect, value_to_owned_string},
     types::{Bytes, Module, Property, Type, property::ZeroArgOsProperty, str::allocate_string},
     value::Value,
@@ -237,7 +237,7 @@ fn getenv(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         key_value.drop_with(vm.heap);
         Ok(CallResult::OsCall(OsFunctionCall::Getenv(GetenvArgs {
             key: key.into_string(vm.interns),
-            default: MontyObject::new(default_value.unwrap_or(Value::None), vm),
+            default: MontyValue::export(default_value.unwrap_or(Value::None), vm),
         })))
     } else {
         let type_name = key_value.py_type_name_heap(vm.heap, vm.interns);

@@ -19,7 +19,8 @@ Project goals:
 
 ## `monty-types` — shared boundary types
 
-The public data types (`MontyObject`, `MontyException`/`ExcType`, `OsFunctionCall` +
+The public data types (`MontyObject`, the value arena `MontyGraph`/`MontyNode` with
+`MontyValue`/`CallArgs`/`NamedValues`, `MontyException`/`ExcType`, `OsFunctionCall` +
 its arg structs, `ResourceLimits`/`ResourceTracker`, `PrintStream`/`PrintWriter`,
 `CompileOptions`, `ExtFunctionResult`, `FileMode`, ...) live in `crates/monty-types`,
 which depends on no other monty crate except the `monty-macros` derives. `monty`
@@ -37,9 +38,13 @@ interpreter. Don't add a `monty` dependency to a host-side crate; if it needs a
 type, that type belongs in `monty-types`.
 
 Interpreter-coupled methods on these types live in `monty` as `pub(crate)`
-extension traits (`ExcTypeExt`, `MontyObjectExt`, `MontyTypeExt`, `StackFrameExt`,
-`FileModeExt`, `BuiltinsFunctionsExt`, `ExtFunctionResultExt`) — import the trait
-to call e.g. `ExcType::type_error(...)` or `MontyObject::new(value, vm)`.
+extension traits (`ExcTypeExt`, `MontyValueExt`, `MontyGraphExt`, `CallArgsExt`,
+`MontyTypeExt`, `StackFrameExt`, `FileModeExt`, `BuiltinsFunctionsExt`,
+`ExtFunctionResultExt`) — import the trait to call e.g. `ExcType::type_error(...)` or
+`MontyValue::export(value, vm)`. Values leave the interpreter as a `MontyGraph` arena
+built by `object_bridge::GraphExporter` (one per message, so a shared sub-object
+crosses once) and re-enter through `MontyGraphExt::to_values`; `MontyObject` is the
+tree form hosts build inputs with and expand results into.
 
 ## Cross-Platform Requirements
 

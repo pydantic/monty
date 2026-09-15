@@ -67,15 +67,6 @@ impl HostClass {
         }
     }
 
-    /// Rebuilds the wire [`MontyClassType`] this instance's class crosses out
-    /// as. The worker sends the `type` branch of an instance with empty
-    /// `attrs` (the host resolves the class by id); on the way in a host may
-    /// fill them, and the class's type object refreshes from them.
-    #[must_use]
-    pub fn class_type(&self, heap: &Heap, interns: &Interns) -> MontyClassType {
-        host_class_type(heap, self.class_id).class_type(interns)
-    }
-
     /// Returns the class name, read from the shared class entry.
     #[must_use]
     pub fn name<'a>(&self, heap: &'a Heap, interns: &'a Interns) -> &'a str {

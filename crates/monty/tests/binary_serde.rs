@@ -35,7 +35,7 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
     while let RunProgress::NameLookup(lookup) = progress {
         let name = lookup.name.clone();
         progress = lookup.resume(
-            NameLookupResult::Value(MontyObject::Function { name, docstring: None }),
+            NameLookupResult::Value(MontyObject::Function { name, docstring: None }.into()),
             PrintWriter::Stdout,
         )?;
     }
@@ -308,7 +308,7 @@ fn run_progress_round_trip_at_external_call() {
     // Should still be at the external function call
     let call = loaded.into_function_call().expect("should be at function call");
     assert_eq!(call.function_name, "ext_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(42)]);
+    assert_eq!(call.args.into_objects().unwrap().0, vec![MontyObject::Int(42)]);
 
     // Resume execution with a return value
     let result = call.resume(MontyObject::Int(100), PrintWriter::Stdout).unwrap();
@@ -334,7 +334,7 @@ fn run_progress_round_trip_multiple_calls() {
     let loaded: RunProgress = round_trip_progress(&progress);
     let call = loaded.into_function_call().unwrap();
     assert_eq!(call.function_name, "ext_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(1)]);
+    assert_eq!(call.args.into_objects().unwrap().0, vec![MontyObject::Int(1)]);
 
     // Resume first call
     let progress = call.resume(MontyObject::Int(10), PrintWriter::Stdout).unwrap();
@@ -345,7 +345,7 @@ fn run_progress_round_trip_multiple_calls() {
     let loaded: RunProgress = round_trip_progress(&progress);
     let call = loaded.into_function_call().unwrap();
     assert_eq!(call.function_name, "ext_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(2)]);
+    assert_eq!(call.args.into_objects().unwrap().0, vec![MontyObject::Int(2)]);
 
     // Resume second call to completion
     let result = call.resume(MontyObject::Int(20), PrintWriter::Stdout).unwrap();

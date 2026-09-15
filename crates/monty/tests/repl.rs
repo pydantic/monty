@@ -446,7 +446,7 @@ fn repl_start_external_call_resumes_to_updated_repl() {
     let progress = repl.feed_start("ext_fn(41) + 1", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "ext_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(41)]);
+    assert_eq!(call.args.into_objects().unwrap().0, vec![MontyObject::Int(41)]);
 
     let progress = call.resume(MontyObject::Int(41), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
@@ -472,7 +472,7 @@ fn repl_feed_start_restores_comprehension_slots_before_next_turn() {
     let progress = repl.feed_start("foo()", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "foo");
-    assert!(call.args.is_empty());
+    assert!(call.args.args.is_empty());
     let _repl = call.into_repl();
 }
 
@@ -487,7 +487,7 @@ fn repl_feed_start_restores_comprehension_slots_after_runtime_error() {
     let progress = err.repl.feed_start("foo()", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "foo");
-    assert!(call.args.is_empty());
+    assert!(call.args.args.is_empty());
     let _repl = call.into_repl();
 }
 
@@ -622,7 +622,7 @@ fn repl_progress_dump_load_roundtrip() {
     let loaded = round_trip_progress(&progress);
 
     let call = loaded.into_function_call().expect("expected function call");
-    assert_eq!(call.args, vec![MontyObject::Int(20)]);
+    assert_eq!(call.args.into_objects().unwrap().0, vec![MontyObject::Int(20)]);
 
     let progress = call.resume(MontyObject::Int(20), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
@@ -656,7 +656,7 @@ async def main():
 
     let progress = state
         .resume(
-            vec![(call_id, ExtFunctionResult::Return(MontyObject::Int(41)))],
+            vec![(call_id, ExtFunctionResult::Return(MontyObject::Int(41).into()))],
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -747,7 +747,7 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
         Some(MontyUuid::from_u128(42)),
         "should be a method call on instance 42"
     );
-    assert!(call.args.is_empty(), "receiver must not be included in args");
+    assert!(call.args.args.is_empty(), "receiver must not be included in args");
 
     // Resume with a return value (sum of x + y = 3)
     let progress = call.resume(MontyObject::Int(3), PrintWriter::Stdout).unwrap();
@@ -774,11 +774,11 @@ fn repl_hasattr_getattr_lookup_effects_survive_dump() {
 
     // (name, answer, round-trip through the dump format first)
     let steps = [
-        ("dims", NameLookupResult::Value(MontyObject::Int(2)), true),
+        ("dims", NameLookupResult::Value(MontyObject::Int(2).into()), true),
         ("nope", NameLookupResult::Undefined, true),
         ("nope", NameLookupResult::Undefined, true),
         ("nope", NameLookupResult::Undefined, true),
-        ("dims", NameLookupResult::Value(MontyObject::Int(2)), false),
+        ("dims", NameLookupResult::Value(MontyObject::Int(2).into()), false),
     ];
     for (name, answer, round_trip) in steps {
         let progress_in = if round_trip {
@@ -1376,7 +1376,7 @@ fn repl_start_new_external_function_in_later_block() {
     let progress = repl.feed_start("new_ext(y)", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "new_ext");
-    assert_eq!(call.args, vec![MontyObject::Int(15)]);
+    assert_eq!(call.args.into_objects().unwrap().0, vec![MontyObject::Int(15)]);
 
     let progress = call.resume(MontyObject::Int(100), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");

@@ -9,7 +9,9 @@ use std::{
     },
 };
 
-use monty_types::{AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker};
+use monty_types::{
+    AssertMessageAnnotations, ExcType, MontyException, MontyObject, MontyValue, PrintWriter, ResourceTracker,
+};
 pub use monty_types::{CompileOptions, HostClock};
 use ruff_python_stdlib::identifiers::is_identifier;
 
@@ -20,7 +22,7 @@ use crate::{
     intern::{Interns, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
-    object_bridge::MontyObjectExt,
+    object_bridge::MontyValueExt,
     parse::{CodeRange, parse, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
     run_progress::{
@@ -644,7 +646,7 @@ impl Executor {
             } => match self.clock.resolve(&function_call) {
                 Some(result) => {
                     function_call.drop_with(vm);
-                    ControlFlow::Continue(vm.resume(result))
+                    ControlFlow::Continue(vm.resume(result.into()))
                 }
                 None => ControlFlow::Break(FrameExit::OsCall {
                     function_call,
@@ -777,7 +779,7 @@ impl Executor {
             return Err(MontyException::runtime_error("too many inputs for namespace"));
         }
         for (i, input) in inputs.into_iter().enumerate() {
-            let value = input
+            let value = MontyValue::from(input)
                 .to_value(vm)
                 .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
             vm.globals[i] = value;
@@ -807,7 +809,9 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
     // so one `drop_with` releases whatever the exit owns, fields added later
     // included.
     let exit = match answer_unserved_lookups(frame_exit_result, vm)? {
-        FrameExit::Return(return_value) => return Ok(MontyObject::new(return_value, vm)),
+        FrameExit::Return(return_value) => {
+            return expand_value(&MontyValue::export(return_value, vm)).map_err(RunError::from);
+        }
         exit => exit,
     };
     let error: RunError = match &exit {
@@ -835,6 +839,15 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
     };
     exit.drop_with(vm);
     Err(error)
+}
+
+/// Expands an exported value into the `MontyObject` tree the in-process API
+/// returns. A result too large or deep to expand (sharing multiplies on
+/// expansion) is reported as a `RuntimeError` rather than exhausting memory.
+pub(crate) fn expand_value(value: &MontyValue) -> Result<MontyObject, MontyException> {
+    value
+        .into_object()
+        .map_err(|e| MontyException::runtime_error(format!("result cannot be expanded into a MontyObject: {e}")))
 }
 
 /// Output from `run_ref_counts` containing reference count and heap information.

@@ -35,7 +35,11 @@ fn run_with_open_then_io(
     let io_call = progress.into_os_call().expect("expected follow-up OsCall");
     assert_eq!(io_call.function_call.name(), expected_io_fn_name);
     let progress = io_call.resume(io_result, PrintWriter::Stdout)?;
-    Ok(progress.into_complete().expect("expected Complete after resume"))
+    Ok(progress
+        .into_complete()
+        .expect("expected Complete after resume")
+        .into_object()
+        .unwrap())
 }
 
 fn file_handle(path: &str, mode: &str) -> MontyFileHandle {

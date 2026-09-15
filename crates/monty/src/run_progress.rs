@@ -9,7 +9,8 @@
 use std::mem;
 
 use monty_types::{
-    ExcType, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker,
+    CallArgs, ExcType, InvalidInputError, MontyException, MontyUuid, MontyValue, OsFunctionCall, PrintWriter,
+    ResourceTracker,
 };
 
 use crate::{
@@ -17,7 +18,7 @@ use crate::{
     bytecode::{FrameExit, PendingLookupEffect, VM, VMSnapshot},
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
-    object_bridge::MontyObjectExt,
+    object_bridge::MontyValueExt,
     os_dispatch::{PendingEffect, release_pending_effect},
     run::Executor,
     value::Value,
@@ -44,7 +45,7 @@ pub enum RunProgress {
     /// Execution paused for an unresolved name lookup.
     NameLookup(NameLookup),
     /// Execution completed with a final result.
-    Complete(MontyObject),
+    Complete(MontyValue),
 }
 
 impl RunProgress {
@@ -68,7 +69,7 @@ impl RunProgress {
 
     /// Consumes the progress and returns the final value if execution completed.
     #[must_use]
-    pub fn into_complete(self) -> Option<MontyObject> {
+    pub fn into_complete(self) -> Option<MontyValue> {
         match self {
             Self::Complete(value) => Some(value),
             _ => None,
@@ -114,10 +115,8 @@ impl RunProgress {
 pub struct FunctionCall {
     /// The name of the function or method being called.
     pub function_name: String,
-    /// The positional arguments passed to the function.
-    pub args: Vec<MontyObject>,
-    /// The keyword arguments passed to the function (key, value pairs).
-    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    /// The arguments: one arena holding every positional and keyword value.
+    pub args: CallArgs,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
     /// Uuid of the routed receiver — an instance, or a class type (a
@@ -134,8 +133,7 @@ impl FunctionCall {
     /// Creates a new `FunctionCall` from its parts.
     fn new(
         function_name: String,
-        args: Vec<MontyObject>,
-        kwargs: Vec<(MontyObject, MontyObject)>,
+        args: CallArgs,
         call_id: u32,
         object_id: Option<MontyUuid>,
         allow_eager_await: bool,
@@ -144,7 +142,6 @@ impl FunctionCall {
         Self {
             function_name,
             args,
-            kwargs,
             call_id,
             object_id,
             allow_eager_await,
@@ -200,7 +197,7 @@ impl FunctionCall {
     /// Only use when [`Self::allow_eager_await`] is true; synchronous returns use [`Self::resume`].
     pub fn resume_eager(
         self,
-        result: Result<MontyObject, MontyException>,
+        result: Result<MontyValue, MontyException>,
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
         self.snapshot.run_inner(
@@ -917,18 +914,17 @@ impl ExtFunctionResultExt for ExtFunctionResult {}
 
 /// Pre-converted frame exit data, produced while the VM is still alive.
 ///
-/// This intermediate enum holds `MontyObject`s and `String`s instead of `Value`s
+/// This intermediate enum holds `MontyValue`s and `String`s instead of `Value`s
 /// and `StringId`s. It exists to separate the conversion phase (needs `&mut VM`)
 /// from the snapshot/progress construction phase (needs owned `Heap`).
 pub(crate) enum ConvertedExit {
     /// Execution completed with a final result.
-    Complete(MontyObject),
+    Complete(MontyValue),
     /// External function call, or a host-routed method call (`object_id`
     /// set; construction of a host class is a `__call__` method call).
     FunctionCall {
         function_name: String,
-        args: Vec<MontyObject>,
-        kwargs: Vec<(MontyObject, MontyObject)>,
+        args: CallArgs,
         call_id: u32,
         object_id: Option<MontyUuid>,
         allow_eager_await: bool,
@@ -955,7 +951,7 @@ impl ConvertedExit {
 
 /// Converts a `FrameExit` into a `ConvertedExit` while the VM is still alive.
 ///
-/// All `Value` → `MontyObject` and `StringId` → `String` conversions happen here,
+/// All `Value` → `MontyValue` and `StringId` → `String` conversions happen here,
 /// while the VM (and its heap/interns) are still accessible.
 pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) -> ConvertedExit {
     // An effect still armed on arrival belongs to an OS call that was answered
@@ -967,7 +963,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
     release_pending_effect(vm.pending_effect.take(), vm.heap);
     vm.pending_lookup_effect.take().drop_with(vm.heap);
     match result {
-        Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::new(value, vm)),
+        Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyValue::export(value, vm)),
         Ok(FrameExit::ExternalCall {
             function_name,
             args,
@@ -975,11 +971,10 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             ..
         }) => {
             let name = function_name.into_string(vm.interns);
-            let (args_py, kwargs_py) = args.into_py_objects(vm);
+            let args = args.into_call_args(vm);
             ConvertedExit::FunctionCall {
                 function_name: name,
-                args: args_py,
-                kwargs: kwargs_py,
+                args,
                 call_id: call_id.raw(),
                 object_id: None,
                 allow_eager_await: vm.allow_eager_await(),
@@ -1005,11 +1000,10 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             object_id,
         }) => {
             let name = method_name.into_string(vm.interns);
-            let (args_py, kwargs_py) = args.into_py_objects(vm);
+            let args = args.into_call_args(vm);
             ConvertedExit::FunctionCall {
                 function_name: name,
-                args: args_py,
-                kwargs: kwargs_py,
+                args,
                 call_id: call_id.raw(),
                 object_id: Some(object_id),
                 allow_eager_await: vm.allow_eager_await(),
@@ -1092,14 +1086,12 @@ pub(crate) fn build_run_progress(
         ConvertedExit::FunctionCall {
             function_name,
             args,
-            kwargs,
             call_id,
             object_id,
             allow_eager_await,
         } => Ok(RunProgress::FunctionCall(FunctionCall::new(
             function_name,
             args,
-            kwargs,
             call_id,
             object_id,
             allow_eager_await,

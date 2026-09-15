@@ -8,8 +8,8 @@ use std::fs;
 
 use monty_fs::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use monty_types::{
-    ExcType, MkdirCallArgs, MontyException, MontyObject, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-    RenameCallArgs, UnicodeErrorData, UnicodeErrorObject,
+    ExcType, MkdirCallArgs, MontyException, MontyNode, MontyObject, MontyValue, OsFunctionCall, PathBytesDataArgs,
+    PathStringDataArgs, RenameCallArgs, UnicodeErrorData, UnicodeErrorObject,
 };
 use tempfile::TempDir;
 
@@ -1660,7 +1660,7 @@ fn non_filesystem_ops_not_handled() {
 
     let result = mt.handle_os_call(OsFunctionCall::Getenv(monty_types::GetenvArgs {
         key: "PATH".to_owned(),
-        default: MontyObject::None,
+        default: MontyValue::leaf(MontyNode::None),
     }));
     assert!(
         matches!(result, MountCallOutcome::NotHandled(OsFunctionCall::Getenv(_))),
