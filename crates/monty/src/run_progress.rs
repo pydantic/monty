@@ -226,7 +226,7 @@ impl FunctionCall {
 ///
 /// `function_call` is a tagged [`OsFunctionCall`] whose variants carry the
 /// typed args directly. Host bindings that need a generic
-/// `(positional, keyword)` `MontyObject` view can call [`OsFunctionCall::to_args`]
+/// `(positional, keyword)` `MontyValue` view can call [`OsFunctionCall::to_args`]
 /// (the public projection method).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct OsCall {

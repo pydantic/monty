@@ -8,7 +8,7 @@ use std::{
 };
 
 use monty_pool::{Checkout, OnPrint, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent, on_print_sync};
-use monty_types::MontyObject;
+use monty_types::MontyValue;
 
 /// Runs Monty's test-case corpus through subprocess pool sessions.
 #[tokio::main]
@@ -83,7 +83,7 @@ async fn run_code(
             TurnEvent::Complete(_) => break Ok(()),
             TurnEvent::FunctionCall { .. } => {
                 session
-                    .resume(ResumeValue::Return(MontyObject::None.into()), &mut *on_print)
+                    .resume(ResumeValue::Return(MontyValue::none()), &mut *on_print)
                     .await?
             }
             TurnEvent::OsCall { .. } => match session.resume_from_mounts(&mut *on_print).await? {
@@ -98,7 +98,7 @@ async fn run_code(
             TurnEvent::ResolveFutures { pending_call_ids } => {
                 let results = pending_call_ids
                     .into_iter()
-                    .map(|call_id| (call_id, ResumeValue::Return(MontyObject::None.into())))
+                    .map(|call_id| (call_id, ResumeValue::Return(MontyValue::none())))
                     .collect();
                 session.resume_futures(results, &mut *on_print).await?
             }
@@ -107,24 +107,24 @@ async fn run_code(
 }
 
 /// Returns representative host values for names used by the shared test corpus.
-fn name_lookup_value(name: String) -> Option<MontyObject> {
+fn name_lookup_value(name: String) -> Option<MontyValue> {
     match name.as_str() {
         "add_ints" | "concat_strings" | "return_value" | "get_list" | "raise_error" | "make_point"
         | "make_mutable_point" | "make_user" | "make_empty" | "async_call" | "async_fail" => {
-            Some(MontyObject::Function { name, docstring: None })
+            Some(MontyValue::function(name, None))
         }
-        "CONST_INT" => Some(MontyObject::Int(42)),
-        "CONST_STR" => Some(MontyObject::String("hello".to_owned())),
+        "CONST_INT" => Some(MontyValue::int(42)),
+        "CONST_STR" => Some(MontyValue::string("hello".to_owned())),
         #[expect(clippy::approx_constant, reason = "3.14 is the test fixture value")]
-        "CONST_FLOAT" => Some(MontyObject::Float(3.14)),
-        "CONST_BOOL" => Some(MontyObject::Bool(true)),
-        "CONST_LIST" => Some(MontyObject::List(vec![
-            MontyObject::Int(1),
-            MontyObject::Int(2),
-            MontyObject::Int(3),
+        "CONST_FLOAT" => Some(MontyValue::float(3.14)),
+        "CONST_BOOL" => Some(MontyValue::bool(true)),
+        "CONST_LIST" => Some(MontyValue::list([
+            MontyValue::int(1),
+            MontyValue::int(2),
+            MontyValue::int(3),
         ])),
-        "CONST_NONE" => Some(MontyObject::None),
-        "root" => Some(MontyObject::Path("/mnt".to_owned())),
+        "CONST_NONE" => Some(MontyValue::none()),
+        "root" => Some(MontyValue::path("/mnt".to_owned())),
         _ => None,
     }
 }

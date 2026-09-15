@@ -29,7 +29,7 @@ use common::{symlink_dir, symlink_file, symlinks_supported, try_rename_mount_roo
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 #[cfg(unix)]
 use monty_types::{FileMode, OpenCallArgs};
-use monty_types::{MkdirCallArgs, MontyObject, OsFunctionCall, PathStringDataArgs};
+use monty_types::{MkdirCallArgs, MontyValue, OsFunctionCall, PathStringDataArgs};
 #[cfg(unix)]
 use nix::{sys::stat::Mode, unistd::mkfifo};
 use tempfile::TempDir;
@@ -58,14 +58,14 @@ fn soak_enabled() -> bool {
 }
 
 /// Dispatches a call, panicking if the mount table declines to handle it.
-fn dispatch(mounts: &mut MountTable, call: OsFunctionCall) -> Result<MontyObject, MountError> {
+fn dispatch(mounts: &mut MountTable, call: OsFunctionCall) -> Result<MontyValue, MountError> {
     match mounts.handle_os_call(call) {
         MountCallOutcome::Handled(result) => result,
         MountCallOutcome::NotHandled(call) => panic!("mount table returned NotHandled: {call:?}"),
     }
 }
 
-fn read_text(mounts: &mut MountTable, path: &str) -> Result<MontyObject, MountError> {
+fn read_text(mounts: &mut MountTable, path: &str) -> Result<MontyValue, MountError> {
     dispatch(mounts, OsFunctionCall::ReadText(path.into()))
 }
 
@@ -102,16 +102,18 @@ fn mount_root_swapped_for_symlink_still_reads_original() {
     if !try_rename_mount_root(&mount_path, base.path().join("moved")) {
         // Windows blocks the rename outright, so the swap cannot even be staged
         // — a stronger guarantee than the one asserted below.
-        assert!(matches!(read_text(&mut mounts, "/mnt/file.txt"), Ok(MontyObject::String(s)) if s == "public"));
+        assert!(
+            matches!(read_text(&mut mounts, "/mnt/file.txt"), Ok(value) if value.as_ref().as_str() == Some("public"))
+        );
         return;
     }
     symlink_dir(&elsewhere, &mount_path);
 
     let outcome = read_text(&mut mounts, "/mnt/file.txt");
-    let leaked = matches!(&outcome, Ok(MontyObject::String(s)) if s.contains(SECRET));
+    let leaked = matches!(&outcome, Ok(value) if value.as_ref().as_str().is_some_and(|s| s.contains(SECRET)));
     assert!(!leaked, "HOST FILE DISCLOSURE: read followed the swapped mount root");
     assert!(
-        matches!(&outcome, Ok(MontyObject::String(s)) if s == "public"),
+        matches!(&outcome, Ok(value) if value.as_ref().as_str() == Some("public")),
         "expected the original directory to still back the mount, got {outcome:?}"
     );
 }
@@ -133,7 +135,7 @@ fn mount_survives_host_directory_rename() {
 
     let outcome = read_text(&mut mounts, "/mnt/file.txt");
     assert!(
-        matches!(&outcome, Ok(MontyObject::String(s)) if s == "public"),
+        matches!(&outcome, Ok(value) if value.as_ref().as_str() == Some("public")),
         "expected the mount to follow its directory through a rename, got {outcome:?}"
     );
 }
@@ -153,7 +155,7 @@ fn mounted_directory_cannot_be_renamed_on_windows() {
     assert_eq!(err.raw_os_error(), Some(32), "expected ERROR_SHARING_VIOLATION");
 
     let outcome = read_text(&mut mounts, "/mnt/file.txt");
-    assert!(matches!(&outcome, Ok(MontyObject::String(s)) if s == "public"));
+    assert!(matches!(&outcome, Ok(value) if value.as_ref().as_str() == Some("public")));
 }
 
 /// An intermediate directory replaced by a symlink out of the mount must not
@@ -180,7 +182,7 @@ fn read_through_swapped_intermediate_directory_is_rejected() {
     symlink_dir(outside_dir.path(), &data);
 
     let outcome = read_text(&mut mounts, "/mnt/data/secret.txt");
-    let leaked = matches!(&outcome, Ok(MontyObject::String(s)) if s.contains(SECRET));
+    let leaked = matches!(&outcome, Ok(value) if value.as_ref().as_str().is_some_and(|s| s.contains(SECRET)));
     assert!(!leaked, "HOST FILE DISCLOSURE: read traversed an outbound symlink");
 }
 
@@ -249,7 +251,10 @@ fn concurrent_rename_cannot_redirect_a_read() {
     let mut leaks = 0_u32;
     let mut reads = 0_u32;
     while Instant::now() < deadline {
-        if let Ok(MontyObject::String(s)) = read_text(&mut mounts, "/mnt/data/file.txt") {
+        if let Some(s) = read_text(&mut mounts, "/mnt/data/file.txt")
+            .ok()
+            .and_then(|value| value.as_ref().as_str().map(ToOwned::to_owned))
+        {
             reads += 1;
             if s.contains(SECRET) {
                 leaks += 1;
@@ -325,7 +330,7 @@ fn relative_symlink_target_is_followed_inside_the_mount() {
 
     assert_eq!(
         read_text(&mut mounts, "/mnt/link.txt").unwrap(),
-        MontyObject::String("in-mount".to_owned())
+        MontyValue::string("in-mount".to_owned())
     );
 }
 
@@ -360,13 +365,13 @@ fn absolute_symlink_target_is_refused_even_inside_the_mount() {
         OsFunctionCall::IsFile("/mnt/abs.txt".into()),
         OsFunctionCall::IsDir("/mnt/abs.txt".into()),
     ] {
-        assert_eq!(dispatch(&mut mounts, call).unwrap(), MontyObject::Bool(false));
+        assert_eq!(dispatch(&mut mounts, call).unwrap(), MontyValue::bool(false));
     }
 
     // `is_symlink` does not follow the final component, so it still sees a link.
     assert_eq!(
         dispatch(&mut mounts, OsFunctionCall::IsSymlink("/mnt/abs.txt".into())).unwrap(),
-        MontyObject::Bool(true)
+        MontyValue::bool(true)
     );
 }
 
@@ -458,7 +463,7 @@ fn overlay_permission_errors_match_direct_mode() {
             let label = format!("{call:?}");
             assert_eq!(
                 dispatch(&mut mounts, call).unwrap(),
-                MontyObject::Bool(false),
+                MontyValue::bool(false),
                 "{label}: predicates must answer False, not raise"
             );
         }
@@ -688,7 +693,7 @@ fn mkdir_parents_under_an_escaping_symlink_cannot_reach_the_host() {
     assert!(!outside.path().join("x.txt").exists(), "file created outside the mount");
 
     let outcome = read_text(&mut overlay, "/mnt/evil/secret.txt");
-    let leaked = matches!(&outcome, Ok(MontyObject::String(s)) if s.contains(SECRET));
+    let leaked = matches!(&outcome, Ok(value) if value.as_ref().as_str().is_some_and(|s| s.contains(SECRET)));
     assert!(!leaked, "HOST FILE DISCLOSURE: read followed the escaping symlink");
     assert!(outcome.is_err(), "outside read must be refused, got {outcome:?}");
 }
@@ -771,11 +776,10 @@ fn fifo_raced_into_place_between_check_and_open_is_refused() {
         let mut mounts = mount_rw(&host);
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
-            match read_text(&mut mounts, "/mnt/file.txt") {
-                // The FIFO has no writer, so any success is a regular file.
-                Ok(MontyObject::String(s)) => assert_eq!(s, "public"),
-                Ok(other) => panic!("unexpected value: {other:?}"),
-                Err(_) => {} // Missing mid-swap, or refused as a FIFO: both fine.
+            // The FIFO has no writer, so any success is a regular file; an
+            // error (missing mid-swap, or refused as a FIFO) is fine too.
+            if let Ok(value) = read_text(&mut mounts, "/mnt/file.txt") {
+                assert_eq!(value.as_ref().as_str(), Some("public"));
             }
         }
         tx.send(()).ok();

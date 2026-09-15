@@ -274,7 +274,7 @@ pub fn utf8_error_reason(first_bad_byte: u8, error_len: Option<usize>) -> &'stat
 /// offset in seconds, normalized like Python's `timedelta` (`days` may be
 /// negative, `seconds` in `0..86400`) — e.g. `-18000` →
 /// `datetime.timedelta(days=-1, seconds=68400)`. Used by the
-/// `datetime.timezone` reprs of [`MontyObject`](crate::object::MontyObject).
+/// `datetime.timezone` reprs of boundary values.
 #[must_use]
 pub fn format_offset_timedelta_repr(offset_seconds: i32) -> String {
     const SECONDS_PER_DAY: i32 = 86_400;

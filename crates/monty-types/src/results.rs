@@ -1,7 +1,7 @@
 //! Host-supplied results fed back into a suspended run:
 //! [`NameLookupResult`] and [`ExtFunctionResult`].
 
-use crate::{exceptions::MontyException, object::MontyObject, value::MontyValue};
+use crate::{exceptions::MontyException, value::MontyValue};
 /// Result of a name lookup from the host.
 ///
 /// When the VM encounters an unresolved name (or a lazy attribute on a
@@ -29,23 +29,10 @@ impl From<MontyValue> for NameLookupResult {
     }
 }
 
-impl From<MontyObject> for NameLookupResult {
-    fn from(value: MontyObject) -> Self {
-        Self::Value(value.into())
-    }
-}
-
 impl From<Option<MontyValue>> for NameLookupResult {
     /// `Some` resolves the name, `None` leaves it undefined.
     fn from(value: Option<MontyValue>) -> Self {
         value.map_or(Self::Undefined, Self::Value)
-    }
-}
-
-impl From<Option<MontyObject>> for NameLookupResult {
-    /// `Some` resolves the name, `None` leaves it undefined.
-    fn from(value: Option<MontyObject>) -> Self {
-        value.map_or(Self::Undefined, |value| Self::Value(value.into()))
     }
 }
 
@@ -75,12 +62,6 @@ pub enum ExtFunctionResult {
 impl From<MontyValue> for ExtFunctionResult {
     fn from(value: MontyValue) -> Self {
         Self::Return(value)
-    }
-}
-
-impl From<MontyObject> for ExtFunctionResult {
-    fn from(value: MontyObject) -> Self {
-        Self::Return(value.into())
     }
 }
 

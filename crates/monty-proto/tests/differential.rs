@@ -18,9 +18,9 @@
 use monty::{MontyRun, RunProgress};
 use monty_proto::{WireArena, WireFunctionCall, os_call_to_proto, pb};
 use monty_types::{
-    CallArgs, ClassTypeNode, CompileOptions, DictPairs, ExcType, GetenvArgs, MontyClassInstance, MontyClassType,
-    MontyDate, MontyDateTime, MontyFileHandle, MontyGraph, MontyNode, MontyObject, MontyTime, MontyTimeDelta,
-    MontyTimeZone, MontyType, MontyUuid, MontyValue, NodeId, OsFunctionCall, PrintWriter, ResourceTracker,
+    CallArgs, ClassTypeNode, CompileOptions, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle,
+    MontyGraph, MontyNode, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, MontyValue, NodeId,
+    OsFunctionCall, PrintWriter, ResourceTracker,
 };
 use num_bigint::{BigInt, Sign};
 use prost::Message;
@@ -30,66 +30,62 @@ use crate::oracle::value_node::Kind;
 #[path = "oracle/monty.v1.rs"]
 mod oracle;
 
-/// Every `MontyObject` shape, deliberately including protobuf-default
+/// Every `MontyValue` shape, deliberately including protobuf-default
 /// payloads (zeros, empty strings, `false`, empty containers, `Some("")`)
 /// where prost's implicit/explicit field-presence rules diverge most.
-fn corpus() -> Vec<MontyObject> {
+fn corpus() -> Vec<MontyValue> {
     let bigint: BigInt = "123456789012345678901234567890123456789".parse().unwrap();
     vec![
-        MontyObject::Ellipsis,
-        MontyObject::NotImplemented,
-        MontyObject::None,
-        MontyObject::Bool(false), // oneof arms encode even at default payloads
-        MontyObject::Bool(true),
-        MontyObject::Int(0),
-        MontyObject::Int(-1),
-        MontyObject::Int(i64::MIN),
-        MontyObject::Int(i64::MAX),
-        MontyObject::BigInt(BigInt::ZERO),
-        MontyObject::BigInt(bigint.clone()),
-        MontyObject::BigInt(-bigint),
-        MontyObject::Float(0.0),
-        MontyObject::Float(-0.0),
-        MontyObject::Float(f64::NAN),
-        MontyObject::Float(f64::NEG_INFINITY),
-        MontyObject::String(String::new()),
-        MontyObject::String("héllo \u{1F40D}".to_owned()),
-        MontyObject::Bytes(vec![]),
-        MontyObject::Bytes(vec![0, 255, 128]),
-        MontyObject::List(vec![]),
-        MontyObject::List(vec![
-            MontyObject::Int(1),
-            MontyObject::String("two".to_owned()),
-            MontyObject::List(vec![MontyObject::None]),
+        MontyValue::ellipsis(),
+        MontyValue::not_implemented(),
+        MontyValue::none(),
+        MontyValue::bool(false), // oneof arms encode even at default payloads
+        MontyValue::bool(true),
+        MontyValue::int(0),
+        MontyValue::int(-1),
+        MontyValue::int(i64::MIN),
+        MontyValue::int(i64::MAX),
+        MontyValue::bigint(BigInt::ZERO),
+        MontyValue::bigint(bigint.clone()),
+        MontyValue::bigint(-bigint),
+        MontyValue::float(0.0),
+        MontyValue::float(-0.0),
+        MontyValue::float(f64::NAN),
+        MontyValue::float(f64::NEG_INFINITY),
+        MontyValue::string(String::new()),
+        MontyValue::string("héllo \u{1F40D}".to_owned()),
+        MontyValue::bytes(vec![]),
+        MontyValue::bytes(vec![0, 255, 128]),
+        MontyValue::list([]),
+        MontyValue::list([
+            MontyValue::int(1),
+            MontyValue::string("two".to_owned()),
+            MontyValue::list([MontyValue::none()]),
         ]),
-        MontyObject::Tuple(vec![MontyObject::Bool(true), MontyObject::Float(2.5)]),
-        MontyObject::Set(vec![MontyObject::Int(1), MontyObject::Int(2)]),
-        MontyObject::FrozenSet(vec![MontyObject::String("a".to_owned())]),
-        MontyObject::NamedTuple {
-            type_name: String::new(),
-            field_names: vec![],
-            values: vec![],
-        },
-        MontyObject::NamedTuple {
-            type_name: "os.stat_result".to_owned(),
-            field_names: vec!["st_mode".to_owned(), String::new()],
-            values: vec![MontyObject::Int(0o644), MontyObject::None],
-        },
-        MontyObject::dict(Vec::new()),
-        MontyObject::dict(vec![
-            (MontyObject::Int(1), MontyObject::String("one".to_owned())),
+        MontyValue::tuple([MontyValue::bool(true), MontyValue::float(2.5)]),
+        MontyValue::set([MontyValue::int(1), MontyValue::int(2)]),
+        MontyValue::frozenset([MontyValue::string("a".to_owned())]),
+        MontyValue::named_tuple(String::new(), Vec::<String>::new(), vec![]),
+        MontyValue::named_tuple(
+            "os.stat_result".to_owned(),
+            vec!["st_mode".to_owned(), String::new()],
+            vec![MontyValue::int(0o644), MontyValue::none()],
+        ),
+        MontyValue::dict(Vec::new()),
+        MontyValue::dict([
+            (MontyValue::int(1), MontyValue::string("one".to_owned())),
             (
-                MontyObject::Tuple(vec![MontyObject::Int(1), MontyObject::Int(2)]),
-                MontyObject::None,
+                MontyValue::tuple([MontyValue::int(1), MontyValue::int(2)]),
+                MontyValue::none(),
             ),
         ]),
-        MontyObject::Date(MontyDate {
+        MontyValue::date(MontyDate {
             year: 2026,
             month: 6,
             day: 12,
         }),
         // a midnight datetime: every time component is a protobuf default
-        MontyObject::DateTime(MontyDateTime {
+        MontyValue::datetime(MontyDateTime {
             year: 1,
             month: 1,
             day: 1,
@@ -102,7 +98,7 @@ fn corpus() -> Vec<MontyObject> {
         }),
         // every field at its implicit-presence default: nothing but the
         // submessage key should reach the wire
-        MontyObject::Time(MontyTime {
+        MontyValue::time(MontyTime {
             hour: 0,
             minute: 0,
             second: 0,
@@ -111,7 +107,7 @@ fn corpus() -> Vec<MontyObject> {
             timezone_name: None,
             fold: 0,
         }),
-        MontyObject::Time(MontyTime {
+        MontyValue::time(MontyTime {
             hour: 23,
             minute: 59,
             second: 59,
@@ -120,7 +116,7 @@ fn corpus() -> Vec<MontyObject> {
             timezone_name: Some(String::new()),
             fold: 1,
         }),
-        MontyObject::Time(MontyTime {
+        MontyValue::time(MontyTime {
             hour: 1,
             minute: 2,
             second: 3,
@@ -131,7 +127,7 @@ fn corpus() -> Vec<MontyObject> {
         }),
         // explicit-presence edge: offset of exactly 0 and an empty name must
         // still encode (proto3 `optional`), unlike implicit-presence fields
-        MontyObject::DateTime(MontyDateTime {
+        MontyValue::datetime(MontyDateTime {
             year: 2026,
             month: 6,
             day: 12,
@@ -142,123 +138,91 @@ fn corpus() -> Vec<MontyObject> {
             offset_seconds: Some(0),
             timezone_name: Some(String::new()),
         }),
-        MontyObject::TimeDelta(MontyTimeDelta {
+        MontyValue::timedelta(MontyTimeDelta {
             days: 0,
             seconds: 0,
             microseconds: 0,
         }),
-        MontyObject::TimeDelta(MontyTimeDelta {
+        MontyValue::timedelta(MontyTimeDelta {
             days: -2,
             seconds: 86_399,
             microseconds: 999_999,
         }),
-        MontyObject::TimeZone(MontyTimeZone {
+        MontyValue::timezone(MontyTimeZone {
             offset_seconds: 0,
             name: None,
         }),
-        MontyObject::TimeZone(MontyTimeZone {
+        MontyValue::timezone(MontyTimeZone {
             offset_seconds: -19_800,
             name: Some("IST".to_owned()),
         }),
-        MontyObject::Exception {
-            exc_type: ExcType::ValueError,
-            arg: None,
-        },
-        MontyObject::Exception {
-            exc_type: ExcType::JsonDecodeError,
-            arg: Some(String::new()),
-        },
-        MontyObject::Type(MontyType::Int),
-        MontyObject::Type(MontyType::Exception(ExcType::KeyError)),
-        MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
-            name: "Foo".to_owned(),
-            id: MontyUuid::from_u128(0xF00),
-            host_defined: false,
-            is_dataclass: false,
-            attrs: DictPairs::default(),
-        }))),
-        MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
-            name: "Child".to_owned(),
-            id: MontyUuid::from_u128(0xF01),
-            host_defined: true,
-            is_dataclass: true,
-            attrs: vec![
-                (MontyObject::String("SIDES".to_owned()), MontyObject::Int(4)),
+        MontyValue::exception(ExcType::ValueError, None),
+        MontyValue::exception(ExcType::JsonDecodeError, Some(String::new())),
+        MontyValue::type_object(MontyType::Int),
+        MontyValue::type_object(MontyType::Exception(ExcType::KeyError)),
+        MontyValue::class_type("Foo", MontyUuid::from_u128(0xF00), false, false, []),
+        MontyValue::class_type(
+            "Child",
+            MontyUuid::from_u128(0xF01),
+            true,
+            true,
+            [
+                (MontyValue::string("SIDES".to_owned()), MontyValue::int(4)),
                 (
-                    MontyObject::String("KIND".to_owned()),
-                    MontyObject::String("polygon".to_owned()),
+                    MontyValue::string("KIND".to_owned()),
+                    MontyValue::string("polygon".to_owned()),
                 ),
-            ]
-            .into(),
-        }))),
-        MontyObject::builtin_function_from_name("len").expect("len is a builtin"),
-        MontyObject::Path(String::new()),
-        MontyObject::Path("/mnt/data/file.txt".to_owned()),
-        MontyObject::FileHandle(MontyFileHandle {
+            ],
+        ),
+        MontyValue::builtin_function_from_name("len").expect("len is a builtin"),
+        MontyValue::path(String::new()),
+        MontyValue::path("/mnt/data/file.txt".to_owned()),
+        MontyValue::file_handle(MontyFileHandle {
             path: "/f.bin".to_owned(),
             mode: "rb".parse().unwrap(),
             position: 0,
         }),
-        MontyObject::ClassInstance(Box::new(MontyClassInstance {
-            class_type: MontyClassType {
-                name: String::new(),
-                id: MontyUuid::from_u128(0),
-                host_defined: false,
-                is_dataclass: false,
-                attrs: DictPairs::default(),
-            },
-            instance_id: MontyUuid::from_u128(0),
-            attrs: DictPairs::from(Vec::new()),
-        })),
-        MontyObject::ClassInstance(Box::new(MontyClassInstance {
-            class_type: MontyClassType {
-                name: "Point".to_owned(),
-                id: MontyUuid::from_u128(0xDEAD_BEEF),
-                host_defined: true,
-                is_dataclass: true,
-                attrs: DictPairs::default(),
-            },
-            instance_id: MontyUuid::from_u128(0xFEED_FACE),
-            attrs: DictPairs::from(vec![
-                (MontyObject::String("x".to_owned()), MontyObject::Int(1)),
-                (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
-            ]),
-        })),
+        MontyValue::class_instance(
+            MontyValue::class_type(String::new(), MontyUuid::from_u128(0), false, false, []),
+            MontyUuid::from_u128(0),
+            [],
+        ),
+        MontyValue::class_instance(
+            MontyValue::class_type("Point", MontyUuid::from_u128(0xDEAD_BEEF), true, true, []),
+            MontyUuid::from_u128(0xFEED_FACE),
+            [
+                (MontyValue::string("x".to_owned()), MontyValue::int(1)),
+                (MontyValue::string("y".to_owned()), MontyValue::int(2)),
+            ],
+        ),
         // an instance whose class branch carries eager class attrs
-        MontyObject::ClassInstance(Box::new(MontyClassInstance {
-            class_type: MontyClassType {
-                name: "Square".to_owned(),
-                id: MontyUuid::from_u128(0xF02),
-                host_defined: true,
-                is_dataclass: false,
-                attrs: vec![
-                    (MontyObject::String("SIDES".to_owned()), MontyObject::Int(4)),
-                    (MontyObject::String(String::new()), MontyObject::None),
-                ]
-                .into(),
-            },
-            instance_id: MontyUuid::from_u128(0xF03),
-            attrs: DictPairs::from(vec![(MontyObject::String("size".to_owned()), MontyObject::Int(3))]),
-        })),
-        MontyObject::Function {
-            name: "f".to_owned(),
-            docstring: None,
-        },
-        MontyObject::Function {
-            name: "fetch".to_owned(),
-            docstring: Some(String::new()),
-        },
-        MontyObject::Repr(String::new()),
-        MontyObject::Repr("<unrepresentable>".to_owned()),
-        MontyObject::Cycle("[...]".to_owned()),
-        MontyObject::Cycle("{...}".to_owned()),
+        MontyValue::class_instance(
+            MontyValue::class_type(
+                "Square",
+                MontyUuid::from_u128(0xF02),
+                true,
+                false,
+                [
+                    (MontyValue::string("SIDES".to_owned()), MontyValue::int(4)),
+                    (MontyValue::string(String::new()), MontyValue::none()),
+                ],
+            ),
+            MontyUuid::from_u128(0xF03),
+            [(MontyValue::string("size".to_owned()), MontyValue::int(3))],
+        ),
+        MontyValue::function("f".to_owned(), None),
+        MontyValue::function("fetch".to_owned(), Some(String::new())),
+        MontyValue::repr(String::new()),
+        MontyValue::repr("<unrepresentable>".to_owned()),
+        MontyValue::cycle("[...]".to_owned()),
+        MontyValue::cycle("{...}".to_owned()),
     ]
 }
 
 /// Every corpus value as an arena, plus arenas only sharing can produce: a
 /// doubling ladder, a cycle leaf, and a class node shared by two instances.
 fn graphs() -> Vec<MontyGraph> {
-    let mut graphs: Vec<MontyGraph> = corpus().into_iter().map(|obj| MontyValue::from(obj).graph).collect();
+    let mut graphs: Vec<MontyGraph> = corpus().into_iter().map(|value| value.graph).collect();
     let mut ladder = MontyGraph::new();
     let mut x = ladder.push(MontyNode::Int(0));
     for _ in 0..4 {
@@ -501,13 +465,13 @@ fn generated_decoder_reads_hand_bytes() {
 #[test]
 fn hand_call_payloads_match_generated_encoding() {
     let args = vec![
-        MontyObject::Int(1),
-        MontyObject::String("arg".to_owned()),
-        MontyObject::List(vec![MontyObject::None]),
+        MontyValue::int(1),
+        MontyValue::string("arg".to_owned()),
+        MontyValue::list([MontyValue::none()]),
     ];
     let kwargs = vec![
-        (MontyObject::String("flag".to_owned()), MontyObject::Bool(true)),
-        (MontyObject::String("count".to_owned()), MontyObject::Int(3)),
+        (MontyValue::string("flag".to_owned()), MontyValue::bool(true)),
+        (MontyValue::string("count".to_owned()), MontyValue::int(3)),
     ];
 
     let call = CallArgs::from((args, kwargs));
@@ -543,7 +507,7 @@ fn hand_call_payloads_match_generated_encoding() {
 
     // `OsCall` is fully generated, but its arena is the hand-written
     // `WireArena` — check the embedding agrees with the oracle byte-for-byte.
-    let default = MontyValue::from(MontyObject::List(vec![MontyObject::None, MontyObject::Int(3)]));
+    let default = MontyValue::list([MontyValue::none(), MontyValue::int(3)]);
     let hand_os = os_call_to_proto(
         7,
         OsFunctionCall::Getenv(GetenvArgs {
@@ -979,7 +943,7 @@ fn out_of_range_temporal_values_are_rejected() {
 /// prost's generated decoder.
 #[test]
 fn unknown_fields_are_skipped() {
-    let graph = MontyValue::from(MontyObject::Int(42)).graph;
+    let graph = MontyValue::int(42).graph;
     let mut bytes = WireArena::new(graph.clone()).encode_to_vec();
     // append an unknown varint field: key = 99 << 3 | 0 = 792 (varint
     // 0x98 0x06), value 7
@@ -992,7 +956,7 @@ fn unknown_fields_are_skipped() {
 /// carrying message's root ids then catch the missing nodes).
 #[test]
 fn corrupt_frames_fail_cleanly() {
-    let graph = MontyValue::from(MontyObject::List(vec![MontyObject::Int(1)])).graph;
+    let graph = MontyValue::list([MontyValue::int(1)]).graph;
     let bytes = WireArena::new(graph.clone()).encode_to_vec();
     for cut in 1..bytes.len() {
         if let Ok(prefix) = decode_wire(&bytes[..cut]) {

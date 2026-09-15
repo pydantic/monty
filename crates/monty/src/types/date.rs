@@ -138,7 +138,7 @@ struct DateInitArgs {
 /// Classmethod implementation for `date.today()`.
 ///
 /// Issues a `DateToday` OS call with no arguments. The host should return
-/// `MontyObject::Date` directly.
+/// `MontyValue::Date` directly.
 pub(crate) fn class_today(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("date.today", heap)?;
     Ok(CallResult::OsCall(OsFunctionCall::DateToday))

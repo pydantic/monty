@@ -36,9 +36,8 @@ pub use crate::{
         PrintWriterCallback, check_print_collect_limit,
     },
     object::{
-        ConversionError, DictPairs, InvalidInputError, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
-        MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
-        MontyTimeDelta, MontyTimeZone, MontyType,
+        ConversionError, InvalidInputError, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyDate,
+        MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
     },
     os::{
         GetenvArgs, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
@@ -52,9 +51,6 @@ pub use crate::{
     run_options::{AssertMessageAnnotations, CompileOptions},
     type_checking::{TypeCheckState, TypeCheckingConfig, TypeCheckingFormat},
     uuid::MontyUuid,
-    value::{
-        ArgObjects, CallArgs, DEFAULT_EXPAND_BYTES, DEFAULT_EXPAND_DEPTH, ExpandError, ExpandLimits, MontyValue,
-        NamedValues, ValueRef,
-    },
+    value::{CallArgs, MontyValue, NamedValues, ValueRef},
     virtual_path::{normalize_virtual_path, validate_cwd},
 };

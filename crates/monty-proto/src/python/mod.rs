@@ -22,4 +22,4 @@ pub use class_instance::{InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy
 pub use convert::PyMontyFileHandle;
 pub use decode::{DecodedArena, monty_to_py};
 pub use encode::{GraphEncoder, py_to_monty, py_to_monty_value};
-pub use exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_object};
+pub use exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_node};

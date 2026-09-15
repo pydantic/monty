@@ -13,7 +13,7 @@ use std::{mem, ops::ControlFlow, sync::Arc};
 
 use ahash::AHashMap;
 use monty_types::{
-    CallArgs, ExcType, HostClock, MontyException, MontyGraph, MontyObject, MontyUuid, MontyValue, NamedValues, NodeId,
+    CallArgs, ExcType, HostClock, MontyException, MontyGraph, MontyUuid, MontyValue, NamedValues, NodeId,
     OsFunctionCall, PrintWriter, ResourceTracker,
 };
 use ruff_python_ast::token::TokenKind;
@@ -28,7 +28,7 @@ use crate::{
     intern::Interns,
     name_map::NameMap,
     object_bridge::{MontyGraphExt, MontyValueExt},
-    run::{CompileOptions, DEFAULT_CWD, Executor, ReplSession, default_clock, expand_value},
+    run::{CompileOptions, DEFAULT_CWD, Executor, ReplSession, default_clock},
     run_progress::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
         resume_lookup, resume_with_result,
@@ -202,7 +202,7 @@ impl MontyRepl {
         if code.is_empty() {
             return Ok(ReplProgress::Complete {
                 repl: this,
-                value: MontyObject::None.into(),
+                value: MontyValue::none(),
             });
         }
 
@@ -287,9 +287,9 @@ impl MontyRepl {
         code: &str,
         inputs: impl Into<NamedValues>,
         print: PrintWriter<'_>,
-    ) -> Result<MontyObject, MontyException> {
+    ) -> Result<MontyValue, MontyException> {
         if code.is_empty() {
-            return Ok(MontyObject::None);
+            return Ok(MontyValue::none());
         }
 
         let NamedValues {
@@ -370,7 +370,7 @@ impl MontyRepl {
         name: &str,
         args: impl Into<CallArgs>,
         print: PrintWriter<'_>,
-    ) -> Result<MontyObject, MontyException> {
+    ) -> Result<MontyValue, MontyException> {
         let args: CallArgs = args.into();
         let Some(name_id) = self.interns.get_string_id_by_name(name) else {
             return Err(RunError::from(ExcType::name_error(name))
@@ -431,7 +431,7 @@ impl MontyRepl {
                     let mut run_result = vm.run_module();
                     loop {
                         run_result = match run_result {
-                            Ok(FrameExit::Return(value)) => break expand_value(&MontyValue::export(value, vm)),
+                            Ok(FrameExit::Return(value)) => break Ok(MontyValue::export(value, vm)),
                             // No host answers inside a host-driven call, so the
                             // lookup is `Undefined`: `hasattr()` is False,
                             // `getattr()` yields its default.

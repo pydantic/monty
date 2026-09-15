@@ -4,8 +4,9 @@
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeDelta, Timelike};
 
 use crate::{
-    object::{MontyDate, MontyDateTime, MontyObject},
+    object::{MontyDate, MontyDateTime},
     os::OsFunctionCall,
+    value::MontyValue,
 };
 
 /// Where `date.today()` and `datetime.now()` read the time under standard
@@ -51,12 +52,12 @@ impl HostClock {
     /// every OS call through here — as the CLI does — pays nothing for the
     /// filesystem calls, which are the overwhelming majority.
     #[must_use]
-    pub fn resolve(self, call: &OsFunctionCall) -> Option<MontyObject> {
+    pub fn resolve(self, call: &OsFunctionCall) -> Option<MontyValue> {
         match call {
             OsFunctionCall::DateToday => {
                 let (utc, local_offset_seconds) = self.instant()?;
                 let local = shift(utc, local_offset_seconds)?;
-                Some(MontyObject::Date(MontyDate {
+                Some(MontyValue::date(MontyDate {
                     year: local.year(),
                     month: u8::try_from(local.month()).ok()?,
                     day: u8::try_from(local.day()).ok()?,
@@ -68,7 +69,7 @@ impl HostClock {
                 let (utc, local_offset_seconds) = self.instant()?;
                 let offset_seconds = tz.as_ref().map_or(local_offset_seconds, |tz| tz.offset_seconds);
                 let local = shift(utc, offset_seconds)?;
-                Some(MontyObject::DateTime(MontyDateTime {
+                Some(MontyValue::datetime(MontyDateTime {
                     year: local.year(),
                     month: u8::try_from(local.month()).ok()?,
                     day: u8::try_from(local.day()).ok()?,

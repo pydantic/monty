@@ -6,7 +6,7 @@
 use std::borrow::Cow;
 
 use monty_types::{
-    FileMode, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
+    FileMode, MontyDateTime, MontyFileHandle, MontyNode, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
     StringRepr,
 };
 use pyo3::{
@@ -26,7 +26,7 @@ use pyo3::{
 /// the latter is spoofable and churns across Python versions (e.g. `pathlib` paths
 /// report `pathlib._local` on 3.13). Every `pathlib` path class collapses to
 /// [`MontyType::Path`]. Returns `None` for classes Monty does not model, which the
-/// caller then represents as a [`MontyObject::Function`].
+/// caller then represents as a function node.
 pub(super) fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option<MontyType>> {
     let py = ty.py();
     for (obj, t) in round_trip_type_table(py)? {
@@ -109,7 +109,7 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
         ]
         .into_iter()
         .filter(|t| host_has_type(py, t))
-        .map(|t| Ok((type_object_to_py(py, t.clone())?, t)))
+        .map(|t| Ok((type_object_to_py(py, &t)?, t)))
         .collect()
     })
 }
@@ -157,12 +157,12 @@ pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
 /// The import path can differ from [`MontyType`]'s `Display` (io types show `_io.*` but
 /// live in `io`). Unmodeled types fall through to `builtins` and raise `AttributeError`.
 /// Each modeled type's host class is cached in its own `PyOnceLock` (imported once).
-pub(super) fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
+pub(super) fn type_object_to_py(py: Python<'_>, t: &MontyType) -> PyResult<Py<PyAny>> {
     // A type this host's Python is too old to define has no object to hand back.
     // Say which type that was, rather than leaving the arm's import to raise a
     // bare `AttributeError` naming neither. Same predicate as the filter in
     // `round_trip_type_table`, so both directions agree on what this host holds.
-    if !host_has_type(py, &t) {
+    if !host_has_type(py, t) {
         return Err(PyTypeError::new_err(format!(
             "Cannot convert {t} to a host type: this Python does not define it"
         )));
@@ -227,12 +227,6 @@ pub(super) fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyA
         // the singletons (`type(None)` / `type(...)`).
         MontyType::NoneType => Ok(py.None().bind(py).get_type().into_any().unbind()),
         MontyType::Ellipsis => Ok(py.Ellipsis().bind(py).get_type().into_any().unbind()),
-        // A class type reaching here was not resolvable through the store
-        // (`monty_to_py` handles the registered-host-class path first).
-        MontyType::Instance(class_type) => Err(PyValueError::new_err(format!(
-            "cannot convert class '{}' to a host type object",
-            class_type.name
-        ))),
         _ => import_builtins(py)?.getattr(py, t.to_string()),
     }
 }
@@ -394,7 +388,7 @@ pub(super) fn monty_datetime_to_py(py: Python<'_>, datetime: &MontyDateTime) -> 
 /// the explicit-vs-auto-generated name distinction. For other tzinfo types
 /// (e.g. `zoneinfo.ZoneInfo`), falls back to the standard `utcoffset()`/`tzname()`
 /// protocol on the datetime itself.
-pub(super) fn py_datetime_to_monty(datetime: &Bound<'_, PyDateTime>) -> PyResult<MontyObject> {
+pub(super) fn py_datetime_to_monty(datetime: &Bound<'_, PyDateTime>) -> PyResult<MontyNode> {
     let (offset_seconds, timezone_name) = if let Some(tzinfo) = datetime.get_tzinfo() {
         if tzinfo.is_instance(get_datetime_timezone_type(tzinfo.py())?)? {
             // datetime.timezone — use __getinitargs__ for round-trip fidelity
@@ -408,7 +402,7 @@ pub(super) fn py_datetime_to_monty(datetime: &Bound<'_, PyDateTime>) -> PyResult
         (None, None)
     };
 
-    Ok(MontyObject::DateTime(MontyDateTime {
+    Ok(MontyNode::DateTime(MontyDateTime {
         year: datetime.get_year(),
         month: datetime.get_month(),
         day: datetime.get_day(),
@@ -427,7 +421,7 @@ pub(super) fn py_datetime_to_monty(datetime: &Bound<'_, PyDateTime>) -> PyResult
 /// `datetime` only a `datetime.timezone` is accepted: CPython passes `None` to
 /// `tzinfo.utcoffset(None)`, and a zone that needs a date (`ZoneInfo`) returns
 /// `None` there rather than a usable offset.
-pub(super) fn py_time_to_monty(time: &Bound<'_, PyTime>) -> PyResult<MontyObject> {
+pub(super) fn py_time_to_monty(time: &Bound<'_, PyTime>) -> PyResult<MontyNode> {
     let (offset_seconds, timezone_name) = match time.get_tzinfo() {
         Some(tzinfo) if tzinfo.is_instance(get_datetime_timezone_type(tzinfo.py())?)? => {
             let timezone = py_timezone_to_monty(&tzinfo)?;
@@ -442,7 +436,7 @@ pub(super) fn py_time_to_monty(time: &Bound<'_, PyTime>) -> PyResult<MontyObject
         None => (None, None),
     };
 
-    Ok(MontyObject::Time(MontyTime {
+    Ok(MontyNode::Time(MontyTime {
         hour: time.get_hour(),
         minute: time.get_minute(),
         second: time.get_second(),
@@ -530,7 +524,7 @@ fn get_pure_path(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     PUREPATH.import(py, "pathlib", "PurePath")
 }
 
-/// Host-side mirror of [`MontyObject::FileHandle`]: a thin PyO3 wrapper holding
+/// Host-side mirror of a [`MontyFileHandle`] value: a thin PyO3 wrapper holding
 /// the same [`MontyFileHandle`] value the interpreter does.
 ///
 /// A Python host sees one when a sandbox-opened file flows back across the

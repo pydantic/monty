@@ -797,7 +797,7 @@ impl Checkout {
         match outcome {
             MountCallOutcome::Handled(result) => {
                 let value = match result {
-                    Ok(obj) => ResumeValue::Return(obj.into()),
+                    Ok(obj) => ResumeValue::Return(obj),
                     Err(err) => ResumeValue::Error(err.into_exception()),
                 };
                 match self.resume(value, &mut *on_print).await {

@@ -1,33 +1,39 @@
 //! Values on top of the arena: [`MontyValue`] (an owned arena plus its root),
-//! [`ValueRef`] (a borrowed root inside an arena), the message carriers
-//! [`CallArgs`] and [`NamedValues`], and the conversions to and from the
-//! [`MontyObject`] tree.
+//! [`ValueRef`] (a borrowed root inside an arena), and the message carriers
+//! [`CallArgs`] and [`NamedValues`].
 //!
-//! Hosts build inputs as [`MontyObject`] trees and convert with `.into()`;
-//! results are read back with [`ValueRef::into_object`], which expands
-//! sharing and is therefore capped by [`ExpandLimits`]. Native converters
-//! (the Python and JavaScript bindings) read the arena directly and never expand.
+//! Hosts build inputs with the [`MontyValue`] constructors (`MontyValue::int`,
+//! `MontyValue::list`, ...) and read results through [`ValueRef`]: the root
+//! node, typed accessors, structural equality and the Python `repr()`. Nothing
+//! here expands sharing, so every operation is linear in the arena.
 
-use std::{error::Error, fmt};
+use std::{
+    collections::HashSet,
+    fmt::{self, Write},
+};
+
+use num_bigint::BigInt;
+use num_traits::{ToPrimitive, Zero};
 
 use crate::{
     args::PushValue,
+    builtins::BuiltinsFunctions,
+    exceptions::ExcType,
+    format::{FormatFloat, StringRepr, bytes_repr_fmt, format_offset_timedelta_repr, string_repr_fmt},
     graph::{ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
-    object::{DictPairs, MontyClassInstance, MontyClassType, MontyObject, MontyType},
+    object::{
+        ConversionError, MontyDate, MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
+    },
+    uuid::MontyUuid,
 };
-
-/// Default cap on a tree expanded from an arena: 1 GiB of decoded objects.
-pub const DEFAULT_EXPAND_BYTES: usize = 1 << 30;
-/// Default cap on the nesting depth of an expanded tree; [`MontyObject`]'s
-/// drop, equality and serialization are recursive, so depth bounds stack use.
-pub const DEFAULT_EXPAND_DEPTH: usize = 200;
 
 /// One owned, self-contained value: an arena plus the id of its root.
 ///
 /// The single-value form carried by `Complete`, resume results, name lookups
-/// and `os.getenv` defaults. Converting a [`MontyObject`] with `.into()`
-/// yields one; [`MontyValue::into_object`] converts back.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// and `os.getenv` defaults, and the value hosts construct inputs with. Two
+/// values are equal when they are structurally equal as Python values,
+/// whatever the layout of their arenas.
+#[derive(Debug, Clone, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MontyValue {
     /// The arena holding the value and everything it references.
     pub graph: MontyGraph,
@@ -53,6 +59,244 @@ impl MontyValue {
         Self { graph, root }
     }
 
+    /// Python `None`.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::leaf(MontyNode::None)
+    }
+
+    /// Python `Ellipsis`.
+    #[must_use]
+    pub fn ellipsis() -> Self {
+        Self::leaf(MontyNode::Ellipsis)
+    }
+
+    /// Python `NotImplemented`.
+    #[must_use]
+    pub fn not_implemented() -> Self {
+        Self::leaf(MontyNode::NotImplemented)
+    }
+
+    /// A `bool`.
+    #[must_use]
+    pub fn bool(value: bool) -> Self {
+        Self::leaf(MontyNode::Bool(value))
+    }
+
+    /// An `int` that fits in 64 bits.
+    #[must_use]
+    pub fn int(value: i64) -> Self {
+        Self::leaf(MontyNode::Int(value))
+    }
+
+    /// An `int` of any size.
+    #[must_use]
+    pub fn bigint(value: BigInt) -> Self {
+        Self::leaf(MontyNode::BigInt(value))
+    }
+
+    /// A `float`.
+    #[must_use]
+    pub fn float(value: f64) -> Self {
+        Self::leaf(MontyNode::Float(value))
+    }
+
+    /// A `str`.
+    #[must_use]
+    pub fn string(value: impl Into<String>) -> Self {
+        Self::leaf(MontyNode::String(value.into()))
+    }
+
+    /// A `bytes`.
+    #[must_use]
+    pub fn bytes(value: impl Into<Vec<u8>>) -> Self {
+        Self::leaf(MontyNode::Bytes(value.into()))
+    }
+
+    /// A `pathlib.Path`, always a virtual POSIX path.
+    #[must_use]
+    pub fn path(value: impl Into<String>) -> Self {
+        Self::leaf(MontyNode::Path(value.into()))
+    }
+
+    /// A `datetime.date`.
+    #[must_use]
+    pub fn date(value: MontyDate) -> Self {
+        Self::leaf(MontyNode::Date(value))
+    }
+
+    /// A `datetime.datetime`.
+    #[must_use]
+    pub fn datetime(value: MontyDateTime) -> Self {
+        Self::leaf(MontyNode::DateTime(value))
+    }
+
+    /// A `datetime.time`.
+    #[must_use]
+    pub fn time(value: MontyTime) -> Self {
+        Self::leaf(MontyNode::Time(value))
+    }
+
+    /// A `datetime.timedelta`.
+    #[must_use]
+    pub fn timedelta(value: MontyTimeDelta) -> Self {
+        Self::leaf(MontyNode::TimeDelta(value))
+    }
+
+    /// A `datetime.timezone`.
+    #[must_use]
+    pub fn timezone(value: MontyTimeZone) -> Self {
+        Self::leaf(MontyNode::TimeZone(value))
+    }
+
+    /// An exception instance as a value (not raised), with its message.
+    #[must_use]
+    pub fn exception(exc_type: ExcType, arg: Option<String>) -> Self {
+        Self::leaf(MontyNode::Exception { exc_type, arg })
+    }
+
+    /// A host function the sandbox calls back by `name`.
+    #[must_use]
+    pub fn function(name: impl Into<String>, docstring: Option<String>) -> Self {
+        Self::leaf(MontyNode::Function {
+            name: name.into(),
+            docstring,
+        })
+    }
+
+    /// A builtin function such as `len`.
+    #[must_use]
+    pub fn builtin_function(function: BuiltinsFunctions) -> Self {
+        Self::leaf(MontyNode::BuiltinFunction(function))
+    }
+
+    /// A builtin type object such as `int`.
+    #[must_use]
+    pub fn type_object(value: MontyType) -> Self {
+        Self::leaf(MontyNode::Type(value))
+    }
+
+    /// An open file object, as the result of an `open()` OS call.
+    #[must_use]
+    pub fn file_handle(value: MontyFileHandle) -> Self {
+        Self::leaf(MontyNode::FileHandle(value))
+    }
+
+    /// Output-only: a value's `repr()` where no faithful representation exists.
+    #[must_use]
+    pub fn repr(value: impl Into<String>) -> Self {
+        Self::leaf(MontyNode::Repr(value.into()))
+    }
+
+    /// Output-only: a reference back to an enclosing container, as its placeholder.
+    #[must_use]
+    pub fn cycle(placeholder: impl Into<String>) -> Self {
+        Self::leaf(MontyNode::Cycle(placeholder.into()))
+    }
+
+    /// A `list`.
+    #[must_use]
+    pub fn list(items: impl IntoIterator<Item = Self>) -> Self {
+        Self::container(items, MontyNode::List)
+    }
+
+    /// A `tuple`.
+    #[must_use]
+    pub fn tuple(items: impl IntoIterator<Item = Self>) -> Self {
+        Self::container(items, MontyNode::Tuple)
+    }
+
+    /// A `set`.
+    #[must_use]
+    pub fn set(items: impl IntoIterator<Item = Self>) -> Self {
+        Self::container(items, MontyNode::Set)
+    }
+
+    /// A `frozenset`.
+    #[must_use]
+    pub fn frozenset(items: impl IntoIterator<Item = Self>) -> Self {
+        Self::container(items, MontyNode::FrozenSet)
+    }
+
+    /// A `dict` from `(key, value)` pairs, in insertion order.
+    #[must_use]
+    pub fn dict(pairs: impl IntoIterator<Item = (Self, Self)>) -> Self {
+        let mut graph = MontyGraph::new();
+        let pairs = push_pairs(pairs, &mut graph);
+        let root = graph.push(MontyNode::Dict(pairs));
+        Self { graph, root }
+    }
+
+    /// A namedtuple: `type_name(field=value, ...)`.
+    #[must_use]
+    pub fn named_tuple(
+        type_name: impl Into<String>,
+        field_names: impl IntoIterator<Item = impl Into<String>>,
+        values: impl IntoIterator<Item = Self>,
+    ) -> Self {
+        let type_name = type_name.into();
+        let field_names = field_names.into_iter().map(Into::into).collect();
+        Self::container(values, |values| MontyNode::NamedTuple {
+            type_name,
+            field_names,
+            values,
+        })
+    }
+
+    /// A non-builtin class type object with its eager class attrs.
+    ///
+    /// `id` is generated by whichever side defined the class (a host uuid4,
+    /// or a worker uuid for sandbox classes); the sandbox keeps one type
+    /// object per id and routes instantiation and classmethod calls by it.
+    #[must_use]
+    pub fn class_type(
+        name: impl Into<String>,
+        id: MontyUuid,
+        host_defined: bool,
+        is_dataclass: bool,
+        attrs: impl IntoIterator<Item = (Self, Self)>,
+    ) -> Self {
+        let mut graph = MontyGraph::new();
+        let attrs = push_pairs(attrs, &mut graph);
+        let root = graph.push(MontyNode::ClassType(Box::new(ClassTypeNode {
+            name: name.into(),
+            id,
+            host_defined,
+            is_dataclass,
+            attrs,
+        })));
+        Self { graph, root }
+    }
+
+    /// An instance of `class_type` (a [`class_type`](Self::class_type) value)
+    /// with its eager attrs, identified by `instance_id`.
+    ///
+    /// # Panics
+    /// If `class_type` is not a class type object.
+    #[must_use]
+    pub fn class_instance(
+        class_type: Self,
+        instance_id: MontyUuid,
+        attrs: impl IntoIterator<Item = (Self, Self)>,
+    ) -> Self {
+        let mut graph = MontyGraph::new();
+        let class_type = class_type.push_into(&mut graph);
+        let attrs = push_pairs(attrs, &mut graph);
+        let root = graph.push(MontyNode::ClassInstance {
+            class_type,
+            instance_id,
+            attrs,
+        });
+        Self { graph, root }
+    }
+
+    /// Resolves a builtin function by its Python name (e.g. `"len"`), the
+    /// name its `Display` renders.
+    #[must_use]
+    pub fn builtin_function_from_name(name: &str) -> Option<Self> {
+        name.parse::<BuiltinsFunctions>().ok().map(Self::builtin_function)
+    }
+
     /// Borrows the root inside its arena.
     #[must_use]
     pub fn as_ref(&self) -> ValueRef<'_> {
@@ -68,35 +312,43 @@ impl MontyValue {
         self.graph.node(self.root)
     }
 
-    /// Expands the value into a [`MontyObject`] tree under the default [`ExpandLimits`].
-    pub fn into_object(&self) -> Result<MontyObject, ExpandError> {
-        self.as_ref().into_object()
+    /// The Python `repr()` of the value.
+    #[must_use]
+    pub fn py_repr(&self) -> String {
+        self.as_ref().py_repr()
     }
 
-    /// Expands the value into a [`MontyObject`] tree under `limits`.
-    pub fn into_object_with(&self, limits: ExpandLimits) -> Result<MontyObject, ExpandError> {
-        self.as_ref().into_object_with(limits)
+    /// Whether the value is truthy under Python's rules; see [`ValueRef::is_truthy`].
+    #[must_use]
+    pub fn is_truthy(&self) -> bool {
+        self.as_ref().is_truthy()
     }
-}
 
-impl PartialEq<MontyObject> for MontyValue {
-    /// Equal when the value expands (under the default limits) to `other`.
-    fn eq(&self, other: &MontyObject) -> bool {
-        self.into_object().is_ok_and(|object| object == *other)
+    /// The Python type name of the value, e.g. `"list"`.
+    #[must_use]
+    pub fn type_name(&self) -> &str {
+        self.graph.type_name(self.root)
     }
-}
 
-impl PartialEq<MontyValue> for MontyObject {
-    fn eq(&self, other: &MontyValue) -> bool {
-        other == self
-    }
-}
-
-impl From<MontyObject> for MontyValue {
-    fn from(object: MontyObject) -> Self {
+    /// Pushes every item, then the container node holding their ids.
+    fn container(items: impl IntoIterator<Item = Self>, make: impl FnOnce(Vec<NodeId>) -> MontyNode) -> Self {
         let mut graph = MontyGraph::new();
-        let root = object.push_into(&mut graph);
+        let ids = items.into_iter().map(|item| item.push_into(&mut graph)).collect();
+        let root = graph.push(make(ids));
         Self { graph, root }
+    }
+}
+
+impl PartialEq for MontyValue {
+    /// Structural equality as Python values, independent of arena layout.
+    fn eq(&self, other: &Self) -> bool {
+        self.as_ref() == other.as_ref()
+    }
+}
+
+impl PartialEq<ValueRef<'_>> for MontyValue {
+    fn eq(&self, other: &ValueRef<'_>) -> bool {
+        self.as_ref() == *other
     }
 }
 
@@ -107,8 +359,41 @@ impl From<MontyNode> for MontyValue {
 }
 
 impl fmt::Display for MontyValue {
+    /// The Python `str()` of the value: text as is, everything else its `repr()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.as_ref().fmt(f)
+    }
+}
+
+impl TryFrom<&MontyValue> for i64 {
+    type Error = ConversionError;
+
+    fn try_from(value: &MontyValue) -> Result<Self, ConversionError> {
+        value.as_ref().try_into()
+    }
+}
+
+impl TryFrom<&MontyValue> for f64 {
+    type Error = ConversionError;
+
+    fn try_from(value: &MontyValue) -> Result<Self, ConversionError> {
+        value.as_ref().try_into()
+    }
+}
+
+impl TryFrom<&MontyValue> for String {
+    type Error = ConversionError;
+
+    fn try_from(value: &MontyValue) -> Result<Self, ConversionError> {
+        value.as_ref().try_into()
+    }
+}
+
+impl TryFrom<&MontyValue> for bool {
+    type Error = ConversionError;
+
+    fn try_from(value: &MontyValue) -> Result<Self, ConversionError> {
+        value.as_ref().try_into()
     }
 }
 
@@ -144,81 +429,477 @@ impl<'a> ValueRef<'a> {
         MontyValue { graph, root }
     }
 
-    /// Expands the value into a [`MontyObject`] tree under the default [`ExpandLimits`].
-    pub fn into_object(&self) -> Result<MontyObject, ExpandError> {
-        self.into_object_with(ExpandLimits::default())
+    /// The child at `id` of the same arena.
+    #[must_use]
+    pub fn child(&self, id: NodeId) -> Self {
+        self.graph.value(id)
     }
 
-    /// Expands the value into a [`MontyObject`] tree.
-    ///
-    /// A sub-object referenced twice becomes two copies, so the result can be
-    /// much larger than the arena: `limits` caps its bytes and depth.
-    pub fn into_object_with(&self, limits: ExpandLimits) -> Result<MontyObject, ExpandError> {
-        let mut expander = Expander {
-            graph: self.graph,
-            remaining: limits.max_bytes,
-            limits,
+    /// The items of a list, tuple, set, frozenset or namedtuple; `None` for
+    /// any other value.
+    #[must_use]
+    pub fn items(&self) -> Option<Vec<Self>> {
+        match self.node() {
+            MontyNode::List(ids)
+            | MontyNode::Tuple(ids)
+            | MontyNode::Set(ids)
+            | MontyNode::FrozenSet(ids)
+            | MontyNode::NamedTuple { values: ids, .. } => Some(ids.iter().map(|id| self.child(*id)).collect()),
+            _ => None,
+        }
+    }
+
+    /// The `(key, value)` pairs of a dict, or the eager attrs of a class
+    /// instance or class type object; `None` for any other value.
+    #[must_use]
+    pub fn pairs(&self) -> Option<Vec<(Self, Self)>> {
+        let pairs = match self.node() {
+            MontyNode::Dict(pairs) | MontyNode::ClassInstance { attrs: pairs, .. } => pairs,
+            MontyNode::ClassType(class) => &class.attrs,
+            _ => return None,
         };
-        expander.expand(self.id, 0)
+        Some(
+            pairs
+                .iter()
+                .map(|(key, value)| (self.child(*key), self.child(*value)))
+                .collect(),
+        )
+    }
+
+    /// The value as an `int`, if it fits in 64 bits.
+    #[must_use]
+    pub fn as_int(&self) -> Option<i64> {
+        match self.node() {
+            MontyNode::Int(value) => Some(*value),
+            MontyNode::BigInt(value) => value.to_i64(),
+            _ => None,
+        }
+    }
+
+    /// The value as a `str`.
+    #[must_use]
+    pub fn as_str(&self) -> Option<&'a str> {
+        match self.node() {
+            MontyNode::String(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// The value as a `bool`.
+    #[must_use]
+    pub fn as_bool(&self) -> Option<bool> {
+        match self.node() {
+            MontyNode::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// The value as a `float`; an `int` converts as Python's `float()` does.
+    #[must_use]
+    pub fn as_float(&self) -> Option<f64> {
+        match self.node() {
+            MontyNode::Float(value) => Some(*value),
+            MontyNode::Int(value) => Some(*value as f64),
+            _ => None,
+        }
+    }
+
+    /// The Python `repr()` of the value.
+    ///
+    /// # Panics
+    /// Could panic if out of memory.
+    #[must_use]
+    pub fn py_repr(&self) -> String {
+        let mut s = String::new();
+        self.repr_fmt(&mut s).expect("Unable to format repr display value");
+        s
+    }
+
+    /// Whether the value is truthy under Python's rules: `None`, `False`,
+    /// zero and empty containers are falsy; everything else is truthy.
+    #[must_use]
+    pub fn is_truthy(&self) -> bool {
+        match self.node() {
+            MontyNode::None => false,
+            MontyNode::Bool(b) => *b,
+            MontyNode::Int(i) => *i != 0,
+            MontyNode::BigInt(bi) => !bi.is_zero(),
+            MontyNode::Float(f) => *f != 0.0,
+            MontyNode::String(s) => !s.is_empty(),
+            MontyNode::Bytes(b) => !b.is_empty(),
+            MontyNode::List(items)
+            | MontyNode::Tuple(items)
+            | MontyNode::Set(items)
+            | MontyNode::FrozenSet(items)
+            | MontyNode::NamedTuple { values: items, .. } => !items.is_empty(),
+            MontyNode::Dict(pairs) => !pairs.is_empty(),
+            MontyNode::TimeDelta(delta) => delta.days != 0 || delta.seconds != 0 || delta.microseconds != 0,
+            _ => true,
+        }
+    }
+
+    /// Writes the comma-separated `repr()`s of the nodes at `ids`.
+    fn repr_items(&self, f: &mut impl Write, ids: &[NodeId]) -> fmt::Result {
+        for (i, id) in ids.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            self.child(*id).repr_fmt(f)?;
+        }
+        Ok(())
+    }
+
+    /// Writes the Python `repr()`, recursing into containers.
+    fn repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
+        match self.node() {
+            MontyNode::Ellipsis => f.write_str("Ellipsis"),
+            MontyNode::NotImplemented => f.write_str("NotImplemented"),
+            MontyNode::None => f.write_str("None"),
+            MontyNode::Bool(true) => f.write_str("True"),
+            MontyNode::Bool(false) => f.write_str("False"),
+            MontyNode::Int(v) => write!(f, "{v}"),
+            MontyNode::BigInt(v) => write!(f, "{v}"),
+            MontyNode::Float(v) => write!(f, "{}", FormatFloat(*v)),
+            MontyNode::String(s) => string_repr_fmt(s, f),
+            MontyNode::Bytes(b) => bytes_repr_fmt(b, f),
+            MontyNode::List(ids) => {
+                f.write_char('[')?;
+                self.repr_items(f, ids)?;
+                f.write_char(']')
+            }
+            MontyNode::Tuple(ids) => {
+                f.write_char('(')?;
+                self.repr_items(f, ids)?;
+                f.write_char(')')
+            }
+            MontyNode::NamedTuple {
+                type_name,
+                field_names,
+                values,
+            } => {
+                // type_name(field1=value1, field2=value2, ...)
+                f.write_str(type_name)?;
+                f.write_char('(')?;
+                for (i, (name, id)) in field_names.iter().zip(values).enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    f.write_str(name)?;
+                    f.write_char('=')?;
+                    self.child(*id).repr_fmt(f)?;
+                }
+                f.write_char(')')
+            }
+            MontyNode::Dict(pairs) => {
+                f.write_char('{')?;
+                for (i, (key, value)) in pairs.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    self.child(*key).repr_fmt(f)?;
+                    f.write_str(": ")?;
+                    self.child(*value).repr_fmt(f)?;
+                }
+                f.write_char('}')
+            }
+            MontyNode::Set(ids) => {
+                if ids.is_empty() {
+                    f.write_str("set()")
+                } else {
+                    f.write_char('{')?;
+                    self.repr_items(f, ids)?;
+                    f.write_char('}')
+                }
+            }
+            MontyNode::FrozenSet(ids) => {
+                f.write_str("frozenset(")?;
+                if !ids.is_empty() {
+                    f.write_char('{')?;
+                    self.repr_items(f, ids)?;
+                    f.write_char('}')?;
+                }
+                f.write_char(')')
+            }
+            MontyNode::Date(date) => write!(f, "datetime.date({}, {}, {})", date.year, date.month, date.day),
+            MontyNode::DateTime(datetime) => {
+                write!(
+                    f,
+                    "datetime.datetime({}, {}, {}, {}, {}",
+                    datetime.year, datetime.month, datetime.day, datetime.hour, datetime.minute
+                )?;
+                if datetime.second != 0 || datetime.microsecond != 0 {
+                    write!(f, ", {}", datetime.second)?;
+                }
+                if datetime.microsecond != 0 {
+                    write!(f, ", {}", datetime.microsecond)?;
+                }
+                if let Some(offset) = datetime.offset_seconds {
+                    tzinfo_repr_fmt(f, offset, datetime.timezone_name.as_deref())?;
+                }
+                f.write_char(')')
+            }
+            MontyNode::Time(time) => {
+                write!(f, "datetime.time({}, {}", time.hour, time.minute)?;
+                // CPython prints `second` whenever either sub-minute field is
+                // set, so `time(1, 2, 0, 4)` reprs as `(1, 2, 0, 4)`.
+                if time.second != 0 || time.microsecond != 0 {
+                    write!(f, ", {}", time.second)?;
+                }
+                if time.microsecond != 0 {
+                    write!(f, ", {}", time.microsecond)?;
+                }
+                if let Some(offset) = time.offset_seconds {
+                    tzinfo_repr_fmt(f, offset, time.timezone_name.as_deref())?;
+                }
+                if time.fold != 0 {
+                    write!(f, ", fold={}", time.fold)?;
+                }
+                f.write_char(')')
+            }
+            MontyNode::TimeDelta(delta) => {
+                if delta.days == 0 && delta.seconds == 0 && delta.microseconds == 0 {
+                    return f.write_str("datetime.timedelta(0)");
+                }
+                f.write_str("datetime.timedelta(")?;
+                let mut first = true;
+                if delta.days != 0 {
+                    write!(f, "days={}", delta.days)?;
+                    first = false;
+                }
+                if delta.seconds != 0 {
+                    if !first {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "seconds={}", delta.seconds)?;
+                    first = false;
+                }
+                if delta.microseconds != 0 {
+                    if !first {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "microseconds={}", delta.microseconds)?;
+                }
+                f.write_char(')')
+            }
+            MontyNode::TimeZone(tz) => {
+                if tz.offset_seconds == 0 && tz.name.is_none() {
+                    return f.write_str("datetime.timezone.utc");
+                }
+                let timedelta_repr = format_offset_timedelta_repr(tz.offset_seconds);
+                write!(f, "datetime.timezone({timedelta_repr}")?;
+                if let Some(name) = &tz.name {
+                    write!(f, ", {}", StringRepr(name))?;
+                }
+                f.write_char(')')
+            }
+            MontyNode::Exception { exc_type, arg } => {
+                let type_str: &'static str = exc_type.into();
+                write!(f, "{type_str}(")?;
+                if let Some(arg) = arg {
+                    string_repr_fmt(arg, f)?;
+                }
+                f.write_char(')')
+            }
+            MontyNode::ClassInstance { attrs, .. } => {
+                // ClassName(attr1=value1, attr2=value2, ...) over the eager
+                // attrs in order; a non-string key renders via repr rather
+                // than panicking, since inputs are host-built
+                f.write_str(self.type_name())?;
+                f.write_char('(')?;
+                for (i, (key, value)) in attrs.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    match self.graph.node(*key) {
+                        MontyNode::String(key) => f.write_str(key)?,
+                        _ => self.child(*key).repr_fmt(f)?,
+                    }
+                    f.write_char('=')?;
+                    self.child(*value).repr_fmt(f)?;
+                }
+                f.write_char(')')
+            }
+            MontyNode::Path(p) => write!(f, "PosixPath('{p}')"),
+            MontyNode::FileHandle(handle) => write!(f, "{handle}"),
+            MontyNode::Type(t) => write!(f, "<class '{t}'>"),
+            MontyNode::ClassType(class) => write!(f, "<class '{}'>", class.name),
+            MontyNode::BuiltinFunction(func) => write!(f, "<built-in function {func}>"),
+            MontyNode::Function { name, .. } => write!(f, "<function '{name}' external>"),
+            MontyNode::Repr(s) => write!(f, "Repr({})", StringRepr(s)),
+            MontyNode::Cycle(placeholder) => f.write_str(placeholder),
+        }
+    }
+}
+
+impl PartialEq for ValueRef<'_> {
+    /// Structural equality as Python values: an `int` equals the same
+    /// `BigInt`, a namedtuple equals a tuple of its values, floats compare
+    /// bit-for-bit (so `NaN` round-trips equal), and a sub-object shared in
+    /// one arena equals its copies in another. Linear in the arenas: each
+    /// pair of nodes is compared once.
+    fn eq(&self, other: &Self) -> bool {
+        let mut pending = vec![(self.id, other.id)];
+        let mut seen = HashSet::new();
+        while let Some((a, b)) = pending.pop() {
+            if !seen.insert((a, b)) {
+                continue;
+            }
+            if !nodes_eq(self.graph.node(a), other.graph.node(b), &mut pending) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+impl PartialEq<MontyValue> for ValueRef<'_> {
+    fn eq(&self, other: &MontyValue) -> bool {
+        *self == other.as_ref()
     }
 }
 
 impl fmt::Display for ValueRef<'_> {
-    /// The Python `repr()` of the value, or a note when it is too large to expand.
+    /// The Python `str()` of the value: text as is, everything else its `repr()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.into_object() {
-            Ok(object) => write!(f, "{}", object.py_repr()),
-            Err(err) => write!(f, "<value not shown: {err}>"),
+        match self.node() {
+            MontyNode::String(s) | MontyNode::Cycle(s) => f.write_str(s),
+            _ => self.repr_fmt(f),
         }
     }
 }
 
-/// Caps on [`ValueRef::into_object_with`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExpandLimits {
-    /// Maximum decoded footprint of the tree, summed over [`MontyNode::host_size`].
-    pub max_bytes: usize,
-    /// Maximum nesting depth of the tree.
-    pub max_depth: usize,
-}
+impl TryFrom<ValueRef<'_>> for i64 {
+    type Error = ConversionError;
 
-impl Default for ExpandLimits {
-    fn default() -> Self {
-        Self {
-            max_bytes: DEFAULT_EXPAND_BYTES,
-            max_depth: DEFAULT_EXPAND_DEPTH,
+    fn try_from(value: ValueRef<'_>) -> Result<Self, ConversionError> {
+        match value.node() {
+            MontyNode::Int(i) => Ok(*i),
+            _ => Err(ConversionError::new("int", value.type_name())),
         }
     }
 }
 
-/// Why an arena could not be expanded into a tree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExpandError {
-    /// The tree would exceed [`ExpandLimits::max_bytes`].
-    TooLarge {
-        /// The byte cap that was hit.
-        limit: usize,
-    },
-    /// The tree would exceed [`ExpandLimits::max_depth`].
-    TooDeep {
-        /// The depth cap that was hit.
-        limit: usize,
-    },
-}
+/// An `int` converts as Python's `float()` does.
+impl TryFrom<ValueRef<'_>> for f64 {
+    type Error = ConversionError;
 
-impl fmt::Display for ExpandError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TooLarge { limit } => write!(f, "expanded value exceeds {limit} bytes"),
-            Self::TooDeep { limit } => write!(f, "expanded value is nested deeper than {limit} levels"),
-        }
+    fn try_from(value: ValueRef<'_>) -> Result<Self, ConversionError> {
+        value
+            .as_float()
+            .ok_or_else(|| ConversionError::new("float", value.type_name()))
     }
 }
 
-impl Error for ExpandError {}
+impl TryFrom<ValueRef<'_>> for String {
+    type Error = ConversionError;
 
-/// `(positional, keyword)` argument trees, the expanded form of [`CallArgs`].
-pub type ArgObjects = (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>);
+    fn try_from(value: ValueRef<'_>) -> Result<Self, ConversionError> {
+        value
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| ConversionError::new("str", value.type_name()))
+    }
+}
+
+/// Only `True`/`False` convert; this is not Python truthiness (see [`ValueRef::is_truthy`]).
+impl TryFrom<ValueRef<'_>> for bool {
+    type Error = ConversionError;
+
+    fn try_from(value: ValueRef<'_>) -> Result<Self, ConversionError> {
+        value
+            .as_bool()
+            .ok_or_else(|| ConversionError::new("bool", value.type_name()))
+    }
+}
+
+/// Writes the `, tzinfo=...` part of an aware datetime or time repr.
+fn tzinfo_repr_fmt(f: &mut impl Write, offset: i32, name: Option<&str>) -> fmt::Result {
+    if offset == 0 && name.is_none() {
+        f.write_str(", tzinfo=datetime.timezone.utc")
+    } else {
+        let timedelta_repr = format_offset_timedelta_repr(offset);
+        write!(f, ", tzinfo=datetime.timezone({timedelta_repr}")?;
+        if let Some(name) = name {
+            write!(f, ", {}", StringRepr(name))?;
+        }
+        f.write_char(')')
+    }
+}
+
+/// Compares two nodes' own payloads and queues their children pairwise;
+/// `false` when the nodes differ in kind, payload or child count.
+fn nodes_eq(a: &MontyNode, b: &MontyNode, pending: &mut Vec<(NodeId, NodeId)>) -> bool {
+    match (a, b) {
+        // Cross-compare Int and BigInt without allocating a temporary BigInt.
+        (MontyNode::Int(x), MontyNode::BigInt(y)) | (MontyNode::BigInt(y), MontyNode::Int(x)) => y.to_i64() == Some(*x),
+        // NamedTuple compares with Tuple by values only (matching Python semantics)
+        (MontyNode::NamedTuple { values: xs, .. }, MontyNode::Tuple(ys))
+        | (MontyNode::Tuple(xs), MontyNode::NamedTuple { values: ys, .. }) => queue_items(xs, ys, pending),
+        (MontyNode::List(xs), MontyNode::List(ys))
+        | (MontyNode::Tuple(xs), MontyNode::Tuple(ys))
+        | (MontyNode::Set(xs), MontyNode::Set(ys))
+        | (MontyNode::FrozenSet(xs), MontyNode::FrozenSet(ys)) => queue_items(xs, ys, pending),
+        (
+            MontyNode::NamedTuple {
+                type_name: x_type,
+                field_names: x_fields,
+                values: xs,
+            },
+            MontyNode::NamedTuple {
+                type_name: y_type,
+                field_names: y_fields,
+                values: ys,
+            },
+        ) => x_type == y_type && x_fields == y_fields && queue_items(xs, ys, pending),
+        (MontyNode::Dict(xs), MontyNode::Dict(ys)) => queue_pairs(xs, ys, pending),
+        (MontyNode::ClassType(x), MontyNode::ClassType(y)) => {
+            x.name == y.name
+                && x.id == y.id
+                && x.host_defined == y.host_defined
+                && x.is_dataclass == y.is_dataclass
+                && queue_pairs(&x.attrs, &y.attrs, pending)
+        }
+        (
+            MontyNode::ClassInstance {
+                class_type: x_class,
+                instance_id: x_id,
+                attrs: xs,
+            },
+            MontyNode::ClassInstance {
+                class_type: y_class,
+                instance_id: y_id,
+                attrs: ys,
+            },
+        ) => {
+            x_id == y_id && {
+                pending.push((*x_class, *y_class));
+                queue_pairs(xs, ys, pending)
+            }
+        }
+        // every other pairing is leaf against leaf, or a kind mismatch
+        _ => a.is_leaf() && b.is_leaf() && a == b,
+    }
+}
+
+/// Queues two child lists pairwise; `false` when their lengths differ.
+fn queue_items(xs: &[NodeId], ys: &[NodeId], pending: &mut Vec<(NodeId, NodeId)>) -> bool {
+    xs.len() == ys.len() && {
+        pending.extend(xs.iter().copied().zip(ys.iter().copied()));
+        true
+    }
+}
+
+/// Queues two pair lists key-for-key and value-for-value; `false` when
+/// their lengths differ.
+fn queue_pairs(xs: &[(NodeId, NodeId)], ys: &[(NodeId, NodeId)], pending: &mut Vec<(NodeId, NodeId)>) -> bool {
+    xs.len() == ys.len() && {
+        for ((xk, xv), (yk, yv)) in xs.iter().zip(ys) {
+            pending.push((*xk, *yk));
+            pending.push((*xv, *yv));
+        }
+        true
+    }
+}
 
 /// The arguments of one function or OS call: one arena, and the ids of the
 /// positional arguments and `(key, value)` keyword pairs in it.
@@ -274,6 +955,14 @@ impl CallArgs {
             .map(|(key, value)| (self.values.value(*key), self.values.value(*value)))
     }
 
+    /// The keyword argument named `name`, if present.
+    #[must_use]
+    pub fn kwarg(&self, name: &str) -> Option<ValueRef<'_>> {
+        self.kwargs()
+            .find(|(key, _)| key.as_str() == Some(name))
+            .map(|(_, value)| value)
+    }
+
     /// Checks every argument id is inside the arena; run on decoded messages.
     pub fn check_roots(&self) -> Result<(), GraphError> {
         self.args.iter().try_for_each(|id| self.values.check_root(*id))?;
@@ -283,36 +972,23 @@ impl CallArgs {
                 .and_then(|()| self.values.check_root(*value))
         })
     }
-
-    /// Expands the arguments into `(positional, keyword)` [`MontyObject`] trees.
-    pub fn into_objects(&self) -> Result<ArgObjects, ExpandError> {
-        let args = self.args().map(|arg| arg.into_object()).collect::<Result<_, _>>()?;
-        let kwargs = self
-            .kwargs()
-            .map(|(key, value)| Ok((key.into_object()?, value.into_object()?)))
-            .collect::<Result<_, _>>()?;
-        Ok((args, kwargs))
-    }
 }
 
 /// Positional-only arguments; concrete so an empty `vec![]` infers.
-impl From<Vec<MontyObject>> for CallArgs {
-    fn from(args: Vec<MontyObject>) -> Self {
+impl From<Vec<MontyValue>> for CallArgs {
+    fn from(args: Vec<MontyValue>) -> Self {
         Self::from((args, Vec::new()))
     }
 }
 
-impl From<ArgObjects> for CallArgs {
-    fn from((args, kwargs): ArgObjects) -> Self {
+/// Positional and keyword arguments, in order.
+impl From<(Vec<MontyValue>, Vec<(MontyValue, MontyValue)>)> for CallArgs {
+    fn from((args, kwargs): (Vec<MontyValue>, Vec<(MontyValue, MontyValue)>)) -> Self {
         let mut call = Self::new();
         for arg in args {
             call.push_arg(arg);
         }
-        for (key, value) in kwargs {
-            let key = key.push_into(&mut call.values);
-            let value = value.push_into(&mut call.values);
-            call.kwargs.push((key, value));
-        }
+        call.kwargs = push_pairs(kwargs, &mut call.values);
         call
     }
 }
@@ -366,8 +1042,8 @@ impl NamedValues {
 }
 
 /// Concrete rather than generic over [`PushValue`] so an empty `vec![]` infers.
-impl From<Vec<(String, MontyObject)>> for NamedValues {
-    fn from(pairs: Vec<(String, MontyObject)>) -> Self {
+impl From<Vec<(String, MontyValue)>> for NamedValues {
+    fn from(pairs: Vec<(String, MontyValue)>) -> Self {
         let mut named = Self::new();
         for (name, value) in pairs {
             named.push(name, value);
@@ -385,65 +1061,6 @@ impl MontyGraph {
     pub fn value(&self, id: NodeId) -> ValueRef<'_> {
         assert!(id.index() < self.len(), "node id {id} is out of range");
         ValueRef { graph: self, id }
-    }
-}
-
-impl PushValue for MontyObject {
-    /// Post-order push of the tree; a tree cannot share, so no memo is needed.
-    fn push_into(self, graph: &mut MontyGraph) -> NodeId {
-        let node = match self {
-            Self::Ellipsis => MontyNode::Ellipsis,
-            Self::NotImplemented => MontyNode::NotImplemented,
-            Self::None => MontyNode::None,
-            Self::Bool(b) => MontyNode::Bool(b),
-            Self::Int(i) => MontyNode::Int(i),
-            Self::BigInt(bi) => MontyNode::BigInt(bi),
-            Self::Float(f) => MontyNode::Float(f),
-            Self::String(s) => MontyNode::String(s),
-            Self::Bytes(b) => MontyNode::Bytes(b),
-            Self::Date(d) => MontyNode::Date(d),
-            Self::DateTime(dt) => MontyNode::DateTime(dt),
-            Self::Time(t) => MontyNode::Time(t),
-            Self::TimeDelta(td) => MontyNode::TimeDelta(td),
-            Self::TimeZone(tz) => MontyNode::TimeZone(tz),
-            Self::Exception { exc_type, arg } => MontyNode::Exception { exc_type, arg },
-            Self::Type(MontyType::Instance(class_type)) => return push_class_type(*class_type, graph),
-            Self::Type(t) => MontyNode::Type(t),
-            Self::BuiltinFunction(bf) => MontyNode::BuiltinFunction(bf),
-            Self::Path(p) => MontyNode::Path(p),
-            Self::FileHandle(fh) => MontyNode::FileHandle(fh),
-            Self::Function { name, docstring } => MontyNode::Function { name, docstring },
-            Self::Repr(s) => MontyNode::Repr(s),
-            Self::Cycle(s) => MontyNode::Cycle(s),
-            Self::List(items) => MontyNode::List(push_items(items, graph)),
-            Self::Tuple(items) => MontyNode::Tuple(push_items(items, graph)),
-            Self::Set(items) => MontyNode::Set(push_items(items, graph)),
-            Self::FrozenSet(items) => MontyNode::FrozenSet(push_items(items, graph)),
-            Self::NamedTuple {
-                type_name,
-                field_names,
-                values,
-            } => MontyNode::NamedTuple {
-                type_name,
-                field_names,
-                values: push_items(values, graph),
-            },
-            Self::Dict(pairs) => MontyNode::Dict(push_pairs(pairs, graph)),
-            Self::ClassInstance(instance) => {
-                let MontyClassInstance {
-                    class_type,
-                    instance_id,
-                    attrs,
-                } = *instance;
-                let class_type = push_class_type(class_type, graph);
-                MontyNode::ClassInstance {
-                    class_type,
-                    instance_id,
-                    attrs: push_pairs(attrs, graph),
-                }
-            }
-        };
-        graph.push(node)
     }
 }
 
@@ -467,13 +1084,11 @@ impl PushValue for ValueRef<'_> {
     }
 }
 
-/// Pushes each item and collects the ids.
-fn push_items(items: Vec<MontyObject>, graph: &mut MontyGraph) -> Vec<NodeId> {
-    items.into_iter().map(|item| item.push_into(graph)).collect()
-}
-
 /// Pushes each key then value and collects the id pairs.
-fn push_pairs(pairs: DictPairs, graph: &mut MontyGraph) -> Vec<(NodeId, NodeId)> {
+fn push_pairs(
+    pairs: impl IntoIterator<Item = (MontyValue, MontyValue)>,
+    graph: &mut MontyGraph,
+) -> Vec<(NodeId, NodeId)> {
     pairs
         .into_iter()
         .map(|(key, value)| {
@@ -482,25 +1097,6 @@ fn push_pairs(pairs: DictPairs, graph: &mut MontyGraph) -> Vec<(NodeId, NodeId)>
             (key, value)
         })
         .collect()
-}
-
-/// Pushes a class's eager attrs then the class-type node itself.
-fn push_class_type(class_type: MontyClassType, graph: &mut MontyGraph) -> NodeId {
-    let MontyClassType {
-        name,
-        id,
-        host_defined,
-        is_dataclass,
-        attrs,
-    } = class_type;
-    let attrs = push_pairs(attrs, graph);
-    graph.push(MontyNode::ClassType(Box::new(ClassTypeNode {
-        name,
-        id,
-        host_defined,
-        is_dataclass,
-        attrs,
-    })))
 }
 
 /// Copies the nodes reachable from one root of `source` into `target`,
@@ -524,113 +1120,5 @@ impl Copier<'_> {
         let target_id = self.target.push(node);
         self.copied[id.index()] = Some(target_id);
         target_id
-    }
-}
-
-/// Expands one root of an arena into a [`MontyObject`] tree under a byte and depth budget.
-struct Expander<'a> {
-    graph: &'a MontyGraph,
-    limits: ExpandLimits,
-    /// Bytes left before [`ExpandError::TooLarge`].
-    remaining: usize,
-}
-
-impl Expander<'_> {
-    fn expand(&mut self, id: NodeId, depth: usize) -> Result<MontyObject, ExpandError> {
-        if depth > self.limits.max_depth {
-            return Err(ExpandError::TooDeep {
-                limit: self.limits.max_depth,
-            });
-        }
-        let node = self.graph.node(id);
-        self.remaining = self
-            .remaining
-            .checked_sub(node.host_size())
-            .ok_or(ExpandError::TooLarge {
-                limit: self.limits.max_bytes,
-            })?;
-        let depth = depth + 1;
-        Ok(match node {
-            MontyNode::Ellipsis => MontyObject::Ellipsis,
-            MontyNode::NotImplemented => MontyObject::NotImplemented,
-            MontyNode::None => MontyObject::None,
-            MontyNode::Bool(b) => MontyObject::Bool(*b),
-            MontyNode::Int(i) => MontyObject::Int(*i),
-            MontyNode::BigInt(bi) => MontyObject::BigInt(bi.clone()),
-            MontyNode::Float(f) => MontyObject::Float(*f),
-            MontyNode::String(s) => MontyObject::String(s.clone()),
-            MontyNode::Bytes(b) => MontyObject::Bytes(b.clone()),
-            MontyNode::Date(d) => MontyObject::Date(d.clone()),
-            MontyNode::DateTime(dt) => MontyObject::DateTime(dt.clone()),
-            MontyNode::Time(t) => MontyObject::Time(t.clone()),
-            MontyNode::TimeDelta(td) => MontyObject::TimeDelta(td.clone()),
-            MontyNode::TimeZone(tz) => MontyObject::TimeZone(tz.clone()),
-            MontyNode::Exception { exc_type, arg } => MontyObject::Exception {
-                exc_type: *exc_type,
-                arg: arg.clone(),
-            },
-            MontyNode::Type(t) => MontyObject::Type(t.clone()),
-            MontyNode::BuiltinFunction(bf) => MontyObject::BuiltinFunction(*bf),
-            MontyNode::Path(p) => MontyObject::Path(p.clone()),
-            MontyNode::FileHandle(fh) => MontyObject::FileHandle(fh.clone()),
-            MontyNode::Function { name, docstring } => MontyObject::Function {
-                name: name.clone(),
-                docstring: docstring.clone(),
-            },
-            MontyNode::Repr(s) => MontyObject::Repr(s.clone()),
-            MontyNode::Cycle(s) => MontyObject::Cycle(s.clone()),
-            MontyNode::List(items) => MontyObject::List(self.expand_items(items, depth)?),
-            MontyNode::Tuple(items) => MontyObject::Tuple(self.expand_items(items, depth)?),
-            MontyNode::Set(items) => MontyObject::Set(self.expand_items(items, depth)?),
-            MontyNode::FrozenSet(items) => MontyObject::FrozenSet(self.expand_items(items, depth)?),
-            MontyNode::NamedTuple {
-                type_name,
-                field_names,
-                values,
-            } => MontyObject::NamedTuple {
-                type_name: type_name.clone(),
-                field_names: field_names.clone(),
-                values: self.expand_items(values, depth)?,
-            },
-            MontyNode::Dict(pairs) => MontyObject::Dict(self.expand_pairs(pairs, depth)?),
-            MontyNode::ClassType(_) => {
-                MontyObject::Type(MontyType::Instance(Box::new(self.expand_class_type(id, depth)?)))
-            }
-            MontyNode::ClassInstance {
-                class_type,
-                instance_id,
-                attrs,
-            } => MontyObject::ClassInstance(Box::new(MontyClassInstance {
-                class_type: self.expand_class_type(*class_type, depth)?,
-                instance_id: *instance_id,
-                attrs: self.expand_pairs(attrs, depth)?,
-            })),
-        })
-    }
-
-    fn expand_items(&mut self, ids: &[NodeId], depth: usize) -> Result<Vec<MontyObject>, ExpandError> {
-        ids.iter().map(|id| self.expand(*id, depth)).collect()
-    }
-
-    fn expand_pairs(&mut self, pairs: &[(NodeId, NodeId)], depth: usize) -> Result<DictPairs, ExpandError> {
-        pairs
-            .iter()
-            .map(|(key, value)| Ok((self.expand(*key, depth)?, self.expand(*value, depth)?)))
-            .collect()
-    }
-
-    /// Expands a class-type node into the tree's class descriptor. The arena
-    /// invariants guarantee `id` is a class-type node.
-    fn expand_class_type(&mut self, id: NodeId, depth: usize) -> Result<MontyClassType, ExpandError> {
-        let MontyNode::ClassType(class) = self.graph.node(id) else {
-            unreachable!("MontyGraph guarantees class_type points at a ClassType node")
-        };
-        Ok(MontyClassType {
-            name: class.name.clone(),
-            id: class.id,
-            host_defined: class.host_defined,
-            is_dataclass: class.is_dataclass,
-            attrs: self.expand_pairs(&class.attrs, depth)?,
-        })
     }
 }

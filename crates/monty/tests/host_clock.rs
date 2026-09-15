@@ -11,7 +11,7 @@
 
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, Session, SessionRef, dump};
-use monty_types::{CompileOptions, HostClock, MontyObject, ResourceTracker};
+use monty_types::{CompileOptions, HostClock, MontyValue, ResourceTracker};
 
 /// 2023-11-14 22:13:20 UTC — the instant the datatest fixtures already freeze
 /// to, reused so both harnesses tell the same story.
@@ -31,7 +31,7 @@ const FIXED: HostClock = HostClock::Fixed {
 };
 
 /// Runs `code` under `clock` and returns its result.
-fn run(code: &str, clock: HostClock) -> Result<MontyObject, String> {
+fn run(code: &str, clock: HostClock) -> Result<MontyValue, String> {
     MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
         .unwrap()
         .with_host_clock(clock)
@@ -53,11 +53,12 @@ fn run_repr(expr: &str, clock: HostClock) -> String {
 fn the_host_clock_is_the_default() {
     let code = "from datetime import date, datetime\n(date.today().year, datetime.now().year)";
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let MontyObject::Tuple(years) = runner.run_no_limits(vec![]).unwrap() else {
+    let value = runner.run_no_limits(vec![]).unwrap();
+    let Some(years) = value.as_ref().items() else {
         panic!("expected a tuple of years");
     };
     for year in years {
-        let MontyObject::Int(year) = year else {
+        let Some(year) = year.as_int() else {
             panic!("expected an int year");
         };
         assert!((2026..=2100).contains(&year), "implausible year {year}");
@@ -106,7 +107,7 @@ fn fixed_clock_converts_into_the_requested_timezone() {
 fn aware_and_naive_agree_on_the_instant() {
     let code = "from datetime import datetime, timezone\n\
                 (datetime.now(timezone.utc).hour - datetime.now().hour) % 24";
-    assert_eq!(run(code, FIXED).unwrap(), MontyObject::Int(22));
+    assert_eq!(run(code, FIXED).unwrap(), MontyValue::int(22));
 }
 
 /// A fixed instant outside `datetime`'s 1..=9999 years is refused rather than
@@ -155,7 +156,7 @@ fn system_clock_returns_a_plausible_now() {
     // Written 2026; a system clock that reads before then is broken, not stale.
     let code = "from datetime import date, datetime\n\
                 date.today() == datetime.now().date() and datetime.now().year >= 2026";
-    assert_eq!(run(code, HostClock::System).unwrap(), MontyObject::Bool(true));
+    assert_eq!(run(code, HostClock::System).unwrap(), MontyValue::bool(true));
 }
 
 /// The clock is a *standard execution* fallback: with a host loop present the
@@ -189,7 +190,7 @@ fn repl_sessions_take_a_clock_too() {
             monty_types::PrintWriter::Disabled,
         )
         .unwrap();
-    assert_eq!(result, MontyObject::String("datetime.date(2023, 11, 15)".to_owned()));
+    assert_eq!(result, MontyValue::string("datetime.date(2023, 11, 15)".to_owned()));
 }
 
 /// The clock is granted on the session, so which entry point runs the code
@@ -208,7 +209,7 @@ fn call_function_takes_the_session_clock_too() {
     let result = repl
         .call_function("when", vec![], monty_types::PrintWriter::Disabled)
         .unwrap();
-    assert_eq!(result, MontyObject::String("datetime.date(2023, 11, 15)".to_owned()));
+    assert_eq!(result, MontyValue::string("datetime.date(2023, 11, 15)".to_owned()));
 }
 
 /// A denied clock refuses through `call_function` too, as it does `feed_run`.
@@ -260,5 +261,5 @@ fn a_granted_clock_survives_a_dump() {
             monty_types::PrintWriter::Disabled,
         )
         .unwrap();
-    assert_eq!(result, MontyObject::String("datetime.date(2023, 11, 15)".to_owned()));
+    assert_eq!(result, MontyValue::string("datetime.date(2023, 11, 15)".to_owned()));
 }

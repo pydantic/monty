@@ -3,10 +3,7 @@
 
 use std::{collections::HashMap, vec::IntoIter};
 
-use monty_types::{
-    ClassTypeNode, MontyClassType, MontyDate, MontyException, MontyGraph, MontyNode, MontyObject, MontyUuid,
-    MontyValue, NodeId, args::PushValue,
-};
+use monty_types::{ClassTypeNode, MontyDate, MontyException, MontyGraph, MontyNode, MontyUuid, MontyValue, NodeId};
 use num_bigint::BigInt;
 use pyo3::{
     exceptions::{PyBaseException, PyTypeError, PyValueError},
@@ -20,14 +17,14 @@ use pyo3::{
 
 use super::{
     class_instance::{
-        InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy, is_class_instance_wrapper, is_class_type_wrapper,
-        wrapper_uuid,
+        ClassHeader, InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy, is_class_instance_wrapper,
+        is_class_type_wrapper, wrapper_uuid,
     },
     convert::{
         PyMontyFileHandle, get_datetime_timezone_type, get_docstring, get_name, get_pure_posix_path,
         py_datetime_to_monty, py_time_to_monty, py_timedelta_to_monty, py_timezone_to_monty, py_type_object_to_monty,
     },
-    exceptions::{exc_py_to_monty, exc_to_monty_object},
+    exceptions::{exc_py_to_monty, exc_to_monty_node},
 };
 
 /// Encodes one host value as its own arena; unsupported types raise `TypeError`.
@@ -210,7 +207,7 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
         } else if obj.is(PyModule::import(py, "builtins")?.getattr("NotImplemented")?) {
             Ok(self.leaf(MontyNode::NotImplemented))
         } else if let Ok(datetime) = obj.cast::<PyDateTime>() {
-            Ok(self.object(py_datetime_to_monty(datetime)?))
+            Ok(self.leaf(py_datetime_to_monty(datetime)?))
         } else if let Ok(date) = obj.cast::<PyDate>() {
             Ok(self.leaf(MontyNode::Date(MontyDate {
                 year: date.get_year(),
@@ -218,13 +215,13 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
                 day: date.get_day(),
             })))
         } else if let Ok(time) = obj.cast::<PyTime>() {
-            Ok(self.object(py_time_to_monty(time)?))
+            Ok(self.leaf(py_time_to_monty(time)?))
         } else if let Ok(delta) = obj.cast::<PyDelta>() {
             Ok(self.leaf(MontyNode::TimeDelta(py_timedelta_to_monty(delta))))
         } else if obj.is_instance(get_datetime_timezone_type(py)?)? {
             Ok(self.leaf(MontyNode::TimeZone(py_timezone_to_monty(obj)?)))
         } else if let Ok(exc) = obj.cast::<PyBaseException>() {
-            Ok(self.object(exc_to_monty_object(exc)))
+            Ok(self.leaf(exc_to_monty_node(exc)))
         } else if is_class_type_wrapper(obj)? {
             // `ClassType` and `ClassInstance` are sibling `BaseWrapper`s; the
             // class check simply comes first.
@@ -290,11 +287,6 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
     /// Pushes a leaf node.
     fn leaf(&mut self, node: MontyNode) -> Step<'py> {
         Step::Done(self.graph.push(node))
-    }
-
-    /// Pushes a leaf built as a `MontyObject` by a shared helper.
-    fn object(&mut self, obj: MontyObject) -> Step<'py> {
-        Step::Done(obj.push_into(&mut self.graph))
     }
 
     /// Opens a frame for a container, unless it is memoized: a finished one
@@ -471,7 +463,7 @@ enum Pending {
     /// Children alternate key, value.
     Dict,
     /// Children alternate attr name, value.
-    ClassType(MontyClassType),
+    ClassType(ClassHeader),
     /// The first child is the class node, then attr name, value pairs.
     ClassInstance {
         instance_id: MontyUuid,
@@ -481,8 +473,8 @@ enum Pending {
 /// Where a class node comes from: a `ClassType` wrapper, a proxy, or the
 /// class recorded on an instance proxy.
 struct ClassTypeSource<'py> {
-    /// The class header (its `attrs` are ignored; `attrs` below is used).
-    class_type: MontyClassType,
+    /// The class header.
+    class_type: ClassHeader,
     /// Eager class attrs, `name -> value`.
     attrs: Bound<'py, PyDict>,
     /// The host object to memoize by identity, when there is one.
@@ -503,12 +495,11 @@ impl<'py> ClassTypeSource<'py> {
             .call_method0(intern!(py, "get_eager_attrs"))?
             .cast_into::<PyDict>()?;
         Ok(Self {
-            class_type: MontyClassType {
+            class_type: ClassHeader {
                 name: class.getattr(intern!(py, "__name__"))?.extract()?,
                 id: wrapper_uuid(wrapper, "ClassType")?,
                 host_defined: true,
                 is_dataclass: wrapper.call_method0(intern!(py, "is_dataclass"))?.extract()?,
-                attrs: Vec::new().into(),
             },
             attrs,
             identity: Some(wrapper.clone()),
@@ -521,7 +512,7 @@ impl<'py> ClassTypeSource<'py> {
         Self::node_from(self.class_type.clone(), attrs)
     }
 
-    fn node_from(class_type: MontyClassType, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
+    fn node_from(class_type: ClassHeader, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
         MontyNode::ClassType(Box::new(ClassTypeNode {
             name: class_type.name,
             id: class_type.id,

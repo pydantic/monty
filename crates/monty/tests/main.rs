@@ -1,7 +1,5 @@
-use std::mem;
-
 use monty::MontyRun;
-use monty_types::{CompileOptions, DictPairs, ExcType, MontyClassInstance, MontyClassType, MontyObject, MontyUuid};
+use monty_types::{CompileOptions, ExcType, MontyNode, MontyUuid, MontyValue};
 
 /// Test we can reuse exec without borrow checker issues.
 #[test]
@@ -52,21 +50,14 @@ fn str_format_os_attribute_reports_suspension_limit() {
 /// This exercises the `FrameExit::MethodCall` path in `frame_exit_to_object`.
 #[test]
 fn class_instance_method_call_in_standard_mode_errors() {
-    let point = MontyObject::ClassInstance(Box::new(MontyClassInstance {
-        class_type: MontyClassType {
-            name: "Point".to_string(),
-            id: MontyUuid::from_u128(1),
-            host_defined: true,
-            is_dataclass: true,
-            attrs: DictPairs::default(),
-        },
-        instance_id: MontyUuid::from_u128(2),
-        attrs: vec![
-            (MontyObject::String("x".to_string()), MontyObject::Int(1)),
-            (MontyObject::String("y".to_string()), MontyObject::Int(2)),
-        ]
-        .into(),
-    }));
+    let point = MontyValue::class_instance(
+        MontyValue::class_type("Point".to_string(), MontyUuid::from_u128(1), true, true, []),
+        MontyUuid::from_u128(2),
+        vec![
+            (MontyValue::string("x".to_string()), MontyValue::int(1)),
+            (MontyValue::string("y".to_string()), MontyValue::int(2)),
+        ],
+    );
 
     let ex = MontyRun::new(
         "point.sum()".to_owned(),
@@ -140,10 +131,7 @@ fn external_function_as_init_raises_not_implemented() {
     )
     .unwrap();
     let err = ex
-        .run_no_limits(vec![MontyObject::Function {
-            name: "ext_fn".to_owned(),
-            docstring: None,
-        }])
+        .run_no_limits(vec![MontyValue::function("ext_fn".to_owned(), None)])
         .unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -167,10 +155,7 @@ fn external_function_in_reduce_raises_not_implemented() {
     )
     .unwrap();
     let err = ex
-        .run_no_limits(vec![MontyObject::Function {
-            name: "ext_fn".to_owned(),
-            docstring: None,
-        }])
+        .run_no_limits(vec![MontyValue::function("ext_fn".to_owned(), None)])
         .unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -223,10 +208,7 @@ fn external_function_in_next_raises_not_implemented() {
     )
     .unwrap();
     let err = ex
-        .run_no_limits(vec![MontyObject::Function {
-            name: "ext_fn".to_owned(),
-            docstring: None,
-        }])
+        .run_no_limits(vec![MontyValue::function("ext_fn".to_owned(), None)])
         .unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -256,14 +238,11 @@ sorted([1, 2, 3], key=key_fn)
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::Function {
-            name: "ext_fn".to_owned(),
-            docstring: None,
-        }])
+        .run_no_limits(vec![MontyValue::function("ext_fn".to_owned(), None)])
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::List(vec![MontyObject::Int(3), MontyObject::Int(2), MontyObject::Int(1)])
+        MontyValue::list([MontyValue::int(3), MontyValue::int(2), MontyValue::int(1)])
     );
 }
 
@@ -293,17 +272,14 @@ seen
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::Function {
-            name: "ext_fn".to_owned(),
-            docstring: None,
-        }])
+        .run_no_limits(vec![MontyValue::function("ext_fn".to_owned(), None)])
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::List(vec![
-            MontyObject::Int(1),
-            MontyObject::String("caught".to_owned()),
-            MontyObject::String("after".to_owned()),
+        MontyValue::list([
+            MontyValue::int(1),
+            MontyValue::string("caught".to_owned()),
+            MontyValue::string("after".to_owned()),
         ])
     );
 }
@@ -320,10 +296,7 @@ fn not_implemented_in_list_sort_key_names_sort() {
     )
     .unwrap();
     let err = ex
-        .run_no_limits(vec![MontyObject::Function {
-            name: "ext_fn".to_owned(),
-            docstring: None,
-        }])
+        .run_no_limits(vec![MontyValue::function("ext_fn".to_owned(), None)])
         .unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -353,10 +326,7 @@ fn external_function_as_itertools_callable_raises_not_implemented() {
         let code = format!("import itertools\n\n{expr}");
         let ex = MontyRun::new(code, "test.py", vec!["ext_fn".to_owned()], CompileOptions::default()).unwrap();
         let err = ex
-            .run_no_limits(vec![MontyObject::Function {
-                name: "ext_fn".to_owned(),
-                docstring: None,
-            }])
+            .run_no_limits(vec![MontyValue::function("ext_fn".to_owned(), None)])
             .unwrap_err();
         let carets = "~".repeat(expr.len());
         assert_eq!(
@@ -407,58 +377,23 @@ fn dynamic_type_with_non_string_key_raises_type_error() {
 // `Evil.__repr__` never fires.
 
 /// Structured `ClassInstance` a sandbox `Evil()` instance converts to.
-fn evil_instance() -> MontyObject {
-    MontyObject::ClassInstance(Box::new(MontyClassInstance {
-        class_type: MontyClassType {
-            name: "Evil".to_owned(),
-            id: MontyUuid::from_u128(0xE0),
-            host_defined: false,
-            is_dataclass: false,
-            attrs: DictPairs::default(),
-        },
-        instance_id: MontyUuid::from_u128(0xE1),
-        attrs: vec![].into(),
-    }))
+fn evil_instance() -> MontyValue {
+    MontyValue::class_instance(
+        MontyValue::class_type("Evil".to_owned(), MontyUuid::from_u128(0xE0), false, false, []),
+        MontyUuid::from_u128(0xE1),
+        vec![],
+    )
 }
 
 /// Replaces the worker-generated (random) class/instance uuids in `obj` with the
 /// deterministic ids [`evil_instance`] uses, so structural comparison works.
-fn normalize_instance_uuids(obj: &mut MontyObject) {
-    match obj {
-        MontyObject::ClassInstance(instance) => {
-            let MontyClassInstance {
-                class_type,
-                instance_id,
-                attrs,
-            } = instance.as_mut();
-            class_type.id = MontyUuid::from_u128(0xE0);
-            *instance_id = MontyUuid::from_u128(0xE1);
-            let pairs = mem::replace(attrs, DictPairs::from(vec![]))
-                .into_iter()
-                .map(|(mut key, mut value)| {
-                    normalize_instance_uuids(&mut key);
-                    normalize_instance_uuids(&mut value);
-                    (key, value)
-                })
-                .collect::<Vec<_>>();
-            *attrs = pairs.into();
+fn normalize_instance_uuids(obj: &mut MontyValue) {
+    for node in obj.graph.nodes_mut() {
+        match node {
+            MontyNode::ClassType(class) => class.id = MontyUuid::from_u128(0xE0),
+            MontyNode::ClassInstance { instance_id, .. } => *instance_id = MontyUuid::from_u128(0xE1),
+            _ => {}
         }
-        MontyObject::List(items)
-        | MontyObject::Tuple(items)
-        | MontyObject::Set(items)
-        | MontyObject::FrozenSet(items) => items.iter_mut().for_each(normalize_instance_uuids),
-        MontyObject::Dict(pairs) => {
-            let normalized = mem::replace(pairs, DictPairs::from(vec![]))
-                .into_iter()
-                .map(|(mut key, mut value)| {
-                    normalize_instance_uuids(&mut key);
-                    normalize_instance_uuids(&mut value);
-                    (key, value)
-                })
-                .collect::<Vec<_>>();
-            *pairs = normalized.into();
-        }
-        _ => {}
     }
 }
 
@@ -477,7 +412,7 @@ lst";
     normalize_instance_uuids(&mut result);
     assert_eq!(
         result,
-        MontyObject::List(vec![evil_instance(), MontyObject::Int(1), MontyObject::Int(2)])
+        MontyValue::list([evil_instance(), MontyValue::int(1), MontyValue::int(2)])
     );
 }
 
@@ -496,13 +431,10 @@ d";
     normalize_instance_uuids(&mut result);
     assert_eq!(
         result,
-        MontyObject::Dict(
-            vec![
-                (MontyObject::String("k".to_owned()), evil_instance()),
-                (MontyObject::String("a".to_owned()), MontyObject::Int(1)),
-            ]
-            .into()
-        )
+        MontyValue::dict(vec![
+            (MontyValue::string("k".to_owned()), evil_instance()),
+            (MontyValue::string("a".to_owned()), MontyValue::int(1)),
+        ])
     );
 }
 
@@ -523,7 +455,7 @@ d";
     normalize_instance_uuids(&mut result);
     assert_eq!(
         result,
-        MontyObject::List(vec![evil_instance(), MontyObject::Int(1), MontyObject::Int(2)])
+        MontyValue::list([evil_instance(), MontyValue::int(1), MontyValue::int(2)])
     );
 }
 
@@ -566,5 +498,5 @@ except StopIteration:
     pass
 seen";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    assert_eq!(ex.run_no_limits(vec![]).unwrap(), MontyObject::Int(1));
+    assert_eq!(ex.run_no_limits(vec![]).unwrap(), MontyValue::int(1));
 }

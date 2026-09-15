@@ -144,7 +144,7 @@ Divergences in the aliases themselves:
     sandbox reaches the host as its repr string. Passed in from the host, a
     `list[int]` degrades to an external function (it is callable, so it is
     treated like any unmodeled class) and an `int | None` is rejected with
-    `MontyConversionError`; neither has a `MontyObject` form. Their type
+    `MontyConversionError`; neither has a `MontyValue` form. Their type
     objects round-trip: `types.GenericAlias` by identity, and Monty's
     `typing.Union` as the host's `types.UnionType`, which is `typing.Union`
     itself only from Python 3.14.

@@ -17,7 +17,7 @@ use cap_std::{
     fs::{Dir, File, Metadata, OpenOptions},
     time::SystemTime as CapSystemTime,
 };
-use monty_types::{MontyObject, UnicodeErrorData, dir_stat, file_stat, utf8_error_reason};
+use monty_types::{MontyValue, UnicodeErrorData, dir_stat, file_stat, utf8_error_reason};
 #[cfg(unix)]
 use rustix::fs::OFlags;
 
@@ -112,10 +112,10 @@ pub(super) fn host_read_text(
     rel: &str,
     vpath: &str,
     budget: MemoryBudget,
-) -> Result<MontyObject, MountError> {
+) -> Result<MontyValue, MountError> {
     let bytes = read_file_limited(dir, rel, vpath, budget)?;
     let content = bytes_to_utf8(bytes)?;
-    Ok(MontyObject::String(content))
+    Ok(MontyValue::string(content))
 }
 
 /// Reads a file as raw bytes.
@@ -127,8 +127,8 @@ pub(super) fn host_read_bytes(
     rel: &str,
     vpath: &str,
     budget: MemoryBudget,
-) -> Result<MontyObject, MountError> {
-    Ok(MontyObject::Bytes(read_file_limited(dir, rel, vpath, budget)?))
+) -> Result<MontyValue, MountError> {
+    Ok(MontyValue::bytes(read_file_limited(dir, rel, vpath, budget)?))
 }
 
 /// Reads at most `budget + 1` bytes so an oversized file is rejected before it
@@ -139,7 +139,12 @@ pub(super) fn host_read_bytes(
 /// with one `stat`, and pre-sizing the buffer (capped by the budget) to avoid
 /// `read_to_end`'s doubling reallocations. Enforcement is always the byte
 /// count actually read, so lying or racing metadata cannot evade the limit.
-fn read_file_limited(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudget) -> Result<Vec<u8>, MountError> {
+pub(super) fn read_file_limited(
+    dir: &Dir,
+    rel: &str,
+    vpath: &str,
+    budget: MemoryBudget,
+) -> Result<Vec<u8>, MountError> {
     reject_non_regular(dir, rel, vpath)?;
     let file = open_regular(dir, rel, vpath, OpenOptions::new().read(true))?;
     let meta_len = file.metadata().map_err(|err| map_io(err, vpath))?.len();
@@ -158,9 +163,9 @@ fn read_file_limited(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudget) ->
 ///
 /// On Windows, `fs::write()` on a directory returns `PermissionDenied` instead of
 /// `IsADirectory`, so we check explicitly before writing.
-pub(super) fn host_write_text(dir: &Dir, rel: &str, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
+pub(super) fn host_write_text(dir: &Dir, rel: &str, content: &str, vpath: &str) -> Result<MontyValue, MountError> {
     write_bytes_to_file(dir, rel, content.as_bytes(), vpath)?;
-    Ok(MontyObject::Int(
+    Ok(MontyValue::int(
         i64::try_from(content.chars().count()).unwrap_or(i64::MAX),
     ))
 }
@@ -169,9 +174,9 @@ pub(super) fn host_write_text(dir: &Dir, rel: &str, content: &str, vpath: &str) 
 ///
 /// On Windows, `fs::write()` on a directory returns `PermissionDenied` instead of
 /// `IsADirectory`, so we check explicitly before writing.
-pub(super) fn host_write_bytes(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<MontyObject, MountError> {
+pub(super) fn host_write_bytes(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<MontyValue, MountError> {
     write_bytes_to_file(dir, rel, content, vpath)?;
-    Ok(MontyObject::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
+    Ok(MontyValue::int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
 }
 
 /// Truncates `rel` and writes `content` through the mount descriptor.
@@ -190,9 +195,9 @@ fn write_bytes_to_file(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Res
 ///
 /// The host file is opened only for the duration of this call, preserving the
 /// sandbox invariant that Monty never keeps native file handles alive.
-pub(super) fn host_append_text(dir: &Dir, rel: &str, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
+pub(super) fn host_append_text(dir: &Dir, rel: &str, content: &str, vpath: &str) -> Result<MontyValue, MountError> {
     append_bytes_to_file(dir, rel, content.as_bytes(), vpath)?;
-    Ok(MontyObject::Int(
+    Ok(MontyValue::int(
         i64::try_from(content.chars().count()).unwrap_or(i64::MAX),
     ))
 }
@@ -200,9 +205,9 @@ pub(super) fn host_append_text(dir: &Dir, rel: &str, content: &str, vpath: &str)
 /// Appends bytes to a file and returns the number of bytes written.
 ///
 /// This is the binary counterpart of [`host_append_text`].
-pub(super) fn host_append_bytes(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<MontyObject, MountError> {
+pub(super) fn host_append_bytes(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<MontyValue, MountError> {
     append_bytes_to_file(dir, rel, content, vpath)?;
-    Ok(MontyObject::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
+    Ok(MontyValue::int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
 }
 
 /// Opens `rel` in append mode, writes all bytes, and closes it before returning.
@@ -259,7 +264,7 @@ pub(super) fn host_mkdir(
     parents: bool,
     exist_ok: bool,
     vpath: &str,
-) -> Result<MontyObject, MountError> {
+) -> Result<MontyValue, MountError> {
     let result = if parents {
         // `create_dir_all` silently returns `Ok(())` when the directory already exists,
         // so we must check for pre-existing paths ourselves. The lookup follows,
@@ -268,7 +273,7 @@ pub(super) fn host_mkdir(
         match dir.metadata(rel) {
             Ok(meta) if meta.is_dir() => {
                 return if exist_ok {
-                    Ok(MontyObject::None)
+                    Ok(MontyValue::none())
                 } else {
                     Err(MountError::io_err(ErrorKind::AlreadyExists, "File exists", vpath))
                 };
@@ -285,28 +290,28 @@ pub(super) fn host_mkdir(
     };
 
     match result {
-        Ok(()) => Ok(MontyObject::None),
+        Ok(()) => Ok(MontyValue::none()),
         Err(err) if err.kind() == ErrorKind::AlreadyExists && exist_ok && host_is_dir(dir, rel) => {
-            Ok(MontyObject::None)
+            Ok(MontyValue::none())
         }
         Err(err) => Err(map_io(err, vpath)),
     }
 }
 
 /// Removes a file, or the symlink itself when `rel` names one.
-pub(super) fn host_unlink(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject, MountError> {
+pub(super) fn host_unlink(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyValue, MountError> {
     dir.remove_file(rel).map_err(|err| map_io(err, vpath))?;
-    Ok(MontyObject::None)
+    Ok(MontyValue::none())
 }
 
 /// Removes an empty directory.
-pub(super) fn host_rmdir(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject, MountError> {
+pub(super) fn host_rmdir(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyValue, MountError> {
     dir.remove_dir(rel).map_err(|err| map_io(err, vpath))?;
-    Ok(MontyObject::None)
+    Ok(MontyValue::none())
 }
 
 /// Returns a `stat_result`-shaped object for a file or directory.
-pub(super) fn host_stat(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject, MountError> {
+pub(super) fn host_stat(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyValue, MountError> {
     let metadata = dir.metadata(rel).map_err(|err| map_io(err, vpath))?;
     let mtime = mtime_secs(&metadata);
     let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
@@ -319,7 +324,7 @@ pub(super) fn host_stat(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject
 }
 
 /// Lists visible directory entries within the mount memory budget.
-pub(super) fn host_iterdir(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudget) -> Result<MontyObject, MountError> {
+pub(super) fn host_iterdir(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudget) -> Result<MontyValue, MountError> {
     let names = host_list_visible_dir_entry_names(dir, rel, vpath, budget.halved())?;
     let mut memory_usage = names.iter().fold(0_u64, |usage, name| {
         usage
@@ -333,9 +338,9 @@ pub(super) fn host_iterdir(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudg
             .saturating_add(as_u64(path.len()))
             .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
         budget.check(memory_usage)?;
-        result.push(MontyObject::Path(path));
+        result.push(MontyValue::path(path));
     }
-    Ok(MontyObject::List(result))
+    Ok(MontyValue::list(result))
 }
 
 /// Validates that writing `bytes` would not exceed the mount's quota.

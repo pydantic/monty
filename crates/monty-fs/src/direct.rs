@@ -6,7 +6,7 @@
 //! filesystem root.
 
 use cap_std::fs::Dir;
-use monty_types::{FileMode, MontyObject, normalize_virtual_path};
+use monty_types::{FileMode, MontyValue, normalize_virtual_path};
 
 use super::{
     common::{
@@ -23,7 +23,7 @@ use super::{
 ///
 /// This backend never retains payloads (they stream to disk), so the owned
 /// request is simply borrowed from and dropped when the operation finishes.
-pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
+pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<MontyValue, MountError> {
     match request {
         FsRequest::Exists { path } => bool_query(&path, ctx, |dir, rel| dir.exists(rel)),
         FsRequest::IsFile { path } => bool_query(&path, ctx, host_is_file),
@@ -82,7 +82,7 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
         }
         FsRequest::Rename { src, dst } => rename(&src, &dst, ctx),
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
-            Ok(MontyObject::Path(normalize_virtual_path(&path).into_owned()))
+            Ok(MontyValue::path(normalize_virtual_path(&path).into_owned()))
         }
         FsRequest::Open { path, mode } => open(&path, mode, ctx),
     }
@@ -94,7 +94,7 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
 /// exists; write modes truncate or create an empty file; append modes create the
 /// file if missing without disturbing existing content. The host keeps no handle
 /// open — this single call opens, acts, and closes.
-fn open(path: &str, mode: FileMode, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
+fn open(path: &str, mode: FileMode, ctx: &mut MountContext<'_>) -> Result<MontyValue, MountError> {
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
     let rel = target.for_dir_op();
     match mode {
@@ -126,13 +126,13 @@ fn bool_query(
     path: &str,
     ctx: &MountContext<'_>,
     query: impl Fn(&Dir, &str) -> bool,
-) -> Result<MontyObject, MountError> {
+) -> Result<MontyValue, MountError> {
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
-    Ok(MontyObject::Bool(query(ctx.mount_dir, target.for_dir_op())))
+    Ok(MontyValue::bool(query(ctx.mount_dir, target.for_dir_op())))
 }
 
 /// Writes text after validating quota.
-fn write_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
+fn write_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<MontyValue, MountError> {
     check_write_limit(data.len(), ctx)?;
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
     let result = host_write_text(ctx.mount_dir, target.for_dir_op(), data, path)?;
@@ -141,7 +141,7 @@ fn write_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<Mont
 }
 
 /// Writes bytes after validating quota.
-fn write_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
+fn write_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<MontyValue, MountError> {
     check_write_limit(data.len(), ctx)?;
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
     let result = host_write_bytes(ctx.mount_dir, target.for_dir_op(), data, path)?;
@@ -150,7 +150,7 @@ fn write_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<Mo
 }
 
 /// Appends text after validating quota.
-fn append_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
+fn append_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<MontyValue, MountError> {
     check_write_limit(data.len(), ctx)?;
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
     let result = host_append_text(ctx.mount_dir, target.for_dir_op(), data, path)?;
@@ -159,7 +159,7 @@ fn append_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<Mon
 }
 
 /// Appends bytes after validating quota.
-fn append_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
+fn append_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<MontyValue, MountError> {
     check_write_limit(data.len(), ctx)?;
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
     let result = host_append_bytes(ctx.mount_dir, target.for_dir_op(), data, path)?;
@@ -168,7 +168,7 @@ fn append_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<M
 }
 
 /// Creates a directory, using `create_dir_all` only when `parents` is set.
-fn mkdir(path: &str, parents: bool, exist_ok: bool, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
+fn mkdir(path: &str, parents: bool, exist_ok: bool, ctx: &MountContext<'_>) -> Result<MontyValue, MountError> {
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
     host_mkdir(ctx.mount_dir, target.for_dir_op(), parents, exist_ok, path)
 }
@@ -177,7 +177,7 @@ fn mkdir(path: &str, parents: bool, exist_ok: bool, ctx: &MountContext<'_>) -> R
 ///
 /// Both ends resolve against the same descriptor, so neither can name anything
 /// outside it and the operation itself is a single `renameat`.
-fn rename(src: &str, dst: &str, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
+fn rename(src: &str, dst: &str, ctx: &MountContext<'_>) -> Result<MontyValue, MountError> {
     let src_target = resolve_virtual_path(src, ctx.mount_virtual)?;
     let dst_target = resolve_virtual_path(dst, ctx.mount_virtual)?;
     reject_mount_root(&src_target, src)?;
@@ -186,7 +186,7 @@ fn rename(src: &str, dst: &str, ctx: &MountContext<'_>) -> Result<MontyObject, M
     ctx.mount_dir
         .rename(src_target.for_dir_op(), ctx.mount_dir, dst_target.for_dir_op())
         .map_err(|err| map_io(err, src))?;
-    Ok(MontyObject::None)
+    Ok(MontyValue::none())
 }
 
 /// Refuses to rename or remove the mount root itself, which has no name inside

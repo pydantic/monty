@@ -5,7 +5,7 @@ use std::{
     mem,
 };
 
-use monty_types::{DictPairs, MontyClassType, MontyUuid};
+use monty_types::{ClassTypeNode, MontyUuid};
 
 use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value, str::allocate_string};
 use crate::{
@@ -413,17 +413,17 @@ impl HostClassType {
         self.is_dataclass
     }
 
-    /// Rebuilds the wire [`MontyClassType`] this type object crosses out as —
+    /// Rebuilds the [`ClassTypeNode`] this type object crosses out as —
     /// minus `attrs`, which hold heap `Value`s: the object bridge converts
     /// and appends them when the type crosses out as a value.
     #[must_use]
-    pub fn class_type(&self, interns: &Interns) -> MontyClassType {
-        MontyClassType {
+    pub fn class_type(&self, interns: &Interns) -> ClassTypeNode {
+        ClassTypeNode {
             name: self.name.as_str(interns).to_owned(),
             id: self.type_id,
             host_defined: true,
             is_dataclass: self.is_dataclass,
-            attrs: DictPairs::default(),
+            attrs: Vec::new(),
         }
     }
 }

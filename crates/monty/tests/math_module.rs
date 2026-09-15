@@ -1,8 +1,8 @@
 use monty::MontyRun;
-use monty_types::{CompileOptions, MontyObject};
+use monty_types::{CompileOptions, MontyValue};
 
 /// Helper to run a Python expression and return the result.
-fn run_expr(code: &str) -> MontyObject {
+fn run_expr(code: &str) -> MontyValue {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     ex.run_no_limits(vec![]).unwrap()
 }

@@ -679,7 +679,6 @@ impl MontyTypeExt for MontyType {
             Self::DictValues => Some(Type::DictValues),
             Self::Set => Some(Type::Set),
             Self::FrozenSet => Some(Type::FrozenSet),
-            Self::Instance(_) => None,
             Self::Exception(exc_type) => Some(Type::Exception(*exc_type)),
             Self::Function => Some(Type::Function),
             Self::BuiltinFunction => Some(Type::BuiltinFunction),

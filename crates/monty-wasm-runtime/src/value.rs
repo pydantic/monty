@@ -11,8 +11,8 @@ use std::borrow::Cow;
 
 use monty_proto::DEFAULT_MAX_DECODE_BYTES;
 use monty_types::{
-    ClassTypeNode as MontyClassTypeNode, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyGraph, MontyNode,
-    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NodeId,
+    BuiltinsFunctions, ClassTypeNode as MontyClassTypeNode, FileMode, MontyDate, MontyDateTime, MontyFileHandle,
+    MontyGraph, MontyNode, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NodeId,
 };
 
 use crate::bindings::exports::pydantic::monty::worker::{
@@ -68,7 +68,7 @@ pub fn from_component(arena: Arena, budget: &mut DecodeBudget) -> Result<MontyGr
 fn node_host_size(node: &ValueNode) -> usize {
     let strings_size = |strings: &[String]| {
         strings.iter().fold(0usize, |size, value| {
-            size.saturating_add(MontyObject::host_metadata_string_size(value))
+            size.saturating_add(MontyNode::metadata_string_size(value))
         })
     };
     let indexes = |count: usize| count.saturating_mul(size_of::<NodeId>());
@@ -215,10 +215,11 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
             is_dataclass: value.is_dataclass,
             attrs: id_pairs(value.attrs),
         })),
-        ValueNode::BuiltinFunction(value) => match MontyObject::builtin_function_from_name(&value) {
-            Some(MontyObject::BuiltinFunction(function)) => MontyNode::BuiltinFunction(function),
-            _ => return Err(format!("unknown builtin function {value:?}")),
-        },
+        ValueNode::BuiltinFunction(value) => MontyNode::BuiltinFunction(
+            value
+                .parse::<BuiltinsFunctions>()
+                .map_err(|_| format!("unknown builtin function {value:?}"))?,
+        ),
         ValueNode::Path(value) => MontyNode::Path(value),
         ValueNode::FileHandle(value) => MontyNode::FileHandle(MontyFileHandle {
             path: value.path,

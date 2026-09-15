@@ -181,7 +181,7 @@ properties that real CPython does not provide, per the caveat above.
     [`Cycle`](../api/rust/monty-types.md#montynode) node that a worker can send
     but that is rejected as an input. A cyclic host value cannot be sent at all:
     Python raises `ValueError: Circular reference detected`, JS `TypeError`.
-- A sandbox value with no `MontyObject` equivalent — a class, a class
+- A sandbox value with no `MontyValue` equivalent — a class, a class
     instance, a function, a compiled `re` pattern — is **silently degraded to
     its repr string** on the way out, rather than failing. A host function
     receiving one gets a `str`: `"<class 'C'>"`, `"<C object at 0x5>"`,

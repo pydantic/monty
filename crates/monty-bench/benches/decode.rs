@@ -8,7 +8,7 @@ use codspeed_criterion_compat::{BenchmarkId, Criterion, Throughput, black_box, c
 #[cfg(not(codspeed))]
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use monty_proto::{decode_frame, encode_to_capped_vec, pb};
-use monty_types::{MontyGraph, MontyNode, MontyObject, MontyValue};
+use monty_types::{MontyGraph, MontyNode, MontyValue};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 
@@ -50,14 +50,14 @@ fn complete_frame(value: MontyValue) -> Vec<u8> {
 
 /// A frame whose payload is a single string of roughly `target` bytes.
 fn str_frame(target: usize) -> Vec<u8> {
-    complete_frame(MontyObject::String("x".repeat(target)).into())
+    complete_frame(MontyValue::string("x".repeat(target)))
 }
 
 /// A frame of roughly `target` bytes of row dicts, sized by measuring the
 /// encoded cost of a small batch first.
 fn rows_frame(target: usize) -> Vec<u8> {
-    let per_row = complete_frame(rows(1024).into()).len() / 1024;
-    complete_frame(rows((target / per_row).try_into().expect("row count fits i64")).into())
+    let per_row = complete_frame(rows(1024)).len() / 1024;
+    complete_frame(rows((target / per_row).try_into().expect("row count fits i64")))
 }
 
 /// A frame of roughly `target` bytes of shared structure: `[0]` wrapped in
@@ -81,28 +81,28 @@ fn dag(levels: usize) -> MontyValue {
 
 /// A list of `n` dicts shaped like a SQL tool reply (short string keys,
 /// mixed str/int values) — same shape as `pool.rs`'s `make_rows`, scaled.
-fn rows(n: i64) -> MontyObject {
-    MontyObject::List(
+fn rows(n: i64) -> MontyValue {
+    MontyValue::list(
         (0..n)
             .map(|i| {
-                MontyObject::dict(vec![
-                    (MontyObject::String("order_id".to_owned()), MontyObject::Int(i)),
+                MontyValue::dict([
+                    (MontyValue::string("order_id".to_owned()), MontyValue::int(i)),
                     (
-                        MontyObject::String("customer".to_owned()),
-                        MontyObject::String(format!("customer-{i}@example.com")),
+                        MontyValue::string("customer".to_owned()),
+                        MontyValue::string(format!("customer-{i}@example.com")),
                     ),
                     (
-                        MontyObject::String("region".to_owned()),
-                        MontyObject::String("north".to_owned()),
+                        MontyValue::string("region".to_owned()),
+                        MontyValue::string("north".to_owned()),
                     ),
                     (
-                        MontyObject::String("amount".to_owned()),
-                        MontyObject::Int((i * 37) % 500 + 1),
+                        MontyValue::string("amount".to_owned()),
+                        MontyValue::int((i * 37) % 500 + 1),
                     ),
-                    (MontyObject::String("quantity".to_owned()), MontyObject::Int(i % 7 + 1)),
+                    (MontyValue::string("quantity".to_owned()), MontyValue::int(i % 7 + 1)),
                 ])
             })
-            .collect(),
+            .collect::<Vec<_>>(),
     )
 }
 

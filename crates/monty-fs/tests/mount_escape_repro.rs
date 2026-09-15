@@ -3,7 +3,7 @@
 use std::{fs, io::ErrorKind};
 
 use monty_fs::{Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
-use monty_types::{MontyObject, MontyPath, OsFunctionCall, RenameCallArgs};
+use monty_types::{MontyPath, MontyValue, OsFunctionCall, RenameCallArgs};
 use tempfile::TempDir;
 
 // Only the directory helpers are used here; the rest is shared with other tests.
@@ -12,7 +12,7 @@ mod common;
 use common::{symlink_dir, symlinks_supported};
 
 /// Dispatches `call`, panicking on the `NotHandled` these tests never expect.
-fn handled(mt: &mut MountTable, call: OsFunctionCall) -> Result<MontyObject, MountError> {
+fn handled(mt: &mut MountTable, call: OsFunctionCall) -> Result<MontyValue, MountError> {
     match mt.handle_os_call(call) {
         MountCallOutcome::Handled(result) => result,
         MountCallOutcome::NotHandled(call) => panic!("expected the mount table to handle {call:?}"),
@@ -28,7 +28,7 @@ fn rename(src: &str, dst: &str) -> OsFunctionCall {
 }
 
 /// Reads `path` through the table.
-fn read_text(mt: &mut MountTable, path: &str) -> Result<MontyObject, MountError> {
+fn read_text(mt: &mut MountTable, path: &str) -> Result<MontyValue, MountError> {
     handled(mt, OsFunctionCall::ReadText(MontyPath::new(path.to_owned())))
 }
 
@@ -86,7 +86,7 @@ fn mount_root_stays_pinned_across_rebuilds() {
     // The rebuild still serves the directory that was validated, and the file
     // the redirect aimed at is simply not in it.
     let inside = read_text(&mut rebuilt, "/child/inside.txt").unwrap();
-    assert_eq!(inside, MontyObject::String("in-mount".to_owned()));
+    assert_eq!(inside, MontyValue::string("in-mount".to_owned()));
     match read_text(&mut rebuilt, "/child/secret.txt") {
         Err(MountError::Io(err, _)) => assert_eq!(err.kind(), ErrorKind::NotFound),
         other => panic!("expected the redirected read to miss, got {other:?}"),
@@ -99,7 +99,7 @@ fn mount_root_stays_pinned_across_rebuilds() {
         .mount("/child", &child_host_path, MountMode::ReadOnly, None)
         .unwrap();
     let leaked = read_text(&mut from_path, "/child/secret.txt").unwrap();
-    assert_eq!(leaked, MontyObject::String("HOST SECRET".to_owned()));
+    assert_eq!(leaked, MontyValue::string("HOST SECRET".to_owned()));
 }
 
 /// Once either side of a rename is covered, the table owns the call: the
@@ -163,7 +163,7 @@ fn overlong_path_rejected_even_when_it_normalizes_short() {
 
         // The path it collapses to is served normally, so only length is at issue.
         let read = read_text(&mut mt, "/mnt/a/../hello.txt").unwrap();
-        assert_eq!(read, MontyObject::String("hello".to_owned()));
+        assert_eq!(read, MontyValue::string("hello".to_owned()));
     }
 }
 
@@ -250,7 +250,7 @@ fn overlong_path_predicates_answer_false() {
             let name = call.name();
             assert_eq!(
                 handled(&mut mt, call).unwrap(),
-                MontyObject::Bool(false),
+                MontyValue::bool(false),
                 "{name} on an overlong path must answer False, as CPython does"
             );
         }
@@ -258,7 +258,7 @@ fn overlong_path_predicates_answer_false() {
 }
 
 /// Asserts an operation failed with the `ENAMETOOLONG` form of [`MountError`].
-fn assert_too_long(result: Result<MontyObject, MountError>) {
+fn assert_too_long(result: Result<MontyValue, MountError>) {
     match result {
         Err(MountError::Io(err, _)) => {
             assert_eq!(err.kind(), ErrorKind::InvalidFilename);
@@ -269,7 +269,7 @@ fn assert_too_long(result: Result<MontyObject, MountError>) {
 }
 
 /// The sandbox-visible exception message for a failed operation.
-fn message_of(result: Result<MontyObject, MountError>) -> String {
+fn message_of(result: Result<MontyValue, MountError>) -> String {
     result
         .expect_err("expected the operation to fail")
         .into_exception()

@@ -363,12 +363,12 @@ impl Serialize for Displayed<'_> {
     }
 }
 
-/// The repr a timezone value would have had as a `MontyObject`.
+/// The repr a timezone value would have had as a `MontyValue`.
 struct TimeZoneRepr<'a>(&'a monty_types::MontyTimeZone);
 
 impl fmt::Display for TimeZoneRepr<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        monty_types::MontyObject::TimeZone(self.0.clone()).fmt(f)
+        write!(f, "{}", monty_types::MontyValue::timezone(self.0.clone()).py_repr())
     }
 }
 
@@ -429,20 +429,19 @@ fn write_utc_offset(iso: &mut String, offset: i32) {
 #[cfg(test)]
 mod tests {
     use monty_types::{
-        DictPairs, ExcType, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyGraph, MontyNode,
-        MontyObject, MontyTimeDelta, MontyType, MontyUuid, MontyValue, NodeId,
+        ExcType, MontyDate, MontyDateTime, MontyGraph, MontyNode, MontyTimeDelta, MontyType, MontyUuid, MontyValue,
+        NodeId,
     };
 
     use super::{serialize_capped, serialize_dict_capped, serialize_named_capped, serialize_seq_capped};
 
-    /// Encodes a tree with a byte cap, through the arena it converts to.
-    fn capped(obj: &MontyObject, limit: usize) -> (String, bool) {
-        let value = MontyValue::from(obj.clone());
+    /// Encodes a value with a byte cap.
+    fn capped(value: &MontyValue, limit: usize) -> (String, bool) {
         serialize_capped(value.graph.nodes(), value.root, limit)
     }
 
     /// Shorthand: encode with a byte cap nothing here reaches.
-    fn json(obj: &MontyObject) -> String {
+    fn json(obj: &MontyValue) -> String {
         let (json, cut) = capped(obj, usize::MAX);
         assert!(!cut);
         json
@@ -450,42 +449,42 @@ mod tests {
 
     #[test]
     fn scalars_encode_as_json_scalars() {
-        assert_eq!(json(&MontyObject::Bool(true)), "true");
-        assert_eq!(json(&MontyObject::Int(-42)), "-42");
-        assert_eq!(json(&MontyObject::Float(1.5)), "1.5");
-        assert_eq!(json(&MontyObject::String("hello".to_owned())), r#""hello""#);
-        assert_eq!(json(&MontyObject::None), "null");
+        assert_eq!(json(&MontyValue::bool(true)), "true");
+        assert_eq!(json(&MontyValue::int(-42)), "-42");
+        assert_eq!(json(&MontyValue::float(1.5)), "1.5");
+        assert_eq!(json(&MontyValue::string("hello".to_owned())), r#""hello""#);
+        assert_eq!(json(&MontyValue::none()), "null");
     }
 
     #[test]
     fn nonfinite_floats_become_python_str() {
-        assert_eq!(json(&MontyObject::Float(f64::INFINITY)), r#""inf""#);
-        assert_eq!(json(&MontyObject::Float(f64::NEG_INFINITY)), r#""-inf""#);
-        assert_eq!(json(&MontyObject::Float(f64::NAN)), r#""nan""#);
+        assert_eq!(json(&MontyValue::float(f64::INFINITY)), r#""inf""#);
+        assert_eq!(json(&MontyValue::float(f64::NEG_INFINITY)), r#""-inf""#);
+        assert_eq!(json(&MontyValue::float(f64::NAN)), r#""nan""#);
     }
 
     #[test]
     fn containers_become_json() {
-        let list = MontyObject::List(vec![
-            MontyObject::Int(1),
-            MontyObject::String("x".to_owned()),
-            MontyObject::None,
-            MontyObject::Float(f64::NAN),
+        let list = MontyValue::list([
+            MontyValue::int(1),
+            MontyValue::string("x".to_owned()),
+            MontyValue::none(),
+            MontyValue::float(f64::NAN),
         ]);
         assert_eq!(json(&list), r#"[1,"x",null,"nan"]"#);
 
-        let tuple = MontyObject::Tuple(vec![MontyObject::Bool(false), MontyObject::Float(2.5)]);
+        let tuple = MontyValue::tuple([MontyValue::bool(false), MontyValue::float(2.5)]);
         assert_eq!(json(&tuple), "[false,2.5]");
 
-        let nested = MontyObject::List(vec![MontyObject::List(vec![MontyObject::Int(1)])]);
+        let nested = MontyValue::list([MontyValue::list([MontyValue::int(1)])]);
         assert_eq!(json(&nested), "[[1]]");
     }
 
     #[test]
     fn dict_keys_are_strings_or_reprs() {
-        let dict = MontyObject::dict(vec![
-            (MontyObject::String("a".to_owned()), MontyObject::Int(1)),
-            (MontyObject::Int(2), MontyObject::String("b".to_owned())),
+        let dict = MontyValue::dict([
+            (MontyValue::string("a".to_owned()), MontyValue::int(1)),
+            (MontyValue::int(2), MontyValue::string("b".to_owned())),
         ]);
         assert_eq!(json(&dict), r#"{"a":1,"2":"b"}"#);
     }
@@ -495,10 +494,10 @@ mod tests {
     #[test]
     fn oversize_dict_key_repr_is_capped() {
         let pairs = vec![(
-            MontyObject::Tuple(vec![MontyObject::Bytes(vec![0xff; 10_000])]),
-            MontyObject::None,
+            MontyValue::tuple([MontyValue::bytes(vec![0xff; 10_000])]),
+            MontyValue::none(),
         )];
-        let value = MontyValue::from(MontyObject::dict(pairs));
+        let value = MontyValue::dict(pairs);
         let MontyNode::Dict(pairs) = value.root_node() else {
             panic!("expected a dict node");
         };
@@ -509,20 +508,20 @@ mod tests {
 
     #[test]
     fn bytes_use_repr_content() {
-        let bytes = MontyObject::Bytes(b"hi\xff".to_vec());
+        let bytes = MontyValue::bytes(b"hi\xff".to_vec());
         assert_eq!(json(&bytes), r#""hi\\xff""#);
     }
 
     #[test]
     fn dates_use_isoformat() {
-        let date = MontyObject::Date(MontyDate {
+        let date = MontyValue::date(MontyDate {
             year: 2024,
             month: 3,
             day: 7,
         });
         assert_eq!(json(&date), r#""2024-03-07""#);
 
-        let naive = MontyObject::DateTime(MontyDateTime {
+        let naive = MontyValue::datetime(MontyDateTime {
             year: 2024,
             month: 3,
             day: 7,
@@ -535,7 +534,7 @@ mod tests {
         });
         assert_eq!(json(&naive), r#""2024-03-07T01:02:03""#);
 
-        let aware = MontyObject::DateTime(MontyDateTime {
+        let aware = MontyValue::datetime(MontyDateTime {
             year: 2024,
             month: 3,
             day: 7,
@@ -551,7 +550,7 @@ mod tests {
 
     #[test]
     fn timedelta_is_total_seconds() {
-        let delta = MontyObject::TimeDelta(MontyTimeDelta {
+        let delta = MontyValue::timedelta(MontyTimeDelta {
             days: 1,
             seconds: 1,
             microseconds: 500_000,
@@ -563,7 +562,7 @@ mod tests {
     /// microseconds, so the total is accumulated in f64 instead.
     #[test]
     fn huge_timedelta_does_not_overflow() {
-        let delta = MontyObject::TimeDelta(MontyTimeDelta {
+        let delta = MontyValue::timedelta(MontyTimeDelta {
             days: i32::MAX,
             seconds: 86_399,
             microseconds: 999_999,
@@ -573,65 +572,63 @@ mod tests {
 
     #[test]
     fn exception_is_its_message() {
-        let exc = MontyObject::Exception {
-            exc_type: ExcType::ValueError,
-            arg: Some("boom".to_owned()),
-        };
+        let exc = MontyValue::exception(ExcType::ValueError, Some("boom".to_owned()));
         assert_eq!(json(&exc), r#""boom""#);
     }
 
     #[test]
     fn namedtuple_is_a_plain_array() {
-        let nt = MontyObject::NamedTuple {
-            type_name: "Point".to_owned(),
-            field_names: vec!["x".to_owned(), "y".to_owned()],
-            values: vec![MontyObject::Int(1), MontyObject::Int(2)],
-        };
+        let nt = MontyValue::named_tuple(
+            "Point".to_owned(),
+            vec!["x".to_owned(), "y".to_owned()],
+            vec![MontyValue::int(1), MontyValue::int(2)],
+        );
         assert_eq!(json(&nt), "[1,2]");
     }
 
     /// A minimal host class type for fixtures.
-    fn test_class_type(name: &str, is_dataclass: bool) -> MontyClassType {
-        MontyClassType {
-            name: name.to_owned(),
-            id: MontyUuid::from_u128(1),
-            host_defined: true,
-            is_dataclass,
-            attrs: DictPairs::default(),
-        }
+    fn test_class_type(
+        name: &str,
+        is_dataclass: bool,
+        attrs: impl IntoIterator<Item = (MontyValue, MontyValue)>,
+    ) -> MontyValue {
+        MontyValue::class_type(name, MontyUuid::from_u128(1), true, is_dataclass, attrs)
     }
 
     /// A class instance mirrors its variant: the class, the instance id and
     /// the eager attrs.
     #[test]
     fn class_instance_mirrors_its_shape() {
-        let ci = MontyObject::ClassInstance(Box::new(MontyClassInstance {
-            class_type: test_class_type("Point", true),
-            instance_id: MontyUuid::from_u128(7),
-            attrs: DictPairs::from(vec![
-                (MontyObject::String("x".to_owned()), MontyObject::Int(1)),
-                (MontyObject::String("y".to_owned()), MontyObject::Int(2)),
-            ]),
-        }));
+        let ci = MontyValue::class_instance(
+            test_class_type("Point", true, []),
+            MontyUuid::from_u128(7),
+            [
+                (MontyValue::string("x".to_owned()), MontyValue::int(1)),
+                (MontyValue::string("y".to_owned()), MontyValue::int(2)),
+            ],
+        );
         assert_eq!(
             json(&ci),
             r#"{"type":{"name":"Point","id":"00000000-0000-0000-0000-000000000001","host_defined":true,"is_dataclass":true,"attrs":{}},"id":"00000000-0000-0000-0000-000000000007","attrs":{"x":1,"y":2}}"#
         );
     }
 
-    /// A class object mirrors `MontyClassType`; builtin types keep their repr.
+    /// A class object mirrors its node; builtin types keep their repr.
     #[test]
     fn class_type_mirrors_its_fields() {
-        let mut class_type = test_class_type("Point", false);
-        class_type.attrs = DictPairs::from(vec![(
-            MontyObject::String("ORIGIN".to_owned()),
-            MontyObject::Tuple(vec![MontyObject::Int(0), MontyObject::Int(0)]),
-        )]);
+        let class_type = test_class_type(
+            "Point",
+            false,
+            [(
+                MontyValue::string("ORIGIN".to_owned()),
+                MontyValue::tuple([MontyValue::int(0), MontyValue::int(0)]),
+            )],
+        );
         assert_eq!(
-            json(&MontyObject::Type(MontyType::Instance(Box::new(class_type)))),
+            json(&class_type),
             r#"{"name":"Point","id":"00000000-0000-0000-0000-000000000001","host_defined":true,"is_dataclass":false,"attrs":{"ORIGIN":[0,0]}}"#
         );
-        assert_eq!(json(&MontyObject::Type(MontyType::Int)), r#""<class 'int'>""#);
+        assert_eq!(json(&MontyValue::type_object(MontyType::Int)), r#""<class 'int'>""#);
     }
 
     /// A wide attacker-controlled attrs mapping is cut by the byte cap rather
@@ -639,35 +636,31 @@ mod tests {
     #[test]
     fn class_instance_attrs_are_capped() {
         let attrs = (0..2_000)
-            .map(|index| (MontyObject::String(format!("extra_{index}")), MontyObject::None))
+            .map(|index| (MontyValue::string(format!("extra_{index}")), MontyValue::none()))
             .collect::<Vec<_>>();
-        let value = MontyObject::ClassInstance(Box::new(MontyClassInstance {
-            class_type: test_class_type("Large", false),
-            instance_id: MontyUuid::from_u128(7),
-            attrs: DictPairs::from(attrs),
-        }));
+        let value = MontyValue::class_instance(test_class_type("Large", false, []), MontyUuid::from_u128(7), attrs);
         assert!(capped(&value, 64).1);
     }
 
     #[test]
     fn opaque_values_fall_back_to_repr() {
-        assert_eq!(json(&MontyObject::Ellipsis), r#""Ellipsis""#);
-        assert_eq!(json(&MontyObject::Path("/mnt/data".to_owned())), r#""/mnt/data""#);
+        assert_eq!(json(&MontyValue::ellipsis()), r#""Ellipsis""#);
+        assert_eq!(json(&MontyValue::path("/mnt/data".to_owned())), r#""/mnt/data""#);
         assert_eq!(
-            json(&MontyObject::Cycle("[...]".to_owned())),
+            json(&MontyValue::cycle("[...]".to_owned())),
             r#""<circular reference>""#
         );
     }
 
     #[test]
     fn big_ints_encode_as_numbers() {
-        let big = MontyObject::BigInt("123456789012345678901234567890".parse().unwrap());
+        let big = MontyValue::bigint("123456789012345678901234567890".parse().unwrap());
         assert_eq!(json(&big), "123456789012345678901234567890");
     }
 
     #[test]
     fn oversize_output_is_cut_off_and_flagged() {
-        let value = MontyObject::List((0..1000).map(MontyObject::Int).collect());
+        let value = MontyValue::list((0..1000).map(MontyValue::int));
         let (s, cut) = capped(&value, 20);
         assert!(cut);
         assert!(s.len() <= 20);
@@ -678,12 +671,12 @@ mod tests {
     /// huge payload is never quadrupled into a repr that is then thrown away.
     #[test]
     fn oversize_bytes_are_capped_before_escaping() {
-        let value = MontyObject::List(vec![MontyObject::Bytes(vec![0xff; 10_000]), MontyObject::Int(1)]);
+        let value = MontyValue::list([MontyValue::bytes(vec![0xff; 10_000]), MontyValue::int(1)]);
         let (s, cut) = capped(&value, 64);
         assert!(cut);
         assert!(s.len() <= 64);
         // a payload the cap can hold is still encoded in full
-        let value = MontyObject::Bytes(vec![0xff; 4]);
+        let value = MontyValue::bytes(vec![0xff; 4]);
         assert_eq!(json(&value), r#""\\xff\\xff\\xff\\xff""#);
     }
 

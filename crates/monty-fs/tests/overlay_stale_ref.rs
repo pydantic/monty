@@ -13,7 +13,7 @@ use std::{
 };
 
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
-use monty_types::{MontyObject, OsFunctionCall, PathStringDataArgs, RenameCallArgs};
+use monty_types::{MontyNode, MontyValue, OsFunctionCall, PathStringDataArgs, RenameCallArgs};
 use tempfile::TempDir;
 
 mod common;
@@ -33,7 +33,7 @@ fn mount_overlay(host: &Path) -> MountTable {
 }
 
 /// Dispatches a call, panicking if the mount table declines to handle it.
-fn dispatch(mt: &mut MountTable, call: OsFunctionCall) -> Result<MontyObject, MountError> {
+fn dispatch(mt: &mut MountTable, call: OsFunctionCall) -> Result<MontyValue, MountError> {
     match mt.handle_os_call(call) {
         MountCallOutcome::Handled(result) => result,
         MountCallOutcome::NotHandled(call) => panic!("mount table returned NotHandled: {call:?}"),
@@ -95,9 +95,12 @@ impl StaleRef {
     fn assert_rejected(&mut self, call: OsFunctionCall) {
         let outcome = dispatch(&mut self.mounts, call);
         let leaked = match &outcome {
-            Ok(MontyObject::String(s)) => s.contains(SECRET),
-            Ok(MontyObject::Bytes(b)) => b.windows(SECRET.len()).any(|w| w == SECRET.as_bytes()),
-            _ => false,
+            Ok(value) => match value.root_node() {
+                MontyNode::String(s) => s.contains(SECRET),
+                MontyNode::Bytes(b) => b.windows(SECRET.len()).any(|w| w == SECRET.as_bytes()),
+                _ => false,
+            },
+            Err(_) => false,
         };
         assert!(
             !leaked,
@@ -189,12 +192,12 @@ fn mount_root_swap_does_not_redirect_a_cached_ref() {
     }
 
     let outcome = dispatch(&mut mt, OsFunctionCall::ReadText("/mnt/moved.txt".into()));
-    let leaked = matches!(&outcome, Ok(MontyObject::String(s)) if s.contains(SECRET));
+    let leaked = matches!(&outcome, Ok(value) if value.as_ref().as_str().is_some_and(|s| s.contains(SECRET)));
     assert!(
         !leaked,
         "HOST FILE DISCLOSURE: swapping the mount root redirected the read"
     );
-    assert_eq!(outcome.unwrap(), MontyObject::String("public".to_owned()));
+    assert_eq!(outcome.unwrap(), MontyValue::string("public".to_owned()));
 }
 
 /// Renaming a symlink is refused without ever consulting its target.
@@ -247,7 +250,7 @@ fn direct_read_through_escaping_symlink_is_rejected() {
     let mut mt = mount_overlay(mount_dir.path());
     let outcome = dispatch(&mut mt, OsFunctionCall::ReadText("/mnt/link.txt".into()));
 
-    let leaked = matches!(&outcome, Ok(MontyObject::String(s)) if s.contains(SECRET));
+    let leaked = matches!(&outcome, Ok(value) if value.as_ref().as_str().is_some_and(|s| s.contains(SECRET)));
     assert!(!leaked, "control failed: the ordinary resolution path also leaks");
 }
 

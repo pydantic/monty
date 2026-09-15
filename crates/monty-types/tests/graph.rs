@@ -1,56 +1,49 @@
-//! Tests for the value arena: tree ↔ arena round trips, sharing, cycles,
-//! validation, merging, expansion limits and footprint accounting.
+//! Tests for the value arena: construction, sharing, cycles, validation,
+//! merging, equality and footprint accounting.
 
 use std::mem::size_of;
 
 use monty_types::{
-    BuiltinsFunctions, CallArgs, DictPairs, ExcType, ExpandError, ExpandLimits, FileMode, GraphError,
-    MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle, MontyGraph, MontyNode, MontyObject,
-    MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, MontyValue, NamedValues, NodeId,
+    BuiltinsFunctions, CallArgs, ExcType, FileMode, GraphError, MontyDate, MontyDateTime, MontyFileHandle, MontyGraph,
+    MontyNode, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, MontyValue, NamedValues, NodeId,
 };
 
-fn class_type(attrs: DictPairs) -> MontyClassType {
-    MontyClassType {
-        name: "Point".to_owned(),
-        id: MontyUuid::from_u128(1),
-        host_defined: true,
-        is_dataclass: false,
-        attrs,
-    }
+fn class_type(attrs: impl IntoIterator<Item = (MontyValue, MontyValue)>) -> MontyValue {
+    MontyValue::class_type("Point", MontyUuid::from_u128(1), true, false, attrs)
 }
 
-fn pair(name: &str, value: MontyObject) -> (MontyObject, MontyObject) {
-    (MontyObject::String(name.to_owned()), value)
+fn pair(name: &str, value: MontyValue) -> (MontyValue, MontyValue) {
+    (MontyValue::string(name.to_owned()), value)
 }
 
-/// One object of every `MontyObject` variant.
-fn corpus() -> Vec<MontyObject> {
+/// One object of every `MontyValue` variant.
+fn corpus() -> Vec<MontyValue> {
     vec![
-        MontyObject::Ellipsis,
-        MontyObject::NotImplemented,
-        MontyObject::None,
-        MontyObject::Bool(true),
-        MontyObject::Int(-42),
-        MontyObject::BigInt("123456789012345678901234567890".parse().unwrap()),
-        MontyObject::Float(f64::NAN),
-        MontyObject::String("hi".to_owned()),
-        MontyObject::Bytes(vec![0, 255]),
-        MontyObject::List(vec![MontyObject::Int(1), MontyObject::None]),
-        MontyObject::Tuple(vec![MontyObject::Int(1)]),
-        MontyObject::Set(vec![MontyObject::Int(1)]),
-        MontyObject::FrozenSet(vec![MontyObject::Int(1)]),
-        MontyObject::NamedTuple {
-            type_name: "os.stat_result".to_owned(),
-            field_names: vec!["st_mode".to_owned()],
-            values: vec![MontyObject::Int(0o644)],
-        },
-        MontyObject::Dict(DictPairs::from(vec![pair("a", MontyObject::Int(1))])),
-        MontyObject::Date(MontyDate {
+        MontyValue::ellipsis(),
+        MontyValue::not_implemented(),
+        MontyValue::none(),
+        MontyValue::bool(true),
+        MontyValue::int(-42),
+        MontyValue::bigint("123456789012345678901234567890".parse().unwrap()),
+        MontyValue::float(f64::NAN),
+        MontyValue::string("hi".to_owned()),
+        MontyValue::bytes(vec![0, 255]),
+        MontyValue::list([MontyValue::int(1), MontyValue::none()]),
+        MontyValue::tuple([MontyValue::int(1)]),
+        MontyValue::set([MontyValue::int(1)]),
+        MontyValue::frozenset([MontyValue::int(1)]),
+        MontyValue::named_tuple(
+            "os.stat_result".to_owned(),
+            vec!["st_mode".to_owned()],
+            vec![MontyValue::int(0o644)],
+        ),
+        MontyValue::dict([pair("a", MontyValue::int(1))]),
+        MontyValue::date(MontyDate {
             year: 2026,
             month: 9,
             day: 15,
         }),
-        MontyObject::DateTime(MontyDateTime {
+        MontyValue::datetime(MontyDateTime {
             year: 2026,
             month: 9,
             day: 15,
@@ -61,7 +54,7 @@ fn corpus() -> Vec<MontyObject> {
             offset_seconds: Some(3600),
             timezone_name: Some("CET".to_owned()),
         }),
-        MontyObject::Time(MontyTime {
+        MontyValue::time(MontyTime {
             hour: 1,
             minute: 2,
             second: 3,
@@ -70,63 +63,50 @@ fn corpus() -> Vec<MontyObject> {
             timezone_name: None,
             fold: 0,
         }),
-        MontyObject::TimeDelta(MontyTimeDelta {
+        MontyValue::timedelta(MontyTimeDelta {
             days: 1,
             seconds: 2,
             microseconds: 3,
         }),
-        MontyObject::TimeZone(MontyTimeZone {
+        MontyValue::timezone(MontyTimeZone {
             offset_seconds: 0,
             name: Some("UTC".to_owned()),
         }),
-        MontyObject::Exception {
-            exc_type: ExcType::ValueError,
-            arg: Some("bad".to_owned()),
-        },
-        MontyObject::Type(MontyType::Int),
-        MontyObject::Type(MontyType::Instance(Box::new(class_type(DictPairs::from(vec![pair(
-            "ORIGIN",
-            MontyObject::Int(0),
-        )]))))),
-        MontyObject::BuiltinFunction(BuiltinsFunctions::Len),
-        MontyObject::Path("/mnt/data".to_owned()),
-        MontyObject::FileHandle(MontyFileHandle {
+        MontyValue::exception(ExcType::ValueError, Some("bad".to_owned())),
+        MontyValue::type_object(MontyType::Int),
+        class_type([pair("ORIGIN", MontyValue::int(0))]),
+        MontyValue::builtin_function(BuiltinsFunctions::Len),
+        MontyValue::path("/mnt/data".to_owned()),
+        MontyValue::file_handle(MontyFileHandle {
             path: "/mnt/f".to_owned(),
             mode: FileMode::Read(false),
             position: 7,
         }),
-        MontyObject::ClassInstance(Box::new(MontyClassInstance {
-            class_type: class_type(DictPairs::default()),
-            instance_id: MontyUuid::from_u128(2),
-            attrs: DictPairs::from(vec![pair("x", MontyObject::Int(1))]),
-        })),
-        MontyObject::Function {
-            name: "fetch".to_owned(),
-            docstring: Some("doc".to_owned()),
-        },
-        MontyObject::Repr("<object>".to_owned()),
-        MontyObject::Cycle("[...]".to_owned()),
+        MontyValue::class_instance(class_type([]), MontyUuid::from_u128(2), [pair("x", MontyValue::int(1))]),
+        MontyValue::function("fetch".to_owned(), Some("doc".to_owned())),
+        MontyValue::repr("<object>".to_owned()),
+        MontyValue::cycle("[...]".to_owned()),
     ]
 }
 
-// === tree → arena → tree ===
+// === construction ===
 
 #[test]
-fn every_variant_round_trips_through_the_arena() {
-    for object in corpus() {
-        let value = MontyValue::from(object.clone());
-        assert_eq!(value.into_object().unwrap(), object, "{object:?}");
+fn every_kind_copies_and_serializes_equal() {
+    for value in corpus() {
+        assert_eq!(value.as_ref().to_owned(), value, "{value:?}");
+        let bytes = postcard::to_allocvec(&value).unwrap();
+        assert_eq!(postcard::from_bytes::<MontyValue>(&bytes).unwrap(), value, "{value:?}");
     }
 }
 
 #[test]
 fn class_types_become_their_own_node() {
-    let object = MontyObject::ClassInstance(Box::new(MontyClassInstance {
-        class_type: class_type(DictPairs::from(vec![pair("ORIGIN", MontyObject::Int(0))])),
-        instance_id: MontyUuid::from_u128(2),
-        attrs: DictPairs::default(),
-    }));
-    let value = MontyValue::from(object);
+    let value = MontyValue::class_instance(
+        class_type([pair("ORIGIN", MontyValue::int(0))]),
+        MontyUuid::from_u128(2),
+        [],
+    );
     // "ORIGIN", 0, the class, then the instance.
     assert_eq!(value.graph.len(), 4);
     assert!(matches!(value.graph.node(NodeId(2)), MontyNode::ClassType(class) if class.name == "Point"));
@@ -140,32 +120,29 @@ fn class_types_become_their_own_node() {
 }
 
 #[test]
-fn shared_nodes_expand_into_copies() {
+fn shared_nodes_equal_their_copies() {
     let mut graph = MontyGraph::new();
     let one = graph.push(MontyNode::Int(1));
     let inner = graph.push(MontyNode::List(vec![one]));
     let root = graph.push(MontyNode::List(vec![inner, inner]));
     let value = MontyValue::new(graph, root).unwrap();
     assert_eq!(
-        value.into_object().unwrap(),
-        MontyObject::List(vec![
-            MontyObject::List(vec![MontyObject::Int(1)]),
-            MontyObject::List(vec![MontyObject::Int(1)]),
+        value,
+        MontyValue::list([
+            MontyValue::list([MontyValue::int(1)]),
+            MontyValue::list([MontyValue::int(1)]),
         ])
     );
     assert_eq!(value.to_string(), "[[1], [1]]");
 }
 
 #[test]
-fn cycle_leaf_expands_to_the_placeholder() {
+fn cycle_leaf_renders_as_the_placeholder() {
     let mut graph = MontyGraph::new();
     let cycle = graph.push(MontyNode::Cycle("[...]".to_owned()));
     let root = graph.push(MontyNode::List(vec![cycle]));
     let value = MontyValue::new(graph, root).unwrap();
-    assert_eq!(
-        value.into_object().unwrap(),
-        MontyObject::List(vec![MontyObject::Cycle("[...]".to_owned())])
-    );
+    assert_eq!(value, MontyValue::list([MontyValue::cycle("[...]")]));
     assert_eq!(value.to_string(), "[[...]]");
 }
 
@@ -177,9 +154,9 @@ fn cycle_placeholders_follow_the_container_kind() {
     assert_eq!(MontyNode::Int(1).cycle_placeholder(), "...");
 }
 
-// === expansion limits ===
+// === equality is linear ===
 
-/// `x = [0]; x = [x, x]` repeated: n doublings share 2 + n nodes but expand to 2^(n+1) - 1.
+/// `x = [0]; x = [x, x]` repeated: n doublings share 2 + n nodes but would expand to 2^(n+1) - 1.
 fn doubling_ladder(doublings: u32) -> MontyValue {
     let mut graph = MontyGraph::new();
     let zero = graph.push(MontyNode::Int(0));
@@ -191,30 +168,16 @@ fn doubling_ladder(doublings: u32) -> MontyValue {
 }
 
 #[test]
-fn expansion_is_capped_by_bytes() {
-    let value = doubling_ladder(20);
-    assert_eq!(value.graph.len(), 22);
-    let limits = ExpandLimits {
-        max_bytes: 1 << 20,
-        ..ExpandLimits::default()
-    };
+fn equality_compares_each_node_pair_once() {
+    // 2^61 leaves if expanded: only linear comparison finishes
+    let value = doubling_ladder(60);
+    assert_eq!(value.graph.len(), 62);
+    assert_eq!(value, doubling_ladder(60));
+    assert_ne!(value, doubling_ladder(59));
     assert_eq!(
-        value.into_object_with(limits),
-        Err(ExpandError::TooLarge { limit: 1 << 20 })
+        value.graph.host_size(),
+        62 * size_of::<MontyNode>() + 121 * size_of::<NodeId>()
     );
-    assert!(doubling_ladder(3).into_object().is_ok());
-}
-
-#[test]
-fn expansion_is_capped_by_depth() {
-    let mut graph = MontyGraph::new();
-    let mut id = graph.push(MontyNode::Int(0));
-    for _ in 0..201 {
-        id = graph.push(MontyNode::List(vec![id]));
-    }
-    let value = MontyValue::new(graph, id).unwrap();
-    assert_eq!(value.into_object(), Err(ExpandError::TooDeep { limit: 200 }));
-    assert!(value.to_string().starts_with("<value not shown: "));
 }
 
 // === validation ===
@@ -250,18 +213,11 @@ fn class_instances_must_point_at_a_class_type() {
         MontyGraph::from_nodes(nodes).unwrap_err(),
         GraphError::ClassTypeNotAClass { node: NodeId(1) }
     );
-    let nodes = vec![MontyNode::Type(MontyType::Instance(Box::new(class_type(
-        DictPairs::default(),
-    ))))];
-    assert_eq!(
-        MontyGraph::from_nodes(nodes).unwrap_err(),
-        GraphError::InstanceTypeLeaf { node: NodeId(0) }
-    );
 }
 
 #[test]
 fn roots_must_be_in_range() {
-    let graph = MontyValue::from(MontyObject::Int(1)).graph;
+    let graph = MontyValue::int(1).graph;
     assert_eq!(
         graph.check_root(NodeId(1)),
         Err(GraphError::RootOutOfRange {
@@ -282,32 +238,29 @@ fn push_rejects_forward_references() {
 
 #[test]
 fn merge_rebases_ids() {
-    let mut target = MontyValue::from(MontyObject::Int(1)).graph;
-    let other = MontyValue::from(MontyObject::List(vec![MontyObject::Int(2)]));
+    let mut target = MontyValue::int(1).graph;
+    let other = MontyValue::list([MontyValue::int(2)]);
     let offset = target.merge(other.graph.clone());
     assert_eq!(offset, 1);
     let root = NodeId(other.root.0 + offset);
     assert_eq!(target.node(root), &MontyNode::List(vec![NodeId(1)]));
-    assert_eq!(
-        target.value(root).into_object().unwrap(),
-        MontyObject::List(vec![MontyObject::Int(2)])
-    );
+    assert_eq!(target.value(root), other);
 }
 
 #[test]
 fn call_args_share_one_arena() {
     let mut call = CallArgs::new();
-    let shared = MontyValue::from(MontyObject::List(vec![MontyObject::Int(1)]));
+    let shared = MontyValue::list([MontyValue::int(1)]);
     let first = call.push_arg(shared.clone());
     let second = call.push_arg(shared.as_ref());
     call.push_kwarg("flag", true);
     assert_ne!(first, second);
     assert_eq!(call.values.len(), 6);
     assert!(call.check_roots().is_ok());
-    let (args, kwargs) = call.into_objects().unwrap();
-    assert_eq!(args.len(), 2);
-    assert_eq!(kwargs, vec![pair("flag", MontyObject::Bool(true))]);
+    assert!(call.args().all(|arg| arg == shared));
+    assert_eq!(call.kwarg("flag").unwrap(), MontyValue::bool(true));
     assert_eq!(call.kwargs().next().unwrap().1.type_name(), "bool");
+    assert_eq!(CallArgs::from(vec![shared.clone()]).arg(0).unwrap(), shared);
 }
 
 #[test]
@@ -321,8 +274,8 @@ fn value_ref_copy_preserves_sharing() {
 #[test]
 fn named_values_convert_from_pairs() {
     let named = NamedValues::from(vec![
-        ("a".to_owned(), MontyObject::Int(1)),
-        ("b".to_owned(), MontyObject::String("s".to_owned())),
+        ("a".to_owned(), MontyValue::int(1)),
+        ("b".to_owned(), MontyValue::string("s".to_owned())),
     ]);
     let names: Vec<_> = named.iter().map(|(name, value)| (name, value.type_name())).collect();
     assert_eq!(names, vec![("a", "int"), ("b", "str")]);
@@ -334,14 +287,17 @@ fn named_values_convert_from_pairs() {
 
 // === footprint ===
 
+/// Every arena node costs this much: the widest inline variant is
+/// `NamedTuple` (three 24-byte fields), so a larger payload must be boxed
+/// rather than inlined (see `ClassType`).
 #[test]
-fn node_is_no_wider_than_an_object() {
-    assert_eq!(size_of::<MontyNode>(), size_of::<MontyObject>());
+fn node_is_72_bytes() {
+    assert_eq!(size_of::<MontyNode>(), 72);
 }
 
 #[test]
 fn host_size_sums_nodes() {
-    let value = MontyValue::from(MontyObject::List(vec![MontyObject::String("abc".to_owned())]));
+    let value = MontyValue::list([MontyValue::string("abc".to_owned())]);
     let list = MontyNode::List(vec![NodeId(0)]);
     assert_eq!(list.host_size(), size_of::<MontyNode>() + size_of::<NodeId>());
     assert_eq!(value.graph.host_size(), size_of::<MontyNode>() + 3 + list.host_size());

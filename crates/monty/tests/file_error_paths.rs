@@ -8,7 +8,7 @@
 
 use monty::MontyRun;
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject, PrintWriter,
+    CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyValue, PrintWriter,
     ResourceTracker,
 };
 
@@ -22,7 +22,7 @@ fn run_with_open_then_io(
     expected_io_fn_name: &str,
     file_handle: MontyFileHandle,
     io_result: ExtFunctionResult,
-) -> Result<MontyObject, MontyException> {
+) -> Result<MontyValue, MontyException> {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
@@ -30,16 +30,12 @@ fn run_with_open_then_io(
     let open_call = progress.into_os_call().expect("expected Open OsCall");
     assert_eq!(open_call.function_call.name(), "open");
     let progress = open_call
-        .resume(MontyObject::FileHandle(file_handle), PrintWriter::Stdout)
+        .resume(MontyValue::file_handle(file_handle), PrintWriter::Stdout)
         .unwrap();
     let io_call = progress.into_os_call().expect("expected follow-up OsCall");
     assert_eq!(io_call.function_call.name(), expected_io_fn_name);
     let progress = io_call.resume(io_result, PrintWriter::Stdout)?;
-    Ok(progress
-        .into_complete()
-        .expect("expected Complete after resume")
-        .into_object()
-        .unwrap())
+    Ok(progress.into_complete().expect("expected Complete after resume"))
 }
 
 fn file_handle(path: &str, mode: &str) -> MontyFileHandle {
@@ -69,7 +65,7 @@ result
     let host_exc = MontyException::new(ExcType::OSError, Some("disk on fire".to_owned()));
     let result = run_with_open_then_io(code, "Path.read_text", file_handle("/x.txt", "r"), host_exc.into())
         .expect("script should complete after catching the host error");
-    assert_eq!(result, MontyObject::String("disk on fire".to_owned()));
+    assert_eq!(result, MontyValue::string("disk on fire".to_owned()));
 }
 
 #[test]
@@ -92,7 +88,7 @@ f.readline()
         .unwrap();
     let open_call = progress.into_os_call().expect("expected Open OsCall");
     let progress = open_call
-        .resume(MontyObject::FileHandle(file_handle("/x.txt", "r")), PrintWriter::Stdout)
+        .resume(MontyValue::file_handle(file_handle("/x.txt", "r")), PrintWriter::Stdout)
         .unwrap();
     let read_call = progress.into_os_call().expect("expected ReadText OsCall");
     assert_eq!(read_call.function_call.name(), "Path.read_text");
@@ -105,10 +101,10 @@ f.readline()
     let retry_call = progress.into_os_call().expect("expected retry OsCall");
     assert_eq!(retry_call.function_call.name(), "Path.read_text");
     let final_progress = retry_call
-        .resume(MontyObject::String("alpha\nbeta\n".to_owned()), PrintWriter::Stdout)
+        .resume(MontyValue::string("alpha\nbeta\n".to_owned()), PrintWriter::Stdout)
         .unwrap();
     let result = final_progress.into_complete().expect("expected Complete");
-    assert_eq!(result, MontyObject::String("alpha\n".to_owned()));
+    assert_eq!(result, MontyValue::string("alpha\n".to_owned()));
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +130,7 @@ after
     // tell() must read 0 — the failed write was rolled back.
     assert_eq!(
         result,
-        MontyObject::Tuple(vec![MontyObject::Int(0), MontyObject::String("device full".to_owned()),])
+        MontyValue::tuple([MontyValue::int(0), MontyValue::string("device full".to_owned()),])
     );
 }
 
@@ -151,7 +147,7 @@ f.tell()
     let host_exc = MontyException::new(ExcType::OSError, Some("io".to_owned()));
     let result = run_with_open_then_io(code, "Path.append_bytes", file_handle("/x.bin", "wb"), host_exc.into())
         .expect("script should complete");
-    assert_eq!(result, MontyObject::Int(0));
+    assert_eq!(result, MontyValue::int(0));
 }
 
 // ---------------------------------------------------------------------------
@@ -172,10 +168,10 @@ f.read(5)
         code,
         "Path.read_text",
         file_handle("/empty.txt", "r"),
-        MontyObject::String(String::new()).into(),
+        MontyValue::string(String::new()).into(),
     )
     .expect("script should complete");
-    assert_eq!(result, MontyObject::String(String::new()));
+    assert_eq!(result, MontyValue::string(String::new()));
 }
 
 #[test]
@@ -188,10 +184,10 @@ f.read(5)
         code,
         "Path.read_bytes",
         file_handle("/empty.bin", "rb"),
-        MontyObject::Bytes(Vec::new()).into(),
+        MontyValue::bytes(Vec::new()).into(),
     )
     .expect("script should complete");
-    assert_eq!(result, MontyObject::Bytes(Vec::new()));
+    assert_eq!(result, MontyValue::bytes(Vec::new()));
 }
 
 #[test]
@@ -216,12 +212,12 @@ caught[0]
         .unwrap();
     let open_call = progress.into_os_call().expect("expected Open OsCall");
     let progress = open_call
-        .resume(MontyObject::FileHandle(file_handle("/x.txt", "r")), PrintWriter::Stdout)
+        .resume(MontyValue::file_handle(file_handle("/x.txt", "r")), PrintWriter::Stdout)
         .unwrap();
     let result = progress.into_complete().expect("expected Complete");
     assert_eq!(
         result,
-        MontyObject::String(
+        MontyValue::string(
             "sorted() key argument: OS function 'Path.read_text' is not yet supported in this context".to_owned()
         )
     );
@@ -250,15 +246,14 @@ result
         code,
         "Path.append_text",
         file_handle("/x.txt", "w"),
-        MontyObject::String("oops".to_owned()).into(),
+        MontyValue::string("oops".to_owned()).into(),
     )
     .expect("script should complete");
     // The exact message comes from `as_int`; we just verify the tag.
-    match result {
-        MontyObject::Tuple(items) => {
-            assert_eq!(items.len(), 2);
-            assert_eq!(items[0], MontyObject::String("type".to_owned()));
-        }
-        other => panic!("expected ('type', msg) tuple, got {other:?}"),
-    }
+    let items = result
+        .as_ref()
+        .items()
+        .unwrap_or_else(|| panic!("expected ('type', msg) tuple, got {result:?}"));
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0], MontyValue::string("type".to_owned()));
 }

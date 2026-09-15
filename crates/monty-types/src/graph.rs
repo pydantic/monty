@@ -1,9 +1,9 @@
 //! [`MontyGraph`] — the flat node arena Python values cross the sandbox
 //! boundary in, and [`MontyNode`], one entry of it.
 //!
-//! A tree ([`MontyObject`]) re-exports a shared sub-object once per
-//! reference, so a small heap graph can become an exponentially larger
-//! message. The arena keeps the heap's shape: every container holds the
+//! A tree would re-export a shared sub-object once per reference, so a small
+//! heap graph could become an exponentially larger message. The arena keeps
+//! the heap's shape: every container holds the
 //! indexes of its children, a sub-object referenced twice is one node
 //! referenced twice, and a message carries one arena plus the ids of its
 //! roots (see [`MontyValue`](crate::MontyValue), [`CallArgs`](crate::CallArgs)).
@@ -22,9 +22,7 @@ use num_bigint::BigInt;
 use crate::{
     builtins::BuiltinsFunctions,
     exceptions::ExcType,
-    object::{
-        MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
-    },
+    object::{MontyDate, MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType},
     uuid::MontyUuid,
 };
 
@@ -52,10 +50,10 @@ impl fmt::Display for NodeId {
 /// One entry of a [`MontyGraph`]: a leaf value, or a container holding the
 /// ids of its children.
 ///
-/// Leaf payloads are the same types [`MontyObject`] uses, so leaves convert
-/// without copying. Containers differ only in holding [`NodeId`]s where the
-/// tree holds nested objects, and a non-builtin class is its own
-/// [`ClassType`](Self::ClassType) node so every instance of it shares one.
+/// Containers hold [`NodeId`]s rather than nested values, and a non-builtin
+/// class is its own [`ClassType`](Self::ClassType) node so every instance of
+/// it shares one. Build values with the [`MontyValue`](crate::MontyValue)
+/// constructors rather than nodes.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum MontyNode {
     /// Python's `Ellipsis` singleton (`...`).
@@ -214,6 +212,21 @@ impl MontyNode {
         }
     }
 
+    /// Whether the node holds no child ids.
+    #[must_use]
+    pub fn is_leaf(&self) -> bool {
+        let mut leaf = true;
+        self.for_each_child(|_| leaf = false);
+        leaf
+    }
+
+    /// The host footprint of one owned string in a metadata vector, such as
+    /// a namedtuple's field names.
+    #[must_use]
+    pub const fn metadata_string_size(value: &str) -> usize {
+        size_of::<String>().saturating_add(value.len())
+    }
+
     /// Host footprint of this node once decoded: the fixed enum size plus the
     /// bytes it owns directly (string, bytes and bigint payloads, field
     /// names, and its child-id vectors). Children charge themselves, so an
@@ -242,10 +255,7 @@ impl MontyNode {
                 field_names,
                 values,
             } => {
-                let names: usize = field_names
-                    .iter()
-                    .map(|name| MontyObject::host_metadata_string_size(name))
-                    .sum();
+                let names: usize = field_names.iter().map(|name| Self::metadata_string_size(name)).sum();
                 type_name.len().saturating_add(names).saturating_add(ids(values))
             }
             Self::Dict(entries) => pairs(entries),
@@ -459,6 +469,13 @@ impl MontyGraph {
         &mut self.nodes[id.index()]
     }
 
+    /// Every node, in post-order, for edits that keep every child id where
+    /// it is (an id or a leaf payload); reordering or re-pointing children
+    /// breaks the arena's invariants.
+    pub fn nodes_mut(&mut self) -> &mut [MontyNode] {
+        &mut self.nodes
+    }
+
     /// Every node, in post-order.
     #[must_use]
     pub fn nodes(&self) -> &[MontyNode] {
@@ -547,7 +564,6 @@ impl MontyGraph {
             {
                 Err(GraphError::ClassTypeNotAClass { node: holder })
             }
-            MontyNode::Type(MontyType::Instance(_)) => Err(GraphError::InstanceTypeLeaf { node: holder }),
             _ => Ok(()),
         }
     }
@@ -573,11 +589,6 @@ pub enum GraphError {
         /// The instance node.
         node: NodeId,
     },
-    /// A `Type` leaf carries `MontyType::Instance`, which must be a class-type node.
-    InstanceTypeLeaf {
-        /// The offending node.
-        node: NodeId,
-    },
     /// A root id is outside the arena.
     RootOutOfRange {
         /// The root id.
@@ -594,7 +605,6 @@ impl fmt::Display for GraphError {
                 write!(f, "value node {node} references node {child}, which is not below it")
             }
             Self::ClassTypeNotAClass { node } => write!(f, "class instance node {node} does not point at a class type"),
-            Self::InstanceTypeLeaf { node } => write!(f, "value node {node} is a class type stored as a type leaf"),
             Self::RootOutOfRange { root, len } => {
                 write!(f, "value root {root} is out of range for an arena of {len} nodes")
             }

@@ -35,8 +35,8 @@ use monty_pool::{
     ResumeValue, TurnEvent,
 };
 use monty_types::{
-    AssertMessageAnnotations, ExcType, MontyException, MontyNode, MontyObject, MontyValue, NameLookupResult,
-    NamedValues, NodeId, PrintStream, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, ExcType, MontyException, MontyNode, MontyValue, NameLookupResult, NamedValues, NodeId,
+    PrintStream, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
 };
 use napi::{
     bindgen_prelude::{
@@ -595,7 +595,7 @@ impl NativeSession {
                 let value = if ok {
                     match result.get::<Unknown>("value")? {
                         Some(value) => sendable_resume(env, value),
-                        None => ResumeValue::Return(MontyObject::None.into()),
+                        None => ResumeValue::Return(MontyValue::none()),
                     }
                 } else {
                     let exc_type: String = require(&result, "excType")?;

@@ -5,7 +5,7 @@
 //! these; the host (a `MountTable`, an `os` callback) decides whether to
 //! permit it. The interpreter itself never performs I/O.
 //!
-//! The fs/ layer matches on the enum directly (no [`MontyObject`](crate::MontyObject) introspection);
+//! The fs/ layer matches on the enum directly (no value introspection);
 //! host bindings get a generic `(positional, keyword)` view via
 //! [`OsFunctionCall::to_args`].
 
@@ -17,7 +17,7 @@ use crate::{
     file_mode::FileMode,
     format::StringRepr,
     graph::{MontyGraph, MontyNode, NodeId},
-    object::{MontyObject, MontyTimeZone},
+    object::MontyTimeZone,
     value::{CallArgs, MontyValue},
     virtual_path::normalize_virtual_path,
 };
@@ -28,7 +28,7 @@ use crate::{
 /// Tagged dispatch value for OS-level operations.
 ///
 /// Each variant carries the strongly-typed args/kwargs the corresponding OS
-/// call needs. The fs/ layer matches on this enum directly (no [`MontyObject`](crate::MontyObject)
+/// call needs. The fs/ layer matches on this enum directly (no value
 /// introspection); host bindings get a generic `(positional, keyword)` view
 /// via [`OsFunctionCall::to_args`].
 ///
@@ -84,7 +84,7 @@ pub enum OsFunctionCall {
     // ---- FS mutate (custom shapes) ----------------------------------------
     /// Open a file. The host performs the open-time effect (truncate for
     /// `w`/`w+`, create-if-missing for `a`/`a+`, existence check for `r`/`r+`)
-    /// and returns a [`MontyObject::FileHandle`] — it never holds a live OS
+    /// and returns a [`MontyFileHandle`](crate::MontyFileHandle) — it never holds a live OS
     /// handle across calls.
     #[strum(serialize = "open")]
     Open(OpenCallArgs),
@@ -474,7 +474,7 @@ impl PushValue for MontyPath {
 // stat_result builders — separate utility API used by host backends.
 // =============================================================================
 //
-// These functions create MontyObject::NamedTuple values that match Python's
+// These functions create namedtuple values that match Python's
 // os.stat_result structure. The stat_result has 10 fields:
 // st_mode, st_ino, st_dev, st_nlink, st_uid, st_gid, st_size, st_atime, st_mtime, st_ctime.
 
@@ -491,7 +491,7 @@ impl PushValue for MontyPath {
 /// * `size` - File size in bytes
 /// * `mtime` - Modification time as Unix timestamp
 #[must_use]
-pub fn file_stat(mode: i64, size: i64, mtime: f64) -> MontyObject {
+pub fn file_stat(mode: i64, size: i64, mtime: f64) -> MontyValue {
     let mode = if mode < 0o1000 { mode | 0o100_000 } else { mode };
     stat_result(mode, 0, 0, 1, 0, 0, size, mtime, mtime, mtime)
 }
@@ -507,7 +507,7 @@ pub fn file_stat(mode: i64, size: i64, mtime: f64) -> MontyObject {
 ///   - `0o040755` - same as 0o755 with explicit directory type bits
 /// * `mtime` - Modification time as Unix timestamp
 #[must_use]
-pub fn dir_stat(mode: i64, mtime: f64) -> MontyObject {
+pub fn dir_stat(mode: i64, mtime: f64) -> MontyValue {
     let mode = if mode < 0o1000 { mode | 0o040_000 } else { mode };
     stat_result(mode, 0, 0, 2, 0, 0, 4096, mtime, mtime, mtime)
 }
@@ -522,7 +522,7 @@ pub fn dir_stat(mode: i64, mtime: f64) -> MontyObject {
 ///   - `0o120777` - same as 0o777 with explicit symlink type bits
 /// * `mtime` - Modification time as Unix timestamp
 #[must_use]
-pub fn symlink_stat(mode: i64, mtime: f64) -> MontyObject {
+pub fn symlink_stat(mode: i64, mtime: f64) -> MontyValue {
     let mode = if mode < 0o1000 { mode | 0o120_000 } else { mode };
     stat_result(mode, 0, 0, 1, 0, 0, 0, mtime, mtime, mtime)
 }
@@ -544,23 +544,23 @@ pub fn stat_result(
     st_atime: f64,
     st_mtime: f64,
     st_ctime: f64,
-) -> MontyObject {
-    MontyObject::NamedTuple {
-        type_name: STAT_RESULT_TYPE_NAME.to_owned(),
-        field_names: STAT_RESULT_FIELDS.iter().map(|s| (*s).to_owned()).collect(),
-        values: vec![
-            MontyObject::Int(st_mode),
-            MontyObject::Int(st_ino),
-            MontyObject::Int(st_dev),
-            MontyObject::Int(st_nlink),
-            MontyObject::Int(st_uid),
-            MontyObject::Int(st_gid),
-            MontyObject::Int(st_size),
-            MontyObject::Float(st_atime),
-            MontyObject::Float(st_mtime),
-            MontyObject::Float(st_ctime),
+) -> MontyValue {
+    MontyValue::named_tuple(
+        STAT_RESULT_TYPE_NAME,
+        STAT_RESULT_FIELDS.iter().copied(),
+        [
+            MontyValue::int(st_mode),
+            MontyValue::int(st_ino),
+            MontyValue::int(st_dev),
+            MontyValue::int(st_nlink),
+            MontyValue::int(st_uid),
+            MontyValue::int(st_gid),
+            MontyValue::int(st_size),
+            MontyValue::float(st_atime),
+            MontyValue::float(st_mtime),
+            MontyValue::float(st_ctime),
         ],
-    }
+    )
 }
 
 const STAT_RESULT_TYPE_NAME: &str = "StatResult";

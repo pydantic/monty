@@ -20,7 +20,7 @@ use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, 
 #[cfg(not(codspeed))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 use monty_pool::{Checkout, Pool, PoolConfig, PrintFuture, ReplConfig, ResumeValue, TurnEvent};
-use monty_types::{MontyObject, PrintStream};
+use monty_types::{MontyValue, PrintStream};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 use tokio::runtime::{Builder, Runtime};
@@ -74,9 +74,9 @@ fn no_print(_: PrintStream, _: &str) -> PrintFuture {
 /// suspension — used by the benchmarks that feed code making no external
 /// calls.
 #[track_caller]
-fn expect_complete(event: TurnEvent) -> MontyObject {
+fn expect_complete(event: TurnEvent) -> MontyValue {
     match event {
-        TurnEvent::Complete(value) => value.into_object().expect("complete value expands"),
+        TurnEvent::Complete(value) => value,
         other => panic!("expected Complete, got {other:?}"),
     }
 }
@@ -84,13 +84,13 @@ fn expect_complete(event: TurnEvent) -> MontyObject {
 /// Drives a feed to completion, answering every external-function suspension
 /// with `None`. This is the hot loop of the wire-protocol benchmark: each
 /// `resume` is one request/reply pair across the framed protobuf channel.
-async fn drive_answering_calls(session: &mut Checkout, mut event: TurnEvent) -> MontyObject {
+async fn drive_answering_calls(session: &mut Checkout, mut event: TurnEvent) -> MontyValue {
     loop {
         match event {
-            TurnEvent::Complete(value) => break value.into_object().expect("complete value expands"),
+            TurnEvent::Complete(value) => break value,
             TurnEvent::FunctionCall { .. } => {
                 event = session
-                    .resume(ResumeValue::Return(MontyObject::None.into()), &mut no_print)
+                    .resume(ResumeValue::Return(MontyValue::none()), &mut no_print)
                     .await
                     .unwrap();
             }
@@ -180,28 +180,28 @@ total
 /// Builds a 100-row result set shaped like a SQL tool reply: a list of dicts
 /// with string keys and mixed str/int values. This is the payload shape real
 /// agents pull across the wire on every external call.
-fn make_rows() -> MontyObject {
-    MontyObject::List(
+fn make_rows() -> MontyValue {
+    MontyValue::list(
         (0..100)
             .map(|i| {
-                MontyObject::dict(vec![
-                    (MontyObject::String("order_id".to_owned()), MontyObject::Int(i)),
+                MontyValue::dict([
+                    (MontyValue::string("order_id".to_owned()), MontyValue::int(i)),
                     (
-                        MontyObject::String("customer".to_owned()),
-                        MontyObject::String(format!("customer-{i}@example.com")),
+                        MontyValue::string("customer".to_owned()),
+                        MontyValue::string(format!("customer-{i}@example.com")),
                     ),
                     (
-                        MontyObject::String("region".to_owned()),
-                        MontyObject::String("north".to_owned()),
+                        MontyValue::string("region".to_owned()),
+                        MontyValue::string("north".to_owned()),
                     ),
                     (
-                        MontyObject::String("amount".to_owned()),
-                        MontyObject::Int((i * 37) % 500 + 1),
+                        MontyValue::string("amount".to_owned()),
+                        MontyValue::int((i * 37) % 500 + 1),
                     ),
-                    (MontyObject::String("quantity".to_owned()), MontyObject::Int(i % 7 + 1)),
+                    (MontyValue::string("quantity".to_owned()), MontyValue::int(i % 7 + 1)),
                 ])
             })
-            .collect(),
+            .collect::<Vec<_>>(),
     )
 }
 
@@ -215,7 +215,7 @@ fn ext_call_rows(bench: &mut Bencher) {
     let rows = make_rows();
     // Expected sandbox result: 20 identical calls, each summing amount * quantity.
     let per_call: i64 = (0..100).map(|i| ((i * 37) % 500 + 1) * (i % 7 + 1)).sum();
-    let expected = MontyObject::Int(per_call * 20);
+    let expected = MontyValue::int(per_call * 20);
     let pool = runtime
         .block_on(Pool::new(PoolConfig::subprocess(monty_binary())))
         .unwrap();
@@ -229,10 +229,10 @@ fn ext_call_rows(bench: &mut Bencher) {
             .unwrap();
         let value = loop {
             match event {
-                TurnEvent::Complete(value) => break value.into_object().expect("complete value expands"),
+                TurnEvent::Complete(value) => break value,
                 TurnEvent::FunctionCall { .. } => {
                     event = session
-                        .resume(ResumeValue::Return(rows.clone().into()), &mut no_print)
+                        .resume(ResumeValue::Return(rows.clone()), &mut no_print)
                         .await
                         .unwrap();
                 }

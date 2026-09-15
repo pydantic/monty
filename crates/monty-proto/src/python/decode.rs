@@ -3,14 +3,14 @@
 
 use std::collections::HashMap;
 
-use monty_types::{ClassTypeNode, MontyClassType, MontyException, MontyGraph, MontyNode, MontyValue, NodeId};
+use monty_types::{ClassTypeNode, MontyException, MontyGraph, MontyNode, MontyValue, NodeId};
 use pyo3::{
     prelude::*,
     types::{PyBool, PyBytes, PyDate, PyDelta, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple},
 };
 
 use super::{
-    class_instance::{InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy},
+    class_instance::{ClassHeader, InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy},
     convert::{
         PyMontyFileHandle, builtin_function_to_py, get_namedtuple, get_pure_posix_path, import_builtins,
         monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py, type_object_to_py,
@@ -129,7 +129,7 @@ impl Decoder<'_, '_> {
                 .map(Bound::into_any)
                 .map(Bound::unbind),
             MontyNode::TimeZone(timezone) => monty_timezone_to_py(py, timezone),
-            MontyNode::Type(t) => type_object_to_py(py, t.clone()),
+            MontyNode::Type(t) => type_object_to_py(py, t),
             MontyNode::BuiltinFunction(f) => builtin_function_to_py(py, &f.to_string()),
             // a registered host class resolves to the original class object,
             // anything else to a read-only `MontyClassTypeProxy`
@@ -233,12 +233,11 @@ impl Decoder<'_, '_> {
 
 /// The class as a proxy records it: the node's header without its attrs,
 /// which the proxy keeps as a Python dict.
-fn class_header(class: &ClassTypeNode) -> MontyClassType {
-    MontyClassType {
+fn class_header(class: &ClassTypeNode) -> ClassHeader {
+    ClassHeader {
         name: class.name.clone(),
         id: class.id,
         host_defined: class.host_defined,
         is_dataclass: class.is_dataclass,
-        attrs: Vec::new().into(),
     }
 }

@@ -3,11 +3,11 @@
 //! The mount table projects an [`OsFunctionCall`](crate::os::OsFunctionCall)
 //! into [`FsRequest`] (an owned projection of the call's typed args). From
 //! that point onward the backends operate on semantic requests with typed
-//! fields rather than re-parsing `MontyObject` arrays or walking kwargs.
+//! fields rather than re-parsing `MontyValue` arrays or walking kwargs.
 //! Ownership matters: write payloads are *moved* through here so overlay
 //! storage can retain them without a copy.
 
-use monty_types::{FileMode, MontyFileHandle, MontyObject, MontyPath, OsFunctionCall, normalize_virtual_path};
+use monty_types::{FileMode, MontyFileHandle, MontyPath, MontyValue, OsFunctionCall, normalize_virtual_path};
 
 use super::{common::MountContext, direct, error::MountError, mount_mode::MountMode, overlay};
 
@@ -58,7 +58,7 @@ pub(super) enum FsRequest {
     /// `Path.absolute()`
     Absolute { path: MontyPath },
     /// `open(path, mode)` — performs the open-time effect and returns a
-    /// [`MontyObject::FileHandle`]. The mode is parsed once during dispatch
+    /// [`MontyFileHandle`] value. The mode is parsed once during dispatch
     /// so backends never re-parse the raw string.
     Open {
         /// Target path.
@@ -121,7 +121,7 @@ impl FsRequest {
 /// payloads rather than copying them.
 ///
 /// This is a trivial 1:1 mapping — every field is already typed on the
-/// caller side (no `MontyObject` introspection, no kwarg walks, no mode
+/// caller side (no `MontyValue` introspection, no kwarg walks, no mode
 /// reparse), so the function is infallible. Non-FS variants never reach here
 /// — they have no [`OsFunctionCall::fs_primary_path`] to route on — and panic
 /// the catch-all arm if they slip through.
@@ -178,7 +178,7 @@ pub(super) fn execute(
     request: FsRequest,
     ctx: &mut MountContext<'_>,
     mode: &mut MountMode,
-) -> Result<MontyObject, MountError> {
+) -> Result<MontyValue, MountError> {
     if request.is_write() && matches!(mode, MountMode::ReadOnly) {
         Err(MountError::ReadOnly(request.primary_path().to_owned()))
     } else {
@@ -189,12 +189,12 @@ pub(super) fn execute(
     }
 }
 
-/// Builds the [`MontyObject::FileHandle`] an `Open` request resolves to.
+/// Builds the [`MontyFileHandle`] value an `Open` request resolves to.
 ///
 /// The handle carries the **virtual** (sandbox) path — never a host path — so
 /// subsequent `read`/`write` calls re-resolve it against the mount descriptor.
-pub(super) fn file_handle_result(path: &str, mode: FileMode) -> MontyObject {
-    MontyObject::FileHandle(MontyFileHandle {
+pub(super) fn file_handle_result(path: &str, mode: FileMode) -> MontyValue {
+    MontyValue::file_handle(MontyFileHandle {
         path: normalize_virtual_path(path).into_owned(),
         mode,
         position: 0,

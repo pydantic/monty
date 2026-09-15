@@ -10,7 +10,7 @@ use std::fmt::Write;
 
 use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    CompileOptions, MontyException, MontyObject, MontyType, NameLookupResult, PrintWriter, ResourceTracker,
+    CompileOptions, MontyException, MontyType, MontyValue, NameLookupResult, PrintWriter, ResourceTracker,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::to_value;
@@ -35,7 +35,7 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
     while let RunProgress::NameLookup(lookup) = progress {
         let name = lookup.name.clone();
         progress = lookup.resume(
-            NameLookupResult::Value(MontyObject::Function { name, docstring: None }.into()),
+            NameLookupResult::Value(MontyValue::function(name, None)),
             PrintWriter::Stdout,
         )?;
     }
@@ -51,7 +51,7 @@ fn monty_run_round_trip_simple() {
     let loaded = round_trip(&runner);
 
     let result = loaded.run_no_limits(vec![]).unwrap();
-    assert_eq!(result, MontyObject::Int(3));
+    assert_eq!(result, MontyValue::int(3));
 }
 
 #[test]
@@ -67,9 +67,9 @@ fn monty_run_round_trip_with_inputs() {
     let loaded = round_trip(&runner);
 
     let result = loaded
-        .run_no_limits(vec![MontyObject::Int(10), MontyObject::Int(5)])
+        .run_no_limits(vec![MontyValue::int(10), MontyValue::int(5)])
         .unwrap();
-    assert_eq!(result, MontyObject::Int(20));
+    assert_eq!(result, MontyValue::int(20));
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn monty_run_round_trip_preserves_code() {
 
     assert_eq!(loaded.code(), code);
     let result = loaded.run_no_limits(vec![]).unwrap();
-    assert_eq!(result, MontyObject::Int(42));
+    assert_eq!(result, MontyValue::int(42));
 }
 
 #[test]
@@ -105,17 +105,17 @@ result
 
     let result = loaded.run_no_limits(vec![]).unwrap();
     // First 10 Fibonacci numbers: 0, 1, 1, 2, 3, 5, 8, 13, 21, 34
-    let expected = MontyObject::List(vec![
-        MontyObject::Int(0),
-        MontyObject::Int(1),
-        MontyObject::Int(1),
-        MontyObject::Int(2),
-        MontyObject::Int(3),
-        MontyObject::Int(5),
-        MontyObject::Int(8),
-        MontyObject::Int(13),
-        MontyObject::Int(21),
-        MontyObject::Int(34),
+    let expected = MontyValue::list([
+        MontyValue::int(0),
+        MontyValue::int(1),
+        MontyValue::int(1),
+        MontyValue::int(2),
+        MontyValue::int(3),
+        MontyValue::int(5),
+        MontyValue::int(8),
+        MontyValue::int(13),
+        MontyValue::int(21),
+        MontyValue::int(34),
     ]);
     assert_eq!(result, expected);
 }
@@ -129,7 +129,7 @@ fn monty_run_round_trip_comprehension_closure() {
 
     assert_eq!(
         loaded.run_no_limits(vec![]).unwrap(),
-        MontyObject::String("second".to_owned())
+        MontyValue::string("second".to_owned())
     );
 }
 
@@ -273,12 +273,12 @@ fn monty_run_round_trip_multiple_runs() {
     let loaded = round_trip(&runner);
 
     assert_eq!(
-        loaded.run_no_limits(vec![MontyObject::Int(5)]).unwrap(),
-        MontyObject::Int(10)
+        loaded.run_no_limits(vec![MontyValue::int(5)]).unwrap(),
+        MontyValue::int(10)
     );
     assert_eq!(
-        loaded.run_no_limits(vec![MontyObject::Int(21)]).unwrap(),
-        MontyObject::Int(42)
+        loaded.run_no_limits(vec![MontyValue::int(21)]).unwrap(),
+        MontyValue::int(42)
     );
 }
 
@@ -308,11 +308,11 @@ fn run_progress_round_trip_at_external_call() {
     // Should still be at the external function call
     let call = loaded.into_function_call().expect("should be at function call");
     assert_eq!(call.function_name, "ext_fn");
-    assert_eq!(call.args.into_objects().unwrap().0, vec![MontyObject::Int(42)]);
+    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyValue::int(42)]);
 
     // Resume execution with a return value
-    let result = call.resume(MontyObject::Int(100), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyObject::Int(101)); // 100 + 1
+    let result = call.resume(MontyValue::int(100), PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete().unwrap(), MontyValue::int(101)); // 100 + 1
 }
 
 #[test]
@@ -334,10 +334,10 @@ fn run_progress_round_trip_multiple_calls() {
     let loaded: RunProgress = round_trip_progress(&progress);
     let call = loaded.into_function_call().unwrap();
     assert_eq!(call.function_name, "ext_fn");
-    assert_eq!(call.args.into_objects().unwrap().0, vec![MontyObject::Int(1)]);
+    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyValue::int(1)]);
 
     // Resume first call
-    let progress = call.resume(MontyObject::Int(10), PrintWriter::Stdout).unwrap();
+    let progress = call.resume(MontyValue::int(10), PrintWriter::Stdout).unwrap();
     // Resolve any NameLookup for the second ext_fn reference
     let progress = resolve_name_lookups(progress).unwrap();
 
@@ -345,11 +345,11 @@ fn run_progress_round_trip_multiple_calls() {
     let loaded: RunProgress = round_trip_progress(&progress);
     let call = loaded.into_function_call().unwrap();
     assert_eq!(call.function_name, "ext_fn");
-    assert_eq!(call.args.into_objects().unwrap().0, vec![MontyObject::Int(2)]);
+    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyValue::int(2)]);
 
     // Resume second call to completion
-    let result = call.resume(MontyObject::Int(20), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyObject::Int(30)); // 10 + 20
+    let result = call.resume(MontyValue::int(20), PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete().unwrap(), MontyValue::int(30)); // 10 + 20
 }
 
 /// Live `itertools` iterators on the heap survive a round-trip with their state
@@ -379,11 +379,11 @@ ext_fn(0)
 
     // Both adaptors kept their position: the count carries `current`/`step`,
     // the repeat carries its object and remaining count.
-    let expected = MontyObject::List(vec![
-        MontyObject::Int(12),
-        MontyObject::String("x".to_owned()),
-        MontyObject::String("count(14, 2)".to_owned()),
-        MontyObject::String("repeat('x', 1)".to_owned()),
+    let expected = MontyValue::list([
+        MontyValue::int(12),
+        MontyValue::string("x".to_owned()),
+        MontyValue::string("count(14, 2)".to_owned()),
+        MontyValue::string("repeat('x', 1)".to_owned()),
     ]);
 
     // Both are resumed: an unresumed `RunProgress` leaves its globals' refs
@@ -391,11 +391,11 @@ ext_fn(0)
     // itertools-specific (a plain `x = [1, 2]` global does it too).
     let original = progress.into_function_call().expect("should be at function call");
     assert_eq!(original.function_name, "ext_fn");
-    let from_original = original.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    let from_original = original.resume(MontyValue::int(0), PrintWriter::Stdout).unwrap();
     assert_eq!(from_original.into_complete().unwrap(), expected);
 
     let call = loaded.into_function_call().expect("should be at function call");
-    let from_loaded = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    let from_loaded = call.resume(MontyValue::int(0), PrintWriter::Stdout).unwrap();
     assert_eq!(from_loaded.into_complete().unwrap(), expected);
 }
 
@@ -428,21 +428,21 @@ ext_fn(0)
 
     // The wrapped function is reached by id, so it still resolves to the same
     // object after a reload rather than to a copy.
-    let expected = MontyObject::List(vec![
-        MontyObject::Int(123),
-        MontyObject::Tuple(vec![MontyObject::Int(1)]),
-        MontyObject::Dict(vec![(MontyObject::String("c".to_owned()), MontyObject::Int(3))].into()),
-        MontyObject::String("True".to_owned()),
+    let expected = MontyValue::list([
+        MontyValue::int(123),
+        MontyValue::tuple([MontyValue::int(1)]),
+        MontyValue::dict([(MontyValue::string("c".to_owned()), MontyValue::int(3))]),
+        MontyValue::string("True".to_owned()),
     ]);
 
     // Both are resumed for the reason given in the itertools round-trip above.
     let original = progress.into_function_call().expect("should be at function call");
     assert_eq!(original.function_name, "ext_fn");
-    let from_original = original.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    let from_original = original.resume(MontyValue::int(0), PrintWriter::Stdout).unwrap();
     assert_eq!(from_original.into_complete().unwrap(), expected);
 
     let call = loaded.into_function_call().expect("should be at function call");
-    let from_loaded = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    let from_loaded = call.resume(MontyValue::int(0), PrintWriter::Stdout).unwrap();
     assert_eq!(from_loaded.into_complete().unwrap(), expected);
 }
 
@@ -466,26 +466,26 @@ ext_fn(0)
     let progress = resolve_name_lookups(progress).unwrap();
     let loaded: RunProgress = round_trip_progress(&progress);
 
-    let expected = MontyObject::List(vec![
-        MontyObject::String("tuple[int, str, ...]".to_owned()),
-        MontyObject::Tuple(vec![
-            MontyObject::Type(MontyType::Int),
-            MontyObject::Type(MontyType::Str),
-            MontyObject::Ellipsis,
+    let expected = MontyValue::list([
+        MontyValue::string("tuple[int, str, ...]".to_owned()),
+        MontyValue::tuple([
+            MontyValue::type_object(MontyType::Int),
+            MontyValue::type_object(MontyType::Str),
+            MontyValue::ellipsis(),
         ]),
-        MontyObject::String("<class 'tuple'>".to_owned()),
-        MontyObject::Tuple(vec![MontyObject::Int(1), MontyObject::Int(2)]),
-        MontyObject::Bool(true),
+        MontyValue::string("<class 'tuple'>".to_owned()),
+        MontyValue::tuple([MontyValue::int(1), MontyValue::int(2)]),
+        MontyValue::bool(true),
     ]);
 
     // Both are resumed for the reason given in the itertools round-trip above.
     let original = progress.into_function_call().expect("should be at function call");
     assert_eq!(original.function_name, "ext_fn");
-    let from_original = original.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    let from_original = original.resume(MontyValue::int(0), PrintWriter::Stdout).unwrap();
     assert_eq!(from_original.into_complete().unwrap(), expected);
 
     let call = loaded.into_function_call().expect("should be at function call");
-    let from_loaded = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    let from_loaded = call.resume(MontyValue::int(0), PrintWriter::Stdout).unwrap();
     assert_eq!(from_loaded.into_complete().unwrap(), expected);
 }
 
@@ -508,25 +508,25 @@ ext_fn(0)
     let progress = resolve_name_lookups(progress).unwrap();
     let loaded: RunProgress = round_trip_progress(&progress);
 
-    let expected = MontyObject::List(vec![
-        MontyObject::String("None | list[int]".to_owned()),
-        MontyObject::Tuple(vec![
-            MontyObject::Type(MontyType::NoneType),
-            MontyObject::Repr("list[int]".to_owned()),
+    let expected = MontyValue::list([
+        MontyValue::string("None | list[int]".to_owned()),
+        MontyValue::tuple([
+            MontyValue::type_object(MontyType::NoneType),
+            MontyValue::repr("list[int]".to_owned()),
         ]),
-        MontyObject::Bool(true),
-        MontyObject::Bool(true),
-        MontyObject::Bool(true),
+        MontyValue::bool(true),
+        MontyValue::bool(true),
+        MontyValue::bool(true),
     ]);
 
     // Both are resumed for the reason given in the itertools round-trip above.
     let original = progress.into_function_call().expect("should be at function call");
     assert_eq!(original.function_name, "ext_fn");
-    let from_original = original.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    let from_original = original.resume(MontyValue::int(0), PrintWriter::Stdout).unwrap();
     assert_eq!(from_original.into_complete().unwrap(), expected);
 
     let call = loaded.into_function_call().expect("should be at function call");
-    let from_loaded = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    let from_loaded = call.resume(MontyValue::int(0), PrintWriter::Stdout).unwrap();
     assert_eq!(from_loaded.into_complete().unwrap(), expected);
 }
 
@@ -540,5 +540,5 @@ fn run_progress_complete_round_trip() {
 
     let loaded: RunProgress = round_trip_progress(&progress);
 
-    assert_eq!(loaded.into_complete().unwrap(), MontyObject::Int(3));
+    assert_eq!(loaded.into_complete().unwrap(), MontyValue::int(3));
 }
