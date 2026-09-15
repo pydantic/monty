@@ -63,6 +63,7 @@ assert tuple(name for name in sys.builtin_module_names if name != 'gc') == (
     'math',
     'os',
     'pathlib',
+    'random',
     're',
     'sys',
     'typing',

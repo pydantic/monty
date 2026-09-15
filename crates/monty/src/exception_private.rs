@@ -957,6 +957,17 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, msg).into()
     }
 
+    /// Creates a generic `IndexError` with a custom message.
+    fn index_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::IndexError, msg).into()
+    }
+
+    /// `random.seed()` / `random.Random()` given something other than
+    /// `None`, an int, a float, a `str` or `bytes`.
+    fn random_seed_type() -> RunError {
+        Self::type_error("The only supported seed types are:\nNone, int, float, str, bytes, and bytearray.")
+    }
+
     /// Creates a TypeError for bytes() constructor with invalid type.
     ///
     /// Matches CPython's format: `TypeError: cannot convert '{type}' object to bytes`

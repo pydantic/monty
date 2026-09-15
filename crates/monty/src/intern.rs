@@ -1295,7 +1295,6 @@ pub enum StaticStrings {
     /// `__class_getitem__`, the classmethod behind `list[int]`.
     #[strum(serialize = "__class_getitem__")]
     ClassGetitem,
-
     // ==========================
     // Batch-four itertools module strings: the combinatoric iterators,
     // `groupby` and `chain.from_iterable`. Appended for the same reason as
@@ -1328,6 +1327,59 @@ pub enum StaticStrings {
     /// `itertools._grouper`, the sub-iterator `groupby` hands out.
     #[strum(serialize = "_grouper")]
     Grouper,
+
+    // ==========================
+    // `random` module: its name doubles as the `random()` function's
+    Random,
+    /// The `random.Random` class.
+    #[strum(serialize = "Random")]
+    RandomClass,
+    /// `Random.VERSION`, the `getstate()` format number.
+    #[strum(serialize = "VERSION")]
+    RandomVersion,
+    Seed,
+    Getstate,
+    Setstate,
+    Getrandbits,
+    Randbytes,
+    Randrange,
+    Randint,
+    Choice,
+    Choices,
+    Shuffle,
+    Sample,
+    Uniform,
+    Triangular,
+    Normalvariate,
+    Gauss,
+    Lognormvariate,
+    Expovariate,
+    Vonmisesvariate,
+    Gammavariate,
+    Betavariate,
+    Paretovariate,
+    Weibullvariate,
+    Binomialvariate,
+    /// `os.urandom()` function.
+    Urandom,
+    // `random` parameter names
+    Weights,
+    CumWeights,
+    Counts,
+    Population,
+    Seq,
+    Mu,
+    Sigma,
+    Lambd,
+    Kappa,
+    Alpha,
+    Beta,
+    Low,
+    High,
+    /// `size` parameter of `os.urandom()`.
+    Size,
+    /// `state` parameter of `Random.setstate()`.
+    State,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

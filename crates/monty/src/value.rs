@@ -1433,6 +1433,9 @@ impl Value {
         let name = match heap.get(*heap_id) {
             HeapData::NamedTuple(nt) => nt.name_either(),
             HeapData::HostClass(hc) => host_class_type(heap, hc.class_id()).name_either(),
+            // A Python class in CPython, so messages carry the bare name and
+            // only `repr(type(x))` the module-qualified one.
+            HeapData::Random(_) => return Some(Cow::Borrowed("Random")),
             _ => return None,
         };
         Some(name.to_cow(interns))

@@ -36,13 +36,13 @@ use crate::{
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
-    modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
+    modules::{StandardLib, json::JsonStringCache, random::apply_seed_random, re::RePatternCache},
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect, resolve_call_paths},
     parse::CodeRange,
     run::VmEnv,
     types::{
-        Dict, LongInt, PyTrait,
+        Dict, LongInt, PyTrait, Random,
         file::{apply_buffer_store, apply_open_name, apply_write_position},
         str::allocate_string,
     },
@@ -644,15 +644,18 @@ pub struct VMSnapshot {
 
     /// Working directory at the pause, including any `os.chdir` so far.
     cwd: String,
+    /// The module-level `random` generator at the pause, seeded or not.
+    random: Random,
 }
 
 impl VMSnapshot {
     /// Discards the in-flight execution state of a snapshot that will never be
     /// restored, releasing every heap reference it holds (operand and exception
-    /// stacks, scheduler tasks, pending resume effects), and returns the globals
-    /// and working directory so an abandoned REPL snippet keeps its namespace
-    /// and any `os.chdir` it made. Mirrors `VM::drop`.
-    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String) {
+    /// stacks, scheduler tasks, pending resume effects), and returns the
+    /// globals, working directory and `random` generator so an abandoned REPL
+    /// snippet keeps its namespace, any `os.chdir` it made and any seed it
+    /// set. Mirrors `VM::drop`.
+    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String, Random) {
         let Self {
             stack,
             globals,
@@ -661,6 +664,7 @@ impl VMSnapshot {
             pending_effect,
             pending_lookup_effect,
             cwd,
+            random,
             ..
         } = self;
         HeapReader::with(heap, &mut (), |heap, ()| {
@@ -670,7 +674,7 @@ impl VMSnapshot {
             stack.drop_with(heap);
             scheduler.cleanup(heap);
         });
-        (globals, cwd)
+        (globals, cwd, random)
     }
 
     /// Number of tasks the scheduler held when this snapshot was taken.
@@ -812,6 +816,12 @@ pub struct VM<'h> {
     /// snapshotted (a pure performance cache), so default-initialized on restore.
     pub(crate) re_pattern_cache: RePatternCache,
 
+    /// The module-level `random` generator behind `random.random()` and
+    /// friends. Session state like the globals: it travels in snapshots and,
+    /// through the REPL, from one feed to the next, so a `random.seed()` keeps
+    /// governing later draws.
+    pub(crate) random: Random,
+
     /// Working directory, `__file__` inputs and the assert-repr cap for this
     /// run. Rebuilt from the executor on restore, except the working
     /// directory, which travels in the snapshot because `os.chdir` may have
@@ -868,6 +878,7 @@ impl<'h> VM<'h> {
             namespace_scratch: Vec::new(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
+            random: Random::default(),
             env,
         }
     }
@@ -945,6 +956,7 @@ impl<'h> VM<'h> {
             // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
+            random: snapshot.random,
             env: {
                 let mut env = env;
                 env.cwd = Cow::Owned(snapshot.cwd);
@@ -1000,6 +1012,7 @@ impl<'h> VM<'h> {
             // Reset to the starting directory rather than `take` (an empty
             // string), so a later `take_changed_cwd` on this VM stays honest.
             cwd: mem::replace(&mut self.env.cwd, Cow::Borrowed(self.env.initial_cwd)).into_owned(),
+            random: mem::take(&mut self.random),
         }
     }
 
@@ -2011,6 +2024,9 @@ impl<'h> VM<'h> {
                 apply_write_position(file_id, value, self)
             }
             Some(PendingEffect::Post(PostConversionEffect::OpenName { name })) => apply_open_name(name, value, self),
+            Some(PendingEffect::Post(PostConversionEffect::SeedRandom { target, retry })) => {
+                apply_seed_random(target, retry, value, self)
+            }
             // Any pre-conversion effect was consumed above.
             Some(PendingEffect::Pre(_)) | None => Ok(value),
         };
@@ -2060,6 +2076,11 @@ impl<'h> VM<'h> {
                         drop(file);
                     }
                     self.heap.dec_ref(file_id);
+                }
+                // The generator was never seeded, so there is nothing to roll
+                // back: dropping the pin and the stashed retry is the whole undo.
+                PendingEffect::Post(PostConversionEffect::SeedRandom { target, retry }) => {
+                    PostConversionEffect::SeedRandom { target, retry }.release(self.heap);
                 }
                 // Hold no state or heap references — nothing to roll back.
                 PendingEffect::Pre(_) | PendingEffect::Post(PostConversionEffect::OpenName { .. }) => {}

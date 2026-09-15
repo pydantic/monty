@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, Protocol, Sequence, TypeAlias, TypeGuard
@@ -46,6 +47,7 @@ OsFunction = Literal[
     'os.environ',
     'date.today',
     'datetime.now',
+    'os.urandom',
 ]
 
 
@@ -223,6 +225,8 @@ class AbstractOS(ABC):
                 return self.date_today()
             case 'datetime.now':
                 return self.datetime_now(*args)
+            case 'os.urandom':
+                return self.urandom(*args)
             case _:  # pyright: ignore[reportUnnecessaryComparison]
                 raise NotImplementedError(f'Unknown OS function: {function_name}')
 
@@ -544,6 +548,16 @@ class AbstractOS(ABC):
         any provided timezone through to `datetime.datetime.now()`.
         """
         return datetime.datetime.now(tz=tz)
+
+    def urandom(self, size: int) -> bytes:
+        """Return `size` random bytes for Monty's `os.urandom(size)` host callback.
+
+        The `random` module also calls this once, for 2496 bytes, the first time an
+        unseeded generator draws a value; returning fixed bytes there makes unseeded
+        runs reproducible. `size` is chosen by sandboxed code, so an override that
+        allocates should cap it. The default proxies to the host's `os.urandom`.
+        """
+        return os.urandom(size)
 
 
 class AbstractFile(Protocol):

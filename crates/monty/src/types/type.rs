@@ -12,8 +12,8 @@ use crate::{
     intern::{Interns, StaticStrings, StringId},
     modules::{collections, itertools, itertools::ItertoolsFunctions},
     types::{
-        Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Range, Set, Slice, Str,
-        TimeZone, Tuple,
+        Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
+        Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         date, datetime,
         dict::{DictKind, dict_fromkeys},
@@ -269,6 +269,10 @@ pub enum Type {
     /// that name.
     #[strum(serialize = "itertools._tee_dataobject")]
     ItertoolsTeeDataObject,
+    /// `random.Random`, qualified like `collections.deque` so `type(rng)`
+    /// reads `<class 'random.Random'>`.
+    #[strum(serialize = "random.Random")]
+    Random,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -649,6 +653,7 @@ impl Type {
             Self::Iterator => super::iter::init(vm, args),
             Self::Path => Path::init(vm, args),
             Self::Partial => Partial::init(vm, args),
+            Self::Random => Random::init(vm, args),
 
             // Every `itertools` name but `tee` is a type, as in CPython, so
             // `isinstance(x, itertools.count)` and `type(x) is count` hold.

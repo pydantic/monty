@@ -33,7 +33,7 @@ use crate::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
         resume_lookup, resume_with_result,
     },
-    types::tuple::allocate_tuple,
+    types::{Random, tuple::allocate_tuple},
     value::Value,
     virtual_path::canonical_cwd,
 };
@@ -87,6 +87,10 @@ pub struct MontyRepl {
     /// [`set_cwd`](Self::set_cwd) chose, then whatever `os.chdir` left the
     /// last snippet in — the directory is session state, like the globals.
     cwd: Arc<str>,
+    /// The module-level `random` generator, carried between snippets like the
+    /// globals so a `random.seed()` in one feed governs the draws of the next.
+    #[serde(default)]
+    random: Random,
     /// Persistent heap across snippets.
     heap: Heap,
     /// Persistent global variable values across snippets.
@@ -116,6 +120,7 @@ impl MontyRepl {
             options,
             clock: default_clock(),
             cwd: Arc::from(DEFAULT_CWD),
+            random: Random::default(),
             heap,
             globals: Vec::new(),
         }
@@ -246,10 +251,11 @@ impl MontyRepl {
                 print.reborrow(),
                 executor.vm_env(),
             );
+            vm.random = mem::take(&mut this.random);
 
             // Inject inputs with VM alive
             if let Err(error) = inject_inputs_into_vm(executor, input_values, &mut vm) {
-                this.globals = vm.take_globals();
+                reclaim_vm_state(&mut this.globals, &mut this.cwd, &mut this.random, &mut vm);
                 return Err(error);
             }
 
@@ -260,7 +266,7 @@ impl MontyRepl {
             let vm_state = if converted.needs_snapshot() {
                 Some(vm.snapshot())
             } else {
-                reclaim_vm_state(&mut this.globals, &mut this.cwd, &mut vm);
+                reclaim_vm_state(&mut this.globals, &mut this.cwd, &mut this.random, &mut vm);
                 None
             };
             Ok((converted, vm_state))
@@ -328,16 +334,17 @@ impl MontyRepl {
                 print.reborrow(),
                 executor.vm_env(),
             );
+            vm.random = mem::take(&mut self.random);
 
             if let Err(e) = inject_inputs_into_vm(executor, input_values, &mut vm) {
-                self.globals = vm.take_globals();
+                reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut self.random, &mut vm);
                 return Err(e);
             }
 
             let result = executor.run_to_completion(&mut vm);
 
-            // Reclaim globals (and any directory change) before cleanup.
-            reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut vm);
+            // Reclaim globals (and any directory change or seed) before cleanup.
+            reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut self.random, &mut vm);
             Ok(result)
         });
 
@@ -411,6 +418,7 @@ impl MontyRepl {
                 print.reborrow(),
                 executor.vm_env(),
             );
+            vm.random = mem::take(&mut self.random);
 
             let result = match convert_args(args, vm) {
                 Ok(args) => {
@@ -463,6 +471,7 @@ impl MontyRepl {
             if let Some(cwd) = vm.take_changed_cwd() {
                 self.cwd = Arc::from(cwd);
             }
+            self.random = mem::take(&mut vm.random);
             result
         });
         self.interns = executor.interns;
@@ -865,7 +874,7 @@ impl ReplNameLookup {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut vm);
+                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
                     None
                 };
                 (converted, vm_state)
@@ -911,9 +920,10 @@ impl ReplResolveFutures {
             vm_state,
             ..
         } = self;
-        let (globals, cwd) = vm_state.abandon(&mut repl.heap);
+        let (globals, cwd, random) = vm_state.abandon(&mut repl.heap);
         repl.globals = globals;
         repl.cwd = Arc::from(cwd);
+        repl.random = random;
         repl.commit_executor(executor);
         repl
     }
@@ -971,7 +981,7 @@ impl ReplResolveFutures {
             );
 
             if let Some(call_id) = invalid_call_id {
-                reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut vm);
+                reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
                 return Err(MontyException::runtime_error(format!(
                     "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
                 )));
@@ -984,7 +994,7 @@ impl ReplResolveFutures {
             let vm_state = if converted.needs_snapshot() {
                 Some(vm.snapshot())
             } else {
-                reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut vm);
+                reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
                 None
             };
             Ok((converted, vm_state))
@@ -1107,7 +1117,7 @@ fn abort_restored(
         let vm_result = vm.abort(exc);
         let converted = convert_frame_exit(vm_result, &mut vm);
         // Uncatchable exceptions cannot suspend, so no snapshot is needed.
-        reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut vm);
+        reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
         converted
     });
     build_repl_progress(converted, None, executor, repl)
@@ -1150,9 +1160,10 @@ impl ReplSnapshot {
             executor,
             vm_state,
         } = self;
-        let (globals, cwd) = vm_state.abandon(&mut repl.heap);
+        let (globals, cwd, random) = vm_state.abandon(&mut repl.heap);
         repl.globals = globals;
         repl.cwd = Arc::from(cwd);
+        repl.random = random;
         repl.commit_executor(executor);
         repl
     }
@@ -1198,7 +1209,7 @@ impl ReplSnapshot {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut vm);
+                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
                     None
                 };
                 (converted, vm_state)
@@ -1211,14 +1222,16 @@ impl ReplSnapshot {
 // Private helper functions
 // ---------------------------------------------------------------------------
 
-/// Reclaims what outlives a snippet from its finished VM: the globals, and
-/// the working directory when the snippet (or the snapshot it resumed from)
-/// owns one, so an `os.chdir` persists into later feeds like the globals do.
-fn reclaim_vm_state(globals: &mut Vec<Value>, cwd: &mut Arc<str>, vm: &mut VM<'_>) {
+/// Reclaims what outlives a snippet from its finished VM: the globals, the
+/// `random` generator, and the working directory when the snippet (or the
+/// snapshot it resumed from) owns one, so an `os.chdir` or a `random.seed()`
+/// persists into later feeds like the globals do.
+fn reclaim_vm_state(globals: &mut Vec<Value>, cwd: &mut Arc<str>, random: &mut Random, vm: &mut VM<'_>) {
     *globals = vm.take_globals();
     if let Some(changed) = vm.take_changed_cwd() {
         *cwd = Arc::from(changed);
     }
+    *random = mem::take(&mut vm.random);
 }
 
 /// Injects input values into the VM's global namespace slots.

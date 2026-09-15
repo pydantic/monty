@@ -200,7 +200,7 @@ anything.
     ```
 
 A separate `os=` callback handles operations no mount covers: the remaining `pathlib` operations, `os.getenv`,
-`os.environ`, `date.today()` and `datetime.now()`.
+`os.environ`, `date.today()`, `datetime.now()` and `os.urandom()`.
 [`AbstractOS`][pydantic_monty.AbstractOS] is the typed form of that callback; [`OSAccess`][pydantic_monty.OSAccess] implements it over in-memory files and an `environ` mapping
 you supply, and overriding one of its methods replaces one operation.
 JavaScript has only the callback form, so the TypeScript tab answers the same three operations by hand:
@@ -304,6 +304,15 @@ In-process Rust runs have no host loop to ask, so they read this machine's clock
 
 Wall-clock time is a weak capability, but it is one — it is what makes elapsed time measurable from inside the sandbox,
 and a naive `datetime.now()` is read in the host's local zone, which discloses its UTC offset.
+
+### Entropy
+
+`os.urandom()` is the only call that reads entropy, and the `random` module gets its entropy the same way: a generator
+nobody seeded asks the host for 2496 bytes the first time it draws.
+Through the pool the call reaches your `os=` handler like any other, so an unseeded `random.random()` raises until you
+answer it — with real entropy, or with fixed bytes when a run has to be reproducible.
+Seeded code (`random.seed(42)`) never asks.
+See [random](limitations/random.md).
 
 ## Crash isolation
 

@@ -67,6 +67,8 @@ Only the file argument's name is used, so `monty ./scripts/run.py` and `monty /a
 ## The clock
 
 `date.today()` and `datetime.now()` read the machine's clock and local timezone.
+Nothing answers `os.urandom()` in the CLI, so it and any unseeded `random` draw raise
+`RuntimeError: 'os.urandom' is not supported in this environment`; `random.seed(...)` first and the draws work.
 
 ```console
 $ monty -c "from datetime import datetime; print(datetime.now())"

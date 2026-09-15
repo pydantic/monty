@@ -40,6 +40,12 @@ impl ToMontyObject for Vec<u8> {
     }
 }
 
+impl ToMontyObject for i64 {
+    fn into_monty_object(self) -> MontyObject {
+        MontyObject::Int(self)
+    }
+}
+
 impl ToMontyObject for bool {
     fn into_monty_object(self) -> MontyObject {
         MontyObject::Bool(self)

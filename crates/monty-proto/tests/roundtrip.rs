@@ -8,7 +8,7 @@ use monty_types::{
     MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
     MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, OpenCallArgs,
     OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame,
-    UnicodeErrorData,
+    UnicodeErrorData, UrandomArgs,
 };
 use num_bigint::BigInt;
 use prost::Message;
@@ -870,6 +870,7 @@ fn os_calls_round_trip_all_variants() {
             offset_seconds: 3600,
             name: Some("CET".to_owned()),
         })),
+        OsFunctionCall::Urandom(UrandomArgs { size: 2496 }),
     ] {
         assert_os_call_round_trip(call);
     }

@@ -4,6 +4,7 @@ import functools
 import itertools
 import json
 import os
+import random
 import re
 import sys
 from collections.abc import Iterator
@@ -646,3 +647,13 @@ for key, group in itertools.groupby([1, 1, 2]):
 for key_fn, group_fn in itertools.groupby([1, 1, 2], key=lambda i: i > 1):
     assert_type(key_fn, bool)
     assert_type(list(group_fn), list[int])
+
+# === random ===
+assert_type(random.random(), float)
+assert_type(random.randint(1, 6), int)
+assert_type(random.choice([1, 2, 3]), int)
+assert_type(random.sample(['a', 'b'], 1), list[str])
+assert_type(random.choices('abc', k=2), list[str])
+assert_type(random.Random(42).uniform(1, 2), float)
+assert_type(random.Random().getrandbits(8), int)
+assert_type(os.urandom(4), bytes)

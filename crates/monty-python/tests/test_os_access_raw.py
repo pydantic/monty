@@ -236,6 +236,15 @@ def test_abstract_os_date_today(monty_run: RunMonty):
     assert (type(result).__name__, repr(result)) == snapshot(('date', 'datetime.date(2024, 1, 15)'))
 
 
+def test_abstract_os_urandom_default(monty_run: RunMonty):
+    """AbstractOS.urandom() answers from the host's os.urandom by default."""
+    fs = TestOS()
+
+    result = monty_run('import os, random\n(len(os.urandom(8)), 0.0 <= random.random() < 1.0)', os=fs)
+
+    assert result == snapshot((8, True))
+
+
 def test_abstract_os_datetime_now_with_timezone(monty_run: RunMonty):
     """AbstractOS.datetime_now() receives the requested timezone."""
     fs = TestOS()

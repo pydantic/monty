@@ -32,7 +32,8 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
-    types::{Path, file::FileName},
+    modules::random::RandomRetry,
+    types::{Path, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
 };
@@ -56,7 +57,7 @@ impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
 /// VM's single slot (one call in flight per task) only once the call reaches
 /// the host, where a `resume` becomes guaranteed; anything discarding the
 /// suspension calls [`release_pending_effect`] instead.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PendingEffect {
     /// Reshapes the host's reply before it is converted to a heap value.
     Pre(PreConversionEffect),
@@ -72,17 +73,18 @@ impl PendingEffect {
         match self {
             Self::Pre(effect) => Some(effect.operation_name()),
             Self::Post(PostConversionEffect::OpenName { .. }) => Some("open"),
+            Self::Post(PostConversionEffect::SeedRandom { .. }) => Some("os.urandom"),
             // A future strands these instead: the awaited value is the raw host reply.
             Self::Post(PostConversionEffect::BufferStore { .. } | PostConversionEffect::WritePosition { .. }) => None,
         }
     }
 
-    /// The heap entry this effect pins across the host yield, if any, so drop
-    /// and abandon paths release it with `if let Some(id) = effect.pinned_file()`.
-    pub(crate) fn pinned_file(&self) -> Option<HeapId> {
+    /// Discards an effect that will never be applied, releasing whatever it
+    /// held across the host yield (see [`PostConversionEffect::release`]).
+    pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
         match self {
-            Self::Pre(_) => None,
-            Self::Post(effect) => effect.pinned_file(),
+            Self::Pre(_) => {}
+            Self::Post(effect) => effect.release(heap),
         }
     }
 }
@@ -101,7 +103,7 @@ impl From<PostConversionEffect> for PendingEffect {
 
 /// Reshapes the raw host reply before heap conversion: plain data in, plain
 /// data out, so no variant holds a heap reference and none needs cleanup.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PreConversionEffect {
     /// `os.listdir`: reduce the host's `Iterdir` result (a list of child
     /// paths) to the list of bare entry names.
@@ -144,10 +146,11 @@ impl PreConversionEffect {
     }
 }
 
-/// Applies the converted host value to VM state. The file variants own a
-/// reference to their handle across the host yield (see
-/// `inc_ref_for_pending_oscall`), released exactly once via [`Self::pinned_file`].
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// Applies the converted host value to VM state. The file variants and
+/// `SeedRandom`'s instance target own a reference to their heap object across
+/// the host yield (see `inc_ref_for_pending_oscall`), released exactly once —
+/// on apply, or via [`Self::release`] when the effect is discarded.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PostConversionEffect {
     /// Store a full-file read result into the file buffer, then compute the
     /// pending read/seek slice (see `types/file.rs`).
@@ -164,26 +167,41 @@ pub(crate) enum PostConversionEffect {
     },
     /// Preserve `open()`'s filename while the returned handle supplies the I/O target.
     OpenName { name: FileName },
+    /// Seed a `random` generator from the host's `os.urandom` reply, then
+    /// answer `None` (`seed()`) or re-run the draw that found it unseeded
+    /// (`retry`, which owns the call's arguments across the yield).
+    SeedRandom {
+        target: RandomTarget,
+        retry: Option<RandomRetry>,
+    },
 }
 
 impl PostConversionEffect {
-    /// The pinned file handle, the single place that knows which variants carry a refcount.
-    pub(crate) fn pinned_file(&self) -> Option<HeapId> {
+    /// Releases what the effect held across the yield: the pinned heap object
+    /// (a file handle, or a `random.Random` instance) and any stashed
+    /// arguments. The single place that knows which variants carry a refcount.
+    pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
         match self {
-            Self::BufferStore { file_id } | Self::WritePosition { file_id, .. } => Some(*file_id),
-            Self::OpenName { .. } => None,
+            Self::BufferStore { file_id } | Self::WritePosition { file_id, .. } => heap.heap_mut().dec_ref(file_id),
+            Self::OpenName { .. } => {}
+            Self::SeedRandom { target, retry } => {
+                if let RandomTarget::Instance(id) = target {
+                    heap.heap_mut().dec_ref(id);
+                }
+                retry.drop_with(heap);
+            }
         }
     }
 }
 
-/// Releases an effect that will never be resumed, dropping the file pin it
-/// carried (see `inc_ref_for_pending_oscall`).
+/// Releases an effect that will never be resumed, dropping the heap pin and
+/// any arguments it carried (see `inc_ref_for_pending_oscall`).
 ///
 /// Reached via the owner's `drop_with`, or `Drop for VM` once the effect is
 /// armed and no owning value remains.
 pub(crate) fn release_pending_effect(effect: Option<PendingEffect>, heap: &mut impl ContainsHeap) {
-    if let Some(file_id) = effect.and_then(|effect| effect.pinned_file()) {
-        heap.heap_mut().dec_ref(file_id);
+    if let Some(effect) = effect {
+        effect.release(heap);
     }
 }
 
