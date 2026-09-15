@@ -108,8 +108,7 @@ pub(crate) fn new_group(source: Value, consumers: usize, vm: &mut VM<'_>) -> Vec
         .heap
         .allocate(HeapData::Itertools(ItertoolsIter::TeeBlock(Box::new(block))));
     let tees = consumers_at(block_id, 0, consumers, vm);
-    // The allocation's own reference belongs to no consumer, so it goes here —
-    // and a `tee(x, 0)` chain is freed on the spot.
+    // The allocation's own reference belongs to no consumer, so it goes here.
     Value::Ref(block_id).drop_with(vm);
     tees
 }
@@ -156,13 +155,9 @@ fn consumers_at(block_id: HeapId, index: usize, consumers: usize, vm: &mut VM<'_
 /// Yields this consumer's next item, reading one from the source when the
 /// chain has nothing further for it.
 pub(super) fn next<'h>(iter: &mut HeapObjectRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-    let mut steps = 0usize;
     loop {
         // Reading the source runs user code that can step other consumers, so
         // the position is re-read each round rather than carried across one.
-        vm.heap.tracker.check_time_every(steps)?;
-        steps += 1;
-
         let (block_id, index) = position(iter, vm);
         if let Some(item) = read_block(block_id, vm, |block, heap| {
             block.items.get(index).map(|item| item.clone_with_heap(heap))

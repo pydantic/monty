@@ -68,10 +68,9 @@ use crate::{
 
 /// The state of one `itertools` iterator, whichever adaptor produced it.
 ///
-/// Held inline, so this width is memcpy'd on every heap allocate and free along
-/// with the rest of `HeapData` — which #636 shrank to 80 bytes, asserted in
-/// `heap_data.rs`. The budget below keeps the family from becoming what sets
-/// that size.
+/// Held inline, so this width is memcpy'd on every heap allocate and free
+/// along with the rest of `HeapData`, which `heap_data.rs` caps at 80 bytes.
+/// The budget below keeps the family from becoming what sets that size.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum ItertoolsIter {
     Count(Count),
@@ -90,8 +89,9 @@ pub(crate) enum ItertoolsIter {
     Accumulate(Box<Accumulate>),
     Batched(Batched),
     ZipLongest(ZipLongest),
-    /// Boxed, like the rest of the combinatoric family: a pool plus index
-    /// vectors is far wider than the budget below.
+    /// Boxed with the rest of the combinatoric family for consistency: only
+    /// `Permutations` and `GroupBy` are actually past the budget below, but a
+    /// pool plus index vectors is the kind of payload that grows.
     Combinations(Box<Combinations>),
     Permutations(Box<Permutations>),
     Product(Box<Product>),
@@ -211,7 +211,7 @@ impl ItertoolsIter {
         match self {
             // Only ever holds numbers, whose refs point at `LongInt` leaves.
             Self::Count(_) => false,
-            // Both hold arbitrary objects, which may reach back to the iterator.
+            // The rest hold arbitrary objects, which may reach back here.
             Self::Repeat(_)
             | Self::Pairwise(_)
             | Self::Compress(_)

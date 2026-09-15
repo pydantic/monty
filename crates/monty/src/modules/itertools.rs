@@ -125,8 +125,9 @@ pub(crate) fn construct(type_: Type, vm: &mut VM<'_>, args: ArgValues) -> RunRes
         Type::ItertoolsPermutations => call_permutations(vm, args),
         Type::ItertoolsProduct => call_product(vm, args),
         Type::ItertoolsGroupBy => call_groupby(vm, args),
-        // CPython exposes these two but refuses to construct them: they are
-        // only ever handed out by `groupby` and `tee`.
+        // Exposed under their CPython names so `type()` and `isinstance()`
+        // work, but not constructible here — CPython builds them from the
+        // arguments its internals use. See `limitations/itertools.md`.
         Type::ItertoolsGrouper | Type::ItertoolsTee | Type::ItertoolsTeeDataObject => {
             args.drop_with(vm);
             Err(ExcType::type_error_not_callable(&type_.name(vm.heap, vm.interns)))
