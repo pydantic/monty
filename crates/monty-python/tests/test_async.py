@@ -1186,6 +1186,14 @@ async def test_legacy_dispatch_override_still_sleeps(asession: AsyncMontySession
     assert seen == snapshot(['asyncio.sleep'])
 
 
+async def test_max_sleep_caps_an_async_wait(asession: AsyncMontySession):
+    """`max_sleep` bounds the coroutine `async_sleep` hands the pool as well."""
+    start = time.monotonic()
+    code = "import asyncio\nasyncio.run(asyncio.sleep(3600, 'woken'))"
+    assert await asession.feed_run(code, os=OSAccess(max_sleep=0.001)) == snapshot('woken')
+    assert time.monotonic() - start < 5
+
+
 async def test_sleep_coroutine_value_is_ignored(asession: AsyncMontySession):
     """Whatever the coroutine answering asyncio.sleep returns, even something with no wire form, the await produces `result`."""
 

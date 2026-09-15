@@ -61,6 +61,12 @@ The `OverflowError` past ~9223372036.85 seconds is CPython's,
 raises for a delay just *under* that boundary: Monty accepts it and passes it
 to the host, where it becomes a wait that outlives any turn deadline.
 
+The hosts Monty ships cut long sleeps short rather than wait them out:
+`pydantic_monty`'s `OSAccess` at its `max_sleep` (default 10 seconds, `None`
+for no cap) and the `monty` CLI at `--max-sleep` (default 10). Sandboxed code
+sees the call return early with no error, where CPython would have waited, so
+`time.time()` advances by less than the sleep asked for.
+
 A host may answer `time.sleep()` with a value, and it is discarded:
 `time.sleep()` always evaluates to `None`. A host answering it with a future
 instead gets `RuntimeError: time.sleep cannot be answered with a future` in the

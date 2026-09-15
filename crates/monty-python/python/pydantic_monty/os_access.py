@@ -148,6 +148,13 @@ class AbstractOS(ABC):
     Pass an instance as the `os` parameter to `Monty.run()`.
     """
 
+    max_sleep: float | None = 10
+    """Longest wait `sleep()` and `async_sleep()` perform, in seconds.
+
+    A longer `time.sleep()` or `asyncio.sleep()` is cut short to this, so
+    sandboxed code cannot hold the host for longer; `None` waits the full time.
+    """
+
     def __call__(
         self,
         *,
@@ -592,13 +599,13 @@ class AbstractOS(ABC):
         return time.time()
 
     def sleep(self, seconds: float) -> None:
-        """Wait for Monty's `time.sleep()` callback.
+        """Wait for Monty's `time.sleep()` callback, for at most `max_sleep`.
 
         The wait happens in the host process, blocking this thread: override it
-        to cap, scale or refuse (raise, or return `NOT_HANDLED`) how long
-        sandboxed code can make the host wait.
+        to scale or refuse (raise, or return `NOT_HANDLED`) the waits sandboxed
+        code asks for, beyond the cap `max_sleep` already applies.
         """
-        time.sleep(seconds)
+        time.sleep(self._capped(seconds))
 
     def async_sleep(self, delay: float, *, is_async: bool) -> Coroutine[Any, Any, None] | None:
         """Wait for Monty's `asyncio.sleep()` callback.
@@ -613,8 +620,12 @@ class AbstractOS(ABC):
         keeps the `result` argument of `asyncio.sleep()`.
         """
         if is_async:
-            return asyncio.sleep(delay)
+            return asyncio.sleep(self._capped(delay))
         return self.sleep(delay)
+
+    def _capped(self, seconds: float) -> float:
+        """`seconds` cut down to `max_sleep`, when there is one."""
+        return seconds if self.max_sleep is None else min(seconds, self.max_sleep)
 
 
 @functools.cache
@@ -625,7 +636,11 @@ def _dispatch_takes_is_async(cls: type[AbstractOS]) -> bool:
     and would fail on every call if it were passed; `**kwargs` counts as taking it.
     """
     params = inspect.signature(cls.dispatch).parameters
-    return 'is_async' in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+    is_async = params.get('is_async')
+    by_keyword = {inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+    return (is_async is not None and is_async.kind in by_keyword) or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
 
 
 class AbstractFile(Protocol):
@@ -881,6 +896,7 @@ class OSAccess(AbstractOS):
         environ: dict[str, str] | None = None,
         *,
         root_dir: str | PurePosixPath = '/',
+        max_sleep: float | None = 10,
     ):
         """Create a virtual filesystem with the given files.
 
@@ -892,6 +908,9 @@ class OSAccess(AbstractOS):
                 Isolated from the real environment.
             root_dir: Base directory for normalizing relative file paths. Relative
                 paths in files will be prefixed with this. Default is '/'.
+            max_sleep: Longest wait a `time.sleep()` or `asyncio.sleep()` performs,
+                in seconds (default 10); longer sleeps are cut short, `None` waits
+                the full time.
 
         Raises:
             AssertionError: If root_dir is not an absolute path.
@@ -900,6 +919,7 @@ class OSAccess(AbstractOS):
         """
         self.files = list(files) if files else []
         self.environ = environ or {}
+        self.max_sleep = max_sleep
         # Initialize tree with root directory - / is always present
         self._tree = {'/': {}}
         root_dir = PurePosixPath(root_dir)
