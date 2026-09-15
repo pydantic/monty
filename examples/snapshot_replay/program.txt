@@ -1,0 +1,12 @@
+packages = ['pydantic-ai-slim', 'pydantic-ai-harness', 'langchain-monty']
+report = []
+for package in packages:
+    metadata = package_metadata(package)
+    monty = [item for item in metadata['requires_dist'] if 'monty' in item.lower()]
+    report.append({
+        'package': package,
+        'version': metadata['version'],
+        'python': metadata['requires_python'],
+        'monty_dependencies': monty,
+    })
+report

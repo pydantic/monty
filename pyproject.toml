@@ -38,6 +38,7 @@ docs = [
 [tool.ruff]
 line-length = 120
 include = [
+    "examples/snapshot_replay/**/*.py",
     "scripts/**/*.py",
     "crates/**/*.py",
     "crates/**/*.pyi",
