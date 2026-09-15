@@ -510,6 +510,7 @@ fn hand_call_payloads_match_generated_encoding() {
     let default = MontyObject::List(vec![MontyObject::None, MontyObject::Int(3)]);
     let hand_os = pb::OsCall {
         call_id: 7,
+        allow_eager_await: false,
         call: Some(pb::os_call::Call::Getenv(pb::os_call::Getenv {
             key: "HOME".to_owned(),
             default: Some(WireObject::new(default.clone())),
@@ -517,6 +518,7 @@ fn hand_call_payloads_match_generated_encoding() {
     };
     let generated_os = oracle::OsCall {
         call_id: 7,
+        allow_eager_await: false,
         call: Some(oracle::os_call::Call::Getenv(oracle::os_call::Getenv {
             key: "HOME".to_owned(),
             default: Some(to_oracle(&default)),
@@ -532,6 +534,7 @@ fn hand_call_payloads_match_generated_encoding() {
     // embedding, but keep the byte-compat check against the oracle.
     let hand_now = pb::OsCall {
         call_id: 9,
+        allow_eager_await: false,
         call: Some(pb::os_call::Call::DateTimeNow(pb::os_call::DateTimeNow {
             tz: Some(pb::TimeZone {
                 offset_seconds: 3600,
@@ -541,6 +544,7 @@ fn hand_call_payloads_match_generated_encoding() {
     };
     let generated_now = oracle::OsCall {
         call_id: 9,
+        allow_eager_await: false,
         call: Some(oracle::os_call::Call::DateTimeNow(oracle::os_call::DateTimeNow {
             tz: Some(oracle::TimeZone {
                 offset_seconds: 3600,

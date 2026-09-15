@@ -62,11 +62,14 @@ use tokio::{
 };
 
 use crate::{
-    async_dispatch::{Dispatched, coroutine_future, dispatch_function_call, spawn_coroutine_task, wait_for_futures},
+    async_dispatch::{
+        Dispatched, coroutine_future, dispatch_function_call, sleep_future, spawn_coroutine_task, spawn_sleep_task,
+        wait_for_futures,
+    },
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
-    external::{CallResult, ExternalLookup, dispatch_object_call, resolve_object_attr},
+    external::{CallResult, ExternalLookup, dispatch_object_call, is_coroutine, resolve_object_attr},
     get_not_handled,
     limits::extract_limits,
     mount::PyMountDir,
@@ -1353,14 +1356,17 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                         event = next;
                         continue;
                     }
-                    None => TurnAnswer::Call(dispatch_os_parts(
-                        py,
-                        &function_name,
-                        &args,
-                        &kwargs,
-                        os.as_ref(),
-                        &instances,
-                    )),
+                    None => {
+                        match dispatch_os_parts(py, &function_name, &args, &kwargs, os.as_ref(), &instances, false) {
+                            OsDispatch::Answer(value) => TurnAnswer::Call(value),
+                            OsDispatch::Coroutine(coro) => {
+                                // Closed so CPython does not warn that it was never awaited.
+                                coro.bind(py).call_method0("close")?;
+                                discard_checkout_sync(py, &checkout);
+                                return Err(PyRuntimeError::new_err("async os callbacks require AsyncMonty"));
+                            }
+                        }
+                    }
                 }
             }
             event => match sync_turn_answer(py, event, &lookup, &instances) {
@@ -1566,7 +1572,9 @@ async fn drive_async_inner(
                 function_name,
                 args,
                 kwargs,
-                ..
+                call_id,
+                accepts_future,
+                allow_eager_await,
             } => {
                 let mounted = run_turn_async(
                     &checkout,
@@ -1578,7 +1586,7 @@ async fn drive_async_inner(
                     event = next;
                     continue;
                 }
-                let value = Python::attach(|py| {
+                let dispatched = Python::attach(|py| {
                     let _guard = callback_context.enter(py, &native)?;
                     Ok::<_, PyErr>(dispatch_os_parts(
                         py,
@@ -1587,9 +1595,29 @@ async fn drive_async_inner(
                         &kwargs,
                         os.as_ref(),
                         &instances,
+                        true,
                     ))
                 })?;
-                TurnAnswer::Call(value)
+                match dispatched {
+                    OsDispatch::Answer(value) => TurnAnswer::Call(value),
+                    // `asyncio.sleep` with nothing else to run: settle the wait
+                    // in place and skip the `ResolveFutures` round trip.
+                    OsDispatch::Coroutine(coro) if allow_eager_await => {
+                        let future = sleep_future(coro)?;
+                        TurnAnswer::Eager(call_id, ext_to_resume(future.await)?)
+                    }
+                    // `asyncio.sleep` runs alongside the sandbox's other tasks.
+                    OsDispatch::Coroutine(coro) if accepts_future => {
+                        spawn_sleep_task(&mut join_set, call_id, coro)?;
+                        TurnAnswer::Call(ResumeValue::Future)
+                    }
+                    // Any other call is a value the sandbox is waiting on: the
+                    // wait happens here and holds up only this session.
+                    OsDispatch::Coroutine(coro) => {
+                        let future = coroutine_future(coro, &instances)?;
+                        TurnAnswer::Call(ext_to_resume(future.await)?)
+                    }
+                }
             }
             event => match async_turn_answer(
                 event,
@@ -1849,11 +1877,12 @@ pub(crate) fn dispatch_os_parts(
     kwargs: &[(MontyObject, MontyObject)],
     os: Option<&Py<PyAny>>,
     instances: &InstanceStore,
-) -> ResumeValue {
+    is_async: bool,
+) -> OsDispatch {
     let Some(os_callback) = os else {
-        return ResumeValue::NotHandled;
+        return OsDispatch::Answer(ResumeValue::NotHandled);
     };
-    let call = || -> PyResult<ResumeValue> {
+    let call = || -> PyResult<OsDispatch> {
         let py_args: Vec<Py<PyAny>> = args
             .iter()
             .map(|arg| monty_to_py(py, arg, instances))
@@ -1863,16 +1892,34 @@ pub(crate) fn dispatch_os_parts(
         for (k, v) in kwargs {
             py_kwargs.set_item(monty_to_py(py, k, instances)?, monty_to_py(py, v, instances)?)?;
         }
-        let result = callback_context::call(py, || os_callback.bind(py).call1((function_name, py_args, py_kwargs)))?;
+        // The `OsHandler` protocol: keyword arguments only, so a handler can
+        // name the ones it uses and absorb the rest.
+        let handler_kwargs = PyDict::new(py);
+        handler_kwargs.set_item("name", function_name)?;
+        handler_kwargs.set_item("args", py_args)?;
+        handler_kwargs.set_item("kwargs", py_kwargs)?;
+        handler_kwargs.set_item("is_async", is_async)?;
+        let result = callback_context::call(py, || os_callback.bind(py).call((), Some(&handler_kwargs)))?;
         if result.is(get_not_handled(py)?.bind(py)) {
-            return Ok(ResumeValue::NotHandled);
+            return Ok(OsDispatch::Answer(ResumeValue::NotHandled));
         }
-        Ok(match py_to_monty_value(&result, instances) {
+        if is_coroutine(py, &result) {
+            return Ok(OsDispatch::Coroutine(result.unbind()));
+        }
+        Ok(OsDispatch::Answer(match py_to_monty_value(&result, instances) {
             Ok(obj) => ResumeValue::Return(obj),
             Err(exc) => ResumeValue::Error(exc),
-        })
+        }))
     };
-    call().unwrap_or_else(|err| ResumeValue::Error(exc_py_to_monty(py, &err)))
+    call().unwrap_or_else(|err| OsDispatch::Answer(ResumeValue::Error(exc_py_to_monty(py, &err))))
+}
+
+/// What an `os=` callback answered with. A coroutine is the drive loop's to
+/// deal with: `AsyncMonty` spawns it as a future for `asyncio.sleep` and
+/// awaits it in place for any other call, while `Monty` refuses it.
+pub(crate) enum OsDispatch {
+    Answer(ResumeValue),
+    Coroutine(Py<PyAny>),
 }
 
 /// Extracts `MountDir | list[MountDir] | None` into mount specs for the pool,

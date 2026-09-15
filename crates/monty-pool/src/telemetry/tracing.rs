@@ -741,6 +741,9 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, pa
                 os_call!("date_time_now")
             }
         }
+        Some(Call::Time(_)) => os_call!("time"),
+        Some(Call::Sleep(s)) => os_call!("sleep", args.seconds = s.seconds),
+        Some(Call::AsyncSleep(s)) => os_call!("async_sleep", args.delay = s.delay),
         None => os_call!(MISSING),
     });
     if args_cut {
@@ -1133,6 +1136,7 @@ mod tests {
         )));
         recorder.event(&event(pb::child_event::Kind::OsCall(pb::OsCall {
             call_id: 1,
+            allow_eager_await: false,
             call: Some(Call::WriteText(pb::os_call::TextWrite {
                 path: "/mnt/data/f.txt".to_owned(),
                 data: long.clone(),

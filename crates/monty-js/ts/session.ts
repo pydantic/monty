@@ -673,6 +673,18 @@ class TurnAnswerer {
       const args = restoreValues(call.args, this.instances)
       returned = this.os(call.functionName, args, kwargsToRecord(restoreKwargPairs(call.kwargs, this.instances)))
       if (isThenable(returned)) {
+        if (call.acceptsFuture) {
+          // `asyncio.sleep`: the sandbox's other tasks run while the host
+          // waits — unless there are none, when the wait settles in place.
+          const settled = Promise.resolve(returned).then(rejectNotHandled(call.functionName))
+          if (call.allowEagerAwait) {
+            return await this.answerEagerCoroutine(call.callId, settled, onPrint)
+          }
+          this.registerFuture(call.callId, settled)
+          return await this.native.resumeFuture(onPrint)
+        }
+        // Every other OS call is a value the sandbox is waiting on, so the
+        // wait happens here and only this session is held up.
         returned = await returned
       }
     } catch (err) {
@@ -980,7 +992,7 @@ export class FunctionSnapshot extends SingleUse {
     this.kwargs = kwargsToRecord(restoreKwargPairs(turn.kwargs, driver.instances))
     this.callId = turn.callId
     this.isOsFunction = isOsFunction
-    this.allowEagerAwait = turn.kind === 'functionCall' && (turn.allowEagerAwait ?? false)
+    this.allowEagerAwait = turn.allowEagerAwait ?? false
     this.objectId = 'objectId' in turn ? (turn.objectId ?? null) : null
   }
 
@@ -1213,6 +1225,21 @@ function jsErrorParts(err: unknown): { excType: string; message: string } {
     return { excType, message: err.message }
   }
   return { excType: 'RuntimeError', message: String(err) }
+}
+
+/**
+ * A future cannot decline a call the way `resumeNotHandled` does, so an async
+ * `os` callback that settles to `NOT_HANDLED` raises the sandbox's own
+ * no-handler error for that call instead. Any other value is dropped: the
+ * sandbox ignores it, so it must not fail conversion either.
+ */
+function rejectNotHandled(functionName: string): (value: unknown) => undefined {
+  return (value) => {
+    if (value === NOT_HANDLED) {
+      throw new Error(`'${functionName}' is not supported in this environment`)
+    }
+    return undefined
+  }
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {

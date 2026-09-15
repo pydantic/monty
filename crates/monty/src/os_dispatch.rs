@@ -56,7 +56,7 @@ impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
 /// VM's single slot (one call in flight per task) only once the call reaches
 /// the host, where a `resume` becomes guaranteed; anything discarding the
 /// suspension calls [`release_pending_effect`] instead.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PendingEffect {
     /// Reshapes the host's reply before it is converted to a heap value.
     Pre(PreConversionEffect),
@@ -72,8 +72,14 @@ impl PendingEffect {
         match self {
             Self::Pre(effect) => Some(effect.operation_name()),
             Self::Post(PostConversionEffect::OpenName { .. }) => Some("open"),
+            // `time.sleep` blocks by definition, so a future would leave the
+            // sandbox running before the wait it asked for finished.
+            Self::Post(PostConversionEffect::DiscardResult) => Some("time.sleep"),
             // A future strands these instead: the awaited value is the raw host reply.
             Self::Post(PostConversionEffect::BufferStore { .. } | PostConversionEffect::WritePosition { .. }) => None,
+            // `asyncio.sleep` wants the future: `resume_with_result` moves the
+            // result onto the pending awaitable instead.
+            Self::Post(PostConversionEffect::SleepResult { .. }) => None,
         }
     }
 
@@ -147,7 +153,7 @@ impl PreConversionEffect {
 /// Applies the converted host value to VM state. The file variants own a
 /// reference to their handle across the host yield (see
 /// `inc_ref_for_pending_oscall`), released exactly once via [`Self::pinned_file`].
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PostConversionEffect {
     /// Store a full-file read result into the file buffer, then compute the
     /// pending read/seek slice (see `types/file.rs`).
@@ -164,6 +170,15 @@ pub(crate) enum PostConversionEffect {
     },
     /// Preserve `open()`'s filename while the returned handle supplies the I/O target.
     OpenName { name: FileName },
+    /// Drop the host's answer and evaluate to `None` (`time.sleep`, whose
+    /// CPython return value is always `None`).
+    DiscardResult,
+    /// Drop the host's answer and produce `result` from an awaitable, so
+    /// `asyncio.sleep(delay, result)` is awaitable whether the host answered
+    /// immediately (a settled awaitable) or with a future (the pending
+    /// awaitable takes `result` over; see `ExternalFuture::sleep_result`).
+    /// Owns `result`'s reference; released by [`release_pending_effect`].
+    SleepResult { result: Value },
 }
 
 impl PostConversionEffect {
@@ -171,19 +186,25 @@ impl PostConversionEffect {
     pub(crate) fn pinned_file(&self) -> Option<HeapId> {
         match self {
             Self::BufferStore { file_id } | Self::WritePosition { file_id, .. } => Some(*file_id),
-            Self::OpenName { .. } => None,
+            Self::OpenName { .. } | Self::DiscardResult | Self::SleepResult { .. } => None,
         }
     }
 }
 
-/// Releases an effect that will never be resumed, dropping the file pin it
-/// carried (see `inc_ref_for_pending_oscall`).
+/// Releases an effect that will never be resumed, dropping the file pin or
+/// sleep result it carried (see `inc_ref_for_pending_oscall`).
 ///
 /// Reached via the owner's `drop_with`, or `Drop for VM` once the effect is
 /// armed and no owning value remains.
 pub(crate) fn release_pending_effect(effect: Option<PendingEffect>, heap: &mut impl ContainsHeap) {
-    if let Some(file_id) = effect.and_then(|effect| effect.pinned_file()) {
-        heap.heap_mut().dec_ref(file_id);
+    match effect {
+        Some(PendingEffect::Post(PostConversionEffect::SleepResult { result })) => result.drop_with(heap),
+        Some(effect) => {
+            if let Some(file_id) = effect.pinned_file() {
+                heap.heap_mut().dec_ref(file_id);
+            }
+        }
+        None => {}
     }
 }
 

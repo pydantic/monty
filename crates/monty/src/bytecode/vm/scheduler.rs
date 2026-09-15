@@ -491,6 +491,10 @@ impl Scheduler {
                 panic!("fail_for_call: future was already resolved")
             }
         };
+        // A failed sleep never produces its result.
+        if let Some(result) = fut.get_mut(heap).sleep_result.take() {
+            result.drop_with(heap);
+        }
         drop(fut);
         heap.dec_ref(future_id);
 

@@ -716,7 +716,15 @@ message OsCall {
     Unit date_today = 23; // date.today()
     // datetime.now(tz) — the timezone argument (absent for a naive result).
     DateTimeNow date_time_now = 24;
+    Unit time = 25; // time.time()
+    Sleep sleep = 26; // time.sleep(seconds)
+    AsyncSleep async_sleep = 27; // asyncio.sleep(delay)
   }
+
+  // As on `FunctionCall`: the parent may await a coroutine and answer with
+  // `ResumeFutures` for `call_id`. Only ever set on `async_sleep`, the one
+  // call a future may answer at all.
+  bool allow_eager_await = 28;
 
   message TextWrite {
     string path = 1;
@@ -751,6 +759,24 @@ message OsCall {
   message DateTimeNow {
     // Fixed-offset timezone for an aware result; absent for a naive one.
     optional TimeZone tz = 1;
+  }
+  // time.sleep(seconds) — the parent waits, then answers (the sandbox
+  // evaluates the call to None whatever the answer carried). Answering with a
+  // future is refused: the call is a block by definition.
+  message Sleep {
+    // How long to wait. Always finite, non-negative, and small enough to be a
+    // duration of nanoseconds in an int64; a frame breaking that is rejected.
+    double seconds = 1;
+  }
+  // asyncio.sleep(delay) — the awaitable form. A parent running an event
+  // loop should answer `ExtFunctionResult.future` and resolve it once the
+  // delay elapses, so the sandbox's other tasks keep running; answering
+  // directly is equivalent to a wait that blocks them. The answer's value is
+  // ignored: the sandbox keeps the `result` argument itself and produces it
+  // from the `await`.
+  message AsyncSleep {
+    // How long to wait, under the same constraints as `Sleep.seconds`.
+    double delay = 1;
   }
 }
 

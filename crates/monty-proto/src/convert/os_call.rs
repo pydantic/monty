@@ -2,9 +2,11 @@
 //! `monty.v1.OsCall` and [`OsFunctionCall`] map 1:1, so payloads (write data,
 //! paths) *move* between the wire and the call — never clone.
 
+use std::time::Duration;
+
 use monty_types::{
     GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
-    PathStringDataArgs, RenameCallArgs,
+    PathStringDataArgs, RenameCallArgs, sleep_duration,
 };
 
 use crate::{
@@ -55,6 +57,13 @@ impl From<OsFunctionCall> for os_call::Call {
                     offset_seconds: tz.offset_seconds,
                     name: tz.name,
                 }),
+            }),
+            OsFunctionCall::Time => Self::Time(Unit {}),
+            OsFunctionCall::Sleep(delay) => Self::Sleep(os_call::Sleep {
+                seconds: delay.as_secs_f64(),
+            }),
+            OsFunctionCall::AsyncSleep(delay) => Self::AsyncSleep(os_call::AsyncSleep {
+                delay: delay.as_secs_f64(),
             }),
         }
     }
@@ -109,8 +118,23 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
                 offset_seconds: tz.offset_seconds,
                 name: tz.name,
             })),
+            os_call::Call::Time(_) => Self::Time,
+            os_call::Call::Sleep(s) => Self::Sleep(delay(s.seconds, "Sleep.seconds")?),
+            os_call::Call::AsyncSleep(s) => Self::AsyncSleep(delay(s.delay, "AsyncSleep.delay")?),
         })
     }
+}
+
+/// Validates wire seconds into a `Duration`.
+///
+/// A child may be compromised, so a NaN, negative or unrepresentable delay is
+/// refused here rather than reaching a host that would convert it — and panic
+/// doing so.
+fn delay(seconds: f64, field: &'static str) -> Result<Duration, ProtoConvertError> {
+    sleep_duration(seconds).map_err(|_| ProtoConvertError::InvalidValue {
+        field,
+        reason: format!("sleep length {seconds} is not a finite, non-negative number of seconds"),
+    })
 }
 
 /// `PathStringDataArgs` → wire `TextWrite`, moving the text payload.

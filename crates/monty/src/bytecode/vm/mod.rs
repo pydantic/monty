@@ -1992,6 +1992,23 @@ impl<'h> VM<'h> {
                 obj
             }
         };
+        // The sleeps ignore the host's answer, so an unconvertible one (a
+        // host object with no wire form, say) must not fail them.
+        let obj = match self.pending_effect.take() {
+            Some(PendingEffect::Post(PostConversionEffect::DiscardResult)) => {
+                self.push(Value::None);
+                return self.run_external();
+            }
+            Some(PendingEffect::Post(PostConversionEffect::SleepResult { result })) => {
+                let settled = self.settled_awaitable(result);
+                self.push(settled);
+                return self.run_external();
+            }
+            effect => {
+                self.pending_effect = effect;
+                obj
+            }
+        };
         // Surface resource-exhaustion failures from `to_value` (e.g. a host
         // string whose `heap.allocate` trips `max_memory`) as the same
         // `RunError::Resource` that pure-Monty allocations produce, so the
@@ -2011,8 +2028,12 @@ impl<'h> VM<'h> {
                 apply_write_position(file_id, value, self)
             }
             Some(PendingEffect::Post(PostConversionEffect::OpenName { name })) => apply_open_name(name, value, self),
-            // Any pre-conversion effect was consumed above.
-            Some(PendingEffect::Pre(_)) | None => Ok(value),
+            // The sleeps were answered above; any pre-conversion effect was consumed.
+            Some(
+                PendingEffect::Post(PostConversionEffect::DiscardResult | PostConversionEffect::SleepResult { .. })
+                | PendingEffect::Pre(_),
+            )
+            | None => Ok(value),
         };
         match result {
             Ok(value) => {
@@ -2061,8 +2082,10 @@ impl<'h> VM<'h> {
                     }
                     self.heap.dec_ref(file_id);
                 }
+                PendingEffect::Post(PostConversionEffect::SleepResult { result }) => result.drop_with(self),
                 // Hold no state or heap references — nothing to roll back.
-                PendingEffect::Pre(_) | PendingEffect::Post(PostConversionEffect::OpenName { .. }) => {}
+                PendingEffect::Pre(_)
+                | PendingEffect::Post(PostConversionEffect::OpenName { .. } | PostConversionEffect::DiscardResult) => {}
             }
         }
         // Use the normal exception handling mechanism

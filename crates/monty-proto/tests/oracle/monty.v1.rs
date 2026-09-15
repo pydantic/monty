@@ -828,9 +828,14 @@ pub struct FunctionCall {
 pub struct OsCall {
     #[prost(uint32, tag = "1")]
     pub call_id: u32,
+    /// As on `FunctionCall`: the parent may await a coroutine and answer with
+    /// `ResumeFutures` for `call_id`. Only ever set on `async_sleep`, the one
+    /// call a future may answer at all.
+    #[prost(bool, tag = "28")]
+    pub allow_eager_await: bool,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -890,6 +895,28 @@ pub mod os_call {
         /// Fixed-offset timezone for an aware result; absent for a naive one.
         #[prost(message, optional, tag = "1")]
         pub tz: ::core::option::Option<super::TimeZone>,
+    }
+    /// time.sleep(seconds) — the parent waits, then answers (the sandbox
+    /// evaluates the call to None whatever the answer carried). Answering with a
+    /// future is refused: the call is a block by definition.
+    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    pub struct Sleep {
+        /// How long to wait. Always finite, non-negative, and small enough to be a
+        /// duration of nanoseconds in an int64; a frame breaking that is rejected.
+        #[prost(double, tag = "1")]
+        pub seconds: f64,
+    }
+    /// asyncio.sleep(delay) — the awaitable form. A parent running an event
+    /// loop should answer `ExtFunctionResult.future` and resolve it once the
+    /// delay elapses, so the sandbox's other tasks keep running; answering
+    /// directly is equivalent to a wait that blocks them. The answer's value is
+    /// ignored: the sandbox keeps the `result` argument itself and produces it
+    /// from the `await`.
+    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    pub struct AsyncSleep {
+        /// How long to wait, under the same constraints as `Sleep.seconds`.
+        #[prost(double, tag = "1")]
+        pub delay: f64,
     }
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
@@ -965,6 +992,15 @@ pub mod os_call {
         /// datetime.now(tz) — the timezone argument (absent for a naive result).
         #[prost(message, tag = "24")]
         DateTimeNow(DateTimeNow),
+        /// time.time()
+        #[prost(message, tag = "25")]
+        Time(super::Unit),
+        /// time.sleep(seconds)
+        #[prost(message, tag = "26")]
+        Sleep(Sleep),
+        /// asyncio.sleep(delay)
+        #[prost(message, tag = "27")]
+        AsyncSleep(AsyncSleep),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether

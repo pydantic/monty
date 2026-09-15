@@ -8,6 +8,7 @@ For tests of the AbstractOS interface via custom subclasses, see test_os_access_
 """
 
 import datetime
+import time
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -76,6 +77,44 @@ def test_time_methods_direct_api():
     assert naive_now.tzinfo is None
     assert isinstance(aware_now, datetime.datetime)
     assert aware_now.tzinfo == datetime.timezone.utc
+
+
+def test_default_clock_and_sleeps(monty_run: RunMonty):
+    """OSAccess answers the clock and both sleeps from the host process."""
+    fs = OSAccess()
+
+    result = monty_run(
+        'import asyncio, time\n'
+        'start = time.time()\n'
+        'time.sleep(0.001)\n'
+        "woken = asyncio.run(asyncio.sleep(0.001, 'woken'))\n"
+        '(time.time() >= start, woken)',
+        os=fs,
+    )
+    assert result == snapshot((True, 'woken'))
+
+
+def test_max_sleep_caps_the_wait(monty_run: RunMonty):
+    """`max_sleep` bounds how long the sandbox can hold the host; it defaults to 10s."""
+    assert OSAccess().max_sleep == snapshot(10)
+    assert OSAccess(max_sleep=None).max_sleep is None
+
+    start = time.monotonic()
+    assert monty_run('import time; time.sleep(3600) is None', os=OSAccess(max_sleep=0.001)) == snapshot(True)
+    assert time.monotonic() - start < 5
+
+
+def test_sleep_override_sees_the_requested_length(monty_run: RunMonty):
+    """An override receives the sandbox's own request; the cap applies inside the default."""
+    waited: list[float] = []
+
+    class RecordingSleep(OSAccess):
+        def sleep(self, seconds: float) -> None:
+            waited.append(seconds)
+            super().sleep(seconds)
+
+    assert monty_run('import time; time.sleep(3600) is None', os=RecordingSleep(max_sleep=0.001)) == snapshot(True)
+    assert waited == snapshot([3600.0])
 
 
 # =============================================================================

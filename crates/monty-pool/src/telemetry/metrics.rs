@@ -810,6 +810,9 @@ fn os_call(call: Option<&Call>) -> &'static str {
         Some(Call::GetEnviron(_)) => "get_environ",
         Some(Call::DateToday(_)) => "date_today",
         Some(Call::DateTimeNow(_)) => "date_time_now",
+        Some(Call::Time(_)) => "time",
+        Some(Call::Sleep(_)) => "sleep",
+        Some(Call::AsyncSleep(_)) => "async_sleep",
         None => "unknown",
     }
 }
@@ -1255,6 +1258,7 @@ mod tests {
         metrics.begin_turn(&feed());
         metrics.event(&event(pb::child_event::Kind::OsCall(pb::OsCall {
             call_id: 1,
+            allow_eager_await: false,
             call: Some(Call::ReadText("/mnt/f.txt".to_owned())),
         })));
         metrics.begin_turn(&resume_call(pb::ext_function_result::Kind::ReturnValue(
