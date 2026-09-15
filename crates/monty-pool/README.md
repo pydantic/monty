@@ -52,7 +52,7 @@ async fn main() -> Result<(), PoolError> {
     session.feed("x = 21", vec![], vec![], false, &mut on_print).await?;
     let event = session.feed("x * 2", vec![], vec![], false, &mut on_print).await?;
     match event {
-        TurnEvent::Complete(value) => println!("result: {value:?}"), // Int(42)
+        TurnEvent::Complete(value) => println!("result: {value}"), // 42
         // other events are suspensions (external function calls, OS calls,
         // name lookups, futures) answered with `resume` / `resume_name_lookup`
         // / `resume_futures` to continue the turn

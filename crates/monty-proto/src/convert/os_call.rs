@@ -1,6 +1,7 @@
 //! Conversions for `OsCall` suspensions: the typed wire arms of
 //! `monty.v1.OsCall` and [`OsFunctionCall`] map 1:1, so payloads (write data,
-//! paths) *move* between the wire and the call — never clone.
+//! paths) *move* between the wire and the call — never clone. The one
+//! value-typed argument (`Getenv.default`) indexes the message's arena.
 
 use monty_types::{
     GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
@@ -8,10 +9,46 @@ use monty_types::{
 };
 
 use crate::{
-    convert::ProtoConvertError,
-    pb::{TimeZone, Unit, os_call},
+    convert::{ProtoConvertError, value_from_parts},
+    pb::{self, TimeZone, Unit, os_call},
+    wire::WireArena,
 };
 
+/// Projects a suspension's OS call onto the wire envelope.
+#[must_use]
+pub fn os_call_to_proto(call_id: u32, call: OsFunctionCall) -> pb::OsCall {
+    let (call, values) = match call {
+        OsFunctionCall::Getenv(a) => (
+            os_call::Call::Getenv(os_call::Getenv {
+                key: a.key,
+                default: a.default.root.0,
+            }),
+            Some(WireArena::new(a.default.graph)),
+        ),
+        other => (other.into(), None),
+    };
+    pb::OsCall {
+        call_id,
+        values,
+        call: Some(call),
+    }
+}
+
+/// Validates a decoded OS call envelope into its call id and typed call.
+pub fn os_call_from_proto(call: pb::OsCall) -> Result<(u32, OsFunctionCall), ProtoConvertError> {
+    let kind = call.call.ok_or(ProtoConvertError::MissingField("OsCall.call"))?;
+    let function_call = match kind {
+        os_call::Call::Getenv(g) => OsFunctionCall::Getenv(GetenvArgs {
+            key: g.key,
+            default: value_from_parts(call.values, g.default, "OsCall.values")?,
+        }),
+        other => other.try_into()?,
+    };
+    Ok((call.call_id, function_call))
+}
+
+/// The value-free arms; `Getenv` needs the envelope's arena, see
+/// [`os_call_to_proto`].
 impl From<OsFunctionCall> for os_call::Call {
     fn from(call: OsFunctionCall) -> Self {
         match call {
@@ -44,9 +81,10 @@ impl From<OsFunctionCall> for os_call::Call {
                 src: a.src.into_string(),
                 dst: a.dst.into_string(),
             }),
+            // Only reachable through `os_call_to_proto`, which handles the arena.
             OsFunctionCall::Getenv(a) => Self::Getenv(os_call::Getenv {
                 key: a.key,
-                default: Some(a.default.into()),
+                default: a.default.root.0,
             }),
             OsFunctionCall::GetEnviron => Self::GetEnviron(Unit {}),
             OsFunctionCall::DateToday => Self::DateToday(Unit {}),
@@ -61,6 +99,8 @@ impl From<OsFunctionCall> for os_call::Call {
     }
 }
 
+/// The value-free arms; `Getenv` needs the envelope's arena, see
+/// [`os_call_from_proto`].
 impl TryFrom<os_call::Call> for OsFunctionCall {
     type Error = ProtoConvertError;
 
@@ -95,13 +135,12 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
                 src: MontyPath::new(r.src),
                 dst: MontyPath::new(r.dst),
             }),
-            os_call::Call::Getenv(g) => Self::Getenv(GetenvArgs {
-                key: g.key,
-                default: g
-                    .default
-                    .ok_or(ProtoConvertError::MissingField("Getenv.default"))?
-                    .into_object()?,
-            }),
+            os_call::Call::Getenv(_) => {
+                return Err(ProtoConvertError::InvalidValue {
+                    field: "OsCall.getenv",
+                    reason: "getenv carries a value and must be converted with its arena".to_owned(),
+                });
+            }
             os_call::Call::GetEnviron(_) => Self::GetEnviron,
             os_call::Call::DateToday(_) => Self::DateToday,
             // typed arm: the wire cannot express anything but an optional

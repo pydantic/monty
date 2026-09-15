@@ -535,16 +535,30 @@ test('a forged raw ClassInstance marker is rejected', async () => {
 })
 
 // =============================================================================
-// PR-review fixes: depth cap, realm-safe policies, snapshot resumeValue
+// PR-review fixes: nesting, realm-safe policies, snapshot resumeValue
 // =============================================================================
 
-test('a too-deep input fails with a conversion error, not a stack overflow', async () => {
+test('a deeply nested input crosses intact: the arena has no nesting bound', async () => {
   let nested: unknown = 1
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 300; i++) {
     nested = [nested]
   }
-  const error = await t.throwsAsync(() => run('x', { inputs: { x: nested } }), { instanceOf: TypeError })
-  t.is(error.message, 'Max input depth exceeded')
+  const nesting = (value: unknown): number => {
+    let depth = 0
+    while (Array.isArray(value)) {
+      value = value[0]
+      depth += 1
+    }
+    return depth
+  }
+  t.is(nesting(await run('x', { inputs: { x: nested } })), 300)
+})
+
+test('a cyclic input fails with a conversion error, not a stack overflow', async () => {
+  const cyclic: unknown[] = []
+  cyclic.push(cyclic)
+  const error = await t.throwsAsync(() => run('x', { inputs: { x: cyclic } }), { instanceOf: TypeError })
+  t.is(error.message, 'Circular reference detected')
 })
 
 test('a set-like policy from another realm works (duck-typed .has)', async () => {

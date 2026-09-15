@@ -24,7 +24,8 @@ use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, HostClock, MontyException, MontyObject,
-    NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig, validate_cwd,
+    MontyValue, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig,
+    validate_cwd,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
@@ -469,7 +470,7 @@ fn execute_repl_with_mounts(
     snippet: &str,
     mount_table: &mut Option<MountTable>,
     suspensions: &mut SuspensionBudget,
-) -> Result<(MontyRepl, MontyObject), (MontyRepl, String)> {
+) -> Result<(MontyRepl, MontyValue), (MontyRepl, String)> {
     let mut progress = match r.feed_start(snippet, vec![], PrintWriter::Stdout) {
         Ok(p) => p,
         Err(err) => return Err((err.repl, format!("{}", err.error))),
@@ -531,7 +532,7 @@ fn run_until_complete(
     mut progress: RunProgress,
     mount_table: &mut Option<MountTable>,
     suspensions: &mut SuspensionBudget,
-) -> Result<MontyObject, String> {
+) -> Result<MontyValue, String> {
     loop {
         // The CLI, as host, enforces `--max-suspensions`.
         if !matches!(progress, RunProgress::Complete(_))
@@ -550,7 +551,8 @@ fn run_until_complete(
         match progress {
             RunProgress::Complete(value) => return Ok(value),
             RunProgress::FunctionCall(call) => {
-                let return_value = resolve_external_call(&call.function_name, &call.args)?;
+                let (args, _) = call.args.into_objects().map_err(|err| err.to_string())?;
+                let return_value = resolve_external_call(&call.function_name, &args)?;
                 progress = call
                     .resume(return_value, PrintWriter::Stdout)
                     .map_err(|err| format!("{err}"))?;
@@ -563,7 +565,7 @@ fn run_until_complete(
             }
             RunProgress::NameLookup(lookup) => {
                 let result = if lookup.name == "add_ints" {
-                    NameLookupResult::Value(MontyObject::Function {
+                    NameLookupResult::from(MontyObject::Function {
                         name: "add_ints".to_string(),
                         docstring: None,
                     })

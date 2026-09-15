@@ -45,7 +45,7 @@ use monty_pool::{
 };
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value};
 use monty_types::{
-    AssertMessageAnnotations, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, PrintStream,
+    AssertMessageAnnotations, CallArgs, ExtFunctionResult, MontyException, NameLookupResult, NamedValues, PrintStream,
     TypeCheckingConfig, TypeCheckingFormat,
 };
 use pyo3::{
@@ -66,7 +66,7 @@ use crate::{
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
-    external::{CallResult, ExternalLookup, dispatch_object_call, resolve_object_attr},
+    external::{CallResult, ExternalLookup, dispatch_object_call, resolve_object_attr, wire_call_arguments},
     get_not_handled,
     limits::extract_limits,
     mount::PyMountDir,
@@ -1244,7 +1244,7 @@ async fn install_deps_checkout(checkout: &SharedCheckout, requirements: Vec<Stri
 pub(crate) struct FeedArgs {
     pub(crate) callback_context: CallbackContext,
     pub(crate) code: String,
-    pub(crate) inputs: Vec<(String, MontyObject)>,
+    pub(crate) inputs: NamedValues,
     pub(crate) mounts: Vec<MountSpec>,
     /// Explicit sandbox working directory for the feed; `None` takes the
     /// pool default (first mount, else `/`).
@@ -1337,10 +1337,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
             // This feed's mounts get first refusal on every OS call; only what
             // they don't cover reaches the `os=` callback.
             TurnEvent::OsCall {
-                function_name,
-                args,
-                kwargs,
-                ..
+                function_name, args, ..
             } => {
                 let mounted = run_turn_sync(
                     py,
@@ -1353,14 +1350,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                         event = next;
                         continue;
                     }
-                    None => TurnAnswer::Call(dispatch_os_parts(
-                        py,
-                        &function_name,
-                        &args,
-                        &kwargs,
-                        os.as_ref(),
-                        &instances,
-                    )),
+                    None => TurnAnswer::Call(dispatch_os_parts(py, &function_name, &args, os.as_ref(), &instances)),
                 }
             }
             event => match sync_turn_answer(py, event, &lookup, &instances) {
@@ -1404,13 +1394,12 @@ fn sync_turn_answer(
         TurnEvent::FunctionCall {
             function_name,
             args,
-            kwargs,
             object_id,
             ..
         } => {
             let result = match object_id {
-                Some(object_id) => dispatch_object_call(py, &function_name, &object_id, &args, &kwargs, instances),
-                None => lookup.call(&function_name, &args, &kwargs),
+                Some(object_id) => dispatch_object_call(py, &function_name, &object_id, &args, instances),
+                None => lookup.call(&function_name, &args),
             };
             Ok(TurnAnswer::Call(ext_to_resume(result)?))
         }
@@ -1563,10 +1552,7 @@ async fn drive_async_inner(
             }
             // Mounts get first refusal, as in `drive_sync`.
             TurnEvent::OsCall {
-                function_name,
-                args,
-                kwargs,
-                ..
+                function_name, args, ..
             } => {
                 let mounted = run_turn_async(
                     &checkout,
@@ -1580,14 +1566,7 @@ async fn drive_async_inner(
                 }
                 let value = Python::attach(|py| {
                     let _guard = callback_context.enter(py, &native)?;
-                    Ok::<_, PyErr>(dispatch_os_parts(
-                        py,
-                        &function_name,
-                        &args,
-                        &kwargs,
-                        os.as_ref(),
-                        &instances,
-                    ))
+                    Ok::<_, PyErr>(dispatch_os_parts(py, &function_name, &args, os.as_ref(), &instances))
                 })?;
                 TurnAnswer::Call(value)
             }
@@ -1643,14 +1622,13 @@ async fn async_turn_answer(
         TurnEvent::FunctionCall {
             function_name,
             args,
-            kwargs,
             call_id,
             object_id,
             allow_eager_await,
         } => {
             let dispatched = Python::attach(|py| {
                 let _guard = callback_context.enter(py, native)?;
-                match dispatch_function_call(&function_name, object_id, &args, &kwargs, external_lookup, instances) {
+                match dispatch_function_call(&function_name, object_id, &args, external_lookup, instances) {
                     CallResult::Sync(result) => Ok(Dispatched::Done(ext_to_resume(result)?)),
                     CallResult::Coroutine(coro) if allow_eager_await => {
                         coroutine_future(coro, instances).map(Dispatched::Eager)
@@ -1845,8 +1823,7 @@ pub(crate) fn ext_to_resume(result: ExtFunctionResult) -> PyResult<ResumeValue> 
 pub(crate) fn dispatch_os_parts(
     py: Python<'_>,
     function_name: &str,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &CallArgs,
     os: Option<&Py<PyAny>>,
     instances: &InstanceStore,
 ) -> ResumeValue {
@@ -1854,15 +1831,7 @@ pub(crate) fn dispatch_os_parts(
         return ResumeValue::NotHandled;
     };
     let call = || -> PyResult<ResumeValue> {
-        let py_args: Vec<Py<PyAny>> = args
-            .iter()
-            .map(|arg| monty_to_py(py, arg, instances))
-            .collect::<PyResult<_>>()?;
-        let py_args = PyTuple::new(py, py_args)?;
-        let py_kwargs = PyDict::new(py);
-        for (k, v) in kwargs {
-            py_kwargs.set_item(monty_to_py(py, k, instances)?, monty_to_py(py, v, instances)?)?;
-        }
+        let (py_args, py_kwargs) = wire_call_arguments(py, args, instances)?;
         let result = callback_context::call(py, || os_callback.bind(py).call1((function_name, py_args, py_kwargs)))?;
         if result.is(get_not_handled(py)?.bind(py)) {
             return Ok(ResumeValue::NotHandled);

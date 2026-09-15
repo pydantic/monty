@@ -165,15 +165,22 @@ properties that real CPython does not provide, per the caveat above.
 
 ## Values crossing the process boundary
 
-- Process/WebSocket transports encode values as protobuf
-    (`proto/monty/v1/monty.proto`). The browser component instead uses semantic
-    flat node arenas because WIT cannot express recursive types. Every
-    [`MontyObject`](../api/rust/monty-types.md#montyobject) variant round-trips through either representation, with the
-    same nesting bound: roughly 48 nested list-like containers, 32 nested dicts,
-    or 24 nested class instances. Deeper values fail the turn rather than
-    crossing the boundary.
-- [`Cycle`](../api/rust/monty-proto.md#cycle) markers (self-referential containers) can be *received* from a
-    worker but are rejected as inputs.
+- Every message carries its values as one flat, post-order node arena
+    ([`MontyGraph`](../api/rust/monty-types.md#montygraph)): containers hold the
+    indexes of their children, and the message names its roots by index. The
+    process/WebSocket transports encode it as protobuf
+    (`proto/monty/v1/monty.proto`); the browser component lifts the same shape
+    through WIT. Nesting depth is not bounded by the wire.
+- A sub-object referenced more than once — inside one value, or across the
+    arguments, keyword arguments or inputs of one message — crosses once and
+    arrives as **one host object** (`[x, x]` gives the same list twice, `f(x, x)`
+    hands a host function the same object twice), as it would in CPython. Each
+    separate feed or call still gets its own copy.
+- A self-referential container arrives as its placeholder string (`[...]`,
+    `{...}`, `(...)`, `...`) at the point of the cycle — a
+    [`Cycle`](../api/rust/monty-types.md#montynode) node that a worker can send
+    but that is rejected as an input. A cyclic host value cannot be sent at all:
+    Python raises `ValueError: Circular reference detected`, JS `TypeError`.
 - A sandbox value with no `MontyObject` equivalent — a class, a class
     instance, a function, a compiled `re` pattern — is **silently degraded to
     its repr string** on the way out, rather than failing. A host function
@@ -196,20 +203,21 @@ properties that real CPython does not provide, per the caveat above.
 - On protobuf transports, independently of the wire-byte limit, a frame is
     rejected if the values it decodes into would exceed a **per-frame host-memory budget**, a hard,
     non-configurable limit of 1 GiB of *resident* decoded bytes. The wire cap
-    bounds bytes, but the cheapest elements (e.g. `None` in a list, ~4 wire bytes)
-    materialize into 88-byte `MontyObject`s, a ~22× blow-up that a ≤256 MiB frame
-    could turn into multiple GiB on the host. The budget is charged incrementally
-    during decode and trips before the full value is built, so a parent reading
-    such a frame discards the worker with a protocol error rather than risking an
+    bounds bytes, but the cheapest nodes (e.g. `None`, ~4 wire bytes)
+    materialize into 72-byte arena nodes, an ~18× blow-up that a ≤256 MiB frame
+    could turn into multiple GiB on the host. The arena's node count is
+    reserved (and charged) up front, capped by the bytes actually present, and
+    every node's payload is charged as it decodes, so a frame that would exceed
+    the budget trips before the full arena is built and a parent reading it
+    discards the worker with a protocol error rather than risking an
     out-of-memory abort. A value large enough to hit it (tens of millions of
-    elements) cannot cross the boundary even though it is under the wire-byte
-    limit. Every payload, containers and function/OS-call args & kwargs alike,
-    decodes straight into its final type with no intermediate copy, so the
-    worst-case host *peak* is ~1× the budget plus the ≤256 MiB frame buffer, and
-    the bound applies per concurrent worker. The browser component applies the
-    same expanded-value budget across all WIT value arenas in a request before
-    constructing their `MontyObject`s, and before lifting a semantic event into
-    JavaScript.
+    nodes) cannot cross the boundary even though it is under the wire-byte
+    limit. Sharing does not amplify on decode: a shared sub-object is one node
+    however many times it is referenced. The worst-case host *peak* is ~1× the
+    budget plus the ≤256 MiB frame buffer, and the bound applies per concurrent
+    worker. The browser component applies the same expanded-value budget to a
+    request's WIT arena before constructing it, and before lifting a semantic
+    event into JavaScript.
 - Semantic validation of protobuf values (date ranges, timedelta normalization,
     exception/type/builtin names) happens *while decoding* the frame; the browser
     component applies the same checks while converting its WIT value arena. A frame
@@ -223,8 +231,9 @@ properties that real CPython does not provide, per the caveat above.
 
 - **A host-function return value the wire cannot carry fails *inside* the
     sandbox, not host-side.** An unrepresentable type becomes a catchable
-    `TypeError: Cannot convert X to Monty value`; one nested past the wire depth
-    bound becomes a catchable `RuntimeError: Max input depth exceeded`. Either
+    `TypeError: Cannot convert X to Monty value`; a cyclic value becomes a
+    catchable `ValueError: Circular reference detected` (`TypeError` from the JS
+    client). Either
     reaches the host as [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] only when the sandbox does not catch
     it. The same holds for an `os=` callback's return value, and for the JS
     client. [`MontyConversionError`][pydantic_monty.MontyConversionError] covers only values the host supplies up
@@ -335,7 +344,7 @@ properties that real CPython does not provide, per the caveat above.
     unrepresentable *type* surfaces as a dedicated [`MontyError`][pydantic_monty.MontyError] subclass (in
     `pydantic_monty`, `MontyConversionError`; its `exception()` reconstructs a
     native `TypeError`), **never** as a masquerading `NameError`; other converter
-    failures, such as exceeding the max input nesting depth, keep their own type
+    failures, such as a cyclic value (`ValueError`), keep their own type
     (`MontyRuntimeError`). The two
     workers diverge on *re-reading* a lazily-resolved **value**: the Monty sandbox
     worker caches it in the namespace slot, so a second reference in the same feed

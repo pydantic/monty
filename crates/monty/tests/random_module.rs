@@ -30,6 +30,8 @@ const PATTERN_FIRST_RANDOM: f64 = 0.246_986_487_449_397_1;
 fn random_instances_and_types_cross_as_repr() {
     let result = start("import random\n[random.Random(42), random.Random, type(random.Random()), int]")
         .into_complete()
+        .unwrap()
+        .into_object()
         .unwrap();
     let MontyObject::List(values) = result else {
         panic!("expected a list");
@@ -75,6 +77,8 @@ fn an_unseeded_draw_asks_the_host_for_one_state_vector() {
         .resume(pattern(), PrintWriter::Stdout)
         .unwrap()
         .into_complete()
+        .unwrap()
+        .into_object()
         .unwrap();
     assert_eq!(result, MontyObject::Float(PATTERN_FIRST_RANDOM));
 }
@@ -87,6 +91,8 @@ fn the_reply_seeds_every_later_draw_without_suspending_again() {
         .resume(pattern(), PrintWriter::Stdout)
         .unwrap()
         .into_complete()
+        .unwrap()
+        .into_object()
         .unwrap();
     assert_eq!(
         result,
@@ -102,7 +108,7 @@ fn the_reply_seeds_every_later_draw_without_suspending_again() {
 fn seeded_code_never_suspends() {
     let progress = start("import random\nrandom.seed(42)\nrandom.random()");
     assert_eq!(
-        progress.into_complete().unwrap(),
+        progress.into_complete().unwrap().into_object().unwrap(),
         MontyObject::Float(0.639_426_798_457_883_7)
     );
 }
@@ -114,6 +120,8 @@ fn explicit_seed_with_no_argument_reseeds_from_the_host() {
         .resume(pattern(), PrintWriter::Stdout)
         .unwrap()
         .into_complete()
+        .unwrap()
+        .into_object()
         .unwrap();
     assert_eq!(result, MontyObject::Float(PATTERN_FIRST_RANDOM));
 }
@@ -126,6 +134,8 @@ fn an_unseeded_instance_seeds_itself_even_when_nothing_else_holds_it() {
         .resume(pattern(), PrintWriter::Stdout)
         .unwrap()
         .into_complete()
+        .unwrap()
+        .into_object()
         .unwrap();
     assert_eq!(result, MontyObject::Float(PATTERN_FIRST_RANDOM));
 }
@@ -174,6 +184,8 @@ except OSError as exc:
         .resume(pattern(), PrintWriter::Stdout)
         .unwrap()
         .into_complete()
+        .unwrap()
+        .into_object()
         .unwrap();
     assert_eq!(
         result,
@@ -197,11 +209,15 @@ fn a_dump_taken_while_waiting_for_entropy_resumes_the_stashed_draw() {
         .resume(pattern(), PrintWriter::Stdout)
         .unwrap()
         .into_complete()
+        .unwrap()
+        .into_object()
         .unwrap();
     let from_loaded = expect_entropy_call(*loaded)
         .resume(pattern(), PrintWriter::Stdout)
         .unwrap()
         .into_complete()
+        .unwrap()
+        .into_object()
         .unwrap();
     assert_eq!(from_original, from_loaded);
     // CPython: two `choice` draws after seeding from the same bytes.
@@ -215,7 +231,7 @@ fn setstate_truncates_words_between_2_63_and_2_64_like_64_bit_cpython() {
         "import random\nr = random.Random(0)\nr.setstate((3, (2**63 + 7,) * 624 + (0,), None))\nr.getstate()[1][:2]";
     let progress = start(code);
     assert_eq!(
-        progress.into_complete().unwrap(),
+        progress.into_complete().unwrap().into_object().unwrap(),
         MontyObject::Tuple(vec![MontyObject::Int(7), MontyObject::Int(7)])
     );
 }
@@ -229,7 +245,7 @@ fn os_urandom_accepts_only_bytes_of_the_requested_length() {
                 OsFunctionCall::Urandom(UrandomArgs { size: 3 })
             ));
             call.resume(reply, PrintWriter::Stdout)
-                .map(|p| p.into_complete().unwrap())
+                .map(|p| p.into_complete().unwrap().into_object().unwrap())
         }
         other => panic!("expected an OsCall suspension, got {other:?}"),
     };

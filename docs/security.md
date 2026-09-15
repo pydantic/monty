@@ -339,7 +339,7 @@ Two more properties of the worker boundary matter:
 - **Workers spawn with an empty environment** (Windows keeps only `SystemRoot`), so host secrets are never in a worker's
     memory to begin with.
 - **The parent treats every frame from a worker as untrusted input.** A worker could in principle be compromised, so
-    wire decoding validates everything, enforces depth and size budgets, and never panics on malformed data.
+    wire decoding validates everything, enforces size budgets, and never panics on malformed data.
     A worker that violates the protocol is discarded.
 
 From Rust, this is why [`monty-pool`](quickstart/rust.md) is the recommended entry point rather than the in-process

@@ -34,7 +34,7 @@ use std::{
 
 use monty_pool::{Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value, uuid_to_py};
-use monty_types::{ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult};
+use monty_types::{CallArgs, ExtFunctionResult, MontyException, MontyUuid, MontyValue, NameLookupResult};
 use pyo3::{
     Borrowed,
     exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
@@ -259,7 +259,6 @@ pub(crate) fn build_snapshot(
         TurnEvent::FunctionCall {
             function_name,
             args,
-            kwargs,
             call_id,
             object_id,
             allow_eager_await,
@@ -267,7 +266,6 @@ pub(crate) fn build_snapshot(
             let call = FunctionCallData {
                 function_name,
                 args,
-                kwargs,
                 call_id,
                 is_os_function: false,
                 object_id,
@@ -278,13 +276,11 @@ pub(crate) fn build_snapshot(
         TurnEvent::OsCall {
             function_name,
             args,
-            kwargs,
             call_id,
         } => {
             let call = FunctionCallData {
                 function_name,
                 args,
-                kwargs,
                 call_id,
                 is_os_function: true,
                 object_id: None,
@@ -526,17 +522,13 @@ fn parse_external_result(
 }
 
 /// The pending call's positional args as a Python tuple.
-fn args_to_py<'py>(py: Python<'py>, args: &[MontyObject], instances: &InstanceStore) -> PyResult<Bound<'py, PyTuple>> {
-    wire_call_arguments(py, args, &[], instances).map(|(args, _)| args)
+fn args_to_py<'py>(py: Python<'py>, args: &CallArgs, instances: &InstanceStore) -> PyResult<Bound<'py, PyTuple>> {
+    wire_call_arguments(py, args, instances).map(|(args, _)| args)
 }
 
 /// The pending call's keyword args as a Python dict.
-fn kwargs_to_py<'py>(
-    py: Python<'py>,
-    kwargs: &[(MontyObject, MontyObject)],
-    instances: &InstanceStore,
-) -> PyResult<Bound<'py, PyDict>> {
-    wire_call_arguments(py, &[], kwargs, instances).map(|(_, kwargs)| kwargs)
+fn kwargs_to_py<'py>(py: Python<'py>, args: &CallArgs, instances: &InstanceStore) -> PyResult<Bound<'py, PyDict>> {
+    wire_call_arguments(py, args, instances).map(|(_, kwargs)| kwargs)
 }
 
 // =============================================================================
@@ -550,8 +542,7 @@ fn kwargs_to_py<'py>(
 #[derive(Clone)]
 struct FunctionCallData {
     function_name: String,
-    args: Vec<MontyObject>,
-    kwargs: Vec<(MontyObject, MontyObject)>,
+    args: CallArgs,
     call_id: u32,
     is_os_function: bool,
     /// Uuid of the routed receiver — an instance or class type; `None` for
@@ -629,7 +620,7 @@ impl PyFunctionSnapshot {
 
     #[getter]
     fn kwargs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        kwargs_to_py(py, &self.0.call.kwargs, &self.0.snapshot.ctx.instances)
+        kwargs_to_py(py, &self.0.call.args, &self.0.snapshot.ctx.instances)
     }
 
     /// Resumes execution with an `ExternalResult` (return value, exception, or
@@ -674,20 +665,12 @@ impl PyFunctionSnapshot {
             if let Some(event) = try_mounts_sync(py, &ctx)? {
                 return build_snapshot(py, ctx, event, false);
             }
-            dispatch_os_parts(
-                py,
-                &call.function_name,
-                &call.args,
-                &call.kwargs,
-                ctx.os.as_ref(),
-                &ctx.instances,
-            )
+            dispatch_os_parts(py, &call.function_name, &call.args, ctx.os.as_ref(), &ctx.instances)
         } else {
             match dispatch_function_call(
                 &call.function_name,
                 call.object_id,
                 &call.args,
-                &call.kwargs,
                 ctx.external_lookup.as_ref(),
                 &ctx.instances,
             ) {
@@ -763,7 +746,7 @@ impl PyAsyncFunctionSnapshot {
 
     #[getter]
     fn kwargs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        kwargs_to_py(py, &self.0.call.kwargs, &self.0.snapshot.ctx.instances)
+        kwargs_to_py(py, &self.0.call.args, &self.0.snapshot.ctx.instances)
     }
 
     fn resume<'py>(&self, py: Python<'py>, result: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
@@ -816,7 +799,6 @@ impl PyAsyncFunctionSnapshot {
                             py,
                             &call.function_name,
                             &call.args,
-                            &call.kwargs,
                             ctx.os.as_ref(),
                             &ctx.instances,
                         ))
@@ -832,7 +814,6 @@ impl PyAsyncFunctionSnapshot {
                         &call.function_name,
                         call.object_id,
                         &call.args,
-                        &call.kwargs,
                         ctx.external_lookup.as_ref(),
                         &ctx.instances,
                     ) {
@@ -930,7 +911,7 @@ impl NameLookupSnapshot {
     /// (`Unset`) leaves the lookup unanswered — the sandbox raises `NameError`
     /// for a plain name, or `AttributeError` when `object_id` marks a lazy host
     /// attribute — while a supplied value (**including `None`**) binds it.
-    fn resume_value(&self, py: Python<'_>, value: MaybeValue<'_>) -> PyResult<Option<MontyObject>> {
+    fn resume_value(&self, py: Python<'_>, value: MaybeValue<'_>) -> PyResult<Option<MontyValue>> {
         match value {
             MaybeValue::Unset => Ok(None),
             MaybeValue::Set(value) => py_to_monty_value(&value, &self.snapshot.ctx.instances)
@@ -1228,7 +1209,7 @@ impl PyAsyncFutureSnapshot {
 /// final value from monty's representation to a Python object on each access.
 #[pyclass(name = "MontyComplete", module = "pydantic_monty", frozen)]
 pub struct MontyComplete {
-    value: MontyObject,
+    value: MontyValue,
     instances: InstanceStore,
 }
 

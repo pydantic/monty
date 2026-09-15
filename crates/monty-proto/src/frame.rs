@@ -28,20 +28,19 @@ pub const MAX_FRAME_LEN: u32 = 256 * 1024 * 1024;
 /// Hard, fixed per-frame budget for *resident* decoded value bytes (1 GiB = 4×
 /// the frame cap).
 ///
-/// `MAX_FRAME_LEN` bounds the *wire* size, but the cheapest elements (`None` in a
-/// list ≈ 4 wire bytes) decode into 88-byte `MontyObject`s — a ~22× blow-up that
-/// could turn a ≤256 MiB frame into multiple GiB on the host. The budget caps
+/// `MAX_FRAME_LEN` bounds the *wire* size, but the cheapest nodes (`None` ≈ 4
+/// wire bytes) decode into 72-byte `MontyNode`s — an ~18× blow-up that could
+/// turn a ≤256 MiB frame into multiple GiB on the host. The budget caps
 /// decoded size so amplification is bounded regardless of frame contents.
 ///
-/// The budget bounds bytes *resident* at once. The decoder materializes every
-/// payload straight into its final type — containers via `ObjectList`/
-/// `PairList`/`NamedTupleBody`/`ClassInstanceBody`, and function-call args &
-/// kwargs via `WireFunctionCall` — so no path builds an
-/// intermediate `Vec<WireObject>`/`Vec<Pair>` and then converts it; only a
-/// single per-element value is transient at any moment. The host *peak* is
-/// therefore ~1× the budget plus the ≤256 MiB frame buffer (~1.25 GiB); the 4×
-/// multiplier keeps the hard 1 GiB ceiling comfortably below host limits.
-/// Multiplies per concurrent worker.
+/// The budget bounds bytes *resident* at once. `WireArena` charges the vector
+/// slots it reserves (the sender's `node_count` hint up front, capped by the
+/// message size, then doubling growth) and each node's payload as it decodes,
+/// so a frame is rejected before its arena outgrows the budget. Sharing no
+/// longer amplifies on decode: a sub-object referenced twice is one node. The
+/// host *peak* is therefore ~1× the budget plus the ≤256 MiB frame buffer
+/// (~1.25 GiB); the 4× multiplier keeps the hard 1 GiB ceiling comfortably
+/// below host limits. Multiplies per concurrent worker.
 pub const DEFAULT_MAX_DECODE_BYTES: usize = 4 * MAX_FRAME_LEN as usize;
 
 /// Framing or decoding failure while reading or writing protocol messages.

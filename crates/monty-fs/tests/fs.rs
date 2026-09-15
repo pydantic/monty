@@ -1660,7 +1660,7 @@ fn non_filesystem_ops_not_handled() {
 
     let result = mt.handle_os_call(OsFunctionCall::Getenv(monty_types::GetenvArgs {
         key: "PATH".to_owned(),
-        default: MontyObject::None,
+        default: MontyObject::None.into(),
     }));
     assert!(
         matches!(result, MountCallOutcome::NotHandled(OsFunctionCall::Getenv(_))),

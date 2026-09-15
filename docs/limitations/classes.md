@@ -266,9 +266,12 @@ value). Divergences from real CPython objects:
 - **`dataclasses.fields()` / `asdict()` do not work on host instances**;
     `dataclasses.is_dataclass(x)` returns the flag the host sent.
 - Returning a host-sent instance gives the host the **original object**
-    (identity preserved), discarding any sandbox-side attr mutations. Sending
-    the same object twice yields equal (same class uuid + attrs) sandbox
-    values, but each send allocates its own proxy, so `a is b` is `False`.
+    (identity preserved), discarding any sandbox-side attr mutations. The same
+    wrapper sent twice *in one message* (two inputs of a feed, two arguments of
+    a call, or nested twice in one value) is one sandbox object, so `a is b`
+    holds; each separate feed or call allocates its own proxy, so `a is b`
+    across feeds is `False` even though the two are equal (same class uuid +
+    attrs).
 - **Instance ids are per wrapper; class ids are per process** (host
     classes) — Python keys class ids by `module.qualname` in
     `pydantic_monty.class_instance.type_id_cache`, JS by class object — so

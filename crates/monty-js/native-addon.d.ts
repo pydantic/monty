@@ -1,5 +1,3 @@
-export declare const MAX_VALUE_DEPTH: number
-
 export declare function _flushTelemetry(): Promise<void>
 
 export declare function _installTelemetry(

@@ -11,7 +11,7 @@
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyObject};
+use monty_types::{CompileOptions, DictPairs, ExcType, MontyObject};
 
 /// Evaluate a Python snippet under Monty and return its final value.
 fn eval(code: &str) -> MontyObject {
@@ -102,7 +102,7 @@ fn json_output_cycle_list() {
     // Cyclic references become MontyObject::Cycle on serialization.
     assert_snapshot!(
         to_json(&eval("a = []; a.append(a); a")),
-        @r#"{"List":[{"Cycle":[1,"[...]"]}]}"#
+        @r#"{"List":[{"Cycle":"[...]"}]}"#
     );
 }
 
@@ -110,7 +110,7 @@ fn json_output_cycle_list() {
 fn json_output_cycle_dict() {
     assert_snapshot!(
         to_json(&eval("d = {}; d['self'] = d; d")),
-        @r#"{"Dict":[[{"String":"self"},{"Cycle":[1,"{...}"]}]]}"#
+        @r#"{"Dict":[[{"String":"self"},{"Cycle":"{...}"}]]}"#
     );
 }
 
@@ -223,39 +223,24 @@ fn cycle_equality_same_id() {
 }
 
 #[test]
-fn cycle_equality_different_ids() {
-    // Two separate cyclic objects should produce unequal Cycle values
+fn cycle_placeholders_follow_the_container() {
+    // A cycle is its placeholder: two distinct cyclic lists render the same.
     let ex = MontyRun::new(
-        "a = []; a.append(a); b = []; b.append(b); [a, b]".to_owned(),
+        "a = []; a.append(a); b = {}; b['b'] = b; [a, b]".to_owned(),
         "test.py",
         vec![],
         CompileOptions::default(),
     )
     .unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
-
-    if let MontyObject::List(outer) = &result {
-        assert_eq!(outer.len(), 2, "outer list should have 2 elements");
-
-        if let (MontyObject::List(inner1), MontyObject::List(inner2)) = (&outer[0], &outer[1]) {
-            assert_eq!(inner1.len(), 1);
-            assert_eq!(inner2.len(), 1);
-            assert_ne!(
-                inner1[0], inner2[0],
-                "cycles referencing different objects should not be equal"
-            );
-
-            if let (MontyObject::Cycle(id1, ph1), MontyObject::Cycle(id2, ph2)) = (&inner1[0], &inner2[0]) {
-                assert_ne!(id1, id2, "heap IDs should differ");
-                assert_eq!(ph1, ph2, "placeholders should match (both are lists)");
-                assert_eq!(*ph1, "[...]");
-            } else {
-                panic!("expected Cycle variants");
-            }
-        } else {
-            panic!("expected inner lists");
-        }
-    } else {
-        panic!("expected outer list");
-    }
+    assert_eq!(
+        result,
+        MontyObject::List(vec![
+            MontyObject::List(vec![MontyObject::Cycle("[...]".to_owned())]),
+            MontyObject::Dict(DictPairs::from(vec![(
+                MontyObject::String("b".to_owned()),
+                MontyObject::Cycle("{...}".to_owned())
+            )])),
+        ])
+    );
 }

@@ -71,7 +71,7 @@ fn callback_normalization_only_changes_filesystem_paths() {
         path: MontyPath::new(raw.to_owned()),
         data: raw.to_owned(),
     });
-    let (args, _) = call.clone().to_args();
+    let (args, _) = call.clone().to_args().into_objects().unwrap();
     assert_eq!(
         args,
         vec![
@@ -81,14 +81,19 @@ fn callback_normalization_only_changes_filesystem_paths() {
     );
     assert_eq!(call.fs_primary_path(), Some(raw));
 
-    let (args, _) = OsFunctionCall::Stat(MontyPath::new(String::new())).to_args();
+    let (args, _) = OsFunctionCall::Stat(MontyPath::new(String::new()))
+        .to_args()
+        .into_objects()
+        .unwrap();
     assert_eq!(args, vec![MontyObject::Path(String::new())]);
 
     let (args, _) = OsFunctionCall::Getenv(GetenvArgs {
         key: raw.to_owned(),
-        default: MontyObject::Path(raw.to_owned()),
+        default: MontyObject::Path(raw.to_owned()).into(),
     })
-    .to_args();
+    .to_args()
+    .into_objects()
+    .unwrap();
     assert_eq!(
         args,
         vec![MontyObject::String(raw.to_owned()), MontyObject::Path(raw.to_owned())]

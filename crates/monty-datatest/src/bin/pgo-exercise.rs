@@ -83,7 +83,7 @@ async fn run_code(
             TurnEvent::Complete(_) => break Ok(()),
             TurnEvent::FunctionCall { .. } => {
                 session
-                    .resume(ResumeValue::Return(MontyObject::None), &mut *on_print)
+                    .resume(ResumeValue::Return(MontyObject::None.into()), &mut *on_print)
                     .await?
             }
             TurnEvent::OsCall { .. } => match session.resume_from_mounts(&mut *on_print).await? {
@@ -98,7 +98,7 @@ async fn run_code(
             TurnEvent::ResolveFutures { pending_call_ids } => {
                 let results = pending_call_ids
                     .into_iter()
-                    .map(|call_id| (call_id, ResumeValue::Return(MontyObject::None)))
+                    .map(|call_id| (call_id, ResumeValue::Return(MontyObject::None.into())))
                     .collect();
                 session.resume_futures(results, &mut *on_print).await?
             }
