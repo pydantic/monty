@@ -1152,7 +1152,12 @@ impl Message for NamedTupleBody {
         // Field numbers from `NamedTuple` in monty.proto; unknown → skip.
         match tag {
             1 => encoding::string::merge(wire_type, &mut self.type_name, buf, ctx),
-            2 => encoding::string::merge_repeated(wire_type, &mut self.field_names, buf, ctx),
+            // Names are charged by the finished value's `host_size`; the slots
+            // holding them are charged here as the vector grows.
+            2 => {
+                let name = merge_string(wire_type, buf, ctx)?;
+                push_charged(&mut self.field_names, name, 0)
+            }
             3 => merge_object_item(wire_type, buf, ctx, &mut self.values),
             _ => skip_field(wire_type, tag, buf, ctx),
         }
@@ -1609,12 +1614,18 @@ const MIN_DECODED_CAPACITY: usize = 4;
 /// allocated. `credit` is the element's inline size already charged by
 /// [`decode_field`], returned because the slot now covers it — a vector's net
 /// charge is exactly `capacity × slot size` plus its elements' payloads.
+///
+/// Every slot is charged on this frame: capacity a vector already holds on
+/// its first push (a message reused after `clear()`, a pre-sized vector) is
+/// charged then, so a credit never refunds a slot the frame did not pay for.
 fn push_charged<T>(items: &mut Vec<T>, item: T, credit: usize) -> Result<(), DecodeError> {
     let capacity = items.capacity();
     if items.len() == capacity {
         let grown = (capacity * 2).max(MIN_DECODED_CAPACITY);
         charge_decode((grown - capacity) * size_of::<T>())?;
         items.reserve_exact(grown - items.len());
+    } else if items.is_empty() {
+        charge_decode(capacity * size_of::<T>())?;
     }
     items.push(item);
     credit_decode(credit);

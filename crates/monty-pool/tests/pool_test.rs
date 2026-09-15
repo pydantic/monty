@@ -352,6 +352,15 @@ async fn too_many_inputs_are_rejected_before_sending() {
         panic!("expected Runtime, got {err:?}");
     };
     assert_eq!(exc.message(), Some("too many inputs: 257 exceeds the limit of 256"));
+    // the count is checked before the values are walked, so an over-cap feed
+    // is refused for its count whatever it carries
+    let mut deep = numbered(monty_pool::MAX_FEED_INPUTS + 1);
+    deep[0].1 = (0..=monty_pool::MAX_VALUE_DEPTH).fold(MontyObject::Int(1), |inner, _| MontyObject::List(vec![inner]));
+    let err = session.feed("1", deep, vec![], false, &mut no_print).await.unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("too many inputs: 257 exceeds the limit of 256"));
     // the session is intact and a feed at the cap runs
     let event = session
         .feed(

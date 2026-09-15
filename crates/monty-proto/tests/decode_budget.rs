@@ -61,13 +61,13 @@ fn charge_for(value: &MontyObject) -> usize {
 
 /// HackMonty gbkZ5p1: a million two-byte wrappers decoded into ~100 MB of
 /// parent memory while charging nothing, because only values were budgeted.
-/// The first valueless entry now fails the frame before any wrapper exists.
+/// The reported frame now fails on its first entry, before any wrapper
+/// exists — nothing was charged because nothing was kept.
 #[test]
 fn empty_input_wrappers_are_rejected_before_they_are_materialized() {
     let err = decode_frame::<pb::ParentRequest>(&empty_inputs_frame(1_000_000)).expect_err("valueless inputs");
     assert_snapshot!(err, @"frame decode error: failed to decode Protobuf message: ParentRequest.kind: missing required field NamedValue.value");
-    let err = decode_frame::<pb::ParentRequest>(&empty_inputs_frame(1)).expect_err("valueless input");
-    assert_snapshot!(err, @"frame decode error: failed to decode Protobuf message: ParentRequest.kind: missing required field NamedValue.value");
+    assert_eq!(decode_budget_remaining(), DEFAULT_MAX_DECODE_BYTES);
 }
 
 /// The input count is enforced while the frame decodes, so the 257th entry
@@ -102,9 +102,42 @@ fn vector_capacity_is_charged() {
     // A string element charges its bytes on top of its slot.
     let strings = MontyObject::List(vec![MontyObject::String("abc".to_owned())]);
     assert_eq!(charge_for(&strings), base + 4 * base + 3);
+    // A named tuple's field names are a second vector: four `String` slots,
+    // plus the name itself charged with the finished value.
+    let named = MontyObject::NamedTuple {
+        type_name: "P".to_owned(),
+        field_names: vec!["ab".to_owned()],
+        values: vec![MontyObject::None],
+    };
+    let name_slots = 4 * size_of::<String>();
+    assert_eq!(
+        charge_for(&named),
+        base + 1 + (size_of::<String>() + 2) + 4 * base + name_slots
+    );
     // Slots handed back by a credit never lift the budget past a fresh frame.
     reset_decode_budget();
     assert_eq!(decode_budget_remaining(), DEFAULT_MAX_DECODE_BYTES);
+}
+
+/// Capacity a vector already holds before its first push is charged then,
+/// so a reused or pre-sized vector never earns a credit the frame did not pay.
+#[test]
+fn pre_existing_capacity_is_charged_on_first_push() {
+    let bytes = WireFeed {
+        code: String::new(),
+        inputs: vec![("ab".to_owned(), MontyObject::Int(1))],
+        skip_type_check: false,
+        cwd: String::new(),
+    }
+    .encode_to_vec();
+    let mut reused = WireFeed {
+        inputs: Vec::with_capacity(16),
+        ..WireFeed::default()
+    };
+    reset_decode_budget();
+    reused.merge(bytes.as_slice()).expect("feed merges");
+    let charged = DEFAULT_MAX_DECODE_BYTES - decode_budget_remaining();
+    assert_eq!(charged, 2 + 16 * size_of::<(String, MontyObject)>());
 }
 
 /// A feed input charges its value, its name's bytes, and the slot it occupies.

@@ -666,7 +666,8 @@ impl Checkout {
                 "feed called while a suspension is awaiting an answer".into(),
             ));
         }
-        ensure_sendable(inputs.iter().map(|(_, value)| value))?;
+        // Count first: it is O(1), and an over-cap feed is refused for that
+        // reason whatever its values hold.
         if inputs.len() > MAX_FEED_INPUTS {
             return Err(PoolError::Runtime(MontyException::new(
                 ExcType::RuntimeError,
@@ -676,6 +677,7 @@ impl Checkout {
                 )),
             )));
         }
+        ensure_sendable(inputs.iter().map(|(_, value)| value))?;
         let cwd = match cwd {
             Some(cwd) => checked_cwd(cwd)?,
             // An empty wire cwd keeps the worker's current directory.
