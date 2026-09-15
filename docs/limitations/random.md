@@ -52,8 +52,8 @@ it is included in a dump.
 - **Integer ranges are 64-bit.** `randrange`, `randint`, `choice` and `sample` raise
     `OverflowError: Python int too large to convert to C ssize_t` for bounds outside `i64`; CPython accepts any int.
     `seed(big_int)` accepts any int, as in CPython.
-    `getrandbits(k)` and `randbytes(n)` raise `OverflowError: Python int too large for C uint64_t` from `k >= 2**63`
-    and `n >= 2**60`, where CPython accepts up to `2**64` and then fails to allocate.
+    `getrandbits(k)` raises `OverflowError: Python int too large for C uint64_t` from `k >= 2**63`, where CPython
+    accepts up to `2**64` and then fails to allocate; `randbytes(n)` raises it from `n >= 2**61` in both.
     The sum of `sample(counts=...)` must also fit in a signed 64-bit integer.
 - **Seeds.** `seed(x)` accepts `None`, `int`, `float`, `str` and `bytes`; there is no `bytearray`.
     `seed(float('nan'))` seeds from `0`, where CPython hashes the object's address.

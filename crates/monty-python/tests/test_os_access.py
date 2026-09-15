@@ -82,11 +82,15 @@ def test_time_methods_direct_api():
 @pytest.mark.parametrize('limit', [0, 8, 1_048_576, 2_097_152])
 def test_urandom_limit(monty_run: RunMonty, monkeypatch: pytest.MonkeyPatch, limit: int):
     """The configured cap rejects oversized requests before calling the host."""
-    entropy = Mock(return_value=b'abc')
+
+    def fake_urandom(size: int) -> bytes:
+        return b'\x07' * size
+
+    entropy = Mock(side_effect=fake_urandom)
     monkeypatch.setattr('pydantic_monty.os_access.os.urandom', entropy)
     fs = OSAccess(max_urandom_bytes=limit)
 
-    assert monty_run(f'import os\nos.urandom({limit})', os=fs) == b'abc'
+    assert monty_run(f'import os\nos.urandom({limit})', os=fs) == b'\x07' * limit
     entropy.assert_called_once_with(limit)
     entropy.reset_mock()
 

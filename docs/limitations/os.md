@@ -18,7 +18,8 @@ whether each call is permitted.
 - `os.mkdir(path, mode=0o777)`, `os.makedirs(name, mode=0o777, exist_ok=False)`
 - `os.remove(path)`, `os.unlink(path)`, `os.rmdir(path)`
 - `os.rename(src, dst)`, `os.replace(src, dst)`
-- `os.urandom(size)` — yields to the host, which returns the bytes.
+- `os.urandom(size)` — yields to the host, which must return exactly `size` bytes; any other length, or a
+    non-`bytes` value, raises `RuntimeError`.
     Sandboxed code chooses `size`, so a host handler that allocates must cap it.
     Python's `AbstractOS.urandom()` raises `MemoryError` before allocating when `size` exceeds `max_urandom_bytes`,
     1 MiB by default; `OSAccess(max_urandom_bytes=...)` sets it, and zero rejects every nonempty request.

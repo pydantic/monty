@@ -221,6 +221,39 @@ fn setstate_truncates_words_between_2_63_and_2_64_like_64_bit_cpython() {
 }
 
 #[test]
+fn os_urandom_accepts_only_bytes_of_the_requested_length() {
+    let urandom = |reply: MontyObject| match start("import os\nos.urandom(3)") {
+        RunProgress::OsCall(call) => {
+            assert!(matches!(
+                call.function_call,
+                OsFunctionCall::Urandom(UrandomArgs { size: 3 })
+            ));
+            call.resume(reply, PrintWriter::Stdout)
+                .map(|p| p.into_complete().unwrap())
+        }
+        other => panic!("expected an OsCall suspension, got {other:?}"),
+    };
+    assert_eq!(
+        urandom(MontyObject::Bytes(vec![1, 2, 3])).unwrap(),
+        MontyObject::Bytes(vec![1, 2, 3])
+    );
+    assert_snapshot!(urandom(MontyObject::Bytes(vec![1, 2, 3, 4, 5])).unwrap_err().to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        os.urandom(3)
+        ~~~~~~~~~~~~~
+    RuntimeError: 'os.urandom' returned 5 bytes, expected 3
+    "#);
+    assert_snapshot!(urandom(MontyObject::String("abc".to_owned())).unwrap_err().to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        os.urandom(3)
+        ~~~~~~~~~~~~~
+    RuntimeError: 'os.urandom' must return bytes, not str
+    "#);
+}
+
+#[test]
 fn standard_execution_has_no_host_to_ask() {
     let err = MontyRun::new(
         "import random\nrandom.random()".to_owned(),
