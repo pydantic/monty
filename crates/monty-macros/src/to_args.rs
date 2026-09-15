@@ -1,11 +1,11 @@
 //! Codegen for `#[derive(ToArgs)]`. Inverse of `#[derive(FromArgs)]`:
-//! projects a struct into the `(Vec<MontyObject>, kwargs)` pair host
-//! callbacks expect. Reuses `from_args` field classification so structs
-//! that derive both stay symmetric.
+//! projects a struct into the `CallArgs` arena host callbacks expect.
+//! Reuses `from_args` field classification so structs that derive both
+//! stay symmetric.
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Data, DataStruct, DeriveInput, Fields, Ident, LitStr, Type, spanned::Spanned};
+use syn::{Data, DataStruct, DeriveInput, Fields, Ident, LitStr, spanned::Spanned};
 
 use crate::from_args::{FieldKind, parse_field_attrs};
 
@@ -13,7 +13,6 @@ use crate::from_args::{FieldKind, parse_field_attrs};
 /// implicit kw_only-after-varargs rule.
 struct ProjField {
     ident: Ident,
-    ty: Type,
     kind: FieldKind,
 }
 
@@ -24,7 +23,7 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         ..
     } = input;
 
-    // Unit structs yield an empty vec → trivial impl.
+    // Unit structs yield an empty call → trivial impl.
     let named_fields: Vec<&syn::Field> = match data {
         Data::Struct(DataStruct {
             fields: Fields::Named(named),
@@ -53,27 +52,18 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
             FieldKind::PosOrKeyword if seen_varargs => kind = FieldKind::KwOnly,
             _ => {}
         }
-        proj_fields.push(ProjField {
-            ident,
-            ty: field.ty.clone(),
-            kind,
-        });
+        proj_fields.push(ProjField { ident, kind });
     }
 
     let pos_pushes = proj_fields.iter().map(|f| {
         let ident = &f.ident;
-        let ty = &f.ty;
         match f.kind {
             FieldKind::PosOnly | FieldKind::PosOrKeyword => quote! {
-                __pos.push(
-                    <#ty as crate::args::ToMontyObject>::into_monty_object(self.#ident),
-                );
+                crate::CallArgs::push_arg(&mut __call, self.#ident);
             },
             FieldKind::Varargs => quote! {
                 for __item in self.#ident {
-                    __pos.push(
-                        <_ as crate::args::ToMontyObject>::into_monty_object(__item),
-                    );
+                    crate::CallArgs::push_arg(&mut __call, __item);
                 }
             },
             _ => quote! {},
@@ -82,14 +72,10 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
 
     let kw_pushes = proj_fields.iter().map(|f| {
         let ident = &f.ident;
-        let ty = &f.ty;
         let name_lit = LitStr::new(&ident.to_string(), ident.span());
         match f.kind {
             FieldKind::KwOnly => quote! {
-                __kw.push((
-                    crate::MontyObject::String(#name_lit.to_owned()),
-                    <#ty as crate::args::ToMontyObject>::into_monty_object(self.#ident),
-                ));
+                crate::CallArgs::push_kwarg(&mut __call, #name_lit, self.#ident);
             },
             FieldKind::Varkwargs => {
                 // No caller needs this yet; reject at codegen rather than
@@ -105,18 +91,11 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     Ok(quote! {
         #[automatically_derived]
         impl crate::args::ToArgs for #struct_ident {
-            fn to_args(
-                self,
-            ) -> (
-                ::std::vec::Vec<crate::MontyObject>,
-                ::std::vec::Vec<(crate::MontyObject, crate::MontyObject)>,
-            ) {
-                let mut __pos: ::std::vec::Vec<crate::MontyObject> = ::std::vec::Vec::new();
-                let mut __kw: ::std::vec::Vec<(crate::MontyObject, crate::MontyObject)> =
-                    ::std::vec::Vec::new();
+            fn to_args(self) -> crate::CallArgs {
+                let mut __call = crate::CallArgs::new();
                 #(#pos_pushes)*
                 #(#kw_pushes)*
-                (__pos, __kw)
+                __call
             }
         }
     })

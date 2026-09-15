@@ -1,7 +1,7 @@
 //! Host-supplied results fed back into a suspended run:
 //! [`NameLookupResult`] and [`ExtFunctionResult`].
 
-use crate::{exceptions::MontyException, object::MontyObject};
+use crate::{exceptions::MontyException, object::MontyObject, value::MontyValue};
 /// Result of a name lookup from the host.
 ///
 /// When the VM encounters an unresolved name (or a lazy attribute on a
@@ -15,7 +15,7 @@ use crate::{exceptions::MontyException, object::MontyObject};
 #[derive(Debug)]
 pub enum NameLookupResult {
     /// The name resolves to this value.
-    Value(MontyObject),
+    Value(MontyValue),
     /// The name is undefined — the VM raises `NameError` / `AttributeError`.
     Undefined,
     /// Resolving the name raised this exception on the host; the VM raises
@@ -23,16 +23,29 @@ pub enum NameLookupResult {
     Error(MontyException),
 }
 
+impl From<MontyValue> for NameLookupResult {
+    fn from(value: MontyValue) -> Self {
+        Self::Value(value)
+    }
+}
+
 impl From<MontyObject> for NameLookupResult {
     fn from(value: MontyObject) -> Self {
-        Self::Value(value)
+        Self::Value(value.into())
+    }
+}
+
+impl From<Option<MontyValue>> for NameLookupResult {
+    /// `Some` resolves the name, `None` leaves it undefined.
+    fn from(value: Option<MontyValue>) -> Self {
+        value.map_or(Self::Undefined, Self::Value)
     }
 }
 
 impl From<Option<MontyObject>> for NameLookupResult {
     /// `Some` resolves the name, `None` leaves it undefined.
     fn from(value: Option<MontyObject>) -> Self {
-        value.map_or(Self::Undefined, Self::Value)
+        value.map_or(Self::Undefined, |value| Self::Value(value.into()))
     }
 }
 
@@ -46,7 +59,7 @@ impl From<MontyException> for NameLookupResult {
 #[derive(Debug)]
 pub enum ExtFunctionResult {
     /// Continues execution with the return value from the external function.
-    Return(MontyObject),
+    Return(MontyValue),
     /// Continues execution with the exception raised by the external function.
     Error(MontyException),
     /// Pending future — the external function is a coroutine.
@@ -58,9 +71,16 @@ pub enum ExtFunctionResult {
     /// The function was not found, should result in a `NameError` exception.
     NotFound(String),
 }
+
+impl From<MontyValue> for ExtFunctionResult {
+    fn from(value: MontyValue) -> Self {
+        Self::Return(value)
+    }
+}
+
 impl From<MontyObject> for ExtFunctionResult {
     fn from(value: MontyObject) -> Self {
-        Self::Return(value)
+        Self::Return(value.into())
     }
 }
 
