@@ -1,0 +1,37 @@
+crates/monty/src/object_bridge.rs
+  s_ca283a3ffb9206::t_b027e4f4158947 18,43-48,59,62-72,82,306,308-310,326-331,338-350,392,408,416,433,445,462,475,484,560,571,590,976-981,984,994,1000-1001
+docs/resource-limits.md
+  s_ca283a3ffb9206::t_f9bf5ca5511bb2 84-86
+crates/monty/src/run_progress.rs
+  s_ca283a3ffb9206::t_619e3f3c422e50 969-972,980-983,1013-1016
+crates/monty/src/args/mod.rs
+  s_ca283a3ffb9206::t_8284059822b00a 27-30,235
+  s_ca283a3ffb9206::t_25c050af415deb 237-241,245-246,414,416,421,426,430
+  s_ca283a3ffb9206::t_f9bf5ca5511bb2 242-244
+crates/monty/src/modules/os.rs
+  s_ca283a3ffb9206::t_619e3f3c422e50 201
+crates/monty/src/repl.rs
+  s_ca283a3ffb9206::t_619e3f3c422e50 428-434
+crates/monty/src/run.rs
+  s_ca283a3ffb9206::t_619e3f3c422e50 829
+docs/limitations/resource_limits.md
+  s_ca283a3ffb9206::t_f9bf5ca5511bb2 72-77
+crates/monty-runtime/tests/subprocess.rs
+  s_ca283a3ffb9206::t_181187244d4de3 971-1019
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "74c57f840d958f46a11a965bb3a84f7ec6b25254",
+  "prompts": {},
+  "sessions": {
+    "s_ca283a3ffb9206": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8a98136-7d8b-491f-8651-2dd8b0e6bb3f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
