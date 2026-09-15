@@ -1,0 +1,21 @@
+crates/monty-proto/tests/dispatch.rs
+  s_ca283a3ffb9206::t_3ab2b71d60800a 10-11,213-244
+crates/monty-proto/src/worker.rs
+  s_ca283a3ffb9206::t_3ab2b71d60800a 33,513-516
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "61849a0a9effafc1cf9f57b9121e9d7ecd2c8493",
+  "prompts": {},
+  "sessions": {
+    "s_ca283a3ffb9206": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8a98136-7d8b-491f-8651-2dd8b0e6bb3f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
