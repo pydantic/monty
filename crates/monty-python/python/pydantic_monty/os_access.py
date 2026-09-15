@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import functools
+import inspect
 import os
 import time
 from abc import ABC, abstractmethod
@@ -9,8 +11,8 @@ from pathlib import PurePosixPath
 from typing import (
     TYPE_CHECKING,
     Any,
-    Awaitable,
     Callable,
+    Coroutine,
     Literal,
     NamedTuple,
     Protocol,
@@ -173,7 +175,11 @@ class AbstractOS(ABC):
             standard unhandled-operation behavior.
         """
         try:
-            return self.dispatch(name, args, kwargs, is_async=is_async)
+            if _dispatch_takes_is_async(type(self)):
+                return self.dispatch(name, args, kwargs, is_async=is_async)
+            # an override with the older three-argument signature never sees
+            # `is_async`, so its sleeps block as they did before it existed
+            return self.dispatch(name, args, kwargs)
         except NotImplementedError:
             return NOT_HANDLED
 
@@ -614,20 +620,32 @@ class AbstractOS(ABC):
         """
         time.sleep(seconds)
 
-    def async_sleep(self, delay: float, *, is_async: bool) -> Awaitable[None] | None:
+    def async_sleep(self, delay: float, *, is_async: bool) -> Coroutine[Any, Any, None] | None:
         """Wait for Monty's `asyncio.sleep()` callback.
 
         Under `AsyncMonty` (`is_async` is true) the default returns
         `asyncio.sleep(delay)`, which the pool awaits while the sandbox's other
         tasks keep running, so gathered sleeps overlap. Under `Monty`, which has
         no event loop, it waits with `sleep()` and the sandbox is blocked for the
-        delay. An override may return `None` once it has waited, or an awaitable
-        when `is_async` is true. The return value is never the `await`'s
-        result: the sandbox keeps the `result` argument of `asyncio.sleep()`.
+        delay. An override may return `None` once it has waited, or a coroutine
+        (not a `Future` or `Task`, which the bridge does not recognise) when
+        `is_async` is true. What the coroutine returns is ignored: the sandbox
+        keeps the `result` argument of `asyncio.sleep()`.
         """
         if is_async:
             return asyncio.sleep(delay)
         return self.sleep(delay)
+
+
+@functools.cache
+def _dispatch_takes_is_async(cls: type[AbstractOS]) -> bool:
+    """Whether `cls.dispatch` accepts `is_async`, cached per subclass.
+
+    Overrides written against the three-argument `dispatch` predate the keyword
+    and would fail on every call if it were passed; `**kwargs` counts as taking it.
+    """
+    params = inspect.signature(cls.dispatch).parameters
+    return 'is_async' in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 class AbstractFile(Protocol):

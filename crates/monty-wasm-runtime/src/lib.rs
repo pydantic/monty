@@ -198,15 +198,19 @@ struct PreparedOsEvent {
     function_name: String,
     args: CallArgs,
     call_id: u32,
+    allow_eager_await: bool,
 }
 
 impl PreparedOsEvent {
     /// Validates and projects a typed protocol call without building WIT
     /// arenas; the error names what was wrong with the call.
     fn from_proto(call: pb::OsCall) -> Result<Self, String> {
+        let eager_bit = call.allow_eager_await;
         let (call_id, call) = os_call_from_proto(call).map_err(|error| format!("invalid OS call: {error}"))?;
         Ok(Self {
             function_name: call.name().to_owned(),
+            // The eager bit is only meaningful on a call a future may answer.
+            allow_eager_await: eager_bit && call.accepts_future(),
             args: call.to_args(),
             call_id,
         })
@@ -221,6 +225,7 @@ impl PreparedOsEvent {
     fn into_component(self) -> Event {
         Event::OsCall(OsCallEvent {
             function_name: self.function_name,
+            allow_eager_await: self.allow_eager_await,
             values: value::into_component(self.args.graph.into_nodes()),
             args: value::raw_ids(self.args.arg_ids),
             kwargs: value::raw_pairs(self.args.kwarg_ids),

@@ -513,15 +513,19 @@ def test_asyncio_sleep_result_stays_in_the_sandbox(monty_run: RunMonty):
     assert monty_run(code, os=os_handler) == snapshot(42)
 
 
-def test_async_os_callback_requires_async_monty(monty_run: RunMonty):
-    """The sync pool has no event loop to run a coroutine answer on."""
+def test_async_os_callback_requires_async_monty(pool: Monty):
+    """The sync pool has no event loop to run a coroutine answer on; the refusal poisons the checkout."""
 
-    async def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+    async def os_handler(**_: Any) -> Any:
         return None
 
-    with pytest.raises(RuntimeError) as exc_info:
-        monty_run('import time; time.sleep(0)', os=os_handler)
-    assert str(exc_info.value) == snapshot('async os callbacks require AsyncMonty')
+    with pool.checkout() as session:
+        with pytest.raises(RuntimeError) as exc_info:
+            session.feed_run('import time; time.sleep(0)', os=os_handler)
+        assert str(exc_info.value) == snapshot('async os callbacks require AsyncMonty')
+        # the discarded checkout is not reusable
+        with pytest.raises(RuntimeError):
+            session.feed_run('1 + 1')
 
 
 # =============================================================================

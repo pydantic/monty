@@ -1360,7 +1360,7 @@ impl Checkout {
                     // `restore`) decodes into a typed `OsFunctionCall`; a
                     // payload the child could never legitimately produce is a
                     // protocol violation.
-                    let allow_eager_await = call.allow_eager_await;
+                    let eager_bit = call.allow_eager_await;
                     let (call_id, function_call) = match os_call_from_proto(call) {
                         Ok(call) => call,
                         Err(err) => {
@@ -1372,6 +1372,9 @@ impl Checkout {
                     // normalizes only the clone presented to callbacks.
                     let function_name = function_call.name().to_owned();
                     let accepts_future = function_call.accepts_future();
+                    // The child is untrusted: an eager bit on a call no future
+                    // may answer is dropped rather than exposed.
+                    let allow_eager_await = eager_bit && accepts_future;
                     let args = function_call.clone().to_args();
                     self.pending = Some(Pending::Call {
                         call_id,

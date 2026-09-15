@@ -7,7 +7,7 @@ use std::future::Future;
 
 use monty_pool::ResumeValue;
 use monty_proto::python::InstanceStore;
-use monty_types::{CallArgs, ExtFunctionResult, MontyUuid};
+use monty_types::{CallArgs, ExtFunctionResult, MontyObject, MontyUuid};
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
 use pyo3_async_runtimes::{into_future_with_locals, tokio::get_current_locals};
 use tokio::task::{JoinError, JoinSet};
@@ -47,17 +47,25 @@ pub(crate) fn spawn_coroutine_task(
     Ok(())
 }
 
+/// [`spawn_coroutine_task`] for a coroutine answering `asyncio.sleep`; see
+/// [`sleep_future`].
+pub(crate) fn spawn_sleep_task(
+    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    call_id: u32,
+    coro: Py<PyAny>,
+) -> PyResult<()> {
+    let future = sleep_future(coro)?;
+    join_set.spawn(async move { (call_id, future.await) });
+    Ok(())
+}
+
 /// Converts a coroutine under the current asyncio task-locals, for eager await or spawning.
 pub(crate) fn coroutine_future(
     coro: Py<PyAny>,
     instances: &InstanceStore,
 ) -> PyResult<impl Future<Output = ExtFunctionResult> + Send + use<>> {
     let instances = Python::attach(|py| instances.clone_ref(py));
-    let future = Python::attach(|py| {
-        let locals = get_current_locals(py)?.copy_context(py)?;
-        into_future_with_locals(&locals, coro.into_bound(py))
-    })?;
-
+    let future = python_future(coro)?;
     Ok(async move {
         match future.await {
             Ok(py_result) => Python::attach(|py| {
@@ -66,6 +74,29 @@ pub(crate) fn coroutine_future(
             }),
             Err(err) => Python::attach(|py| py_err_to_ext_result(py, &err)),
         }
+    })
+}
+
+/// Like [`coroutine_future`] for a coroutine answering `asyncio.sleep`, whose
+/// value the sandbox ignores: it settles to `None` however the coroutine
+/// returns, so a value with no wire form cannot fail it. An exception still
+/// reaches the `await`.
+pub(crate) fn sleep_future(coro: Py<PyAny>) -> PyResult<impl Future<Output = ExtFunctionResult> + Send + use<>> {
+    let future = python_future(coro)?;
+    Ok(async move {
+        match future.await {
+            Ok(_) => ExtFunctionResult::Return(MontyObject::none()),
+            Err(err) => Python::attach(|py| py_err_to_ext_result(py, &err)),
+        }
+    })
+}
+
+/// Schedules `coro` on the caller's event loop, under the task-locals the
+/// current `future_into_py` scope established.
+fn python_future(coro: Py<PyAny>) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send + use<>> {
+    Python::attach(|py| {
+        let locals = get_current_locals(py)?.copy_context(py)?;
+        into_future_with_locals(&locals, coro.into_bound(py))
     })
 }
 

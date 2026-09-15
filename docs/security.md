@@ -326,7 +326,8 @@ A handler that answers them decides how long a wait it is willing to perform —
 that answers neither leaves both raising.
 
 A wait costs nothing against `max_duration`, which measures execution time and stops while the sandbox is suspended, so
-what bounds a sleeping session is `max_suspensions` (one per sleep) and your own turn deadline.
+what bounds a sleeping session is `max_suspensions` (one per sleep, two when an `asyncio.sleep()` answered with a future
+is awaited later) and your own turn deadline.
 See [resource limits](resource-limits.md).
 
 Under [`AsyncMonty`][pydantic_monty.AsyncMonty] and in JavaScript the handler may be `async`.

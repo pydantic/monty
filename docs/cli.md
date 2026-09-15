@@ -66,7 +66,7 @@ Only the file argument's name is used, so `monty ./scripts/run.py` and `monty /a
 
 ## The clock
 
-`date.today()`, `datetime.now()` and `time.time()` read the machine's clock and local timezone.
+`date.today()` and `datetime.now()` read the machine's clock and local timezone; `time.time()` reads the machine's clock as Unix epoch seconds.
 Nothing answers `os.urandom()` in the CLI, so it and any unseeded `random` draw fail.
 Without `--mount` the script runs in-process and the call raises
 `NotImplementedError: OS function 'os.urandom' not implemented with standard execution`; with a mount it goes

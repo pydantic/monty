@@ -1247,14 +1247,15 @@ function jsErrorParts(err: unknown): { excType: string; message: string } {
 /**
  * A future cannot decline a call the way `resumeNotHandled` does, so an async
  * `os` callback that settles to `NOT_HANDLED` raises the sandbox's own
- * no-handler error for that call instead.
+ * no-handler error for that call instead. Any other value is dropped: the
+ * sandbox ignores it, so it must not fail conversion either.
  */
-function rejectNotHandled(functionName: string): (value: unknown) => unknown {
+function rejectNotHandled(functionName: string): (value: unknown) => undefined {
   return (value) => {
     if (value === NOT_HANDLED) {
       throw new Error(`'${functionName}' is not supported in this environment`)
     }
-    return value
+    return undefined
   }
 }
 

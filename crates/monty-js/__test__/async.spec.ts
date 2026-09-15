@@ -338,28 +338,30 @@ test('time.sleep reaches the os callback and evaluates to None', async () => {
 
 test('an async os callback answers asyncio.sleep as a future, so gathered sleeps overlap', async () => {
   const calls: unknown[] = []
+  const started: number[] = []
+  const finished: number[] = []
   const code = [
     'import asyncio',
     'async def main():',
-    "    return await asyncio.gather(asyncio.sleep(0.15, 'a'), asyncio.sleep(0.15, 'b'))",
+    "    return await asyncio.gather(asyncio.sleep(0.05, 'a'), asyncio.sleep(0.05, 'b'))",
     'asyncio.run(main())',
   ].join('\n')
-  const start = performance.now()
   const result = await run(code, {
     os: async (name, args) => {
       calls.push([name, args])
-      const [delay] = args as [number]
-      await new Promise((resolve) => setTimeout(resolve, delay * 1000))
-      return 'ignored' // the sandbox keeps `result` itself
+      started.push(performance.now())
+      await new Promise((resolve) => setTimeout(resolve, (args[0] as number) * 1000))
+      finished.push(performance.now())
+      return new Map() // ignored, so it need not convert
     },
   })
-  const elapsed = (performance.now() - start) / 1000
   t.deepEqual(result, ['a', 'b'])
   t.deepEqual(calls, [
-    ['asyncio.sleep', [0.15]],
-    ['asyncio.sleep', [0.15]],
+    ['asyncio.sleep', [0.05]],
+    ['asyncio.sleep', [0.05]],
   ])
-  t.true(elapsed < 0.28, `in series the sleeps would take 0.3s, took ${elapsed}s`)
+  // the second sleep started before the first finished, so they overlapped
+  t.true(started[1] < finished[0])
 })
 
 test('an async os callback answering time.sleep is awaited before the sandbox resumes', async () => {

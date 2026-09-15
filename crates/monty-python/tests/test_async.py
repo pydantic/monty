@@ -23,6 +23,7 @@ from pydantic_monty import (
     MontyRuntimeError,
     MontySyntaxError,
     OSAccess,
+    OsFunction,
 )
 
 
@@ -1123,44 +1124,90 @@ async def test_sync_monty_inside_print_callback(asession: AsyncMontySession):
 async def test_async_os_callback_answers_asyncio_sleep_as_a_future(asession: AsyncMontySession):
     """A coroutine answer to asyncio.sleep runs alongside the sandbox's other tasks."""
     calls: list[Any] = []
+    started: list[float] = []
+    finished: list[float] = []
 
     async def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
         calls.append((name, args))
+        started.append(time.monotonic())
         await asyncio.sleep(args[0])
+        finished.append(time.monotonic())
         return 'ignored'
 
     code = """
 import asyncio
 
 async def main():
-    return await asyncio.gather(asyncio.sleep(0.15, 'a'), asyncio.sleep(0.15, 'b'))
+    return await asyncio.gather(asyncio.sleep(0.05, 'a'), asyncio.sleep(0.05, 'b'))
 
 asyncio.run(main())
 """
-    start = time.monotonic()
     result = await asession.feed_run(code, os=os_handler)
-    elapsed = time.monotonic() - start
     assert result == snapshot(['a', 'b'])
-    assert calls == snapshot([('asyncio.sleep', (0.15,)), ('asyncio.sleep', (0.15,))])
-    # in series the two sleeps would take at least 0.3s
-    assert elapsed < 0.28
+    assert calls == snapshot([('asyncio.sleep', (0.05,)), ('asyncio.sleep', (0.05,))])
+    # the second sleep started before the first finished, so they overlapped
+    assert started[1] < finished[0]
 
 
 async def test_os_access_sleeps_concurrently_under_async_monty(asession: AsyncMontySession):
     """`OSAccess` needs no override for gathered sleeps to overlap."""
+    dispatched: list[float] = []
+
+    class Timed(OSAccess):
+        def dispatch(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: Any = None, **rest: Any) -> Any:
+            dispatched.append(time.monotonic())
+            return super().dispatch(function_name, args, kwargs, **rest)
+
     code = """
 import asyncio
 
 async def main():
-    return await asyncio.gather(asyncio.sleep(0.15, 1), asyncio.sleep(0.15, 2))
+    return await asyncio.gather(asyncio.sleep(0.05, 1), asyncio.sleep(0.05, 2))
 
 asyncio.run(main())
 """
-    start = time.monotonic()
-    result = await asession.feed_run(code, os=OSAccess())
-    elapsed = time.monotonic() - start
+    result = await asession.feed_run(code, os=Timed())
     assert result == snapshot([1, 2])
-    assert elapsed < 0.28
+    # the second sleep was dispatched while the first was still waiting
+    assert dispatched[1] - dispatched[0] < 0.05
+
+
+async def test_legacy_dispatch_override_still_sleeps(asession: AsyncMontySession):
+    """A three-argument `dispatch` override never sees `is_async`, so its sleep blocks but works."""
+    seen: list[str] = []
+
+    class Legacy(OSAccess):
+        def dispatch(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: Any = None) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+            seen.append(function_name)
+            return super().dispatch(function_name, args, kwargs)
+
+    code = "import asyncio\nasyncio.run(asyncio.sleep(0.001, 'woken'))"
+    assert await asession.feed_run(code, os=Legacy()) == snapshot('woken')
+    assert seen == snapshot(['asyncio.sleep'])
+
+
+async def test_sleep_coroutine_value_is_ignored(asession: AsyncMontySession):
+    """Whatever the coroutine answering asyncio.sleep returns, even something with no wire form, the await produces `result`."""
+
+    class Odd(OSAccess):
+        def async_sleep(self, delay: float, *, is_async: bool) -> Any:
+            async def wait() -> object:
+                await asyncio.sleep(delay)
+                return object()
+
+            return wait()
+
+    code = """
+import asyncio
+
+async def main():
+    first = await asyncio.sleep(0, 'eager')
+    both = await asyncio.gather(asyncio.sleep(0, 'a'), asyncio.sleep(0, 'b'))
+    return [first, *both]
+
+asyncio.run(main())
+"""
+    assert await asession.feed_run(code, os=Odd()) == snapshot(['eager', 'a', 'b'])
 
 
 async def test_is_async_is_passed_to_sync_callbacks(asession: AsyncMontySession):

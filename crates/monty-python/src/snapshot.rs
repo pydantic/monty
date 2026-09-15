@@ -50,7 +50,10 @@ use tokio::{sync::Mutex, task::JoinSet};
 mod tests;
 
 use crate::{
-    async_dispatch::{Dispatched, coroutine_future, dispatch_function_call, spawn_coroutine_task, wait_for_futures},
+    async_dispatch::{
+        Dispatched, coroutine_future, dispatch_function_call, sleep_future, spawn_coroutine_task, spawn_sleep_task,
+        wait_for_futures,
+    },
     callback_context::CallbackContext,
     exceptions::MontyError,
     external::{CallResult, ExternalLookup, resolve_object_attr, wire_call_arguments},
@@ -851,21 +854,18 @@ impl PyAsyncFunctionSnapshot {
                     Ok(OsDispatch::Answer(value)) => Ok(value),
                     // `asyncio.sleep` with nothing else to run: settled in
                     // place, answered like an eager coroutine.
-                    Ok(OsDispatch::Coroutine(coro)) if call.allow_eager_await => {
-                        match coroutine_future(coro, &ctx.instances) {
-                            Ok(future) => {
-                                eager = true;
-                                Ok(ext_result_to_resume(future.await))
-                            }
-                            Err(err) => Err(err),
+                    Ok(OsDispatch::Coroutine(coro)) if call.allow_eager_await => match sleep_future(coro) {
+                        Ok(future) => {
+                            eager = true;
+                            Ok(ext_result_to_resume(future.await))
                         }
-                    }
+                        Err(err) => Err(err),
+                    },
                     // `asyncio.sleep` runs alongside the sandbox's other
                     // tasks; any other call is awaited in place.
                     Ok(OsDispatch::Coroutine(coro)) if call.accepts_future => {
                         let mut join_set = ctx.pending_futures.lock().await;
-                        spawn_coroutine_task(&mut join_set, call.call_id, coro, &ctx.instances)
-                            .map(|()| ResumeValue::Future)
+                        spawn_sleep_task(&mut join_set, call.call_id, coro).map(|()| ResumeValue::Future)
                     }
                     Ok(OsDispatch::Coroutine(coro)) => match coroutine_future(coro, &ctx.instances) {
                         Ok(future) => Ok(ext_result_to_resume(future.await)),

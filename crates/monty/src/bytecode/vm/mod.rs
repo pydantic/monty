@@ -1997,6 +1997,23 @@ impl<'h> VM<'h> {
                 obj
             }
         };
+        // The sleeps ignore the host's answer, so an unconvertible one (a
+        // host object with no wire form, say) must not fail them.
+        let obj = match self.pending_effect.take() {
+            Some(PendingEffect::Post(PostConversionEffect::DiscardResult)) => {
+                self.push(Value::None);
+                return self.run_external();
+            }
+            Some(PendingEffect::Post(PostConversionEffect::SleepResult { result })) => {
+                let settled = self.settled_awaitable(result);
+                self.push(settled);
+                return self.run_external();
+            }
+            effect => {
+                self.pending_effect = effect;
+                obj
+            }
+        };
         // Surface resource-exhaustion failures from `to_value` (e.g. a host
         // string whose `heap.allocate` trips `max_memory`) as the same
         // `RunError::Resource` that pure-Monty allocations produce, so the
@@ -2019,16 +2036,12 @@ impl<'h> VM<'h> {
             Some(PendingEffect::Post(PostConversionEffect::SeedRandom { target, retry })) => {
                 apply_seed_random(target, retry, value, self)
             }
-            Some(PendingEffect::Post(PostConversionEffect::DiscardResult)) => {
-                value.drop_with(self);
-                Ok(Value::None)
-            }
-            Some(PendingEffect::Post(PostConversionEffect::SleepResult { result })) => {
-                value.drop_with(self);
-                Ok(self.settled_awaitable(result))
-            }
-            // Any pre-conversion effect was consumed above.
-            Some(PendingEffect::Pre(_)) | None => Ok(value),
+            // The sleeps were answered above; any pre-conversion effect was consumed.
+            Some(
+                PendingEffect::Post(PostConversionEffect::DiscardResult | PostConversionEffect::SleepResult { .. })
+                | PendingEffect::Pre(_),
+            )
+            | None => Ok(value),
         };
         match result {
             Ok(value) => {

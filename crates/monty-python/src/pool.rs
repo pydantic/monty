@@ -62,7 +62,10 @@ use tokio::{
 };
 
 use crate::{
-    async_dispatch::{Dispatched, coroutine_future, dispatch_function_call, spawn_coroutine_task, wait_for_futures},
+    async_dispatch::{
+        Dispatched, coroutine_future, dispatch_function_call, sleep_future, spawn_coroutine_task, spawn_sleep_task,
+        wait_for_futures,
+    },
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
@@ -1358,6 +1361,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                             OsDispatch::Coroutine(coro) => {
                                 // Closed so CPython does not warn that it was never awaited.
                                 coro.bind(py).call_method0("close")?;
+                                discard_checkout_sync(py, &checkout);
                                 return Err(PyRuntimeError::new_err("async os callbacks require AsyncMonty"));
                             }
                         }
@@ -1595,12 +1599,12 @@ async fn drive_async_inner(
                     // `asyncio.sleep` with nothing else to run: settle the wait
                     // in place and skip the `ResolveFutures` round trip.
                     OsDispatch::Coroutine(coro) if allow_eager_await => {
-                        let future = coroutine_future(coro, &instances)?;
+                        let future = sleep_future(coro)?;
                         TurnAnswer::Eager(call_id, ext_to_resume(future.await)?)
                     }
                     // `asyncio.sleep` runs alongside the sandbox's other tasks.
                     OsDispatch::Coroutine(coro) if accepts_future => {
-                        spawn_coroutine_task(&mut join_set, call_id, coro, &instances)?;
+                        spawn_sleep_task(&mut join_set, call_id, coro)?;
                         TurnAnswer::Call(ResumeValue::Future)
                     }
                     // Any other call is a value the sandbox is waiting on: the

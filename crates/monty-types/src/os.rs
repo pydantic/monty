@@ -477,12 +477,14 @@ pub enum SleepError {
 /// obvious `Duration::from_secs_f64` panics on all three. Both producers, the
 /// interpreter and the wire decoder, go through here.
 pub fn sleep_duration(seconds: f64) -> Result<Duration, SleepError> {
+    // Range before sign, as CPython converts to `PyTime_t` before checking
+    // the sign: `-inf` and huge negatives overflow rather than being negative.
     if seconds.is_nan() {
         Err(SleepError::NotANumber)
+    } else if seconds.abs() > MAX_SLEEP_SECONDS {
+        Err(SleepError::TooLarge)
     } else if seconds < 0.0 {
         Err(SleepError::Negative)
-    } else if seconds > MAX_SLEEP_SECONDS {
-        Err(SleepError::TooLarge)
     } else {
         Duration::try_from_secs_f64(seconds).map_err(|_| SleepError::TooLarge)
     }
@@ -495,7 +497,9 @@ pub fn sleep_duration(seconds: f64) -> Result<Duration, SleepError> {
 pub fn sleep_duration_saturating(seconds: f64) -> Result<Duration, SleepError> {
     match sleep_duration(seconds) {
         Ok(delay) => Ok(delay),
+        // `delay <= 0` returns at once in CPython, however far below zero.
         Err(SleepError::Negative) => Ok(Duration::ZERO),
+        Err(SleepError::TooLarge) if seconds < 0.0 => Ok(Duration::ZERO),
         Err(SleepError::TooLarge) => Ok(Duration::from_secs_f64(MAX_SLEEP_SECONDS)),
         Err(err @ SleepError::NotANumber) => Err(err),
     }

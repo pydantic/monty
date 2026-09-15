@@ -43,8 +43,9 @@ monty --help
 - `--max-memory 10MB`, `--max-duration 0.5`, `--max-recursion-depth`,
   `--gc-interval`, `--max-suspensions` — sandbox resource limits
 
-`date.today()`, `datetime.now()` and `time.time()` read this machine's clock and
-local timezone, as they do for any in-process run. `MontyRun::with_host_clock` is
+`date.today()` and `datetime.now()` read this machine's clock and local
+timezone, and `time.time()` its clock as Unix epoch seconds, as they do for any
+in-process run. `MontyRun::with_host_clock` is
 how an embedder chooses otherwise; the CLI has no flag for it. `time.sleep()` and
 `asyncio.sleep()` wait on the running thread, but only where the CLI drives
 suspensions, which is a run with at least one `-m` mount. Nothing answers
