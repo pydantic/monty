@@ -26,9 +26,10 @@ for the schema and the protocol rules documented alongside it.
 - `FrameReader` / `write_frame` — 4-byte little-endian length-prefixed
   framing, with a hard cap on frame length.
 - Fallible conversions between `pb` types and Monty's public types
-  (`MontyObject`, `MontyException`, mounts, resource limits, ...).
-- Host-object routing on the wire: host-backed `MontyObject::ClassInstance` /
-  `MontyClassType` carry host-generated uuids, and `FunctionCall.object_id` /
+  (`MontyValue`/`CallArgs`/`NamedValues` over the `MontyGraph` arena,
+  `MontyException`, mounts, resource limits, ...).
+- Host-object routing on the wire: host-backed class instances and class
+  nodes carry host-generated uuids, and `FunctionCall.object_id` /
   `NameLookup.object_id` route their method calls and lazy attribute lookups
   back to the parent's per-session instance store; sandbox-defined classes and
   instances carry worker-generated uuids that never reach that store.
@@ -46,18 +47,22 @@ for the schema and the protocol rules documented alongside it.
 
 ## Values are special-cased for performance
 
-The `monty.v1.MontyObject` message is mapped via prost `extern_path` onto
-`WireObject`: a hand-written `prost::Message` implementation that encodes
-borrowed `MontyObject`s and validates *while* decoding — no mirror struct and
-no deep clone on the hot path. `tests/differential.rs` proves it
-byte-compatible against a fully prost-generated oracle (`tests/oracle/`,
-regenerated and CI-checked together with the main codegen).
+Values cross as one flat `monty.v1.Arena` per message — a post-order node
+arena in which containers hold child indexes, so a sub-object shared inside
+the sandbox (or between two arguments of one call) is sent once and the
+carrying message names its roots by index. The message is mapped via prost
+`extern_path` onto `WireArena`: a hand-written `prost::Message` implementation
+that encodes borrowed `MontyNode`s and validates *while* decoding — no mirror
+struct, no deep clone and no recursion on the hot path, with the decode budget
+charged per node. `tests/differential.rs` proves it byte-compatible against a
+fully prost-generated oracle (`tests/oracle/`, regenerated and CI-checked
+together with the main codegen).
 
 ## Children are untrusted
 
 A parent must treat every frame from a (possibly compromised) child as
 untrusted input: conversions from proto to Rust are fallible by design,
-decoding enforces depth and size budgets, and nothing in this crate panics on
+decoding enforces a per-frame size budget and validates every arena index, and nothing in this crate panics on
 malformed wire data.
 
 ## Worker state machine
