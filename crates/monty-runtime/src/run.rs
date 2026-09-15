@@ -118,7 +118,7 @@ fn run_cli(cli: Cli) -> ExitCode {
     monty_alloc::set_hard_limit(hard_memory_limit).expect("monty-runtime must install LimitedAllocator globally");
 
     // Build mount table early to fail fast on bad -m args.
-    let (mount_table, first_mount) = match build_mount_table(&cli.mounts) {
+    let (mounts, first_mount) = match build_mount_table(&cli.mounts) {
         Ok(Some((mt, first_mount))) => (Some(mt), Some(first_mount)),
         Ok(None) => (None, None),
         Err(err) => {
@@ -126,6 +126,14 @@ fn run_cli(cli: Cli) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let max_sleep = match cli.max_sleep() {
+        Ok(max_sleep) => max_sleep,
+        Err(err) => {
+            eprintln!("{BOLD_RED}error{BOLD_RED:#}: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let host = HostOs { mounts, max_sleep };
     let cwd = match sandbox_cwd(cli.cwd.as_deref(), first_mount) {
         Ok(cwd) => cwd,
         Err(err) => {
@@ -140,9 +148,9 @@ fn run_cli(cli: Cli) -> ExitCode {
             return ExitCode::FAILURE;
         }
         return if cli.interactive {
-            dispatch_repl("<string>", &cmd, limits, mount_table, &cwd)
+            dispatch_repl("<string>", &cmd, limits, host, &cwd)
         } else {
-            dispatch_script("<string>", cmd, type_check, limits, mount_table, &cwd)
+            dispatch_script("<string>", cmd, type_check, limits, host, &cwd)
         };
     }
 
@@ -155,13 +163,13 @@ fn run_cli(cli: Cli) -> ExitCode {
             }
         };
         return if cli.interactive {
-            dispatch_repl(file_path, &code, limits, mount_table, &cwd)
+            dispatch_repl(file_path, &code, limits, host, &cwd)
         } else {
-            dispatch_script(file_path, code, type_check, limits, mount_table, &cwd)
+            dispatch_script(file_path, code, type_check, limits, host, &cwd)
         };
     }
 
-    dispatch_repl("repl.py", "", limits, mount_table, &cwd)
+    dispatch_repl("repl.py", "", limits, host, &cwd)
 }
 
 /// Resolves the sandbox working directory: `--cwd`, else the first `--mount`
@@ -179,28 +187,15 @@ fn dispatch_script(
     code: String,
     type_check: Option<TypeCheckingConfig>,
     limits: ResourceLimits,
-    mount_table: Option<MountTable>,
+    host: HostOs,
     cwd: &str,
 ) -> ExitCode {
-    run_script(
-        file_path,
-        code,
-        type_check,
-        ResourceTracker::new(limits),
-        mount_table,
-        cwd,
-    )
+    run_script(file_path, code, type_check, ResourceTracker::new(limits), host, cwd)
 }
 
 /// REPL analog of [`dispatch_script`].
-fn dispatch_repl(
-    file_path: &str,
-    code: &str,
-    limits: ResourceLimits,
-    mount_table: Option<MountTable>,
-    cwd: &str,
-) -> ExitCode {
-    run_repl(file_path, code, ResourceTracker::new(limits), mount_table, cwd)
+fn dispatch_repl(file_path: &str, code: &str, limits: ResourceLimits, host: HostOs, cwd: &str) -> ExitCode {
+    run_repl(file_path, code, ResourceTracker::new(limits), host, cwd)
 }
 
 /// Executes a Python file in one-shot CLI mode.
@@ -217,7 +212,7 @@ fn run_script(
     code: String,
     type_check: Option<TypeCheckingConfig>,
     tracker: ResourceTracker,
-    mut mount_table: Option<MountTable>,
+    mut host: HostOs,
     cwd: &str,
 ) -> ExitCode {
     if let Some(config) = type_check {
@@ -252,7 +247,7 @@ fn run_script(
 
     // Use the start() + loop path when mounts are configured or external functions
     // are enabled, since we need to intercept OsCalls.
-    if EXT_FUNCTIONS || mount_table.is_some() {
+    if EXT_FUNCTIONS || host.suspends() {
         let start = Instant::now();
         let progress = match runner.start(inputs, tracker, PrintWriter::Stdout) {
             Ok(p) => p,
@@ -267,7 +262,7 @@ fn run_script(
         };
 
         let mut suspensions = SuspensionBudget::from_progress(&progress);
-        match run_until_complete(progress, &mut mount_table, &mut suspensions) {
+        match run_until_complete(progress, &mut host, &mut suspensions) {
             Ok(value) => {
                 let elapsed = start.elapsed();
                 eprintln!(
@@ -317,20 +312,14 @@ fn run_script(
 ///
 /// Returns `ExitCode::SUCCESS` on EOF or `exit`, and `ExitCode::FAILURE` on
 /// initialization or I/O errors.
-fn run_repl(
-    file_path: &str,
-    code: &str,
-    tracker: ResourceTracker,
-    mut mount_table: Option<MountTable>,
-    cwd: &str,
-) -> ExitCode {
+fn run_repl(file_path: &str, code: &str, tracker: ResourceTracker, mut host: HostOs, cwd: &str) -> ExitCode {
     let mut suspensions = SuspensionBudget::new(&tracker);
     let mut repl = MontyRepl::new(file_path, tracker, CompileOptions::default()).with_host_clock(CLI_CLOCK);
     repl.set_cwd(cwd);
     let mut repl = Some(repl);
 
     if !code.is_empty() {
-        execute_repl_snippet(&mut repl, code, &mut mount_table, &mut suspensions);
+        execute_repl_snippet(&mut repl, code, &mut host, &mut suspensions);
     }
 
     eprintln!("Monty v{} REPL. Type `exit` to exit.", env!("CARGO_PKG_VERSION"));
@@ -389,7 +378,7 @@ fn run_repl(
 
         if continuation_mode == ReplContinuationMode::IncompleteBlock && snippet.is_empty() {
             let _ = rl.add_history_entry(pending_snippet.trim_end());
-            execute_repl_snippet(&mut repl, &pending_snippet, &mut mount_table, &mut suspensions);
+            execute_repl_snippet(&mut repl, &pending_snippet, &mut host, &mut suspensions);
             pending_snippet.clear();
             continuation_mode = ReplContinuationMode::Complete;
             continue;
@@ -402,7 +391,7 @@ fn run_repl(
                     continue;
                 }
                 let _ = rl.add_history_entry(pending_snippet.trim_end());
-                execute_repl_snippet(&mut repl, &pending_snippet, &mut mount_table, &mut suspensions);
+                execute_repl_snippet(&mut repl, &pending_snippet, &mut host, &mut suspensions);
                 pending_snippet.clear();
                 continuation_mode = ReplContinuationMode::Complete;
             }
@@ -426,13 +415,13 @@ fn run_repl(
 fn execute_repl_snippet(
     repl: &mut Option<MontyRepl>,
     snippet: &str,
-    mount_table: &mut Option<MountTable>,
+    host: &mut HostOs,
     suspensions: &mut SuspensionBudget,
 ) {
     let r = repl.take().expect("repl must be present");
 
-    if mount_table.is_some() {
-        match execute_repl_with_mounts(r, snippet, mount_table, suspensions) {
+    if host.suspends() {
+        match execute_repl_with_mounts(r, snippet, host, suspensions) {
             Ok((returned_repl, output)) => {
                 if output != MontyObject::none() {
                     println!("{output}");
@@ -469,7 +458,7 @@ fn execute_repl_snippet(
 fn execute_repl_with_mounts(
     r: MontyRepl,
     snippet: &str,
-    mount_table: &mut Option<MountTable>,
+    host: &mut HostOs,
     suspensions: &mut SuspensionBudget,
 ) -> Result<(MontyRepl, MontyObject), (MontyRepl, String)> {
     let mut progress = match r.feed_start(snippet, vec![], PrintWriter::Stdout) {
@@ -497,12 +486,10 @@ fn execute_repl_with_mounts(
         }
         match progress {
             ReplProgress::Complete { repl, value } => return Ok((repl, value)),
-            ReplProgress::OsCall(call) => {
-                match call.resume_with(PrintWriter::Stdout, |fc| handle_os_call(fc, mount_table)) {
-                    Ok(p) => progress = p,
-                    Err(err) => return Err((err.repl, format!("{}", err.error))),
-                }
-            }
+            ReplProgress::OsCall(call) => match call.resume_with(PrintWriter::Stdout, |fc| host.handle_os_call(fc)) {
+                Ok(p) => progress = p,
+                Err(err) => return Err((err.repl, format!("{}", err.error))),
+            },
             ReplProgress::FunctionCall(call) => {
                 return Err((
                     call.into_repl(),
@@ -531,7 +518,7 @@ fn execute_repl_with_mounts(
 /// produce an error.
 fn run_until_complete(
     mut progress: RunProgress,
-    mount_table: &mut Option<MountTable>,
+    host: &mut HostOs,
     suspensions: &mut SuspensionBudget,
 ) -> Result<MontyObject, String> {
     loop {
@@ -575,7 +562,7 @@ fn run_until_complete(
             }
             RunProgress::OsCall(call) => {
                 progress = call
-                    .resume_with(PrintWriter::Stdout, |fc| handle_os_call(fc, mount_table))
+                    .resume_with(PrintWriter::Stdout, |fc| host.handle_os_call(fc))
                     .map_err(|err| format!("{err}"))?;
             }
         }
@@ -624,35 +611,51 @@ impl SuspensionBudget {
     }
 }
 
-/// Handles a filesystem `OsCall` using the mount table if available.
-///
-/// Consumes the call (moving write payloads into the mount backend) and
-/// returns the operation result as an `ExtFunctionResult` — either a
-/// successful `MontyObject` or an exception for errors / unsupported
-/// operations.
-fn handle_os_call(call: OsFunctionCall, mount_table: &mut Option<MountTable>) -> ExtFunctionResult {
-    // The clock answers `date.today()` / `datetime.now()` / `time.time()` here
-    // for the same reason it is granted to the non-suspending path: the CLI is
-    // the host, and a local script expecting CPython's clock should get one
-    // either way.
-    if let Some(now) = CLI_CLOCK.resolve(&call) {
-        return now.into();
+/// What the CLI lends the sandbox as its host: the `-m` mounts and the
+/// `--max-sleep` cap. Only a run with mounts suspends at all, so the cap
+/// matters there alone.
+struct HostOs {
+    mounts: Option<MountTable>,
+    /// Longest wait a sleep performs; longer ones are cut short.
+    max_sleep: Duration,
+}
+
+impl HostOs {
+    /// Whether OS calls reach the host at all (see `run_script`).
+    fn suspends(&self) -> bool {
+        self.mounts.is_some()
     }
-    // Both sleeps wait on this thread, which is the script's own: a CLI run is
-    // one local script, so there is nothing else to run meanwhile and no
-    // deadline but the user's patience. `--max-suspensions` still bounds how
-    // many waits a run can ask for.
-    if let OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay) = call {
-        thread::sleep(delay);
-        return MontyObject::none().into();
-    }
-    match mount_table.as_mut() {
-        Some(mounts) => match mounts.handle_os_call(call) {
-            MountCallOutcome::Handled(Ok(obj)) => obj.into(),
-            MountCallOutcome::Handled(Err(err)) => err.into_exception().into(),
-            MountCallOutcome::NotHandled(call) => call.on_no_handler().into(),
-        },
-        None => call.on_no_handler().into(),
+
+    /// Answers an `OsCall`: the clock, a (capped) sleep, or a mount.
+    ///
+    /// Consumes the call (moving write payloads into the mount backend) and
+    /// returns the operation result as an `ExtFunctionResult` — either a
+    /// successful `MontyObject` or an exception for errors / unsupported
+    /// operations.
+    fn handle_os_call(&mut self, call: OsFunctionCall) -> ExtFunctionResult {
+        // The clock answers `date.today()` / `datetime.now()` / `time.time()`
+        // here for the same reason it is granted to the non-suspending path:
+        // the CLI is the host, and a local script expecting CPython's clock
+        // should get one either way.
+        if let Some(now) = CLI_CLOCK.resolve(&call) {
+            return now.into();
+        }
+        // Both sleeps wait on this thread, which is the script's own: a CLI
+        // run is one local script, so there is nothing else to run meanwhile.
+        // `--max-sleep` bounds each wait and `--max-suspensions` how many a
+        // run can ask for.
+        if let OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay) = call {
+            thread::sleep(delay.min(self.max_sleep));
+            return MontyObject::none().into();
+        }
+        match self.mounts.as_mut() {
+            Some(mounts) => match mounts.handle_os_call(call) {
+                MountCallOutcome::Handled(Ok(obj)) => obj.into(),
+                MountCallOutcome::Handled(Err(err)) => err.into_exception().into(),
+                MountCallOutcome::NotHandled(call) => call.on_no_handler().into(),
+            },
+            None => call.on_no_handler().into(),
+        }
     }
 }
 

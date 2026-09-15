@@ -42,6 +42,8 @@ monty --help
   mount's virtual path, else `/`); relative paths resolve against it
 - `--max-memory 10MB`, `--max-duration 0.5`, `--max-recursion-depth`,
   `--gc-interval`, `--max-suspensions` — sandbox resource limits
+- `--max-sleep 10` — longest wait a `time.sleep()` / `asyncio.sleep()` performs
+  in seconds; longer sleeps are cut short (`inf` for no limit)
 
 `date.today()` and `datetime.now()` read this machine's clock and local
 timezone, and `time.time()` its clock as Unix epoch seconds, as they do for any

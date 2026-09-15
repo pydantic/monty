@@ -324,6 +324,8 @@ See [random](limitations/random.md).
 `time.sleep()` and `asyncio.sleep()` are calls too: the sandbox cannot block, it can only ask the host to wait for it.
 A handler that answers them decides how long a wait it is willing to perform — cap it, scale it, or refuse it — and one
 that answers neither leaves both raising.
+[`OSAccess`][pydantic_monty.OSAccess] caps every wait at its `max_sleep`, ten seconds unless you say otherwise, and the
+CLI at `--max-sleep`.
 
 A wait costs nothing against `max_duration`, which measures execution time and stops while the sandbox is suspended, so
 what bounds a sleeping session is `max_suspensions` (one per sleep, two when an `asyncio.sleep()` answered with a future

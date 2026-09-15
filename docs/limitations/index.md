@@ -33,7 +33,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
     format specs and nested replacement fields
-- `async` / `await`, and `asyncio.run` / `asyncio.gather`
+- `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.sleep`
 - `import x`, `import x.y`, `from x import y, z as w`
 - Starred unpacking everywhere CPython allows it
 - Runtime generic aliases (`list[int]`) and `|` unions (`int | None`), see [typing.md](typing.md)

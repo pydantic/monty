@@ -8,6 +8,7 @@ For tests of the AbstractOS interface via custom subclasses, see test_os_access_
 """
 
 import datetime
+import time
 from pathlib import PurePosixPath
 from typing import Any
 from unittest.mock import Mock
@@ -132,16 +133,26 @@ def test_default_clock_and_sleeps(monty_run: RunMonty):
     assert result == snapshot((True, 'woken'))
 
 
-def test_sleep_can_be_capped(monty_run: RunMonty):
-    """Overriding sleep() is how a host bounds how long the sandbox can wait."""
+def test_max_sleep_caps_the_wait(monty_run: RunMonty):
+    """`max_sleep` bounds how long the sandbox can hold the host; it defaults to 10s."""
+    assert OSAccess().max_sleep == snapshot(10)
+    assert OSAccess(max_sleep=None).max_sleep is None
+
+    start = time.monotonic()
+    assert monty_run('import time; time.sleep(3600) is None', os=OSAccess(max_sleep=0.001)) == snapshot(True)
+    assert time.monotonic() - start < 5
+
+
+def test_sleep_override_sees_the_requested_length(monty_run: RunMonty):
+    """An override receives the sandbox's own request; the cap applies inside the default."""
     waited: list[float] = []
 
-    class CappedSleep(OSAccess):
+    class RecordingSleep(OSAccess):
         def sleep(self, seconds: float) -> None:
             waited.append(seconds)
-            super().sleep(min(seconds, 0.001))
+            super().sleep(seconds)
 
-    assert monty_run('import time; time.sleep(3600) is None', os=CappedSleep()) == snapshot(True)
+    assert monty_run('import time; time.sleep(3600) is None', os=RecordingSleep(max_sleep=0.001)) == snapshot(True)
     assert waited == snapshot([3600.0])
 
 

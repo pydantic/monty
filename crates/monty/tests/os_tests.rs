@@ -1533,6 +1533,29 @@ fn only_an_immediately_awaited_asyncio_sleep_allows_an_eager_answer() {
     }
 }
 
+/// A sleep answered with a future but never awaited is freed with its
+/// pending future once the run completes; the heap's own walkers must
+/// release the `result` it still holds (`memory-model-checks` verifies).
+#[test]
+fn unawaited_sleep_future_releases_its_result() {
+    let code = "import asyncio\nx = asyncio.sleep(5, [1, 2])\n'done'";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected the sleep, got {progress:?}")
+    };
+    let call_id = call.call_id;
+    let progress = call
+        .resume(ExtFunctionResult::Future(call_id), PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(
+        progress.into_complete().expect("expected Complete"),
+        MontyObject::string("done")
+    );
+}
+
 /// A future the host rejects raises at the `await`; `result` is dropped
 /// with it rather than leaking.
 #[test]
