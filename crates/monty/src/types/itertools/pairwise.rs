@@ -83,6 +83,17 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
         // the ref.
         let displaced = pairwise.previous.replace(first);
         displaced.drop_with(vm);
+        // That same call may have run the source dry, which latches the adaptor
+        // and clears `previous`; the write above puts an item back on a spent
+        // pairwise. CPython re-reads `po->it` here and `Py_CLEAR`s `old`.
+        let ItertoolsIter::Pairwise(pairwise) = iter.get_mut(vm.heap) else {
+            unreachable!("dispatched on Kind::Pairwise")
+        };
+        if pairwise.source.is_none() {
+            let resurrected = pairwise.previous.take();
+            resurrected.drop_with(vm);
+            return Ok(None);
+        }
     }
 
     // Cloned BEFORE the source runs, as CPython holds its own reference to

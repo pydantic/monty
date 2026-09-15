@@ -161,6 +161,38 @@ prime_displacing = itertools.pairwise(PrimeDisplacing())
 assert len(list(prime_displacing)) == 1
 
 
+# The same window, but the re-entrant call runs the source DRY: that latches the
+# adaptor and clears `previous`, so the outer pull's item must not be written
+# back. CPython releases it at exhaustion (verified with `weakref` on 3.14);
+# leaving it in `previous` pins it until the spent pairwise is itself collected.
+class PrimeExhausting:
+    def __init__(self):
+        self.calls = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.calls += 1
+        if self.calls == 1:
+            try:
+                next(prime_exhausting)
+                assert False, 'expected the re-entrant next to exhaust the source'
+            except StopIteration:
+                pass
+            return exhausted_item
+        raise StopIteration
+
+
+exhausted_item = [1]
+prime_exhausting = itertools.pairwise(PrimeExhausting())
+try:
+    next(prime_exhausting)
+    assert False, 'expected pairwise to stop once the source was spent'
+except StopIteration:
+    pass
+
+
 # A source that raises on the SECOND pull leaves `next` through a `?` while
 # the pass still holds the item it captured to pair — the path `Boom` above
 # cannot reach, since raising on the first pull holds nothing yet.
@@ -367,4 +399,4 @@ except TypeError:
     pass
 
 len('done')
-# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1, 'chain_drained_source': 1, 'chain_drained': 1, 'chain_unreached_source': 1, 'chain_failed': 1, 'Displacing': 1, 'displacing': 1, 'PrimeDisplacing': 1, 'prime_displacing': 1, 'BoomLate': 1, 'take_live': 1, 'drop_live': 1, 'filter_live': 1, 'star_live': 1, 'filter_none': 1, 'rejected': 1, 'pred_erroring': 1, 'star_erroring': 1, 'take_pred': 1, 'take_source': 1, 'latched_take': 1, 'drop_pred': 2, 'drop_source': 2, 'past_drop': 1, 'fill_live': 1, 'zip_live': 1, 'bat_live': 1, 'acc_live': 1, 'bat_source': 1, 'spent_zip': 1, 'spent_bat': 1, 'zip_source': 1, 'strict_flag': 1, 'inspected_bat': 1, 'zip_resolved': 1, 'zip_unreached': 1}
+# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1, 'chain_drained_source': 1, 'chain_drained': 1, 'chain_unreached_source': 1, 'chain_failed': 1, 'Displacing': 1, 'displacing': 1, 'PrimeDisplacing': 1, 'prime_displacing': 1, 'PrimeExhausting': 1, 'prime_exhausting': 1, 'exhausted_item': 1, 'BoomLate': 1, 'take_live': 1, 'drop_live': 1, 'filter_live': 1, 'star_live': 1, 'filter_none': 1, 'rejected': 1, 'pred_erroring': 1, 'star_erroring': 1, 'take_pred': 1, 'take_source': 1, 'latched_take': 1, 'drop_pred': 2, 'drop_source': 2, 'past_drop': 1, 'fill_live': 1, 'zip_live': 1, 'bat_live': 1, 'acc_live': 1, 'bat_source': 1, 'spent_zip': 1, 'spent_bat': 1, 'zip_source': 1, 'strict_flag': 1, 'inspected_bat': 1, 'zip_resolved': 1, 'zip_unreached': 1}
