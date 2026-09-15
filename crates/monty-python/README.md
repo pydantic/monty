@@ -99,3 +99,9 @@ Return the generated values or `rng.getstate()` instead.
 
 See the [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) README for
 more details.
+
+`AsyncMontySession.feed_run()` cancels unfinished coroutine callbacks and joins them before returning a result,
+raising an error, or propagating caller cancellation.
+Further caller cancellation reaches callback cleanup.
+Callbacks must cooperate with cancellation; tasks they create themselves remain their responsibility.
+This does not apply to snapshot-driven execution with `feed_start()` and `resume_auto()`.
