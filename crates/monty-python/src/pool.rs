@@ -1567,6 +1567,7 @@ async fn drive_async_inner(
                 args,
                 call_id,
                 accepts_future,
+                allow_eager_await,
             } => {
                 let mounted = run_turn_async(
                     &checkout,
@@ -1584,6 +1585,12 @@ async fn drive_async_inner(
                 })?;
                 match dispatched {
                     OsDispatch::Answer(value) => TurnAnswer::Call(value),
+                    // `asyncio.sleep` with nothing else to run: settle the wait
+                    // in place and skip the `ResolveFutures` round trip.
+                    OsDispatch::Coroutine(coro) if allow_eager_await => {
+                        let future = coroutine_future(coro, &instances)?;
+                        TurnAnswer::Eager(call_id, ext_to_resume(future.await)?)
+                    }
                     // `asyncio.sleep` runs alongside the sandbox's other tasks.
                     OsDispatch::Coroutine(coro) if accepts_future => {
                         spawn_coroutine_task(&mut join_set, call_id, coro, &instances)?;

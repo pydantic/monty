@@ -280,6 +280,7 @@ pub(crate) fn build_snapshot(
             args,
             call_id,
             accepts_future,
+            allow_eager_await,
         } => {
             let call = FunctionCallData {
                 function_name,
@@ -288,7 +289,7 @@ pub(crate) fn build_snapshot(
                 is_os_function: true,
                 accepts_future,
                 object_id: None,
-                allow_eager_await: false,
+                allow_eager_await,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
@@ -848,6 +849,17 @@ impl PyAsyncFunctionSnapshot {
                 });
                 match dispatched {
                     Ok(OsDispatch::Answer(value)) => Ok(value),
+                    // `asyncio.sleep` with nothing else to run: settled in
+                    // place, answered like an eager coroutine.
+                    Ok(OsDispatch::Coroutine(coro)) if call.allow_eager_await => {
+                        match coroutine_future(coro, &ctx.instances) {
+                            Ok(future) => {
+                                eager = true;
+                                Ok(ext_result_to_resume(future.await))
+                            }
+                            Err(err) => Err(err),
+                        }
+                    }
                     // `asyncio.sleep` runs alongside the sandbox's other
                     // tasks; any other call is awaited in place.
                     Ok(OsDispatch::Coroutine(coro)) if call.accepts_future => {

@@ -19,15 +19,16 @@ use crate::{
     wire::WireArena,
 };
 
-/// Builds the `OsCall` envelope: call id, typed arm and, for `Getenv`, the
-/// arena its default indexes.
+/// Builds the `OsCall` envelope: call id, typed arm, the eager-await hint and,
+/// for `Getenv`, the arena its default indexes.
 #[must_use]
-pub fn os_call_to_proto(call_id: u32, call: OsFunctionCall) -> pb::OsCall {
+pub fn os_call_to_proto(call_id: u32, call: OsFunctionCall, allow_eager_await: bool) -> pb::OsCall {
     let (call, values) = call_to_proto(call);
     pb::OsCall {
         call_id,
         values,
         call: Some(call),
+        allow_eager_await,
     }
 }
 

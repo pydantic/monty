@@ -1482,6 +1482,46 @@ fn asyncio_sleep_answered_with_a_future_blocks_until_resolved() {
     );
 }
 
+/// An `asyncio.sleep` awaited at once, with nothing else to run, may be
+/// answered eagerly: the wait is done, so the `await` finds the sleep
+/// settled and no `ResolveFutures` round trip follows.
+#[test]
+fn asyncio_sleep_awaited_at_once_allows_an_eager_answer() {
+    let code = "import asyncio\nasync def main():\n    return await asyncio.sleep(5, 'late')\nasyncio.run(main())";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected the sleep, got {progress:?}")
+    };
+    assert!(call.allow_eager_await);
+    let progress = call.resume_eager(Ok(MontyObject::none()), PrintWriter::Stdout).unwrap();
+    assert_eq!(
+        progress.into_complete().expect("expected Complete"),
+        MontyObject::string("late".to_owned())
+    );
+}
+
+/// The eager hint needs an immediate `await`: a sleep passed to `asyncio.run`
+/// is not awaited by the calling frame, and `time.sleep` never is.
+#[test]
+fn only_an_immediately_awaited_asyncio_sleep_allows_an_eager_answer() {
+    for code in [
+        "import asyncio\nasyncio.run(asyncio.sleep(0, 'x'))",
+        "import time\ntime.sleep(0)",
+    ] {
+        let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let progress = runner
+            .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap();
+        let RunProgress::OsCall(call) = progress else {
+            panic!("expected the sleep, got {progress:?}")
+        };
+        assert!(!call.allow_eager_await, "{code}");
+    }
+}
+
 /// A future the host rejects raises at the `await`; `result` is dropped
 /// with it rather than leaking.
 #[test]

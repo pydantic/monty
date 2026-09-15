@@ -375,8 +375,9 @@ await session.feedRun('import os\nos.getenv("HOME")', {
 ```
 
 An `async` callback works too. Its answer to `asyncio.sleep` is registered as a
-future, so the sandbox's other tasks run while it waits; its answer to any
-other OS call is awaited before that session resumes.
+future, so the sandbox's other tasks run while it waits (or, when there are
+none, is awaited in place like an eager host function); its answer to any other
+OS call is awaited before that session resumes.
 
 Callback-backed virtual files return a `MontyFileHandle` marker from the
 open-time call. Paths are virtual POSIX sandbox paths and `position` defaults

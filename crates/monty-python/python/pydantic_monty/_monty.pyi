@@ -1167,7 +1167,12 @@ class FunctionSnapshot:
 
     @property
     def allow_eager_await(self) -> bool:
-        """Whether the worker permits eager coroutine resolution at this call."""
+        """Whether the worker permits eager coroutine resolution at this call.
+
+        True for a host function or `asyncio.sleep` awaited at once while no other
+        sandbox task can run, so a coroutine answer is awaited in place rather than
+        surfacing as a future snapshot.
+        """
 
     @property
     def script_name(self) -> str: ...

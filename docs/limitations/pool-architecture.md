@@ -387,8 +387,9 @@ properties that real CPython does not provide, per the caveat above.
     snapshot may be resumed at most once (a second resume raises
     `RuntimeError`), and feeding while suspended raises. This differs from the
     pre-subprocess in-process API, where a snapshot owned freely-copyable state.
-- **Coroutine calls do not always produce a future snapshot.** When a call is immediately awaited and no other
-    sandbox task is runnable or external future is pending, `allow_eager_await` is true (`allowEagerAwait` in JavaScript).
+- **Coroutine calls do not always produce a future snapshot.** When a call (a host function, or `asyncio.sleep`) is
+    immediately awaited and no other sandbox task is runnable or external future is pending, `allow_eager_await` is true
+    (`allowEagerAwait` in JavaScript).
     Async `resume_auto()` / `resumeAuto()` then awaits the host coroutine and returns the next call or completion
     directly, without an intermediate future snapshot.
     Telemetry records eager results on the original function-call span, with the same `value` or `error` metric outcome

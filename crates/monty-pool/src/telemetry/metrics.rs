@@ -1269,6 +1269,7 @@ mod tests {
         metrics.event(&event(pb::child_event::Kind::OsCall(pb::OsCall {
             call_id: 1,
             values: None,
+            allow_eager_await: false,
             call: Some(Call::ReadText("/mnt/f.txt".to_owned())),
         })));
         metrics.begin_turn(&resume_return(MontyObject::string("hello".to_owned())));

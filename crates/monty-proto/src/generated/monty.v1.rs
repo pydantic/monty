@@ -808,6 +808,11 @@ pub struct OsCall {
     /// The arena any value-typed argument (`Getenv.default`) indexes.
     #[prost(message, optional, tag = "26")]
     pub values: ::core::option::Option<crate::WireArena>,
+    /// As on `FunctionCall`: the parent may await a coroutine and answer with
+    /// `ResumeFutures` for `call_id`. Only ever set on `async_sleep`, the one
+    /// call a future may answer at all.
+    #[prost(bool, tag = "30")]
+    pub allow_eager_await: bool,
     #[prost(
         oneof = "os_call::Call",
         tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29"

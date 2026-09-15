@@ -767,7 +767,7 @@ fn invalid_arenas_are_rejected() {
 #[track_caller]
 fn assert_os_call_round_trip(call: OsFunctionCall) {
     let expected = format!("{call:?}");
-    let bytes = os_call_to_proto(3, call).encode_to_vec();
+    let bytes = os_call_to_proto(3, call, false).encode_to_vec();
     let decoded = pb::OsCall::decode(bytes.as_slice()).expect("wire bytes -> OsCall failed");
     let (call_id, back) = os_call_from_proto(decoded).expect("wire call -> OsFunctionCall failed");
     assert_eq!(call_id, 3);
@@ -917,6 +917,7 @@ fn os_call_conversion_rejects_invalid_payloads() {
     let getenv = |values| pb::OsCall {
         call_id: 1,
         values,
+        allow_eager_await: false,
         call: Some(pb::os_call::Call::Getenv(pb::os_call::Getenv {
             key: "HOME".to_owned(),
             default: 1,

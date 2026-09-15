@@ -234,16 +234,20 @@ pub struct OsCall {
     pub function_call: OsFunctionCall,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
+    /// The host may await its wait and answer with [`Self::resume_eager`].
+    /// Only ever true for `asyncio.sleep`, the one call a future may answer.
+    pub allow_eager_await: bool,
     /// Internal execution snapshot.
     snapshot: Snapshot,
 }
 
 impl OsCall {
     /// Creates a new `OsCall` from its parts.
-    fn new(function_call: OsFunctionCall, call_id: u32, snapshot: Snapshot) -> Self {
+    fn new(function_call: OsFunctionCall, call_id: u32, allow_eager_await: bool, snapshot: Snapshot) -> Self {
         Self {
             function_call,
             call_id,
+            allow_eager_await,
             snapshot,
         }
     }
@@ -274,6 +278,22 @@ impl OsCall {
     ) -> Result<RunProgress, MontyException> {
         let result = handler(self.function_call);
         self.snapshot.run(result, print)
+    }
+
+    /// Resumes with the wait already performed, as [`FunctionCall::resume_eager`]
+    /// does for a settled coroutine: the `await` that follows finds the sleep
+    /// settled without a `ResolveFutures` round trip. Only use when
+    /// [`Self::allow_eager_await`] is true.
+    pub fn resume_eager(
+        self,
+        result: Result<MontyObject, MontyException>,
+        print: PrintWriter<'_>,
+    ) -> Result<RunProgress, MontyException> {
+        self.snapshot.run_inner(
+            result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
+            Some(self.call_id),
+            print,
+        )
     }
 
     /// Ends the feed by raising `exc` uncatchably at the suspended call.
@@ -835,46 +855,50 @@ pub(crate) fn resume_with_result(
     result: ExtFunctionResult,
     eager_call_id: Option<u32>,
 ) -> Result<FrameExit, RunError> {
-    if let Some(call_id) = eager_call_id {
-        vm.add_pending_call(CallId::new(call_id));
-        vm.apply_future_results(vec![(call_id, result)])?;
-        vm.run_external()
-    } else {
-        match result {
-            ExtFunctionResult::Return(obj) => vm.resume(obj),
-            ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
-            ExtFunctionResult::Future(raw_call_id) => {
-                if let Some(name) = vm
-                    .pending_effect
-                    .as_ref()
-                    .and_then(PendingEffect::immediate_result_name)
-                {
-                    vm.resume_with_exception(
-                        SimpleException::new_msg(
-                            ExcType::RuntimeError,
-                            format!("{name} cannot be answered with a future"),
-                        )
-                        .into(),
+    // An eager answer and a future both register the call's future; the
+    // eager one settles it in the same step.
+    let future_call_id = match (&result, eager_call_id) {
+        (_, Some(call_id)) => Some(call_id),
+        (ExtFunctionResult::Future(call_id), None) => Some(*call_id),
+        _ => None,
+    };
+    match (result, future_call_id) {
+        (result, Some(call_id)) => {
+            if let Some(name) = vm
+                .pending_effect
+                .as_ref()
+                .and_then(PendingEffect::immediate_result_name)
+            {
+                return vm.resume_with_exception(
+                    SimpleException::new_msg(
+                        ExcType::RuntimeError,
+                        format!("{name} cannot be answered with a future"),
                     )
-                } else {
-                    // `asyncio.sleep` hands its result to the awaitable; no
-                    // other effect survives a future answer.
-                    match vm.pending_effect.take() {
-                        Some(PendingEffect::Post(PostConversionEffect::SleepResult { result })) => {
-                            vm.add_pending_sleep(CallId::new(raw_call_id), result);
-                        }
-                        effect => {
-                            release_pending_effect(effect, vm.heap);
-                            vm.add_pending_call(CallId::new(raw_call_id));
-                        }
-                    }
-                    vm.run_external()
+                    .into(),
+                );
+            }
+            // `asyncio.sleep` hands its result to the awaitable; no other
+            // effect survives a future answer.
+            match vm.pending_effect.take() {
+                Some(PendingEffect::Post(PostConversionEffect::SleepResult { result })) => {
+                    vm.add_pending_sleep(CallId::new(call_id), result);
+                }
+                effect => {
+                    release_pending_effect(effect, vm.heap);
+                    vm.add_pending_call(CallId::new(call_id));
                 }
             }
-            ExtFunctionResult::NotFound(function_name) => {
-                vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
+            if eager_call_id.is_some() {
+                vm.apply_future_results(vec![(call_id, result)])?;
             }
+            vm.run_external()
         }
+        (ExtFunctionResult::Return(obj), None) => vm.resume(obj),
+        (ExtFunctionResult::Error(exc), None) => vm.resume_with_exception(exc.into()),
+        (ExtFunctionResult::NotFound(function_name), None) => {
+            vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
+        }
+        (ExtFunctionResult::Future(_), None) => unreachable!("a future answer always carries its call id"),
     }
 }
 
@@ -943,6 +967,8 @@ pub(crate) enum ConvertedExit {
     OsCall {
         function_call: OsFunctionCall,
         call_id: u32,
+        /// See [`OsCall::allow_eager_await`].
+        allow_eager_await: bool,
     },
     /// All async tasks are blocked waiting for external futures.
     ResolveFutures(Vec<u32>),
@@ -998,9 +1024,12 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             // The point of no return: the call is the host's, so a matching
             // `resume` is guaranteed. Every other destination drops it.
             vm.pending_effect = effect;
+            // Only a call a future may answer can be answered eagerly.
+            let allow_eager_await = function_call.accepts_future() && vm.allow_eager_await();
             ConvertedExit::OsCall {
                 function_call,
                 call_id: call_id.raw(),
+                allow_eager_await,
             }
         }
         Ok(FrameExit::MethodCall {
@@ -1107,9 +1136,14 @@ pub(crate) fn build_run_progress(
             allow_eager_await,
             new_snapshot!(),
         ))),
-        ConvertedExit::OsCall { function_call, call_id } => Ok(RunProgress::OsCall(OsCall::new(
+        ConvertedExit::OsCall {
             function_call,
             call_id,
+            allow_eager_await,
+        } => Ok(RunProgress::OsCall(OsCall::new(
+            function_call,
+            call_id,
+            allow_eager_await,
             new_snapshot!(),
         ))),
         ConvertedExit::ResolveFutures(pending_call_ids) => Ok(RunProgress::ResolveFutures(ResolveFutures::new(

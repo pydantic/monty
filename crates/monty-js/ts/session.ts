@@ -686,8 +686,13 @@ class TurnAnswerer {
       returned = this.os(call.functionName, args, kwargsToRecord(kwargs))
       if (isThenable(returned)) {
         if (call.acceptsFuture) {
-          // `asyncio.sleep`: the sandbox's other tasks run while the host waits.
-          this.registerFuture(call.callId, Promise.resolve(returned).then(rejectNotHandled(call.functionName)))
+          // `asyncio.sleep`: the sandbox's other tasks run while the host
+          // waits — unless there are none, when the wait settles in place.
+          const settled = Promise.resolve(returned).then(rejectNotHandled(call.functionName))
+          if (call.allowEagerAwait) {
+            return await this.answerEagerCoroutine(call.callId, settled, onPrint)
+          }
+          this.registerFuture(call.callId, settled)
           return await this.native.resumeFuture(onPrint)
         }
         // Every other OS call is a value the sandbox is waiting on, so the
@@ -1000,7 +1005,7 @@ export class FunctionSnapshot extends SingleUse {
     this.kwargs = kwargsToRecord(kwargs)
     this.callId = turn.callId
     this.isOsFunction = isOsFunction
-    this.allowEagerAwait = turn.kind === 'functionCall' && (turn.allowEagerAwait ?? false)
+    this.allowEagerAwait = turn.allowEagerAwait ?? false
     this.objectId = 'objectId' in turn ? (turn.objectId ?? null) : null
   }
 
