@@ -89,7 +89,6 @@ pub struct MontyRepl {
     cwd: Arc<str>,
     /// The module-level `random` generator, carried between snippets like the
     /// globals so a `random.seed()` in one feed governs the draws of the next.
-    #[serde(default)]
     random: Random,
     /// Persistent heap across snippets.
     heap: Heap,

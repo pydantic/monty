@@ -41,6 +41,9 @@ The module-level generator is session state like the globals: a seed set in one
 
 ## Behavioural notes
 
+- **Generators and their type stay in the sandbox.** Returning a `Random` instance, `random.Random`, or
+    `type(rng)` to the host produces `MontyObject::Repr` in Rust and a string in Python.
+    Return generated values or `rng.getstate()` when the host needs the results or state.
 - **No `SystemRandom`**, and `random.Random` cannot be subclassed (Monty has
     no class inheritance, see [classes.md](classes.md)). `random.Random.VERSION`
     on the class raises `AttributeError`; on an instance it is `3`. Instances

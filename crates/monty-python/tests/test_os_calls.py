@@ -517,6 +517,20 @@ def test_random_seed_persists_across_feeds(pool: Monty):
         assert session.feed_run('import random\nrandom.random()') == snapshot(0.6229016948897019)
 
 
+@pytest.mark.parametrize('expression', ['random.Random', 'type(random.Random(1))'])
+def test_random_type_returns_repr(monty_run: RunMonty, expression: str):
+    """The sandbox's Random class crosses as a string, not a host constructor."""
+    assert monty_run(f'import random\n{expression}') == "<class 'random.Random'>"
+
+
+def test_random_instance_returns_repr(monty_run: RunMonty):
+    """Returning a generator exposes only its repr."""
+    result = monty_run('import random\nrandom.Random(1)')
+    assert isinstance(result, str)
+    assert result.startswith('<random.Random object at 0x')
+    assert result.endswith('>')
+
+
 # =============================================================================
 # os.environ tests
 # =============================================================================

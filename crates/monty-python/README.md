@@ -94,5 +94,8 @@ Setting `cwd` does not grant filesystem access; provide `mount=` or `os=` to han
 Requests above the configured cap raise `MemoryError` before allocating.
 Set the cap to zero to reject nonempty entropy requests, including the 2496-byte request from an unseeded `random` generator.
 
+Returning a sandbox `random.Random` instance or its class produces a repr string in Python.
+Return generated values or `rng.getstate()` to retrieve results or state.
+
 See the [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) README for
 more details.

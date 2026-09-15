@@ -51,6 +51,9 @@ pub(crate) const SEED_BYTES: usize = N * 4;
 /// suspension.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct Random {
+    /// `None` until explicitly seeded, restored with `setstate()`, or initialized
+    /// from host entropy on the first draw. Also temporarily `None` while
+    /// [`RandomTarget::with_generator`] holds the state outside its owner.
     rng: Option<Mt19937>,
     /// `gauss()`'s spare deviate, cleared by every reseed as CPython does.
     gauss_next: Option<f64>,

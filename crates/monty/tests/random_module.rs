@@ -1,6 +1,5 @@
-//! `random`'s host-entropy path: the `os.urandom` suspension an unseeded
-//! generator makes, what the reply must look like, and what survives around
-//! it (a dump mid-suspension, a REPL feed boundary, a host error).
+//! `random` at the host boundary: repr output, entropy callbacks and state
+//! preserved across snapshots and REPL feeds.
 //!
 //! Seeded values are pinned against a live CPython in `test_cases/`; these
 //! tests cover only what a fixture cannot drive — the suspension itself.
@@ -8,7 +7,7 @@
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall, PrintWriter,
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyType, OsFunctionCall, PrintWriter,
     ResourceTracker, UrandomArgs,
 };
 
@@ -25,6 +24,26 @@ fn pattern() -> MontyObject {
 
 /// CPython's first `random()` after seeding from [`pattern`].
 const PATTERN_FIRST_RANDOM: f64 = 0.246_986_487_449_397_1;
+
+/// Generator state and constructors stay in the sandbox, including inside returned containers.
+#[test]
+fn random_instances_and_types_cross_as_repr() {
+    let result = start("import random\n[random.Random(42), random.Random, type(random.Random()), int]")
+        .into_complete()
+        .unwrap();
+    let MontyObject::List(values) = result else {
+        panic!("expected a list");
+    };
+    let MontyObject::Repr(instance) = &values[0] else {
+        panic!("expected an instance repr");
+    };
+    assert!(instance.starts_with("<random.Random object at 0x"));
+    assert!(instance.ends_with('>'));
+    assert_eq!(values[1], MontyObject::Repr("<class 'random.Random'>".to_owned()));
+    assert_eq!(values[2], values[1]);
+    assert_eq!(values[3], MontyObject::Type(MontyType::Int));
+    assert!(MontyType::from_type_name("random.Random").is_none());
+}
 
 /// Starts `code` under suspend/resume execution.
 fn start(code: &str) -> RunProgress {
