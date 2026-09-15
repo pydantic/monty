@@ -42,6 +42,9 @@ WebAssembly runtimes do.
     with `MemoryError` before allocation when they would exceed it.
 - `bigint.pow(base, exp)` estimates result size as `bits(base) * exp` with
     a 4× safety multiplier to cover repeated-squaring intermediate values.
+- A feed accepts at most **256 named inputs**. More raise `RuntimeError`
+    (`too many inputs: 257 exceeds the limit of 256`) in the host before
+    anything is sent to the worker; the session is unaffected.
 
 ## Exceeding `max_memory` in a worker (pools)
 

@@ -30,8 +30,9 @@ use monty_types::{
 };
 
 use super::{
-    DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError, WireFunctionCall,
-    check_protocol_version, exceeds_max_frame_len, exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
+    DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError, WireFeed,
+    WireFunctionCall, check_protocol_version, exceeds_max_frame_len, exceeds_max_value_depth,
+    future_results_from_proto, pb, write_frame,
 };
 use crate::wire::uuid_to_pb;
 
@@ -501,7 +502,7 @@ impl Child {
 
     /// Runs a `Feed` on the ready session: type-checks the snippet (unless
     /// skipped), injects inputs, and drives execution to the turn-ending event.
-    fn handle_repl_feed(&mut self, feed: pb::Feed, sink: &mut dyn EventSink) -> pb::ChildEvent {
+    fn handle_repl_feed(&mut self, feed: WireFeed, sink: &mut dyn EventSink) -> pb::ChildEvent {
         if let Err(event) = self.ensure_repl() {
             return *event;
         }
@@ -514,10 +515,6 @@ impl Child {
         {
             return event;
         }
-        let inputs = match named_inputs(feed.inputs) {
-            Ok(inputs) => inputs,
-            Err(event) => return *event,
-        };
         let SessionState::Ready(mut repl) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked Ready above");
         };
@@ -535,7 +532,7 @@ impl Child {
             state.pending_snippet = Some(feed.code.clone());
         }
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
-        let result = repl.feed_start(&feed.code, inputs, PrintWriter::Callback(&mut print));
+        let result = repl.feed_start(&feed.code, feed.inputs, PrintWriter::Callback(&mut print));
         let event = self.drive(result, &mut print);
         print.drain();
         event
@@ -1070,22 +1067,6 @@ fn suspension_event(progress: &mut ReplProgress) -> pb::ChildEvent {
         })),
         ReplProgress::Complete { .. } => unreachable!("Complete is handled before suspension_event"),
     }
-}
-
-/// Converts wire named inputs into `(name, value)` pairs for `feed_start`.
-fn named_inputs(inputs: Vec<pb::NamedValue>) -> Result<Vec<(String, MontyObject)>, Box<pb::ChildEvent>> {
-    inputs
-        .into_iter()
-        .map(|input| {
-            let value = input
-                .value
-                .ok_or_else(|| Box::new(protocol_violation(&format!("input {:?} has no value", input.name))))?;
-            let value = value
-                .into_object()
-                .map_err(|err| Box::new(protocol_violation(&format!("invalid input {:?}: {err}", input.name))))?;
-            Ok((input.name, value))
-        })
-        .collect()
 }
 
 /// A validated `ResumeFutures` body, shaped for the suspension it answers.

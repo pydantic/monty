@@ -1,7 +1,7 @@
 use std::io::{self, Read};
 
 use monty_proto::{
-    FrameError, FrameReader, pb,
+    FrameError, FrameReader, WireFeed, pb,
     pb::{child_event::Kind as EventKind, parent_request::Kind as RequestKind},
     write_frame,
 };
@@ -19,7 +19,7 @@ impl<R: Read> Read for OneByteReader<R> {
 
 fn feed() -> pb::ParentRequest {
     pb::ParentRequest {
-        kind: Some(RequestKind::Feed(pb::Feed {
+        kind: Some(RequestKind::Feed(WireFeed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,

@@ -191,6 +191,146 @@ impl Message for WireFunctionCall {
     }
 }
 
+/// Maximum number of named inputs one `Feed` may carry.
+///
+/// Enforced while the frame decodes, before the entry is read, so the
+/// wrapper vector never grows past it: an empty `NamedValue` costs two wire
+/// bytes but ~100 bytes of host memory, and without a cap a max-size frame of
+/// them would allocate gigabytes in the parent before any value was charged.
+pub const MAX_FEED_INPUTS: usize = 256;
+
+/// Wire form of `monty.v1.Feed` that decodes `inputs` directly into
+/// `(name, value)` pairs.
+///
+/// Installed with `prost_build::extern_path` like [`WireFunctionCall`]. The
+/// generated `Feed` would build a `Vec<NamedValue>` of `Option` values that the
+/// worker then unwraps; decoding here instead rejects an absent value and
+/// enforces [`MAX_FEED_INPUTS`] before each entry is materialized.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WireFeed {
+    /// Python source to run.
+    pub code: String,
+    /// Values bound as globals before the snippet runs, in wire order.
+    pub inputs: Vec<(String, MontyObject)>,
+    /// Skip type checking for this feed even when the session enables it.
+    pub skip_type_check: bool,
+    /// Absolute virtual working directory to switch to; empty keeps the
+    /// session's current one.
+    pub cwd: String,
+}
+
+impl Message for WireFeed {
+    fn encode_raw(&self, buf: &mut impl BufMut) {
+        encode_str(1, &self.code, buf);
+        for (name, value) in &self.inputs {
+            encode_message_key(2, named_input_len(name, value), buf);
+            encode_str(1, name, buf);
+            encode_message_key(2, object_len(value), buf);
+            encode_object(value, buf);
+        }
+        if self.skip_type_check {
+            encoding::bool::encode(3, &true, buf);
+        }
+        encode_str(4, &self.cwd, buf);
+    }
+
+    fn encoded_len(&self) -> usize {
+        str_len(1, &self.code)
+            + self
+                .inputs
+                .iter()
+                .map(|(name, value)| submessage_len(2, named_input_len(name, value)))
+                .sum::<usize>()
+            + if self.skip_type_check {
+                encoding::bool::encoded_len(3, &true)
+            } else {
+                0
+            }
+            + str_len(4, &self.cwd)
+    }
+
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        match tag {
+            1 => encoding::string::merge(wire_type, &mut self.code, buf, ctx),
+            2 => {
+                if self.inputs.len() >= MAX_FEED_INPUTS {
+                    return Err(to_decode_err(format!("feed has more than {MAX_FEED_INPUTS} inputs")));
+                }
+                let input: NamedInputBody = merge_message(wire_type, buf, ctx)?;
+                let value = input
+                    .value
+                    .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("NamedValue.value")))?
+                    .into_object()
+                    .map_err(to_decode_err)?;
+                // The value charged itself in `decode_field`; the name's bytes
+                // are the only payload the slot does not cover.
+                charge_decode(input.name.len())?;
+                push_charged(&mut self.inputs, (input.name, value), MontyObject::host_base_size())
+            }
+            3 => encoding::bool::merge(wire_type, &mut self.skip_type_check, buf, ctx),
+            4 => encoding::string::merge(wire_type, &mut self.cwd, buf, ctx),
+            _ => skip_field(wire_type, tag, buf, ctx),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.code.clear();
+        self.inputs.clear();
+        self.skip_type_check = false;
+        self.cwd.clear();
+    }
+}
+
+/// `NamedValue` body: `string name = 1; MontyObject value = 2`.
+fn named_input_len(name: &str, value: &MontyObject) -> usize {
+    str_len(1, name) + submessage_len(2, object_len(value))
+}
+
+/// Decode-only `prost::Message` for one `NamedValue` entry of `Feed.inputs`.
+/// The value stays `Option` so [`WireFeed`] can reject an absent one (presence,
+/// not a default). Never encoded — [`WireFeed`] writes entries inline.
+#[derive(Default)]
+struct NamedInputBody {
+    name: String,
+    value: Option<WireObject>,
+}
+
+impl Message for NamedInputBody {
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        // Field numbers from `NamedValue` in monty.proto; unknown → skip.
+        match tag {
+            1 => encoding::string::merge(wire_type, &mut self.name, buf, ctx),
+            2 => encoding::message::merge(wire_type, self.value.get_or_insert_with(WireObject::default), buf, ctx),
+            _ => skip_field(wire_type, tag, buf, ctx),
+        }
+    }
+
+    fn encode_raw(&self, _buf: &mut impl BufMut) {
+        unreachable!("NamedInputBody is decode-only")
+    }
+
+    fn encoded_len(&self) -> usize {
+        unreachable!("NamedInputBody is decode-only")
+    }
+
+    fn clear(&mut self) {
+        self.name.clear();
+        self.value = None;
+    }
+}
+
 /// Field numbers of the `MontyObject.kind` oneof — must match
 /// `proto/monty/v1/monty.proto` exactly (the differential oracle test catches drift).
 mod tag {
@@ -837,8 +977,8 @@ fn merge_object_item(
     items: &mut Vec<MontyObject>,
 ) -> Result<(), DecodeError> {
     let item: WireObject = merge_message(wire_type, buf, ctx)?;
-    items.push(item.into_object().map_err(to_decode_err)?);
-    Ok(())
+    let item = item.into_object().map_err(to_decode_err)?;
+    push_charged(items, item, MontyObject::host_base_size())
 }
 
 /// Decodes one repeated `Pair` entry into an already-owned vector.
@@ -849,8 +989,8 @@ fn merge_pair_item(
     pairs: &mut Vec<(MontyObject, MontyObject)>,
 ) -> Result<(), DecodeError> {
     let pair: pb::Pair = merge_message(wire_type, buf, ctx)?;
-    pairs.push(pair_to_kv(pair)?);
-    Ok(())
+    let pair = pair_to_kv(pair)?;
+    push_charged(pairs, pair, 2 * MontyObject::host_base_size())
 }
 
 /// Unwraps one decoded `Pair` into a `(key, value)`, rejecting an absent key or
@@ -1426,11 +1566,19 @@ pub fn reset_decode_budget() {
     DECODE_BUDGET.set(DEFAULT_MAX_DECODE_BYTES);
 }
 
+/// Bytes of the current frame's decode budget still unspent on this thread.
+///
+/// Read-only; tests use it to check a decode charged exactly what it kept.
+#[must_use]
+pub fn decode_budget_remaining() -> usize {
+    DECODE_BUDGET.get()
+}
+
 /// Charges `bytes` of decoded host memory against the current frame's budget,
-/// erroring once a frame would exceed it. Called once per [`MontyObject`] from
-/// [`decode_field`] — the choke point every value routes through — so it bounds
-/// total host memory incrementally, rejecting an over-budget frame before its
-/// value tree is fully built.
+/// erroring once a frame would exceed it. Called per [`MontyObject`] from
+/// [`decode_field`] — the choke point every value routes through — and per
+/// vector growth from [`push_charged`], so it bounds total host memory
+/// incrementally, rejecting an over-budget frame before its tree is built.
 fn charge_decode(bytes: usize) -> Result<(), DecodeError> {
     DECODE_BUDGET.with(|budget| match budget.get().checked_sub(bytes) {
         Some(remaining) => {
@@ -1439,4 +1587,36 @@ fn charge_decode(bytes: usize) -> Result<(), DecodeError> {
         }
         None => Err(to_decode_err("frame exceeds decode memory budget")),
     })
+}
+
+/// Hands `bytes` back to the budget: the inline part of an element that
+/// [`decode_field`] charged and a vector slot now covers. Never exceeds the
+/// frame's full budget, so a credit can only undo an earlier charge.
+fn credit_decode(bytes: usize) {
+    DECODE_BUDGET.with(|budget| {
+        budget.set(budget.get().saturating_add(bytes).min(DEFAULT_MAX_DECODE_BYTES));
+    });
+}
+
+/// Smallest capacity a decoded vector grows to, matching `Vec`'s own floor.
+const MIN_DECODED_CAPACITY: usize = 4;
+
+/// Pushes one decoded element, charging the vector's growth first.
+///
+/// A vector's resident size is its whole capacity, not its length: a
+/// one-element list holds four slots. Growth is driven here (doubling from
+/// [`MIN_DECODED_CAPACITY`]) so every new slot is charged before it is
+/// allocated. `credit` is the element's inline size already charged by
+/// [`decode_field`], returned because the slot now covers it — a vector's net
+/// charge is exactly `capacity × slot size` plus its elements' payloads.
+fn push_charged<T>(items: &mut Vec<T>, item: T, credit: usize) -> Result<(), DecodeError> {
+    let capacity = items.capacity();
+    if items.len() == capacity {
+        let grown = (capacity * 2).max(MIN_DECODED_CAPACITY);
+        charge_decode((grown - capacity) * size_of::<T>())?;
+        items.reserve_exact(grown - items.len());
+    }
+    items.push(item);
+    credit_decode(credit);
+    Ok(())
 }

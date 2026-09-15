@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
+use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireFeed, WireObject, exceeds_max_value_depth, pb};
 use monty_types::{
     CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
     MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
@@ -737,12 +737,9 @@ fn class_type_with_attr(value: MontyObject) -> MontyClassType {
 /// wrapper chain (`Request` → `Feed` → `NamedValue`).
 fn decodes_in_frame(value: &MontyObject) -> bool {
     let request = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        kind: Some(pb::parent_request::Kind::Feed(WireFeed {
             code: String::new(),
-            inputs: vec![pb::NamedValue {
-                name: "v".to_owned(),
-                value: Some(WireObject::new(value.clone())),
-            }],
+            inputs: vec![("v".to_owned(), value.clone())],
             skip_type_check: false,
             cwd: "/work".to_owned(),
         })),

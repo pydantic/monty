@@ -527,21 +527,11 @@ const MISSING: &str = "<missing>";
 /// Renders a feed's named inputs as one JSON object; the bool reports a cut at
 /// [`ATTR_SIZE_LIMIT`]. Values are borrowed, never cloned — inputs can be a
 /// large graph of which only the cap survives.
-fn render_inputs(inputs: &[pb::NamedValue]) -> (Option<String>, bool) {
+fn render_inputs(inputs: &[(String, MontyObject)]) -> (Option<String>, bool) {
     if inputs.is_empty() {
         return (None, false);
     }
-    // One placeholder is borrowed by every value the frame left out. The
-    // cloneable iterator avoids allocating in proportion to all inputs.
-    let missing = MontyObject::Repr(MISSING.to_owned());
-    let pairs = inputs.iter().map(|input| {
-        let value = input
-            .value
-            .as_ref()
-            .and_then(|value| value.0.as_ref())
-            .unwrap_or(&missing);
-        (input.name.as_str(), value)
-    });
+    let pairs = inputs.iter().map(|(name, value)| (name.as_str(), value));
     let (json, cut) = serialize_named_iter_capped(pairs, inputs.len(), ATTR_SIZE_LIMIT);
     (Some(json), cut)
 }
@@ -983,7 +973,7 @@ mod tests {
     use std::sync::{Mutex, PoisonError};
 
     use logfire::{Logfire, config::AdvancedOptions, set_local_logfire};
-    use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
+    use monty_proto::{WireFeed, WireFunctionCall, pb, pb::os_call::Call};
     use monty_types::MontyObject;
     use opentelemetry::{logs::AnyValue, trace::SpanId};
     use opentelemetry_sdk::{
@@ -1057,7 +1047,7 @@ mod tests {
             assert_message_annotations: None,
             ..Default::default()
         })));
-        recorder.begin_turn(&request(pb::parent_request::Kind::Feed(pb::Feed {
+        recorder.begin_turn(&request(pb::parent_request::Kind::Feed(WireFeed {
             code: "double(2)".to_owned(),
             inputs: vec![],
             skip_type_check: false,
@@ -1227,7 +1217,7 @@ mod tests {
             max_suspensions: None,
             restored_script_name: Some("restored.py".to_owned()),
         });
-        recorder.begin_turn(&request(pb::parent_request::Kind::Feed(pb::Feed {
+        recorder.begin_turn(&request(pb::parent_request::Kind::Feed(WireFeed {
             code: "1".to_owned(),
             inputs: vec![],
             skip_type_check: false,

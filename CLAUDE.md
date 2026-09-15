@@ -129,7 +129,11 @@ subprocesses:
     the `monty.v1.MontyObject` message is mapped via prost `extern_path` onto
     `WireObject` (`src/wire.rs`), a hand-written `prost::Message` impl that
     encodes borrowed `MontyObject`s and validates *while* decoding — no mirror
-    struct, no deep clone on the hot path. `tests/differential.rs` proves it
+    struct, no deep clone on the hot path. `FunctionCall` and `Feed` are mapped
+    the same way (`WireFunctionCall`, `WireFeed`); `Feed.inputs` is capped at
+    `MAX_FEED_INPUTS` during decode. The per-frame decode budget charges every
+    value *and* every vector slot holding one, so cheap wire elements cannot
+    amplify into unbounded host memory. `tests/differential.rs` proves it
     byte-compatible against a fully prost-generated oracle (`tests/oracle/`,
     regenerated and CI-checked together with the main codegen). Parents must
     treat frames from a (possibly compromised) child as untrusted — wire

@@ -49,9 +49,16 @@ for the schema and the protocol rules documented alongside it.
 The `monty.v1.MontyObject` message is mapped via prost `extern_path` onto
 `WireObject`: a hand-written `prost::Message` implementation that encodes
 borrowed `MontyObject`s and validates *while* decoding — no mirror struct and
-no deep clone on the hot path. `tests/differential.rs` proves it
-byte-compatible against a fully prost-generated oracle (`tests/oracle/`,
-regenerated and CI-checked together with the main codegen).
+no deep clone on the hot path. `FunctionCall` and `Feed` are mapped the same
+way (`WireFunctionCall`, `WireFeed`) so their argument and input vectors decode
+straight into `MontyObject`s, with `Feed.inputs` capped at `MAX_FEED_INPUTS`
+entries during the parse. `tests/differential.rs` proves them byte-compatible
+against a fully prost-generated oracle (`tests/oracle/`, regenerated and
+CI-checked together with the main codegen).
+
+Decoding charges a per-frame memory budget for what it actually keeps:
+every value, and every slot of the vectors holding them, so a frame of cheap
+elements cannot amplify into gigabytes of host memory.
 
 ## Children are untrusted
 

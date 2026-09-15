@@ -78,4 +78,4 @@ pub use frame::{
 };
 pub use generated::pb;
 pub use requirement::validate_requirement;
-pub use wire::{WireFunctionCall, WireObject, reset_decode_budget};
+pub use wire::{MAX_FEED_INPUTS, WireFeed, WireFunctionCall, WireObject, decode_budget_remaining, reset_decode_budget};

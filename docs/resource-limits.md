@@ -81,6 +81,9 @@ threshold, including integer multiplication, division and `divmod`, left shift, 
 an iterator into a container, and f-string, `str.format()` or `%` formatting with a dynamic width or precision.
 So `'x' * 10**12` fails immediately rather than after consuming the machine's memory.
 
+A feed accepts at most 256 named inputs.
+More raise `RuntimeError` in the host before the snippet is sent, and the session is unaffected.
+
 A few integer operations carry their own caps regardless of `max_memory`:
 
 - `base ** exp` with an exponent above `u32::MAX` raises `OverflowError`, except for bases 0, 1 and -1.

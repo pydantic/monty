@@ -23,7 +23,7 @@ use monty_pool::{
     telemetry::{Metrics, TelemetryAdapter, configure_telemetry_adapter},
     telemetry_adapter,
 };
-use monty_proto::pb;
+use monty_proto::{WireFeed, pb};
 use monty_types::{ExcType, MontyException, MontyObject, PrintStream};
 use opentelemetry::{
     KeyValue,
@@ -443,7 +443,7 @@ async fn raw_turns_are_instrumented_like_typed_ones() {
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
     let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        kind: Some(pb::parent_request::Kind::Feed(WireFeed {
             code: "print('hi')\n6 * 7".to_owned(),
             inputs: vec![],
             skip_type_check: false,
