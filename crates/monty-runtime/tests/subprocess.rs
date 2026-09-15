@@ -970,13 +970,11 @@ fn overlapping_dict_merges_are_not_charged_for_absent_growth() {
     child.shutdown();
 }
 
-/// `set(s)` and `frozenset(s)` copy a set's storage wholesale rather than
-/// re-hashing element by element, so the whole copy runs between two execution
-/// checkpoints. It has to be charged before it happens: a source set sized as a
-/// *fraction of the limit* is what makes this a regression test rather than one
-/// for an absolute number — uncharged, a source that fits under the soft limit
-/// jumps straight past the allocator's hard ceiling and the worker is killed
-/// where a catchable `MemoryError` belongs.
+/// `set(s)` and `frozenset(s)` copy a set's storage wholesale, so the whole
+/// copy runs between two execution checkpoints and has to be charged first.
+/// The source is sized as a fraction of the limit: uncharged, one that fits
+/// under the soft limit jumps the hard ceiling and the worker is killed where
+/// a catchable `MemoryError` belongs.
 #[test]
 fn copying_a_large_set_fails_softly() {
     for expr in ["set(s)", "frozenset(s)"] {
@@ -996,9 +994,8 @@ fn copying_a_large_set_fails_softly() {
 }
 
 /// A set keeps the index table it grew to when its elements go, so copying one
-/// must index the copy afresh rather than reproduce that table. Twenty copies
-/// of an emptied set hold nothing and have to fit in a limit the source alone
-/// once filled a third of.
+/// must index the copy afresh rather than reproduce that table: twenty copies
+/// of an emptied set hold nothing and must cost nothing.
 #[test]
 fn copying_an_emptied_set_costs_nothing() {
     let mut child = ChildProc::spawn();
@@ -1014,11 +1011,9 @@ fn copying_an_emptied_set_costs_nothing() {
     child.shutdown();
 }
 
-/// `set(s)` owns the argument it is handed, so a copy the memory limit refuses
-/// has to release it on the way out. Leaving it retained pins the source for
-/// the rest of the session: rebinding the name frees nothing and the room it
-/// occupied is gone for good, though the failure was catchable and the session
-/// lives on.
+/// `set(s)` owns the argument it is handed, so a copy the limit refuses has to
+/// release it on the way out. Retained, it pins the source for the rest of the
+/// session: rebinding the name would free nothing.
 #[test]
 fn refused_set_copy_releases_its_source() {
     let mut child = ChildProc::spawn();

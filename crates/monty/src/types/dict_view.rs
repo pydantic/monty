@@ -647,11 +647,10 @@ fn dict_keys_eq_set_like<'h>(
         return Ok(false);
     }
 
-    // `contains` runs a user `__hash__`/`__eq__`, which can resize this very
-    // dict — so the walk goes through `DictIter`, which re-checks the live
-    // length each step and raises like CPython rather than indexing an entry
-    // that is no longer there. Its recursion token also bounds the nesting a
-    // view-vs-view comparison recursing back through here would otherwise reach.
+    // `contains` runs user `__hash__`/`__eq__`, which can resize this very dict,
+    // so the walk goes through `DictIter`: it re-checks the live length each step
+    // and raises like CPython instead of indexing an entry that is gone. Its
+    // recursion token also bounds a view-vs-view comparison recursing back here.
     let iter = dict.iter(vm)?;
     defer_drop_mut!(iter, vm);
     while let Some(key) = iter.next_key(vm)? {

@@ -77,10 +77,9 @@ impl SetStorage {
 
     /// Indexes entries that already carry their hashes, in the order given.
     ///
-    /// The index table is sized to the entry count, which is what keeps a
-    /// rebuilt set's memory proportional to the elements it actually holds:
-    /// a `HashTable` keeps the buckets it grew to across `clear` and `remove`,
-    /// so anything that copies one wholesale carries that ballast with it.
+    /// The table is sized to the entry count: a `HashTable` keeps the buckets
+    /// it grew to across `clear` and `remove`, so a set rebuilt this way costs
+    /// what it holds rather than what it once held.
     fn from_entry_vec(entries: Vec<SetEntry>) -> Self {
         let mut indices = HashTable::with_capacity(entries.len());
         for (idx, entry) in entries.iter().enumerate() {
@@ -217,11 +216,8 @@ impl<'h> HeapRead<'h, SetStorage> {
 impl SetStorage {
     /// Creates a deep clone with proper reference counting.
     ///
-    /// The copy is indexed from scratch instead of cloning `indices`, which
-    /// `HashTable` would reproduce at the source's bucket count: a set that
-    /// grew large and was then cleared or pared down would hand its copy a
-    /// table sized for elements the copy does not hold, and the callers that
-    /// preflight a copy against the memory limit charge only its entries.
+    /// Indexed from scratch rather than cloning `indices`, which `HashTable`
+    /// would reproduce at the source's bucket count — see [`Self::from_entry_vec`].
     fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
         Self::from_entry_vec(
             self.entries
@@ -879,16 +875,14 @@ impl Set {
 
     /// Creates a set from an iterable value, adding and hashing items incrementally.
     ///
-    /// A set or frozenset source is copied wholesale instead, so its cached
-    /// hashes carry over and `set(s)` runs no user `__hash__` — the same
-    /// shortcut CPython's `set_update_internal` takes. That copy is a
-    /// known-size bulk allocation with no execution checkpoint inside it, so
-    /// it is preflighted: otherwise only the allocator's hard ceiling would
-    /// stop `set(huge)`, killing the worker where a `MemoryError` belongs.
+    /// A set or frozenset source is copied wholesale instead, carrying its
+    /// cached hashes over so `set(s)` runs no user `__hash__` — CPython's
+    /// `set_update_internal` shortcut. That copy runs whole between two
+    /// checkpoints, so it is preflighted: otherwise only the allocator's hard
+    /// ceiling would stop `set(huge)`, killing the worker.
     fn from_iterable(iterable: Value, vm: &mut VM<'_>) -> RunResult<Self> {
-        // The preflight can refuse the copy, so the owned argument rides in a
-        // guard: both it and the copy path release the source, and only the
-        // iterator path below reclaims it.
+        // The preflight can refuse the copy, so the argument rides in a guard;
+        // only the iterator path below takes it back.
         let mut guard = DropGuard::new(iterable, vm);
         let (iterable, vm) = guard.as_parts();
         let storage = match iterable {
@@ -917,11 +911,11 @@ impl Set {
     }
 }
 
-/// Copies a set's storage after charging the copy against the memory limit.
+/// Copies a set's storage, charging its entries against the memory limit first.
 ///
-/// Used by the set/frozenset shortcut in [`Set::from_iterable`], where the
-/// whole copy runs between two execution checkpoints and would otherwise only
-/// be caught by the allocator's hard ceiling.
+/// The copy runs whole between two execution checkpoints, so without this only
+/// the allocator's hard ceiling would catch it. The index table it rebuilds is
+/// bounded by those entries, which is why charging them is enough.
 fn clone_storage_checked(storage: &SetStorage, vm: &VM<'_>) -> RunResult<SetStorage> {
     vm.heap
         .tracker

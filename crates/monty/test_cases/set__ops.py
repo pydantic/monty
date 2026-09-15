@@ -326,6 +326,14 @@ assert len(frozenset(a)) == 2
 assert len(frozenset(a) - b) == 1
 assert _hash_calls == []
 
+# the result holds the right element, and comparing two sets hashes nothing either
+a = {Counted(1), Counted(2)}
+b = {Counted(2), Counted(3)}
+expected = {Counted(1)}
+_hash_calls.clear()
+assert (a - b) == expected
+assert _hash_calls == []
+
 # an arbitrary iterable on the right has no cached hashes, so it is hashed
 a, b = _counted_pair()
 assert len(a.difference(list(b))) == 1
@@ -355,3 +363,7 @@ assert len(set(clearing)) == 2
 assert clearing.isdisjoint(set()) is True
 assert clearing.issubset(clearing) is True
 assert len(clearing) == 2
+
+# the control: a membership probe does hash, so the same class empties the set
+assert (Clearing() in clearing) is False
+assert len(clearing) == 0
