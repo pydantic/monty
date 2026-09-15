@@ -1577,6 +1577,13 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "Python int too large to convert to C ssize_t").into()
     }
 
+    /// Creates the OverflowError for an argument clinic converts to `uint64_t`
+    /// (`random.getrandbits`), which CPython names differently from `ssize_t`.
+    #[must_use]
+    fn overflow_c_uint64() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "Python int too large for C uint64_t").into()
+    }
+
     /// Creates an OverflowError when a Python int doesn't fit into a C `int` (i32).
     ///
     /// Matches CPython's format: `OverflowError: Python int too large to convert to C int`

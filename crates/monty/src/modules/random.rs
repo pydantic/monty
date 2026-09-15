@@ -29,9 +29,9 @@ use crate::{
     args::{ArgValues, FromArgs},
     builtins::Builtins,
     bytecode::{CallResult, VM},
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
@@ -409,24 +409,40 @@ fn setstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
         }
     };
 
-    let Value::Ref(internal_id) = internal else {
-        return Err(ExcType::type_error("state vector must be a tuple"));
+    // Version 2 runs `tuple(x % (2**32) for x in internalstate)` before the
+    // C-level checks, so it accepts any iterable and a non-number reports the
+    // `%` error; version 3 hands the object straight to C, which wants a tuple.
+    let entries: Vec<Value> = if version == 2 {
+        reduce_state_words(internal, vm)?
+    } else {
+        let tuple = match internal {
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::Tuple(tuple) => Some(tuple),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(tuple) = tuple else {
+            return Err(ExcType::type_error("state vector must be a tuple"));
+        };
+        tuple
+            .as_slice()
+            .iter()
+            .map(|entry| entry.clone_with_heap(vm.heap))
+            .collect()
     };
-    let HeapData::Tuple(tuple) = vm.heap.get(*internal_id) else {
-        return Err(ExcType::type_error("state vector must be a tuple"));
-    };
-    let entries = tuple.as_slice();
+    defer_drop!(entries, vm);
     if entries.len() != Mt19937::state_len() + 1 {
         return Err(ExcType::value_error("state vector is the wrong size"));
     }
     let mut words = Vec::with_capacity(Mt19937::state_len());
     for entry in &entries[..Mt19937::state_len()] {
-        words.push(state_word(entry, version, vm)?);
+        words.push(state_word(entry, vm)?);
     }
-    let index = match entries[Mt19937::state_len()] {
-        Value::Int(i) => i,
-        Value::Bool(b) => i64::from(b),
-        ref other => {
+    let index = match &entries[Mt19937::state_len()] {
+        Value::Int(i) => *i,
+        Value::Bool(b) => i64::from(*b),
+        other => {
             return Err(ExcType::type_error(format!(
                 "'{}' object cannot be interpreted as an integer",
                 other.py_type_name(vm)
@@ -445,10 +461,28 @@ fn setstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
     Ok(Value::None)
 }
 
-/// One state word as the C `setstate` reads it (`PyLong_AsUnsignedLong`,
-/// truncated to 32 bits), after `random.py` has reduced a version 2 word
-/// modulo `2**32`.
-fn state_word(entry: &Value, version: i64, vm: &VM<'_>) -> RunResult<u32> {
+/// `tuple(x % (2**32) for x in internalstate)`: the reduction `random.py`
+/// applies to a version 2 state before the C `setstate` sees it.
+fn reduce_state_words(internal: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
+    let items: Vec<Value> = collect_owned_iterable(internal.clone_with_heap(vm), vm)?;
+    defer_drop!(items, vm);
+    let modulus = Value::Int(1 << 32);
+    let mut reduced = Vec::with_capacity(items.len());
+    for item in items {
+        match item.py_mod(&modulus, vm) {
+            Ok(word) => reduced.push(word),
+            Err(err) => {
+                reduced.drop_with(vm);
+                return Err(err);
+            }
+        }
+    }
+    Ok(reduced)
+}
+
+/// One state word as the C `setstate` reads it: `PyLong_AsUnsignedLong`,
+/// truncated to 32 bits.
+fn state_word(entry: &Value, vm: &VM<'_>) -> RunResult<u32> {
     const NEGATIVE: &str = "can't convert negative value to unsigned int";
     const TOO_LARGE: &str = "Python int too large to convert to C unsigned long";
     let overflow = |message: &str| SimpleException::new_msg(ExcType::OverflowError, message).into();
@@ -460,28 +494,18 @@ fn state_word(entry: &Value, version: i64, vm: &VM<'_>) -> RunResult<u32> {
             reason = "truncation to 32 bits is the C behaviour; the sign is checked first"
         )]
         Value::Int(i) => {
-            if version == 2 {
-                Ok(i.rem_euclid(1 << 32) as u32)
-            } else if *i < 0 {
+            if *i < 0 {
                 Err(overflow(NEGATIVE))
             } else {
                 Ok(*i as u32)
             }
         }
         _ => match entry.as_long_int(vm) {
-            Some(big) if version == 2 => Ok(low_word(big)),
             Some(big) if big.sign() == num_bigint::Sign::Minus => Err(overflow(NEGATIVE)),
             Some(_) => Err(overflow(TOO_LARGE)),
             None => Err(ExcType::type_error("an integer is required")),
         },
     }
-}
-
-/// `big % 2**32` as a word, for version 2 state vectors holding big ints.
-fn low_word(big: &BigInt) -> u32 {
-    let modulus = BigInt::from(1u64 << 32);
-    let reduced = ((big % &modulus) + &modulus) % &modulus;
-    reduced.to_u32_digits().1.first().copied().unwrap_or(0)
 }
 
 // ============================================================================
@@ -498,9 +522,12 @@ fn random(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<V
 
 /// `getrandbits(k)`: `k` random bits as a non-negative int.
 fn getrandbits(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let k = args.get_one_arg("Random.getrandbits", vm.heap)?;
+    // A clinic `uint64_t` parameter: keywords are refused before the count.
+    let k = args
+        .reject_kwargs("Random.getrandbits", vm.heap)?
+        .get_one_arg("Random.getrandbits", vm.heap)?;
     defer_drop!(k, vm);
-    let k = k.as_int(vm)?;
+    let k = k.as_int_with_overflow(vm, ExcType::overflow_c_uint64)?;
     let k = u64::try_from(k).map_err(|_| ExcType::value_error("Cannot convert negative int"))?;
     if k == 0 {
         return Ok(Value::Int(0));
@@ -513,7 +540,9 @@ fn getrandbits(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunRes
     let words = usize::try_from((k - 1) / 32 + 1).map_err(|_| ExcType::value_error("number of bits too large"))?;
     // One preflight for the word buffer and the big int built from it.
     vm.heap.tracker.check_allocation(words.saturating_mul(8))?;
-    let words = target.with_generator(vm, |random, _| random.rng().getrandbits_words(k, words));
+    let words = target.with_generator(vm, |random, vm| {
+        random.rng().getrandbits_words(k, words, &vm.heap.tracker)
+    })?;
     Ok(LongInt::new(BigInt::from(BigUint::from_slice(&words))).into_value(vm.heap))
 }
 
@@ -528,8 +557,8 @@ struct RandbytesArgs {
 fn randbytes(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     let RandbytesArgs { n } = RandbytesArgs::from_args(args, vm)?;
     defer_drop!(n, vm);
-    let n = n.as_int(vm)?;
-    // `getrandbits(n * 8)` is what rejects a negative count.
+    // `getrandbits(n * 8)` is what rejects a negative or oversized count.
+    let n = n.as_int_with_overflow(vm, ExcType::overflow_c_uint64)?;
     let n = usize::try_from(n).map_err(|_| ExcType::value_error("Cannot convert negative int"))?;
     if n == 0 {
         return Ok(allocate_bytes(Vec::new(), vm.heap));
@@ -537,7 +566,9 @@ fn randbytes(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResul
     vm.heap.tracker.check_allocation(n.saturating_mul(2))?;
     let words = n.div_ceil(4);
     let bits = u64::try_from(n).expect("usize fits u64") * 8;
-    let words = target.with_generator(vm, |random, _| random.rng().getrandbits_words(bits, words));
+    let words = target.with_generator(vm, |random, vm| {
+        random.rng().getrandbits_words(bits, words, &vm.heap.tracker)
+    })?;
     let mut bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
     bytes.truncate(n);
     Ok(allocate_bytes(bytes, vm.heap))
@@ -707,36 +738,52 @@ struct ShuffleArgs {
     x: Value,
 }
 
-/// `shuffle(x)`: Fisher–Yates over a list in place, from the end.
+/// `shuffle(x)`: Fisher–Yates in place, from the end.
 ///
-/// Only lists can be shuffled: any other sequence of two or more items raises
-/// the item-assignment `TypeError` CPython's first swap would — after the
-/// draw that swap was going to use, so the stream stays aligned.
+/// Lists are swapped directly. Anything else goes through `x[i], x[j] = x[j],
+/// x[i]` per swap, as `random.py` does, so a tuple, `str`, set or dict fails
+/// (or, for a dict keyed `0..n`, succeeds) exactly where CPython does.
 fn shuffle(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     let ShuffleArgs { x } = ShuffleArgs::from_args(args, vm)?;
-    defer_drop!(x, vm);
+    defer_drop_mut!(x, vm);
     let len = len_of(x, vm)?;
-    let list_id = match x {
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::List(_)) => *id,
-        _ if len < 2 => return Ok(Value::None),
-        other => {
-            target.with_generator(vm, |random, vm| random.rng().randbelow(len as u128, &vm.heap.tracker))?;
-            return Err(ExcType::type_error_not_sub_assignment(&other.py_type_name(vm)));
-        }
-    };
-    let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
-        unreachable!("checked to be a list above");
-    };
-    target.with_generator(vm, |random, vm| {
-        for i in (1..len).rev() {
-            vm.heap.tracker.check_time_every(i)?;
-            let j = index_value(random.rng().randbelow(i as u128 + 1, &vm.heap.tracker)?);
-            list.get_mut(vm.heap)
-                .as_vec_mut()
-                .swap(i, usize::try_from(j).expect("j <= i"));
-        }
-        Ok(Value::None)
-    })
+    if let Value::Ref(id) = x
+        && let HeapReadOutput::List(mut list) = vm.heap.read(*id)
+    {
+        return target.with_generator(vm, |random, vm| {
+            for i in (1..len).rev() {
+                vm.heap.tracker.check_time_every(i)?;
+                let j = index_value(random.rng().randbelow(i as u128 + 1, &vm.heap.tracker)?);
+                list.get_mut(vm.heap)
+                    .as_vec_mut()
+                    .swap(i, usize::try_from(j).expect("j <= i"));
+            }
+            Ok(Value::None)
+        });
+    }
+    for i in (1..len).rev() {
+        vm.heap.tracker.check_time_every(i)?;
+        let j = target.with_generator(vm, |random, vm| random.rng().randbelow(i as u128 + 1, &vm.heap.tracker))?;
+        swap_items(x, i64::try_from(i).expect("index fits i64"), index_value(j), vm)?;
+    }
+    Ok(Value::None)
+}
+
+/// `x[i], x[j] = x[j], x[i]` through the subscript protocol: both reads happen
+/// before either write, and `__getitem__` may run Python, so the caller draws
+/// `j` before calling.
+fn swap_items(x: &mut Value, i: i64, j: i64, vm: &mut VM<'_>) -> RunResult<()> {
+    let (i, j) = (Value::Int(i), Value::Int(j));
+    let mut xj_guard = DropGuard::new(x.py_getitem(&j, vm)?, vm);
+    let (_, vm) = xj_guard.as_parts_mut();
+    let xi = x.py_getitem(&i, vm)?;
+    let (xj, vm) = xj_guard.into_parts();
+    // `py_setitem` consumes its value on every path, so only `xi` needs guarding.
+    let mut xi_guard = DropGuard::new(xi, vm);
+    let (_, vm) = xi_guard.as_parts_mut();
+    x.py_setitem(i, xj, vm)?;
+    let (xi, vm) = xi_guard.into_parts();
+    x.py_setitem(j, xi, vm)
 }
 
 /// `sample(population, k, *, counts=None)` — a Python `def`.
@@ -1062,15 +1109,16 @@ struct TriangularArgs {
     mode: Value,
 }
 
-/// `triangular(low=0.0, high=1.0, mode=None)`: the triangular distribution;
-/// `low == high` short-circuits to `low` where CPython catches its
-/// `ZeroDivisionError`.
+/// `triangular(low=0.0, high=1.0, mode=None)`: the triangular distribution.
+/// With `mode` given and `low == high`, CPython catches the `ZeroDivisionError`
+/// and returns `low` itself, so an int `low` comes back as an int.
 fn triangular(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     let TriangularArgs { low, high, mode } = TriangularArgs::from_args(args, vm)?;
     defer_drop!(low, vm);
     defer_drop!(high, vm);
     defer_drop!(mode, vm);
-    let (mut low, mut high) = (to_float(low, vm)?, to_float(high, vm)?);
+    let (low_value, high_value) = (low, high);
+    let (mut low, mut high) = (to_float(low_value, vm)?, to_float(high_value, vm)?);
     let mode = if matches!(mode, Value::None) {
         None
     } else {
@@ -1080,7 +1128,7 @@ fn triangular(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResu
     let mut u = target.with_generator(vm, |random, _| random.rng().random());
     let mut c = match mode {
         None => 0.5,
-        Some(_) if high - low == 0.0 => return Ok(Value::Float(low)),
+        Some(_) if high - low == 0.0 => return Ok(low_value.clone_with_heap(vm)),
         Some(mode) => (mode - low) / (high - low),
     };
     if u > c {

@@ -1317,12 +1317,12 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_setitem(&mut self, key: Self, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
-        match self {
-            Self::Ref(id) => vm.heap.read(*id).py_setitem(key, value, vm),
-            _ => Err(ExcType::type_error(format!(
-                "'{}' object does not support item assignment",
-                self.py_type_name(vm)
-            ))),
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_setitem(key, value, vm)
+        } else {
+            key.drop_with(vm);
+            value.drop_with(vm);
+            Err(ExcType::type_error_not_sub_assignment(&self.py_type_name(vm)))
         }
     }
 

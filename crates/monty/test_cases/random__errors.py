@@ -30,6 +30,21 @@ try:
 except TypeError as exc:
     assert str(exc) == "'str' object cannot be interpreted as an integer"
 try:
+    random.getrandbits(k=1)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'Random.getrandbits() takes no keyword arguments'
+try:
+    random.getrandbits(2**70)
+    assert False, 'expected OverflowError'
+except OverflowError as exc:
+    assert str(exc) == 'Python int too large for C uint64_t'
+try:
+    random.randbytes(2**70)
+    assert False, 'expected OverflowError'
+except OverflowError as exc:
+    assert str(exc) == 'Python int too large for C uint64_t'
+try:
     random.randbytes(-1)
     assert False, 'expected ValueError'
 except ValueError as exc:
@@ -149,6 +164,23 @@ try:
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == "object of type 'int' has no len()"
+try:
+    random.shuffle({1, 2})
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'set' object is not subscriptable"
+# a dict keyed 0..n-1 shuffles through __getitem__/__setitem__ like any sequence
+d = {0: 'a', 1: 'b', 2: 'c', 3: 'd'}
+random.Random(3).shuffle(d)
+letters = ['a', 'b', 'c', 'd']
+random.Random(3).shuffle(letters)
+assert [d[0], d[1], d[2], d[3]] == letters
+try:
+    random.shuffle({1: 'a', 5: 'b'})
+    assert False, 'expected KeyError'
+except KeyError as exc:
+    # Monty's dict KeyError carries the key's str(), see exceptions.md
+    assert str(exc) in ('0', '1', "'0'", "'1'")
 
 # === sample() ===
 for population in ({1, 2, 3}, {1: 2}):
@@ -279,6 +311,9 @@ except ValueError as exc:
     assert str(exc) == 'p must be in the range 0.0 <= p <= 1.0'
 assert 0 <= random.binomialvariate(n=3, p=0.5) <= 3
 assert 1 <= random.triangular(low=1, high=2, mode=1.5) <= 2
+# low == high with a mode returns low itself, int included
+assert type(random.triangular(5, 5, 5)) is int
+assert type(random.triangular(5, 5)) is float
 assert random.gauss(mu=1, sigma=0) == 1.0
 
 # Shared parameter shapes must still name the function actually called.
@@ -369,6 +404,27 @@ try:
     assert False, 'expected OverflowError'
 except OverflowError as exc:
     assert str(exc) == 'Python int too large to convert to C unsigned long'
+# a version 2 state is reduced with `%` first, so its errors are the operator's
+try:
+    random.setstate((2, ('a',) * 624 + (0,), None))
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'not all arguments converted during string formatting'
+try:
+    random.setstate((2, (None,) * 624 + (0,), None))
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "unsupported operand type(s) for %: 'NoneType' and 'int'"
+try:
+    random.setstate((2, (1.5,) * 624 + (0,), None))
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'an integer is required'
+try:
+    random.setstate((2, 7, None))
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
 
 # === attributes ===
 try:

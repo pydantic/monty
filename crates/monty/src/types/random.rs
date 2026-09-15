@@ -481,10 +481,12 @@ impl Mt19937 {
 
     /// `getrandbits(k)` for any `k > 0`, as little-endian 32-bit words: each
     /// word is one output, the last one shifted down to its remaining bits.
-    pub(crate) fn getrandbits_words(&mut self, k: u64, words: usize) -> Vec<u32> {
+    /// Polls the deadline, since `k` is caller-chosen.
+    pub(crate) fn getrandbits_words(&mut self, k: u64, words: usize, tracker: &ResourceTracker) -> RunResult<Vec<u32>> {
         let mut out = Vec::with_capacity(words);
         let mut remaining = k;
-        for _ in 0..words {
+        for i in 0..words {
+            tracker.check_time_every(i)?;
             let mut word = self.next_u32();
             if remaining < 32 {
                 #[expect(clippy::cast_possible_truncation, reason = "remaining < 32")]
@@ -494,7 +496,7 @@ impl Mt19937 {
             out.push(word);
             remaining = remaining.saturating_sub(32);
         }
-        out
+        Ok(out)
     }
 
     /// `_randbelow_with_getrandbits(n)`: an int in `[0, n)` for `n > 0`, by

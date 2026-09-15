@@ -122,6 +122,16 @@ assert random.random() == 0.8180391270568783
 random.seed(a=7, version=2)
 assert random.random() == random.Random(7).random()
 
+# Other versions use the seed's unsigned hash, which differs between interpreters.
+for seed_value in ('hello', b'bytes', '', b'', ''.join(['he', 'llo']), b''.join([b'by', b'tes'])):
+    expected = random.Random(hash(seed_value) % 2**64).getstate()
+    rng = random.Random(0)
+    for version in (0, -1, 3, 2**100, 0.0, 1.5, 3.0, False, None, '2', [], {}):
+        random.seed(seed_value, version=version)
+        assert random.getstate() == expected, (seed_value, version)
+        rng.seed(seed_value, version=version)
+        assert rng.getstate() == expected, (seed_value, version)
+
 # === Random instances have their own state ===
 r = random.Random(7)
 assert r.random() == 0.32383276483316237
@@ -159,6 +169,9 @@ words = list(state[1][:-1])
 signed = tuple(w - 2**32 if w >= 2**31 else w for w in words) + (state[1][-1],)
 r3 = random.Random()
 r3.setstate((2, signed, None))
+assert r3.random() == random.Random(7).random()
+# version 2 accepts any iterable of words, and big ints reduce modulo 2**32
+r3.setstate((2, [w + 2**40 for w in signed], None))
 assert r3.random() == random.Random(7).random()
 # a list outer state works as well as a tuple
 r3.setstate([3, state[1], 0.5])

@@ -62,9 +62,6 @@ it is included in a dump.
     `collections.abc.Sequence`).
     `k` and each `counts` entry must be ints, so `sample(x, 1.5)` raises
     `'float' object cannot be interpreted as an integer` instead of CPython's sequence-multiplication error.
-- **`shuffle`** works on lists only.
-    Any other sequence of two or more items raises the `does not support item assignment` error that CPython's first
-    swap raises, after consuming the draw that swap would have consumed.
 - **`choices`** accumulates `weights` as floats, so int weights above `2**53` lose precision; `cum_weights` may be
     any iterable of numbers.
 - **`setstate`** accepts version 3 and version 2 state tuples; the third element (`gauss_next`) must be a float or
