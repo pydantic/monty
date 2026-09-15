@@ -1,0 +1,61 @@
+crates/monty-python/tests/test_async.py
+  s_39113c86df7101::t_cc00affd880a14 247,1127-1128,1166-1167,1170-1172,1182
+crates/monty-python/tests/conftest.py
+  s_39113c86df7101::t_ceb4a3517cfa9b 16
+  s_39113c86df7101::t_8155543e8f3cc7 34,70
+docs/security.md
+  s_39113c86df7101::t_0bfbaceb483805 334
+  s_39113c86df7101::t_8155543e8f3cc7 322-323
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_39113c86df7101::t_ab4590151b0c97 604,967
+  s_39113c86df7101::t_8155543e8f3cc7 642-643,708-711,1010-1011,1061-1064
+  s_39113c86df7101::t_6c6e81383ddf16 18
+crates/monty-python/tests/test_callback_context.py
+  s_39113c86df7101::t_8155543e8f3cc7 139
+  s_39113c86df7101::t_ceb4a3517cfa9b 345
+docs/limitations/pool-architecture.md
+  s_39113c86df7101::t_8155543e8f3cc7 314
+crates/monty-python/tests/test_feed_start.py
+  s_39113c86df7101::t_cc00affd880a14 182,700
+crates/monty-python/tests/test_mount_table.py
+  s_39113c86df7101::t_24e681e090c249 367,389,510,526,548,799
+  s_39113c86df7101::t_cc00affd880a14 368,390
+  s_39113c86df7101::t_df0f8d06b1a43f 758
+crates/monty-python/tests/test_os_calls.py
+  s_39113c86df7101::t_cc00affd880a14 18,29-30,44-46,48,50,82,164,182-183,202-204,235-236,253,271,306-307,327-328,354-356,370-371,385,387,406-407,419-420,435-436,454-455,472-473,484,496-498,509,519,536-538,550-551,563-564,575-576,587-588,599-600,611-612,623-624,641-642,658-659,683-684,696-697,721-723
+  s_39113c86df7101::t_edf3a8fd6c675d 127
+  s_39113c86df7101::t_48b29b9c5487f5 152
+crates/monty-python/python/pydantic_monty/__init__.py
+  s_39113c86df7101::t_0f112e802c1177 4,258-284
+crates/monty-python/tests/test_os_access_raw.py
+  s_39113c86df7101::t_ca41f976ccf71c 270
+  s_39113c86df7101::t_48b29b9c5487f5 284-285,289
+docs/filesystem.md
+  s_39113c86df7101::t_8155543e8f3cc7 202-203,213
+  s_39113c86df7101::t_0bfbaceb483805 204,212
+crates/monty-python/src/lib.rs
+  s_39113c86df7101::t_8155543e8f3cc7 34,145
+crates/monty-python/src/pool.rs
+  s_39113c86df7101::t_972c9d5ac1709c 1357,1587-1595,1877,1879,1910
+  s_39113c86df7101::t_8155543e8f3cc7 70,1876,1891-1898
+crates/monty-python/python/pydantic_monty/os_access.py
+  s_39113c86df7101::t_8155543e8f3cc7 21,149-155,157-158,160-161,168,172-179,190,257,597,600,605,608
+crates/monty-python/src/snapshot.rs
+  s_39113c86df7101::t_972c9d5ac1709c 692,832,840
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7e816ac6abd9b86fb53ae6d10b2f75315cd62593",
+  "prompts": {},
+  "sessions": {
+    "s_39113c86df7101": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a6a907e-552e-489d-b040-c6ce4647bde1",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
