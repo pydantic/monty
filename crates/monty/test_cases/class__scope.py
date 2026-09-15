@@ -203,3 +203,82 @@ try:
     assert False, 'expected NameError'
 except NameError as e:
     assert str(e) == "name 'missing_name' is not defined"
+
+
+# === Comprehensions skip the class namespace after evaluating the first
+# iterable, matching the nested-scope behavior used by CPython. ===
+comp_scope_value = 10
+
+
+class ComprehensionScope:
+    comp_scope_value = 20
+    first_iterable = [value for value in [comp_scope_value]]
+    body_lookup = [comp_scope_value for _ in range(1)]
+    filter_lookup = [comp_scope_value for _ in range(1) if comp_scope_value == 10]
+    later_iterable = [value for _ in range(1) for value in [comp_scope_value]]
+
+
+assert ComprehensionScope.first_iterable == [20]
+assert ComprehensionScope.body_lookup == [10]
+assert ComprehensionScope.filter_lookup == [10]
+assert ComprehensionScope.later_iterable == [10]
+
+
+def make_capturing_comprehension(comp_outer_value):
+    class Inner:
+        body_lookup = [comp_outer_value for _ in range(1)]
+
+    return Inner
+
+
+assert make_capturing_comprehension(30).body_lookup == [30]
+
+
+# A class member may shadow an enclosing function local without changing what
+# the nested comprehension captures. Comprehensions skip the class namespace,
+# so all three reads resolve to the enclosing function's cell.
+def make_shadowing_comprehension(outer_value):
+    class Shadowing:
+        outer_value = 10
+        body_lookup = [outer_value for _ in range(1)]
+        filter_lookup = [outer_value for _ in range(1) if outer_value == 30]
+        later_iterable = [x for _ in range(1) for x in [outer_value]]
+
+    return Shadowing
+
+
+shadowing = make_shadowing_comprehension(30)
+assert shadowing.outer_value == 10
+assert shadowing.body_lookup == [30]
+assert shadowing.filter_lookup == [30]
+assert shadowing.later_iterable == [30]
+
+
+# A class-body store after a comprehension capture still creates a class
+# member; the comprehension keeps the enclosing function's value.
+def make_post_capture_class(outer_value):
+    class PostCapture:
+        body_lookup = [outer_value for _ in range(1)]
+        outer_value = 10
+
+    return PostCapture
+
+
+post_capture = make_post_capture_class(30)
+assert post_capture.body_lookup == [30]
+assert post_capture.outer_value == 10
+
+
+# A comprehension target is isolated from a later class-body store of the
+# same name.
+def make_target_store():
+    class TargetStore:
+        body_lookup = [target for target in range(1)]
+        target = 5
+
+    return TargetStore
+
+
+target_store = make_target_store()
+assert target_store.body_lookup == [0]
+assert target_store.target == 5
