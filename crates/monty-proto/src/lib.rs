@@ -21,13 +21,13 @@ pub mod worker;
 /// or repurposing a field, changing a field's meaning, or adding one the child
 /// requires. Purely additive changes an older peer can ignore do not need a
 /// bump.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///
-/// Version 2 is not served: its `Print` event carried a single stream and
-/// text, which this build no longer emits or reads.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 3;
+/// Version 3 is not served: it carried values as recursive `MontyObject`
+/// trees, where this build carries one flat `Arena` per message.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 4;
 
 /// How long the child holds buffered `print()` output before emitting it as a
 /// `Print` event, when [`pb::Configure::print_flush_interval_ms`] says nothing.
@@ -71,11 +71,14 @@ pub fn check_protocol_version(version: u32) -> Result<(), String> {
     }
 }
 
-pub use convert::{MAX_VALUE_DEPTH, ProtoConvertError, exceeds_max_value_depth, future_results_from_proto};
+pub use convert::{
+    ProtoConvertError, ext_result_from_proto, ext_result_to_proto, future_results_from_proto, future_results_to_proto,
+    named_values_from_proto, named_values_to_proto, os_call_from_proto, os_call_to_proto, resume_call_result,
+};
 pub use frame::{
     DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_framed_into,
     encode_to_capped_vec, exceeds_max_frame_len, write_frame,
 };
 pub use generated::pb;
 pub use requirement::validate_requirement;
-pub use wire::{WireFunctionCall, WireObject, reset_decode_budget};
+pub use wire::{WireArena, WireFunctionCall, reset_decode_budget};

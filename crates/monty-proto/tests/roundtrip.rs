@@ -2,27 +2,38 @@ use std::time::Duration;
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
+use monty_proto::{
+    ProtoConvertError, WireArena, ext_result_from_proto, ext_result_to_proto, named_values_from_proto,
+    named_values_to_proto, os_call_from_proto, os_call_to_proto, pb,
+};
 use monty_types::{
     CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
-    MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
-    MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, OpenCallArgs,
-    OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame,
-    UnicodeErrorData, UrandomArgs,
+    MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyGraph,
+    MontyNode, MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, MontyValue,
+    NameLookupResult, NamedValues, NodeId, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
+    RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData, UrandomArgs,
 };
 use num_bigint::BigInt;
 use prost::Message;
 
-/// Asserts `obj` survives `MontyObject -> wire bytes -> MontyObject` through
-/// the hand-written `WireObject` codec (both directions).
+/// Asserts `graph` survives `MontyGraph -> wire bytes -> MontyGraph` through
+/// the hand-written `WireArena` codec (both directions).
+#[track_caller]
+fn assert_graph_round_trip(graph: &MontyGraph) {
+    let bytes = WireArena::new(graph.clone()).encode_to_vec();
+    let back = WireArena::decode(bytes.as_slice())
+        .expect("wire bytes -> WireArena failed")
+        .into_graph()
+        .expect("decoded arena is invalid");
+    assert_eq!(&back, graph);
+}
+
+/// Asserts `obj` survives the wire as the arena its tree converts to.
 #[track_caller]
 fn assert_value_round_trip(obj: &MontyObject) {
-    let bytes = WireObject::new(obj.clone()).encode_to_vec();
-    let back = WireObject::decode(bytes.as_slice())
-        .expect("wire bytes -> WireObject failed")
-        .into_object()
-        .expect("decoded value has no kind");
-    assert_eq!(&back, obj);
+    let value = MontyValue::from(obj.clone());
+    assert_graph_round_trip(&value.graph);
+    assert_eq!(value.into_object().expect("expands"), *obj);
 }
 
 #[test]
@@ -171,7 +182,7 @@ fn timezone_names_are_charged_to_the_decode_budget() {
                 name,
             }),
         ]
-        .map(|obj| obj.host_size())
+        .map(|obj| MontyValue::from(obj).root_node().host_size())
     };
     let named = sizes(Some(name.clone()));
     let unnamed = sizes(None);
@@ -309,7 +320,7 @@ fn repr_and_cycle_round_trip() {
     .unwrap();
     let cyclic = run.run_no_limits(vec![]).unwrap();
     assert_value_round_trip(&cyclic);
-    assert!(matches!(&cyclic, MontyObject::List(items) if matches!(items[0], MontyObject::Cycle(_, _))));
+    assert!(matches!(&cyclic, MontyObject::List(items) if matches!(items[0], MontyObject::Cycle(_))));
 }
 
 // NOTE: rejection of semantically invalid wire values (bad dates, unknown
@@ -598,32 +609,44 @@ fn empty_resource_limits_default_recursion_depth() {
 #[test]
 fn ext_results_round_trip() {
     let cases = [
-        ExtFunctionResult::Return(MontyObject::Int(3)),
+        ExtFunctionResult::Return(MontyObject::Int(3).into()),
         ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("no".to_owned()))),
         ExtFunctionResult::Future(7),
         ExtFunctionResult::NotFound("missing".to_owned()),
     ];
     for case in cases {
         let expected = format!("{case:?}");
-        let proto = pb::ExtFunctionResult::from(case);
-        let back = ExtFunctionResult::try_from(proto).unwrap();
+        let (proto, values) = ext_result_to_proto(case);
+        let back = ext_result_from_proto(proto, values).unwrap();
         // ExtFunctionResult has no PartialEq; compare via Debug
         assert_eq!(format!("{back:?}"), expected);
     }
+    // a returned value with no arena to index is rejected
+    let (proto, _) = ext_result_to_proto(ExtFunctionResult::Return(MontyObject::Int(3).into()));
+    assert!(matches!(
+        ext_result_from_proto(proto, None),
+        Err(ProtoConvertError::MissingField("values"))
+    ));
 }
 
 #[test]
 fn name_lookup_results_convert() {
-    let value = pb::ResumeNameLookup {
-        kind: Some(pb::resume_name_lookup::Kind::Value(WireObject::new(MontyObject::Int(
-            1,
-        )))),
-    };
+    let value = pb::ResumeNameLookup::from(NameLookupResult::from(MontyObject::Int(1)));
     assert!(matches!(
         NameLookupResult::try_from(value),
-        Ok(NameLookupResult::Value(MontyObject::Int(1)))
+        Ok(NameLookupResult::Value(v)) if v == MontyObject::Int(1)
+    ));
+    // the root must index the arena the message carries
+    let out_of_range = pb::ResumeNameLookup {
+        values: Some(WireArena::new(MontyValue::from(MontyObject::Int(1)).graph)),
+        kind: Some(pb::resume_name_lookup::Kind::Value(1)),
+    };
+    assert!(matches!(
+        NameLookupResult::try_from(out_of_range),
+        Err(ProtoConvertError::InvalidValue { field: "Arena", .. })
     ));
     let undefined = pb::ResumeNameLookup {
+        values: None,
         kind: Some(pb::resume_name_lookup::Kind::Undefined(pb::Unit {})),
     };
     assert!(matches!(
@@ -631,6 +654,7 @@ fn name_lookup_results_convert() {
         Ok(NameLookupResult::Undefined)
     ));
     let error = pb::ResumeNameLookup {
+        values: None,
         kind: Some(pb::resume_name_lookup::Kind::Error(
             (&MontyException::new(ExcType::KeyError, Some("boom".to_owned()))).into(),
         )),
@@ -643,6 +667,7 @@ fn name_lookup_results_convert() {
     assert_eq!(exc.message(), Some("boom"));
     // an error arm is validated like any exception crossing the wire
     let bogus = pb::ResumeNameLookup {
+        values: None,
         kind: Some(pb::resume_name_lookup::Kind::Error(pb::RaisedException {
             exc_type: "NotARealError".to_owned(),
             message: None,
@@ -656,140 +681,103 @@ fn name_lookup_results_convert() {
     ));
 }
 
-/// Deeply nested values: encoding works at depths a sandbox can plausibly
-/// produce, and prost's decode recursion limit bounds what a malicious peer
-/// can make the receiver process.
+/// The arena is flat, so nesting is not bounded by prost's recursion limit:
+/// a chain far deeper than any tree message could carry decodes inside the
+/// deepest legitimate frame wrapper (`Request` → `Feed`).
 #[test]
-fn nested_value_round_trip() {
-    let mut value = MontyObject::Int(1);
-    for _ in 0..20 {
-        value = MontyObject::List(vec![value]);
+fn deep_values_cross_the_wire() {
+    let mut graph = MontyGraph::new();
+    let mut id = graph.push(MontyNode::Int(1));
+    for _ in 0..10_000 {
+        id = graph.push(MontyNode::List(vec![id]));
     }
-    assert_value_round_trip(&value);
-}
-
-/// `Int(1)` nested in `depth` levels of list (2 proto levels per level).
-fn nest_list(depth: usize) -> MontyObject {
-    (0..depth).fold(MontyObject::Int(1), |inner, _| MontyObject::List(vec![inner]))
-}
-
-/// `Int(1)` nested in `depth` levels of single-entry dict (3 proto levels per
-/// level: `MontyObject` + `Dict` + `Pair`).
-fn nest_dict(depth: usize) -> MontyObject {
-    (0..depth).fold(MontyObject::Int(1), |inner, _| {
-        MontyObject::dict(vec![(MontyObject::String("k".to_owned()), inner)])
-    })
-}
-
-/// `Int(1)` nested in `depth` levels of single-attr class instance (4 proto
-/// levels per level: `MontyObject` + `ClassInstance` + `Dict` + `Pair`).
-fn nest_class_instance(depth: usize) -> MontyObject {
-    (0..depth).fold(MontyObject::Int(1), |inner, _| {
-        MontyObject::ClassInstance(Box::new(MontyClassInstance {
-            class_type: MontyClassType {
-                name: "D".to_owned(),
-                id: MontyUuid::from_u128(1),
-                host_defined: true,
-                is_dataclass: false,
-                attrs: DictPairs::default(),
-            },
-            instance_id: MontyUuid::from_u128(1),
-            attrs: DictPairs::from(vec![(MontyObject::String("f".to_owned()), inner)]),
-        }))
-    })
-}
-
-/// `Int(1)` nested in `depth` levels of class type whose single eager class
-/// attr holds the next level (4 proto levels per level: `MontyObject` +
-/// `Type` + `Dict` + `Pair` — `TYPE_COST` + `TYPE_ATTRS_COST`).
-fn nest_type_attrs(depth: usize) -> MontyObject {
-    (0..depth).fold(MontyObject::Int(1), |inner, _| {
-        MontyObject::Type(MontyType::Instance(Box::new(class_type_with_attr(inner))))
-    })
-}
-
-/// `Int(1)` nested in `depth` levels of attr-less class instance whose class
-/// branch holds the next level in an eager class attr (5 proto levels per
-/// level: `MontyObject` + `ClassInstance` + `Type` + `Dict` + `Pair` —
-/// `CLASS_INSTANCE_TYPE_COST` + `TYPE_ATTRS_COST`).
-fn nest_class_instance_type_attrs(depth: usize) -> MontyObject {
-    (0..depth).fold(MontyObject::Int(1), |inner, _| {
-        MontyObject::ClassInstance(Box::new(MontyClassInstance {
-            class_type: class_type_with_attr(inner),
-            instance_id: MontyUuid::from_u128(1),
-            attrs: DictPairs::default(),
-        }))
-    })
-}
-
-/// A host class `D` whose only eager class attr `k` is `value`.
-fn class_type_with_attr(value: MontyObject) -> MontyClassType {
-    MontyClassType {
-        name: "D".to_owned(),
-        id: MontyUuid::from_u128(1),
-        host_defined: true,
-        is_dataclass: false,
-        attrs: DictPairs::from(vec![(MontyObject::String("k".to_owned()), value)]),
-    }
-}
-
-/// Whether `value` decodes when shipped inside the deepest legitimate frame
-/// wrapper chain (`Request` → `Feed` → `NamedValue`).
-fn decodes_in_frame(value: &MontyObject) -> bool {
+    assert_graph_round_trip(&graph);
+    let mut inputs = NamedValues::new();
+    inputs.push("v", MontyValue::new(graph, id).unwrap());
+    let (refs, values) = named_values_to_proto(inputs.clone());
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: String::new(),
-            inputs: vec![pb::NamedValue {
-                name: "v".to_owned(),
-                value: Some(WireObject::new(value.clone())),
-            }],
+            inputs: refs,
+            values: Some(values),
             skip_type_check: false,
             cwd: "/work".to_owned(),
         })),
         trace_parent: None,
     };
-    pb::ParentRequest::decode(request.encode_to_vec().as_slice()).is_ok()
+    let back = pb::ParentRequest::decode(request.encode_to_vec().as_slice()).expect("deep feed decodes");
+    let Some(pb::parent_request::Kind::Feed(feed)) = back.kind else {
+        panic!("expected a feed");
+    };
+    assert_eq!(named_values_from_proto(feed.inputs, feed.values).unwrap(), inputs);
 }
 
-/// The sender-side depth check must agree exactly with what the receiver can
-/// decode, for every container shape: dicts and class instances consume more
-/// of prost's recursion budget per level than lists, so a uniform
-/// per-container budget would pass values that then fail to decode (and kill
-/// the worker as a protocol failure instead of raising a clean depth error).
+/// A sub-object referenced twice is one node referenced twice, on the wire as
+/// in the arena: the doubling ladder stays linear.
 #[test]
-fn depth_check_matches_frame_decodability() {
-    /// One container shape: name, nesting builder, deepest depth that must pass.
-    type DepthCase = (&'static str, fn(usize) -> MontyObject, usize);
-    let cases: [DepthCase; 5] = [
-        ("list", nest_list, MAX_VALUE_DEPTH),        // 48: 2 proto levels each
-        ("dict", nest_dict, 32),                     // 3 proto levels each
-        ("class_instance", nest_class_instance, 24), // 4 proto levels each
-        ("type_attrs", nest_type_attrs, 24),         // 4 proto levels each
-        // 5 proto levels each: the type branch plus its attrs
-        ("class_instance_type_attrs", nest_class_instance_type_attrs, 19),
-    ];
-    for (shape, build, max_depth) in cases {
-        let deepest = build(max_depth);
-        assert!(
-            !exceeds_max_value_depth(&deepest),
-            "{shape} nested {max_depth} deep should pass the depth check"
-        );
-        assert!(
-            decodes_in_frame(&deepest),
-            "{shape} nested {max_depth} deep should decode inside a frame"
-        );
-        let too_deep = build(max_depth + 1);
-        assert!(
-            exceeds_max_value_depth(&too_deep),
-            "{shape} nested {} deep should fail the depth check",
-            max_depth + 1
-        );
-        assert!(
-            !decodes_in_frame(&too_deep),
-            "{shape} nested {} deep should fail to decode inside a frame",
-            max_depth + 1
-        );
+fn shared_nodes_stay_shared_on_the_wire() {
+    let mut graph = MontyGraph::new();
+    let mut x = graph.push(MontyNode::Int(0));
+    for _ in 0..20 {
+        x = graph.push(MontyNode::List(vec![x, x]));
     }
+    assert_eq!(graph.len(), 21);
+    let bytes = WireArena::new(graph.clone()).encode_to_vec();
+    assert!(bytes.len() < 200, "{} bytes", bytes.len());
+    assert_graph_round_trip(&graph);
+    let cycle = MontyGraph::from_nodes(vec![
+        MontyNode::Cycle("[...]".to_owned()),
+        MontyNode::List(vec![NodeId(0)]),
+    ]);
+    assert_graph_round_trip(&cycle.unwrap());
+}
+
+/// Hostile arenas are rejected by `into_graph`, never trusted: an index that
+/// is not lower than its holder, a root outside the arena, a class instance
+/// whose class is not a class node, and a node with no kind.
+#[test]
+fn invalid_arenas_are_rejected() {
+    let decode = |nodes: Vec<MontyNode>| {
+        let bytes = WireArena(nodes).encode_to_vec();
+        WireArena::decode(bytes.as_slice())
+            .expect("structurally valid")
+            .into_graph()
+            .map_err(|err| err.to_string())
+    };
+    assert_eq!(
+        decode(vec![MontyNode::List(vec![NodeId(0)])]).unwrap_err(),
+        "invalid value for Arena: value node 0 references node 0, which is not below it"
+    );
+    assert_eq!(
+        decode(vec![MontyNode::Int(1), MontyNode::List(vec![NodeId(7)])]).unwrap_err(),
+        "invalid value for Arena: value node 1 references node 7, which is not below it"
+    );
+    assert_eq!(
+        decode(vec![
+            MontyNode::Int(1),
+            MontyNode::ClassInstance {
+                class_type: NodeId(0),
+                instance_id: MontyUuid::from_u128(1),
+                attrs: vec![],
+            },
+        ])
+        .unwrap_err(),
+        "invalid value for Arena: class instance node 1 does not point at a class type"
+    );
+    // an empty arena decodes, but no root can index it
+    let empty = pb::Complete {
+        value: 0,
+        values: Some(WireArena::default()),
+    };
+    assert_eq!(
+        MontyValue::try_from(empty).unwrap_err().to_string(),
+        "invalid value for Arena: value root 0 is out of range for an arena of 0 nodes"
+    );
+    let absent = pb::Complete { value: 0, values: None };
+    assert!(matches!(
+        MontyValue::try_from(absent),
+        Err(ProtoConvertError::MissingField("Complete.values"))
+    ));
 }
 
 // =============================================================================
@@ -802,15 +790,10 @@ fn depth_check_matches_frame_decodability() {
 #[track_caller]
 fn assert_os_call_round_trip(call: OsFunctionCall) {
     let expected = format!("{call:?}");
-    let bytes = pb::OsCall {
-        call_id: 3,
-        call: Some(call.into()),
-    }
-    .encode_to_vec();
+    let bytes = os_call_to_proto(3, call).encode_to_vec();
     let decoded = pb::OsCall::decode(bytes.as_slice()).expect("wire bytes -> OsCall failed");
-    assert_eq!(decoded.call_id, 3);
-    let back = OsFunctionCall::try_from(decoded.call.expect("decoded OsCall has no call"))
-        .expect("wire call -> OsFunctionCall failed");
+    let (call_id, back) = os_call_from_proto(decoded).expect("wire call -> OsFunctionCall failed");
+    assert_eq!(call_id, 3);
     assert_eq!(format!("{back:?}"), expected);
 }
 
@@ -857,11 +840,11 @@ fn os_calls_round_trip_all_variants() {
         }),
         OsFunctionCall::Getenv(GetenvArgs {
             key: "HOME".to_owned(),
-            default: MontyObject::None,
+            default: MontyObject::None.into(),
         }),
         OsFunctionCall::Getenv(GetenvArgs {
             key: "PATH".to_owned(),
-            default: MontyObject::List(vec![MontyObject::Int(1)]),
+            default: MontyObject::List(vec![MontyObject::Int(1)]).into(),
         }),
         OsFunctionCall::GetEnviron,
         OsFunctionCall::DateToday,
@@ -914,14 +897,24 @@ fn os_call_conversion_rejects_invalid_payloads() {
         OsFunctionCall::try_from(bad_mode),
         Err(ProtoConvertError::InvalidFileMode(mode)) if mode == "q"
     ));
-    // os.getenv always carries a default (None when the sandbox omitted it).
-    let missing_default = pb::os_call::Call::Getenv(pb::os_call::Getenv {
-        key: "HOME".to_owned(),
-        default: None,
-    });
+    // os.getenv always carries a default (None when the sandbox omitted it),
+    // which indexes the envelope's arena: absent, or out of range, is rejected.
+    let getenv = |values| pb::OsCall {
+        call_id: 1,
+        values,
+        call: Some(pb::os_call::Call::Getenv(pb::os_call::Getenv {
+            key: "HOME".to_owned(),
+            default: 1,
+        })),
+    };
     assert!(matches!(
-        OsFunctionCall::try_from(missing_default),
-        Err(ProtoConvertError::MissingField("Getenv.default"))
+        os_call_from_proto(getenv(None)),
+        Err(ProtoConvertError::MissingField("OsCall.values"))
+    ));
+    let one_node = WireArena::new(MontyValue::from(MontyObject::None).graph);
+    assert!(matches!(
+        os_call_from_proto(getenv(Some(one_node))),
+        Err(ProtoConvertError::InvalidValue { field: "Arena", .. })
     ));
 }
 
