@@ -1373,6 +1373,25 @@ fn bounded_deque_extend_is_not_preflighted() {
     child.shutdown();
 }
 
+/// A deque that has reached `maxlen` is not exempt from the growth preflight.
+///
+/// `append` and `appendleft` push before they evict, so a bounded deque whose
+/// ring is exactly full still reallocates on that push — once, by its whole
+/// length. Unchecked, that single allocation cleared the hard-limit headroom
+/// and killed the worker.
+#[test]
+fn full_bounded_deque_growth_stays_graceful() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(12 * 1024 * 1024));
+    // 2^19 items fill the ring exactly, so the append after them doubles it.
+    let code = "from collections import deque\nd = deque(maxlen=524_288)\nd.extend(range(524_288))\nd.append(0)";
+    let (_, event) = child.feed(code);
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    // The session outliving the error is the whole point.
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
 /// Assert a `memory limit exceeded` message reports roughly `expected` bytes
 /// used against a 1 MiB limit.
 ///
