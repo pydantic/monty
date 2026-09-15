@@ -723,18 +723,26 @@ impl VM<'_> {
     ) -> Result<CallResult, RunError> {
         let this = self;
         defer_drop!(args_tuple, this);
+        // The receiver and any kwargs are handed on only once the argument pack
+        // is built, and building it is fallible — a refused `*args` clone, a
+        // kwargs dict that cannot grow — so the guard holds both until then.
+        // Without it those references are dropped without their refcounts.
+        let mut pending = DropGuard::new((obj, kwargs), this);
+        let (pending_values, this) = pending.as_parts_mut();
 
         // Extract positional args from tuple
         let copied_args = this.extract_args_tuple_for_attr(args_tuple)?;
 
-        // Build ArgValues from positional args and optional kwargs
-        let args = if let Some(kwargs_ref) = kwargs {
+        // Build ArgValues from positional args and optional kwargs, the kwargs
+        // leaving the guard as `build_args_with_kwargs_for_attr` takes them on.
+        let args = if let Some(kwargs_ref) = pending_values.1.take() {
             this.build_args_with_kwargs_for_attr(copied_args, kwargs_ref)?
         } else {
             Self::build_args_positional_only(copied_args)
         };
 
         // Call the method (args_tuple guard drops at scope exit)
+        let ((obj, _), this) = pending.into_parts();
         this.call_attr(obj, name_id, args)
     }
 
