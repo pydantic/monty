@@ -407,9 +407,18 @@ impl ResourceTracker {
         if len < capacity {
             0
         } else {
-            // `max(1)` covers the first push into an empty buffer, whose
-            // capacity would otherwise make the increment zero.
-            let new_capacity = capacity.saturating_mul(2).max(len.saturating_add(1)).max(1);
+            // A buffer growing from nothing jumps straight to the standard
+            // library's minimum non-zero capacity (`RawVec::MIN_NON_ZERO_CAP`),
+            // which is also what stops the increment coming out as zero.
+            let min_non_zero_capacity = match elem_size {
+                1 => 8,
+                2..=1024 => 4,
+                _ => 1,
+            };
+            let new_capacity = capacity
+                .saturating_mul(2)
+                .max(len.saturating_add(1))
+                .max(min_non_zero_capacity);
             new_capacity.saturating_sub(capacity).saturating_mul(elem_size)
         }
     }

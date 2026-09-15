@@ -60,7 +60,8 @@ without one is unlimited.
     result operations are pre-checked to avoid this path when their size is known,
     as is buffer growth a program drives one element at a time — `append`,
     `insert`, `add` or `d[k] = v` on a list, deque, set or dict, a parsed JSON
-    array — and the argument buffers behind `f(*args)`.
+    array — and the argument buffers behind `f(*args)` and the pieces `re.split`
+    collects.
     `re.findall` is covered only for a pattern with at most one capture group.
     A wider `findall` builds a tuple per match, and `re.finditer` a match object,
     and those accumulate between the checks on the result list itself, so a
