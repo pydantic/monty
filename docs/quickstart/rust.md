@@ -201,7 +201,7 @@ use monty_types::{CompileOptions, MontyValue, PrintWriter, ResourceTracker};
 let code = "from datetime import date\ndate.today().year";
 let runner = MontyRun::new(code.to_owned(), "today.py", vec![], CompileOptions::default()).unwrap();
 let year = runner.run(vec![], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
-assert!(matches!(year, MontyValue::int(y) if y >= 2026));
+assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
 ```
 
 `with_host_clock` changes that: `HostClock::Denied` takes the clock away, for embedders who would rather sandboxed code
@@ -232,7 +232,7 @@ let progress = runner.start(vec![get_data], ResourceTracker::default(), PrintWri
 // execution pauses at the `get_data(3)` call
 let RunProgress::FunctionCall(call) = progress else { panic!("expected a function call") };
 assert_eq!(call.function_name, "get_data");
-assert_eq!(call.args.into_objects().unwrap().0, vec![MontyValue::int(3)]);
+assert_eq!(call.args.arg(0).unwrap(), MontyValue::int(3));
 
 // the host computes the result and resumes
 let progress = call.resume(MontyValue::int(21), PrintWriter::Stdout).unwrap();

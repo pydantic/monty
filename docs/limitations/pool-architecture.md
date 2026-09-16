@@ -215,7 +215,7 @@ properties that real CPython does not provide, per the caveat above.
     limit. Sharing does not amplify on decode: a shared sub-object is one node
     however many times it is referenced. The worst-case host *peak* is ~1× the
     budget plus the ≤256 MiB frame buffer, and the bound applies per concurrent
-    worker. The browser component applies the same expanded-value budget to a
+    worker. The browser component applies the same decoded-value budget to a
     request's WIT arena before constructing it, and before lifting a semantic
     event into JavaScript.
 - Semantic validation of protobuf values (date ranges, timedelta normalization,

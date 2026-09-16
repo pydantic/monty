@@ -2110,7 +2110,7 @@ fn assert_refused_before_io(mt: &mut MountTable, op: PathOp, path: &str, mode_na
 fn outcome_class(result: Option<&Result<MontyValue, MountError>>) -> String {
     match result {
         None => "NotHandled".to_owned(),
-        Some(Ok(value)) => format!("Ok({value:?})"),
+        Some(Ok(value)) => format!("Ok({:?})", value.root_node()),
         Some(Err(MountError::PathEscape { .. })) => "PathEscape".to_owned(),
         Some(Err(MountError::NoMountPoint(_))) => "NoMountPoint".to_owned(),
         Some(Err(MountError::Io(err, _))) => format!("Io({:?})", err.kind()),

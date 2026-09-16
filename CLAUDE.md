@@ -43,8 +43,9 @@ extension traits (`ExcTypeExt`, `MontyValueExt`, `MontyGraphExt`, `CallArgsExt`,
 `ExtFunctionResultExt`) — import the trait to call e.g. `ExcType::type_error(...)` or
 `MontyValue::export(value, vm)`. Values leave the interpreter as a `MontyGraph` arena
 built by `object_bridge::GraphExporter` (one per message, so a shared sub-object
-crosses once) and re-enter through `MontyGraphExt::to_values`; `MontyValue` is the
-tree form hosts build inputs with and expand results into.
+crosses once) and re-enter through `MontyGraphExt::to_values`; `MontyValue` is one
+owned value (an arena plus its root) that hosts build inputs with and read results
+from through `ValueRef` accessors.
 
 ## Cross-Platform Requirements
 

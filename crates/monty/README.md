@@ -83,7 +83,7 @@ let progress = runner.start(vec![get_data], ResourceTracker::default(), PrintWri
 // execution pauses at the `get_data(3)` call
 let RunProgress::FunctionCall(call) = progress else { panic!("expected a function call") };
 assert_eq!(call.function_name, "get_data");
-assert_eq!(call.args.into_objects().unwrap().0, vec![MontyValue::int(3)]);
+assert_eq!(call.args.arg(0).unwrap(), MontyValue::int(3));
 
 // the host computes the result and resumes
 let progress = call.resume(MontyValue::int(21), PrintWriter::Stdout).unwrap();
