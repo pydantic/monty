@@ -1,0 +1,42 @@
+crates/monty/Cargo.toml
+  s_ba45d486b765c4::t_b47cf7141f5e47 43
+Cargo.toml
+  s_ba45d486b765c4::t_b47cf7141f5e47 116
+crates/monty-types/Cargo.toml
+  s_ba45d486b765c4::t_b47cf7141f5e47 25
+crates/monty-types/tests/graph.rs
+  s_ba45d486b765c4::t_4d2145a0465cc1 299,302-303
+  s_ba45d486b765c4::t_b47cf7141f5e47 298,300-301,304-305
+crates/monty-pool/src/checkout.rs
+  s_ba45d486b765c4::t_0df91b118208e4 1690-1691,1693
+crates/monty-proto/src/wire.rs
+  s_ba45d486b765c4::t_31c1d8e94a179c 139,141
+  s_ba45d486b765c4::t_b47cf7141f5e47 14,40-41,60,76-77,136-137,140,142
+crates/monty-wasm-runtime/src/value.rs
+  s_ba45d486b765c4::t_b47cf7141f5e47 122
+crates/monty-types/src/graph.rs
+  s_ba45d486b765c4::t_b47cf7141f5e47 21,383,386-392,404,409-410,496
+crates/monty-proto/tests/decode_budget.rs
+  s_ba45d486b765c4::t_b47cf7141f5e47 6,21
+  s_ba45d486b765c4::t_cf9fce6342242a 33
+crates/monty-proto/tests/roundtrip.rs
+  s_ba45d486b765c4::t_b47cf7141f5e47 717
+crates/monty-types/src/lib.rs
+  s_ba45d486b765c4::t_31c1d8e94a179c 33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f29019851171efe21c3211cac614029311aed215",
+  "prompts": {},
+  "sessions": {
+    "s_ba45d486b765c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc4f662a-117f-497e-8e5b-187279549b8e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
