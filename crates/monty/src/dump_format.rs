@@ -89,7 +89,6 @@ impl Dump {
     /// guarantees: loading or using them may panic, abort, hang, or produce wrong results,
     /// but must not cause undefined behaviour in the host process.
     /// Successful decoding does not authenticate or fully validate a snapshot.
-    /// Successful decoding does not authenticate or fully validate a snapshot.
     /// The same contract applies to direct serde deserialization.
     ///
     /// # Errors
