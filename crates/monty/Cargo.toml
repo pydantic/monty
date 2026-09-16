@@ -40,7 +40,7 @@ unicode-general-category = { workspace = true }
 unicode_names2 = "1"
 unicode-normalization = "0.1"
 memchr = { workspace = true }
-smallvec = { workspace = true }
+smallvec = { version = "1.13", features = ["serde"] }
 fancy-regex = "0.17.0"
 # worker-side uuid generation for sandbox-defined classes/instances crossing the
 # boundary; supports native and wasm32-wasip1 (WASI random)

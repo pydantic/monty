@@ -295,14 +295,6 @@ fn node_is_72_bytes() {
     assert_eq!(size_of::<MontyNode>(), 72);
 }
 
-/// Two nodes live inline in every arena, so a `MontyValue` is moved through
-/// the pool and worker as a fixed 168-byte struct; bigger inline storage
-/// would push the enums carrying values past clippy's large-variant limit.
-#[test]
-fn value_is_168_bytes() {
-    assert_eq!(size_of::<MontyValue>(), 168);
-}
-
 #[test]
 fn host_size_sums_nodes() {
     let value = MontyValue::list([MontyValue::string("abc".to_owned())]);

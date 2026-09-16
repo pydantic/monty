@@ -3,7 +3,7 @@
 //! present, and a frame that could not fit is rejected before it is built.
 
 use monty_proto::{DEFAULT_MAX_DECODE_BYTES, WireArena, reset_decode_budget};
-use monty_types::{MontyNode, MontyNodes};
+use monty_types::MontyNode;
 use prost::{Message, encoding::encode_varint};
 
 /// One `ValueNode { none }` entry as `Arena.nodes` encodes it: entry key and
@@ -18,7 +18,7 @@ fn arena_bytes(hint: u32, nodes: usize) -> Vec<u8> {
     bytes
 }
 
-fn decode(bytes: &[u8]) -> Result<MontyNodes, String> {
+fn decode(bytes: &[u8]) -> Result<Vec<MontyNode>, String> {
     reset_decode_budget();
     WireArena::decode(bytes)
         .map(|arena| arena.0)
@@ -30,7 +30,7 @@ fn decode(bytes: &[u8]) -> Result<MontyNodes, String> {
 #[test]
 fn node_count_hint_is_capped_by_the_message_size() {
     let nodes = decode(&arena_bytes(u32::MAX, 2)).expect("a lying hint still decodes");
-    assert_eq!(nodes.as_slice(), [MontyNode::None, MontyNode::None]);
+    assert_eq!(nodes, vec![MontyNode::None, MontyNode::None]);
 }
 
 /// An arena whose nodes would outgrow the budget once decoded is refused up

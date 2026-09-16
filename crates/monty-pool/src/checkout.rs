@@ -1692,10 +1692,8 @@ fn flush_interval_ms(interval: Duration) -> u32 {
 
 /// Internal classification of a turn-ending event: real turn events for the
 /// caller, plus the control acks (`Ok` / `DumpResult`) used by the checkout
-/// lifecycle itself. `Turn` carries the event's inline value arena; boxing
-/// it would cost the per-turn allocation that inline storage exists to avoid.
+/// lifecycle itself.
 #[derive(Debug)]
-#[expect(clippy::large_enum_variant, reason = "one value per turn, moved once")]
 enum ControlEvent {
     Turn(TurnEvent),
     Ok,

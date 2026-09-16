@@ -714,7 +714,7 @@ fn shared_nodes_stay_shared_on_the_wire() {
 #[test]
 fn invalid_arenas_are_rejected() {
     let decode = |nodes: Vec<MontyNode>| {
-        let bytes = WireArena(nodes.into()).encode_to_vec();
+        let bytes = WireArena(nodes).encode_to_vec();
         WireArena::decode(bytes.as_slice())
             .expect("structurally valid")
             .into_graph()

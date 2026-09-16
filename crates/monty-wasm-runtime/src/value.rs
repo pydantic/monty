@@ -119,7 +119,7 @@ fn node_host_size(node: &ValueNode) -> usize {
 }
 
 /// Converts one Monty arena's nodes into a component arena.
-pub fn into_component(nodes: impl IntoIterator<Item = MontyNode>) -> Arena {
+pub fn into_component(nodes: Vec<MontyNode>) -> Arena {
     Arena {
         nodes: nodes.into_iter().map(node_into_component).collect(),
     }

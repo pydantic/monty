@@ -18,7 +18,6 @@
 use std::{error::Error, fmt, mem::size_of};
 
 use num_bigint::BigInt;
-use smallvec::SmallVec;
 
 use crate::{
     builtins::BuiltinsFunctions,
@@ -380,15 +379,8 @@ impl Eq for MontyNode {}
 /// so one arena serves every value in that message.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MontyGraph {
-    nodes: MontyNodes,
+    nodes: Vec<MontyNode>,
 }
-
-/// An arena's node storage. Two nodes live inline, so a scalar or a
-/// one-child value (a call result, a single argument, `[x]`) never touches
-/// the heap on its way across the boundary; larger arenas spill to a `Vec`.
-/// Kept at two so a `MontyValue` stays under clippy's large-variant threshold
-/// in the enums that carry it.
-pub type MontyNodes = SmallVec<[MontyNode; 2]>;
 
 impl MontyGraph {
     /// An empty arena.
@@ -401,13 +393,12 @@ impl MontyGraph {
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            nodes: SmallVec::with_capacity(capacity),
+            nodes: Vec::with_capacity(capacity),
         }
     }
 
     /// Adopts already-built nodes after validating them.
-    pub fn from_nodes(nodes: impl Into<MontyNodes>) -> Result<Self, GraphError> {
-        let nodes = nodes.into();
+    pub fn from_nodes(nodes: Vec<MontyNode>) -> Result<Self, GraphError> {
         Self::validate(&nodes)?;
         Ok(Self { nodes })
     }
@@ -493,7 +484,7 @@ impl MontyGraph {
 
     /// Takes the nodes out of the arena.
     #[must_use]
-    pub fn into_nodes(self) -> MontyNodes {
+    pub fn into_nodes(self) -> Vec<MontyNode> {
         self.nodes
     }
 
