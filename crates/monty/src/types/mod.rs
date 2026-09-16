@@ -53,7 +53,7 @@ pub(crate) use ext_function::ExtFunction;
 pub(crate) use file::OpenFile;
 pub(crate) use generic_alias::GenericAlias;
 pub(crate) use host_class::{HostClass, HostClassType, host_class_type};
-pub(crate) use instance::{BoundMethod, Instance};
+pub(crate) use instance::{BoundMethod, Instance, instance_call_copy_hook};
 pub(crate) use iter::{collect_iterable, collect_iterable_bounded};
 pub(crate) use itertools::ItertoolsIter;
 pub(crate) use list::List;

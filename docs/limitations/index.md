@@ -73,6 +73,7 @@ The following modules are present:
 | `base64`      | [base64.md](base64.md)           |
 | `binascii`    | [base64.md](base64.md)           |
 | `collections` | [collections.md](collections.md) |
+| `copy`        | [copy.md](copy.md)               |
 | `dataclasses` | [dataclasses.md](dataclasses.md) |
 | `datetime`    | [datetime.md](datetime.md)       |
 | `functools`   | [functools.md](functools.md)     |
@@ -92,7 +93,7 @@ is the exception: every name it exports is implemented.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 
-Notably absent: `enum`, `contextlib`, `time`, `io`, `copy`, `string`, `struct`, `operator`,
+Notably absent: `enum`, `contextlib`, `time`, `io`, `string`, `struct`, `operator`,
 `inspect`, `logging`, `traceback`, `hashlib`, `uuid`, `urllib`.
 Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.

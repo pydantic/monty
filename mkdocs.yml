@@ -60,6 +60,7 @@ nav:
       - Standard library modules: 'limitations/modules.md'
       - base64: 'limitations/base64.md'
       - collections: 'limitations/collections.md'
+      - copy: 'limitations/copy.md'
       - datetime: 'limitations/datetime.md'
       - functools: 'limitations/functools.md'
       - itertools: 'limitations/itertools.md'
