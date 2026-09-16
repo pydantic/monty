@@ -15,7 +15,9 @@ use monty_proto::{
     FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireFunctionCall,
     exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
 };
-use monty_types::{CallArgs, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult, NamedValues};
+use monty_types::{
+    CallArgs, ExtFunctionResult, MontyDate, MontyDateTime, MontyNode, MontyObject, NameLookupResult, NamedValues,
+};
 
 /// How long a death-expecting helper waits for the child to exit. Generous:
 /// the regression it guards is "the child never dies", so the only cost of a
@@ -1219,6 +1221,81 @@ fn exporting_a_deeply_nested_value_does_not_overflow_the_stack() {
     let expected = (0..301).fold(MontyObject::int(1), |inner, _| MontyObject::list([inner]));
     assert_eq!(value, expected);
     child.shutdown();
+}
+
+/// Export recurses once per nesting level under the interpreter's recursion
+/// guard, so a value nested past it degrades to a `<deeply nested>` repr at
+/// that depth instead of growing the worker's stack without bound, and the
+/// session stays usable.
+#[test]
+fn exporting_past_the_recursion_guard_degrades_to_a_repr() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let (_, event) = child.feed("x = [1]\nfor _ in range(2000):\n    x = [x]\nx");
+    let value = expect_complete_object(event);
+    // post-order: the innermost node comes first; the guard trips at the
+    // 1000th level, so 1000 lists wrap the repr
+    assert_eq!(value.graph.nodes()[0], MontyNode::Repr("<deeply nested>".to_owned()));
+    assert_eq!(value.graph.len(), 1001);
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// Many references to one object are many ids and one node: the arena costs
+/// four bytes a reference, so a list of 200,000 references to one list
+/// crosses under an 8 MiB limit and leaves the session usable.
+#[test]
+fn many_references_to_one_object_cost_one_node() {
+    const REFS: usize = 200_000;
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    let (_, event) = child.feed(&format!("x = [1]\n[x] * {REFS}"));
+    let value = expect_complete_object(event);
+    // `1`, `[1]` and the outer list
+    assert_eq!(value.graph.len(), 3);
+    let MontyNode::List(ids) = value.root_node() else {
+        panic!("expected a list, got {value:?}");
+    };
+    assert_eq!(ids.len(), REFS);
+    assert!(ids.iter().all(|id| *id == ids[0]));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// A cycle is one `Cycle` leaf per back-reference, so 10,000 self-referential
+/// lists are 20,001 nodes: linear, with nothing re-exported.
+#[test]
+fn cycles_export_one_placeholder_each() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    let (_, event) = child.feed("xs = [[] for _ in range(10_000)]\nfor x in xs:\n    x.append(x)\nxs");
+    let value = expect_complete_object(event);
+    assert_eq!(value.graph.len(), 20_001);
+    let cycles = value
+        .graph
+        .nodes()
+        .iter()
+        .filter(|node| matches!(node, MontyNode::Cycle(_)))
+        .count();
+    assert_eq!(cycles, 10_000);
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// Export is not checkpointed against the soft limit: a value that fits the
+/// heap but whose arena (72 bytes a node against 16 for a heap value) does
+/// not fit the hard ceiling ends the worker with the OOM exit code, which the
+/// parent classifies as a crash, rather than aborting or growing without bound.
+#[test]
+fn an_export_that_outgrows_the_hard_limit_exits_with_the_oom_code() {
+    let mut child = ChildProc::spawn_stderr_piped();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    // 100,000 ints: 2 MB in the heap, 7.2 MB as nodes plus the frame, past
+    // the 4 MiB headroom; `len(...)` of the same list completes
+    child.feed_expecting_death("list(range(100_000))");
+    let (status, stderr) = child.reap_with_stderr();
+    assert_eq!(status.code(), Some(monty_types::OOM_EXIT_CODE), "got {status:?}");
+    assert!(stderr.contains("exceeds the memory limit"), "{stderr}");
 }
 
 /// A call's arguments share one arena: an object passed twice (positionally

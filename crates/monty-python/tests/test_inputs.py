@@ -169,3 +169,21 @@ x
 
 def test_empty_inputs(monty_run: RunMonty):
     assert monty_run('1 + 1', inputs={}) == snapshot(2)
+
+
+def test_output_past_the_export_guard_degrades_to_a_repr(monty_run: RunMonty):
+    # export recurses once per nesting level under the sandbox's recursion
+    # limit, so a value nested past it arrives truncated at that depth with a
+    # `<deeply nested>` string in place of the rest, rather than failing
+    code = """
+x = [1]
+for _ in range(2000):
+    x = [x]
+x
+"""
+    result = monty_run(code)
+    assert nesting(result) == 1000
+    innermost: Any = result
+    for _ in range(1000):
+        innermost = innermost[0]
+    assert innermost == snapshot('<deeply nested>')

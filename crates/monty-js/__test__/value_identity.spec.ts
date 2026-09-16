@@ -79,6 +79,33 @@ test('a deeply nested result crosses intact', async () => {
   t.is(nesting(await run('x = [1]\nfor _ in range(300):\n    x = [x]\nx')), 301)
 })
 
+test('a result nested past the export guard degrades to a repr string', async () => {
+  // export recurses once per nesting level under the sandbox's recursion
+  // limit, so the value arrives truncated at that depth with a string in
+  // place of the rest, and the host's own walk copes with 1000 levels
+  const result = await run('x = [1]\nfor _ in range(2000):\n    x = [x]\nx')
+  t.is(nesting(result), 1000)
+  let innermost: unknown = result
+  for (let i = 0; i < 1000; i++) {
+    innermost = (innermost as unknown[])[0]
+  }
+  t.is(innermost, '<deeply nested>')
+})
+
+test('many references to one object are one host object', async () => {
+  // a reference costs one arena id, so 200,000 references to one list cross
+  // as three nodes and decode to one array referenced 200,000 times
+  const result = (await run('x = [1]\n[x] * 200_000')) as unknown[]
+  t.is(result.length, 200_000)
+  t.true(result.every((item) => item === result[0]))
+})
+
+test('many cycles are one placeholder each', async () => {
+  const result = (await run('xs = [[] for _ in range(10_000)]\nfor x in xs:\n    x.append(x)\nxs')) as unknown[][]
+  t.is(result.length, 10_000)
+  t.true(result.every((x) => x.length === 1 && x[0] === '[...]'))
+})
+
 // === host → sandbox ===
 
 test('a shared child is one sandbox object', async () => {

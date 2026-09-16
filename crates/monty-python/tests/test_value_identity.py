@@ -69,6 +69,20 @@ x
     assert result[0] is result[1]
 
 
+def test_many_references_to_one_object(monty_run: RunMonty):
+    # a reference costs one arena id, so 200,000 references to one list cross
+    # as three nodes and decode to one host object referenced 200,000 times
+    result = monty_run('x = [1]\n[x] * 200_000')
+    assert len(result) == 200_000
+    assert all(item is result[0] for item in result)
+
+
+def test_many_cycles_are_one_placeholder_each(monty_run: RunMonty):
+    result = monty_run('xs = [[] for _ in range(10_000)]\nfor x in xs:\n    x.append(x)\nxs')
+    assert len(result) == 10_000
+    assert all(x == ['[...]'] for x in result)
+
+
 @pytest.mark.parametrize(
     'code, expected',
     [
