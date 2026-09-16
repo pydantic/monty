@@ -11,7 +11,7 @@
 //!
 //! - **encode** walks the borrowed nodes and writes bytes — no intermediate
 //!   arena, no clones;
-//! - **decode** builds the `Vec<MontyNode>` straight from the wire, running
+//! - **decode** builds the [`MontyNodes`] straight from the wire, running
 //!   the semantic validation (date ranges, timedelta normalization, enum
 //!   names) *during* the parse, so untrusted bytes never exist in memory as
 //!   an unvalidated value, then checks the arena's index invariants once.
@@ -37,8 +37,8 @@ use std::{cell::Cell, fmt::Display, mem::size_of, ops::RangeInclusive};
 
 use monty_types::{
     BuiltinsFunctions, CallArgs, ClassTypeNode, GraphError, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
-    MontyDate, MontyDateTime, MontyFileHandle, MontyGraph, MontyNode, MontyTime, MontyTimeDelta, MontyTimeZone,
-    MontyType, MontyUuid, NodeId,
+    MontyDate, MontyDateTime, MontyFileHandle, MontyGraph, MontyNode, MontyNodes, MontyTime, MontyTimeDelta,
+    MontyTimeZone, MontyType, MontyUuid, NodeId,
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -57,7 +57,7 @@ use crate::{convert::ProtoConvertError, frame::DEFAULT_MAX_DECODE_BYTES, pb};
 /// pointing at class nodes) once the whole message has arrived, since prost
 /// has no end-of-message hook. Senders build it from a validated graph via `From`.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct WireArena(pub Vec<MontyNode>);
+pub struct WireArena(pub MontyNodes);
 
 impl WireArena {
     /// Wraps a graph for sending. Equivalent to `From`, named for call sites
@@ -73,7 +73,8 @@ impl WireArena {
     }
 
     /// Appends a decoded node, charging the decode budget for the vector
-    /// slot (doubling growth, as `Vec` does) and the node's own payload.
+    /// slot (doubling growth, as `Vec` does) and the node's own payload. The
+    /// inline slots are part of the arena struct, so they are never charged.
     fn push_charged(&mut self, node: MontyNode) -> Result<(), DecodeError> {
         let nodes = &mut self.0;
         if nodes.len() == nodes.capacity() {
@@ -132,11 +133,13 @@ impl Message for WireArena {
                 // A hint only: capped by the bytes left in this message (a
                 // node needs at least `MIN_NODE_WIRE_BYTES`) and charged
                 // before reserving, so a lying peer can only spend its own
-                // frame's budget.
-                if self.0.capacity() == 0 {
+                // frame's budget. Arenas that fit the inline slots need nothing.
+                if self.0.is_empty() && !self.0.spilled() {
                     let reserve = (hint as usize).min(buf.remaining() / MIN_NODE_WIRE_BYTES);
-                    charge_decode(reserve.saturating_mul(size_of::<MontyNode>()))?;
-                    self.0.reserve_exact(reserve);
+                    if reserve > self.0.capacity() {
+                        charge_decode(reserve.saturating_mul(size_of::<MontyNode>()))?;
+                        self.0.reserve_exact(reserve);
+                    }
                 }
                 Ok(())
             }

@@ -2612,6 +2612,7 @@ dependencies = [
  "postcard",
  "serde",
  "serde_json",
+ "smallvec",
  "strum 0.27.2",
  "unicode-general-category",
  "web-time",
