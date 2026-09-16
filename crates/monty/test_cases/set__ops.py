@@ -326,6 +326,15 @@ assert len(frozenset(a)) == 2
 assert len(frozenset(a) - b) == 1
 assert _hash_calls == []
 
+# a frozenset source is copied the same way, hashes and all
+a, b = _counted_pair()
+frozen_a = frozenset(a)
+_hash_calls.clear()
+assert len(set(frozen_a)) == 2
+assert len(frozenset(frozen_a)) == 2
+assert len(frozen_a - b) == 1
+assert _hash_calls == []
+
 # the result holds the right element, and comparing two sets hashes nothing either
 a = {Counted(1), Counted(2)}
 b = {Counted(2), Counted(3)}
@@ -374,6 +383,7 @@ assert len(clearing) == 0
 # exception was discarded as "not equal", so colliding elements both landed and
 # the operation returned a set where CPython raises.
 _raising = False
+_raising_eq_calls = []
 
 
 class Raising:
@@ -385,17 +395,21 @@ class Raising:
 
     def __eq__(self, other):
         if _raising:
+            _raising_eq_calls.append(self.n)
             raise ValueError('boom')
         return isinstance(other, Raising) and self.n == other.n
 
 
-def raises_boom(fn):
+def _capture_error(fn):
+    """Runs `fn` and reports the exception it raised as `(type name, message)`."""
     try:
         fn()
-    except ValueError as exc:
-        return str(exc) == 'boom'
-    return False
+    except Exception as exc:
+        return type(exc).__name__, str(exc)
+    return None
 
+
+BOOM = ('ValueError', 'boom')
 
 left = {Raising(1)}
 right = {Raising(2)}
@@ -404,25 +418,40 @@ mapping = {Raising(4): 4}
 _raising = True
 
 # operations that build the result by inserting into a fresh table
-assert raises_boom(lambda: left | right)
-assert raises_boom(lambda: left.union(right))
-assert raises_boom(lambda: frozen | right)
-assert raises_boom(lambda: {Raising(5), Raising(6)})
-assert raises_boom(lambda: {Raising(n) for n in (7, 8)})
-assert raises_boom(lambda: set([Raising(9), Raising(10)]))
-assert raises_boom(lambda: frozenset([Raising(11), Raising(12)]))
-assert raises_boom(lambda: mapping.keys() | right)
+assert _capture_error(lambda: left | right) == BOOM
+assert _capture_error(lambda: left.union(right)) == BOOM
+assert _capture_error(lambda: frozen | right) == BOOM
+assert _capture_error(lambda: {Raising(5), Raising(6)}) == BOOM
+assert _capture_error(lambda: {Raising(n) for n in (7, 8)}) == BOOM
+assert _capture_error(lambda: set([Raising(9), Raising(10)])) == BOOM
+assert _capture_error(lambda: frozenset([Raising(11), Raising(12)])) == BOOM
+assert _capture_error(lambda: mapping.keys() | right) == BOOM
 
 # operations that probe an existing set already propagated, and still do
-assert raises_boom(lambda: left & right)
-assert raises_boom(lambda: left - right)
-assert raises_boom(lambda: left ^ right)
-assert raises_boom(lambda: left.add(Raising(13)))
-assert raises_boom(lambda: left.update(right))
+assert _capture_error(lambda: left & right) == BOOM
+assert _capture_error(lambda: left - right) == BOOM
+assert _capture_error(lambda: left ^ right) == BOOM
+assert _capture_error(lambda: left.add(Raising(13))) == BOOM
+assert _capture_error(lambda: left.update(right)) == BOOM
+
+# the first raise ends the probe: `crowded` holds two colliding entries, but the
+# insertion compares against one of them and gives up
+_raising = False
+crowded = {Raising(14), Raising(15)}
+_raising = True
+
+_raising_eq_calls.clear()
+assert _capture_error(lambda: crowded | {Raising(16)}) == BOOM
+assert len(_raising_eq_calls) == 1
+
+_raising_eq_calls.clear()
+assert _capture_error(lambda: crowded.union([Raising(17)])) == BOOM
+assert len(_raising_eq_calls) == 1
 
 # the left-hand set is unchanged by the failed operations
 _raising = False
 assert len(left) == 1
+assert len(crowded) == 2
 
 
 # === a failed update releases the entries it never reached ===
@@ -442,31 +471,25 @@ class Colliding:
         return 0
 
 
-def update_trips(source):
-    target = {Tripwire()}
-    try:
-        target.update(source)
-    except ValueError as exc:
-        return str(exc) == 'tripped'
-    return False
+TRIPPED = ('ValueError', 'tripped')
 
 
-assert update_trips({Colliding(), Colliding()})
-assert update_trips(frozenset({Colliding(), Colliding()}))
-assert update_trips([Colliding(), Colliding()])
-assert update_trips(iter([Colliding(), Colliding()]))
+def _tripwire_target():
+    return {Tripwire()}
 
 
-def ior_trips():
-    target = {Tripwire()}
-    try:
-        target |= {Colliding(), Colliding()}
-    except ValueError as exc:
-        return str(exc) == 'tripped'
-    return False
+assert _capture_error(lambda: _tripwire_target().update({Colliding(), Colliding()})) == TRIPPED
+assert _capture_error(lambda: _tripwire_target().update(frozenset({Colliding(), Colliding()}))) == TRIPPED
+assert _capture_error(lambda: _tripwire_target().update([Colliding(), Colliding()])) == TRIPPED
+assert _capture_error(lambda: _tripwire_target().update(iter([Colliding(), Colliding()]))) == TRIPPED
 
 
-assert ior_trips()
+def _ior_trip():
+    target = _tripwire_target()
+    target |= {Colliding(), Colliding()}
+
+
+assert _capture_error(_ior_trip) == TRIPPED
 
 
 # === a failed set construction releases the items it already took ===
@@ -476,15 +499,9 @@ class Plain:
     pass
 
 
-def build_trips(fn):
-    try:
-        fn()
-    except TypeError as exc:
-        return str(exc) == "cannot use 'list' as a set element (unhashable type: 'list')"
-    return False
+UNHASHABLE = ('TypeError', "cannot use 'list' as a set element (unhashable type: 'list')")
 
-
-assert build_trips(lambda: {Plain(), [], Plain()})
-assert build_trips(lambda: set([Plain(), [], Plain()]))
-assert build_trips(lambda: frozenset([Plain(), [], Plain()]))
-assert build_trips(lambda: {x for x in (Plain(), [], Plain())})
+assert _capture_error(lambda: {Plain(), [], Plain()}) == UNHASHABLE
+assert _capture_error(lambda: set([Plain(), [], Plain()])) == UNHASHABLE
+assert _capture_error(lambda: frozenset([Plain(), [], Plain()])) == UNHASHABLE
+assert _capture_error(lambda: {x for x in (Plain(), [], Plain())}) == UNHASHABLE
