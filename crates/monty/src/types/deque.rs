@@ -9,7 +9,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
-    resource_checks::{check_estimated_size, check_repeat_size},
+    resource_checks::{check_estimated_size, check_repeat_size, check_value_buffer_growth},
     types::{
         LazyHeapSet, Type,
         list::repr_items_fmt,
@@ -263,8 +263,10 @@ impl<'h> HeapRead<'h, Deque> {
     /// Appends to the right, evicting from the left if `maxlen` is reached.
     ///
     /// Ownership of `item` transfers to the deque (refcount already handled by
-    /// the caller); any evicted item is released here.
-    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) {
+    /// the caller); any evicted item is released here. A push that would grow the
+    /// ring past the memory limit fails with `MemoryError`, dropping `item`.
+    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
+        let item = self.check_push(vm, item)?;
         if matches!(item, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
         }
@@ -275,10 +277,12 @@ impl<'h> HeapRead<'h, Deque> {
         if let Some(value) = evicted {
             value.drop_with(vm);
         }
+        Ok(())
     }
 
     /// Appends to the left, evicting from the right if `maxlen` is reached.
-    pub fn appendleft(&mut self, vm: &mut VM<'h>, item: Value) {
+    pub fn appendleft(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
+        let item = self.check_push(vm, item)?;
         if matches!(item, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
         }
@@ -288,6 +292,22 @@ impl<'h> HeapRead<'h, Deque> {
         let evicted = evict_back_if_full(this);
         if let Some(value) = evicted {
             value.drop_with(vm);
+        }
+        Ok(())
+    }
+
+    /// Preflights the ring growth a single-element push would cause, dropping
+    /// `item` if the deque cannot grow.
+    ///
+    /// `maxlen` is no exemption: `append` and `appendleft` push before they
+    /// evict, so a bounded deque whose ring is full still reallocates.
+    fn check_push(&self, vm: &mut VM<'h>, item: Value) -> RunResult<Value> {
+        let this = self.get(vm.heap);
+        let (len, capacity) = (this.items.len(), this.items.capacity());
+        if len < capacity {
+            Ok(item)
+        } else {
+            check_value_buffer_growth(vm, len, capacity, item)
         }
     }
 
@@ -741,12 +761,12 @@ fn call_deque_method<'h>(
     match method {
         StaticStrings::Append => {
             let item = args.get_one_arg("deque.append", vm.heap)?;
-            deque.append(vm, item);
+            deque.append(vm, item)?;
             Ok(Value::None)
         }
         StaticStrings::Appendleft => {
             let item = args.get_one_arg("deque.appendleft", vm.heap)?;
-            deque.appendleft(vm, item);
+            deque.appendleft(vm, item)?;
             Ok(Value::None)
         }
         StaticStrings::Pop => {
@@ -1029,7 +1049,7 @@ pub(crate) fn deque_extend<'h>(
         iterable.drop_with(vm);
         defer_drop_mut!(items, vm);
         for item in items.by_ref() {
-            deque_push(deque, item, end, vm);
+            deque_push(deque, item, end, vm)?;
         }
         Ok(())
     } else {
@@ -1046,14 +1066,14 @@ pub(crate) fn deque_extend<'h>(
         let retained = deque.get(vm.heap).maxlen().map_or(hint, |maxlen| hint.min(maxlen));
         check_estimated_size(retained.saturating_mul(VALUE_SIZE), &vm.heap.tracker)?;
         while let Some(item) = iter.py_next(vm)? {
-            deque_push(deque, item, end, vm);
+            deque_push(deque, item, end, vm)?;
         }
         Ok(())
     }
 }
 
 /// Appends one item to whichever end the extension targets.
-fn deque_push<'h>(deque: &mut HeapRead<'h, Deque>, item: Value, end: ExtendEnd, vm: &mut VM<'h>) {
+fn deque_push<'h>(deque: &mut HeapRead<'h, Deque>, item: Value, end: ExtendEnd, vm: &mut VM<'h>) -> RunResult<()> {
     match end {
         ExtendEnd::Right => deque.append(vm, item),
         ExtendEnd::Left => deque.appendleft(vm, item),
@@ -1139,7 +1159,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Deque> {
             let HeapReadOutput::Deque(mut dest) = vm.heap.read(copy_id) else {
                 unreachable!("copy was allocated as a deque")
             };
-            dest.append(vm, copied);
+            dest.append(vm, copied)?;
         }
         let (copy, _) = guard.into_parts();
         Ok(copy)

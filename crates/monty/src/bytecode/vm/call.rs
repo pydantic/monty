@@ -15,18 +15,19 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions, BuiltinsFunctionsExt},
     bytecode::FrameExit,
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunError},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     function::{ExactPositionalCall, Function},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
     modules::dataclasses,
     os_dispatch::{PendingEffect, release_pending_effect},
+    resource_checks::check_estimated_size,
     types::{
         Dict, Instance, PyTrait, Type, bytes::call_bytes_method, construct_namedtuple, instance::class_name,
         partial::partial_call_args, str::call_str_method,
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// Result of executing a call or attribute method.
@@ -695,12 +696,17 @@ impl VM<'_> {
         let this = self;
         defer_drop!(args_tuple, this);
         defer_drop!(callable, this);
+        // Building the argument pack is fallible (a refused `*args` clone) and the
+        // kwargs are handed on only once it succeeds, so the guard releases them on
+        // the error paths in between.
+        let mut pending_kwargs = DropGuard::new(kwargs, this);
+        let (pending, this) = pending_kwargs.as_parts_mut();
 
         // Extract positional args from tuple
-        let copied_args = this.extract_args_tuple(args_tuple);
+        let copied_args = this.extract_args_tuple(args_tuple)?;
 
         // Build ArgValues from positional args and optional kwargs
-        let args = if let Some(kwargs_ref) = kwargs {
+        let args = if let Some(kwargs_ref) = pending.take() {
             this.build_args_with_kwargs(copied_args, kwargs_ref)?
         } else {
             Self::build_args_positional_only(copied_args)
@@ -722,18 +728,24 @@ impl VM<'_> {
     ) -> Result<CallResult, RunError> {
         let this = self;
         defer_drop!(args_tuple, this);
+        // Building the argument pack is fallible (a refused `*args` clone, a kwargs
+        // dict that cannot grow) and the receiver and kwargs are handed on only once
+        // it succeeds, so the guard releases them on the error paths in between.
+        let mut pending = DropGuard::new((obj, kwargs), this);
+        let (pending_values, this) = pending.as_parts_mut();
 
         // Extract positional args from tuple
-        let copied_args = this.extract_args_tuple_for_attr(args_tuple);
+        let copied_args = this.extract_args_tuple_for_attr(args_tuple)?;
 
         // Build ArgValues from positional args and optional kwargs
-        let args = if let Some(kwargs_ref) = kwargs {
+        let args = if let Some(kwargs_ref) = pending_values.1.take() {
             this.build_args_with_kwargs_for_attr(copied_args, kwargs_ref)?
         } else {
             Self::build_args_positional_only(copied_args)
         };
 
         // Call the method (args_tuple guard drops at scope exit)
+        let ((obj, _), this) = pending.into_parts();
         this.call_attr(obj, name_id, args)
     }
 
@@ -742,14 +754,14 @@ impl VM<'_> {
     /// # Panics
     /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
     /// the compiler always emits `ListToTuple` before `CallFunctionExtended`.
-    fn extract_args_tuple(&mut self, args_tuple: &Value) -> Vec<Value> {
+    fn extract_args_tuple(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
         let Value::Ref(id) = args_tuple else {
             unreachable!("CallFunctionExtended: args_tuple must be a Ref")
         };
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
+        clone_args_from_tuple(tuple.as_slice(), self)
     }
 
     /// Builds `ArgValues` with kwargs for `CallFunctionExtended`.
@@ -773,6 +785,11 @@ impl VM<'_> {
             .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
             .collect();
 
+        // `copied_args` travels unguarded through this `?`, which is sound only
+        // because `from_pairs` cannot fail here: it sizes both dict buffers to the
+        // pair count up front so the growth preflight is a no-op, and keys taken out
+        // of a dict are already known hashable. Size that dict lazily and this leaks
+        // the args.
         let kwargs_values = if copied_kwargs.is_empty() {
             KwargsValues::Empty
         } else {
@@ -815,14 +832,14 @@ impl VM<'_> {
     /// # Panics
     /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
     /// the compiler always emits `ListToTuple` before `CallAttrExtended`.
-    fn extract_args_tuple_for_attr(&mut self, args_tuple: &Value) -> Vec<Value> {
+    fn extract_args_tuple_for_attr(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
         let Value::Ref(id) = args_tuple else {
             unreachable!("CallAttrExtended: args_tuple must be a Ref")
         };
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallAttrExtended: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
+        clone_args_from_tuple(tuple.as_slice(), self)
     }
 
     /// Builds `ArgValues` with kwargs for `CallAttrExtended`.
@@ -850,6 +867,11 @@ impl VM<'_> {
             .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
             .collect();
 
+        // `copied_args` travels unguarded through this `?`, which is sound only
+        // because `from_pairs` cannot fail here: it sizes both dict buffers to the
+        // pair count up front so the growth preflight is a no-op, and keys taken out
+        // of a dict are already known hashable. Size that dict lazily and this leaks
+        // the args.
         let kwargs_values = if copied_kwargs.is_empty() {
             KwargsValues::Empty
         } else {
@@ -1236,6 +1258,21 @@ impl VM<'_> {
             _ => false,
         }
     }
+}
+
+/// Clones a `*args` tuple's contents into the owned buffer a call needs.
+///
+/// The clone is one allocation the size of the whole tuple, so it is preflighted:
+/// past the allocator's hard-limit headroom that single allocation kills the worker
+/// rather than raising `MemoryError`.
+fn clone_args_from_tuple(items: &[Value], vm: &impl ContainsHeap) -> RunResult<Vec<Value>> {
+    // One spare slot so `ArgValues::prepend` can put `self` in front of a bound
+    // method's arguments without reallocating; that insert has no preflight of its own.
+    let slots = items.len().saturating_add(1);
+    check_estimated_size(slots.saturating_mul(VALUE_SIZE), &vm.heap().tracker)?;
+    let mut args = Vec::with_capacity(slots);
+    args.extend(items.iter().map(|v| v.clone_with_heap(vm)));
+    Ok(args)
 }
 
 /// Asserts a callable popped off the stack by an exact-positional-call fast

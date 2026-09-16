@@ -39,7 +39,7 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropWithContext},
-    intern::{Interns, StaticStrings, StringId},
+    intern::{Interns, StaticStrings},
     value::{EitherStr, Value},
 };
 
@@ -337,7 +337,7 @@ impl ParamSpec {
 pub(crate) struct Param {
     pub name: &'static str,
     /// Executor-independent identity used for keyword matching.
-    pub keyword_name: Option<KeywordName>,
+    pub keyword_name: Option<StaticStrings>,
     pub kind: ParamKind,
     /// True when the param has no default.
     pub required: bool,
@@ -564,33 +564,15 @@ impl<C: ContainsHeap> DropWithContext<C> for IterState {
     }
 }
 
-/// Executor-independent identity for a keyword-matchable parameter.
-#[derive(Clone, Copy)]
-pub(crate) enum KeywordName {
-    /// A globally reserved one-byte ASCII string.
-    Ascii(u8),
-    /// A string recognized by the static registry.
-    Static(StaticStrings),
-}
-
-impl KeywordName {
-    /// Checks a call-site key without resolving static text on the hot path.
-    fn matches(self, key: &EitherStr, interns: &Interns) -> bool {
-        match self {
-            Self::Ascii(byte) => key.matches(StringId::from_ascii(byte), interns),
-            Self::Static(value) => key.static_string(interns) == Some(value),
-        }
-    }
-}
-
 /// Finds the parameter named by a keyword in declaration order.
 ///
 /// Plain positional-only parameters have no keyword identity and do not match.
 fn find_param<'s>(spec: &'s ParamSpec, key: &EitherStr, interns: &Interns) -> Option<(usize, &'s Param)> {
+    let name = key.static_string(interns)?;
     spec.params
         .iter()
         .enumerate()
-        .find(|(_, param)| param.keyword_name.is_some_and(|name| name.matches(key, interns)))
+        .find(|(_, param)| param.keyword_name == Some(name))
 }
 
 /// How a duplicate (slot already filled) kwarg should be reported.

@@ -7,6 +7,7 @@ use std::{
 
 use ahash::AHashSet;
 use hashbrown::HashTable;
+use monty_types::{ResourceError, ResourceTracker};
 use serde::ser::SerializeStruct;
 use smallvec::{SmallVec, smallvec};
 
@@ -33,6 +34,7 @@ use crate::{
         },
         copy::{Memo, PyDeepCopy, clone_pair, deep_copy, deep_copy_pair},
     },
+    resource_checks::check_entry_table_growth,
     types::Type,
     value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };
@@ -152,6 +154,31 @@ struct DictEntry {
     value: Value,
     /// the hash is needed here for correct use of insert_unique
     hash: u64,
+}
+
+/// Whether an insertion preflights the memory limit before growing.
+///
+/// [`GrowthCheck::Skip`] is for dicts a sandboxed program cannot grow — module
+/// namespaces, whose construction cannot report a `MemoryError` (see
+/// `Module::set_attr`) and whose few entries can never clear the hard-limit headroom.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GrowthCheck {
+    Preflight,
+    Skip,
+}
+
+/// Preflights the growth one insertion would cause in a dict's two buffers.
+///
+/// The entry vector and the index table beside it can reallocate on the same
+/// insertion, so [`check_entry_table_growth`] sums their increments into one check.
+fn check_dict_growth(dict: &Dict, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+    check_entry_table_growth(
+        dict.entries.len(),
+        dict.entries.capacity(),
+        mem::size_of::<DictEntry>(),
+        &dict.indices,
+        tracker,
+    )
 }
 
 impl Dict {
@@ -327,6 +354,11 @@ impl Dict {
             old_entry.key.drop_with(vm);
             Ok(Some(old_entry.value))
         } else {
+            if let Err(err) = check_dict_growth(self, &vm.heap.tracker) {
+                entry.key.drop_with(vm);
+                entry.value.drop_with(vm);
+                return Err(err.into());
+            }
             let index = self.entries.len();
             self.entries.push(entry);
             self.indices.insert_unique(hash, index, |&i| self.entries[i].hash);
@@ -553,6 +585,12 @@ impl Dict {
     pub fn set(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
         vm.heap.protect_mut(self).set(key, value, vm)
     }
+
+    /// [`Dict::set`] without the memory preflight — see [`GrowthCheck::Skip`]
+    /// for when that is the right call.
+    pub fn set_without_growth_check(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+        vm.heap.protect_mut(self).set_without_growth_check(key, value, vm)
+    }
 }
 
 impl<'h> HeapRead<'h, Dict> {
@@ -567,6 +605,16 @@ impl<'h> HeapRead<'h, Dict> {
     /// Returns Err if key is unhashable or the insertion exceeds the memory limit;
     /// either way `key` and `value` are released, so the caller must not drop them.
     pub fn set(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.set_with(key, value, vm, GrowthCheck::Preflight)
+    }
+
+    /// [`HeapRead::set`] without the memory preflight — see [`GrowthCheck::Skip`]
+    /// for when that is the right call.
+    pub fn set_without_growth_check(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.set_with(key, value, vm, GrowthCheck::Skip)
+    }
+
+    fn set_with(&mut self, key: Value, value: Value, vm: &mut VM<'h>, growth: GrowthCheck) -> RunResult<Option<Value>> {
         // Track if we're adding a reference for GC optimization
         if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
@@ -593,6 +641,13 @@ impl<'h> HeapRead<'h, Dict> {
             // Transfer ownership of the old value to caller (no clone needed)
             Ok(Some(old_entry.value))
         } else {
+            if growth == GrowthCheck::Preflight
+                && let Err(err) = check_dict_growth(self.get(vm.heap), &vm.heap.tracker)
+            {
+                entry.key.drop_with(vm);
+                entry.value.drop_with(vm);
+                return Err(err.into());
+            }
             let this = self.get_mut(vm.heap);
             let index = this.entries.len();
             this.entries.push(entry);
@@ -1170,6 +1225,20 @@ impl<'a, 'h> DictIter<'a, 'h> {
         self.current_key = entry.key.clone_with_heap(vm.heap);
         self.current_value = entry.value.clone_with_heap(vm.heap);
         Ok(Some((&self.current_key, &self.current_value)))
+    }
+
+    /// Advances the iterator and returns a borrow of the next key.
+    ///
+    /// Prefer this for key-only operations so dictionary values are not cloned.
+    /// The returned reference is valid until the next call that advances the
+    /// iterator, or until the iterator is dropped.
+    pub(crate) fn next_key<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<&'i Value>> {
+        let Some(entry_index) = self.advance(vm)? else {
+            return Ok(None);
+        };
+        let entry = &self.dict.get(vm.heap).entries[entry_index];
+        self.current_key = entry.key.clone_with_heap(vm.heap);
+        Ok(Some(&self.current_key))
     }
 
     /// Advances the iterator and returns a borrow of the next value.

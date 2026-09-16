@@ -666,7 +666,8 @@ pub enum StaticStrings {
     PycachePrefix,
 
     // ==========================
-    // sys.float_info fields
+    // sys.float_info fields; `Min`/`Max` are shared with the `min`/`max` class
+    // constants of the `datetime` classes.
     FloatInfo,
     #[strum(serialize = "sys.float_info")]
     SysFloatInfo,
@@ -1107,9 +1108,8 @@ pub enum StaticStrings {
     Groupdict,
 
     // ==========================
-    // gc module strings (only reachable when the `test-hooks` feature is enabled,
-    // but interned unconditionally so the variant ordering — and therefore every
-    // `StringId` used elsewhere — stays stable across feature combinations).
+    // gc module strings, recognized in every build but only exposed when
+    // the `test-hooks` feature is enabled.
     /// Module name for `import gc`.
     Gc,
     /// `gc.collect()` function.
@@ -1546,7 +1546,7 @@ pub enum StaticStrings {
     /// `tzname()` method of `time`, `datetime` and `timezone`. (`dst()` reuses
     /// the `Dst` variant already interned for the `os` kwarg of the same name.)
     Tzname,
-    /// `timespec` keyword of `time.isoformat()`.
+    /// `timespec` keyword of `time.isoformat()` and `datetime.isoformat()`.
     Timespec,
     /// `functools.partial` type.
     Partial,
@@ -1574,9 +1574,7 @@ pub enum StaticStrings {
     Ignorechars,
 
     // ==========================
-    // Batch-three itertools module strings. Appended at the enum end like every
-    // block before it: inserting beside the earlier itertools variants would
-    // shift every later serialized `StringId`.
+    // Additional itertools module strings.
     /// `itertools.accumulate()` function.
     Accumulate,
     /// `zip_longest(fillvalue=...)` keyword.
@@ -1587,9 +1585,7 @@ pub enum StaticStrings {
     ZipLongest,
 
     // ==========================
-    // math summation and product functions. Appended at the enum end rather
-    // than beside the other math names: discriminants are serialized
-    // `StringId`s, so mid-enum insertion would shift every later id.
+    // math summation and product functions.
     Hypot,
     Dist,
     Fsum,
@@ -1598,8 +1594,7 @@ pub enum StaticStrings {
     Fma,
 
     // ==========================
-    // The rest of `binascii`, appended after the math block for the same
-    // reason: those discriminants already ship, so these take fresh ids.
+    // Additional binascii module strings.
     /// `binascii.crc_hqx()` function.
     #[strum(serialize = "crc_hqx")]
     CrcHqx,
@@ -1729,7 +1724,7 @@ pub enum StaticStrings {
     State,
 
     // ==========================
-    // copy module strings, appended at the enum end for the same reason.
+    // copy module strings.
     /// `copy.deepcopy()`. The module name and `copy.copy()` reuse [`Self::Copy`].
     Deepcopy,
     /// `memo` parameter of `copy.deepcopy()`.
@@ -1737,6 +1732,13 @@ pub enum StaticStrings {
     /// `_nil` parameter of `copy.deepcopy()`, CPython's private sentinel.
     #[strum(serialize = "_nil")]
     NilSentinel,
+
+    // ==========================
+    // Additional datetime strings.
+    /// `datetime.combine()` class method.
+    Combine,
+    /// `resolution` class constant of the `datetime` classes.
+    Resolution,
 }
 
 /// One immutable interned string with directly accessible dispatch metadata.

@@ -50,8 +50,12 @@ impl Module {
     /// Attribute names are interned lazily when the module materializes them.
     pub fn set_attr(&mut self, name: StaticStrings, value: Value, vm: &mut VM<'_>) {
         let key = Value::InternString(vm.interns.intern_static(name));
-        // Unwrap is safe because InternString keys are always hashable
-        self.attrs.set(key, value, vm).unwrap();
+        // Module construction is infallible (`StandardLib::create`,
+        // `VM::load_module`), so this insert must not be able to fail: skipping
+        // the growth preflight leaves hashing, and `InternString` always hashes.
+        self.attrs
+            .set_without_growth_check(key, value, vm)
+            .expect("module attribute keys are interned, so hashing cannot fail");
     }
 
     /// Returns whether this module has any heap references in its attributes.

@@ -69,6 +69,25 @@ except TypeError as exc:
 # checked against whatever CPython the host runs. That glibc-matching behaviour
 # lives in `tests/datetime_format.rs`. See limitations/datetime.md.
 
+# === %f renders microseconds, not chrono's nanoseconds ===
+assert datetime.datetime(2020, 1, 2, 3, 4, 5, 123456).strftime('%f') == '123456'
+assert datetime.datetime(2020, 1, 2, 3, 4, 5, 7).strftime('%f') == '000007'
+assert datetime.datetime(2020, 1, 2, 3, 4, 5, 123456).strftime('%H:%M:%S.%f') == '03:04:05.123456'
+assert datetime.date(2020, 1, 2).strftime('%f') == '000000'
+assert datetime.time(1, 2, 3, 4).strftime('%f') == '000004'
+assert f'{datetime.datetime(2020, 1, 2, 0, 0, 0, 99):%f}' == '000099'
+# an escaped percent is a literal, so the `f` after it is not a directive
+assert datetime.datetime(2020, 1, 2).strftime('%%f') == '%f'
+assert datetime.datetime(2020, 1, 2).strftime('100%% %f') == '100% 000000'
+assert datetime.datetime(2020, 1, 2).strftime('%%%f') == '%000000'
+
+# === time directives on a bare date read as midnight ===
+_d_mid = datetime.date(2024, 6, 15)
+assert _d_mid.strftime('%H:%M:%S') == '00:00:00'
+assert _d_mid.strftime('%I %p') == '12 AM'
+assert _d_mid.strftime('%Y-%m-%d %H:%M') == '2024-06-15 00:00'
+assert f'{_d_mid:%d/%m/%Y %H:%M}' == '15/06/2024 00:00'
+
 # === f-string / format() of date & datetime (strftime via __format__) ===
 _d = datetime.date(2024, 6, 15)
 _dt = datetime.datetime(2024, 6, 15, 10, 30, 45)

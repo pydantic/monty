@@ -672,29 +672,26 @@ impl Field {
 
     /// Executor-independent tag used to match this parameter by keyword.
     fn keyword_name_expr(&self, never_matchable: bool) -> TokenStream {
-        let name = self.ident.to_string();
         if never_matchable || matches!(self.kind, FieldKind::PosOnly) && self.static_string.is_none() {
             quote! { ::std::option::Option::None }
-        } else if self.static_string.is_none() && name.len() == 1 && name.is_ascii() {
-            let byte = name.as_bytes()[0];
-            quote! { ::std::option::Option::Some(crate::args::KeywordName::Ascii(#byte)) }
         } else {
             let variant = self.static_string_variant();
-            quote! {
-                ::std::option::Option::Some(crate::args::KeywordName::Static(
-                    crate::intern::StaticStrings::#variant,
-                ))
-            }
+            quote! { ::std::option::Option::Some(crate::intern::StaticStrings::#variant) }
         }
     }
 
-    /// `StaticStrings::PascalCase(ident)` or the explicit override.
+    /// The ASCII-letter or PascalCase variant for a field, unless explicitly overridden.
     fn static_string_variant(&self) -> Ident {
         if let Some(explicit) = &self.static_string {
             explicit.clone()
         } else {
-            let pascal = snake_to_pascal(&self.ident.to_string());
-            Ident::new(&pascal, self.ident.span())
+            let name = self.ident.to_string();
+            let variant = match name.as_bytes() {
+                [byte @ b'a'..=b'z'] => format!("AsciiLower{}", char::from(byte.to_ascii_uppercase())),
+                [b'A'..=b'Z'] => format!("Ascii{name}"),
+                _ => snake_to_pascal(&name),
+            };
+            Ident::new(&variant, self.ident.span())
         }
     }
 }
