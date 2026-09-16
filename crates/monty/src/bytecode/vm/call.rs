@@ -696,12 +696,18 @@ impl VM<'_> {
         let this = self;
         defer_drop!(args_tuple, this);
         defer_drop!(callable, this);
+        // Any kwargs are handed on only once the argument pack is built, and
+        // building it is fallible — a refused `*args` clone — so the guard holds
+        // them until then. Without it they are dropped without their refcounts.
+        let mut pending_kwargs = DropGuard::new(kwargs, this);
+        let (pending, this) = pending_kwargs.as_parts_mut();
 
         // Extract positional args from tuple
         let copied_args = this.extract_args_tuple(args_tuple)?;
 
-        // Build ArgValues from positional args and optional kwargs
-        let args = if let Some(kwargs_ref) = kwargs {
+        // Build ArgValues from positional args and optional kwargs, the kwargs
+        // leaving the guard as `build_args_with_kwargs` takes them on.
+        let args = if let Some(kwargs_ref) = pending.take() {
             this.build_args_with_kwargs(copied_args, kwargs_ref)?
         } else {
             Self::build_args_positional_only(copied_args)
