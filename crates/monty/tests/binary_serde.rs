@@ -150,7 +150,7 @@ fn static_interns_deserialize_as_unknown_text() {
     let loaded: MontyRun = postcard::from_bytes(&bytes).unwrap();
     assert_eq!(
         loaded.run_no_limits(vec![]).unwrap(),
-        MontyObject::String("mystery".to_owned()),
+        MontyObject::string("mystery".to_owned()),
     );
 }
 
@@ -158,10 +158,10 @@ fn static_interns_deserialize_as_unknown_text() {
 #[test]
 fn reserved_strings_round_trip_without_local_entries() {
     let mut code = String::from("['',");
-    let mut expected = vec![MontyObject::String(String::new())];
+    let mut expected = vec![MontyObject::string(String::new())];
     for byte in 0..128u8 {
         write!(code, "'\\x{byte:02x}',").unwrap();
-        expected.push(MontyObject::String(char::from(byte).to_string()));
+        expected.push(MontyObject::string(char::from(byte).to_string()));
     }
     code.push(']');
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
@@ -170,7 +170,7 @@ fn reserved_strings_round_trip_without_local_entries() {
         assert!(entry.as_str().unwrap().len() > 1);
     }
     let loaded = round_trip(&runner);
-    assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::List(expected));
+    assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::list(expected));
 }
 
 /// Heap-only allocation paths, builders and static attributes reuse the empty ID.
@@ -195,8 +195,8 @@ assert len({value: 1 for value in values}) == 1
     .unwrap();
     let loaded = round_trip(&runner);
     assert_eq!(
-        loaded.run_no_limits(vec![MontyObject::String(String::new())]).unwrap(),
-        MontyObject::List(vec![MontyObject::Bool(true); 13]),
+        loaded.run_no_limits(vec![MontyObject::string(String::new())]).unwrap(),
+        MontyObject::list(vec![MontyObject::bool(true); 13]),
     );
 }
 
@@ -220,8 +220,8 @@ fn execution_interns_module_static_strings() {
         0
     );
     let loaded: MontyRun = postcard::from_bytes(&bytes).unwrap();
-    assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(1));
-    assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(1));
+    assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::int(1));
+    assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::int(1));
 }
 
 /// Each module can lazily construct its complete namespace after loading,
@@ -254,9 +254,9 @@ fn module_imports_after_snapshot() {
         )
         .unwrap();
         let loaded = round_trip(&runner);
-        assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(42));
+        assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::int(42));
         let loaded = round_trip(&loaded);
-        assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(42));
+        assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::int(42));
     }
 }
 
