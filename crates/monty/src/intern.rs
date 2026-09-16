@@ -868,6 +868,8 @@ pub enum StaticStrings {
     Dist,
     /// `dklen` parameter of `hashlib.pbkdf2_hmac()`.
     Dklen,
+    /// `field(doc=...)`, CPython's per-field docstring.
+    Doc,
     /// `sys.dont_write_bytecode` attribute.
     DontWriteBytecode,
     /// `re.DOTALL` flag
