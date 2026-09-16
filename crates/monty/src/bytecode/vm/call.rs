@@ -788,6 +788,11 @@ impl VM<'_> {
             .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
             .collect();
 
+        // `copied_args` is already cloned and travels unguarded through this `?`,
+        // which is sound only because the call cannot fail: `from_pairs` sizes
+        // both dict buffers to the pair count up front, so every insert sees
+        // room and the growth preflight is a no-op, and a key already in a dict
+        // has already hashed. Size that dict lazily and this leaks the args.
         let kwargs_values = if copied_kwargs.is_empty() {
             KwargsValues::Empty
         } else {
@@ -865,6 +870,11 @@ impl VM<'_> {
             .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
             .collect();
 
+        // `copied_args` is already cloned and travels unguarded through this `?`,
+        // which is sound only because the call cannot fail: `from_pairs` sizes
+        // both dict buffers to the pair count up front, so every insert sees
+        // room and the growth preflight is a no-op, and a key already in a dict
+        // has already hashed. Size that dict lazily and this leaks the args.
         let kwargs_values = if copied_kwargs.is_empty() {
             KwargsValues::Empty
         } else {
