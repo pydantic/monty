@@ -61,21 +61,11 @@ impl SetStorage {
         }
     }
 
-    /// Creates a SetStorage from a vector of (value, hash) pairs.
-    ///
-    /// This is used to avoid borrow conflicts when we need to copy another set's
-    /// contents and then perform operations requiring mutable heap access.
-    /// The caller is responsible for handling reference counting.
-    fn from_entries(entries: Vec<(Value, u64)>) -> Self {
-        Self::from_entry_vec(
-            entries
-                .into_iter()
-                .map(|(value, hash)| SetEntry { value, hash })
-                .collect(),
-        )
-    }
-
     /// Indexes entries that already carry their hashes, in the order given.
+    ///
+    /// Used to copy another set's contents before an operation that needs
+    /// mutable heap access, sidestepping the borrow conflict. The caller owns
+    /// the entries until they land here.
     ///
     /// The table is sized to the entry count: a `HashTable` keeps the buckets
     /// it grew to across `clear` and `remove`, so a set rebuilt this way costs
@@ -89,10 +79,16 @@ impl SetStorage {
     }
 
     /// Clones entries with proper reference counting.
-    fn clone_entries(&self, heap: &impl ContainsHeap) -> Vec<(Value, u64)> {
+    ///
+    /// The returned entries are owned: they implement [`DropWithContext`], so
+    /// a caller that may abandon them partway must hold them in a guard.
+    fn clone_entries(&self, heap: &impl ContainsHeap) -> Vec<SetEntry> {
         self.entries
             .iter()
-            .map(|e| (e.value.clone_with_heap(heap), e.hash))
+            .map(|e| SetEntry {
+                value: e.value.clone_with_heap(heap),
+                hash: e.hash,
+            })
             .collect()
     }
 
@@ -1016,19 +1012,29 @@ impl<'h> HeapRead<'h, Set> {
 
         if let Some(entries) = entries_opt {
             other.drop_with(vm);
-            for (value, hash) in entries {
-                self.add_with_hash(value, hash, vm)?;
-            }
-            return Ok(());
+            return self.extend_from_entries(entries, vm);
         }
 
         // Fall back to iterable
         let temp_set = Set::from_iterable(other, vm)?;
-        let entries: Vec<SetEntry> = temp_set.0.entries.into_iter().collect();
-        for entry in entries {
+        self.extend_from_entries(temp_set.0.entries, vm)
+    }
+
+    /// Inserts owned entries in order, releasing any that are left if one fails.
+    ///
+    /// Each insertion can run user `__eq__` and so raise, which would leave the
+    /// rest of the entries holding references nobody drops — a plain `for` loop
+    /// over the `Vec` would leak them. The guard on the source iterator settles
+    /// whatever the loop did not reach.
+    fn extend_from_entries(&mut self, entries: Vec<SetEntry>, vm: &mut VM<'h>) -> RunResult<()> {
+        let entries = entries.into_iter();
+        defer_drop_mut!(entries, vm);
+        loop {
+            let Some(entry) = entries.next() else {
+                return Ok(());
+            };
             self.add_with_hash(entry.value, entry.hash, vm)?;
         }
-        Ok(())
     }
 
     /// Set algebra operations (union, intersection, difference, symmetric_difference)
@@ -1064,7 +1070,7 @@ impl<'h> HeapRead<'h, Set> {
         };
 
         let other_storage = if let Some(entries) = entries_opt {
-            SetStorage::from_entries(entries)
+            SetStorage::from_entry_vec(entries)
         } else {
             let temp = Set::from_iterable(other.clone_with_heap(vm), vm)?;
             temp.0
@@ -1199,7 +1205,7 @@ impl<'h> HeapRead<'h, FrozenSet> {
         };
 
         let other_storage = if let Some(entries) = entries_opt {
-            SetStorage::from_entries(entries)
+            SetStorage::from_entry_vec(entries)
         } else {
             let temp = Set::from_iterable(other.clone_with_heap(vm), vm)?;
             temp.0
@@ -1443,7 +1449,7 @@ impl Set {
 
         if let Some(entries) = entries_opt {
             value.drop_with(vm);
-            return Ok(SetStorage::from_entries(entries));
+            return Ok(SetStorage::from_entry_vec(entries));
         }
 
         // Convert iterable to set
@@ -1694,10 +1700,10 @@ fn get_storage_from_set_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Opt
     };
 
     match vm.heap.read(*id) {
-        HeapReadOutput::Set(set) => Ok(Some(SetStorage::from_entries(
+        HeapReadOutput::Set(set) => Ok(Some(SetStorage::from_entry_vec(
             set.get(vm.heap).0.clone_entries(vm.heap),
         ))),
-        HeapReadOutput::FrozenSet(set) => Ok(Some(SetStorage::from_entries(
+        HeapReadOutput::FrozenSet(set) => Ok(Some(SetStorage::from_entry_vec(
             set.get(vm.heap).storage.clone_entries(vm.heap),
         ))),
         HeapReadOutput::DictKeysView(view) => {

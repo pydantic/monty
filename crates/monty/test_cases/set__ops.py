@@ -424,6 +424,51 @@ assert raises_boom(lambda: left.update(right))
 _raising = False
 assert len(left) == 1
 
+
+# === a failed update releases the entries it never reached ===
+# Regression: `update` copied the source's entries out and consumed them in a
+# plain loop, so a raising insertion abandoned the rest of the copies and their
+# reference counts went with them.
+class Tripwire:
+    def __hash__(self):
+        return 0
+
+    def __eq__(self, other):
+        raise ValueError('tripped')
+
+
+class Colliding:
+    def __hash__(self):
+        return 0
+
+
+def update_trips(source):
+    target = {Tripwire()}
+    try:
+        target.update(source)
+    except ValueError as exc:
+        return str(exc) == 'tripped'
+    return False
+
+
+assert update_trips({Colliding(), Colliding()})
+assert update_trips(frozenset({Colliding(), Colliding()}))
+assert update_trips([Colliding(), Colliding()])
+assert update_trips(iter([Colliding(), Colliding()]))
+
+
+def ior_trips():
+    target = {Tripwire()}
+    try:
+        target |= {Colliding(), Colliding()}
+    except ValueError as exc:
+        return str(exc) == 'tripped'
+    return False
+
+
+assert ior_trips()
+
+
 # === a failed set construction releases the items it already took ===
 # Regression: the set literal and `set(iterable)` built into an unguarded local,
 # so an item that could not be inserted stranded every item before it.
