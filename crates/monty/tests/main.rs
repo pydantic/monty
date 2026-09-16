@@ -180,10 +180,7 @@ fn external_function_in_deepcopy_raises_not_implemented() {
     )
     .unwrap();
     let err = ex
-        .run_no_limits(vec![MontyObject::Function {
-            name: "ext_fn".to_owned(),
-            docstring: None,
-        }])
+        .run_no_limits(vec![MontyObject::function("ext_fn", None)])
         .unwrap_err();
     assert_eq!(
         err.to_string(),

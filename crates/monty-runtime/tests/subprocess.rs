@@ -889,7 +889,7 @@ fn deep_copy_of_a_near_limit_dict_raises_rather_than_dying() {
     assert_eq!(expect_error(event).exc_type, "MemoryError");
     // The session survives, which is the whole point: a hard-limit exit would
     // have taken the worker with it.
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -1036,7 +1036,7 @@ fn copying_a_large_set_fails_softly() {
         assert_eq!(error.exc_type, "MemoryError", "{expr}");
 
         // the session survives, i.e. the copy never reached the hard ceiling
-        assert_eq!(child.feed_complete("len(s)"), MontyObject::Int(400_000), "{expr}");
+        assert_eq!(child.feed_complete("len(s)"), MontyObject::int(400_000), "{expr}");
         child.shutdown();
     }
 }
@@ -1053,9 +1053,9 @@ fn copying_an_emptied_set_costs_nothing() {
 
     assert_eq!(
         child.feed_complete("copies = [set(s) for _ in range(20)]\nlen(copies)"),
-        MontyObject::Int(20)
+        MontyObject::int(20)
     );
-    assert_eq!(child.feed_complete("len(copies[0])"), MontyObject::Int(0));
+    assert_eq!(child.feed_complete("len(copies[0])"), MontyObject::int(0));
     child.shutdown();
 }
 
@@ -1076,7 +1076,7 @@ fn refused_set_copy_releases_its_source() {
     child.feed_complete("s = None");
     assert_eq!(
         child.feed_complete("len(set(range(400_000)))"),
-        MontyObject::Int(400_000)
+        MontyObject::int(400_000)
     );
     child.shutdown();
 }
@@ -1392,7 +1392,7 @@ fn incremental_container_growth_stays_graceful() {
             // that hit the hard limit would be gone by now.
             assert_eq!(
                 child.feed_complete("1 + 1"),
-                MontyObject::Int(2),
+                MontyObject::int(2),
                 "{limit_mb}MB: {code}"
             );
             child.shutdown();
@@ -1438,7 +1438,7 @@ fn native_value_buffers_stay_graceful() {
         let (_, event) = child.feed(code);
         let error = expect_error(event);
         assert_eq!(error.exc_type, "MemoryError", "{code}");
-        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
         child.shutdown();
     }
 }
@@ -1496,7 +1496,7 @@ fn importing_under_memory_pressure_stays_graceful() {
     assert_eq!(expect_error(event).exc_type, "MemoryError");
     // The session outliving the error is the whole point: a panicking
     // `set_attr` would have taken the worker with it.
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -1512,11 +1512,11 @@ fn container_growth_preflight_leaves_ordinary_work_alone() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(32 * 1024 * 1024));
     let code = "from collections import deque\nl = []\nd = {}\ns = set()\nq = deque()\nfor x in range(50_000):\n    l.append(x)\n    l.insert(len(l), x)\n    d[x] = x\n    s.add(x)\n    q.append(x)\n    q.appendleft(x)\nlen(l) + len(d) + len(s) + len(q)";
-    assert_eq!(child.feed_complete(code), MontyObject::Int(300_000));
+    assert_eq!(child.feed_complete(code), MontyObject::int(300_000));
     // The JSON array loop polls memory per element as well as checking its
     // buffer, so ordinary parsing has two ways to be refused, not one.
     let json_code = "import json\nlen(json.loads('[' + '0,' * 50_000 + '0]'))";
-    assert_eq!(child.feed_complete(json_code), MontyObject::Int(50_001));
+    assert_eq!(child.feed_complete(json_code), MontyObject::int(50_001));
     child.shutdown();
 }
 
@@ -1547,7 +1547,7 @@ fn full_bounded_deque_growth_stays_graceful() {
     let (_, event) = child.feed(code);
     assert_eq!(expect_error(event).exc_type, "MemoryError");
     // The session outliving the error is the whole point.
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -1563,7 +1563,7 @@ fn oversized_split_stays_graceful() {
     child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
     let (_, event) = child.feed("import re\nlen(re.split(',', ',' * 1_500_000))");
     assert_eq!(expect_error(event).exc_type, "MemoryError");
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -1581,13 +1581,13 @@ fn refused_findall_leaves_no_partial_result() {
         child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
         assert_eq!(
             child.feed_complete("import re\ns = 'ab' * 1_000_000\nlen(s)"),
-            MontyObject::Int(2_000_000)
+            MontyObject::int(2_000_000)
         );
         let (_, event) = child.feed(&format!("len(re.findall({pattern}, s))"));
         assert_eq!(expect_error(event).exc_type, "MemoryError", "{pattern}");
         assert_eq!(
             child.feed_complete("len([0] * 500_000)"),
-            MontyObject::Int(500_000),
+            MontyObject::int(500_000),
             "{pattern}"
         );
         child.shutdown();

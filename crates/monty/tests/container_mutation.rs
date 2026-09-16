@@ -10,7 +10,7 @@
 
 use insta::{allow_duplicates, assert_snapshot};
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyException, MontyObject};
+use monty_types::{CompileOptions, ExcType, MontyException, MontyNode, MontyObject};
 
 /// Two colliding elements in `s`, whose `__eq__` clears `s` once `armed`.
 ///
@@ -127,8 +127,9 @@ fn run_err(preamble: &str, expr: &str) -> MontyException {
 /// Runs `preamble` followed by `repr(expr)`, returning the repr as a string.
 fn run_repr(preamble: &str, expr: &str) -> String {
     let (head, tail) = expr.rsplit_once('\n').unwrap_or(("", expr));
-    match run(preamble, &format!("{head}\nrepr({tail})")).expect("expected the run to succeed") {
-        MontyObject::String(repr) => repr,
+    let value = run(preamble, &format!("{head}\nrepr({tail})")).expect("expected the run to succeed");
+    match value.root_node() {
+        MontyNode::String(repr) => repr.clone(),
         other => panic!("expected a string, got {other:?}"),
     }
 }
