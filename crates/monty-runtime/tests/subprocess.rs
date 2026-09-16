@@ -1274,6 +1274,15 @@ fn native_value_buffers_stay_graceful() {
         ("import re\nlen(re.findall('a', 'a' * 2_000_000))", 24),
         ("import re\nlen(re.findall('(a)', 'a' * 2_000_000))", 24),
         ("import json\nlen(json.loads('[' + '0,' * 1_500_000 + '0]'))", 24),
+        // Elements that cost more on the heap than in the source: an empty
+        // container is three bytes of JSON and a heap entry apiece, so a window
+        // between the buffer's doublings outweighs the headroom on its own.
+        ("import json\nlen(json.loads('[' + '[],' * 700_000 + '[]]'))", 24),
+        ("import json\nlen(json.loads('[' + '{},' * 700_000 + '{}]'))", 24),
+        (
+            "import json\nlen(json.loads('[' + '\"aaaaaaaa\",' * 900_000 + '\"a\"]'))",
+            24,
+        ),
     ];
 
     for (code, limit_mb) in cases {
@@ -1358,6 +1367,10 @@ fn container_growth_preflight_leaves_ordinary_work_alone() {
     child.create_repl_with(configure_with_max_memory(32 * 1024 * 1024));
     let code = "from collections import deque\nl = []\nd = {}\ns = set()\nq = deque()\nfor x in range(50_000):\n    l.append(x)\n    l.insert(len(l), x)\n    d[x] = x\n    s.add(x)\n    q.append(x)\n    q.appendleft(x)\nlen(l) + len(d) + len(s) + len(q)";
     assert_eq!(child.feed_complete(code), MontyObject::Int(300_000));
+    // The JSON array loop polls memory per element as well as checking its
+    // buffer, so ordinary parsing has two ways to be refused, not one.
+    let json_code = "import json\nlen(json.loads('[' + '0,' * 50_000 + '0]'))";
+    assert_eq!(child.feed_complete(json_code), MontyObject::Int(50_001));
     child.shutdown();
 }
 
