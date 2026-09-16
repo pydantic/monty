@@ -372,8 +372,8 @@ properties that real CPython does not provide, per the caveat above.
     A version mismatch is reported as such, naming both versions, so a stale
     snapshot is distinguishable from a corrupt one.
     Callers must establish that snapshots are unmodified output from a trusted producer before loading.
-    Invalid snapshots need not be rejected cleanly: they have no correctness or availability guarantees, but must not
-    cause undefined behaviour; see [snapshot security](../security.md#deserializing-snapshots).
+    Invalid snapshots need not be rejected cleanly: they have no correctness or availability guarantees;
+    see [snapshot security](../security.md#deserializing-snapshots).
 - **`feed_start` snapshots are live cursors, not owned state.** The execution
     state lives in the worker, so only one suspension is live per session, each
     snapshot may be resumed at most once (a second resume raises

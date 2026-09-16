@@ -74,7 +74,7 @@ sandbox's working directory (the first feed's first mount by default; it then pe
 and restored later — including on a different worker or machine — with `Checkout::restore`.
 The caller must establish that restored bytes are unmodified output from a trusted, compatible Monty producer.
 Neither the pool nor the interpreter authenticates snapshots; successful loading does not establish validity.
-Invalid snapshots have no correctness or availability guarantees, but must not cause undefined behaviour.
+Invalid snapshots have no correctness or availability guarantees.
 
 ## Protections over in-process execution
 

@@ -84,9 +84,9 @@ if __name__ == '__main__':
 
 `session.load_session()` and `session.load_snapshot()` require unmodified snapshots from a trusted, compatible Monty producer.
 The caller must establish provenance and integrity before loading; Monty does not authenticate snapshots.
-Invalid snapshots have no correctness or availability guarantees, but must not cause undefined behaviour.
+Invalid snapshots have no correctness or availability guarantees.
 Successful loading does not establish validity.
-See the [snapshot security documentation](https://pydantic.dev/docs/monty/security/#deserializing-snapshots).
+See the [snapshot security documentation](https://pydantic.dev/docs/monty/concepts/security/#deserializing-snapshots).
 
 ## Working directory
 

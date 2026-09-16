@@ -415,7 +415,7 @@ Use trusted storage or verify a MAC/signature before loading bytes received thro
 A checksum supplied alongside untrusted bytes is not authentication.
 
 Invalid snapshots have no correctness or availability guarantees: loading or using them may return incorrect results,
-panic, terminate the process, or fail to terminate, but must not cause undefined behaviour.
+panic, terminate the process, or fail to terminate.
 Successful decoding does not establish that a snapshot is valid.
 Worker isolation does not replace verification: restored state carries resource limits and can request host callbacks.
 These rules also apply to direct serde deserialization in Rust.
@@ -424,9 +424,9 @@ and serialized bytes, not the Python source.
 
 ## The parts that are most security-critical
 
-If you are reviewing or contributing to Monty, two files carry most of the weight:
+If you are reviewing or contributing to Monty, two areas carry most of the weight:
 
-- `crates/monty/src/heap/mod.rs` — the heap and reference counting.
+- `crates/monty/src/heap/` — the heap arena, free list and reference counting.
 - `crates/monty-fs/src/mount_table.rs` — the mount boundary: the `Dir` descriptor every filesystem operation runs
     against, with `path_security.rs` beside it holding the virtual-path policy.
 

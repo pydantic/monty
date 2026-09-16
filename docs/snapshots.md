@@ -22,7 +22,7 @@ Using the wrong loader for a dump's kind raises, and both loaders are valid only
 Only restore unmodified snapshots from a trusted, compatible Monty producer.
 The caller must establish provenance and integrity before loading; Monty does not authenticate snapshots or fully
 validate their contents.
-Invalid snapshots have no correctness or availability guarantees, but must not cause undefined behaviour.
+Invalid snapshots have no correctness or availability guarantees.
 Use trusted storage or verify a MAC/signature before restoring bytes received through an untrusted channel.
 See [snapshot security](security.md#deserializing-snapshots) for the trust boundary, including direct Rust deserialization.
 

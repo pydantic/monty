@@ -586,8 +586,8 @@ impl Checkout {
     ///
     /// # Snapshot trust
     /// The caller must verify the dump's provenance and integrity before restoring it.
-    /// Invalid snapshots have no correctness or availability guarantees, but must not
-    /// cause undefined behaviour. Successful loading is not authentication or validation.
+    /// Invalid snapshots have no correctness or availability guarantees.
+    /// Successful loading is not authentication or validation.
     pub async fn restore(
         &mut self,
         state: Vec<u8>,

@@ -724,8 +724,8 @@ class MontySession:
 
         Only load unmodified bytes from a trusted, compatible Monty producer.
         The caller must establish provenance and integrity; Monty does not authenticate
-        snapshots. Invalid snapshots have no correctness or availability guarantees,
-        but must not cause undefined behaviour. Successful loading does not establish validity.
+        snapshots. Invalid snapshots have no correctness or availability guarantees.
+        Successful loading does not establish validity.
 
         The dump restores its own `script_name` /
         limits / type-check state (the `checkout()` config for those is not
@@ -1073,7 +1073,11 @@ class AsyncMontySession:
         """
 
     async def load_session(self, state: bytes) -> None:
-        """Async counterpart of `MontySession.load_session`: restore a session between feeds."""
+        """
+        Async counterpart of `MontySession.load_session`: restore a session between feeds.
+
+        The snapshot trust requirements of `MontySession.load_session` also apply here.
+        """
 
     async def load_snapshot(
         self,
@@ -1086,6 +1090,7 @@ class AsyncMontySession:
     ) -> AsyncSnapshot:
         """
         Async counterpart of `MontySession.load_snapshot`.
+        The snapshot trust requirements of `MontySession.load_session` also apply here.
 
         Restore a snapshot generated while a block of code is running (e.g.
         after `feed_start`) and return the re-announced snapshot to resume.

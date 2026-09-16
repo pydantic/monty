@@ -127,7 +127,7 @@ followed, even inside the mount (see `limitations/filesystem.md`) — do not
 check-then-use this removes.
 
 **Changes to `mount_table.rs` or `path_security.rs` require careful security
-review.** `heap/mod.rs` and the mount boundary are the most security-critical
+review.** The `crates/monty/src/heap/` module and the mount boundary are the most security-critical
 code in the codebase.
 
 ## Subprocess isolation (`monty-proto`, `monty subprocess`, `monty-pool`)
@@ -194,7 +194,9 @@ discriminating operand would cost measurable dispatch time.
 
 All heap-allocated Python objects (lists, dicts, strings, etc.) are stored in a paged arena (`Heap`). The `HeapReader` API provides **compile-time safe** access to heap data. This is the primary mechanism for reading and mutating heap objects throughout the codebase.
 
-**`heap/mod.rs` is a critical safety boundary.** It contains `unsafe` code that underpins the soundness of the entire `HeapReader`/`HeapRead` system (pointer arithmetic, `UnsafeCell` access, reader-count invariants). Do NOT modify `heap/mod.rs` without explicit user approval. Changes to this file require careful review of the safety invariants documented in the code comments.
+**The `crates/monty/src/heap/` module is a critical safety boundary.** Its `mod.rs`, `stable_heap.rs` and `free_list.rs` contain `unsafe` code that underpins the soundness of the entire `HeapReader`/`HeapRead` system (pointer arithmetic, `UnsafeCell` access, reader-count invariants).
+Do NOT modify files under `crates/monty/src/heap/` without explicit user approval.
+Changes to this module require careful review of the safety invariants documented in the code comments.
 
 #### Core concepts
 

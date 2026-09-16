@@ -1,6 +1,6 @@
 ---
 name: review-security
-description: Security review of the current branch against its merge base — sandbox escapes, memory errors, panics and resource-limit bypasses. Use when reviewing changes for security risk, or before merging anything touching heap/mod.rs, path_security.rs, the wire protocol or the pool.
+description: Security review of the current branch against its merge base — sandbox escapes, memory errors, panics and resource-limit bypasses. Use when reviewing changes for security risk, or before merging anything touching the heap/ module, path_security.rs, the wire protocol or the pool.
 ---
 
 # Security review
@@ -45,8 +45,8 @@ code (`monty-pool`, `monty-proto` decoding, `monty-fs`, the bindings), or in a R
 embedder calling the `monty` crate in-process, the same bug takes down the application.
 **Scrutinise those hardest**, especially anything handling a frame from a child.
 
-`crates/monty/src/heap/mod.rs` and `crates/monty-fs/src/path_security.rs` are the two most
-security-critical files; any change to either needs careful justification. Also check the
+The `crates/monty/src/heap/` module and `crates/monty-fs/src/path_security.rs` are
+security-critical; any change to either needs careful justification. Also check the
 public API: could a `pydantic_monty` or `@pydantic/monty` user misuse this to expose
 their host?
 

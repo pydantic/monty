@@ -287,8 +287,8 @@ export class MontySession {
    *
    * Only load unmodified bytes from a trusted, compatible Monty producer.
    * The caller must establish provenance and integrity; Monty does not authenticate
-   * snapshots. Invalid snapshots have no correctness or availability guarantees,
-   * but must not cause undefined behaviour. Successful loading does not establish validity.
+   * snapshots. Invalid snapshots have no correctness or availability guarantees.
+   * Successful loading does not establish validity.
    */
   async loadSession(state: Uint8Array): Promise<void> {
     this.claimFresh()

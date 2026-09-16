@@ -270,9 +270,10 @@ any convertible value (`resume()` resolves a name to an external function
 only, and with no argument leaves the lookup unresolved: `NameError` for a
 plain name, `AttributeError` when `objectId` is set).
 
-Only restore unmodified snapshots from a trusted, compatible Monty producer.
-The caller must establish provenance and integrity before loading; Monty does not authenticate snapshots.
-Invalid snapshots have no correctness or availability guarantees, but must not cause undefined behaviour.
+Only restore unmodified session dumps and suspended snapshots from a trusted, compatible Monty producer.
+The caller must establish provenance and integrity before calling either `loadSession` or `loadSnapshot`;
+Monty does not authenticate the bytes.
+Invalid dumps and snapshots have no correctness or availability guarantees.
 Successful loading does not establish validity.
 
 `snapshot.dump()` serializes the paused worker to bytes; a fresh session's

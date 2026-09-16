@@ -113,7 +113,7 @@ assert_eq!(result, MontyObject::Int(42));
 
 For both `Dump::load` and direct serde deserialization, the caller must establish that the bytes are unmodified output from a trusted, compatible Monty producer.
 Monty does not authenticate snapshots or fully validate their contents.
-Invalid snapshots have no correctness or availability guarantees: loading or using them may panic, abort, hang, or produce incorrect results, but must not cause undefined behaviour.
+Invalid snapshots have no correctness or availability guarantees: loading or using them may panic, abort, hang, or produce incorrect results.
 Successful decoding is not evidence of authenticity or validity.
 
 Async host functions are supported too: `FunctionCall::resume_pending` continues execution with a pending future the sandboxed code can `await`; when all tasks are blocked, execution yields `RunProgress::ResolveFutures` for the host to supply results. When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the result can pass it to `FunctionCall::resume_eager` and skip the `ResolveFutures` round trip.
