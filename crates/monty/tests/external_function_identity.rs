@@ -5,11 +5,11 @@
 //! share sandbox identity regardless of which conversion path produced them.
 
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
-use monty_types::{CompileOptions, MontyValue, NameLookupResult, PrintWriter, ResourceTracker};
+use monty_types::{CompileOptions, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
 
-/// Builds two `MontyValue::Function` inputs with the same `__name__` ("foo")
+/// Builds two `MontyObject::Function` inputs with the same `__name__` ("foo")
 /// and runs `code` against them as inputs `a` and `b`.
-fn run_with_same_named_callable_inputs(code: &str) -> MontyValue {
+fn run_with_same_named_callable_inputs(code: &str) -> MontyObject {
     let runner = MontyRun::new(
         code.to_owned(),
         "test.py",
@@ -19,8 +19,8 @@ fn run_with_same_named_callable_inputs(code: &str) -> MontyValue {
     .unwrap();
     runner
         .run_no_limits(vec![
-            MontyValue::function("foo".to_owned(), None),
-            MontyValue::function("foo".to_owned(), None),
+            MontyObject::function("foo".to_owned(), None),
+            MontyObject::function("foo".to_owned(), None),
         ])
         .unwrap()
 }
@@ -31,7 +31,11 @@ fn same_named_callables_share_identity() {
     let result = run_with_same_named_callable_inputs("(a is b, a == b, id(a) == id(b))");
     assert_eq!(
         result,
-        MontyValue::tuple([MontyValue::bool(true), MontyValue::bool(true), MontyValue::bool(true),]),
+        MontyObject::tuple([
+            MontyObject::bool(true),
+            MontyObject::bool(true),
+            MontyObject::bool(true),
+        ]),
     );
 }
 
@@ -41,7 +45,7 @@ fn same_named_callables_share_identity_when_name_is_interned() {
     let result = run_with_same_named_callable_inputs("foo = None\n(a is b, a == b)");
     assert_eq!(
         result,
-        MontyValue::tuple([MontyValue::bool(true), MontyValue::bool(true)]),
+        MontyObject::tuple([MontyObject::bool(true), MontyObject::bool(true)]),
     );
 }
 
@@ -51,7 +55,7 @@ fn same_named_callables_share_dict_key() {
     let result = run_with_same_named_callable_inputs("d = {a: 42, b: 43}\n(len(d), d[a], d[b])");
     assert_eq!(
         result,
-        MontyValue::tuple([MontyValue::int(1), MontyValue::int(43), MontyValue::int(43)]),
+        MontyObject::tuple([MontyObject::int(1), MontyObject::int(43), MontyObject::int(43)]),
     );
 }
 
@@ -67,21 +71,21 @@ fn different_named_callables_remain_distinct() {
     .unwrap();
     let result = runner
         .run_no_limits(vec![
-            MontyValue::function("foo".to_owned(), None),
-            MontyValue::function("bar".to_owned(), None),
+            MontyObject::function("foo".to_owned(), None),
+            MontyObject::function("bar".to_owned(), None),
         ])
         .unwrap();
     assert_eq!(
         result,
-        MontyValue::tuple([
-            MontyValue::bool(false),
-            MontyValue::bool(false),
-            MontyValue::bool(false),
+        MontyObject::tuple([
+            MontyObject::bool(false),
+            MontyObject::bool(false),
+            MontyObject::bool(false),
         ]),
     );
 }
 
-/// An external function exports as a `MontyValue::Function` even when its name
+/// An external function exports as a `MontyObject::Function` even when its name
 /// also appears in source.
 #[test]
 fn callable_exports_as_function_object() {
@@ -93,15 +97,15 @@ fn callable_exports_as_function_object() {
     )
     .unwrap();
     let result = runner
-        .run_no_limits(vec![MontyValue::function("foo".to_owned(), None)])
+        .run_no_limits(vec![MontyObject::function("foo".to_owned(), None)])
         .unwrap();
-    assert_eq!(result, MontyValue::function("foo".to_owned(), None),);
+    assert_eq!(result, MontyObject::function("foo".to_owned(), None),);
 }
 
 /// Same callable, same export, regardless of source mention.
 #[test]
 fn callable_export_stable_across_source_mention() {
-    let func_input = || vec![MontyValue::function("foo".to_owned(), None)];
+    let func_input = || vec![MontyObject::function("foo".to_owned(), None)];
     let r1 = MontyRun::new(
         "x".to_owned(),
         "test.py",
@@ -134,7 +138,7 @@ fn repl_extfunction_identity_across_feeds() {
     assert_eq!(lookup.name, "foobar");
     let progress = lookup
         .resume(
-            NameLookupResult::Value(MontyValue::function("ext_fn".to_owned(), None)),
+            NameLookupResult::Value(MontyObject::function("ext_fn".to_owned(), None)),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -152,7 +156,7 @@ fn repl_extfunction_identity_across_feeds() {
     assert_eq!(lookup.name, "barbaz");
     let progress = lookup
         .resume(
-            NameLookupResult::Value(MontyValue::function("ext_fn".to_owned(), None)),
+            NameLookupResult::Value(MontyObject::function("ext_fn".to_owned(), None)),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -161,11 +165,11 @@ fn repl_extfunction_identity_across_feeds() {
     // The second conversion reuses the live function object cached by name.
     assert_eq!(
         result,
-        MontyValue::tuple([
-            MontyValue::bool(true),
-            MontyValue::bool(true),
-            MontyValue::bool(true),
-            MontyValue::bool(true),
+        MontyObject::tuple([
+            MontyObject::bool(true),
+            MontyObject::bool(true),
+            MontyObject::bool(true),
+            MontyObject::bool(true),
         ]),
     );
 }
@@ -182,31 +186,31 @@ fn extfunction_cache_is_rebuilt_after_snapshot_load() {
     .unwrap();
     let progress = runner
         .start(
-            vec![MontyValue::function("ext_fn".to_owned(), None)],
+            vec![MontyObject::function("ext_fn".to_owned(), None)],
             ResourceTracker::default(),
             PrintWriter::Stdout,
         )
         .unwrap();
     let bytes = dump("test.py", None, SessionRef::Running(&progress)).unwrap();
-    assert_eq!(resume_snapshot_identity_test(progress), MontyValue::bool(true));
+    assert_eq!(resume_snapshot_identity_test(progress), MontyObject::bool(true));
 
     let Session::Running(progress) = Dump::load(&bytes).unwrap().state else {
         panic!("dumped a running session")
     };
     let progress = *progress;
-    assert_eq!(resume_snapshot_identity_test(progress), MontyValue::bool(true));
+    assert_eq!(resume_snapshot_identity_test(progress), MontyObject::bool(true));
 }
 
 /// Completes the snapshot cache test while preserving refcount cleanup.
-fn resume_snapshot_identity_test(progress: RunProgress) -> MontyValue {
+fn resume_snapshot_identity_test(progress: RunProgress) -> MontyObject {
     let call = progress.into_function_call().expect("expected call to 'gate'");
     assert_eq!(call.function_name, "gate");
 
-    let progress = call.resume(MontyValue::none(), PrintWriter::Stdout).unwrap();
+    let progress = call.resume(MontyObject::none(), PrintWriter::Stdout).unwrap();
     let lookup = progress.into_name_lookup().expect("expected NameLookup for 'missing'");
     let progress = lookup
         .resume(
-            NameLookupResult::Value(MontyValue::function("ext_fn".to_owned(), None)),
+            NameLookupResult::Value(MontyObject::function("ext_fn".to_owned(), None)),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -222,7 +226,7 @@ fn repl_extfunction_cache_does_not_retain_freed_id() {
     let lookup = progress.into_name_lookup().expect("expected NameLookup for 'foobar'");
     let progress = lookup
         .resume(
-            NameLookupResult::Value(MontyValue::function("ext_fn".to_owned(), None)),
+            NameLookupResult::Value(MontyObject::function("ext_fn".to_owned(), None)),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -243,7 +247,7 @@ fn repl_extfunction_cache_does_not_retain_freed_id() {
     let lookup = progress.into_name_lookup().expect("expected NameLookup for 'barbaz'");
     let progress = lookup
         .resume(
-            NameLookupResult::Value(MontyValue::function("ext_fn".to_owned(), None)),
+            NameLookupResult::Value(MontyObject::function("ext_fn".to_owned(), None)),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -251,7 +255,7 @@ fn repl_extfunction_cache_does_not_retain_freed_id() {
 
     assert_eq!(
         result,
-        MontyValue::tuple([MontyValue::bool(false), MontyValue::bool(false)]),
+        MontyObject::tuple([MontyObject::bool(false), MontyObject::bool(false)]),
     );
 }
 
@@ -280,7 +284,7 @@ y = missing
     .unwrap();
     let progress = runner
         .start(
-            vec![MontyValue::function("ext_fn".to_owned(), None)],
+            vec![MontyObject::function("ext_fn".to_owned(), None)],
             ResourceTracker::default(),
             PrintWriter::Stdout,
         )
@@ -290,7 +294,7 @@ y = missing
     assert_eq!(lookup.name, "missing");
     let progress = lookup
         .resume(
-            NameLookupResult::Value(MontyValue::function("ext_fn".to_owned(), None)),
+            NameLookupResult::Value(MontyObject::function("ext_fn".to_owned(), None)),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -298,9 +302,9 @@ y = missing
 
     assert_eq!(
         result,
-        MontyValue::tuple([
-            MontyValue::bool(false),
-            MontyValue::string("<function 'ext_fn' external>".to_owned()),
+        MontyObject::tuple([
+            MontyObject::bool(false),
+            MontyObject::string("<function 'ext_fn' external>".to_owned()),
         ]),
     );
 }

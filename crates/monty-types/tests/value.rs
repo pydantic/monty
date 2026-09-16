@@ -1,132 +1,132 @@
-//! Tests for `MontyValue`: Python truthiness, type names, `repr()`,
+//! Tests for `MontyObject`: Python truthiness, type names, `repr()`,
 //! structural equality and the typed accessors.
 
 use monty_types::{
-    ExcType, MontyDate, MontyDateTime, MontyGraph, MontyNode, MontyTimeDelta, MontyTimeZone, MontyUuid, MontyValue,
+    ExcType, MontyDate, MontyDateTime, MontyGraph, MontyNode, MontyObject, MontyTimeDelta, MontyTimeZone, MontyUuid,
 };
 
-/// Tests for `MontyValue::is_truthy()` - Python's truth value testing rules.
+/// Tests for `MontyObject::is_truthy()` - Python's truth value testing rules.
 
 #[test]
 fn is_truthy_none_is_falsy() {
-    assert!(!MontyValue::none().is_truthy());
+    assert!(!MontyObject::none().is_truthy());
 }
 
 #[test]
 fn is_truthy_ellipsis_is_truthy() {
-    assert!(MontyValue::ellipsis().is_truthy());
+    assert!(MontyObject::ellipsis().is_truthy());
 }
 
 #[test]
 fn is_truthy_false_is_falsy() {
-    assert!(!MontyValue::bool(false).is_truthy());
+    assert!(!MontyObject::bool(false).is_truthy());
 }
 
 #[test]
 fn is_truthy_true_is_truthy() {
-    assert!(MontyValue::bool(true).is_truthy());
+    assert!(MontyObject::bool(true).is_truthy());
 }
 
 #[test]
 fn is_truthy_zero_int_is_falsy() {
-    assert!(!MontyValue::int(0).is_truthy());
+    assert!(!MontyObject::int(0).is_truthy());
 }
 
 #[test]
 fn is_truthy_nonzero_int_is_truthy() {
-    assert!(MontyValue::int(1).is_truthy());
-    assert!(MontyValue::int(-1).is_truthy());
-    assert!(MontyValue::int(42).is_truthy());
+    assert!(MontyObject::int(1).is_truthy());
+    assert!(MontyObject::int(-1).is_truthy());
+    assert!(MontyObject::int(42).is_truthy());
 }
 
 #[test]
 fn is_truthy_zero_float_is_falsy() {
-    assert!(!MontyValue::float(0.0).is_truthy());
+    assert!(!MontyObject::float(0.0).is_truthy());
 }
 
 #[test]
 fn is_truthy_nonzero_float_is_truthy() {
-    assert!(MontyValue::float(1.0).is_truthy());
-    assert!(MontyValue::float(-0.5).is_truthy());
-    assert!(MontyValue::float(f64::INFINITY).is_truthy());
+    assert!(MontyObject::float(1.0).is_truthy());
+    assert!(MontyObject::float(-0.5).is_truthy());
+    assert!(MontyObject::float(f64::INFINITY).is_truthy());
 }
 
 #[test]
 fn is_truthy_empty_string_is_falsy() {
-    assert!(!MontyValue::string(String::new()).is_truthy());
+    assert!(!MontyObject::string(String::new()).is_truthy());
 }
 
 #[test]
 fn is_truthy_nonempty_string_is_truthy() {
-    assert!(MontyValue::string("hello".to_string()).is_truthy());
-    assert!(MontyValue::string(" ".to_string()).is_truthy());
+    assert!(MontyObject::string("hello".to_string()).is_truthy());
+    assert!(MontyObject::string(" ".to_string()).is_truthy());
 }
 
 #[test]
 fn is_truthy_empty_bytes_is_falsy() {
-    assert!(!MontyValue::bytes(vec![]).is_truthy());
+    assert!(!MontyObject::bytes(vec![]).is_truthy());
 }
 
 #[test]
 fn is_truthy_nonempty_bytes_is_truthy() {
-    assert!(MontyValue::bytes(vec![0]).is_truthy());
-    assert!(MontyValue::bytes(vec![1, 2, 3]).is_truthy());
+    assert!(MontyObject::bytes(vec![0]).is_truthy());
+    assert!(MontyObject::bytes(vec![1, 2, 3]).is_truthy());
 }
 
 #[test]
 fn is_truthy_empty_list_is_falsy() {
-    assert!(!MontyValue::list([]).is_truthy());
+    assert!(!MontyObject::list([]).is_truthy());
 }
 
 #[test]
 fn is_truthy_nonempty_list_is_truthy() {
-    assert!(MontyValue::list([MontyValue::int(1)]).is_truthy());
+    assert!(MontyObject::list([MontyObject::int(1)]).is_truthy());
 }
 
 #[test]
 fn is_truthy_empty_tuple_is_falsy() {
-    assert!(!MontyValue::tuple([]).is_truthy());
+    assert!(!MontyObject::tuple([]).is_truthy());
 }
 
 #[test]
 fn is_truthy_nonempty_tuple_is_truthy() {
-    assert!(MontyValue::tuple([MontyValue::int(1)]).is_truthy());
+    assert!(MontyObject::tuple([MontyObject::int(1)]).is_truthy());
 }
 
 #[test]
 fn is_truthy_empty_dict_is_falsy() {
-    assert!(!MontyValue::dict([]).is_truthy());
+    assert!(!MontyObject::dict([]).is_truthy());
 }
 
 #[test]
 fn is_truthy_nonempty_dict_is_truthy() {
-    let dict = vec![(MontyValue::string("key".to_string()), MontyValue::int(1))];
-    assert!(MontyValue::dict(dict).is_truthy());
+    let dict = vec![(MontyObject::string("key".to_string()), MontyObject::int(1))];
+    assert!(MontyObject::dict(dict).is_truthy());
 }
 
-/// Tests for `MontyValue::type_name()` - Python type names.
+/// Tests for `MontyObject::type_name()` - Python type names.
 
 #[test]
 fn type_name() {
-    assert_eq!(MontyValue::none().type_name(), "NoneType");
-    assert_eq!(MontyValue::ellipsis().type_name(), "ellipsis");
-    assert_eq!(MontyValue::bool(true).type_name(), "bool");
-    assert_eq!(MontyValue::bool(false).type_name(), "bool");
-    assert_eq!(MontyValue::int(0).type_name(), "int");
-    assert_eq!(MontyValue::int(42).type_name(), "int");
-    assert_eq!(MontyValue::float(0.0).type_name(), "float");
-    assert_eq!(MontyValue::float(2.5).type_name(), "float");
-    assert_eq!(MontyValue::string(String::new()).type_name(), "str");
-    assert_eq!(MontyValue::string("hello".to_string()).type_name(), "str");
-    assert_eq!(MontyValue::bytes(vec![]).type_name(), "bytes");
-    assert_eq!(MontyValue::bytes(vec![1, 2, 3]).type_name(), "bytes");
-    assert_eq!(MontyValue::list([]).type_name(), "list");
-    assert_eq!(MontyValue::tuple([]).type_name(), "tuple");
-    assert_eq!(MontyValue::dict([]).type_name(), "dict");
-    assert_eq!(MontyValue::set([]).type_name(), "set");
-    assert_eq!(MontyValue::frozenset([]).type_name(), "frozenset");
+    assert_eq!(MontyObject::none().type_name(), "NoneType");
+    assert_eq!(MontyObject::ellipsis().type_name(), "ellipsis");
+    assert_eq!(MontyObject::bool(true).type_name(), "bool");
+    assert_eq!(MontyObject::bool(false).type_name(), "bool");
+    assert_eq!(MontyObject::int(0).type_name(), "int");
+    assert_eq!(MontyObject::int(42).type_name(), "int");
+    assert_eq!(MontyObject::float(0.0).type_name(), "float");
+    assert_eq!(MontyObject::float(2.5).type_name(), "float");
+    assert_eq!(MontyObject::string(String::new()).type_name(), "str");
+    assert_eq!(MontyObject::string("hello".to_string()).type_name(), "str");
+    assert_eq!(MontyObject::bytes(vec![]).type_name(), "bytes");
+    assert_eq!(MontyObject::bytes(vec![1, 2, 3]).type_name(), "bytes");
+    assert_eq!(MontyObject::list([]).type_name(), "list");
+    assert_eq!(MontyObject::tuple([]).type_name(), "tuple");
+    assert_eq!(MontyObject::dict([]).type_name(), "dict");
+    assert_eq!(MontyObject::set([]).type_name(), "set");
+    assert_eq!(MontyObject::frozenset([]).type_name(), "frozenset");
     assert_eq!(
-        MontyValue::date(MontyDate {
+        MontyObject::date(MontyDate {
             year: 2024,
             month: 1,
             day: 1,
@@ -135,7 +135,7 @@ fn type_name() {
         "date"
     );
     assert_eq!(
-        MontyValue::datetime(MontyDateTime {
+        MontyObject::datetime(MontyDateTime {
             year: 2024,
             month: 1,
             day: 1,
@@ -150,7 +150,7 @@ fn type_name() {
         "datetime"
     );
     assert_eq!(
-        MontyValue::timedelta(MontyTimeDelta {
+        MontyObject::timedelta(MontyTimeDelta {
             days: 0,
             seconds: 0,
             microseconds: 0,
@@ -159,7 +159,7 @@ fn type_name() {
         "timedelta"
     );
     assert_eq!(
-        MontyValue::timezone(MontyTimeZone {
+        MontyObject::timezone(MontyTimeZone {
             offset_seconds: 0,
             name: None,
         })
@@ -167,13 +167,13 @@ fn type_name() {
         "timezone"
     );
     assert_eq!(
-        MontyValue::exception(ExcType::ValueError, None).type_name(),
+        MontyObject::exception(ExcType::ValueError, None).type_name(),
         "Exception"
     );
-    assert_eq!(MontyValue::path("/tmp".to_string()).type_name(), "PosixPath");
+    assert_eq!(MontyObject::path("/tmp".to_string()).type_name(), "PosixPath");
     assert_eq!(
-        MontyValue::class_instance(
-            MontyValue::class_type("Foo", MontyUuid::from_u128(1), false, false, []),
+        MontyObject::class_instance(
+            MontyObject::class_type("Foo", MontyUuid::from_u128(1), false, false, []),
             MontyUuid::from_u128(2),
             [],
         )
@@ -186,20 +186,20 @@ fn type_name() {
 
 #[test]
 fn is_truthy_set() {
-    assert!(!MontyValue::set([]).is_truthy());
-    assert!(MontyValue::set([MontyValue::int(1)]).is_truthy());
+    assert!(!MontyObject::set([]).is_truthy());
+    assert!(MontyObject::set([MontyObject::int(1)]).is_truthy());
 }
 
 #[test]
 fn is_truthy_frozenset() {
-    assert!(!MontyValue::frozenset([]).is_truthy());
-    assert!(MontyValue::frozenset([MontyValue::int(1)]).is_truthy());
+    assert!(!MontyObject::frozenset([]).is_truthy());
+    assert!(MontyObject::frozenset([MontyObject::int(1)]).is_truthy());
 }
 
 #[test]
 fn is_truthy_date() {
     assert!(
-        MontyValue::date(MontyDate {
+        MontyObject::date(MontyDate {
             year: 2024,
             month: 6,
             day: 15,
@@ -211,7 +211,7 @@ fn is_truthy_date() {
 #[test]
 fn is_truthy_datetime() {
     assert!(
-        MontyValue::datetime(MontyDateTime {
+        MontyObject::datetime(MontyDateTime {
             year: 2024,
             month: 6,
             day: 15,
@@ -230,7 +230,7 @@ fn is_truthy_datetime() {
 fn is_truthy_timedelta() {
     // Zero timedelta is falsy
     assert!(
-        !MontyValue::timedelta(MontyTimeDelta {
+        !MontyObject::timedelta(MontyTimeDelta {
             days: 0,
             seconds: 0,
             microseconds: 0,
@@ -239,7 +239,7 @@ fn is_truthy_timedelta() {
     );
     // Non-zero timedelta is truthy
     assert!(
-        MontyValue::timedelta(MontyTimeDelta {
+        MontyObject::timedelta(MontyTimeDelta {
             days: 1,
             seconds: 0,
             microseconds: 0,
@@ -247,7 +247,7 @@ fn is_truthy_timedelta() {
         .is_truthy()
     );
     assert!(
-        MontyValue::timedelta(MontyTimeDelta {
+        MontyObject::timedelta(MontyTimeDelta {
             days: 0,
             seconds: 1,
             microseconds: 0,
@@ -255,7 +255,7 @@ fn is_truthy_timedelta() {
         .is_truthy()
     );
     assert!(
-        MontyValue::timedelta(MontyTimeDelta {
+        MontyObject::timedelta(MontyTimeDelta {
             days: 0,
             seconds: 0,
             microseconds: 1,
@@ -267,7 +267,7 @@ fn is_truthy_timedelta() {
 #[test]
 fn is_truthy_timezone() {
     assert!(
-        MontyValue::timezone(MontyTimeZone {
+        MontyObject::timezone(MontyTimeZone {
             offset_seconds: 0,
             name: None,
         })
@@ -277,19 +277,19 @@ fn is_truthy_timezone() {
 
 #[test]
 fn is_truthy_exception() {
-    assert!(MontyValue::exception(ExcType::ValueError, Some("oops".to_string())).is_truthy());
+    assert!(MontyObject::exception(ExcType::ValueError, Some("oops".to_string())).is_truthy());
 }
 
 #[test]
 fn is_truthy_path() {
-    assert!(MontyValue::path("/tmp".to_string()).is_truthy());
+    assert!(MontyObject::path("/tmp".to_string()).is_truthy());
 }
 
 #[test]
 fn is_truthy_class_instance() {
     assert!(
-        MontyValue::class_instance(
-            MontyValue::class_type("Foo", MontyUuid::from_u128(1), false, false, []),
+        MontyObject::class_instance(
+            MontyObject::class_type("Foo", MontyUuid::from_u128(1), false, false, []),
             MontyUuid::from_u128(2),
             [],
         )
@@ -301,18 +301,18 @@ fn is_truthy_class_instance() {
 
 #[test]
 fn repr_frozenset_empty() {
-    assert_eq!(MontyValue::frozenset([]).py_repr(), "frozenset()");
+    assert_eq!(MontyObject::frozenset([]).py_repr(), "frozenset()");
 }
 
 #[test]
 fn repr_frozenset_nonempty() {
-    let fs = MontyValue::frozenset([MontyValue::int(1), MontyValue::int(2)]);
+    let fs = MontyObject::frozenset([MontyObject::int(1), MontyObject::int(2)]);
     assert_eq!(fs.py_repr(), "frozenset({1, 2})");
 }
 
 #[test]
 fn repr_date() {
-    let date = MontyValue::date(MontyDate {
+    let date = MontyObject::date(MontyDate {
         year: 2024,
         month: 6,
         day: 15,
@@ -322,7 +322,7 @@ fn repr_date() {
 
 #[test]
 fn repr_datetime_naive() {
-    let dt = MontyValue::datetime(MontyDateTime {
+    let dt = MontyObject::datetime(MontyDateTime {
         year: 2024,
         month: 6,
         day: 15,
@@ -338,7 +338,7 @@ fn repr_datetime_naive() {
 
 #[test]
 fn repr_datetime_with_seconds_and_microseconds() {
-    let dt = MontyValue::datetime(MontyDateTime {
+    let dt = MontyObject::datetime(MontyDateTime {
         year: 2024,
         month: 1,
         day: 1,
@@ -354,7 +354,7 @@ fn repr_datetime_with_seconds_and_microseconds() {
 
 #[test]
 fn repr_datetime_utc() {
-    let dt = MontyValue::datetime(MontyDateTime {
+    let dt = MontyObject::datetime(MontyDateTime {
         year: 2024,
         month: 6,
         day: 15,
@@ -373,7 +373,7 @@ fn repr_datetime_utc() {
 
 #[test]
 fn repr_datetime_with_offset() {
-    let dt = MontyValue::datetime(MontyDateTime {
+    let dt = MontyObject::datetime(MontyDateTime {
         year: 2024,
         month: 6,
         day: 15,
@@ -392,7 +392,7 @@ fn repr_datetime_with_offset() {
 
 #[test]
 fn repr_datetime_with_named_timezone() {
-    let dt = MontyValue::datetime(MontyDateTime {
+    let dt = MontyObject::datetime(MontyDateTime {
         year: 2024,
         month: 6,
         day: 15,
@@ -411,7 +411,7 @@ fn repr_datetime_with_named_timezone() {
 
 #[test]
 fn repr_timedelta_zero() {
-    let td = MontyValue::timedelta(MontyTimeDelta {
+    let td = MontyObject::timedelta(MontyTimeDelta {
         days: 0,
         seconds: 0,
         microseconds: 0,
@@ -421,7 +421,7 @@ fn repr_timedelta_zero() {
 
 #[test]
 fn repr_timedelta_days_only() {
-    let td = MontyValue::timedelta(MontyTimeDelta {
+    let td = MontyObject::timedelta(MontyTimeDelta {
         days: 5,
         seconds: 0,
         microseconds: 0,
@@ -431,7 +431,7 @@ fn repr_timedelta_days_only() {
 
 #[test]
 fn repr_timedelta_seconds_only() {
-    let td = MontyValue::timedelta(MontyTimeDelta {
+    let td = MontyObject::timedelta(MontyTimeDelta {
         days: 0,
         seconds: 3600,
         microseconds: 0,
@@ -441,7 +441,7 @@ fn repr_timedelta_seconds_only() {
 
 #[test]
 fn repr_timedelta_microseconds_only() {
-    let td = MontyValue::timedelta(MontyTimeDelta {
+    let td = MontyObject::timedelta(MontyTimeDelta {
         days: 0,
         seconds: 0,
         microseconds: 500,
@@ -451,7 +451,7 @@ fn repr_timedelta_microseconds_only() {
 
 #[test]
 fn repr_timedelta_all_components() {
-    let td = MontyValue::timedelta(MontyTimeDelta {
+    let td = MontyObject::timedelta(MontyTimeDelta {
         days: 1,
         seconds: 3600,
         microseconds: 500,
@@ -464,7 +464,7 @@ fn repr_timedelta_all_components() {
 
 #[test]
 fn repr_timezone_utc() {
-    let tz = MontyValue::timezone(MontyTimeZone {
+    let tz = MontyObject::timezone(MontyTimeZone {
         offset_seconds: 0,
         name: None,
     });
@@ -473,7 +473,7 @@ fn repr_timezone_utc() {
 
 #[test]
 fn repr_timezone_with_offset() {
-    let tz = MontyValue::timezone(MontyTimeZone {
+    let tz = MontyObject::timezone(MontyTimeZone {
         offset_seconds: 3600,
         name: None,
     });
@@ -482,7 +482,7 @@ fn repr_timezone_with_offset() {
 
 #[test]
 fn repr_timezone_with_name() {
-    let tz = MontyValue::timezone(MontyTimeZone {
+    let tz = MontyObject::timezone(MontyTimeZone {
         offset_seconds: 3600,
         name: Some("CET".to_string()),
     });
@@ -494,13 +494,13 @@ fn repr_timezone_with_name() {
 
 #[test]
 fn repr_exception_no_arg() {
-    let exc = MontyValue::exception(ExcType::ValueError, None);
+    let exc = MontyObject::exception(ExcType::ValueError, None);
     assert_eq!(exc.py_repr(), "ValueError()");
 }
 
 #[test]
 fn repr_exception_with_arg() {
-    let exc = MontyValue::exception(ExcType::TypeError, Some("bad type".to_string()));
+    let exc = MontyObject::exception(ExcType::TypeError, Some("bad type".to_string()));
     assert_eq!(exc.py_repr(), "TypeError('bad type')");
 }
 
@@ -508,7 +508,7 @@ fn repr_exception_with_arg() {
 
 #[test]
 fn eq_date() {
-    let a = MontyValue::date(MontyDate {
+    let a = MontyObject::date(MontyDate {
         year: 2024,
         month: 6,
         day: 15,
@@ -519,7 +519,7 @@ fn eq_date() {
 
 #[test]
 fn eq_datetime() {
-    let a = MontyValue::datetime(MontyDateTime {
+    let a = MontyObject::datetime(MontyDateTime {
         year: 2024,
         month: 1,
         day: 1,
@@ -536,7 +536,7 @@ fn eq_datetime() {
 
 #[test]
 fn eq_datetime_aware_uses_utc_instant() {
-    let utc = MontyValue::datetime(MontyDateTime {
+    let utc = MontyObject::datetime(MontyDateTime {
         year: 2024,
         month: 1,
         day: 1,
@@ -547,7 +547,7 @@ fn eq_datetime_aware_uses_utc_instant() {
         offset_seconds: Some(0),
         timezone_name: None,
     });
-    let plus_one = MontyValue::datetime(MontyDateTime {
+    let plus_one = MontyObject::datetime(MontyDateTime {
         year: 2024,
         month: 1,
         day: 1,
@@ -563,7 +563,7 @@ fn eq_datetime_aware_uses_utc_instant() {
 
 #[test]
 fn eq_timedelta() {
-    let a = MontyValue::timedelta(MontyTimeDelta {
+    let a = MontyObject::timedelta(MontyTimeDelta {
         days: 5,
         seconds: 100,
         microseconds: 999,
@@ -574,11 +574,11 @@ fn eq_timedelta() {
 
 #[test]
 fn eq_timezone() {
-    let a = MontyValue::timezone(MontyTimeZone {
+    let a = MontyObject::timezone(MontyTimeZone {
         offset_seconds: -3600,
         name: Some("EST".to_string()),
     });
-    let b = MontyValue::timezone(MontyTimeZone {
+    let b = MontyObject::timezone(MontyTimeZone {
         offset_seconds: -3600,
         name: Some("UTC-1".to_string()),
     });
@@ -587,10 +587,10 @@ fn eq_timezone() {
 
 #[test]
 fn eq_named_tuple() {
-    let a = MontyValue::named_tuple(
+    let a = MontyObject::named_tuple(
         "Point".to_string(),
         vec!["x".to_string(), "y".to_string()],
-        vec![MontyValue::int(1), MontyValue::int(2)],
+        vec![MontyObject::int(1), MontyObject::int(2)],
     );
     let b = a.clone();
     assert_eq!(a, b);
@@ -598,24 +598,24 @@ fn eq_named_tuple() {
 
 #[test]
 fn eq_int_and_bigint() {
-    assert_eq!(MontyValue::int(7), MontyValue::bigint(7.into()));
+    assert_eq!(MontyObject::int(7), MontyObject::bigint(7.into()));
     assert_ne!(
-        MontyValue::int(7),
-        MontyValue::bigint("123456789012345678901234567890".parse().unwrap())
+        MontyObject::int(7),
+        MontyObject::bigint("123456789012345678901234567890".parse().unwrap())
     );
 }
 
 #[test]
 fn eq_float_by_bits() {
-    assert_eq!(MontyValue::float(f64::NAN), MontyValue::float(f64::NAN));
-    assert_ne!(MontyValue::float(0.0), MontyValue::float(-0.0));
+    assert_eq!(MontyObject::float(f64::NAN), MontyObject::float(f64::NAN));
+    assert_ne!(MontyObject::float(0.0), MontyObject::float(-0.0));
 }
 
 #[test]
 fn eq_named_tuple_with_tuple() {
-    let named = MontyValue::named_tuple("Point", ["x", "y"], [MontyValue::int(1), MontyValue::int(2)]);
-    assert_eq!(named, MontyValue::tuple([MontyValue::int(1), MontyValue::int(2)]));
-    assert_ne!(named, MontyValue::list([MontyValue::int(1), MontyValue::int(2)]));
+    let named = MontyObject::named_tuple("Point", ["x", "y"], [MontyObject::int(1), MontyObject::int(2)]);
+    assert_eq!(named, MontyObject::tuple([MontyObject::int(1), MontyObject::int(2)]));
+    assert_ne!(named, MontyObject::list([MontyObject::int(1), MontyObject::int(2)]));
 }
 
 #[test]
@@ -625,38 +625,38 @@ fn eq_ignores_arena_layout() {
     let one = graph.push(MontyNode::Int(1));
     let inner = graph.push(MontyNode::List(vec![one]));
     let root = graph.push(MontyNode::List(vec![inner, inner]));
-    let shared = MontyValue::new(graph, root).unwrap();
-    let copied = MontyValue::list([
-        MontyValue::list([MontyValue::int(1)]),
-        MontyValue::list([MontyValue::int(1)]),
+    let shared = MontyObject::new(graph, root).unwrap();
+    let copied = MontyObject::list([
+        MontyObject::list([MontyObject::int(1)]),
+        MontyObject::list([MontyObject::int(1)]),
     ]);
     let mut padded = copied.clone();
-    padded.graph.merge(MontyValue::string("unreachable").graph);
+    padded.graph.merge(MontyObject::string("unreachable").graph);
     assert_ne!(shared.graph.len(), copied.graph.len());
     assert_eq!(shared, copied);
     assert_eq!(copied, padded);
     assert_ne!(
         shared,
-        MontyValue::list([MontyValue::list([MontyValue::int(1)]), MontyValue::list([])])
+        MontyObject::list([MontyObject::list([MontyObject::int(1)]), MontyObject::list([])])
     );
 }
 
 #[test]
 fn eq_class_instances() {
-    let class = || MontyValue::class_type("Foo", MontyUuid::from_u128(1), true, false, []);
-    let a = MontyValue::class_instance(
+    let class = || MontyObject::class_type("Foo", MontyUuid::from_u128(1), true, false, []);
+    let a = MontyObject::class_instance(
         class(),
         MontyUuid::from_u128(2),
-        [(MontyValue::string("x"), MontyValue::int(1))],
+        [(MontyObject::string("x"), MontyObject::int(1))],
     );
     assert_eq!(a, a.clone());
-    let other_id = MontyValue::class_instance(
+    let other_id = MontyObject::class_instance(
         class(),
         MontyUuid::from_u128(3),
-        [(MontyValue::string("x"), MontyValue::int(1))],
+        [(MontyObject::string("x"), MontyObject::int(1))],
     );
     assert_ne!(a, other_id);
-    let other_attrs = MontyValue::class_instance(class(), MontyUuid::from_u128(2), []);
+    let other_attrs = MontyObject::class_instance(class(), MontyUuid::from_u128(2), []);
     assert_ne!(a, other_attrs);
 }
 
@@ -664,9 +664,9 @@ fn eq_class_instances() {
 
 #[test]
 fn accessors_read_leaves_and_containers() {
-    let value = MontyValue::dict([(
-        MontyValue::string("k"),
-        MontyValue::list([MontyValue::int(1), MontyValue::bool(true)]),
+    let value = MontyObject::dict([(
+        MontyObject::string("k"),
+        MontyObject::list([MontyObject::int(1), MontyObject::bool(true)]),
     )]);
     let (key, items) = value.as_ref().pairs().unwrap().into_iter().next().unwrap();
     assert_eq!(key.as_str(), Some("k"));
@@ -685,19 +685,19 @@ fn accessors_read_leaves_and_containers() {
 
 #[test]
 fn display_is_str_and_py_repr_is_repr() {
-    let text = MontyValue::string("hi");
+    let text = MontyObject::string("hi");
     assert_eq!(text.to_string(), "hi");
     assert_eq!(text.py_repr(), "'hi'");
-    let list = MontyValue::list([text, MontyValue::none(), MontyValue::cycle("[...]")]);
+    let list = MontyObject::list([text, MontyObject::none(), MontyObject::cycle("[...]")]);
     assert_eq!(list.to_string(), "['hi', None, [...]]");
     assert_eq!(
-        MontyValue::class_type("Foo", MontyUuid::from_u128(1), true, false, []).to_string(),
+        MontyObject::class_type("Foo", MontyUuid::from_u128(1), true, false, []).to_string(),
         "<class 'Foo'>"
     );
-    let instance = MontyValue::class_instance(
-        MontyValue::class_type("Foo", MontyUuid::from_u128(1), true, false, []),
+    let instance = MontyObject::class_instance(
+        MontyObject::class_type("Foo", MontyUuid::from_u128(1), true, false, []),
         MontyUuid::from_u128(2),
-        [(MontyValue::string("x"), MontyValue::int(1))],
+        [(MontyObject::string("x"), MontyObject::int(1))],
     );
     assert_eq!(instance.py_repr(), "Foo(x=1)");
     assert_eq!(instance.type_name(), "Foo");

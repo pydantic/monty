@@ -10,7 +10,7 @@ use std::{
 };
 
 use cap_std::{ambient_authority, fs::Dir};
-use monty_types::{MontyValue, OsFunctionCall, normalize_virtual_path};
+use monty_types::{MontyObject, OsFunctionCall, normalize_virtual_path};
 
 use super::{
     common::MountContext,
@@ -31,7 +31,7 @@ pub const DEFAULT_MEMORY_USAGE_LIMIT: u64 = 100_000_000;
 #[derive(Debug)]
 pub enum MountCallOutcome {
     /// A mount covered the call and serviced it (successfully or not).
-    Handled(Result<MontyValue, MountError>),
+    Handled(Result<MontyObject, MountError>),
     /// Non-filesystem op or no matching mount — the call, returned unchanged.
     NotHandled(OsFunctionCall),
 }
@@ -118,7 +118,7 @@ impl MountTable {
                 // Both make CPython's predicates answer `False` rather than
                 // raise — `pathlib` swallows `OSError` and `ValueError` alike.
                 MountCallOutcome::Handled(if call.is_existence_check() {
-                    Ok(MontyValue::bool(false))
+                    Ok(MontyObject::bool(false))
                 } else {
                     Err(e)
                 })
@@ -306,7 +306,7 @@ impl Mount {
 
     /// Executes a filesystem call against this mount, consuming it so write
     /// payloads move into the backend.
-    fn execute(&mut self, call: OsFunctionCall) -> Result<MontyValue, MountError> {
+    fn execute(&mut self, call: OsFunctionCall) -> Result<MontyObject, MountError> {
         let mut ctx = MountContext {
             mount_virtual: &self.root.virtual_path,
             mount_dir: &self.root.dir,

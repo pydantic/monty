@@ -3,7 +3,7 @@ use monty_types::CompileOptions;
 
 /// Tests for successful TryFrom conversions from Python values to Rust types.
 ///
-/// These tests validate that the `TryFrom` implementations on `MontyValue` correctly
+/// These tests validate that the `TryFrom` implementations on `MontyObject` correctly
 /// convert Python objects to their corresponding Rust types when the conversion
 /// is valid (e.g., Python int to Rust i64, Python str to Rust String).
 

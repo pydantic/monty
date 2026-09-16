@@ -8,7 +8,7 @@ use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, 
 #[cfg(not(codspeed))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 use monty::{Dump, MontyRepl, MontyRun, SessionRef};
-use monty_types::{CompileOptions, MontyValue, PrintWriter, ResourceLimits, ResourceTracker};
+use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 // CPython benchmarks are only run locally, not on CodSpeed CI (requires Python + pyo3 setup)
@@ -48,7 +48,7 @@ fn run_monty_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i6
         CompileOptions::default(),
     )
     .unwrap();
-    let make_input = || vec![MontyValue::string(data.to_owned())];
+    let make_input = || vec![MontyObject::string(data.to_owned())];
     let r = ex.run_no_limits(make_input()).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, expected);

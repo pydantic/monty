@@ -13,7 +13,7 @@ use std::{mem, ops::ControlFlow, sync::Arc};
 
 use ahash::AHashMap;
 use monty_types::{
-    CallArgs, ExcType, HostClock, MontyException, MontyGraph, MontyUuid, MontyValue, NamedValues, NodeId,
+    CallArgs, ExcType, HostClock, MontyException, MontyGraph, MontyObject, MontyUuid, NamedValues, NodeId,
     OsFunctionCall, PrintWriter, ResourceTracker,
 };
 use ruff_python_ast::token::TokenKind;
@@ -27,7 +27,7 @@ use crate::{
     heap::{DropWithContext, Heap, HeapData, HeapReader},
     intern::Interns,
     name_map::NameMap,
-    object_bridge::{MontyGraphExt, MontyValueExt},
+    object_bridge::{MontyGraphExt, MontyObjectExt},
     run::{CompileOptions, DEFAULT_CWD, Executor, ReplSession, default_clock},
     run_progress::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
@@ -202,7 +202,7 @@ impl MontyRepl {
         if code.is_empty() {
             return Ok(ReplProgress::Complete {
                 repl: this,
-                value: MontyValue::none(),
+                value: MontyObject::none(),
             });
         }
 
@@ -287,9 +287,9 @@ impl MontyRepl {
         code: &str,
         inputs: impl Into<NamedValues>,
         print: PrintWriter<'_>,
-    ) -> Result<MontyValue, MontyException> {
+    ) -> Result<MontyObject, MontyException> {
         if code.is_empty() {
-            return Ok(MontyValue::none());
+            return Ok(MontyObject::none());
         }
 
         let NamedValues {
@@ -370,7 +370,7 @@ impl MontyRepl {
         name: &str,
         args: impl Into<CallArgs>,
         print: PrintWriter<'_>,
-    ) -> Result<MontyValue, MontyException> {
+    ) -> Result<MontyObject, MontyException> {
         let args: CallArgs = args.into();
         let Some(name_id) = self.interns.get_string_id_by_name(name) else {
             return Err(RunError::from(ExcType::name_error(name))
@@ -431,7 +431,7 @@ impl MontyRepl {
                     let mut run_result = vm.run_module();
                     loop {
                         run_result = match run_result {
-                            Ok(FrameExit::Return(value)) => break Ok(MontyValue::export(value, vm)),
+                            Ok(FrameExit::Return(value)) => break Ok(MontyObject::export(value, vm)),
                             // No host answers inside a host-driven call, so the
                             // lookup is `Undefined`: `hasattr()` is False,
                             // `getattr()` yields its default.
@@ -574,7 +574,7 @@ pub enum ReplProgress {
         /// Updated REPL session state to continue feeding snippets.
         repl: MontyRepl,
         /// Final result produced by the snippet.
-        value: MontyValue,
+        value: MontyObject,
     },
 }
 
@@ -622,7 +622,7 @@ impl ReplProgress {
 
     /// Consumes the progress and returns the completed REPL and value.
     #[must_use]
-    pub fn into_complete(self) -> Option<(MontyRepl, MontyValue)> {
+    pub fn into_complete(self) -> Option<(MontyRepl, MontyObject)> {
         match self {
             Self::Complete { repl, value } => Some((repl, value)),
             _ => None,
@@ -718,7 +718,7 @@ impl ReplFunctionCall {
     /// Only use when [`Self::allow_eager_await`] is true; synchronous returns use [`Self::resume`].
     pub fn resume_eager(
         self,
-        result: Result<MontyValue, MontyException>,
+        result: Result<MontyObject, MontyException>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
         self.snapshot.run_inner(

@@ -20,7 +20,7 @@ use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, 
 #[cfg(not(codspeed))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 use monty_pool::{Checkout, Pool, PoolConfig, PrintFuture, ReplConfig, ResumeValue, TurnEvent};
-use monty_types::{MontyValue, PrintStream};
+use monty_types::{MontyObject, PrintStream};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 use tokio::runtime::{Builder, Runtime};
@@ -74,7 +74,7 @@ fn no_print(_: PrintStream, _: &str) -> PrintFuture {
 /// suspension — used by the benchmarks that feed code making no external
 /// calls.
 #[track_caller]
-fn expect_complete(event: TurnEvent) -> MontyValue {
+fn expect_complete(event: TurnEvent) -> MontyObject {
     match event {
         TurnEvent::Complete(value) => value,
         other => panic!("expected Complete, got {other:?}"),
@@ -84,13 +84,13 @@ fn expect_complete(event: TurnEvent) -> MontyValue {
 /// Drives a feed to completion, answering every external-function suspension
 /// with `None`. This is the hot loop of the wire-protocol benchmark: each
 /// `resume` is one request/reply pair across the framed protobuf channel.
-async fn drive_answering_calls(session: &mut Checkout, mut event: TurnEvent) -> MontyValue {
+async fn drive_answering_calls(session: &mut Checkout, mut event: TurnEvent) -> MontyObject {
     loop {
         match event {
             TurnEvent::Complete(value) => break value,
             TurnEvent::FunctionCall { .. } => {
                 event = session
-                    .resume(ResumeValue::Return(MontyValue::none()), &mut no_print)
+                    .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
                     .await
                     .unwrap();
             }
@@ -180,25 +180,25 @@ total
 /// Builds a 100-row result set shaped like a SQL tool reply: a list of dicts
 /// with string keys and mixed str/int values. This is the payload shape real
 /// agents pull across the wire on every external call.
-fn make_rows() -> MontyValue {
-    MontyValue::list(
+fn make_rows() -> MontyObject {
+    MontyObject::list(
         (0..100)
             .map(|i| {
-                MontyValue::dict([
-                    (MontyValue::string("order_id".to_owned()), MontyValue::int(i)),
+                MontyObject::dict([
+                    (MontyObject::string("order_id".to_owned()), MontyObject::int(i)),
                     (
-                        MontyValue::string("customer".to_owned()),
-                        MontyValue::string(format!("customer-{i}@example.com")),
+                        MontyObject::string("customer".to_owned()),
+                        MontyObject::string(format!("customer-{i}@example.com")),
                     ),
                     (
-                        MontyValue::string("region".to_owned()),
-                        MontyValue::string("north".to_owned()),
+                        MontyObject::string("region".to_owned()),
+                        MontyObject::string("north".to_owned()),
                     ),
                     (
-                        MontyValue::string("amount".to_owned()),
-                        MontyValue::int((i * 37) % 500 + 1),
+                        MontyObject::string("amount".to_owned()),
+                        MontyObject::int((i * 37) % 500 + 1),
                     ),
-                    (MontyValue::string("quantity".to_owned()), MontyValue::int(i % 7 + 1)),
+                    (MontyObject::string("quantity".to_owned()), MontyObject::int(i % 7 + 1)),
                 ])
             })
             .collect::<Vec<_>>(),
@@ -215,7 +215,7 @@ fn ext_call_rows(bench: &mut Bencher) {
     let rows = make_rows();
     // Expected sandbox result: 20 identical calls, each summing amount * quantity.
     let per_call: i64 = (0..100).map(|i| ((i * 37) % 500 + 1) * (i % 7 + 1)).sum();
-    let expected = MontyValue::int(per_call * 20);
+    let expected = MontyObject::int(per_call * 20);
     let pool = runtime
         .block_on(Pool::new(PoolConfig::subprocess(monty_binary())))
         .unwrap();

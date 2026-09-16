@@ -9,7 +9,7 @@
 use std::mem;
 
 use monty_types::{
-    CallArgs, ExcType, InvalidInputError, MontyException, MontyUuid, MontyValue, OsFunctionCall, PrintWriter,
+    CallArgs, ExcType, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter,
     ResourceTracker,
 };
 
@@ -18,7 +18,7 @@ use crate::{
     bytecode::{FrameExit, PendingLookupEffect, VM, VMSnapshot},
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
-    object_bridge::MontyValueExt,
+    object_bridge::MontyObjectExt,
     os_dispatch::{PendingEffect, release_pending_effect},
     run::Executor,
     value::Value,
@@ -45,7 +45,7 @@ pub enum RunProgress {
     /// Execution paused for an unresolved name lookup.
     NameLookup(NameLookup),
     /// Execution completed with a final result.
-    Complete(MontyValue),
+    Complete(MontyObject),
 }
 
 impl RunProgress {
@@ -69,7 +69,7 @@ impl RunProgress {
 
     /// Consumes the progress and returns the final value if execution completed.
     #[must_use]
-    pub fn into_complete(self) -> Option<MontyValue> {
+    pub fn into_complete(self) -> Option<MontyObject> {
         match self {
             Self::Complete(value) => Some(value),
             _ => None,
@@ -197,7 +197,7 @@ impl FunctionCall {
     /// Only use when [`Self::allow_eager_await`] is true; synchronous returns use [`Self::resume`].
     pub fn resume_eager(
         self,
-        result: Result<MontyValue, MontyException>,
+        result: Result<MontyObject, MontyException>,
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
         self.snapshot.run_inner(
@@ -226,7 +226,7 @@ impl FunctionCall {
 ///
 /// `function_call` is a tagged [`OsFunctionCall`] whose variants carry the
 /// typed args directly. Host bindings that need a generic
-/// `(positional, keyword)` `MontyValue` view can call [`OsFunctionCall::to_args`]
+/// `(positional, keyword)` `MontyObject` view can call [`OsFunctionCall::to_args`]
 /// (the public projection method).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct OsCall {
@@ -914,12 +914,12 @@ impl ExtFunctionResultExt for ExtFunctionResult {}
 
 /// Pre-converted frame exit data, produced while the VM is still alive.
 ///
-/// This intermediate enum holds `MontyValue`s and `String`s instead of `Value`s
+/// This intermediate enum holds `MontyObject`s and `String`s instead of `Value`s
 /// and `StringId`s. It exists to separate the conversion phase (needs `&mut VM`)
 /// from the snapshot/progress construction phase (needs owned `Heap`).
 pub(crate) enum ConvertedExit {
     /// Execution completed with a final result.
-    Complete(MontyValue),
+    Complete(MontyObject),
     /// External function call, or a host-routed method call (`object_id`
     /// set; construction of a host class is a `__call__` method call).
     FunctionCall {
@@ -951,7 +951,7 @@ impl ConvertedExit {
 
 /// Converts a `FrameExit` into a `ConvertedExit` while the VM is still alive.
 ///
-/// All `Value` → `MontyValue` and `StringId` → `String` conversions happen here,
+/// All `Value` → `MontyObject` and `StringId` → `String` conversions happen here,
 /// while the VM (and its heap/interns) are still accessible.
 pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) -> ConvertedExit {
     // An effect still armed on arrival belongs to an OS call that was answered
@@ -963,7 +963,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
     release_pending_effect(vm.pending_effect.take(), vm.heap);
     vm.pending_lookup_effect.take().drop_with(vm.heap);
     match result {
-        Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyValue::export(value, vm)),
+        Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::export(value, vm)),
         Ok(FrameExit::ExternalCall {
             function_name,
             args,

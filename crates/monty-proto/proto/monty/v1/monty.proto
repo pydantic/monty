@@ -33,24 +33,18 @@ message Unit {}
 // Values
 // ============================================================================
 
-// Python values cross the boundary as one node arena per message: every
-// container holds the indexes of its children, so a sub-object referenced
-// twice (inside one value, or from two arguments of the same call) is one
-// node referenced twice, and the message is O(sandbox objects) rather than
-// O(paths). The carrying message names its roots by index (`Complete.value`,
-// `FunctionCall.args`, ...). Mirrors monty's `MontyGraph` / `MontyNode`.
-//
-// Nodes are in post-order: every child index is strictly lower than the index
-// of the node holding it. Receivers validate every index, so a decoder can
-// build values in one forward pass with no recursion and no nesting bound.
-// A reference back to an enclosing container cannot point lower, so it is a
-// `cycle` leaf carrying the placeholder its repr shows.
+// Python values cross the boundary as one node arena per message: containers
+// hold the indexes of their children, so a sub-object referenced twice is one
+// node, and the carrying message names its roots by index. Nodes are in
+// post-order (every child index is lower than its holder's), so receivers
+// build values in one forward pass; a reference back to an enclosing
+// container is a `cycle` leaf. Mirrors monty's `MontyGraph`.
 message Arena {
   // The sender's node count, so a receiver can reserve the arena once. A
   // hint only: receivers cap it by the message size and charge it against
   // their decode budget before allocating.
   uint32 node_count = 1;
-  repeated ValueNode nodes = 2;
+  repeated MontyNode nodes = 2;
 }
 
 // One node of an `Arena`. Leaf arms carry the value; container arms carry
@@ -58,7 +52,7 @@ message Arena {
 //
 // `repr` and `cycle` are OUTPUT-ONLY: the child may emit them (e.g. inside a
 // `Complete` value) but rejects them as inputs, exactly like `MontyNode`.
-message ValueNode {
+message MontyNode {
   oneof kind {
     Unit ellipsis = 1;
     Unit none = 2;
@@ -518,13 +512,13 @@ message Feed {
   // Inputs, each an index into `values`; one arena, so an object passed
   // under two names is one sandbox object.
   repeated NamedRef inputs = 2;
-  Arena values = 5;
+  Arena values = 3;
   // Skip type checking for this feed even when the session enables it.
-  bool skip_type_check = 3;
+  bool skip_type_check = 4;
   // Absolute virtual working directory to switch the session to before the
   // feed, resolved by the parent (an explicit choice, or the first mount on
   // the session's first feed). Empty keeps the session's current directory.
-  string cwd = 4;
+  string cwd = 5;
 }
 
 // Ends a pending suspension by raising `exception` uncatchably at its site.
@@ -546,17 +540,17 @@ message ResumeCall {
 // Answers a `NameLookup` suspension.
 message ResumeNameLookup {
   // The arena `value` indexes.
-  Arena values = 4;
+  Arena values = 1;
   oneof kind {
     // The name resolves to this value: an index into `values`.
-    uint32 value = 1;
+    uint32 value = 2;
     // The name is undefined — the child raises NameError (AttributeError for
     // a lazy attribute lookup).
-    Unit undefined = 2;
+    Unit undefined = 3;
     // Resolving the name raised on the parent — the child raises this
     // exception where the lookup suspended, bypassing hasattr()/getattr()
     // defaults.
-    RaisedException error = 3;
+    RaisedException error = 4;
   }
 }
 
@@ -648,13 +642,13 @@ message ChildEvent {
 
   // Echoes the parent-enforced budget so a host restoring an opaque dump can
   // recover it.
-  optional uint64 max_suspensions = 23;
+  optional uint64 max_suspensions = 22;
 
   // The session's script name, surfaced on a `Load` reply so a parent that
   // restored a session (whose script name, like the limits above, travels
   // inside the opaque dump bytes) learns it without parsing the dump. Set only
   // on a successful `Load` reply; unset on all other events.
-  optional string restored_script_name = 22;
+  optional string restored_script_name = 23;
 }
 
 enum PrintStream {
@@ -675,11 +669,7 @@ message PrintSegment {
 // the order the sandbox produced them — so output alternating between the
 // streams batches into one event without losing that order.
 message Print {
-  // 1 and 2 were the single stream and text this event carried before it
-  // could hold more than one run.
-  reserved 1, 2;
-  reserved "stream", "text";
-  repeated PrintSegment segments = 3;
+  repeated PrintSegment segments = 1;
 }
 
 // Suspension: the sandbox called an external function, or — when `object_id`
@@ -719,8 +709,6 @@ message FunctionCall {
 // the rest — monty's `OsFunctionCall::on_no_handler`).
 message OsCall {
   uint32 call_id = 1;
-  // The arena any value-typed argument (`Getenv.default`) indexes.
-  Arena values = 26;
 
   oneof call {
     // ---- FS read / check / remove — the string is the virtual path -------
@@ -755,6 +743,9 @@ message OsCall {
     // os.urandom(size), also how `random` seeds an unseeded generator.
     Urandom urandom = 25;
   }
+
+  // The arena any value-typed argument (`Getenv.default`) indexes.
+  Arena values = 26;
 
   message TextWrite {
     string path = 1;

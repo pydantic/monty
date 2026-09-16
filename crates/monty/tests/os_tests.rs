@@ -7,7 +7,7 @@
 use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
 use monty_types::{
     CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime, MontyException,
-    MontyFileHandle, MontyValue, OsFunctionCall, PrintWriter, ResourceTracker, dir_stat, file_stat,
+    MontyFileHandle, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker, dir_stat, file_stat,
 };
 
 /// Helper to run code and extract the OsCall progress.
@@ -16,7 +16,7 @@ use monty_types::{
 /// Returns the OS function name (stable `OsFunctionCall::name` string) and
 /// positional args projected via `to_args`. State is resumed with a mock
 /// result to properly clean up ref counts.
-fn run_to_oscall(code: &str) -> (&'static str, Vec<MontyValue>) {
+fn run_to_oscall(code: &str) -> (&'static str, Vec<MontyObject>) {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
@@ -34,19 +34,19 @@ fn run_to_oscall(code: &str) -> (&'static str, Vec<MontyValue>) {
     }
 }
 
-/// Returns a `MontyValue` shaped like a plausible host response for `call`.
-fn mock_oscall_result(call: &OsFunctionCall) -> MontyValue {
+/// Returns a `MontyObject` shaped like a plausible host response for `call`.
+fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
     match call {
         OsFunctionCall::Exists(_)
         | OsFunctionCall::IsFile(_)
         | OsFunctionCall::IsDir(_)
-        | OsFunctionCall::IsSymlink(_) => MontyValue::bool(true),
+        | OsFunctionCall::IsSymlink(_) => MontyObject::bool(true),
         OsFunctionCall::ReadText(_) | OsFunctionCall::Resolve(_) | OsFunctionCall::Absolute(_) => {
-            MontyValue::string("mock".to_owned())
+            MontyObject::string("mock".to_owned())
         }
-        OsFunctionCall::ReadBytes(_) => MontyValue::bytes(vec![]),
-        OsFunctionCall::Stat(_) => MontyValue::none(),
-        OsFunctionCall::Iterdir(_) => MontyValue::list([]),
+        OsFunctionCall::ReadBytes(_) => MontyObject::bytes(vec![]),
+        OsFunctionCall::Stat(_) => MontyObject::none(),
+        OsFunctionCall::Iterdir(_) => MontyObject::list([]),
         OsFunctionCall::WriteText(_)
         | OsFunctionCall::WriteBytes(_)
         | OsFunctionCall::AppendText(_)
@@ -54,20 +54,20 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyValue {
         | OsFunctionCall::Mkdir(_)
         | OsFunctionCall::Unlink(_)
         | OsFunctionCall::Rmdir(_)
-        | OsFunctionCall::Rename(_) => MontyValue::none(),
-        OsFunctionCall::Open(_) => MontyValue::file_handle(MontyFileHandle {
+        | OsFunctionCall::Rename(_) => MontyObject::none(),
+        OsFunctionCall::Open(_) => MontyObject::file_handle(MontyFileHandle {
             path: "mock".to_owned(),
             mode: "r".parse::<FileMode>().unwrap(),
             position: 0,
         }),
-        OsFunctionCall::Getenv(_) => MontyValue::string("mock_env_value".to_owned()),
-        OsFunctionCall::GetEnviron => MontyValue::dict([]),
-        OsFunctionCall::DateToday => MontyValue::date(MontyDate {
+        OsFunctionCall::Getenv(_) => MontyObject::string("mock_env_value".to_owned()),
+        OsFunctionCall::GetEnviron => MontyObject::dict([]),
+        OsFunctionCall::DateToday => MontyObject::date(MontyDate {
             year: 2023,
             month: 11,
             day: 14,
         }),
-        OsFunctionCall::DateTimeNow(_) => MontyValue::datetime(MontyDateTime {
+        OsFunctionCall::DateTimeNow(_) => MontyObject::datetime(MontyDateTime {
             year: 2023,
             month: 11,
             day: 14,
@@ -78,12 +78,12 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyValue {
             offset_seconds: None,
             timezone_name: None,
         }),
-        OsFunctionCall::Urandom(args) => MontyValue::bytes(vec![0; usize::try_from(args.size).unwrap()]),
+        OsFunctionCall::Urandom(args) => MontyObject::bytes(vec![0; usize::try_from(args.size).unwrap()]),
     }
 }
 
 /// Helper to run code, provide an OS call result, and get the final value.
-fn run_oscall_with_result(code: &str, mock_result: MontyValue) -> (&'static str, Vec<MontyValue>, MontyValue) {
+fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (&'static str, Vec<MontyObject>, MontyObject) {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
@@ -109,70 +109,70 @@ fn run_oscall_with_result(code: &str, mock_result: MontyValue) -> (&'static str,
 fn path_exists() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/test.txt').exists()");
     assert_eq!(func, "Path.exists");
-    assert_eq!(args, vec![MontyValue::path("/tmp/test.txt".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/tmp/test.txt".to_owned())]);
 }
 
 #[test]
 fn path_is_file() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/test.txt').is_file()");
     assert_eq!(func, "Path.is_file");
-    assert_eq!(args, vec![MontyValue::path("/tmp/test.txt".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/tmp/test.txt".to_owned())]);
 }
 
 #[test]
 fn path_is_dir() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp').is_dir()");
     assert_eq!(func, "Path.is_dir");
-    assert_eq!(args, vec![MontyValue::path("/tmp".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/tmp".to_owned())]);
 }
 
 #[test]
 fn path_is_symlink() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/link').is_symlink()");
     assert_eq!(func, "Path.is_symlink");
-    assert_eq!(args, vec![MontyValue::path("/tmp/link".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/tmp/link".to_owned())]);
 }
 
 #[test]
 fn path_read_text() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/file.txt').read_text()");
     assert_eq!(func, "Path.read_text");
-    assert_eq!(args, vec![MontyValue::path("/tmp/file.txt".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/tmp/file.txt".to_owned())]);
 }
 
 #[test]
 fn path_read_bytes() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/file.bin').read_bytes()");
     assert_eq!(func, "Path.read_bytes");
-    assert_eq!(args, vec![MontyValue::path("/tmp/file.bin".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/tmp/file.bin".to_owned())]);
 }
 
 #[test]
 fn path_stat() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/file.txt').stat()");
     assert_eq!(func, "Path.stat");
-    assert_eq!(args, vec![MontyValue::path("/tmp/file.txt".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/tmp/file.txt".to_owned())]);
 }
 
 #[test]
 fn path_iterdir() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp').iterdir()");
     assert_eq!(func, "Path.iterdir");
-    assert_eq!(args, vec![MontyValue::path("/tmp".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/tmp".to_owned())]);
 }
 
 #[test]
 fn path_resolve() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('./relative').resolve()");
     assert_eq!(func, "Path.resolve");
-    assert_eq!(args, vec![MontyValue::path("/relative".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/relative".to_owned())]);
 }
 
 #[test]
 fn path_absolute() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('./relative').absolute()");
     assert_eq!(func, "Path.absolute");
-    assert_eq!(args, vec![MontyValue::path("/relative".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/relative".to_owned())]);
 }
 
 // =============================================================================
@@ -245,25 +245,25 @@ from pathlib import Path
     .unwrap();
     assert_eq!(
         runner.run_no_limits(vec![]).unwrap(),
-        MontyValue::tuple([
-            MontyValue::string("/".to_owned()),
-            MontyValue::path("/".to_owned()),
-            MontyValue::path("/".to_owned())
+        MontyObject::tuple([
+            MontyObject::string("/".to_owned()),
+            MontyObject::path("/".to_owned()),
+            MontyObject::path("/".to_owned())
         ])
     );
     runner.set_cwd("/mnt/data");
     assert_eq!(
         runner.run_no_limits(vec![]).unwrap(),
-        MontyValue::tuple([
-            MontyValue::string("/mnt/data".to_owned()),
-            MontyValue::path("/mnt/data".to_owned()),
-            MontyValue::path("/mnt/data".to_owned())
+        MontyObject::tuple([
+            MontyObject::string("/mnt/data".to_owned()),
+            MontyObject::path("/mnt/data".to_owned()),
+            MontyObject::path("/mnt/data".to_owned())
         ])
     );
 }
 
 /// Runs an `os.chdir` snippet, answering its `Path.stat` call with `reply`.
-fn run_chdir(code: &str, reply: impl Into<ExtFunctionResult>) -> Result<MontyValue, MontyException> {
+fn run_chdir(code: &str, reply: impl Into<ExtFunctionResult>) -> Result<MontyObject, MontyException> {
     let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     runner.set_cwd("/data");
     match runner
@@ -273,7 +273,7 @@ fn run_chdir(code: &str, reply: impl Into<ExtFunctionResult>) -> Result<MontyVal
         RunProgress::OsCall(call) => {
             assert_eq!(call.function_call.name(), "Path.stat");
             let args = positional(&call.function_call.clone().to_args());
-            assert_eq!(args, vec![MontyValue::path("/data/sub".to_owned())]);
+            assert_eq!(args, vec![MontyObject::path("/data/sub".to_owned())]);
             Ok(call
                 .resume(reply, PrintWriter::Stdout)?
                 .into_complete()
@@ -299,17 +299,17 @@ fn os_chdir_adopts_a_directory() {
         panic!("expected a second OsCall");
     };
     let args = positional(&absolute.function_call.clone().to_args());
-    assert_eq!(args, vec![MontyValue::path("/data/sub/x".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/data/sub/x".to_owned())]);
     let result = absolute
-        .resume(MontyValue::path("/data/sub/x".to_owned()), PrintWriter::Stdout)
+        .resume(MontyObject::path("/data/sub/x".to_owned()), PrintWriter::Stdout)
         .unwrap()
         .into_complete()
         .unwrap();
     assert_eq!(
         result,
-        MontyValue::tuple([
-            MontyValue::string("/data/sub".to_owned()),
-            MontyValue::string("/data/sub/x".to_owned())
+        MontyObject::tuple([
+            MontyObject::string("/data/sub".to_owned()),
+            MontyObject::string("/data/sub/x".to_owned())
         ])
     );
 }
@@ -336,7 +336,7 @@ fn os_chdir_normalizes_cwd_after_host_acceptance() {
         .unwrap()
         .into_complete()
         .unwrap();
-    assert_eq!(result, MontyValue::string("/data/sub".to_owned()));
+    assert_eq!(result, MontyObject::string("/data/sub".to_owned()));
 }
 
 /// Rejected file operations must release their effect's heap reference before raising.
@@ -350,7 +350,7 @@ fn nul_file_paths_release_pending_effects() {
             CompileOptions::default(),
         )
         .unwrap();
-        let file = MontyValue::file_handle(MontyFileHandle {
+        let file = MontyObject::file_handle(MontyFileHandle {
             path: "/bad\0/../x".to_owned(),
             mode: mode.parse().unwrap(),
             position: 0,
@@ -360,7 +360,7 @@ fn nul_file_paths_release_pending_effects() {
             .unwrap()
             .into_complete()
             .unwrap();
-        assert_eq!(result, MontyValue::string("embedded null byte".to_owned()));
+        assert_eq!(result, MontyObject::string("embedded null byte".to_owned()));
     }
 }
 
@@ -382,10 +382,10 @@ fn os_chdir_empty_path_raises_without_the_host() {
 #[test]
 fn os_chdir_rejects_a_malformed_stat_reply() {
     // Directory bits in the first slot are not enough: `st_mode` is found by name.
-    let bogus = MontyValue::named_tuple(
+    let bogus = MontyObject::named_tuple(
         "other".to_owned(),
         vec!["nope".to_owned()],
-        vec![MontyValue::int(0o040_755)],
+        vec![MontyObject::int(0o040_755)],
     );
     let err = run_chdir("import os\nos.chdir('sub')", bogus).unwrap_err();
     assert_eq!(err.exc_type(), ExcType::RuntimeError);
@@ -414,7 +414,7 @@ fn set_cwd_normalizes() {
     runner.set_cwd("/data/sub/../x//");
     assert_eq!(
         runner.run_no_limits(vec![]).unwrap(),
-        MontyValue::string("/data/x".to_owned())
+        MontyObject::string("/data/x".to_owned())
     );
 }
 
@@ -422,7 +422,7 @@ fn set_cwd_normalizes() {
 fn os_chdir_returns_none() {
     assert_eq!(
         run_chdir("import os\nos.chdir('sub')", dir_stat(0o755, 0.0)).unwrap(),
-        MontyValue::none()
+        MontyObject::none()
     );
 }
 
@@ -443,9 +443,9 @@ fn os_chdir_host_error_propagates_and_keeps_cwd() {
     );
     assert_eq!(
         run_chdir(code, missing).unwrap(),
-        MontyValue::tuple([
-            MontyValue::string("[Errno 2] No such file or directory: '/data/sub'".to_owned()),
-            MontyValue::string("/data".to_owned())
+        MontyObject::tuple([
+            MontyObject::string("[Errno 2] No such file or directory: '/data/sub'".to_owned()),
+            MontyObject::string("/data".to_owned())
         ])
     );
 }
@@ -473,7 +473,7 @@ fn repl_os_chdir_answered_with_a_future_is_refused() {
     let mut repl = err.repl;
     assert_eq!(
         repl.feed_run("os.getcwd()", vec![], PrintWriter::Stdout).unwrap(),
-        MontyValue::string("/data".to_owned())
+        MontyObject::string("/data".to_owned())
     );
 }
 
@@ -495,12 +495,12 @@ fn repl_keeps_the_directory_across_snippets() {
     let mut repl = repl;
     assert_eq!(
         repl.feed_run("os.getcwd()", vec![], PrintWriter::Stdout).unwrap(),
-        MontyValue::string("/data/sub".to_owned())
+        MontyObject::string("/data/sub".to_owned())
     );
     repl.set_cwd("/other");
     assert_eq!(
         repl.feed_run("os.getcwd()", vec![], PrintWriter::Stdout).unwrap(),
-        MontyValue::string("/other".to_owned())
+        MontyObject::string("/other".to_owned())
     );
 }
 
@@ -530,14 +530,14 @@ fn os_chdir_rejects_non_path() {
 fn path_with_spaces() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/path/with spaces/file.txt').exists()");
     assert_eq!(func, "Path.exists");
-    assert_eq!(args[0], MontyValue::path("/path/with spaces/file.txt".to_owned()));
+    assert_eq!(args[0], MontyObject::path("/path/with spaces/file.txt".to_owned()));
 }
 
 #[test]
 fn path_with_unicode() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/путь/文件.txt').exists()");
     assert_eq!(func, "Path.exists");
-    assert_eq!(args[0], MontyValue::path("/путь/文件.txt".to_owned()));
+    assert_eq!(args[0], MontyObject::path("/путь/文件.txt".to_owned()));
 }
 
 #[test]
@@ -551,7 +551,7 @@ full.exists()
 ",
     );
     assert_eq!(func, "Path.exists");
-    assert_eq!(args[0], MontyValue::path("/home/user/file.txt".to_owned()));
+    assert_eq!(args[0], MontyObject::path("/home/user/file.txt".to_owned()));
 }
 
 // =============================================================================
@@ -564,13 +564,13 @@ fn exists_result_used_in_conditional() {
 from pathlib import Path
 'found' if Path('/tmp/test.txt').exists() else 'missing'
 ";
-    let (func, _, result) = run_oscall_with_result(code, MontyValue::bool(true));
+    let (func, _, result) = run_oscall_with_result(code, MontyObject::bool(true));
     assert_eq!(func, "Path.exists");
-    assert_eq!(result, MontyValue::string("found".to_owned()));
+    assert_eq!(result, MontyObject::string("found".to_owned()));
 
     // Also test false case
-    let (_, _, result) = run_oscall_with_result(code, MontyValue::bool(false));
-    assert_eq!(result, MontyValue::string("missing".to_owned()));
+    let (_, _, result) = run_oscall_with_result(code, MontyObject::bool(false));
+    assert_eq!(result, MontyObject::string("missing".to_owned()));
 }
 
 #[test]
@@ -579,9 +579,9 @@ fn read_text_result_concatenated() {
 from pathlib import Path
 'Content: ' + Path('/tmp/hello.txt').read_text()
 ";
-    let (func, _, result) = run_oscall_with_result(code, MontyValue::string("Hello!".to_owned()));
+    let (func, _, result) = run_oscall_with_result(code, MontyObject::string("Hello!".to_owned()));
     assert_eq!(func, "Path.read_text");
-    assert_eq!(result, MontyValue::string("Content: Hello!".to_owned()));
+    assert_eq!(result, MontyObject::string("Content: Hello!".to_owned()));
 }
 
 #[test]
@@ -591,9 +591,9 @@ from pathlib import Path
 data = Path('/tmp/file.bin').read_bytes()
 data[0]
 ";
-    let (func, _, result) = run_oscall_with_result(code, MontyValue::bytes(vec![0x42, 0x43, 0x44]));
+    let (func, _, result) = run_oscall_with_result(code, MontyObject::bytes(vec![0x42, 0x43, 0x44]));
     assert_eq!(func, "Path.read_bytes");
-    assert_eq!(result, MontyValue::int(0x42));
+    assert_eq!(result, MontyObject::int(0x42));
 }
 
 #[test]
@@ -604,16 +604,16 @@ entries = Path('/tmp').iterdir()
 len(entries)
 ";
     // Return a list of path strings (simulating directory entries)
-    let mock_entries = MontyValue::list([
-        MontyValue::string("/tmp/file1.txt".to_owned()),
-        MontyValue::string("/tmp/file2.txt".to_owned()),
-        MontyValue::string("/tmp/subdir".to_owned()),
+    let mock_entries = MontyObject::list([
+        MontyObject::string("/tmp/file1.txt".to_owned()),
+        MontyObject::string("/tmp/file2.txt".to_owned()),
+        MontyObject::string("/tmp/subdir".to_owned()),
     ]);
     let (func, args, result) = run_oscall_with_result(code, mock_entries);
 
     assert_eq!(func, "Path.iterdir");
-    assert_eq!(args[0], MontyValue::path("/tmp".to_owned()));
-    assert_eq!(result, MontyValue::int(3));
+    assert_eq!(args[0], MontyObject::path("/tmp".to_owned()));
+    assert_eq!(result, MontyObject::int(3));
 }
 
 #[test]
@@ -623,15 +623,15 @@ from pathlib import Path
 entries = Path('/home/user').iterdir()
 entries[0]
 ";
-    let mock_entries = MontyValue::list([
-        MontyValue::string("/home/user/documents".to_owned()),
-        MontyValue::string("/home/user/downloads".to_owned()),
+    let mock_entries = MontyObject::list([
+        MontyObject::string("/home/user/documents".to_owned()),
+        MontyObject::string("/home/user/downloads".to_owned()),
     ]);
     let (func, args, result) = run_oscall_with_result(code, mock_entries);
 
     assert_eq!(func, "Path.iterdir");
-    assert_eq!(args[0], MontyValue::path("/home/user".to_owned()));
-    assert_eq!(result, MontyValue::path("/home/user/documents".to_owned()));
+    assert_eq!(args[0], MontyObject::path("/home/user".to_owned()));
+    assert_eq!(result, MontyObject::path("/home/user/documents".to_owned()));
 }
 
 /// Display names retain the input spelling while a relative host handle is anchored at open time.
@@ -663,15 +663,15 @@ fn open_name_and_target_survive_chdir() {
         .unwrap();
     assert_eq!(call.function_call.fs_primary_path(), Some("/data/target.txt"));
     let result = call
-        .resume(MontyValue::string("content".to_owned()), PrintWriter::Stdout)
+        .resume(MontyObject::string("content".to_owned()), PrintWriter::Stdout)
         .unwrap()
         .into_complete()
         .unwrap();
     assert_eq!(
         result,
-        MontyValue::tuple([
-            MontyValue::string("./name.txt".to_owned()),
-            MontyValue::string("content".to_owned())
+        MontyObject::tuple([
+            MontyObject::string("./name.txt".to_owned()),
+            MontyObject::string("content".to_owned())
         ])
     );
 }
@@ -686,7 +686,7 @@ fn filesystem_result_effects_reject_invalid_replies() {
     ] {
         let call = run_to_oscall_start(code);
         let err = call
-            .resume(MontyValue::list([MontyValue::int(1)]), PrintWriter::Stdout)
+            .resume(MontyObject::list([MontyObject::int(1)]), PrintWriter::Stdout)
             .unwrap_err();
         assert_eq!(err.exc_type(), ExcType::RuntimeError);
         assert!(err.message().unwrap().contains(operation));
@@ -711,8 +711,8 @@ info.st_size
     let (func, args, result) = run_oscall_with_result(code, file_stat(0o644, 1024, 0.0));
 
     assert_eq!(func, "Path.stat");
-    assert_eq!(args[0], MontyValue::path("/tmp/file.txt".to_owned()));
-    assert_eq!(result, MontyValue::int(1024));
+    assert_eq!(args[0], MontyObject::path("/tmp/file.txt".to_owned()));
+    assert_eq!(result, MontyObject::int(1024));
 }
 
 #[test]
@@ -726,8 +726,8 @@ info.st_mode
     let (func, args, result) = run_oscall_with_result(code, file_stat(0o755, 0, 0.0));
 
     assert_eq!(func, "Path.stat");
-    assert_eq!(args[0], MontyValue::path("/tmp/file.txt".to_owned()));
-    assert_eq!(result, MontyValue::int(0o100_755));
+    assert_eq!(args[0], MontyObject::path("/tmp/file.txt".to_owned()));
+    assert_eq!(result, MontyObject::int(0o100_755));
 }
 
 #[test]
@@ -741,10 +741,10 @@ info = Path('/var/log/syslog').stat()
     let (func, args, result) = run_oscall_with_result(code, file_stat(0o644, 4096, 0.0));
 
     assert_eq!(func, "Path.stat");
-    assert_eq!(args[0], MontyValue::path("/var/log/syslog".to_owned()));
+    assert_eq!(args[0], MontyObject::path("/var/log/syslog".to_owned()));
     assert_eq!(
         result,
-        MontyValue::tuple([MontyValue::int(4096), MontyValue::int(0o100_644)])
+        MontyObject::tuple([MontyObject::int(4096), MontyObject::int(0o100_644)])
     );
 }
 
@@ -759,8 +759,8 @@ info[6]  # st_size is at index 6
     let (func, args, result) = run_oscall_with_result(code, file_stat(0o644, 2048, 0.0));
 
     assert_eq!(func, "Path.stat");
-    assert_eq!(args[0], MontyValue::path("/tmp/file.txt".to_owned()));
-    assert_eq!(result, MontyValue::int(2048));
+    assert_eq!(args[0], MontyObject::path("/tmp/file.txt".to_owned()));
+    assert_eq!(result, MontyObject::int(2048));
 }
 
 // =============================================================================
@@ -776,8 +776,8 @@ os.getenv('PATH')
     let (func, args) = run_to_oscall(code);
     assert_eq!(func, "os.getenv");
     // First arg is key, second is default (None if not provided)
-    assert_eq!(args[0], MontyValue::string("PATH".to_owned()));
-    assert_eq!(args[1], MontyValue::none());
+    assert_eq!(args[0], MontyObject::string("PATH".to_owned()));
+    assert_eq!(args[1], MontyObject::none());
 }
 
 #[test]
@@ -788,8 +788,8 @@ os.getenv('MISSING', 'fallback')
 ";
     let (func, args) = run_to_oscall(code);
     assert_eq!(func, "os.getenv");
-    assert_eq!(args[0], MontyValue::string("MISSING".to_owned()));
-    assert_eq!(args[1], MontyValue::string("fallback".to_owned()));
+    assert_eq!(args[0], MontyObject::string("MISSING".to_owned()));
+    assert_eq!(args[1], MontyObject::string("fallback".to_owned()));
 }
 
 #[test]
@@ -798,9 +798,9 @@ fn os_getenv_result_used() {
 import os
 'HOME=' + os.getenv('HOME')
 ";
-    let (func, _, result) = run_oscall_with_result(code, MontyValue::string("/home/user".to_owned()));
+    let (func, _, result) = run_oscall_with_result(code, MontyObject::string("/home/user".to_owned()));
     assert_eq!(func, "os.getenv");
-    assert_eq!(result, MontyValue::string("HOME=/home/user".to_owned()));
+    assert_eq!(result, MontyObject::string("HOME=/home/user".to_owned()));
 }
 
 // =============================================================================
@@ -825,19 +825,19 @@ fn os_environ_result_is_dict() {
 import os
 type(os.environ).__name__
 ";
-    let mock_env = MontyValue::dict(vec![
+    let mock_env = MontyObject::dict(vec![
         (
-            MontyValue::string("HOME".to_owned()),
-            MontyValue::string("/home/user".to_owned()),
+            MontyObject::string("HOME".to_owned()),
+            MontyObject::string("/home/user".to_owned()),
         ),
         (
-            MontyValue::string("PATH".to_owned()),
-            MontyValue::string("/usr/bin".to_owned()),
+            MontyObject::string("PATH".to_owned()),
+            MontyObject::string("/usr/bin".to_owned()),
         ),
     ]);
     let (func, _, result) = run_oscall_with_result(code, mock_env);
     assert_eq!(func, "os.environ");
-    assert_eq!(result, MontyValue::string("dict".to_owned()));
+    assert_eq!(result, MontyObject::string("dict".to_owned()));
 }
 
 #[test]
@@ -846,13 +846,13 @@ fn os_environ_key_access() {
 import os
 os.environ['HOME']
 ";
-    let mock_env = MontyValue::dict(vec![(
-        MontyValue::string("HOME".to_owned()),
-        MontyValue::string("/home/user".to_owned()),
+    let mock_env = MontyObject::dict(vec![(
+        MontyObject::string("HOME".to_owned()),
+        MontyObject::string("/home/user".to_owned()),
     )]);
     let (func, _, result) = run_oscall_with_result(code, mock_env);
     assert_eq!(func, "os.environ");
-    assert_eq!(result, MontyValue::string("/home/user".to_owned()));
+    assert_eq!(result, MontyObject::string("/home/user".to_owned()));
 }
 
 #[test]
@@ -861,10 +861,10 @@ fn os_environ_get_method() {
 import os
 os.environ.get('MISSING', 'default')
 ";
-    let mock_env = MontyValue::dict([]);
+    let mock_env = MontyObject::dict([]);
     let (func, _, result) = run_oscall_with_result(code, mock_env);
     assert_eq!(func, "os.environ");
-    assert_eq!(result, MontyValue::string("default".to_owned()));
+    assert_eq!(result, MontyObject::string("default".to_owned()));
 }
 
 #[test]
@@ -873,14 +873,14 @@ fn os_environ_len() {
 import os
 len(os.environ)
 ";
-    let mock_env = MontyValue::dict(vec![
-        (MontyValue::string("A".to_owned()), MontyValue::string("1".to_owned())),
-        (MontyValue::string("B".to_owned()), MontyValue::string("2".to_owned())),
-        (MontyValue::string("C".to_owned()), MontyValue::string("3".to_owned())),
+    let mock_env = MontyObject::dict(vec![
+        (MontyObject::string("A".to_owned()), MontyObject::string("1".to_owned())),
+        (MontyObject::string("B".to_owned()), MontyObject::string("2".to_owned())),
+        (MontyObject::string("C".to_owned()), MontyObject::string("3".to_owned())),
     ]);
     let (func, _, result) = run_oscall_with_result(code, mock_env);
     assert_eq!(func, "os.environ");
-    assert_eq!(result, MontyValue::int(3));
+    assert_eq!(result, MontyObject::int(3));
 }
 
 #[test]
@@ -889,13 +889,13 @@ fn os_environ_in_check() {
 import os
 'HOME' in os.environ
 ";
-    let mock_env = MontyValue::dict(vec![(
-        MontyValue::string("HOME".to_owned()),
-        MontyValue::string("/home/user".to_owned()),
+    let mock_env = MontyObject::dict(vec![(
+        MontyObject::string("HOME".to_owned()),
+        MontyObject::string("/home/user".to_owned()),
     )]);
     let (func, _, result) = run_oscall_with_result(code, mock_env);
     assert_eq!(func, "os.environ");
-    assert_eq!(result, MontyValue::bool(true));
+    assert_eq!(result, MontyObject::bool(true));
 }
 
 // =============================================================================
@@ -916,31 +916,31 @@ fn run_to_error(code: &str) -> String {
 fn os_listdir_yields_iterdir_and_strips_names() {
     let (func, args, result) = run_oscall_with_result(
         "import os\nos.listdir('/mnt/data')",
-        MontyValue::list([
-            MontyValue::path("/mnt/data/b.txt".to_owned()),
-            MontyValue::path("/mnt/data/a.txt".to_owned()),
-            MontyValue::path("/mnt/data/sub".to_owned()),
+        MontyObject::list([
+            MontyObject::path("/mnt/data/b.txt".to_owned()),
+            MontyObject::path("/mnt/data/a.txt".to_owned()),
+            MontyObject::path("/mnt/data/sub".to_owned()),
         ]),
     );
     // os.listdir reuses the Path.iterdir OS call — hosts see that name.
     assert_eq!(func, "Path.iterdir");
-    assert_eq!(args, vec![MontyValue::path("/mnt/data".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/mnt/data".to_owned())]);
     assert_eq!(
         result,
-        MontyValue::list([
-            MontyValue::string("b.txt".to_owned()),
-            MontyValue::string("a.txt".to_owned()),
-            MontyValue::string("sub".to_owned()),
+        MontyObject::list([
+            MontyObject::string("b.txt".to_owned()),
+            MontyObject::string("a.txt".to_owned()),
+            MontyObject::string("sub".to_owned()),
         ])
     );
 }
 
 #[test]
 fn os_listdir_default_path_is_cwd() {
-    let (func, args, result) = run_oscall_with_result("import os\nos.listdir()", MontyValue::list([]));
+    let (func, args, result) = run_oscall_with_result("import os\nos.listdir()", MontyObject::list([]));
     assert_eq!(func, "Path.iterdir");
-    assert_eq!(args, vec![MontyValue::path("/".to_owned())]);
-    assert_eq!(result, MontyValue::list([]));
+    assert_eq!(args, vec![MontyObject::path("/".to_owned())]);
+    assert_eq!(result, MontyObject::list([]));
 }
 
 #[test]
@@ -949,16 +949,16 @@ fn os_listdir_accepts_host_strings() {
     // strings instead of paths — names are stripped the same way.
     let (_, _, result) = run_oscall_with_result(
         "import os\nos.listdir('/mnt')",
-        MontyValue::list([
-            MontyValue::string("/mnt/x.txt".to_owned()),
-            MontyValue::string("plain".to_owned()),
+        MontyObject::list([
+            MontyObject::string("/mnt/x.txt".to_owned()),
+            MontyObject::string("plain".to_owned()),
         ]),
     );
     assert_eq!(
         result,
-        MontyValue::list([
-            MontyValue::string("x.txt".to_owned()),
-            MontyValue::string("plain".to_owned()),
+        MontyObject::list([
+            MontyObject::string("x.txt".to_owned()),
+            MontyObject::string("plain".to_owned()),
         ])
     );
 }
@@ -980,7 +980,7 @@ fn run_to_oscall_start(code: &str) -> monty::OsCall {
 fn os_listdir_rejects_bad_host_result() {
     let call = run_to_oscall_start("import os\nos.listdir('/mnt')");
     let err = call
-        .resume(MontyValue::list([MontyValue::int(3)]), PrintWriter::Stdout)
+        .resume(MontyObject::list([MontyObject::int(3)]), PrintWriter::Stdout)
         .unwrap_err();
     assert_eq!(
         err.to_string().lines().last().unwrap_or_default(),
@@ -992,7 +992,7 @@ fn os_listdir_rejects_bad_host_result() {
 fn os_stat_yields_stat_call() {
     let (func, args) = run_to_oscall("import os\nos.stat('/tmp/file.txt')");
     assert_eq!(func, "Path.stat");
-    assert_eq!(args, vec![MontyValue::path("/tmp/file.txt".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/tmp/file.txt".to_owned())]);
 }
 
 #[test]
@@ -1015,7 +1015,7 @@ fn os_mkdir_and_makedirs_yield_mkdir_calls() {
         assert_eq!(mkdir.path.as_str(), path);
         assert_eq!(mkdir.parents, parents);
         assert_eq!(mkdir.exist_ok, exist_ok);
-        let _ = call.resume(MontyValue::none(), PrintWriter::Stdout);
+        let _ = call.resume(MontyObject::none(), PrintWriter::Stdout);
     }
 }
 
@@ -1023,18 +1023,18 @@ fn os_mkdir_and_makedirs_yield_mkdir_calls() {
 fn os_remove_and_unlink_yield_unlink_call() {
     let (func, args) = run_to_oscall("import os\nos.remove('/mnt/f.txt')");
     assert_eq!(func, "Path.unlink");
-    assert_eq!(args, vec![MontyValue::path("/mnt/f.txt".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/mnt/f.txt".to_owned())]);
 
     let (func, args) = run_to_oscall("import os\nos.unlink('/mnt/g.txt')");
     assert_eq!(func, "Path.unlink");
-    assert_eq!(args, vec![MontyValue::path("/mnt/g.txt".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/mnt/g.txt".to_owned())]);
 }
 
 #[test]
 fn os_rmdir_yields_rmdir_call() {
     let (func, args) = run_to_oscall("import os\nos.rmdir('/mnt/d')");
     assert_eq!(func, "Path.rmdir");
-    assert_eq!(args, vec![MontyValue::path("/mnt/d".to_owned())]);
+    assert_eq!(args, vec![MontyObject::path("/mnt/d".to_owned())]);
 }
 
 #[test]
@@ -1044,8 +1044,8 @@ fn os_rename_and_replace_yield_rename_call() {
     assert_eq!(
         args,
         vec![
-            MontyValue::path("/mnt/a".to_owned()),
-            MontyValue::path("/mnt/b".to_owned())
+            MontyObject::path("/mnt/a".to_owned()),
+            MontyObject::path("/mnt/b".to_owned())
         ]
     );
 
@@ -1054,8 +1054,8 @@ fn os_rename_and_replace_yield_rename_call() {
     assert_eq!(
         args,
         vec![
-            MontyValue::path("/mnt/a".to_owned()),
-            MontyValue::path("/mnt/b".to_owned())
+            MontyObject::path("/mnt/a".to_owned()),
+            MontyObject::path("/mnt/b".to_owned())
         ]
     );
 }
@@ -1164,15 +1164,15 @@ except NotImplementedError:
     pass
 os.getenv('PROBE')
 ";
-    let (func, _, result) = run_oscall_with_result(code, MontyValue::string("value".to_owned()));
+    let (func, _, result) = run_oscall_with_result(code, MontyObject::string("value".to_owned()));
     assert_eq!(func, "os.getenv");
-    assert_eq!(result, MontyValue::string("value".to_owned()));
+    assert_eq!(result, MontyObject::string("value".to_owned()));
 }
 
 /// Drives `code` through a scripted sequence of OS calls, checking each call's
 /// stable name and answering it with the paired mock result. Returns the final
 /// completed value.
-fn run_oscall_sequence(code: &str, steps: Vec<(&str, MontyValue)>) -> MontyValue {
+fn run_oscall_sequence(code: &str, steps: Vec<(&str, MontyObject)>) -> MontyObject {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let mut progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
@@ -1188,8 +1188,8 @@ fn run_oscall_sequence(code: &str, steps: Vec<(&str, MontyValue)>) -> MontyValue
 }
 
 /// A read-mode handle for `path`, the host's answer to an `open` OS call.
-fn mock_file_handle(path: &str) -> MontyValue {
-    MontyValue::file_handle(MontyFileHandle {
+fn mock_file_handle(path: &str) -> MontyObject {
+    MontyObject::file_handle(MontyFileHandle {
         path: path.to_owned(),
         mode: "r".parse::<FileMode>().unwrap(),
         position: 0,
@@ -1216,10 +1216,10 @@ Path('/data/config.json').read_text()
         code,
         vec![
             ("open", mock_file_handle("/data/sample.txt")),
-            ("Path.read_text", MontyValue::string("victim contents".to_owned())),
+            ("Path.read_text", MontyObject::string("victim contents".to_owned())),
         ],
     );
-    assert_eq!(result, MontyValue::string("victim contents".to_owned()));
+    assert_eq!(result, MontyObject::string("victim contents".to_owned()));
 }
 
 #[test]
@@ -1237,7 +1237,7 @@ msg
     let result = run_oscall_sequence(code, vec![("open", mock_file_handle("/data/sample.txt"))]);
     assert_eq!(
         result,
-        MontyValue::string(
+        MontyObject::string(
             "sorted() key argument: OS function 'Path.read_text' is not yet supported in this context".to_owned()
         )
     );
@@ -1261,10 +1261,10 @@ type(Path('/data/config.json').read_text()).__name__
         code,
         vec![
             ("open", mock_file_handle("/data/sample.txt")),
-            ("Path.read_text", MontyValue::string("a\nb\n".to_owned())),
+            ("Path.read_text", MontyObject::string("a\nb\n".to_owned())),
         ],
     );
-    assert_eq!(result, MontyValue::string("str".to_owned()));
+    assert_eq!(result, MontyObject::string("str".to_owned()));
 }
 
 #[test]
@@ -1302,11 +1302,11 @@ os.getenv('PROBE')
     };
     assert_eq!(call.function_call.name(), "os.getenv");
     let progress = call
-        .resume(MontyValue::string("env-value".to_owned()), PrintWriter::Stdout)
+        .resume(MontyObject::string("env-value".to_owned()), PrintWriter::Stdout)
         .unwrap();
     assert_eq!(
         progress.into_complete().expect("expected Complete"),
-        MontyValue::string("env-value".to_owned())
+        MontyObject::string("env-value".to_owned())
     );
 }
 
@@ -1341,15 +1341,15 @@ some_external('x')
     };
     assert_eq!(call.function_name, "some_external");
     let progress = call
-        .resume(MontyValue::string("external-result".to_owned()), PrintWriter::Stdout)
+        .resume(MontyObject::string("external-result".to_owned()), PrintWriter::Stdout)
         .unwrap();
     assert_eq!(
         progress.into_complete().expect("expected Complete"),
-        MontyValue::string("external-result".to_owned())
+        MontyObject::string("external-result".to_owned())
     );
 }
 
 /// The positional arguments of a call as owned values.
-fn positional(call: &CallArgs) -> Vec<MontyValue> {
+fn positional(call: &CallArgs) -> Vec<MontyObject> {
     call.args().map(|arg| arg.to_owned()).collect()
 }

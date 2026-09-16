@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use monty_types::{ClassTypeNode, MontyException, MontyGraph, MontyNode, MontyValue, NodeId};
+use monty_types::{ClassTypeNode, MontyException, MontyGraph, MontyNode, MontyObject, NodeId};
 use pyo3::{
     prelude::*,
     types::{PyBool, PyBytes, PyDate, PyDelta, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple},
@@ -21,7 +21,7 @@ use super::{
 /// Converts one value to a native Python object. A class instance found in
 /// `store` resolves to the ORIGINAL wrapped object (identity preserved);
 /// otherwise it becomes a read-only `MontyClassProxy`.
-pub fn monty_to_py(py: Python<'_>, value: &MontyValue, store: &InstanceStore) -> PyResult<Py<PyAny>> {
+pub fn monty_to_py(py: Python<'_>, value: &MontyObject, store: &InstanceStore) -> PyResult<Py<PyAny>> {
     Ok(DecodedArena::new(py, &value.graph, store)?.get(py, value.root))
 }
 

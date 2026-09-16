@@ -6,7 +6,7 @@
 //! the heap's shape: every container holds the
 //! indexes of its children, a sub-object referenced twice is one node
 //! referenced twice, and a message carries one arena plus the ids of its
-//! roots (see [`MontyValue`](crate::MontyValue), [`CallArgs`](crate::CallArgs)).
+//! roots (see [`MontyObject`](crate::MontyObject), [`CallArgs`](crate::CallArgs)).
 //!
 //! Nodes are in post-order: every child index is strictly lower than the
 //! index of the node holding it, so a decoder can build values in one
@@ -52,7 +52,7 @@ impl fmt::Display for NodeId {
 ///
 /// Containers hold [`NodeId`]s rather than nested values, and a non-builtin
 /// class is its own [`ClassType`](Self::ClassType) node so every instance of
-/// it shares one. Build values with the [`MontyValue`](crate::MontyValue)
+/// it shares one. Build values with the [`MontyObject`](crate::MontyObject)
 /// constructors rather than nodes.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum MontyNode {

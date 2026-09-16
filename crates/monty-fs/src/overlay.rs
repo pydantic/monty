@@ -8,7 +8,7 @@ use std::io::ErrorKind;
 
 use ahash::AHashSet;
 use cap_std::fs::Dir;
-use monty_types::{FileMode, MontyValue, dir_stat, file_stat, normalize_virtual_path};
+use monty_types::{FileMode, MontyObject, dir_stat, file_stat, normalize_virtual_path};
 
 use super::{
     common::{
@@ -144,7 +144,7 @@ pub(super) fn execute(
     request: FsRequest,
     ctx: &mut MountContext<'_>,
     state: &mut OverlayState,
-) -> Result<MontyValue, MountError> {
+) -> Result<MontyObject, MountError> {
     match request {
         FsRequest::Exists { path } => exists(state, &relative_path(&path, ctx)?, ctx, &path),
         FsRequest::IsFile { path } => is_file(state, &relative_path(&path, ctx)?, ctx, &path),
@@ -167,7 +167,7 @@ pub(super) fn execute(
         FsRequest::Stat { path } => stat(state, &relative_path(&path, ctx)?, ctx, &path),
         FsRequest::Rename { src, dst } => rename(state, &src, &dst, ctx),
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
-            Ok(MontyValue::path(normalize_virtual_path(&path).into_owned()))
+            Ok(MontyObject::path(normalize_virtual_path(&path).into_owned()))
         }
         FsRequest::Open { path, mode } => open(state, &path, mode, ctx),
     }
@@ -184,7 +184,7 @@ fn open(
     path: &str,
     file_mode: FileMode,
     ctx: &mut MountContext<'_>,
-) -> Result<MontyValue, MountError> {
+) -> Result<MontyObject, MountError> {
     match file_mode {
         FileMode::Read(_) | FileMode::ReadUpdate(_) => {
             let relative = relative_path(path, ctx)?;
@@ -279,7 +279,12 @@ fn ensure_append_target_exists(
 }
 
 /// Implements `Path.exists()` against overlay state plus real filesystem fallback.
-fn exists(state: &OverlayState, relative: &str, ctx: &MountContext<'_>, vpath: &str) -> Result<MontyValue, MountError> {
+fn exists(
+    state: &OverlayState,
+    relative: &str,
+    ctx: &MountContext<'_>,
+    vpath: &str,
+) -> Result<MontyObject, MountError> {
     let exists = match state.get(relative) {
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_) | OverlayEntry::Directory { .. }) => true,
         Some(OverlayEntry::Deleted) => false,
@@ -288,7 +293,7 @@ fn exists(state: &OverlayState, relative: &str, ctx: &MountContext<'_>, vpath: &
             RealPathState::Missing => false,
         },
     };
-    Ok(MontyValue::bool(exists))
+    Ok(MontyObject::bool(exists))
 }
 
 /// Implements `Path.is_file()` against overlay state plus real filesystem fallback.
@@ -297,7 +302,7 @@ fn is_file(
     relative: &str,
     ctx: &MountContext<'_>,
     vpath: &str,
-) -> Result<MontyValue, MountError> {
+) -> Result<MontyObject, MountError> {
     let is_file = match state.get(relative) {
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => true,
         Some(OverlayEntry::Directory { .. } | OverlayEntry::Deleted) => false,
@@ -306,11 +311,16 @@ fn is_file(
             RealPathState::Missing => false,
         },
     };
-    Ok(MontyValue::bool(is_file))
+    Ok(MontyObject::bool(is_file))
 }
 
 /// Implements `Path.is_dir()` against overlay state plus real filesystem fallback.
-fn is_dir(state: &OverlayState, relative: &str, ctx: &MountContext<'_>, vpath: &str) -> Result<MontyValue, MountError> {
+fn is_dir(
+    state: &OverlayState,
+    relative: &str,
+    ctx: &MountContext<'_>,
+    vpath: &str,
+) -> Result<MontyObject, MountError> {
     let is_dir = match state.get(relative) {
         Some(OverlayEntry::Directory { .. }) => true,
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_) | OverlayEntry::Deleted) => false,
@@ -319,14 +329,14 @@ fn is_dir(state: &OverlayState, relative: &str, ctx: &MountContext<'_>, vpath: &
             RealPathState::Missing => false,
         },
     };
-    Ok(MontyValue::bool(is_dir))
+    Ok(MontyObject::bool(is_dir))
 }
 
 /// Implements `Path.is_symlink()`. Overlay entries are never symlinks.
 ///
 /// Infallible: a refused or unreadable path is simply not a symlink, since a
 /// predicate must not raise.
-fn is_symlink(state: &OverlayState, relative: &str, ctx: &MountContext<'_>, vpath: &str) -> MontyValue {
+fn is_symlink(state: &OverlayState, relative: &str, ctx: &MountContext<'_>, vpath: &str) -> MontyObject {
     let is_symlink = match state.get(relative) {
         Some(_) => false,
         // The one question a symlink may answer, since it reports only that
@@ -340,7 +350,7 @@ fn is_symlink(state: &OverlayState, relative: &str, ctx: &MountContext<'_>, vpat
                 && ctx.mount_dir.symlink_metadata(rel).is_ok_and(|meta| meta.is_symlink())
         }),
     };
-    MontyValue::bool(is_symlink)
+    MontyObject::bool(is_symlink)
 }
 
 /// Reads text from the overlay or from the real filesystem on fallback.
@@ -349,11 +359,11 @@ fn read_text(
     relative: &str,
     ctx: &MountContext<'_>,
     vpath: &str,
-) -> Result<MontyValue, MountError> {
+) -> Result<MontyObject, MountError> {
     match state.get(relative) {
         Some(OverlayEntry::File(file)) => {
             available_memory(state, ctx)?.check(as_u64(file.content.len()))?;
-            Ok(MontyValue::string(bytes_to_utf8(file.content.clone())?))
+            Ok(MontyObject::string(bytes_to_utf8(file.content.clone())?))
         }
         Some(OverlayEntry::RealFileRef(file_ref)) => {
             let rel = checked_ref_path(file_ref, ctx, vpath)?;
@@ -376,11 +386,11 @@ fn read_bytes(
     relative: &str,
     ctx: &MountContext<'_>,
     vpath: &str,
-) -> Result<MontyValue, MountError> {
+) -> Result<MontyObject, MountError> {
     match state.get(relative) {
         Some(OverlayEntry::File(file)) => {
             available_memory(state, ctx)?.check(as_u64(file.content.len()))?;
-            Ok(MontyValue::bytes(file.content.clone()))
+            Ok(MontyObject::bytes(file.content.clone()))
         }
         Some(OverlayEntry::RealFileRef(file_ref)) => {
             let rel = checked_ref_path(file_ref, ctx, vpath)?;
@@ -404,7 +414,7 @@ fn write_text(
     vpath: &str,
     data: String,
     ctx: &mut MountContext<'_>,
-) -> Result<MontyValue, MountError> {
+) -> Result<MontyObject, MountError> {
     // The return value is the CPython char count — computed up front since
     // the bytes move into the overlay below.
     let char_count = data.chars().count();
@@ -425,7 +435,7 @@ fn write_text(
     )?;
 
     commit_write_bytes(byte_len, ctx);
-    Ok(MontyValue::int(i64::try_from(char_count).unwrap_or(i64::MAX)))
+    Ok(MontyObject::int(i64::try_from(char_count).unwrap_or(i64::MAX)))
 }
 
 /// Writes bytes into the overlay after validating quota and parent existence.
@@ -435,7 +445,7 @@ fn write_bytes(
     vpath: &str,
     data: Vec<u8>,
     ctx: &mut MountContext<'_>,
-) -> Result<MontyValue, MountError> {
+) -> Result<MontyObject, MountError> {
     let byte_len = data.len();
     check_write_limit(byte_len, ctx)?;
     let relative = relative_path(vpath, ctx)?;
@@ -453,7 +463,7 @@ fn write_bytes(
     )?;
 
     commit_write_bytes(byte_len, ctx);
-    Ok(MontyValue::int(i64::try_from(byte_len).unwrap_or(i64::MAX)))
+    Ok(MontyObject::int(i64::try_from(byte_len).unwrap_or(i64::MAX)))
 }
 
 /// Appends text in the overlay without leaving a host file handle open.
@@ -462,9 +472,11 @@ fn append_text(
     vpath: &str,
     data: &str,
     ctx: &mut MountContext<'_>,
-) -> Result<MontyValue, MountError> {
+) -> Result<MontyObject, MountError> {
     append_bytes(state, vpath, data.as_bytes(), ctx)?;
-    Ok(MontyValue::int(i64::try_from(data.chars().count()).unwrap_or(i64::MAX)))
+    Ok(MontyObject::int(
+        i64::try_from(data.chars().count()).unwrap_or(i64::MAX),
+    ))
 }
 
 /// Appends bytes in the overlay, copying through real mounted content if needed.
@@ -478,7 +490,7 @@ fn append_bytes(
     vpath: &str,
     data: &[u8],
     ctx: &mut MountContext<'_>,
-) -> Result<MontyValue, MountError> {
+) -> Result<MontyObject, MountError> {
     let relative = relative_path(vpath, ctx)?;
     ensure_parent_exists(state, &relative, ctx, vpath)?;
     reject_directory_target(state, &relative, ctx, vpath)?;
@@ -509,7 +521,7 @@ fn append_bytes(
     }
 
     commit_write_bytes(charged_bytes, ctx);
-    Ok(MontyValue::int(i64::try_from(data.len()).unwrap_or(i64::MAX)))
+    Ok(MontyObject::int(i64::try_from(data.len()).unwrap_or(i64::MAX)))
 }
 
 /// Returns the visible file length for append accounting without loading bytes.
@@ -665,11 +677,11 @@ fn mkdir(
     exist_ok: bool,
     ctx: &MountContext<'_>,
     vpath: &str,
-) -> Result<MontyValue, MountError> {
+) -> Result<MontyObject, MountError> {
     match state.get(relative) {
         Some(OverlayEntry::Directory { .. }) => {
             return if exist_ok {
-                Ok(MontyValue::none())
+                Ok(MontyObject::none())
             } else {
                 Err(MountError::io_err(ErrorKind::AlreadyExists, "File exists", vpath))
             };
@@ -683,7 +695,7 @@ fn mkdir(
             // overlay directory shadowing the symlink it had just refused.
             let target = resolve_real(vpath, ctx)?;
             match classify_target(ctx.mount_dir, target.for_dir_op(), vpath)? {
-                RealTarget::Dir if exist_ok => return Ok(MontyValue::none()),
+                RealTarget::Dir if exist_ok => return Ok(MontyObject::none()),
                 // Either a file (always an error) or a dir with exist_ok=false.
                 RealTarget::Dir | RealTarget::File => {
                     return Err(MountError::io_err(ErrorKind::AlreadyExists, "File exists", vpath));
@@ -713,7 +725,7 @@ fn mkdir(
         },
         ctx.memory_usage_limit,
     )?;
-    Ok(MontyValue::none())
+    Ok(MontyObject::none())
 }
 
 /// Creates parent directories for `mkdir(parents=True)` with overlay semantics.
@@ -793,11 +805,11 @@ fn unlink(
     relative: &str,
     ctx: &MountContext<'_>,
     vpath: &str,
-) -> Result<MontyValue, MountError> {
+) -> Result<MontyObject, MountError> {
     match state.get(relative) {
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
             state.insert(relative.to_owned(), OverlayEntry::Deleted, ctx.memory_usage_limit)?;
-            Ok(MontyValue::none())
+            Ok(MontyObject::none())
         }
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
@@ -812,7 +824,7 @@ fn unlink(
             match classify_target(ctx.mount_dir, resolved.for_dir_op(), vpath)? {
                 RealTarget::File => {
                     state.insert(relative.to_owned(), OverlayEntry::Deleted, ctx.memory_usage_limit)?;
-                    Ok(MontyValue::none())
+                    Ok(MontyObject::none())
                 }
                 RealTarget::Dir => Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath)),
                 RealTarget::Symlink => Err(MountError::PathEscape {
@@ -830,7 +842,7 @@ fn rmdir(
     relative: &str,
     ctx: &MountContext<'_>,
     vpath: &str,
-) -> Result<MontyValue, MountError> {
+) -> Result<MontyObject, MountError> {
     // Without this guard the root would tombstone in memory while writes to
     // its children kept succeeding — self-contradictory state the direct
     // backend refuses to enter.
@@ -845,7 +857,7 @@ fn rmdir(
                 ));
             }
             state.insert(relative.to_owned(), OverlayEntry::Deleted, ctx.memory_usage_limit)?;
-            Ok(MontyValue::none())
+            Ok(MontyObject::none())
         }
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
             Err(MountError::io_err(ErrorKind::NotADirectory, "Not a directory", vpath))
@@ -883,7 +895,7 @@ fn rmdir(
                 ));
             }
             state.insert(relative.to_owned(), OverlayEntry::Deleted, ctx.memory_usage_limit)?;
-            Ok(MontyValue::none())
+            Ok(MontyObject::none())
         }
     }
 }
@@ -924,7 +936,7 @@ fn real_directory_has_visible_children(
 }
 
 /// Returns the `stat()` result for an overlay or fallthrough path.
-fn stat(state: &OverlayState, relative: &str, ctx: &MountContext<'_>, vpath: &str) -> Result<MontyValue, MountError> {
+fn stat(state: &OverlayState, relative: &str, ctx: &MountContext<'_>, vpath: &str) -> Result<MontyObject, MountError> {
     match state.get(relative) {
         Some(OverlayEntry::File(file)) => {
             let size = i64::try_from(file.content.len()).unwrap_or(i64::MAX);
@@ -949,7 +961,7 @@ fn iterdir(
     relative: &str,
     ctx: &MountContext<'_>,
     vpath: &str,
-) -> Result<MontyValue, MountError> {
+) -> Result<MontyObject, MountError> {
     let host_dir_to_merge = match state.get(relative) {
         Some(OverlayEntry::Directory { .. }) => None,
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
@@ -992,7 +1004,7 @@ fn iterdir(
                 .saturating_add(as_u64(child_path.len()))
                 .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
             budget.check(transient_usage)?;
-            entries.push(MontyValue::path(child_path));
+            entries.push(MontyObject::path(child_path));
         }
     }
 
@@ -1012,13 +1024,13 @@ fn iterdir(
                         .saturating_add(as_u64(child_path.len()))
                         .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
                     budget.check(transient_usage)?;
-                    entries.push(MontyValue::path(child_path));
+                    entries.push(MontyObject::path(child_path));
                 }
             }
         }
     }
 
-    Ok(MontyValue::list(entries))
+    Ok(MontyObject::list(entries))
 }
 
 /// Renames a path within the overlay, lazily referencing real files when needed.
@@ -1032,7 +1044,7 @@ fn rename(
     src_vpath: &str,
     dst_vpath: &str,
     ctx: &MountContext<'_>,
-) -> Result<MontyValue, MountError> {
+) -> Result<MontyObject, MountError> {
     let src_rel = relative_path(src_vpath, ctx)?;
     let dst_rel = relative_path(dst_vpath, ctx)?;
 
@@ -1212,7 +1224,7 @@ fn rename(
         state.insert_unchecked(new_rel, child);
     }
 
-    Ok(MontyValue::none())
+    Ok(MontyObject::none())
 }
 
 /// Refuses to rename or remove the mount root, which has no name inside the

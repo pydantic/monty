@@ -22,7 +22,7 @@ mod type_checking;
 
 use std::{error, fmt};
 
-use monty_types::{MontyGraph, MontyValue, NamedValues, NodeId};
+use monty_types::{MontyGraph, MontyObject, NamedValues, NodeId};
 pub use os_call::{os_call_from_proto, os_call_to_proto};
 pub use resume::{
     ext_result_from_proto, ext_result_to_proto, future_results_from_proto, future_results_to_proto, resume_call_result,
@@ -74,8 +74,8 @@ impl fmt::Display for ProtoConvertError {
 
 impl error::Error for ProtoConvertError {}
 
-impl From<MontyValue> for pb::Complete {
-    fn from(value: MontyValue) -> Self {
+impl From<MontyObject> for pb::Complete {
+    fn from(value: MontyObject) -> Self {
         Self {
             value: value.root.0,
             values: Some(WireArena::new(value.graph)),
@@ -83,7 +83,7 @@ impl From<MontyValue> for pb::Complete {
     }
 }
 
-impl TryFrom<pb::Complete> for MontyValue {
+impl TryFrom<pb::Complete> for MontyObject {
     type Error = ProtoConvertError;
 
     fn try_from(complete: pb::Complete) -> Result<Self, ProtoConvertError> {
@@ -124,9 +124,9 @@ pub(crate) fn value_from_parts(
     values: Option<WireArena>,
     root: u32,
     field: &'static str,
-) -> Result<MontyValue, ProtoConvertError> {
+) -> Result<MontyObject, ProtoConvertError> {
     let graph = values.ok_or(ProtoConvertError::MissingField(field))?.into_graph()?;
-    MontyValue::new(graph, NodeId(root)).map_err(|err| graph_error(&err))
+    MontyObject::new(graph, NodeId(root)).map_err(|err| graph_error(&err))
 }
 
 /// A message's arena, or an empty one when the field is absent (a message

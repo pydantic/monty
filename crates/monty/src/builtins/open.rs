@@ -3,7 +3,7 @@
 //! `open()` itself allocates no heap object. It validates its arguments and
 //! yields an [`OsFunction::Open`] OS call; the host performs the open-time
 //! effect (truncate / create / existence-check) and returns a
-//! [`MontyValue::FileHandle`](monty_types::MontyValue::FileHandle), which the
+//! [`MontyObject::FileHandle`](monty_types::MontyObject::FileHandle), which the
 //! resume path converts into the heap [`OpenFile`](crate::types::OpenFile)
 //! wrapper and attaches the original filename. `read()`/`write()` use the host's
 //! returned path for full-file OS calls, so filesystem access remains behind `OsFunction`.

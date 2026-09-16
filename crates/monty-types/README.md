@@ -7,12 +7,12 @@ implementation**.
 
 ## What's here
 
-- `MontyValue` / `MontyType` — Python values and their types at the host
+- `MontyObject` / `MontyType` — Python values and their types at the host
   boundary, including the `datetime` family (`MontyDate`, `MontyDateTime`,
   `MontyTimeDelta`, `MontyTimeZone`) and `MontyFileHandle`.
 - `MontyGraph` / `MontyNode` — the flat node arena values cross the boundary
-  in, so a sub-object shared inside the sandbox is sent once; `MontyValue`
-  pairs an arena with its root, `ValueRef` borrows one value inside an arena
+  in, so a sub-object shared inside the sandbox is sent once; `MontyObject`
+  pairs an arena with its root, `ObjectRef` borrows one value inside an arena
   (with `as_int`, `as_str`, `items`, `pairs` accessors), and `CallArgs` and
   `NamedValues` carry the arguments or inputs of one message.
 - `MontyException` / `ExcType` — exceptions with tracebacks (`StackFrame`,
@@ -44,9 +44,9 @@ so their binaries never link the interpreter itself. Only worker-side crates
 feature) link `monty`.
 
 ```rust
-use monty_types::MontyValue;
+use monty_types::MontyObject;
 
-let value = MontyValue::list([MontyValue::int(1), MontyValue::string("x".to_owned())]);
+let value = MontyObject::list([MontyObject::int(1), MontyObject::string("x".to_owned())]);
 assert_eq!(value.py_repr(), "[1, 'x']");
 ```
 

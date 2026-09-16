@@ -20,7 +20,7 @@ use std::{borrow::Cow, mem};
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
-use monty_types::{InvalidInputError, MontyUuid, MontyValue, OsFunctionCall, PrintWriter};
+use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
 pub(crate) use recursion::{ContainsVM, RecursionToken};
 use scheduler::Scheduler;
 
@@ -38,7 +38,7 @@ use crate::{
     heap_data::{CellValue, Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::{StandardLib, json::JsonStringCache, random::apply_seed_random, re::RePatternCache},
-    object_bridge::MontyValueExt,
+    object_bridge::MontyObjectExt,
     os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect, resolve_call_paths},
     parse::CodeRange,
     run::VmEnv,
@@ -1984,7 +1984,7 @@ impl<'h> VM<'h> {
     /// If the paused OS call has a pending effect, the result is routed
     /// through the corresponding helper (file-state update or `os.listdir`
     /// name reduction) before it is pushed back to Python.
-    pub fn resume(&mut self, obj: MontyValue) -> Result<FrameExit, RunError> {
+    pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
         // Pre-conversion effects reshape the raw host object; a post-conversion
         // effect waits in the slot until the value exists to apply it to.
         let obj = match self.pending_effect.take() {

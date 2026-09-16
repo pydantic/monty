@@ -15,7 +15,7 @@
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyValue};
+use monty_types::{CompileOptions, ExcType, MontyObject};
 
 /// Runs `from collections import <name>` and returns the raised exception.
 fn import_err(name: &str) -> monty_types::MontyException {
@@ -147,7 +147,7 @@ gc.collect()
 }
 
 /// Runs `code` and returns its final value as a host object.
-fn host_value(code: &str) -> MontyValue {
+fn host_value(code: &str) -> MontyObject {
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
     run.run_no_limits(vec![]).expect("should run")
 }
@@ -163,18 +163,21 @@ fn host_value(code: &str) -> MontyValue {
 fn deque_crosses_host_boundary_as_a_list() {
     assert_eq!(
         host_value("from collections import deque\ndeque([1, 2, 3])"),
-        MontyValue::list([MontyValue::int(1), MontyValue::int(2), MontyValue::int(3)])
+        MontyObject::list([MontyObject::int(1), MontyObject::int(2), MontyObject::int(3)])
     );
 
     // `maxlen` does not survive the crossing — the host sees only the items.
     assert_eq!(
         host_value("from collections import deque\ndeque([1, 2], maxlen=5)"),
-        MontyValue::list([MontyValue::int(1), MontyValue::int(2)])
+        MontyObject::list([MontyObject::int(1), MontyObject::int(2)])
     );
 
     // Nested values keep their own types rather than being flattened to text.
     assert_eq!(
         host_value("from collections import deque\n[deque([b'x']), 2]"),
-        MontyValue::list([MontyValue::list([MontyValue::bytes(b"x".to_vec())]), MontyValue::int(2)])
+        MontyObject::list([
+            MontyObject::list([MontyObject::bytes(b"x".to_vec())]),
+            MontyObject::int(2)
+        ])
     );
 }

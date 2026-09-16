@@ -21,7 +21,7 @@ use monty_proto::{
 };
 use monty_types::{
     AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION,
-    MontyException, MontyUuid, MontyValue, NameLookupResult, NamedValues, OsFunctionCall, PrintStream, ResourceLimits,
+    MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, PrintStream, ResourceLimits,
     TypeCheckingConfig, validate_cwd,
 };
 #[cfg(feature = "telemetry")]
@@ -259,7 +259,7 @@ pub enum TurnEvent {
     ResolveFutures { pending_call_ids: Vec<u32> },
     /// The fed snippet completed with this value; the session is ready for
     /// the next [`Checkout::feed`].
-    Complete(MontyValue),
+    Complete(MontyObject),
 }
 
 /// The caller's answer to a [`TurnEvent::FunctionCall`] or
@@ -267,7 +267,7 @@ pub enum TurnEvent {
 #[derive(Debug)]
 pub enum ResumeValue {
     /// The call returned this value.
-    Return(MontyValue),
+    Return(MontyObject),
     /// The call raised this exception.
     Error(MontyException),
     /// The call is asynchronous: register an external future and continue
@@ -824,7 +824,7 @@ impl Checkout {
     }
 
     /// Answers a [`TurnEvent::NameLookup`] with a [`NameLookupResult`] (or a
-    /// `MontyValue` / `MontyObject`, an `Option` of either where `None` is
+    /// `MontyObject` / `MontyObject`, an `Option` of either where `None` is
     /// `Undefined`, or a `MontyException` for `Error`): a value resolves the name; `Undefined`
     /// makes the sandbox raise `NameError` for a plain lookup, or
     /// `AttributeError` when the lookup carried an `object_id` (a lazy
@@ -1403,7 +1403,7 @@ impl Checkout {
                     // the feed is over — drop its mounts so overlay writes
                     // cannot leak into the next feed
                     self.feed_mounts = None;
-                    return self.convert_turn(|| Ok(TurnEvent::Complete(MontyValue::try_from(complete)?)));
+                    return self.convert_turn(|| Ok(TurnEvent::Complete(MontyObject::try_from(complete)?)));
                 }
                 Some(pb::child_event::Kind::Error(error)) => {
                     // an error reply to `Dump` (e.g. an oversize dump) does not

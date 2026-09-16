@@ -13,18 +13,12 @@
 /// this single file.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Unit {}
-/// Python values cross the boundary as one node arena per message: every
-/// container holds the indexes of its children, so a sub-object referenced
-/// twice (inside one value, or from two arguments of the same call) is one
-/// node referenced twice, and the message is O(sandbox objects) rather than
-/// O(paths). The carrying message names its roots by index (`Complete.value`,
-/// `FunctionCall.args`, ...). Mirrors monty's `MontyGraph` / `MontyNode`.
-///
-/// Nodes are in post-order: every child index is strictly lower than the index
-/// of the node holding it. Receivers validate every index, so a decoder can
-/// build values in one forward pass with no recursion and no nesting bound.
-/// A reference back to an enclosing container cannot point lower, so it is a
-/// `cycle` leaf carrying the placeholder its repr shows.
+/// Python values cross the boundary as one node arena per message: containers
+/// hold the indexes of their children, so a sub-object referenced twice is one
+/// node, and the carrying message names its roots by index. Nodes are in
+/// post-order (every child index is lower than its holder's), so receivers
+/// build values in one forward pass; a reference back to an enclosing
+/// container is a `cycle` leaf. Mirrors monty's `MontyGraph`.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Arena {
     /// The sender's node count, so a receiver can reserve the arena once. A
@@ -33,7 +27,7 @@ pub struct Arena {
     #[prost(uint32, tag = "1")]
     pub node_count: u32,
     #[prost(message, repeated, tag = "2")]
-    pub nodes: ::prost::alloc::vec::Vec<ValueNode>,
+    pub nodes: ::prost::alloc::vec::Vec<MontyNode>,
 }
 /// One node of an `Arena`. Leaf arms carry the value; container arms carry
 /// the indexes of their children.
@@ -41,15 +35,15 @@ pub struct Arena {
 /// `repr` and `cycle` are OUTPUT-ONLY: the child may emit them (e.g. inside a
 /// `Complete` value) but rejects them as inputs, exactly like `MontyNode`.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ValueNode {
+pub struct MontyNode {
     #[prost(
-        oneof = "value_node::Kind",
+        oneof = "monty_node::Kind",
         tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
     )]
-    pub kind: ::core::option::Option<value_node::Kind>,
+    pub kind: ::core::option::Option<monty_node::Kind>,
 }
-/// Nested message and enum types in `ValueNode`.
-pub mod value_node {
+/// Nested message and enum types in `MontyNode`.
+pub mod monty_node {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Kind {
         #[prost(message, tag = "1")]
@@ -628,15 +622,15 @@ pub struct Feed {
     /// under two names is one sandbox object.
     #[prost(message, repeated, tag = "2")]
     pub inputs: ::prost::alloc::vec::Vec<NamedRef>,
-    #[prost(message, optional, tag = "5")]
+    #[prost(message, optional, tag = "3")]
     pub values: ::core::option::Option<Arena>,
     /// Skip type checking for this feed even when the session enables it.
-    #[prost(bool, tag = "3")]
+    #[prost(bool, tag = "4")]
     pub skip_type_check: bool,
     /// Absolute virtual working directory to switch the session to before the
     /// feed, resolved by the parent (an explicit choice, or the first mount on
     /// the session's first feed). Empty keeps the session's current directory.
-    #[prost(string, tag = "4")]
+    #[prost(string, tag = "5")]
     pub cwd: ::prost::alloc::string::String,
 }
 /// Ends a pending suspension by raising `exception` uncatchably at its site.
@@ -663,9 +657,9 @@ pub struct ResumeCall {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResumeNameLookup {
     /// The arena `value` indexes.
-    #[prost(message, optional, tag = "4")]
+    #[prost(message, optional, tag = "1")]
     pub values: ::core::option::Option<Arena>,
-    #[prost(oneof = "resume_name_lookup::Kind", tags = "1, 2, 3")]
+    #[prost(oneof = "resume_name_lookup::Kind", tags = "2, 3, 4")]
     pub kind: ::core::option::Option<resume_name_lookup::Kind>,
 }
 /// Nested message and enum types in `ResumeNameLookup`.
@@ -673,16 +667,16 @@ pub mod resume_name_lookup {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Kind {
         /// The name resolves to this value: an index into `values`.
-        #[prost(uint32, tag = "1")]
+        #[prost(uint32, tag = "2")]
         Value(u32),
         /// The name is undefined — the child raises NameError (AttributeError for
         /// a lazy attribute lookup).
-        #[prost(message, tag = "2")]
+        #[prost(message, tag = "3")]
         Undefined(super::Unit),
         /// Resolving the name raised on the parent — the child raises this
         /// exception where the lookup suspended, bypassing hasattr()/getattr()
         /// defaults.
-        #[prost(message, tag = "3")]
+        #[prost(message, tag = "4")]
         Error(super::RaisedException),
     }
 }
@@ -760,13 +754,13 @@ pub struct ChildEvent {
     pub max_duration_micros: ::core::option::Option<u64>,
     /// Echoes the parent-enforced budget so a host restoring an opaque dump can
     /// recover it.
-    #[prost(uint64, optional, tag = "23")]
+    #[prost(uint64, optional, tag = "22")]
     pub max_suspensions: ::core::option::Option<u64>,
     /// The session's script name, surfaced on a `Load` reply so a parent that
     /// restored a session (whose script name, like the limits above, travels
     /// inside the opaque dump bytes) learns it without parsing the dump. Set only
     /// on a successful `Load` reply; unset on all other events.
-    #[prost(string, optional, tag = "22")]
+    #[prost(string, optional, tag = "23")]
     pub restored_script_name: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: ::core::option::Option<child_event::Kind>,
@@ -816,7 +810,7 @@ pub struct PrintSegment {
 /// streams batches into one event without losing that order.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Print {
-    #[prost(message, repeated, tag = "3")]
+    #[prost(message, repeated, tag = "1")]
     pub segments: ::prost::alloc::vec::Vec<PrintSegment>,
 }
 /// Suspension: the sandbox called an external function, or — when `object_id`

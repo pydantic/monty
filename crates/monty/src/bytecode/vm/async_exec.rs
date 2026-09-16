@@ -25,7 +25,7 @@ use crate::{
         HeapReader,
     },
     intern::FunctionId,
-    object_bridge::MontyValueExt,
+    object_bridge::MontyObjectExt,
     run_progress::{ExtFunctionResult, ExtFunctionResultExt},
     types::List,
     value::Value,

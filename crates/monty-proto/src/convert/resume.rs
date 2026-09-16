@@ -2,7 +2,7 @@
 //! events (`ResumeCall`, `ResumeNameLookup`, `ResumeFutures`). A returned
 //! value is an index into the request's arena, so the arena travels alongside.
 
-use monty_types::{ExtFunctionResult, MontyException, MontyGraph, MontyValue, NameLookupResult, NodeId};
+use monty_types::{ExtFunctionResult, MontyException, MontyGraph, MontyObject, NameLookupResult, NodeId};
 
 use crate::{
     convert::{ProtoConvertError, arena_or_empty, value_from_parts},
@@ -156,9 +156,9 @@ pub fn resume_call_result(call: pb::ResumeCall) -> Result<ExtFunctionResult, Pro
     ext_result_from_proto(result, call.values)
 }
 
-impl From<MontyValue> for pb::ResumeCall {
+impl From<MontyObject> for pb::ResumeCall {
     /// A `ResumeCall` returning `value`; the caller sets `call_id`.
-    fn from(value: MontyValue) -> Self {
+    fn from(value: MontyObject) -> Self {
         let (result, values) = ext_result_to_proto(ExtFunctionResult::Return(value));
         Self {
             call_id: 0,

@@ -25,7 +25,7 @@ use std::{
 use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyValue, OsFunctionCall,
+    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
     PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, TypeCheckState, TypeCheckingConfig,
 };
 
@@ -984,7 +984,7 @@ fn suspension_event_os_call(call: &mut monty::ReplOsCall) -> pb::ChildEvent {
     )))
 }
 
-fn complete_event(value: MontyValue) -> pb::ChildEvent {
+fn complete_event(value: MontyObject) -> pb::ChildEvent {
     event(pb::child_event::Kind::Complete(value.into()))
 }
 
@@ -1010,7 +1010,7 @@ fn suspension_event(progress: &mut ReplProgress) -> pb::ChildEvent {
 /// A validated `ResumeFutures` body, shaped for the suspension it answers.
 enum FuturesReply {
     /// One settled coroutine for a function call with `allow_eager_await`.
-    Eager(Result<MontyValue, MontyException>),
+    Eager(Result<MontyObject, MontyException>),
     /// Results for a `ResolveFutures` suspension.
     Batch(Vec<(u32, ExtFunctionResult)>),
 }
@@ -1020,7 +1020,7 @@ enum FuturesReply {
 fn eager_result(
     results: Vec<(u32, ExtFunctionResult)>,
     call_id: u32,
-) -> Result<Result<MontyValue, MontyException>, &'static str> {
+) -> Result<Result<MontyObject, MontyException>, &'static str> {
     match <[_; 1]>::try_from(results) {
         Ok([(id, ExtFunctionResult::Return(value))]) if id == call_id => Ok(Ok(value)),
         Ok([(id, ExtFunctionResult::Error(exc))]) if id == call_id => Ok(Err(exc)),

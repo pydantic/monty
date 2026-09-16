@@ -116,7 +116,7 @@ pub enum Type {
     /// `VM::instantiate_class`). It must NEVER be stored long-lived,
     /// serialized into snapshots/const pools, placed in `Builtins::Type` (the
     /// `type()` builtin returns the class object itself for instances), or
-    /// converted to `MontyValue` without resolving the name first (the public
+    /// converted to `MontyObject` without resolving the name first (the public
     /// boundary enum `MontyType` carries the resolved name as a `String`).
     #[strum(disabled)]
     Instance(HeapId),
@@ -288,7 +288,7 @@ pub enum Type {
 /// # Panics
 /// On `Instance`, which has no static name — callers with heap access must
 /// resolve the real class name via [`Type::name`]. Well-formed data never
-/// puts an `Instance` where no heap exists (`Builtins::Type`, `MontyValue`,
+/// puts an `Instance` where no heap exists (`Builtins::Type`, `MontyObject`,
 /// the wire protocol), so this is a programmer-error tripwire. A crafted
 /// snapshot payload *can* smuggle one in, but snapshot bytes are not a
 /// panic-free boundary anyway — any bogus `HeapId` in them panics on first

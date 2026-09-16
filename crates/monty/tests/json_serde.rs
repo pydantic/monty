@@ -1,4 +1,4 @@
-//! Tests for JSON serialization and deserialization of `MontyValue`.
+//! Tests for JSON serialization and deserialization of `MontyObject`.
 //!
 //! A value serializes as its arena: the node list plus the root index, with
 //! each node externally tagged (`{"Int":42}`). Serialization tests use
@@ -9,15 +9,15 @@
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyValue};
+use monty_types::{CompileOptions, ExcType, MontyObject};
 
 /// Evaluate a Python snippet under Monty and return its final value.
-fn eval(code: &str) -> MontyValue {
+fn eval(code: &str) -> MontyObject {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     ex.run_no_limits(vec![]).unwrap()
 }
 
-fn to_json(value: &MontyValue) -> String {
+fn to_json(value: &MontyObject) -> String {
     serde_json::to_string(value).unwrap()
 }
 
@@ -26,11 +26,11 @@ fn to_json(value: &MontyValue) -> String {
 #[test]
 fn json_output_primitives() {
     // a leaf is a one-node arena rooted at 0
-    assert_snapshot!(to_json(&MontyValue::int(42)), @r#"{"graph":{"nodes":[{"Int":42}]},"root":0}"#);
-    assert_snapshot!(to_json(&MontyValue::float(1.5)), @r#"{"graph":{"nodes":[{"Float":1.5}]},"root":0}"#);
-    assert_snapshot!(to_json(&MontyValue::string("hi")), @r#"{"graph":{"nodes":[{"String":"hi"}]},"root":0}"#);
-    assert_snapshot!(to_json(&MontyValue::bool(true)), @r#"{"graph":{"nodes":[{"Bool":true}]},"root":0}"#);
-    assert_snapshot!(to_json(&MontyValue::none()), @r#"{"graph":{"nodes":["None"]},"root":0}"#);
+    assert_snapshot!(to_json(&MontyObject::int(42)), @r#"{"graph":{"nodes":[{"Int":42}]},"root":0}"#);
+    assert_snapshot!(to_json(&MontyObject::float(1.5)), @r#"{"graph":{"nodes":[{"Float":1.5}]},"root":0}"#);
+    assert_snapshot!(to_json(&MontyObject::string("hi")), @r#"{"graph":{"nodes":[{"String":"hi"}]},"root":0}"#);
+    assert_snapshot!(to_json(&MontyObject::bool(true)), @r#"{"graph":{"nodes":[{"Bool":true}]},"root":0}"#);
+    assert_snapshot!(to_json(&MontyObject::none()), @r#"{"graph":{"nodes":["None"]},"root":0}"#);
 }
 
 #[test]
@@ -88,15 +88,15 @@ fn json_output_cycle_list() {
 
 #[test]
 fn json_deserialize_primitives() {
-    let int: MontyValue = serde_json::from_str(r#"{"graph":{"nodes":[{"Int":42}]},"root":0}"#).unwrap();
-    let null: MontyValue = serde_json::from_str(r#"{"graph":{"nodes":["None"]},"root":0}"#).unwrap();
-    assert_eq!(int, MontyValue::int(42));
-    assert_eq!(null, MontyValue::none());
+    let int: MontyObject = serde_json::from_str(r#"{"graph":{"nodes":[{"Int":42}]},"root":0}"#).unwrap();
+    let null: MontyObject = serde_json::from_str(r#"{"graph":{"nodes":["None"]},"root":0}"#).unwrap();
+    assert_eq!(int, MontyObject::int(42));
+    assert_eq!(null, MontyObject::none());
 }
 
 #[test]
 fn json_deserialize_builtin_function() {
-    let value: MontyValue =
+    let value: MontyObject =
         serde_json::from_str(r#"{"graph":{"nodes":[{"BuiltinFunction":"print"}]},"root":0}"#).unwrap();
     assert_eq!(value, eval("print"));
 }
@@ -106,11 +106,11 @@ fn json_roundtrip() {
     let values = [
         eval("[1, {'k': (2, 3.5)}, None, b'x', ...]"),
         eval("a = []; a.append(a); b = {}; b['b'] = b; [a, b]"),
-        MontyValue::exception(ExcType::TypeError, Some("bad".to_owned())),
+        MontyObject::exception(ExcType::TypeError, Some("bad".to_owned())),
     ];
     for value in values {
         let json = to_json(&value);
-        let back: MontyValue = serde_json::from_str(&json).unwrap();
+        let back: MontyObject = serde_json::from_str(&json).unwrap();
         assert_eq!(back, value, "{json}");
     }
 }
@@ -123,9 +123,9 @@ fn cycle_placeholders_follow_the_container() {
     let result = eval("a = []; a.append(a); b = {}; b['b'] = b; [a, b]");
     assert_eq!(
         result,
-        MontyValue::list([
-            MontyValue::list([MontyValue::cycle("[...]")]),
-            MontyValue::dict([(MontyValue::string("b"), MontyValue::cycle("{...}"))]),
+        MontyObject::list([
+            MontyObject::list([MontyObject::cycle("[...]")]),
+            MontyObject::dict([(MontyObject::string("b"), MontyObject::cycle("{...}"))]),
         ])
     );
     assert_eq!(result.to_string(), "[[[...]], {'b': {...}}]");

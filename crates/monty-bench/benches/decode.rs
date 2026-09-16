@@ -8,7 +8,7 @@ use codspeed_criterion_compat::{BenchmarkId, Criterion, Throughput, black_box, c
 #[cfg(not(codspeed))]
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use monty_proto::{decode_frame, encode_to_capped_vec, pb};
-use monty_types::{MontyGraph, MontyNode, MontyValue};
+use monty_types::{MontyGraph, MontyNode, MontyObject};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 
@@ -37,7 +37,7 @@ fn decode_benchmark(c: &mut Criterion) {
 
 /// Encodes a `Complete` turn event carrying `value` — byte-identical to the
 /// frame body `Worker::recv` hands to `decode_frame`.
-fn complete_frame(value: MontyValue) -> Vec<u8> {
+fn complete_frame(value: MontyObject) -> Vec<u8> {
     let event = pb::ChildEvent {
         total_execution_micros: 0,
         max_duration_micros: None,
@@ -50,7 +50,7 @@ fn complete_frame(value: MontyValue) -> Vec<u8> {
 
 /// A frame whose payload is a single string of roughly `target` bytes.
 fn str_frame(target: usize) -> Vec<u8> {
-    complete_frame(MontyValue::string("x".repeat(target)))
+    complete_frame(MontyObject::string("x".repeat(target)))
 }
 
 /// A frame of roughly `target` bytes of row dicts, sized by measuring the
@@ -69,37 +69,37 @@ fn dag_frame(target: usize) -> Vec<u8> {
 }
 
 /// `[0]` wrapped in `levels` `[x, x]` lists, every level sharing the one below.
-fn dag(levels: usize) -> MontyValue {
+fn dag(levels: usize) -> MontyObject {
     let mut graph = MontyGraph::new();
     let zero = graph.push(MontyNode::Int(0));
     let mut root = graph.push(MontyNode::List(vec![zero]));
     for _ in 0..levels {
         root = graph.push(MontyNode::List(vec![root, root]));
     }
-    MontyValue::new(graph, root).expect("the last node pushed is the root")
+    MontyObject::new(graph, root).expect("the last node pushed is the root")
 }
 
 /// A list of `n` dicts shaped like a SQL tool reply (short string keys,
 /// mixed str/int values) — same shape as `pool.rs`'s `make_rows`, scaled.
-fn rows(n: i64) -> MontyValue {
-    MontyValue::list(
+fn rows(n: i64) -> MontyObject {
+    MontyObject::list(
         (0..n)
             .map(|i| {
-                MontyValue::dict([
-                    (MontyValue::string("order_id".to_owned()), MontyValue::int(i)),
+                MontyObject::dict([
+                    (MontyObject::string("order_id".to_owned()), MontyObject::int(i)),
                     (
-                        MontyValue::string("customer".to_owned()),
-                        MontyValue::string(format!("customer-{i}@example.com")),
+                        MontyObject::string("customer".to_owned()),
+                        MontyObject::string(format!("customer-{i}@example.com")),
                     ),
                     (
-                        MontyValue::string("region".to_owned()),
-                        MontyValue::string("north".to_owned()),
+                        MontyObject::string("region".to_owned()),
+                        MontyObject::string("north".to_owned()),
                     ),
                     (
-                        MontyValue::string("amount".to_owned()),
-                        MontyValue::int((i * 37) % 500 + 1),
+                        MontyObject::string("amount".to_owned()),
+                        MontyObject::int((i * 37) % 500 + 1),
                     ),
-                    (MontyValue::string("quantity".to_owned()), MontyValue::int(i % 7 + 1)),
+                    (MontyObject::string("quantity".to_owned()), MontyObject::int(i % 7 + 1)),
                 ])
             })
             .collect::<Vec<_>>(),

@@ -10,7 +10,7 @@ use std::{fmt, fs, io::ErrorKind};
 
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use monty_types::{
-    ExcType, FileMode, MkdirCallArgs, MontyNode, MontyPath, MontyValue, OpenCallArgs, OsFunctionCall,
+    ExcType, FileMode, MkdirCallArgs, MontyNode, MontyObject, MontyPath, OpenCallArgs, OsFunctionCall,
     PathBytesDataArgs, PathStringDataArgs, RenameCallArgs,
 };
 use tempfile::TempDir;
@@ -106,7 +106,7 @@ fn mount_at_mnt(tmpdir: &TempDir, mode: MountMode) -> MountTable {
 
 /// Adapts the owning `handle_os_call` API back to the `Option` shape the
 /// assertions below are written against.
-fn dispatch(mt: &mut MountTable, c: OsFunctionCall) -> Option<Result<MontyValue, MountError>> {
+fn dispatch(mt: &mut MountTable, c: OsFunctionCall) -> Option<Result<MontyObject, MountError>> {
     match mt.handle_os_call(c) {
         MountCallOutcome::Handled(result) => Some(result),
         MountCallOutcome::NotHandled(_) => None,
@@ -114,7 +114,7 @@ fn dispatch(mt: &mut MountTable, c: OsFunctionCall) -> Option<Result<MontyValue,
 }
 
 /// Shorthand: call handle_os_call with a single path argument.
-fn call(mt: &mut MountTable, op: PathOp, path: &str) -> Option<Result<MontyValue, MountError>> {
+fn call(mt: &mut MountTable, op: PathOp, path: &str) -> Option<Result<MontyObject, MountError>> {
     dispatch(mt, op.build_path_only(path))
 }
 
@@ -124,7 +124,7 @@ fn call_mkdir(
     path: &str,
     parents: bool,
     exist_ok: bool,
-) -> Option<Result<MontyValue, MountError>> {
+) -> Option<Result<MontyObject, MountError>> {
     dispatch(
         mt,
         OsFunctionCall::Mkdir(MkdirCallArgs {
@@ -156,7 +156,7 @@ fn assert_call_blocked(mt: &mut MountTable, c: OsFunctionCall) {
 
 /// A boundary refusal is any of the "no such thing here" errors, or the call
 /// not being handled at all; anything else is a bug.
-fn assert_result_blocked(result: Option<Result<MontyValue, MountError>>, label: &str) {
+fn assert_result_blocked(result: Option<Result<MontyObject, MountError>>, label: &str) {
     match result {
         Some(Err(
             MountError::PathEscape { .. }
@@ -349,7 +349,7 @@ fn valid_dotdot_within_mount() {
     let result = call(&mut mt, PathOp::ReadText, "/mnt/subdir/../hello.txt")
         .unwrap()
         .unwrap();
-    assert_eq!(result, MontyValue::string("hello world\n".to_owned()));
+    assert_eq!(result, MontyObject::string("hello world\n".to_owned()));
 }
 
 // =============================================================================
@@ -503,7 +503,7 @@ fn too_many_components_is_refused() {
         // At the limit the path is merely missing, not refused.
         assert_eq!(
             call(&mut mt, PathOp::Exists, &at_limit).unwrap().unwrap(),
-            MontyValue::bool(false)
+            MontyObject::bool(false)
         );
         let err = call(&mut mt, PathOp::Stat, &at_limit).unwrap().unwrap_err();
         assert_eq!(err.into_exception().exc_type(), ExcType::FileNotFoundError);
@@ -522,7 +522,7 @@ fn too_many_components_is_refused() {
         // Predicates swallow it, as they swallow every `OSError`.
         assert_eq!(
             call(&mut mt, PathOp::Exists, &over_limit).unwrap().unwrap(),
-            MontyValue::bool(false)
+            MontyObject::bool(false)
         );
     }
 
@@ -585,7 +585,7 @@ fn null_byte_write_ops_in_every_mode() {
         assert_invisible(&mut mt, PathOp::Exists, "/mnt/evil\x00.txt");
         assert_eq!(
             call(&mut mt, PathOp::ReadText, "/mnt/hello.txt").unwrap().unwrap(),
-            MontyValue::string("hello world\n".to_owned()),
+            MontyObject::string("hello world\n".to_owned()),
             "{name}: an unrelated read must still work"
         );
     }
@@ -690,17 +690,17 @@ mod symlink_tests {
         // rather than half-moving and leaving the link behind.
         assert_eq!(
             call(&mut mt, PathOp::Exists, "/mnt/subdir").unwrap().unwrap(),
-            MontyValue::bool(true)
+            MontyObject::bool(true)
         );
         assert_eq!(
             call(&mut mt, PathOp::ReadText, "/mnt/subdir/nested.txt")
                 .unwrap()
                 .unwrap(),
-            MontyValue::string("nested content".to_owned())
+            MontyObject::string("nested content".to_owned())
         );
         assert_eq!(
             call(&mut mt, PathOp::Exists, "/mnt/moved").unwrap().unwrap(),
-            MontyValue::bool(false)
+            MontyObject::bool(false)
         );
     }
 
@@ -744,13 +744,13 @@ mod symlink_tests {
             call(&mut mt, PathOp::ReadText, "/mnt/subdir/nested.txt")
                 .unwrap()
                 .unwrap(),
-            MontyValue::string("nested content".to_owned())
+            MontyObject::string("nested content".to_owned())
         );
         assert_eq!(
             call(&mut mt, PathOp::Exists, "/mnt/link_dir/nested.txt")
                 .unwrap()
                 .unwrap(),
-            MontyValue::bool(false)
+            MontyObject::bool(false)
         );
     }
 
@@ -784,11 +784,11 @@ mod symlink_tests {
         // link's own spelling is refused like every other.
         assert_eq!(
             call(&mut mt, PathOp::ReadText, "/mnt/hello.txt").unwrap().unwrap(),
-            MontyValue::string("hello world\n".to_owned())
+            MontyObject::string("hello world\n".to_owned())
         );
         assert_eq!(
             call(&mut mt, PathOp::Exists, "/mnt/src.txt").unwrap().unwrap(),
-            MontyValue::bool(true)
+            MontyObject::bool(true)
         );
     }
 
@@ -830,11 +830,11 @@ mod symlink_tests {
             call(&mut mt, PathOp::ReadText, "/mnt/subdir/nested.txt")
                 .unwrap()
                 .unwrap(),
-            MontyValue::string("nested content".to_owned())
+            MontyObject::string("nested content".to_owned())
         );
         assert_eq!(
             call(&mut mt, PathOp::Exists, "/mnt/moved.txt").unwrap().unwrap(),
-            MontyValue::bool(false)
+            MontyObject::bool(false)
         );
     }
 
@@ -865,17 +865,17 @@ mod symlink_tests {
         // Nothing moved, and the target keeps its own name and children.
         assert_eq!(
             call(&mut mt, PathOp::Exists, "/mnt/moved").unwrap().unwrap(),
-            MontyValue::bool(false)
+            MontyObject::bool(false)
         );
         assert_eq!(
             call(&mut mt, PathOp::IsDir, "/mnt/subdir").unwrap().unwrap(),
-            MontyValue::bool(true)
+            MontyObject::bool(true)
         );
         assert_eq!(
             call(&mut mt, PathOp::ReadText, "/mnt/subdir/nested.txt")
                 .unwrap()
                 .unwrap(),
-            MontyValue::string("nested content".to_owned())
+            MontyObject::string("nested content".to_owned())
         );
     }
 
@@ -1043,7 +1043,7 @@ mod symlink_tests {
             let mut mt = mount_at_mnt(&dir, mode);
             assert_eq!(
                 call(&mut mt, PathOp::IsSymlink, "/mnt/escape_link").unwrap().unwrap(),
-                MontyValue::bool(true)
+                MontyObject::bool(true)
             );
             assert_invisible(&mut mt, PathOp::Exists, "/mnt/escape_link");
             assert_invisible(&mut mt, PathOp::IsFile, "/mnt/escape_link");
@@ -1101,7 +1101,7 @@ mod symlink_tests {
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         let result = call(&mut mt, PathOp::ReadText, "/mnt/internal_link").unwrap().unwrap();
-        assert_eq!(result, MontyValue::string("hello world\n".to_owned()));
+        assert_eq!(result, MontyObject::string("hello world\n".to_owned()));
     }
 
     #[test]
@@ -1119,7 +1119,7 @@ mod symlink_tests {
         let result = call(&mut mt, PathOp::ReadText, "/mnt/dir_link/nested.txt")
             .unwrap()
             .unwrap();
-        assert_eq!(result, MontyValue::string("nested content".to_owned()));
+        assert_eq!(result, MontyObject::string("nested content".to_owned()));
 
         // Listing the symlinked directory should work.
         let result = call(&mut mt, PathOp::Iterdir, "/mnt/dir_link");
@@ -1129,7 +1129,7 @@ mod symlink_tests {
         let result = call(&mut mt, PathOp::Exists, "/mnt/dir_link/deep/file.txt")
             .unwrap()
             .unwrap();
-        assert_eq!(result, MontyValue::bool(true));
+        assert_eq!(result, MontyObject::bool(true));
     }
 
     #[test]
@@ -1144,7 +1144,7 @@ mod symlink_tests {
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         let result = call(&mut mt, PathOp::ReadText, "/mnt/link2").unwrap().unwrap();
-        assert_eq!(result, MontyValue::string("hello world\n".to_owned()));
+        assert_eq!(result, MontyObject::string("hello world\n".to_owned()));
     }
 
     #[test]
@@ -1237,7 +1237,7 @@ mod symlink_tests {
             assert_invisible(&mut mt, PathOp::Exists, "/mnt/stolen.txt");
             assert_eq!(
                 call(&mut mt, PathOp::Exists, "/mnt/hello.txt").unwrap().unwrap(),
-                MontyValue::bool(true)
+                MontyObject::bool(true)
             );
         }
     }
@@ -1380,7 +1380,7 @@ mod symlink_tests {
             call(&mut mt, PathOp::ReadText, &format!("/mnt/{chain}/leaf.txt"))
                 .unwrap()
                 .unwrap(),
-            MontyValue::string("deep".to_owned())
+            MontyObject::string("deep".to_owned())
         );
 
         // Now rebuild the chain with one component replaced by a symlink to a
@@ -1415,7 +1415,7 @@ mod symlink_tests {
             );
             assert_eq!(
                 call(&mut mt, PathOp::Exists, &vpath).unwrap().unwrap(),
-                MontyValue::bool(false),
+                MontyObject::bool(false),
                 "a link at depth {swapped} must make the path invisible"
             );
         }
@@ -1447,7 +1447,7 @@ mod hard_link_tests {
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         let result = call(&mut mt, PathOp::ReadText, "/mnt/hardlink.txt").unwrap().unwrap();
-        assert_eq!(result, MontyValue::string("hello world\n".to_owned()));
+        assert_eq!(result, MontyObject::string("hello world\n".to_owned()));
     }
 
     #[test]
@@ -1468,7 +1468,7 @@ mod hard_link_tests {
         let result = call(&mut mt, PathOp::ReadText, "/mnt/hardlink_ext.txt")
             .unwrap()
             .unwrap();
-        assert_eq!(result, MontyValue::string("external content".to_owned()));
+        assert_eq!(result, MontyObject::string("external content".to_owned()));
     }
 
     #[test]
@@ -1479,10 +1479,10 @@ mod hard_link_tests {
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         let result = call(&mut mt, PathOp::IsFile, "/mnt/hardlink.txt").unwrap().unwrap();
-        assert_eq!(result, MontyValue::bool(true));
+        assert_eq!(result, MontyObject::bool(true));
 
         let result = call(&mut mt, PathOp::IsSymlink, "/mnt/hardlink.txt").unwrap().unwrap();
-        assert_eq!(result, MontyValue::bool(false));
+        assert_eq!(result, MontyObject::bool(false));
     }
 
     /// A broken symlink (target doesn't exist) inside the mount that points
@@ -1663,9 +1663,9 @@ mod hard_link_tests {
         let exists = call(&mut mt, PathOp::Exists, "/mnt/subdir/nested.txt")
             .unwrap()
             .unwrap();
-        assert_eq!(exists, MontyValue::bool(true));
+        assert_eq!(exists, MontyObject::bool(true));
         let moved = call(&mut mt, PathOp::Exists, "/mnt/moved").unwrap().unwrap();
-        assert_eq!(moved, MontyValue::bool(false));
+        assert_eq!(moved, MontyObject::bool(false));
     }
 
     /// Overlay mode should expose the same visible real entries as direct mode:
@@ -1702,7 +1702,7 @@ mod hard_link_tests {
 
 /// Extracts sorted entry basenames from an `iterdir()` result list.
 #[cfg(unix)]
-fn sorted_names_from_list(obj: &MontyValue) -> Vec<String> {
+fn sorted_names_from_list(obj: &MontyObject) -> Vec<String> {
     match obj.as_ref().items() {
         Some(entries) => {
             let mut names: Vec<String> = entries
@@ -1731,7 +1731,7 @@ fn double_slashes() {
     // Double slashes should be normalized.
     assert_eq!(
         call(&mut mt, PathOp::ReadText, "/mnt//hello.txt").unwrap().unwrap(),
-        MontyValue::string("hello world\n".to_owned())
+        MontyObject::string("hello world\n".to_owned())
     );
 }
 
@@ -1742,13 +1742,13 @@ fn dot_components() {
 
     assert_eq!(
         call(&mut mt, PathOp::ReadText, "/mnt/./hello.txt").unwrap().unwrap(),
-        MontyValue::string("hello world\n".to_owned())
+        MontyObject::string("hello world\n".to_owned())
     );
     assert_eq!(
         call(&mut mt, PathOp::ReadText, "/mnt/./subdir/./nested.txt")
             .unwrap()
             .unwrap(),
-        MontyValue::string("nested content".to_owned())
+        MontyObject::string("nested content".to_owned())
     );
 }
 
@@ -2107,7 +2107,7 @@ fn assert_refused_before_io(mt: &mut MountTable, op: PathOp, path: &str, mode_na
 /// Classifies an outcome, dropping the caller's own path that errors echo back
 /// (raw `Debug` would report two identical refusals as different). Keeps the
 /// `Io` kind, since NotFound-vs-PermissionDenied would itself be an oracle.
-fn outcome_class(result: Option<&Result<MontyValue, MountError>>) -> String {
+fn outcome_class(result: Option<&Result<MontyObject, MountError>>) -> String {
     match result {
         None => "NotHandled".to_owned(),
         Some(Ok(value)) => format!("Ok({:?})", value.root_node()),

@@ -11,12 +11,12 @@ use monty_proto::{
     worker::{Child, HandleOutcome, dispatch_frame},
     write_frame,
 };
-use monty_types::{CompileOptions, MONTY_VERSION, MontyValue, NamedValues, PrintWriter, ResourceTracker};
+use monty_types::{CompileOptions, MONTY_VERSION, MontyObject, NamedValues, PrintWriter, ResourceTracker};
 
 /// Starts a feed with `f` already bound, leaving the worker at its first external call.
 fn start_external_call(child: &mut Child, code: &str) -> WireFunctionCall {
     create_repl(child);
-    let inputs = NamedValues::from(vec![("f".to_owned(), MontyValue::function("f".to_owned(), None))]);
+    let inputs = NamedValues::from(vec![("f".to_owned(), MontyObject::function("f".to_owned(), None))]);
     let (inputs, values) = named_values_to_proto(inputs);
     let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: code.to_owned(),
@@ -43,7 +43,7 @@ fn future_reply(call_id: u32, kind: pb::ext_function_result::Kind) -> pb::Future
 
 /// A `ResumeFutures` whose arena holds `value` at index 0, the root every
 /// `ReturnValue(0)` reply names.
-fn resume_futures(results: Vec<pb::FutureResult>, value: MontyValue) -> pb::ResumeFutures {
+fn resume_futures(results: Vec<pb::FutureResult>, value: MontyObject) -> pb::ResumeFutures {
     pb::ResumeFutures {
         results,
         values: Some(WireArena::new(value.graph)),
@@ -51,7 +51,7 @@ fn resume_futures(results: Vec<pb::FutureResult>, value: MontyValue) -> pb::Resu
 }
 
 /// A one-node arena holding `value` at index 0.
-fn arena(value: MontyValue) -> WireArena {
+fn arena(value: MontyObject) -> WireArena {
     WireArena::new(value.graph)
 }
 
@@ -67,7 +67,7 @@ fn allow_eager_await_uses_one_reply_per_call() {
                 call.call_id,
                 pb::ext_function_result::Kind::ReturnValue(0),
             )],
-            MontyValue::int(n),
+            MontyObject::int(n),
         )));
         let (bytes, outcome) = dispatch_frame(&mut child, &request);
         assert_eq!(outcome, HandleOutcome::Continue);
@@ -78,7 +78,7 @@ fn allow_eager_await_uses_one_reply_per_call() {
             };
             call = next;
         } else {
-            assert_eq!(expect_complete(event), MontyValue::int(30));
+            assert_eq!(expect_complete(event), MontyObject::int(30));
         }
     }
 }
@@ -112,7 +112,7 @@ fn allow_eager_await_rejects_malformed_replies() {
     ] {
         let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
             results,
-            MontyValue::int(42),
+            MontyObject::int(42),
         )));
         let (bytes, outcome) = dispatch_frame(&mut child, &request);
         assert_eq!(outcome, HandleOutcome::Continue);
@@ -120,10 +120,10 @@ fn allow_eager_await_rejects_malformed_replies() {
     }
     let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
         vec![future_reply(call.call_id, value)],
-        MontyValue::int(42),
+        MontyObject::int(42),
     )));
     let (bytes, _) = dispatch_frame(&mut child, &request);
-    assert_eq!(expect_complete(split_turn(&bytes).1), MontyValue::int(42));
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::int(42));
 }
 
 /// Older hosts can ignore the hint; calls without the hint reject the new reply sequence.
@@ -143,27 +143,27 @@ fn allow_eager_await_preserves_legacy_replies() {
     let value = pb::ext_function_result::Kind::ReturnValue(0);
     let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
         vec![future_reply(call.call_id, value.clone())],
-        MontyValue::int(42),
+        MontyObject::int(42),
     )));
     let (bytes, _) = dispatch_frame(&mut child, &request);
-    assert_eq!(expect_complete(split_turn(&bytes).1), MontyValue::int(42));
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::int(42));
 
     let mut child = Child::default();
     let call = start_external_call(&mut child, "f()");
     assert!(!call.allow_eager_await);
     let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
         vec![future_reply(call.call_id, value.clone())],
-        MontyValue::int(42),
+        MontyObject::int(42),
     )));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Error(_)));
     let request = frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
         call_id: call.call_id,
         result: Some(pb::ExtFunctionResult { kind: Some(value) }),
-        values: Some(arena(MontyValue::int(42))),
+        values: Some(arena(MontyObject::int(42))),
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
-    assert_eq!(expect_complete(split_turn(&bytes).1), MontyValue::int(42));
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::int(42));
 }
 
 /// Frames one request the way a host transport would before posting it.
@@ -258,10 +258,10 @@ fn segments_per_event(prints: &[pb::Print]) -> Vec<Vec<(pb::PrintStream, &str)>>
         .collect()
 }
 
-fn expect_complete(event: pb::child_event::Kind) -> MontyValue {
+fn expect_complete(event: pb::child_event::Kind) -> MontyObject {
     match event {
         pb::child_event::Kind::Complete(complete) => {
-            MontyValue::try_from(complete).expect("the complete value decodes")
+            MontyObject::try_from(complete).expect("the complete value decodes")
         }
         other => panic!("expected Complete, got {other:?}"),
     }
@@ -273,7 +273,7 @@ fn feed_round_trips_a_value() {
     create_repl(&mut child);
 
     let (_, event) = feed(&mut child, "1 + 2");
-    assert_eq!(expect_complete(event), MontyValue::int(3));
+    assert_eq!(expect_complete(event), MontyObject::int(3));
 }
 
 #[test]
@@ -282,10 +282,10 @@ fn session_state_persists_across_feeds() {
     create_repl(&mut child);
 
     let (_, first) = feed(&mut child, "x = 21");
-    assert_eq!(expect_complete(first), MontyValue::none());
+    assert_eq!(expect_complete(first), MontyObject::none());
 
     let (_, second) = feed(&mut child, "x * 2");
-    assert_eq!(expect_complete(second), MontyValue::int(42));
+    assert_eq!(expect_complete(second), MontyObject::int(42));
 }
 
 #[test]
@@ -300,7 +300,7 @@ fn print_output_is_streamed_before_the_terminator() {
         .map(|segment| segment.text)
         .collect();
     assert_eq!(streamed, "hello\nworld\n");
-    assert_eq!(expect_complete(event), MontyValue::none());
+    assert_eq!(expect_complete(event), MontyObject::none());
 }
 
 /// Output alternating between the streams batches into one event, holding a
@@ -317,7 +317,7 @@ fn alternating_streams_batch_into_one_event() {
         &mut child,
         "import sys\nprint('a')\nprint('b', file=sys.stderr)\nprint('c')",
     );
-    assert_eq!(expect_complete(event), MontyValue::none());
+    assert_eq!(expect_complete(event), MontyObject::none());
     assert_eq!(
         segments_per_event(&prints),
         vec![vec![
@@ -336,7 +336,7 @@ fn line_buffering_gives_each_line_its_own_event() {
     create_repl_with_flush_interval(&mut child, Some(0));
 
     let (prints, event) = feed(&mut child, "import sys\nprint('a')\nprint('b', file=sys.stderr)");
-    assert_eq!(expect_complete(event), MontyValue::none());
+    assert_eq!(expect_complete(event), MontyObject::none());
     assert_eq!(
         segments_per_event(&prints),
         vec![
@@ -358,7 +358,7 @@ fn line_buffering_keeps_a_line_spanning_the_streams_together() {
         &mut child,
         "import sys\nprint('out', end='')\nprint('err', file=sys.stderr)\nprint('next', end='')",
     );
-    assert_eq!(expect_complete(event), MontyValue::none());
+    assert_eq!(expect_complete(event), MontyObject::none());
     assert_eq!(
         segments_per_event(&prints),
         vec![
@@ -373,7 +373,7 @@ fn inputs_are_injected() {
     let mut child = Child::default();
     create_repl(&mut child);
 
-    let (inputs, values) = named_values_to_proto(NamedValues::from(vec![("n".to_owned(), MontyValue::int(41))]));
+    let (inputs, values) = named_values_to_proto(NamedValues::from(vec![("n".to_owned(), MontyObject::int(41))]));
     let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: "n + 1".to_owned(),
         inputs,
@@ -384,7 +384,7 @@ fn inputs_are_injected() {
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     let (_, event) = split_turn(&bytes);
-    assert_eq!(expect_complete(event), MontyValue::int(42));
+    assert_eq!(expect_complete(event), MontyObject::int(42));
 }
 
 #[test]
@@ -516,7 +516,7 @@ fn abort_feed_ends_a_suspended_feed_uncatchably() {
     assert_eq!(exception.traceback[0].start.map(|loc| loc.line), Some(3));
     // the session survives with the globals from before the suspension
     let (_, event) = feed(&mut child, "x");
-    assert_eq!(expect_complete(event), MontyValue::int(41));
+    assert_eq!(expect_complete(event), MontyObject::int(41));
 }
 
 /// `AbortFeed` is only meaningful while a feed is suspended.
@@ -545,7 +545,7 @@ fn abort_feed_without_a_suspension_is_a_protocol_violation() {
     );
     // the session is untouched
     let (_, event) = feed(&mut child, "1 + 1");
-    assert_eq!(expect_complete(event), MontyValue::int(2));
+    assert_eq!(expect_complete(event), MontyObject::int(2));
 }
 
 /// The child echoes the session's `max_suspensions` on every turn-ending

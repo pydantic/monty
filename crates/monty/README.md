@@ -22,11 +22,11 @@ See the [documentation](https://pydantic.dev/docs/monty/) for the motivation, la
 
 ## Basic usage
 
-`MontyRun` parses and compiles code once; `run` executes it with input values and returns the value of the final expression as a `MontyValue`:
+`MontyRun` parses and compiles code once; `run` executes it with input values and returns the value of the final expression as a `MontyObject`:
 
 ```rust
 use monty::MontyRun;
-use monty_types::{CompileOptions, ResourceTracker, MontyValue, PrintWriter, ResourceLimits};
+use monty_types::{CompileOptions, ResourceTracker, MontyObject, PrintWriter, ResourceLimits};
 
 let code = r#"
 def fib(n):
@@ -38,8 +38,8 @@ fib(x)
 "#;
 
 let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
-let result = runner.run(vec![MontyValue::int(10)], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
-assert_eq!(result, MontyValue::int(55));
+let result = runner.run(vec![MontyObject::int(10)], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
+assert_eq!(result, MontyObject::int(55));
 ```
 
 Errors are returned as `MontyException`, with a traceback matching what CPython would produce. `PrintWriter` controls where `print()` output goes: `Stdout`, `Disabled`, or collected for the host to inspect — into a `String`, or into a `CollectedStreams` buffer whose `entries()` label each run `stdout` or `stderr`.
@@ -71,31 +71,31 @@ The defining feature of the crate: instead of running to completion, `MontyRun::
 
 ```rust
 use monty::{MontyRun, RunProgress};
-use monty_types::{CompileOptions, ResourceTracker, MontyValue, PrintWriter, ResourceLimits};
+use monty_types::{CompileOptions, ResourceTracker, MontyObject, PrintWriter, ResourceLimits};
 
 let code = "data = get_data(3)\ndata * 2";
 let runner = MontyRun::new(code.to_owned(), "main.py", vec!["get_data".to_owned()], CompileOptions::default()).unwrap();
 
 // pass the external function in as an input
-let get_data = MontyValue::function("get_data".to_owned(), None);
+let get_data = MontyObject::function("get_data".to_owned(), None);
 let progress = runner.start(vec![get_data], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
 
 // execution pauses at the `get_data(3)` call
 let RunProgress::FunctionCall(call) = progress else { panic!("expected a function call") };
 assert_eq!(call.function_name, "get_data");
-assert_eq!(call.args.arg(0).unwrap(), MontyValue::int(3));
+assert_eq!(call.args.arg(0).unwrap(), MontyObject::int(3));
 
 // the host computes the result and resumes
-let progress = call.resume(MontyValue::int(21), PrintWriter::Stdout).unwrap();
+let progress = call.resume(MontyObject::int(21), PrintWriter::Stdout).unwrap();
 let RunProgress::Complete(result) = progress else { panic!("expected completion") };
-assert_eq!(result, MontyValue::int(42));
+assert_eq!(result, MontyObject::int(42));
 ```
 
 A REPL session is a self-contained snapshot of the interpreter: serialize it with `dump()`, store it in a file or database, and `Dump::load()` + keep feeding it later — in a different process or on a different machine. The dump carries the session metadata (script name, type-check stubs) alongside the state, behind a version this build checks on load:
 
 ```rust
 use monty::{Dump, MontyRepl, Session, SessionRef, dump};
-use monty_types::{CompileOptions, MontyValue, PrintWriter, ResourceTracker};
+use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 
 let mut repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
 repl.feed_run("x = 41", vec![], PrintWriter::Stdout).unwrap();
@@ -106,7 +106,7 @@ let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
     panic!("expected an idle session")
 };
 let result = restored.feed_run("x + 1", vec![], PrintWriter::Stdout).unwrap();
-assert_eq!(result, MontyValue::int(42));
+assert_eq!(result, MontyObject::int(42));
 ```
 
 `MontyRun` and `RunProgress` have no dump format of their own, but both implement `serde::Serialize`/`Deserialize`, so a host that wants to cache compiled code or a paused run can serialize them with whatever format it already uses.
@@ -123,7 +123,7 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
 - `MontyRepl` — a REPL-style interface: feed code snippet by snippet with state persisting between snippets.
 - `monty-fs` crate — mount real host directories into the sandbox at virtual paths (read-write, read-only, or copy-on-write in-memory overlay), with path resolution hardened against escapes.
 - `RunProgress::OsCall` — filesystem and other `os`-level operations the host can intercept or delegate.
-- `FunctionCall::object_id` and `NameLookup::object_id` — `Some(uuid)` when the suspension is a method call or lazy attribute lookup on a host object sent as `MontyValue::ClassInstance` / `MontyValue::Type`; the receiver is not in `args`.
+- `FunctionCall::object_id` and `NameLookup::object_id` — `Some(uuid)` when the suspension is a method call or lazy attribute lookup on a host object sent as `MontyObject::ClassInstance` / `MontyObject::Type`; the receiver is not in `args`.
 - `MontyRun::with_host_clock` / `MontyRepl::with_host_clock` — choose what `date.today()` and `datetime.now()` read on the non-suspending paths, which have no host to ask. `HostClock::System` (this machine's clock) unless changed; `Denied` takes it away, `Fixed` freezes an instant for reproducible runs.
 
 ## Monty crates

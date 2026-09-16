@@ -13,7 +13,7 @@ use std::mem;
 use ahash::{AHashMap, AHashSet};
 use monty_types::{
     CallArgs, ClassTypeNode, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyGraph, MontyNode,
-    MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, MontyValue, NodeId,
+    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NodeId,
 };
 
 use crate::{
@@ -37,13 +37,13 @@ use crate::{
     value::{EitherStr, Value},
 };
 
-/// Crate-internal conversions between a single [`MontyValue`] and a VM `Value`.
+/// Crate-internal conversions between a single [`MontyObject`] and a VM `Value`.
 ///
-/// `MontyValue` lives in `monty-types`; building one from a heap `Value` (and
+/// `MontyObject` lives in `monty-types`; building one from a heap `Value` (and
 /// back) requires the VM, so the conversions stay here as a `pub(crate)`
 /// extension trait. Multi-value messages use [`GraphExporter`] and
 /// [`MontyGraphExt::to_values`] directly so their values share one arena.
-pub(crate) trait MontyValueExt: Sized {
+pub(crate) trait MontyObjectExt: Sized {
     /// Exports a `Value` into its own arena, taking ownership of the `Value`
     /// and dropping it via `drop_with`.
     fn export(value: Value, vm: &mut VM<'_>) -> Self;
@@ -55,7 +55,7 @@ pub(crate) trait MontyValueExt: Sized {
     fn to_value(self, vm: &mut VM<'_>) -> Result<Value, InvalidInputError>;
 }
 
-impl MontyValueExt for MontyValue {
+impl MontyObjectExt for MontyObject {
     fn export(value: Value, vm: &mut VM<'_>) -> Self {
         let mut exporter = GraphExporter::new();
         let root = exporter.push_owned(value, vm);
@@ -79,7 +79,7 @@ pub(crate) trait MontyGraphExt {
     /// Imports every node into the heap, in order, returning one owned
     /// `Value` per node (so a root is `values[id.index()]`). The caller owns
     /// the vector and must `drop_with` it. Fails as
-    /// [`MontyValueExt::to_value`] does, releasing everything built so far.
+    /// [`MontyObjectExt::to_value`] does, releasing everything built so far.
     fn to_values(self, vm: &mut VM<'_>) -> Result<Vec<Value>, InvalidInputError>;
 }
 

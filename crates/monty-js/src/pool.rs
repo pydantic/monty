@@ -35,7 +35,7 @@ use monty_pool::{
     ResumeValue, TurnEvent,
 };
 use monty_types::{
-    AssertMessageAnnotations, ExcType, MontyException, MontyNode, MontyValue, NameLookupResult, NamedValues, NodeId,
+    AssertMessageAnnotations, ExcType, MontyException, MontyNode, MontyObject, NameLookupResult, NamedValues, NodeId,
     PrintStream, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
 };
 use napi::{
@@ -524,7 +524,7 @@ impl NativeSession {
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let resolved = match value {
             Some(wrapper) => Some(name_lookup_value(env, &wrapper)?),
-            None => function_name.map(|name| MontyValue::leaf(MontyNode::Function { name, docstring: None })),
+            None => function_name.map(|name| MontyObject::leaf(MontyNode::Function { name, docstring: None })),
         };
         self.run_turn(
             env,
@@ -595,7 +595,7 @@ impl NativeSession {
                 let value = if ok {
                     match result.get::<Unknown>("value")? {
                         Some(value) => sendable_resume(env, value),
-                        None => ResumeValue::Return(MontyValue::none()),
+                        None => ResumeValue::Return(MontyObject::none()),
                     }
                 } else {
                     let exc_type: String = require(&result, "excType")?;
@@ -1029,7 +1029,7 @@ fn convert_inputs<'env>(env: &'env Env, inputs: Option<Object<'env>>) -> Result<
 /// (which becomes a catchable in-sandbox error), the worker has not yet
 /// observed the name, so a bad value fails the turn cleanly — matching the
 /// Python resolver, which surfaces a conversion error rather than `NameError`.
-fn name_lookup_value<'env>(env: &'env Env, wrapper: &Object<'env>) -> Result<MontyValue> {
+fn name_lookup_value<'env>(env: &'env Env, wrapper: &Object<'env>) -> Result<MontyObject> {
     // `get_named_property` (not `get`) so an inner `undefined` still converts
     // (to `None`) instead of collapsing back to Option::None.
     let value: Unknown = wrapper.get_named_property("value")?;
@@ -1055,7 +1055,7 @@ fn sendable_resume<'env>(env: &'env Env, value: Unknown<'env>) -> ResumeValue {
 
 /// Converts a host value the sandbox has already asked for, mapping one the
 /// wire cannot carry to the `TypeError` raised in its place.
-fn sendable_value<'env>(env: &'env Env, value: Unknown<'env>) -> StdResult<MontyValue, MontyException> {
+fn sendable_value<'env>(env: &'env Env, value: Unknown<'env>) -> StdResult<MontyObject, MontyException> {
     js_to_monty(value, env).map_err(|err| MontyException::new(ExcType::TypeError, Some(err.reason)))
 }
 

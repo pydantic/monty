@@ -34,8 +34,8 @@
 use std::{borrow::Cow, collections::HashMap, ptr, vec::IntoIter};
 
 use monty_types::{
-    ClassTypeNode, ExcType, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyGraph, MontyNode, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, MontyValue, NodeId,
+    ClassTypeNode, ExcType, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyGraph, MontyNode, MontyObject,
+    MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NodeId,
 };
 use napi::{bindgen_prelude::*, sys::Status};
 use num_bigint::BigInt as NumBigInt;
@@ -60,7 +60,7 @@ impl ToNapiValue for JsMontyObject<'_> {
 /// (`number`/`BigInt`, `Map`, `Set`, `Buffer`, `__tuple__`-marked arrays).
 /// Types without a JS equivalent get `__monty_type__` marker properties so
 /// they round-trip.
-pub fn monty_to_js<'e>(value: &MontyValue, env: &'e Env) -> Result<JsMontyObject<'e>> {
+pub fn monty_to_js<'e>(value: &MontyObject, env: &'e Env) -> Result<JsMontyObject<'e>> {
     Ok(JsMontyObject(DecodedArena::new(&value.graph, env)?.get(value.root)))
 }
 
@@ -499,7 +499,7 @@ fn create_js_attr_pairs<'e>(
 /// The single-value form of [`GraphEncoder`]: a return value, a resumed
 /// lookup. Values that share one message (a feed's inputs) go through one
 /// encoder so their sharing survives.
-pub fn js_to_monty<'e>(value: Unknown<'e>, env: &'e Env) -> Result<MontyValue> {
+pub fn js_to_monty<'e>(value: Unknown<'e>, env: &'e Env) -> Result<MontyObject> {
     let mut encoder = GraphEncoder::new(env)?;
     let root = encoder.push(value)?;
     Ok(encoder.finish_value(root))
@@ -591,9 +591,9 @@ impl<'e> GraphEncoder<'e> {
 
     /// The arena as one value rooted at `root`, an id [`push`](Self::push) returned.
     #[must_use]
-    pub fn finish_value(self, root: NodeId) -> MontyValue {
+    pub fn finish_value(self, root: NodeId) -> MontyObject {
         // `push` returned `root`, so it is in range
-        MontyValue {
+        MontyObject {
             graph: self.graph,
             root,
         }

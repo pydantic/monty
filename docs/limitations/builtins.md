@@ -174,7 +174,7 @@ These raise `NameError`:
 - **`print`** — writes via the host print callback. `file=`, `flush=` are
     not honoured; `sep=` and `end=` are.
 - **Identity of host-supplied callables** — host functions passed in as inputs
-    (`MontyValue::Function`) lose their host object identity at the sandbox
+    (`MontyObject::Function`) lose their host object identity at the sandbox
     boundary. Live external functions are identified by lookup name, so distinct
     host callables with the same name share `is`, equality, `id()`, and `hash()`
     results. Once the last sandbox reference is dropped, a later conversion of

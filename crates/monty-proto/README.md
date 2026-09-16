@@ -26,7 +26,7 @@ for the schema and the protocol rules documented alongside it.
 - `FrameReader` / `write_frame` — 4-byte little-endian length-prefixed
   framing, with a hard cap on frame length.
 - Fallible conversions between `pb` types and Monty's public types
-  (`MontyValue`/`CallArgs`/`NamedValues` over the `MontyGraph` arena,
+  (`MontyObject`/`CallArgs`/`NamedValues` over the `MontyGraph` arena,
   `MontyException`, mounts, resource limits, ...).
 - Host-object routing on the wire: host-backed class instances and class
   nodes carry host-generated uuids, and `FunctionCall.object_id` /
@@ -40,7 +40,7 @@ for the schema and the protocol rules documented alongside it.
   negotiation, so a child rejecting a version reports its range in the
   `FatalError` for the parent to downgrade to.
 - `python` (cargo feature, off by default) — the `python` module: PyO3-based
-  conversions between live Python objects and `MontyValue`/`MontyException`,
+  conversions between live Python objects and `MontyObject`/`MontyException`,
   used by the `pydantic-monty-client` extension module. The feature pulls in `pyo3` (but never its
   `extension-module` feature — how libpython is linked stays the top crate's
   decision), so pure-Rust consumers pay nothing for it.

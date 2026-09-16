@@ -13,7 +13,7 @@
 
 use monty::{MontyRun, RunProgress};
 use monty_types::{
-    CompileOptions, ExcType, MontyException, MontyValue, NameLookupResult, PrintWriter, ResourceTracker,
+    CompileOptions, ExcType, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceTracker,
 };
 
 /// Helper: drives execution through consecutive `NameLookup` yields,
@@ -33,7 +33,7 @@ fn resolve_lookups_with(
 /// for external function calls).
 fn resolve_as_functions(progress: RunProgress) -> Result<RunProgress, MontyException> {
     resolve_lookups_with(progress, |name| {
-        NameLookupResult::Value(MontyValue::function(name.to_string(), None))
+        NameLookupResult::Value(MontyObject::function(name.to_string(), None))
     })
 }
 
@@ -61,11 +61,11 @@ fn resolve_as_function_and_call() {
     // Should now be at a FunctionCall for ext(10)
     let call = progress.into_function_call().expect("expected FunctionCall");
     assert_eq!(call.function_name, "ext");
-    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyValue::int(10)]);
+    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(10)]);
 
     // Resume with 42 → code evaluates 42 + 1 = 43
-    let result = call.resume(MontyValue::int(42), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyValue::int(43));
+    let result = call.resume(MontyObject::int(42), PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete().unwrap(), MontyObject::int(43));
 }
 
 /// NameLookup resolved as an integer constant — no function call involved.
@@ -79,8 +79,8 @@ fn resolve_as_int() {
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "PI");
 
-    let result = lookup.resume(MontyValue::int(3), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyValue::int(4));
+    let result = lookup.resume(MontyObject::int(3), PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete().unwrap(), MontyObject::int(4));
 }
 
 /// NameLookup resolved as a string value.
@@ -101,11 +101,11 @@ fn resolve_as_string() {
     assert_eq!(lookup.name, "GREETING");
 
     let result = lookup
-        .resume(MontyValue::string("hello".to_string()), PrintWriter::Stdout)
+        .resume(MontyObject::string("hello".to_string()), PrintWriter::Stdout)
         .unwrap();
     assert_eq!(
         result.into_complete().unwrap(),
-        MontyValue::string("hello!".to_string())
+        MontyObject::string("hello!".to_string())
     );
 }
 
@@ -120,8 +120,8 @@ fn resolve_as_bool() {
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "FLAG");
 
-    let result = lookup.resume(MontyValue::bool(true), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyValue::bool(false));
+    let result = lookup.resume(MontyObject::bool(true), PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete().unwrap(), MontyObject::bool(false));
 }
 
 /// NameLookup resolved as a list.
@@ -135,9 +135,9 @@ fn resolve_as_list() {
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "ITEMS");
 
-    let items = MontyValue::list([MontyValue::int(10), MontyValue::int(20), MontyValue::int(30)]);
+    let items = MontyObject::list([MontyObject::int(10), MontyObject::int(20), MontyObject::int(30)]);
     let result = lookup.resume(items, PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyValue::int(3));
+    assert_eq!(result.into_complete().unwrap(), MontyObject::int(3));
 }
 
 /// NameLookup resolved as a float.
@@ -151,8 +151,8 @@ fn resolve_as_float() {
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "TAU");
 
-    let result = lookup.resume(MontyValue::float(6.0), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyValue::float(6.5));
+    let result = lookup.resume(MontyObject::float(6.0), PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete().unwrap(), MontyObject::float(6.5));
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +196,7 @@ fn error_raises_host_exception() {
     let progress = lookup.resume(error, PrintWriter::Stdout).unwrap();
     assert_eq!(
         progress.into_complete().unwrap(),
-        MontyValue::string("secret is off limits".to_owned())
+        MontyObject::string("secret is off limits".to_owned())
     );
 }
 
@@ -265,11 +265,11 @@ fn resolved_name_is_cached() {
                 assert_eq!(call.function_name, "ext");
                 call_count += 1;
                 let val: i64 = call.args.arg(0).unwrap().try_into().unwrap();
-                progress = call.resume(MontyValue::int(val * 10), PrintWriter::Stdout).unwrap();
+                progress = call.resume(MontyObject::int(val * 10), PrintWriter::Stdout).unwrap();
             }
             RunProgress::Complete(result) => {
                 // ext(1) -> 10, ext(2) -> 20 → 30
-                assert_eq!(result, MontyValue::int(30));
+                assert_eq!(result, MontyObject::int(30));
                 break;
             }
             other => panic!("unexpected progress: {other:?}"),
@@ -294,10 +294,10 @@ fn resolved_constant_is_cached() {
             RunProgress::NameLookup(lookup) => {
                 assert_eq!(lookup.name, "X");
                 lookup_count += 1;
-                progress = lookup.resume(MontyValue::int(21), PrintWriter::Stdout).unwrap();
+                progress = lookup.resume(MontyObject::int(21), PrintWriter::Stdout).unwrap();
             }
             RunProgress::Complete(result) => {
-                assert_eq!(result, MontyValue::int(42));
+                assert_eq!(result, MontyObject::int(42));
                 break;
             }
             other => panic!("unexpected progress: {other:?}"),
@@ -324,7 +324,7 @@ f()"
             RunProgress::NameLookup(lookup) => {
                 assert_eq!(lookup.name, "mystery");
                 lookup_count += 1;
-                progress = lookup.resume(MontyValue::int(7), PrintWriter::Stdout).unwrap();
+                progress = lookup.resume(MontyObject::int(7), PrintWriter::Stdout).unwrap();
             }
             RunProgress::Complete(_) => break,
             other => panic!("unexpected progress: {other:?}"),
@@ -356,11 +356,11 @@ fn multiple_names_each_looked_up() {
             RunProgress::FunctionCall(call) => {
                 called_names.push(call.function_name.clone());
                 let val: i64 = call.args.arg(0).unwrap().try_into().unwrap();
-                progress = call.resume(MontyValue::int(val * 100), PrintWriter::Stdout).unwrap();
+                progress = call.resume(MontyObject::int(val * 100), PrintWriter::Stdout).unwrap();
             }
             RunProgress::Complete(result) => {
                 // foo(1) -> 100, bar(2) -> 200 → 300
-                assert_eq!(result, MontyValue::int(300));
+                assert_eq!(result, MontyObject::int(300));
                 break;
             }
             other => panic!("unexpected progress: {other:?}"),
@@ -387,7 +387,7 @@ fn mixed_function_and_constant_lookups() {
                 let name = lookup.name.clone();
                 looked_up_names.push(name.clone());
                 let value = match name.as_str() {
-                    "OFFSET" => MontyValue::int(100),
+                    "OFFSET" => MontyObject::int(100),
                     _ => panic!("unexpected name lookup: {name}"),
                 };
                 progress = lookup.resume(value, PrintWriter::Stdout).unwrap();
@@ -395,11 +395,11 @@ fn mixed_function_and_constant_lookups() {
             RunProgress::FunctionCall(call) => {
                 // ext goes directly to FunctionCall via LoadGlobalCallable
                 assert_eq!(call.function_name, "ext");
-                assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyValue::int(100)]);
-                progress = call.resume(MontyValue::int(999), PrintWriter::Stdout).unwrap();
+                assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(100)]);
+                progress = call.resume(MontyObject::int(999), PrintWriter::Stdout).unwrap();
             }
             RunProgress::Complete(result) => {
-                assert_eq!(result, MontyValue::int(999));
+                assert_eq!(result, MontyObject::int(999));
                 break;
             }
             other => panic!("unexpected progress: {other:?}"),
@@ -426,7 +426,7 @@ fn builtins_do_not_trigger_lookup() {
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
-    assert_eq!(progress.into_complete().unwrap(), MontyValue::int(3));
+    assert_eq!(progress.into_complete().unwrap(), MontyObject::int(3));
 }
 
 /// `range` is a builtin — should complete without any NameLookup.
@@ -444,7 +444,7 @@ fn range_builtin_no_lookup() {
         .unwrap();
     assert_eq!(
         progress.into_complete().unwrap(),
-        MontyValue::list([MontyValue::int(0), MontyValue::int(1), MontyValue::int(2)])
+        MontyObject::list([MontyObject::int(0), MontyObject::int(1), MontyObject::int(2)])
     );
 }
 
@@ -466,7 +466,7 @@ fn input_function_no_lookup() {
 
     let progress = runner
         .start(
-            vec![MontyValue::function("my_fn".to_string(), None)],
+            vec![MontyObject::function("my_fn".to_string(), None)],
             ResourceTracker::default(),
             PrintWriter::Stdout,
         )
@@ -477,10 +477,10 @@ fn input_function_no_lookup() {
         .into_function_call()
         .expect("expected FunctionCall, not NameLookup");
     assert_eq!(call.function_name, "my_fn");
-    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyValue::int(10)]);
+    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(10)]);
 
-    let result = call.resume(MontyValue::int(99), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyValue::int(99));
+    let result = call.resume(MontyObject::int(99), PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete().unwrap(), MontyObject::int(99));
 }
 
 /// A function input assigned to a new variable and called via the alias should
@@ -497,7 +497,7 @@ fn input_function_reassigned_then_called() {
 
     let progress = runner
         .start(
-            vec![MontyValue::function("my_fn".to_string(), None)],
+            vec![MontyObject::function("my_fn".to_string(), None)],
             ResourceTracker::default(),
             PrintWriter::Stdout,
         )
@@ -508,10 +508,10 @@ fn input_function_reassigned_then_called() {
         .into_function_call()
         .expect("expected FunctionCall, not NameLookup");
     assert_eq!(call.function_name, "my_fn");
-    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyValue::int(5)]);
+    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(5)]);
 
-    let result = call.resume(MontyValue::int(50), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyValue::int(50));
+    let result = call.resume(MontyObject::int(50), PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete().unwrap(), MontyObject::int(50));
 }
 
 /// A function input used alongside a name-looked-up constant: the function should
@@ -528,7 +528,7 @@ fn input_function_with_looked_up_arg() {
 
     let mut progress = runner
         .start(
-            vec![MontyValue::function("my_fn".to_string(), None)],
+            vec![MontyObject::function("my_fn".to_string(), None)],
             ResourceTracker::default(),
             PrintWriter::Stdout,
         )
@@ -540,15 +540,15 @@ fn input_function_with_looked_up_arg() {
         other => panic!("expected NameLookup for 'OFFSET', got {other:?}"),
     };
     assert_eq!(lookup.name, "OFFSET");
-    progress = lookup.resume(MontyValue::int(42), PrintWriter::Stdout).unwrap();
+    progress = lookup.resume(MontyObject::int(42), PrintWriter::Stdout).unwrap();
 
     // Now should be at FunctionCall for my_fn(42)
     let call = progress.into_function_call().expect("expected FunctionCall");
     assert_eq!(call.function_name, "my_fn");
-    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyValue::int(42)]);
+    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(42)]);
 
-    let result = call.resume(MontyValue::int(100), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyValue::int(100));
+    let result = call.resume(MontyObject::int(100), PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete().unwrap(), MontyObject::int(100));
 }
 
 /// When a NameLookup resolves to a Function whose name differs from the variable
@@ -572,7 +572,7 @@ fn resolve_function_with_non_interned_name() {
     // Resolve with a function whose name is NOT 'foobar' — it won't be interned
     let progress = lookup
         .resume(
-            NameLookupResult::Value(MontyValue::function("not_foobar".to_string(), None)),
+            NameLookupResult::Value(MontyObject::function("not_foobar".to_string(), None)),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -586,8 +586,8 @@ fn resolve_function_with_non_interned_name() {
     assert!(call.args.kwargs.is_empty());
 
     // Resume with a return value
-    let result = call.resume(MontyValue::int(42), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyValue::int(42));
+    let result = call.resume(MontyObject::int(42), PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete().unwrap(), MontyObject::int(42));
 }
 
 #[test]
@@ -608,5 +608,5 @@ sorted([1], key=lambda x: x+1)
     .to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
     let value = runner.run_no_limits(vec![]).unwrap();
-    assert_eq!(value, MontyValue::list([MontyValue::int(1)]));
+    assert_eq!(value, MontyObject::list([MontyObject::int(1)]));
 }

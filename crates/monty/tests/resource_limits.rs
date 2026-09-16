@@ -8,7 +8,8 @@ use std::{
 
 use monty::{MontyRepl, MontyRun, RunProgress};
 use monty_types::{
-    CompileOptions, ExcType, MontyException, MontyValue, NameLookupResult, PrintWriter, ResourceLimits, ResourceTracker,
+    CompileOptions, ExcType, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceLimits,
+    ResourceTracker,
 };
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
@@ -20,7 +21,7 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
     while let RunProgress::NameLookup(lookup) = progress {
         let name = lookup.name.clone();
         progress = lookup.resume(
-            NameLookupResult::Value(MontyValue::function(name, None)),
+            NameLookupResult::Value(MontyObject::function(name, None)),
             PrintWriter::Stdout,
         )?;
     }
@@ -274,7 +275,7 @@ result
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
     let output = run.run_ref_counts(vec![]).expect("should run");
 
-    assert_eq!(output.value, MontyValue::list([MontyValue::int(6)]));
+    assert_eq!(output.value, MontyObject::list([MontyObject::int(6)]));
     assert_eq!(output.unreachable, Vec::<String>::new());
 }
 
@@ -417,7 +418,7 @@ result
         .run_ref_counts(vec![])
         .expect("should succeed with GC enabled on cycles");
 
-    assert_eq!(output.value, MontyValue::string("done".to_owned()));
+    assert_eq!(output.value, MontyObject::string("done".to_owned()));
     assert!(
         output.allocations_since_gc < 100_000,
         "default GC interval should have triggered collection: allocations_since_gc = {}",
@@ -452,7 +453,7 @@ result
         .run_ref_counts_with_tracker(vec![], ResourceTracker::new(limits))
         .expect("should succeed with custom GC interval");
 
-    assert_eq!(output.value, MontyValue::string("done".to_owned()));
+    assert_eq!(output.value, MontyObject::string("done".to_owned()));
     assert!(
         output.allocations_since_gc < 10,
         "configured GC interval should trigger collections before the default; allocations_since_gc = {}",
@@ -550,7 +551,7 @@ template.format()
 ";
     let scan_call = pause_at_interrupt(scan_code);
     let scan_started = Instant::now();
-    let scan_result = scan_call.resume(MontyValue::none(), PrintWriter::Stdout);
+    let scan_result = scan_call.resume(MontyObject::none(), PrintWriter::Stdout);
     let scan_elapsed = scan_started.elapsed();
     assert_eq!(scan_result.unwrap_err().exc_type(), ExcType::KeyError);
     let traversal_budget = scan_elapsed.saturating_mul(3);
@@ -569,7 +570,7 @@ template.format(value)
 
     call.tracker_mut().set_max_duration(traversal_budget);
     let started = Instant::now();
-    let result = call.resume(MontyValue::none(), PrintWriter::Stdout);
+    let result = call.resume(MontyObject::none(), PrintWriter::Stdout);
     let elapsed = started.elapsed();
 
     let exc = result.expect_err("field traversal should exceed the time limit");
@@ -606,7 +607,7 @@ fn run_bytes_search(expr: &str, haystack: Vec<u8>, needle: Vec<u8>, limits: Reso
 
     let start = Instant::now();
     let result = run.run(
-        vec![MontyValue::bytes(haystack), MontyValue::bytes(needle)],
+        vec![MontyObject::bytes(haystack), MontyObject::bytes(needle)],
         ResourceTracker::new(limits),
         PrintWriter::Stdout,
     );
@@ -619,7 +620,7 @@ fn run_bytes_search(expr: &str, haystack: Vec<u8>, needle: Vec<u8>, limits: Reso
 /// What a `bytes` search returned, and how long it took.
 struct BytesSearchOutcome {
     elapsed: Duration,
-    result: Result<MontyValue, MontyException>,
+    result: Result<MontyObject, MontyException>,
 }
 
 /// Worst case for a naive `windows()` scan: every offset compares the full
@@ -1113,11 +1114,11 @@ fn suspension_time_does_not_count_toward_max_duration() {
 
     thread::sleep(Duration::from_millis(300));
 
-    let progress = call.resume(MontyValue::none(), PrintWriter::Stdout).unwrap();
+    let progress = call.resume(MontyObject::none(), PrintWriter::Stdout).unwrap();
     let RunProgress::Complete(value) = progress else {
         panic!("expected Complete, got another suspension");
     };
-    assert_eq!(value, MontyValue::int(4950));
+    assert_eq!(value, MontyObject::int(4950));
 }
 
 /// `MontyRepl::call_function` is a host boundary like `feed_run`: it must
@@ -1342,7 +1343,7 @@ fn assert_timeout_promptly(code: &str, label: &str) {
     call.tracker_mut().set_max_duration(Duration::from_millis(10));
 
     let start = Instant::now();
-    let result = call.resume(MontyValue::none(), PrintWriter::Stdout);
+    let result = call.resume(MontyObject::none(), PrintWriter::Stdout);
     let elapsed = start.elapsed();
 
     let exc = result.unwrap_err();
@@ -1532,7 +1533,7 @@ list(source)
     let list = result.expect("nesting below the recursion limit should succeed");
     assert_eq!(
         list,
-        MontyValue::list([MontyValue::int(1), MontyValue::int(2), MontyValue::int(3)])
+        MontyObject::list([MontyObject::int(1), MontyObject::int(2), MontyObject::int(3)])
     );
 }
 
@@ -1550,7 +1551,7 @@ fn itertools_adaptors_charge_recursion_only_when_they_delegate() {
     // `yields` is the one item the innermost iterator produces, which differs
     // per adaptor — the combinatoric family yields tuples where the rest yield
     // whatever their source held.
-    let min_depth = |inner: &str, yields: MontyValue| {
+    let min_depth = |inner: &str, yields: MontyObject| {
         let code = format!(
             r"
 import itertools
@@ -1576,15 +1577,15 @@ next(source)
     };
 
     assert_eq!(
-        min_depth("itertools.accumulate([], initial=1)", MontyValue::int(1)),
-        min_depth("iter([1])", MontyValue::int(1)),
+        min_depth("itertools.accumulate([], initial=1)", MontyObject::int(1)),
+        min_depth("iter([1])", MontyObject::int(1)),
         "answering from adaptor state should cost no recursion level"
     );
     // The combinatoric family never delegates at all: the pool is collected at
     // construction, so every step is index arithmetic over values it owns.
     assert_eq!(
-        min_depth("itertools.product([1])", MontyValue::tuple([MontyValue::int(1)])),
-        min_depth("iter([(1,)])", MontyValue::tuple([MontyValue::int(1)])),
+        min_depth("itertools.product([1])", MontyObject::tuple([MontyObject::int(1)])),
+        min_depth("iter([(1,)])", MontyObject::tuple([MontyObject::int(1)])),
         "stepping a pool should cost no recursion level"
     );
 }

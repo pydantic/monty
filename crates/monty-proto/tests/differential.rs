@@ -19,73 +19,73 @@ use monty::{MontyRun, RunProgress};
 use monty_proto::{WireArena, WireFunctionCall, os_call_to_proto, pb};
 use monty_types::{
     CallArgs, ClassTypeNode, CompileOptions, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle,
-    MontyGraph, MontyNode, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, MontyValue, NodeId,
+    MontyGraph, MontyNode, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NodeId,
     OsFunctionCall, PrintWriter, ResourceTracker,
 };
 use num_bigint::{BigInt, Sign};
 use prost::Message;
 
-use crate::oracle::value_node::Kind;
+use crate::oracle::monty_node::Kind;
 
 #[path = "oracle/monty.v1.rs"]
 mod oracle;
 
-/// Every `MontyValue` shape, deliberately including protobuf-default
+/// Every `MontyObject` shape, deliberately including protobuf-default
 /// payloads (zeros, empty strings, `false`, empty containers, `Some("")`)
 /// where prost's implicit/explicit field-presence rules diverge most.
-fn corpus() -> Vec<MontyValue> {
+fn corpus() -> Vec<MontyObject> {
     let bigint: BigInt = "123456789012345678901234567890123456789".parse().unwrap();
     vec![
-        MontyValue::ellipsis(),
-        MontyValue::not_implemented(),
-        MontyValue::none(),
-        MontyValue::bool(false), // oneof arms encode even at default payloads
-        MontyValue::bool(true),
-        MontyValue::int(0),
-        MontyValue::int(-1),
-        MontyValue::int(i64::MIN),
-        MontyValue::int(i64::MAX),
-        MontyValue::bigint(BigInt::ZERO),
-        MontyValue::bigint(bigint.clone()),
-        MontyValue::bigint(-bigint),
-        MontyValue::float(0.0),
-        MontyValue::float(-0.0),
-        MontyValue::float(f64::NAN),
-        MontyValue::float(f64::NEG_INFINITY),
-        MontyValue::string(String::new()),
-        MontyValue::string("héllo \u{1F40D}".to_owned()),
-        MontyValue::bytes(vec![]),
-        MontyValue::bytes(vec![0, 255, 128]),
-        MontyValue::list([]),
-        MontyValue::list([
-            MontyValue::int(1),
-            MontyValue::string("two".to_owned()),
-            MontyValue::list([MontyValue::none()]),
+        MontyObject::ellipsis(),
+        MontyObject::not_implemented(),
+        MontyObject::none(),
+        MontyObject::bool(false), // oneof arms encode even at default payloads
+        MontyObject::bool(true),
+        MontyObject::int(0),
+        MontyObject::int(-1),
+        MontyObject::int(i64::MIN),
+        MontyObject::int(i64::MAX),
+        MontyObject::bigint(BigInt::ZERO),
+        MontyObject::bigint(bigint.clone()),
+        MontyObject::bigint(-bigint),
+        MontyObject::float(0.0),
+        MontyObject::float(-0.0),
+        MontyObject::float(f64::NAN),
+        MontyObject::float(f64::NEG_INFINITY),
+        MontyObject::string(String::new()),
+        MontyObject::string("héllo \u{1F40D}".to_owned()),
+        MontyObject::bytes(vec![]),
+        MontyObject::bytes(vec![0, 255, 128]),
+        MontyObject::list([]),
+        MontyObject::list([
+            MontyObject::int(1),
+            MontyObject::string("two".to_owned()),
+            MontyObject::list([MontyObject::none()]),
         ]),
-        MontyValue::tuple([MontyValue::bool(true), MontyValue::float(2.5)]),
-        MontyValue::set([MontyValue::int(1), MontyValue::int(2)]),
-        MontyValue::frozenset([MontyValue::string("a".to_owned())]),
-        MontyValue::named_tuple(String::new(), Vec::<String>::new(), vec![]),
-        MontyValue::named_tuple(
+        MontyObject::tuple([MontyObject::bool(true), MontyObject::float(2.5)]),
+        MontyObject::set([MontyObject::int(1), MontyObject::int(2)]),
+        MontyObject::frozenset([MontyObject::string("a".to_owned())]),
+        MontyObject::named_tuple(String::new(), Vec::<String>::new(), vec![]),
+        MontyObject::named_tuple(
             "os.stat_result".to_owned(),
             vec!["st_mode".to_owned(), String::new()],
-            vec![MontyValue::int(0o644), MontyValue::none()],
+            vec![MontyObject::int(0o644), MontyObject::none()],
         ),
-        MontyValue::dict(Vec::new()),
-        MontyValue::dict([
-            (MontyValue::int(1), MontyValue::string("one".to_owned())),
+        MontyObject::dict(Vec::new()),
+        MontyObject::dict([
+            (MontyObject::int(1), MontyObject::string("one".to_owned())),
             (
-                MontyValue::tuple([MontyValue::int(1), MontyValue::int(2)]),
-                MontyValue::none(),
+                MontyObject::tuple([MontyObject::int(1), MontyObject::int(2)]),
+                MontyObject::none(),
             ),
         ]),
-        MontyValue::date(MontyDate {
+        MontyObject::date(MontyDate {
             year: 2026,
             month: 6,
             day: 12,
         }),
         // a midnight datetime: every time component is a protobuf default
-        MontyValue::datetime(MontyDateTime {
+        MontyObject::datetime(MontyDateTime {
             year: 1,
             month: 1,
             day: 1,
@@ -98,7 +98,7 @@ fn corpus() -> Vec<MontyValue> {
         }),
         // every field at its implicit-presence default: nothing but the
         // submessage key should reach the wire
-        MontyValue::time(MontyTime {
+        MontyObject::time(MontyTime {
             hour: 0,
             minute: 0,
             second: 0,
@@ -107,7 +107,7 @@ fn corpus() -> Vec<MontyValue> {
             timezone_name: None,
             fold: 0,
         }),
-        MontyValue::time(MontyTime {
+        MontyObject::time(MontyTime {
             hour: 23,
             minute: 59,
             second: 59,
@@ -116,7 +116,7 @@ fn corpus() -> Vec<MontyValue> {
             timezone_name: Some(String::new()),
             fold: 1,
         }),
-        MontyValue::time(MontyTime {
+        MontyObject::time(MontyTime {
             hour: 1,
             minute: 2,
             second: 3,
@@ -127,7 +127,7 @@ fn corpus() -> Vec<MontyValue> {
         }),
         // explicit-presence edge: offset of exactly 0 and an empty name must
         // still encode (proto3 `optional`), unlike implicit-presence fields
-        MontyValue::datetime(MontyDateTime {
+        MontyObject::datetime(MontyDateTime {
             year: 2026,
             month: 6,
             day: 12,
@@ -138,84 +138,84 @@ fn corpus() -> Vec<MontyValue> {
             offset_seconds: Some(0),
             timezone_name: Some(String::new()),
         }),
-        MontyValue::timedelta(MontyTimeDelta {
+        MontyObject::timedelta(MontyTimeDelta {
             days: 0,
             seconds: 0,
             microseconds: 0,
         }),
-        MontyValue::timedelta(MontyTimeDelta {
+        MontyObject::timedelta(MontyTimeDelta {
             days: -2,
             seconds: 86_399,
             microseconds: 999_999,
         }),
-        MontyValue::timezone(MontyTimeZone {
+        MontyObject::timezone(MontyTimeZone {
             offset_seconds: 0,
             name: None,
         }),
-        MontyValue::timezone(MontyTimeZone {
+        MontyObject::timezone(MontyTimeZone {
             offset_seconds: -19_800,
             name: Some("IST".to_owned()),
         }),
-        MontyValue::exception(ExcType::ValueError, None),
-        MontyValue::exception(ExcType::JsonDecodeError, Some(String::new())),
-        MontyValue::type_object(MontyType::Int),
-        MontyValue::type_object(MontyType::Exception(ExcType::KeyError)),
-        MontyValue::class_type("Foo", MontyUuid::from_u128(0xF00), false, false, []),
-        MontyValue::class_type(
+        MontyObject::exception(ExcType::ValueError, None),
+        MontyObject::exception(ExcType::JsonDecodeError, Some(String::new())),
+        MontyObject::type_object(MontyType::Int),
+        MontyObject::type_object(MontyType::Exception(ExcType::KeyError)),
+        MontyObject::class_type("Foo", MontyUuid::from_u128(0xF00), false, false, []),
+        MontyObject::class_type(
             "Child",
             MontyUuid::from_u128(0xF01),
             true,
             true,
             [
-                (MontyValue::string("SIDES".to_owned()), MontyValue::int(4)),
+                (MontyObject::string("SIDES".to_owned()), MontyObject::int(4)),
                 (
-                    MontyValue::string("KIND".to_owned()),
-                    MontyValue::string("polygon".to_owned()),
+                    MontyObject::string("KIND".to_owned()),
+                    MontyObject::string("polygon".to_owned()),
                 ),
             ],
         ),
-        MontyValue::builtin_function_from_name("len").expect("len is a builtin"),
-        MontyValue::path(String::new()),
-        MontyValue::path("/mnt/data/file.txt".to_owned()),
-        MontyValue::file_handle(MontyFileHandle {
+        MontyObject::builtin_function_from_name("len").expect("len is a builtin"),
+        MontyObject::path(String::new()),
+        MontyObject::path("/mnt/data/file.txt".to_owned()),
+        MontyObject::file_handle(MontyFileHandle {
             path: "/f.bin".to_owned(),
             mode: "rb".parse().unwrap(),
             position: 0,
         }),
-        MontyValue::class_instance(
-            MontyValue::class_type(String::new(), MontyUuid::from_u128(0), false, false, []),
+        MontyObject::class_instance(
+            MontyObject::class_type(String::new(), MontyUuid::from_u128(0), false, false, []),
             MontyUuid::from_u128(0),
             [],
         ),
-        MontyValue::class_instance(
-            MontyValue::class_type("Point", MontyUuid::from_u128(0xDEAD_BEEF), true, true, []),
+        MontyObject::class_instance(
+            MontyObject::class_type("Point", MontyUuid::from_u128(0xDEAD_BEEF), true, true, []),
             MontyUuid::from_u128(0xFEED_FACE),
             [
-                (MontyValue::string("x".to_owned()), MontyValue::int(1)),
-                (MontyValue::string("y".to_owned()), MontyValue::int(2)),
+                (MontyObject::string("x".to_owned()), MontyObject::int(1)),
+                (MontyObject::string("y".to_owned()), MontyObject::int(2)),
             ],
         ),
         // an instance whose class branch carries eager class attrs
-        MontyValue::class_instance(
-            MontyValue::class_type(
+        MontyObject::class_instance(
+            MontyObject::class_type(
                 "Square",
                 MontyUuid::from_u128(0xF02),
                 true,
                 false,
                 [
-                    (MontyValue::string("SIDES".to_owned()), MontyValue::int(4)),
-                    (MontyValue::string(String::new()), MontyValue::none()),
+                    (MontyObject::string("SIDES".to_owned()), MontyObject::int(4)),
+                    (MontyObject::string(String::new()), MontyObject::none()),
                 ],
             ),
             MontyUuid::from_u128(0xF03),
-            [(MontyValue::string("size".to_owned()), MontyValue::int(3))],
+            [(MontyObject::string("size".to_owned()), MontyObject::int(3))],
         ),
-        MontyValue::function("f".to_owned(), None),
-        MontyValue::function("fetch".to_owned(), Some(String::new())),
-        MontyValue::repr(String::new()),
-        MontyValue::repr("<unrepresentable>".to_owned()),
-        MontyValue::cycle("[...]".to_owned()),
-        MontyValue::cycle("{...}".to_owned()),
+        MontyObject::function("f".to_owned(), None),
+        MontyObject::function("fetch".to_owned(), Some(String::new())),
+        MontyObject::repr(String::new()),
+        MontyObject::repr("<unrepresentable>".to_owned()),
+        MontyObject::cycle("[...]".to_owned()),
+        MontyObject::cycle("{...}".to_owned()),
     ]
 }
 
@@ -272,7 +272,7 @@ fn to_oracle(graph: &MontyGraph) -> oracle::Arena {
     }
 }
 
-fn node_to_oracle(node: &MontyNode) -> oracle::ValueNode {
+fn node_to_oracle(node: &MontyNode) -> oracle::MontyNode {
     let kind = match node {
         MontyNode::Ellipsis => Kind::Ellipsis(oracle::Unit {}),
         MontyNode::NotImplemented => Kind::NotImplemented(oracle::Unit {}),
@@ -370,7 +370,7 @@ fn node_to_oracle(node: &MontyNode) -> oracle::ValueNode {
         MontyNode::Repr(r) => Kind::Repr(r.clone()),
         MontyNode::Cycle(placeholder) => Kind::Cycle(placeholder.clone()),
     };
-    oracle::ValueNode { kind: Some(kind) }
+    oracle::MontyNode { kind: Some(kind) }
 }
 
 /// Oracle mirror of a class node.
@@ -465,13 +465,13 @@ fn generated_decoder_reads_hand_bytes() {
 #[test]
 fn hand_call_payloads_match_generated_encoding() {
     let args = vec![
-        MontyValue::int(1),
-        MontyValue::string("arg".to_owned()),
-        MontyValue::list([MontyValue::none()]),
+        MontyObject::int(1),
+        MontyObject::string("arg".to_owned()),
+        MontyObject::list([MontyObject::none()]),
     ];
     let kwargs = vec![
-        (MontyValue::string("flag".to_owned()), MontyValue::bool(true)),
-        (MontyValue::string("count".to_owned()), MontyValue::int(3)),
+        (MontyObject::string("flag".to_owned()), MontyObject::bool(true)),
+        (MontyObject::string("count".to_owned()), MontyObject::int(3)),
     ];
 
     let call = CallArgs::from((args, kwargs));
@@ -507,7 +507,7 @@ fn hand_call_payloads_match_generated_encoding() {
 
     // `OsCall` is fully generated, but its arena is the hand-written
     // `WireArena` — check the embedding agrees with the oracle byte-for-byte.
-    let default = MontyValue::list([MontyValue::none(), MontyValue::int(3)]);
+    let default = MontyObject::list([MontyObject::none(), MontyObject::int(3)]);
     let hand_os = os_call_to_proto(
         7,
         OsFunctionCall::Getenv(GetenvArgs {
@@ -589,12 +589,12 @@ fn executed_cycle_value_is_byte_compatible() {
 /// Encodes an oracle `kind` arm as a one-node arena and decodes it through the
 /// hand-written codec, returning the decode error message.
 fn rejected(kind: Kind) -> String {
-    rejected_nodes(vec![oracle::ValueNode { kind: Some(kind) }])
+    rejected_nodes(vec![oracle::MontyNode { kind: Some(kind) }])
 }
 
 /// Encodes an oracle arena and decodes it through the hand-written codec,
 /// returning the decode error message.
-fn rejected_nodes(nodes: Vec<oracle::ValueNode>) -> String {
+fn rejected_nodes(nodes: Vec<oracle::MontyNode>) -> String {
     let bytes = oracle::Arena {
         node_count: u32::try_from(nodes.len()).unwrap(),
         nodes,
@@ -667,7 +667,7 @@ fn invalid_values_are_rejected_during_decode() {
         "failed to decode Protobuf message: invalid value for Type.id: uuid must be 16 bytes, got 5"
     );
     // a class instance's class must be a class node, not a builtin type leaf
-    let builtin_int = oracle::ValueNode {
+    let builtin_int = oracle::MontyNode {
         kind: Some(Kind::Type(oracle::Type {
             name: "int".to_owned(),
             origin: oracle::TypeOrigin::Builtin as i32,
@@ -675,7 +675,7 @@ fn invalid_values_are_rejected_during_decode() {
         })),
     };
     let instance_of =
-        |class_type: u32, instance_id: Option<oracle::Uuid>, attrs: Option<oracle::NodePairs>| oracle::ValueNode {
+        |class_type: u32, instance_id: Option<oracle::Uuid>, attrs: Option<oracle::NodePairs>| oracle::MontyNode {
             kind: Some(Kind::ClassInstance(oracle::ClassInstanceNode {
                 class_type,
                 instance_id,
@@ -696,7 +696,7 @@ fn invalid_values_are_rejected_during_decode() {
     // instance_id is required
     assert_eq!(
         rejected_nodes(vec![
-            oracle::ValueNode {
+            oracle::MontyNode {
                 kind: Some(Kind::Type(class_type("Foo")))
             },
             instance_of(0, None, Some(oracle::NodePairs::default())),
@@ -706,7 +706,7 @@ fn invalid_values_are_rejected_during_decode() {
     // attrs is required, even when empty
     assert_eq!(
         rejected_nodes(vec![
-            oracle::ValueNode {
+            oracle::MontyNode {
                 kind: Some(Kind::Type(class_type("Foo")))
             },
             instance_of(0, Some(oracle::Uuid { data: vec![7; 16] }), None),
@@ -716,7 +716,7 @@ fn invalid_values_are_rejected_during_decode() {
     // the instance uuid must be exactly 16 bytes
     assert_eq!(
         rejected_nodes(vec![
-            oracle::ValueNode {
+            oracle::MontyNode {
                 kind: Some(Kind::Type(class_type("Foo")))
             },
             instance_of(
@@ -767,12 +767,12 @@ fn invalid_values_are_rejected_during_decode() {
     // hand-written decoder skips it like any unknown tag, leaving no kind
     assert_eq!(
         rejected(Kind::Uuid(oracle::Uuid { data: vec![7; 16] })),
-        "failed to decode Protobuf message: missing required field ValueNode.kind"
+        "failed to decode Protobuf message: missing required field MontyNode.kind"
     );
     // an absent kind is a valid empty message but not a node
     assert_eq!(
-        rejected_nodes(vec![oracle::ValueNode { kind: None }]),
-        "failed to decode Protobuf message: missing required field ValueNode.kind"
+        rejected_nodes(vec![oracle::MontyNode { kind: None }]),
+        "failed to decode Protobuf message: missing required field MontyNode.kind"
     );
 }
 
@@ -804,10 +804,10 @@ fn present_but_empty_class_attrs_decode_as_absent() {
     let bytes = oracle::Arena {
         node_count: 2,
         nodes: vec![
-            oracle::ValueNode {
+            oracle::MontyNode {
                 kind: Some(Kind::Type(with_empty_attrs)),
             },
-            oracle::ValueNode {
+            oracle::MontyNode {
                 kind: Some(Kind::ClassInstance(oracle::ClassInstanceNode {
                     class_type: 0,
                     instance_id: Some(oracle::Uuid { data: vec![7; 16] }),
@@ -943,7 +943,7 @@ fn out_of_range_temporal_values_are_rejected() {
 /// prost's generated decoder.
 #[test]
 fn unknown_fields_are_skipped() {
-    let graph = MontyValue::int(42).graph;
+    let graph = MontyObject::int(42).graph;
     let mut bytes = WireArena::new(graph.clone()).encode_to_vec();
     // append an unknown varint field: key = 99 << 3 | 0 = 792 (varint
     // 0x98 0x06), value 7
@@ -956,7 +956,7 @@ fn unknown_fields_are_skipped() {
 /// carrying message's root ids then catch the missing nodes).
 #[test]
 fn corrupt_frames_fail_cleanly() {
-    let graph = MontyValue::list([MontyValue::int(1)]).graph;
+    let graph = MontyObject::list([MontyObject::int(1)]).graph;
     let bytes = WireArena::new(graph.clone()).encode_to_vec();
     for cut in 1..bytes.len() {
         if let Ok(prefix) = decode_wire(&bytes[..cut]) {

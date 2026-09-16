@@ -110,7 +110,7 @@ fn container_repr_with_huge_int_raises_value_error() {
 #[test]
 fn monty_object_repr_or_error_success() {
     // Returning a range produces a `Repr` node with the correct repr string.
-    // This exercises the repr_or_error success path in MontyValue::from_value.
+    // This exercises the repr_or_error success path in MontyObject::from_value.
     let code = "range(0, 10, 2)".to_string();
     let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
     let result = run.run_no_limits(vec![]).expect("should run");

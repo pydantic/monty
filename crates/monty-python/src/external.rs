@@ -11,7 +11,7 @@
 //! not `external_lookup`.
 
 use monty_proto::python::{DecodedArena, InstanceStore, exc_py_to_monty, py_to_monty, py_to_monty_value};
-use monty_types::{CallArgs, ExtFunctionResult, MontyNode, MontyUuid, MontyValue, NameLookupResult};
+use monty_types::{CallArgs, ExtFunctionResult, MontyNode, MontyObject, MontyUuid, NameLookupResult};
 use pyo3::{
     exceptions::PyAttributeError,
     prelude::*,
@@ -44,7 +44,7 @@ fn dispatch_object_call_inner(
     object_id: &MontyUuid,
     args: &CallArgs,
     instances: &InstanceStore,
-) -> PyResult<MontyValue> {
+) -> PyResult<MontyObject> {
     let result = call_object_method_raw(py, function_name, object_id, args, instances)?;
     py_to_monty(&result, instances)
 }
@@ -148,7 +148,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     /// because `external_lookup` may hold untrusted values, an unrepresentable
     /// type surfaces as the dedicated `MontyConversionError` (a `MontyError`),
     /// not a masquerading `NameError`.
-    pub fn resolve_name(&self, name: &str) -> PyResult<Option<MontyValue>> {
+    pub fn resolve_name(&self, name: &str) -> PyResult<Option<MontyObject>> {
         let Some(lookup) = self.lookup else {
             return Ok(None);
         };
@@ -176,7 +176,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
 
     /// `PyResult`-returning core of [`call`](Self::call); `Ok(None)` means the
     /// name was not found (an absent dict or an absent key).
-    fn call_inner(&self, function_name: &str, args: &CallArgs) -> PyResult<Option<MontyValue>> {
+    fn call_inner(&self, function_name: &str, args: &CallArgs) -> PyResult<Option<MontyObject>> {
         let Some(lookup) = self.lookup else {
             return Ok(None);
         };

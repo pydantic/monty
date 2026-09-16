@@ -6,7 +6,7 @@ use monty_proto::{DEFAULT_MAX_DECODE_BYTES, WireArena, reset_decode_budget};
 use monty_types::MontyNode;
 use prost::{Message, encoding::encode_varint};
 
-/// One `ValueNode { none }` entry as `Arena.nodes` encodes it: entry key and
+/// One `MontyNode { none }` entry as `Arena.nodes` encodes it: entry key and
 /// length, then the `Unit none = 2` kind key and its empty length.
 const NONE_NODE: [u8; 4] = [0x12, 0x02, 0x12, 0x00];
 

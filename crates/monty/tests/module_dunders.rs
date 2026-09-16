@@ -19,11 +19,11 @@
 //!   which it rejects with `SyntaxError`)
 
 use monty::{MontyRun, RunProgress};
-use monty_types::{CompileOptions, ExcType, MontyValue, PrintWriter, ResourceTracker, dir_stat};
+use monty_types::{CompileOptions, ExcType, MontyObject, PrintWriter, ResourceTracker, dir_stat};
 
 /// Runs `code` to completion with no resource limits and returns the value of
 /// its final expression.
-fn eval(code: &str) -> MontyValue {
+fn eval(code: &str) -> MontyObject {
     MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
         .unwrap()
         .run_no_limits(vec![])
@@ -36,25 +36,25 @@ fn eval(code: &str) -> MontyValue {
 
 #[test]
 fn name_is_main() {
-    assert_eq!(eval("__name__"), MontyValue::string("__main__".to_owned()));
+    assert_eq!(eval("__name__"), MontyObject::string("__main__".to_owned()));
 }
 
 #[test]
 fn debug_is_true() {
-    assert_eq!(eval("__debug__"), MontyValue::bool(true));
+    assert_eq!(eval("__debug__"), MontyObject::bool(true));
 }
 
 #[test]
 fn file_is_script_name_under_cwd() {
     // Like CPython 3.9+, `__main__.__file__` is absolute: the script name's
     // final component under the working directory the run started in.
-    assert_eq!(eval("__file__"), MontyValue::string("/test.py".to_owned()));
+    assert_eq!(eval("__file__"), MontyObject::string("/test.py".to_owned()));
 
     let mut runner = MontyRun::new("__file__".to_owned(), "main.py", vec![], CompileOptions::default()).unwrap();
     runner.set_cwd("/data");
     assert_eq!(
         runner.run_no_limits(vec![]).unwrap(),
-        MontyValue::string("/data/main.py".to_owned())
+        MontyObject::string("/data/main.py".to_owned())
     );
 
     // Only the final component is kept: a script name may be a host path
@@ -71,7 +71,7 @@ fn file_is_script_name_under_cwd() {
         runner.set_cwd("/data");
         assert_eq!(
             runner.run_no_limits(vec![]).unwrap(),
-            MontyValue::string(expected.to_owned())
+            MontyObject::string(expected.to_owned())
         );
     }
 
@@ -90,7 +90,7 @@ fn file_is_script_name_under_cwd() {
         .unwrap()
         .into_complete()
         .unwrap();
-    assert_eq!(result, MontyValue::string("/data/app.py".to_owned()));
+    assert_eq!(result, MontyObject::string("/data/app.py".to_owned()));
 }
 
 #[test]
@@ -102,7 +102,7 @@ fn reassign_file_rejected() {
 #[test]
 fn doc_spec_package_are_none() {
     for name in ["__doc__", "__spec__", "__package__"] {
-        assert_eq!(eval(name), MontyValue::none(), "{name} should be None");
+        assert_eq!(eval(name), MontyObject::none(), "{name} should be None");
     }
 }
 
@@ -124,7 +124,7 @@ fn annotations_is_empty_dict() {
     // Module-level annotations are not stored (see limitations/typing.md), so
     // `__annotations__` is always an empty dict. CPython 3.14 instead raises
     // NameError when a module has no annotations.
-    assert_eq!(eval("__annotations__"), MontyValue::dict([]));
+    assert_eq!(eval("__annotations__"), MontyObject::dict([]));
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn name_resolves_inside_function() {
     // dunder value rather than escalating to a host name lookup.
     assert_eq!(
         eval("def f():\n    return __name__\nf()"),
-        MontyValue::string("__main__".to_owned()),
+        MontyObject::string("__main__".to_owned()),
     );
 }
 
@@ -185,5 +185,5 @@ fn function_local_shadowing_allowed() {
     // Binding a dunder name as a function local is fine — it is a distinct
     // namespace, not the module value. (CPython agrees, except for __debug__.)
     let code = "def f():\n    __name__ = 'local'\n    return __name__\nf()";
-    assert_eq!(eval(code), MontyValue::string("local".to_owned()));
+    assert_eq!(eval(code), MontyObject::string("local".to_owned()));
 }

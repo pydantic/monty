@@ -10,12 +10,12 @@
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, MontyValue};
+use monty_types::{CompileOptions, MontyObject};
 
 /// Runs a snippet and returns its result as a `String`.
 fn run_str(code: &str) -> String {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let obj: MontyValue = ex.run_no_limits(vec![]).unwrap();
+    let obj: MontyObject = ex.run_no_limits(vec![]).unwrap();
     (&obj).try_into().unwrap()
 }
 

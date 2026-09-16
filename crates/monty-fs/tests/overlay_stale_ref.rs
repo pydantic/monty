@@ -13,7 +13,7 @@ use std::{
 };
 
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
-use monty_types::{MontyNode, MontyValue, OsFunctionCall, PathStringDataArgs, RenameCallArgs};
+use monty_types::{MontyNode, MontyObject, OsFunctionCall, PathStringDataArgs, RenameCallArgs};
 use tempfile::TempDir;
 
 mod common;
@@ -33,7 +33,7 @@ fn mount_overlay(host: &Path) -> MountTable {
 }
 
 /// Dispatches a call, panicking if the mount table declines to handle it.
-fn dispatch(mt: &mut MountTable, call: OsFunctionCall) -> Result<MontyValue, MountError> {
+fn dispatch(mt: &mut MountTable, call: OsFunctionCall) -> Result<MontyObject, MountError> {
     match mt.handle_os_call(call) {
         MountCallOutcome::Handled(result) => result,
         MountCallOutcome::NotHandled(call) => panic!("mount table returned NotHandled: {call:?}"),
@@ -197,7 +197,7 @@ fn mount_root_swap_does_not_redirect_a_cached_ref() {
         !leaked,
         "HOST FILE DISCLOSURE: swapping the mount root redirected the read"
     );
-    assert_eq!(outcome.unwrap(), MontyValue::string("public".to_owned()));
+    assert_eq!(outcome.unwrap(), MontyObject::string("public".to_owned()));
 }
 
 /// Renaming a symlink is refused without ever consulting its target.

@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use monty_types::{AssertMessageAnnotations, ExcType, MontyException, MontyValue, PrintWriter, ResourceTracker};
+use monty_types::{AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker};
 pub use monty_types::{CompileOptions, HostClock};
 use ruff_python_stdlib::identifiers::is_identifier;
 
@@ -20,7 +20,7 @@ use crate::{
     intern::{Interns, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
-    object_bridge::MontyValueExt,
+    object_bridge::MontyObjectExt,
     parse::{CodeRange, parse, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
     run_progress::{
@@ -43,7 +43,7 @@ use crate::{
 /// # Example
 /// ```
 /// use monty::MontyRun;
-/// use monty_types::{CompileOptions, MontyValue};
+/// use monty_types::{CompileOptions, MontyObject};
 ///
 /// let runner = MontyRun::new(
 ///     "x + 1".to_owned(),
@@ -52,8 +52,8 @@ use crate::{
 ///     CompileOptions::default(),
 /// )
 /// .unwrap();
-/// let result = runner.run_no_limits(vec![MontyValue::int(41)]).unwrap();
-/// assert_eq!(result, MontyValue::int(42));
+/// let result = runner.run_no_limits(vec![MontyObject::int(41)]).unwrap();
+/// assert_eq!(result, MontyObject::int(42));
 /// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MontyRun {
@@ -106,12 +106,12 @@ impl MontyRun {
     ///
     /// ```
     /// use monty::MontyRun;
-    /// use monty_types::{CompileOptions, HostClock, MontyValue};
+    /// use monty_types::{CompileOptions, HostClock, MontyObject};
     ///
     /// let code = "from datetime import date\ndate.today().year".to_owned();
     /// let clock = HostClock::Fixed { unix_seconds: 1_700_000_000, microsecond: 0, local_offset_seconds: 0 };
     /// let runner = MontyRun::new(code, "today.py", vec![], CompileOptions::default()).unwrap().with_host_clock(clock);
-    /// assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyValue::int(2023));
+    /// assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::int(2023));
     /// ```
     #[must_use]
     pub fn with_host_clock(mut self, clock: HostClock) -> Self {
@@ -132,7 +132,7 @@ impl MontyRun {
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
     #[cfg(feature = "ref-count-return")]
-    pub fn run_ref_counts(&self, inputs: Vec<MontyValue>) -> Result<RefCountOutput, MontyException> {
+    pub fn run_ref_counts(&self, inputs: Vec<MontyObject>) -> Result<RefCountOutput, MontyException> {
         self.executor.run_ref_counts(inputs)
     }
 
@@ -140,7 +140,7 @@ impl MontyRun {
     #[cfg(feature = "ref-count-return")]
     pub fn run_ref_counts_with_tracker(
         &self,
-        inputs: Vec<MontyValue>,
+        inputs: Vec<MontyObject>,
         resource_tracker: ResourceTracker,
     ) -> Result<RefCountOutput, MontyException> {
         self.executor.run_ref_counts_with_tracker(inputs, resource_tracker)
@@ -157,16 +157,16 @@ impl MontyRun {
     /// * `print` - print output writer
     pub fn run(
         &self,
-        inputs: Vec<MontyValue>,
+        inputs: Vec<MontyObject>,
         resource_tracker: ResourceTracker,
         print: PrintWriter<'_>,
-    ) -> Result<MontyValue, MontyException> {
+    ) -> Result<MontyObject, MontyException> {
         self.executor.run(inputs, resource_tracker, print)
     }
 
     /// Executes the code to completion with no resource limits specified (will use the default),
     /// printing to stdout/stderr.
-    pub fn run_no_limits(&self, inputs: Vec<MontyValue>) -> Result<MontyValue, MontyException> {
+    pub fn run_no_limits(&self, inputs: Vec<MontyObject>) -> Result<MontyObject, MontyException> {
         self.run(inputs, ResourceTracker::default(), PrintWriter::Stdout)
     }
 
@@ -189,7 +189,7 @@ impl MontyRun {
     /// # Errors
     /// Returns [`MontyException`] if:
     /// - The number of inputs doesn't match the expected count
-    /// - An input value is invalid (e.g., [`MontyValue::Repr`])
+    /// - An input value is invalid (e.g., [`MontyObject::Repr`])
     /// - A runtime error occurs during execution
     ///
     /// # Panics
@@ -197,7 +197,7 @@ impl MontyRun {
     /// may panic if the VM reaches an inconsistent state (indicating a bug).
     pub fn start(
         self,
-        inputs: Vec<MontyValue>,
+        inputs: Vec<MontyObject>,
         resource_tracker: ResourceTracker,
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
@@ -545,10 +545,10 @@ impl Executor {
     /// * `print` - Print output writer
     fn run(
         &self,
-        inputs: Vec<MontyValue>,
+        inputs: Vec<MontyObject>,
         resource_tracker: ResourceTracker,
         print: PrintWriter<'_>,
-    ) -> Result<MontyValue, MontyException> {
+    ) -> Result<MontyObject, MontyException> {
         let heap_capacity = self.heap_capacity.load(Ordering::Relaxed);
         let mut heap = Heap::new(heap_capacity, resource_tracker);
         let globals = self.empty_globals();
@@ -586,7 +586,7 @@ impl Executor {
     ///
     /// This is the shared non-iterative execution core used by both the standard
     /// `run` path and the REPL's `feed_run` path.
-    pub(crate) fn run_to_completion<'h>(&'h self, vm: &mut VM<'h>) -> RunResult<MontyValue> {
+    pub(crate) fn run_to_completion<'h>(&'h self, vm: &mut VM<'h>) -> RunResult<MontyObject> {
         let mut frame_exit_result = vm.run_module();
 
         // In the non-iterative path there's no host to resolve names, lazy
@@ -658,7 +658,7 @@ impl Executor {
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
     #[cfg(feature = "ref-count-return")]
-    fn run_ref_counts(&self, inputs: Vec<MontyValue>) -> Result<RefCountOutput, MontyException> {
+    fn run_ref_counts(&self, inputs: Vec<MontyObject>) -> Result<RefCountOutput, MontyException> {
         self.run_ref_counts_with_tracker(inputs, ResourceTracker::default())
     }
 
@@ -677,7 +677,7 @@ impl Executor {
     #[cfg(feature = "ref-count-return")]
     fn run_ref_counts_with_tracker(
         &self,
-        inputs: Vec<MontyValue>,
+        inputs: Vec<MontyObject>,
         resource_tracker: ResourceTracker,
     ) -> Result<RefCountOutput, MontyException> {
         let mut heap = Heap::new(self.namespace_size(), resource_tracker);
@@ -767,12 +767,12 @@ impl Executor {
         (0..self.namespace_size()).map(|_| Value::Undefined).collect()
     }
 
-    /// Converts `MontyValue` inputs to heap `Value`s and writes them into the VM's globals.
+    /// Converts `MontyObject` inputs to heap `Value`s and writes them into the VM's globals.
     ///
     /// This runs with the VM alive so that `to_value` has access to the full VM context.
     /// On error partway through, the VM's `Drop` impl will drain globals and
     /// properly decrement refcounts for any already-converted values.
-    pub(crate) fn populate_inputs(&self, inputs: Vec<MontyValue>, vm: &mut VM<'_>) -> Result<(), MontyException> {
+    pub(crate) fn populate_inputs(&self, inputs: Vec<MontyObject>, vm: &mut VM<'_>) -> Result<(), MontyException> {
         if inputs.len() > self.namespace_size() {
             return Err(MontyException::runtime_error("too many inputs for namespace"));
         }
@@ -797,17 +797,17 @@ pub(crate) fn default_clock() -> HostClock {
     HostClock::System
 }
 
-/// Converts module/frame exit results into exported `MontyValue` outputs.
+/// Converts module/frame exit results into exported `MontyObject` outputs.
 ///
 /// Used by non-iterative execution paths: lookups are answered as no host
 /// would (see [`answer_unserved_lookups`]) and the remaining suspendable
 /// outcomes (external calls, futures) produce errors.
-pub(crate) fn frame_exit_to_value(frame_exit_result: RunResult<FrameExit>, vm: &mut VM<'_>) -> RunResult<MontyValue> {
+pub(crate) fn frame_exit_to_value(frame_exit_result: RunResult<FrameExit>, vm: &mut VM<'_>) -> RunResult<MontyObject> {
     // Suspensions this path cannot service. The error is built from a borrow
     // so one `drop_with` releases whatever the exit owns, fields added later
     // included.
     let exit = match answer_unserved_lookups(frame_exit_result, vm)? {
-        FrameExit::Return(return_value) => return Ok(MontyValue::export(return_value, vm)),
+        FrameExit::Return(return_value) => return Ok(MontyObject::export(return_value, vm)),
         exit => exit,
     };
     let error: RunError = match &exit {
@@ -843,7 +843,7 @@ pub(crate) fn frame_exit_to_value(frame_exit_result: RunResult<FrameExit>, vm: &
 #[cfg(feature = "ref-count-return")]
 #[derive(Debug)]
 pub struct RefCountOutput {
-    pub value: MontyValue,
+    pub value: MontyObject,
     pub counts: ahash::AHashMap<String, usize>,
     /// Live heap entries reachable from no named variable, described as
     /// `"<type> (id N)"`. Non-empty means the run leaked: a missed `drop_with`

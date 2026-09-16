@@ -34,7 +34,7 @@ use std::{
 
 use monty_pool::{Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value, uuid_to_py};
-use monty_types::{CallArgs, ExtFunctionResult, MontyException, MontyUuid, MontyValue, NameLookupResult};
+use monty_types::{CallArgs, ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult};
 use pyo3::{
     Borrowed,
     exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
@@ -911,7 +911,7 @@ impl NameLookupSnapshot {
     /// (`Unset`) leaves the lookup unanswered — the sandbox raises `NameError`
     /// for a plain name, or `AttributeError` when `object_id` marks a lazy host
     /// attribute — while a supplied value (**including `None`**) binds it.
-    fn resume_value(&self, py: Python<'_>, value: MaybeValue<'_>) -> PyResult<Option<MontyValue>> {
+    fn resume_value(&self, py: Python<'_>, value: MaybeValue<'_>) -> PyResult<Option<MontyObject>> {
         match value {
             MaybeValue::Unset => Ok(None),
             MaybeValue::Set(value) => py_to_monty_value(&value, &self.snapshot.ctx.instances)
@@ -1209,7 +1209,7 @@ impl PyAsyncFutureSnapshot {
 /// final value from monty's representation to a Python object on each access.
 #[pyclass(name = "MontyComplete", module = "pydantic_monty", frozen)]
 pub struct MontyComplete {
-    value: MontyValue,
+    value: MontyObject,
     instances: InstanceStore,
 }
 

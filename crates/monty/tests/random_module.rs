@@ -7,7 +7,7 @@
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyNode, MontyType, MontyValue, OsFunctionCall,
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyNode, MontyObject, MontyType, OsFunctionCall,
     PrintWriter, ResourceTracker, UrandomArgs,
 };
 
@@ -17,9 +17,9 @@ const SEED_BYTES: usize = 2496;
 /// A fixed "entropy" reply. Its top byte is non-zero, so CPython seeds
 /// identically from `int.from_bytes(pattern, 'little')`, which is how
 /// [`PATTERN_FIRST_RANDOM`] was obtained.
-fn pattern() -> MontyValue {
+fn pattern() -> MontyObject {
     #[expect(clippy::cast_possible_truncation, reason = "reduced mod 256 first")]
-    MontyValue::bytes((0..SEED_BYTES).map(|i| (i % 256) as u8).collect::<Vec<u8>>())
+    MontyObject::bytes((0..SEED_BYTES).map(|i| (i % 256) as u8).collect::<Vec<u8>>())
 }
 
 /// CPython's first `random()` after seeding from [`pattern`].
@@ -39,9 +39,9 @@ fn random_instances_and_types_cross_as_repr() {
     };
     assert!(instance.starts_with("<random.Random object at 0x"));
     assert!(instance.ends_with('>'));
-    assert_eq!(values[1], MontyValue::repr("<class 'random.Random'>".to_owned()));
+    assert_eq!(values[1], MontyObject::repr("<class 'random.Random'>".to_owned()));
     assert_eq!(values[2], values[1]);
-    assert_eq!(values[3], MontyValue::type_object(MontyType::Int));
+    assert_eq!(values[3], MontyObject::type_object(MontyType::Int));
     assert!(MontyType::from_type_name("random.Random").is_none());
 }
 
@@ -76,7 +76,7 @@ fn an_unseeded_draw_asks_the_host_for_one_state_vector() {
         .unwrap()
         .into_complete()
         .unwrap();
-    assert_eq!(result, MontyValue::float(PATTERN_FIRST_RANDOM));
+    assert_eq!(result, MontyObject::float(PATTERN_FIRST_RANDOM));
 }
 
 #[test]
@@ -90,10 +90,10 @@ fn the_reply_seeds_every_later_draw_without_suspending_again() {
         .unwrap();
     assert_eq!(
         result,
-        MontyValue::list([
-            MontyValue::float(PATTERN_FIRST_RANDOM),
-            MontyValue::int(77),
-            MontyValue::bool(true),
+        MontyObject::list([
+            MontyObject::float(PATTERN_FIRST_RANDOM),
+            MontyObject::int(77),
+            MontyObject::bool(true),
         ])
     );
 }
@@ -103,7 +103,7 @@ fn seeded_code_never_suspends() {
     let progress = start("import random\nrandom.seed(42)\nrandom.random()");
     assert_eq!(
         progress.into_complete().unwrap(),
-        MontyValue::float(0.639_426_798_457_883_7)
+        MontyObject::float(0.639_426_798_457_883_7)
     );
 }
 
@@ -115,7 +115,7 @@ fn explicit_seed_with_no_argument_reseeds_from_the_host() {
         .unwrap()
         .into_complete()
         .unwrap();
-    assert_eq!(result, MontyValue::float(PATTERN_FIRST_RANDOM));
+    assert_eq!(result, MontyObject::float(PATTERN_FIRST_RANDOM));
 }
 
 #[test]
@@ -127,14 +127,14 @@ fn an_unseeded_instance_seeds_itself_even_when_nothing_else_holds_it() {
         .unwrap()
         .into_complete()
         .unwrap();
-    assert_eq!(result, MontyValue::float(PATTERN_FIRST_RANDOM));
+    assert_eq!(result, MontyObject::float(PATTERN_FIRST_RANDOM));
 }
 
 #[test]
 fn a_wrong_sized_reply_is_a_runtime_error() {
     let call = expect_entropy_call(start("import random\nrandom.random()"));
     let err = call
-        .resume(MontyValue::bytes(vec![1, 2, 3]), PrintWriter::Stdout)
+        .resume(MontyObject::bytes(vec![1, 2, 3]), PrintWriter::Stdout)
         .unwrap_err();
     assert_snapshot!(err.to_string(), @r#"
     Traceback (most recent call last):
@@ -146,7 +146,7 @@ fn a_wrong_sized_reply_is_a_runtime_error() {
 
     let call = expect_entropy_call(start("import random\nrandom.random()"));
     let err = call
-        .resume(MontyValue::string("nope".to_owned()), PrintWriter::Stdout)
+        .resume(MontyObject::string("nope".to_owned()), PrintWriter::Stdout)
         .unwrap_err();
     assert_snapshot!(err.to_string(), @r#"
     Traceback (most recent call last):
@@ -177,9 +177,9 @@ except OSError as exc:
         .unwrap();
     assert_eq!(
         result,
-        MontyValue::list([
-            MontyValue::string("no entropy".to_owned()),
-            MontyValue::float(PATTERN_FIRST_RANDOM),
+        MontyObject::list([
+            MontyObject::string("no entropy".to_owned()),
+            MontyObject::float(PATTERN_FIRST_RANDOM),
         ])
     );
 }
@@ -205,7 +205,7 @@ fn a_dump_taken_while_waiting_for_entropy_resumes_the_stashed_draw() {
         .unwrap();
     assert_eq!(from_original, from_loaded);
     // CPython: two `choice` draws after seeding from the same bytes.
-    assert_eq!(from_original, MontyValue::string("ax".to_owned()));
+    assert_eq!(from_original, MontyObject::string("ax".to_owned()));
 }
 
 #[test]
@@ -216,13 +216,13 @@ fn setstate_truncates_words_between_2_63_and_2_64_like_64_bit_cpython() {
     let progress = start(code);
     assert_eq!(
         progress.into_complete().unwrap(),
-        MontyValue::tuple([MontyValue::int(7), MontyValue::int(7)])
+        MontyObject::tuple([MontyObject::int(7), MontyObject::int(7)])
     );
 }
 
 #[test]
 fn os_urandom_accepts_only_bytes_of_the_requested_length() {
-    let urandom = |reply: MontyValue| match start("import os\nos.urandom(3)") {
+    let urandom = |reply: MontyObject| match start("import os\nos.urandom(3)") {
         RunProgress::OsCall(call) => {
             assert!(matches!(
                 call.function_call,
@@ -234,17 +234,17 @@ fn os_urandom_accepts_only_bytes_of_the_requested_length() {
         other => panic!("expected an OsCall suspension, got {other:?}"),
     };
     assert_eq!(
-        urandom(MontyValue::bytes(vec![1, 2, 3])).unwrap(),
-        MontyValue::bytes(vec![1, 2, 3])
+        urandom(MontyObject::bytes(vec![1, 2, 3])).unwrap(),
+        MontyObject::bytes(vec![1, 2, 3])
     );
-    assert_snapshot!(urandom(MontyValue::bytes(vec![1, 2, 3, 4, 5])).unwrap_err().to_string(), @r#"
+    assert_snapshot!(urandom(MontyObject::bytes(vec![1, 2, 3, 4, 5])).unwrap_err().to_string(), @r#"
     Traceback (most recent call last):
       File "test.py", line 2, in <module>
         os.urandom(3)
         ~~~~~~~~~~~~~
     RuntimeError: 'os.urandom' returned 5 bytes, expected 3
     "#);
-    assert_snapshot!(urandom(MontyValue::string("abc".to_owned())).unwrap_err().to_string(), @r#"
+    assert_snapshot!(urandom(MontyObject::string("abc".to_owned())).unwrap_err().to_string(), @r#"
     Traceback (most recent call last):
       File "test.py", line 2, in <module>
         os.urandom(3)
@@ -279,7 +279,7 @@ fn the_module_generator_persists_across_repl_feeds() {
     assert_eq!(
         repl.feed_run("import random\nrandom.random()", vec![], PrintWriter::Stdout)
             .unwrap(),
-        MontyValue::float(0.622_901_694_889_701_9)
+        MontyObject::float(0.622_901_694_889_701_9)
     );
     // The seeded generator also travels through a dump of the idle session.
     let bytes = dump("test.py", None, SessionRef::Idle(&repl)).unwrap();

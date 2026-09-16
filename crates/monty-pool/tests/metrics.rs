@@ -24,7 +24,7 @@ use monty_pool::{
     telemetry_adapter,
 };
 use monty_proto::pb;
-use monty_types::{ExcType, MontyException, MontyValue, PrintStream};
+use monty_types::{ExcType, MontyException, MontyObject, PrintStream};
 use opentelemetry::{
     KeyValue,
     trace::{SpanId, TraceId},
@@ -474,7 +474,7 @@ async fn eager_coroutine_metrics_match_sync_outcomes() {
         let (pool, capture) = pool_with_metrics(PoolConfig::subprocess(monty_binary())).await;
         let mut checkout = pool.checkout(&ReplConfig::default()).await.unwrap();
         for result in [
-            ResumeValue::Return(MontyValue::int(42)),
+            ResumeValue::Return(MontyObject::int(42)),
             ResumeValue::Error(MontyException::new(ExcType::ValueError, Some("failed".to_owned()))),
         ] {
             let event = checkout

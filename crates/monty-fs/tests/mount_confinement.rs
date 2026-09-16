@@ -29,7 +29,7 @@ use common::{symlink_dir, symlink_file, symlinks_supported, try_rename_mount_roo
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 #[cfg(unix)]
 use monty_types::{FileMode, OpenCallArgs};
-use monty_types::{MkdirCallArgs, MontyValue, OsFunctionCall, PathStringDataArgs};
+use monty_types::{MkdirCallArgs, MontyObject, OsFunctionCall, PathStringDataArgs};
 #[cfg(unix)]
 use nix::{sys::stat::Mode, unistd::mkfifo};
 use tempfile::TempDir;
@@ -58,14 +58,14 @@ fn soak_enabled() -> bool {
 }
 
 /// Dispatches a call, panicking if the mount table declines to handle it.
-fn dispatch(mounts: &mut MountTable, call: OsFunctionCall) -> Result<MontyValue, MountError> {
+fn dispatch(mounts: &mut MountTable, call: OsFunctionCall) -> Result<MontyObject, MountError> {
     match mounts.handle_os_call(call) {
         MountCallOutcome::Handled(result) => result,
         MountCallOutcome::NotHandled(call) => panic!("mount table returned NotHandled: {call:?}"),
     }
 }
 
-fn read_text(mounts: &mut MountTable, path: &str) -> Result<MontyValue, MountError> {
+fn read_text(mounts: &mut MountTable, path: &str) -> Result<MontyObject, MountError> {
     dispatch(mounts, OsFunctionCall::ReadText(path.into()))
 }
 
@@ -330,7 +330,7 @@ fn relative_symlink_target_is_followed_inside_the_mount() {
 
     assert_eq!(
         read_text(&mut mounts, "/mnt/link.txt").unwrap(),
-        MontyValue::string("in-mount".to_owned())
+        MontyObject::string("in-mount".to_owned())
     );
 }
 
@@ -365,13 +365,13 @@ fn absolute_symlink_target_is_refused_even_inside_the_mount() {
         OsFunctionCall::IsFile("/mnt/abs.txt".into()),
         OsFunctionCall::IsDir("/mnt/abs.txt".into()),
     ] {
-        assert_eq!(dispatch(&mut mounts, call).unwrap(), MontyValue::bool(false));
+        assert_eq!(dispatch(&mut mounts, call).unwrap(), MontyObject::bool(false));
     }
 
     // `is_symlink` does not follow the final component, so it still sees a link.
     assert_eq!(
         dispatch(&mut mounts, OsFunctionCall::IsSymlink("/mnt/abs.txt".into())).unwrap(),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
 }
 
@@ -463,7 +463,7 @@ fn overlay_permission_errors_match_direct_mode() {
             let label = format!("{call:?}");
             assert_eq!(
                 dispatch(&mut mounts, call).unwrap(),
-                MontyValue::bool(false),
+                MontyObject::bool(false),
                 "{label}: predicates must answer False, not raise"
             );
         }

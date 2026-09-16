@@ -6,7 +6,7 @@
 use insta::assert_snapshot;
 use monty::{MontyRepl, MontyRun};
 use monty_types::{
-    AssertMessageAnnotations, CompileOptions, ExcType, MontyException, MontyValue, PrintWriter, ResourceTracker,
+    AssertMessageAnnotations, CompileOptions, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker,
 };
 
 /// Runs `code` and returns the exception it raises.
@@ -116,7 +116,7 @@ len(calls)
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
-    assert_eq!(result, MontyValue::int(0));
+    assert_eq!(result, MontyObject::int(0));
 }
 
 #[test]
@@ -132,7 +132,7 @@ len(xs)
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
-    assert_eq!(result, MontyValue::int(2));
+    assert_eq!(result, MontyObject::int(2));
 }
 
 #[test]
@@ -150,7 +150,7 @@ len(calls)
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
-    assert_eq!(result, MontyValue::int(1));
+    assert_eq!(result, MontyObject::int(1));
 }
 
 #[test]
@@ -164,7 +164,7 @@ r
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
-    assert_eq!(result, MontyValue::string("assert 1 == 2"));
+    assert_eq!(result, MontyObject::string("assert 1 == 2"));
 }
 
 #[test]
@@ -273,7 +273,7 @@ r[:10] + '|' + r[-9:] + '|' + str(len(r))
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).expect("AssertionError should be caught");
     // 7 ("assert ") + 121 (120-char repr + `…`) + 6 (" == []") = 134 chars.
-    assert_eq!(result, MontyValue::string("assert ['x|xx… == []|134"));
+    assert_eq!(result, MontyObject::string("assert ['x|xx… == []|134"));
 }
 
 #[test]

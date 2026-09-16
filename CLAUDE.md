@@ -19,15 +19,15 @@ Project goals:
 
 ## `monty-types` — shared boundary types
 
-The public data types (`MontyValue`, the value arena `MontyGraph`/`MontyNode` with
-`MontyValue`/`CallArgs`/`NamedValues`, `MontyException`/`ExcType`, `OsFunctionCall` +
+The public data types (`MontyObject`, the value arena `MontyGraph`/`MontyNode` with
+`MontyObject`/`CallArgs`/`NamedValues`, `MontyException`/`ExcType`, `OsFunctionCall` +
 its arg structs, `ResourceLimits`/`ResourceTracker`, `PrintStream`/`PrintWriter`,
 `CompileOptions`, `ExtFunctionResult`, `FileMode`, ...) live in `crates/monty-types`,
 which depends on no other monty crate except the `monty-macros` derives. `monty`
 depends on `monty-types` but does not blanket re-export it — only a few types
 are re-exported inline where they appear in `monty`'s public API (e.g.
 `run::CompileOptions`, `run_progress::{ExtFunctionResult, NameLookupResult}`).
-Code needing `MontyValue`, `MontyException`, `OsFunctionCall`, etc. must
+Code needing `MontyObject`, `MontyException`, `OsFunctionCall`, etc. must
 depend on `monty-types` directly.
 
 Host-side crates (`monty-fs`, `monty-pool`, `monty-proto` without its `worker`
@@ -38,14 +38,14 @@ interpreter. Don't add a `monty` dependency to a host-side crate; if it needs a
 type, that type belongs in `monty-types`.
 
 Interpreter-coupled methods on these types live in `monty` as `pub(crate)`
-extension traits (`ExcTypeExt`, `MontyValueExt`, `MontyGraphExt`, `CallArgsExt`,
+extension traits (`ExcTypeExt`, `MontyObjectExt`, `MontyGraphExt`, `CallArgsExt`,
 `MontyTypeExt`, `StackFrameExt`, `FileModeExt`, `BuiltinsFunctionsExt`,
 `ExtFunctionResultExt`) — import the trait to call e.g. `ExcType::type_error(...)` or
-`MontyValue::export(value, vm)`. Values leave the interpreter as a `MontyGraph` arena
+`MontyObject::export(value, vm)`. Values leave the interpreter as a `MontyGraph` arena
 built by `object_bridge::GraphExporter` (one per message, so a shared sub-object
-crosses once) and re-enter through `MontyGraphExt::to_values`; `MontyValue` is one
+crosses once) and re-enter through `MontyGraphExt::to_values`; `MontyObject` is one
 owned value (an arena plus its root) that hosts build inputs with and read results
-from through `ValueRef` accessors.
+from through `ObjectRef` accessors.
 
 ## Cross-Platform Requirements
 
@@ -755,7 +755,7 @@ All these markers must be at the start of comment lines to be recognized.
 
 In `crates/*/tests/*.rs` (but **not** `crates/monty/test_cases/`), use [`insta`](https://insta.rs) `assert_snapshot!` for multi-line strings, serialized output, error messages otherwise fuzz-checked via `.contains(...)`, and any fixture currently compared via a hand-rolled `UPDATE_EXPECT` helper (use external snapshots under `tests/snapshots/`).
 
-Keep `assert_eq!` for scalars, enums, and structural values (`MontyValue`, `Vec`, etc.), and for principled membership checks like `vec.contains(...)`.
+Keep `assert_eq!` for scalars, enums, and structural values (`MontyObject`, `Vec`, etc.), and for principled membership checks like `vec.contains(...)`.
 
 Workflow: write `assert_snapshot!(value, @"");`, then `cargo insta test --accept` to populate (plain `INSTA_UPDATE=always` does **not** update inline `@"..."` snapshots — you need the `cargo insta` subcommand, installed via `cargo install cargo-insta`). Add `insta = { workspace = true }` to `[dev-dependencies]` when introducing it to a new crate.
 

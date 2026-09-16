@@ -3,7 +3,7 @@
 use insta::assert_snapshot;
 use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyValue, NameLookupResult, PrintWriter,
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, PrintWriter,
     ResourceTracker,
 };
 
@@ -22,7 +22,7 @@ fn start(code: &str) -> RunProgress {
         let name = lookup.name.clone();
         progress = lookup
             .resume(
-                NameLookupResult::Value(MontyValue::function(name, None)),
+                NameLookupResult::Value(MontyObject::function(name, None)),
                 PrintWriter::Stdout,
             )
             .unwrap();
@@ -71,7 +71,7 @@ except Exception:
 ";
     let call = start(code).into_os_call().expect("open");
     assert_eq!(call.function_call.name(), "open");
-    let handle = MontyValue::file_handle(monty_types::MontyFileHandle {
+    let handle = MontyObject::file_handle(monty_types::MontyFileHandle {
         path: "/data/x.txt".to_owned(),
         mode: "r".parse().unwrap(),
         position: 0,
@@ -137,7 +137,7 @@ await main()
     };
     let state = state
         .resume(
-            vec![(call_ids[0], ExtFunctionResult::Return(MontyValue::int(1)))],
+            vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::int(1)))],
             PrintWriter::Stdout,
         )
         .unwrap()
@@ -219,7 +219,7 @@ await main()
                 let name = lookup.name.clone();
                 lookup
                     .resume(
-                        NameLookupResult::Value(MontyValue::function(name, None)),
+                        NameLookupResult::Value(MontyObject::function(name, None)),
                         PrintWriter::Stdout,
                     )
                     .unwrap()
@@ -243,7 +243,7 @@ await main()
     let mut repl = err.repl;
     assert_eq!(
         repl.feed_run("x + 1", vec![], PrintWriter::Stdout).unwrap(),
-        MontyValue::int(42)
+        MontyObject::int(42)
     );
 }
 
@@ -262,6 +262,6 @@ fn repl_abort_keeps_the_session_usable() {
     let mut repl = err.repl;
     assert_eq!(
         repl.feed_run("x + 1", vec![], PrintWriter::Stdout).unwrap(),
-        MontyValue::int(42)
+        MontyObject::int(42)
     );
 }

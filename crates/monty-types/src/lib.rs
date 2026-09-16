@@ -18,7 +18,6 @@ mod results;
 mod run_options;
 mod type_checking;
 mod uuid;
-mod value;
 mod virtual_path;
 
 pub use crate::{
@@ -36,8 +35,9 @@ pub use crate::{
         PrintWriterCallback, check_print_collect_limit,
     },
     object::{
-        ConversionError, InvalidInputError, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyDate,
-        MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
+        CallArgs, ConversionError, InvalidInputError, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
+        MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
+        NamedValues, ObjectRef,
     },
     os::{
         GetenvArgs, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
@@ -51,6 +51,5 @@ pub use crate::{
     run_options::{AssertMessageAnnotations, CompileOptions},
     type_checking::{TypeCheckState, TypeCheckingConfig, TypeCheckingFormat},
     uuid::MontyUuid,
-    value::{CallArgs, MontyValue, NamedValues, ValueRef},
     virtual_path::{normalize_virtual_path, validate_cwd},
 };

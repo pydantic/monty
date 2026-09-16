@@ -23,7 +23,7 @@ use std::{borrow::Cow, mem};
 
 use ahash::AHashSet;
 use monty_types::{
-    ExcType, MkdirCallArgs, MontyNode, MontyPath, MontyValue, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
+    ExcType, MkdirCallArgs, MontyNode, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
     RenameCallArgs, ResourceTracker, normalize_virtual_path,
 };
 
@@ -40,7 +40,7 @@ use crate::{
 };
 
 impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
-    // Owned args (String/Vec<u8>/bool/MontyPath/MontyValue) hold no live
+    // Owned args (String/Vec<u8>/bool/MontyPath/MontyObject) hold no live
     // heap references, so a plain drop is correct.
     fn drop_with(self, _heap: &mut C) {
         drop(self);
@@ -51,7 +51,7 @@ impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
 /// resumes, instead of pushing the raw host value onto the operand stack.
 ///
 /// The two stages are separate types because they run on different data:
-/// [`Pre`](Self::Pre) on the raw [`MontyValue`] before heap conversion,
+/// [`Pre`](Self::Pre) on the raw [`MontyObject`] before heap conversion,
 /// [`Post`](Self::Post) on the converted [`Value`] after it. Rides inside the
 /// suspension value — [`CallResult::OsCallWithEffect`], then
 /// [`FrameExit::OsCall`](crate::bytecode::FrameExit) — and is armed on the
@@ -128,7 +128,7 @@ pub(crate) enum PreConversionEffect {
 impl PreConversionEffect {
     /// Applies the effect to the host's reply, yielding the value the VM
     /// imports and pushes; `Chdir` adopts the directory as a side effect.
-    pub(crate) fn reshape(self, value: MontyValue, vm: &mut VM<'_>) -> Result<MontyValue, RunError> {
+    pub(crate) fn reshape(self, value: MontyObject, vm: &mut VM<'_>) -> Result<MontyObject, RunError> {
         match self {
             Self::ListdirNames => listdir_names(value),
             Self::IterdirPaths { path } => iterdir_paths(value, &path, &vm.heap.tracker),
@@ -136,7 +136,7 @@ impl PreConversionEffect {
             Self::Chdir { path, spelled } => {
                 check_chdir_stat(&value, &spelled)?;
                 vm.env.cwd = Cow::Owned(normalize_virtual_path(&path).into_owned());
-                Ok(MontyValue::leaf(MontyNode::None))
+                Ok(MontyObject::leaf(MontyNode::None))
             }
         }
     }
@@ -225,7 +225,7 @@ pub(crate) fn resolve_call_paths(call: &mut OsFunctionCall, cwd: &str) {
 }
 
 /// Checks a host `Path.stat` reply for `os.chdir` — the resume half of
-/// [`PreConversionEffect::Chdir`], run on the raw [`MontyValue`] before heap
+/// [`PreConversionEffect::Chdir`], run on the raw [`MontyObject`] before heap
 /// import like [`listdir_names`].
 ///
 /// A directory `st_mode` passes and the caller normalizes and adopts the path (`os.chdir`
@@ -233,7 +233,7 @@ pub(crate) fn resolve_call_paths(call: &mut OsFunctionCall, cwd: &str) {
 /// path as the caller wrote it. Hosts that answered `Path.stat` with
 /// something other than a stat result get the same `RuntimeError` shape as
 /// `os.listdir`.
-pub(crate) fn check_chdir_stat(value: &MontyValue, spelled: &str) -> Result<(), RunError> {
+pub(crate) fn check_chdir_stat(value: &MontyObject, spelled: &str) -> Result<(), RunError> {
     const S_IFMT: i64 = 0o170_000;
     const S_IFDIR: i64 = 0o040_000;
     // Located by name so a host's stat result is accepted whatever its field
@@ -269,17 +269,17 @@ pub(crate) fn check_chdir_stat(value: &MontyValue, spelled: &str) -> Result<(), 
 /// of bare entry names `os.listdir` returns — the resume half of
 /// [`PreConversionEffect::ListdirNames`].
 ///
-/// Runs on the raw [`MontyValue`] before heap import (see `VM::resume`),
+/// Runs on the raw [`MontyObject`] before heap import (see `VM::resume`),
 /// so it needs no refcount handling; entries are renamed in place with no new
 /// allocations. Virtual paths are always POSIX, so the name is the substring
 /// after the last `/`. Hosts answering the `Path.iterdir` callback themselves
 /// may return `str` entries instead of paths — both work.
-pub(crate) fn listdir_names(value: MontyValue) -> Result<MontyValue, RunError> {
+pub(crate) fn listdir_names(value: MontyObject) -> Result<MontyObject, RunError> {
     directory_entries(value, None)
 }
 
 /// Accepts an `os.urandom` reply only as `bytes` of the requested length.
-fn urandom_reply(value: MontyValue, size: usize) -> Result<MontyValue, RunError> {
+fn urandom_reply(value: MontyObject, size: usize) -> Result<MontyObject, RunError> {
     match value.root_node() {
         MontyNode::Bytes(bytes) if bytes.len() == size => Ok(value),
         MontyNode::Bytes(bytes) => Err(urandom_reply_error(Ok(bytes.len()), size)),
@@ -303,16 +303,20 @@ pub(crate) fn urandom_reply_error(actual: Result<usize, &str>, expected: usize) 
 ///
 /// The joins repeat the receiver once per host entry, so their total is
 /// preflighted against `tracker` in one shot before any is built.
-pub(crate) fn iterdir_paths(value: MontyValue, path: &str, tracker: &ResourceTracker) -> Result<MontyValue, RunError> {
+pub(crate) fn iterdir_paths(
+    value: MontyObject,
+    path: &str,
+    tracker: &ResourceTracker,
+) -> Result<MontyObject, RunError> {
     directory_entries(value, Some((path, tracker)))
 }
 
 /// Reduces host paths to entry names, joining them onto the `Path.iterdir()`
 /// receiver when one is given (with the tracker its joins are charged to).
 fn directory_entries(
-    mut value: MontyValue,
+    mut value: MontyObject,
     receiver: Option<(&str, &ResourceTracker)>,
-) -> Result<MontyValue, RunError> {
+) -> Result<MontyObject, RunError> {
     let invalid = |type_name: &str| -> RunError {
         let operation = if receiver.is_some() {
             "Path.iterdir"

@@ -3,7 +3,7 @@
 //! Values are the hot payload of the protocol — every external function call
 //! ships its arguments, result, and final value across the process boundary.
 //! Generated prost code would force a mirror arena (`pb::Arena` of
-//! `pb::ValueNode`s) plus a conversion in each direction: a clone of every
+//! `pb::MontyNode`s) plus a conversion in each direction: a clone of every
 //! string and container on encode, and a second arena on decode. Instead, the
 //! codegen maps the `monty.v1.Arena` schema message to [`WireArena`] via
 //! `extern_path` (see `src/bin/generate.rs`), and this module implements the
@@ -143,7 +143,7 @@ impl Message for WireArena {
             2 => {
                 let node = merge_message::<NodeBody>(wire_type, buf, ctx)?
                     .0
-                    .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ValueNode.kind")))?;
+                    .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("MontyNode.kind")))?;
                 self.push_charged(node)
             }
             _ => skip_field(wire_type, tag, buf, ctx),
@@ -293,7 +293,7 @@ pub(crate) fn graph_error(err: &GraphError) -> ProtoConvertError {
     }
 }
 
-/// Field numbers of the `ValueNode.kind` oneof — must match
+/// Field numbers of the `MontyNode.kind` oneof — must match
 /// `proto/monty/v1/monty.proto` exactly (the differential oracle test catches drift).
 mod tag {
     pub const ELLIPSIS: u32 = 1;
@@ -333,7 +333,7 @@ mod tag {
 // Encoding
 // ============================================================================
 
-/// A borrowed node as one `ValueNode` message, so the arena can encode each
+/// A borrowed node as one `MontyNode` message, so the arena can encode each
 /// entry through prost's length-delimited helpers without cloning.
 #[derive(Debug)]
 struct NodeRef<'a>(&'a MontyNode);
@@ -367,7 +367,7 @@ fn arena_len_u32(len: usize) -> u32 {
     u32::try_from(len).expect("arena exceeds u32::MAX nodes")
 }
 
-/// Writes `node` as one `ValueNode.kind` oneof field. Oneof fields always
+/// Writes `node` as one `MontyNode.kind` oneof field. Oneof fields always
 /// encode, even when the payload is a protobuf default (matching prost).
 ///
 /// Each sub-message arm writes `encode_message_key(tag, <body len>, ...)` then
@@ -465,7 +465,7 @@ fn encode_node(node: &MontyNode, buf: &mut impl BufMut) {
     }
 }
 
-/// Length of `node` as one `ValueNode.kind` oneof field (key + payload).
+/// Length of `node` as one `MontyNode.kind` oneof field (key + payload).
 /// Mirrors [`encode_node`] arm for arm.
 fn node_len(node: &MontyNode) -> usize {
     match node {
@@ -783,7 +783,7 @@ fn uint64_len(tag: u32, value: u64) -> usize {
 // Decoding
 // ============================================================================
 
-/// Decode-only `prost::Message` for one `ValueNode`: its `kind` oneof, decoded
+/// Decode-only `prost::Message` for one `MontyNode`: its `kind` oneof, decoded
 /// and validated by [`decode_field`]. Never encoded (nodes encode via
 /// [`NodeRef`]), so the encode methods are unreachable.
 #[derive(Default)]
@@ -816,7 +816,7 @@ impl Message for NodeBody {
     }
 }
 
-/// Decodes one `ValueNode.kind` field, validating as it parses. `None`
+/// Decodes one `MontyNode.kind` field, validating as it parses. `None`
 /// means the tag was unknown and skipped (forward compatibility, matching
 /// prost's generated decoder). Child ids are range-checked later by
 /// [`WireArena::into_graph`], once every node has arrived.

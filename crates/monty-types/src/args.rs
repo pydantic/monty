@@ -8,7 +8,7 @@ use num_bigint::BigInt;
 use crate::{
     file_mode::FileMode,
     graph::{MontyGraph, MontyNode, NodeId},
-    value::CallArgs,
+    object::CallArgs,
 };
 /// Projects a typed args struct into the [`CallArgs`] host callbacks expect.
 /// Consumes `self` to avoid cloning owned fields.

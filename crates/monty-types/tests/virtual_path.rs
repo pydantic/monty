@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use monty_types::{
-    CallArgs, GetenvArgs, MontyPath, MontyValue, OsFunctionCall, PathStringDataArgs, normalize_virtual_path,
+    CallArgs, GetenvArgs, MontyObject, MontyPath, OsFunctionCall, PathStringDataArgs, normalize_virtual_path,
     validate_cwd,
 };
 
@@ -75,29 +75,29 @@ fn callback_normalization_only_changes_filesystem_paths() {
     assert_eq!(
         positional(&call.clone().to_args()),
         vec![
-            MontyValue::path("/data/file".to_owned()),
-            MontyValue::string(raw.to_owned())
+            MontyObject::path("/data/file".to_owned()),
+            MontyObject::string(raw.to_owned())
         ]
     );
     assert_eq!(call.fs_primary_path(), Some(raw));
 
     let args = positional(&OsFunctionCall::Stat(MontyPath::new(String::new())).to_args());
-    assert_eq!(args, vec![MontyValue::path(String::new())]);
+    assert_eq!(args, vec![MontyObject::path(String::new())]);
 
     let args = positional(
         &OsFunctionCall::Getenv(GetenvArgs {
             key: raw.to_owned(),
-            default: MontyValue::path(raw.to_owned()),
+            default: MontyObject::path(raw.to_owned()),
         })
         .to_args(),
     );
     assert_eq!(
         args,
-        vec![MontyValue::string(raw.to_owned()), MontyValue::path(raw.to_owned())]
+        vec![MontyObject::string(raw.to_owned()), MontyObject::path(raw.to_owned())]
     );
 }
 
 /// The positional arguments of a call as owned values.
-fn positional(call: &CallArgs) -> Vec<MontyValue> {
+fn positional(call: &CallArgs) -> Vec<MontyObject> {
     call.args().map(|arg| arg.to_owned()).collect()
 }

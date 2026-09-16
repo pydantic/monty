@@ -850,7 +850,7 @@ mod tests {
 
     use logfire::{Logfire, config::MetricsOptions};
     use monty_proto::{WireFunctionCall, ext_result_to_proto, pb, pb::os_call::Call};
-    use monty_types::{CallArgs, ExtFunctionResult, MontyValue, NameLookupResult};
+    use monty_types::{CallArgs, ExtFunctionResult, MontyObject, NameLookupResult};
     use opentelemetry::{
         KeyValue,
         trace::{SpanId, TraceId},
@@ -1104,7 +1104,7 @@ mod tests {
     }
 
     /// A `ResumeCall` returning `value`, with the arena it indexes.
-    fn resume_return(value: MontyValue) -> pb::ParentRequest {
+    fn resume_return(value: MontyObject) -> pb::ParentRequest {
         let (result, values) = ext_result_to_proto(ExtFunctionResult::Return(value));
         request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
@@ -1141,9 +1141,9 @@ mod tests {
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&feed());
         metrics.event(&call_event("double"));
-        metrics.begin_turn(&resume_return(MontyValue::int(4)));
+        metrics.begin_turn(&resume_return(MontyObject::int(4)));
         metrics.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
-            MontyValue::int(4),
+            MontyObject::int(4),
         ))));
 
         assert_eq!(
@@ -1268,7 +1268,7 @@ mod tests {
             values: None,
             call: Some(Call::ReadText("/mnt/f.txt".to_owned())),
         })));
-        metrics.begin_turn(&resume_return(MontyValue::string("hello".to_owned())));
+        metrics.begin_turn(&resume_return(MontyObject::string("hello".to_owned())));
 
         assert_eq!(
             capture.attributes("monty.ext.call.duration"),
@@ -1426,7 +1426,7 @@ mod tests {
         );
 
         metrics.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
-            NameLookupResult::from(MontyValue::int(1)).into(),
+            NameLookupResult::from(MontyObject::int(1)).into(),
         )));
         metrics.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
@@ -1511,7 +1511,7 @@ mod tests {
         metrics.begin_turn(&feed());
         metrics.event(&call_event("double"));
         assert_eq!(capture.i64_sum("monty.pool.workers.suspended"), 1);
-        metrics.begin_turn(&resume_return(MontyValue::int(4)));
+        metrics.begin_turn(&resume_return(MontyObject::int(4)));
         assert_eq!(capture.i64_sum("monty.pool.workers.suspended"), 0);
 
         metrics.event(&call_event("double"));
@@ -1571,7 +1571,7 @@ mod tests {
 
         metrics.begin_turn(&feed());
         metrics.event(&call_event("double"));
-        metrics.begin_turn(&resume_return(MontyValue::int(4)));
+        metrics.begin_turn(&resume_return(MontyObject::int(4)));
         metrics.event(&event(pb::child_event::Kind::Complete(pb::Complete {
             value: 0,
             values: None,

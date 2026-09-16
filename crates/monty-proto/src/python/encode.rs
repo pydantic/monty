@@ -3,7 +3,7 @@
 
 use std::{collections::HashMap, vec::IntoIter};
 
-use monty_types::{ClassTypeNode, MontyDate, MontyException, MontyGraph, MontyNode, MontyUuid, MontyValue, NodeId};
+use monty_types::{ClassTypeNode, MontyDate, MontyException, MontyGraph, MontyNode, MontyObject, MontyUuid, NodeId};
 use num_bigint::BigInt;
 use pyo3::{
     exceptions::{PyBaseException, PyTypeError, PyValueError},
@@ -32,7 +32,7 @@ use super::{
 /// The single-value form of [`GraphEncoder`]: a return value, a resumed
 /// lookup, an OS-call result. Values that share one message (a feed's inputs)
 /// go through one encoder so their sharing survives.
-pub fn py_to_monty(obj: &Bound<'_, PyAny>, store: &InstanceStore) -> PyResult<MontyValue> {
+pub fn py_to_monty(obj: &Bound<'_, PyAny>, store: &InstanceStore) -> PyResult<MontyObject> {
     let mut encoder = GraphEncoder::new(obj.py(), store);
     let root = encoder.push(obj)?;
     Ok(encoder.finish_value(root))
@@ -45,7 +45,7 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, store: &InstanceStore) -> PyResult<Mo
 /// wrap the `MontyException` as they see fit — `MontyError::new_err(py, e)` for
 /// Python-API returns, or `ExtFunctionResult::Error(e)` for mid-execution
 /// dispatch — so raw PyO3 errors like `UnicodeEncodeError` never escape.
-pub fn py_to_monty_value(obj: &Bound<'_, PyAny>, store: &InstanceStore) -> Result<MontyValue, MontyException> {
+pub fn py_to_monty_value(obj: &Bound<'_, PyAny>, store: &InstanceStore) -> Result<MontyObject, MontyException> {
     py_to_monty(obj, store).map_err(|e| exc_py_to_monty(obj.py(), &e))
 }
 
@@ -144,9 +144,9 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
 
     /// The arena as one value rooted at `root`, an id [`push`](Self::push) returned.
     #[must_use]
-    pub fn finish_value(self, root: NodeId) -> MontyValue {
+    pub fn finish_value(self, root: NodeId) -> MontyObject {
         // `push` returned `root`, so it is in range
-        MontyValue {
+        MontyObject {
             graph: self.graph,
             root,
         }

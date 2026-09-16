@@ -8,7 +8,7 @@ use std::fs;
 
 use monty_fs::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use monty_types::{
-    ExcType, MkdirCallArgs, MontyException, MontyNode, MontyValue, OsFunctionCall, PathBytesDataArgs,
+    ExcType, MkdirCallArgs, MontyException, MontyNode, MontyObject, OsFunctionCall, PathBytesDataArgs,
     PathStringDataArgs, RenameCallArgs, UnicodeErrorData, UnicodeErrorObject,
 };
 use tempfile::TempDir;
@@ -60,7 +60,7 @@ fn mount_at_mnt(tmpdir: &TempDir, mode: MountMode) -> MountTable {
 /// Shorthand: dispatch an `OsFunctionCall` through the mount table, adapting
 /// the owning `handle_os_call` API back to the `Option` shape assertions use.
 /// Clones the call — fine here, test payloads are tiny.
-fn call(mt: &mut MountTable, c: &OsFunctionCall) -> Option<Result<MontyValue, MountError>> {
+fn call(mt: &mut MountTable, c: &OsFunctionCall) -> Option<Result<MontyObject, MountError>> {
     match mt.handle_os_call(c.clone()) {
         MountCallOutcome::Handled(result) => Some(result),
         MountCallOutcome::NotHandled(_) => None,
@@ -68,7 +68,7 @@ fn call(mt: &mut MountTable, c: &OsFunctionCall) -> Option<Result<MontyValue, Mo
 }
 
 /// Shorthand: call and unwrap both the Option and Result.
-fn call_ok(mt: &mut MountTable, c: &OsFunctionCall) -> MontyValue {
+fn call_ok(mt: &mut MountTable, c: &OsFunctionCall) -> MontyObject {
     call(mt, c).expect("expected Some").unwrap()
 }
 
@@ -129,7 +129,7 @@ fn assert_exc(exc: &MontyException, expected_type: ExcType, expected_msg: &str) 
 }
 
 /// Extracts entry names from an iterdir result list, sorted for deterministic comparison.
-fn sorted_names(obj: &MontyValue) -> Vec<String> {
+fn sorted_names(obj: &MontyObject) -> Vec<String> {
     let items = obj
         .as_ref()
         .items()
@@ -156,15 +156,15 @@ fn rw_exists() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/subdir".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/nonexistent".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
 }
 
@@ -175,15 +175,15 @@ fn rw_is_file() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsFile("/mnt/hello.txt".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsFile("/mnt/subdir".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsFile("/mnt/nonexistent".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
 }
 
@@ -194,15 +194,15 @@ fn rw_is_dir() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsDir("/mnt/subdir".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsDir("/mnt/hello.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsDir("/mnt/subdir/deep".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
 }
 
@@ -213,7 +213,7 @@ fn rw_is_symlink() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsSymlink("/mnt/hello.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
 }
 
@@ -229,17 +229,17 @@ fn rw_is_symlink_true_for_symlink() {
     // Symlink should be detected as a symlink
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsSymlink("/mnt/link.txt".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     // Target file should NOT be detected as a symlink
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsSymlink("/mnt/hello.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     // Nonexistent path should return false
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsSymlink("/mnt/nope.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
 }
 
@@ -254,11 +254,11 @@ fn overlay_is_symlink_true_for_symlink() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsSymlink("/mnt/link.txt".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsSymlink("/mnt/hello.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
 }
 
@@ -269,19 +269,19 @@ fn rw_read_text() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt".into())),
-        MontyValue::string("hello world\n".to_owned())
+        MontyObject::string("hello world\n".to_owned())
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/empty.txt".into())),
-        MontyValue::string(String::new())
+        MontyObject::string(String::new())
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/subdir/nested.txt".into())),
-        MontyValue::string("nested content".to_owned())
+        MontyObject::string("nested content".to_owned())
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/subdir/deep/file.txt".into())),
-        MontyValue::string("deep file".to_owned())
+        MontyObject::string("deep file".to_owned())
     );
 }
 
@@ -350,11 +350,11 @@ fn rw_read_bytes() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/data.bin".into())),
-        MontyValue::bytes(vec![0x00, 0x01, 0x02, 0x03])
+        MontyObject::bytes(vec![0x00, 0x01, 0x02, 0x03])
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/empty.txt".into())),
-        MontyValue::bytes(vec![])
+        MontyObject::bytes(vec![])
     );
 }
 
@@ -369,7 +369,7 @@ fn rw_write_text_and_read_back() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/new_file.txt".into())),
-        MontyValue::string("new content".to_owned())
+        MontyObject::string("new content".to_owned())
     );
     // Verify host file was actually written (ReadWrite mode).
     assert_eq!(
@@ -389,7 +389,7 @@ fn rw_write_bytes_and_read_back() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/out.bin".into())),
-        MontyValue::bytes(vec![0xff, 0xfe])
+        MontyObject::bytes(vec![0xff, 0xfe])
     );
 }
 
@@ -404,7 +404,7 @@ fn rw_overwrite_existing() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt".into())),
-        MontyValue::string("overwritten".to_owned())
+        MontyObject::string("overwritten".to_owned())
     );
 }
 
@@ -416,7 +416,7 @@ fn rw_stat_file() {
     let stat = call_ok(&mut mt, &OsFunctionCall::Stat("/mnt/hello.txt".into()));
     // stat returns a namedtuple; check st_size at index 6
     let values = stat.as_ref().items().expect("expected a namedtuple from stat");
-    assert_eq!(values[6], MontyValue::int(12), "st_size should be 12");
+    assert_eq!(values[6], MontyObject::int(12), "st_size should be 12");
 }
 
 #[test]
@@ -462,7 +462,7 @@ fn rw_mkdir() {
     call(&mut mt, &mkdir("/mnt/new_dir", false, false)).unwrap().unwrap();
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsDir("/mnt/new_dir".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert!(dir.path().join("new_dir").is_dir());
 }
@@ -475,7 +475,7 @@ fn rw_mkdir_parents() {
     call(&mut mt, &mkdir("/mnt/a/b/c", true, false)).unwrap().unwrap();
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsDir("/mnt/a/b/c".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
 }
 
@@ -507,14 +507,14 @@ fn rw_unlink() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     call(&mut mt, &OsFunctionCall::Unlink("/mnt/hello.txt".into()))
         .unwrap()
         .unwrap();
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert!(!dir.path().join("hello.txt").exists());
 }
@@ -543,7 +543,7 @@ fn rw_rmdir() {
         .unwrap();
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/empty_dir".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
 }
 
@@ -557,11 +557,11 @@ fn rw_rename() {
         .unwrap();
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/renamed.txt".into())),
-        MontyValue::string("hello world\n".to_owned())
+        MontyObject::string("hello world\n".to_owned())
     );
 }
 
@@ -572,7 +572,7 @@ fn rw_resolve() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Resolve("/mnt/subdir/../hello.txt".into())),
-        MontyValue::path("/mnt/hello.txt".to_owned())
+        MontyObject::path("/mnt/hello.txt".to_owned())
     );
 }
 
@@ -583,7 +583,7 @@ fn rw_absolute() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Absolute("/mnt/./subdir".into())),
-        MontyValue::path("/mnt/subdir".to_owned())
+        MontyObject::path("/mnt/subdir".to_owned())
     );
 }
 
@@ -598,23 +598,23 @@ fn ro_reads_work() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsFile("/mnt/hello.txt".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsDir("/mnt/subdir".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt".into())),
-        MontyValue::string("hello world\n".to_owned())
+        MontyObject::string("hello world\n".to_owned())
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/data.bin".into())),
-        MontyValue::bytes(vec![0x00, 0x01, 0x02, 0x03])
+        MontyObject::bytes(vec![0x00, 0x01, 0x02, 0x03])
     );
 
     // stat and iterdir should work
@@ -723,19 +723,19 @@ fn ovl_mem_reads_fall_through() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt".into())),
-        MontyValue::string("hello world\n".to_owned())
+        MontyObject::string("hello world\n".to_owned())
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/data.bin".into())),
-        MontyValue::bytes(vec![0x00, 0x01, 0x02, 0x03])
+        MontyObject::bytes(vec![0x00, 0x01, 0x02, 0x03])
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsDir("/mnt/subdir".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
 }
 
@@ -753,15 +753,15 @@ fn ovl_mem_write_readable_back() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/new_overlay.txt".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/new_overlay.txt".into())),
-        MontyValue::string("overlay content".to_owned())
+        MontyObject::string("overlay content".to_owned())
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsFile("/mnt/new_overlay.txt".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
 }
 
@@ -777,7 +777,7 @@ fn ovl_mem_write_does_not_modify_host() {
     // Overlay returns the new content.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt".into())),
-        MontyValue::string("overlay overwrite".to_owned())
+        MontyObject::string("overlay overwrite".to_owned())
     );
     // Host file remains unchanged.
     assert_eq!(
@@ -797,7 +797,7 @@ fn ovl_mem_tombstone() {
         .unwrap();
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     // Host file still exists.
     assert!(dir.path().join("hello.txt").exists());
@@ -869,7 +869,7 @@ fn ovl_mem_path_component_too_long() {
     // `exists()` answers False rather than raising, as CPython's does.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists(path.as_str().into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     // An operation that does raise quotes the path with its middle elided.
     let err = call_err(&mut mt, &OsFunctionCall::Stat(path.as_str().into()));
@@ -900,7 +900,7 @@ fn ovl_mem_path_total_too_long() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists(path.as_str().into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     let err = call_err(&mut mt, &OsFunctionCall::Stat(path.as_str().into()));
     assert_exc(
@@ -966,7 +966,7 @@ fn ovl_mem_mkdir() {
         .unwrap();
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsDir("/mnt/overlay_dir".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     // Host should not have the directory.
     assert!(!dir.path().join("overlay_dir").exists());
@@ -983,7 +983,7 @@ fn ovl_mem_stat_overlay_file() {
 
     let stat = call_ok(&mut mt, &OsFunctionCall::Stat("/mnt/sized.txt".into()));
     let values = stat.as_ref().items().expect("expected a namedtuple from stat");
-    assert_eq!(values[6], MontyValue::int(5), "st_size should be 5");
+    assert_eq!(values[6], MontyObject::int(5), "st_size should be 5");
 }
 
 #[test]
@@ -997,7 +997,7 @@ fn ovl_mem_rmdir_overlay() {
         .unwrap();
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/temp_dir".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
 }
 
@@ -1022,7 +1022,7 @@ fn rename_of_mount_root_is_refused_in_both_modes() {
         // The mount must be untouched by the refusal.
         assert_eq!(
             call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
-            MontyValue::bool(true)
+            MontyObject::bool(true)
         );
     }
 }
@@ -1048,11 +1048,11 @@ fn rmdir_of_mount_root_is_refused_in_both_modes() {
         // The refusal must leave the mount fully live, root included.
         assert_eq!(
             call_ok(&mut mt, &OsFunctionCall::Exists("/mnt".into())),
-            MontyValue::bool(true)
+            MontyObject::bool(true)
         );
         assert_eq!(
             call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
-            MontyValue::bool(true)
+            MontyObject::bool(true)
         );
     }
 }
@@ -1101,11 +1101,11 @@ fn ovl_mem_rename() {
         .unwrap();
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/moved.txt".into())),
-        MontyValue::string("hello world\n".to_owned())
+        MontyObject::string("hello world\n".to_owned())
     );
     // Host unchanged.
     assert!(dir.path().join("hello.txt").exists());
@@ -1122,7 +1122,7 @@ fn ovl_mem_write_bytes() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/bin_overlay.dat".into())),
-        MontyValue::bytes(vec![0xAA, 0xBB])
+        MontyObject::bytes(vec![0xAA, 0xBB])
     );
 }
 
@@ -1133,7 +1133,7 @@ fn ovl_mem_resolve() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Resolve("/mnt/subdir/../hello.txt".into())),
-        MontyValue::path("/mnt/hello.txt".to_owned())
+        MontyObject::path("/mnt/hello.txt".to_owned())
     );
 }
 
@@ -1151,32 +1151,32 @@ fn ovl_mem_rename_directory() {
     // Old path should be gone.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/subdir".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/subdir/nested.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/subdir/deep/file.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
 
     // New path should have all descendants.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/renamed_dir".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/renamed_dir/nested.txt".into())),
-        MontyValue::string("nested content".to_owned())
+        MontyObject::string("nested content".to_owned())
     );
     assert_eq!(
         call_ok(
             &mut mt,
             &OsFunctionCall::ReadText("/mnt/renamed_dir/deep/file.txt".into())
         ),
-        MontyValue::string("deep file".to_owned())
+        MontyObject::string("deep file".to_owned())
     );
 
     // Host unchanged.
@@ -1202,12 +1202,12 @@ fn ovl_mem_rename_directory_with_overlay_children() {
     // Overlay-written file should appear under the new name.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/moved/overlay_file.txt".into())),
-        MontyValue::string("overlay content".to_owned())
+        MontyObject::string("overlay content".to_owned())
     );
     // Real-FS file should also appear.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/moved/nested.txt".into())),
-        MontyValue::string("nested content".to_owned())
+        MontyObject::string("nested content".to_owned())
     );
 }
 
@@ -1254,7 +1254,7 @@ fn ovl_mem_write_existing_parent() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/subdir/new_file.txt".into())),
-        MontyValue::string("new content".to_owned())
+        MontyObject::string("new content".to_owned())
     );
 }
 
@@ -1272,7 +1272,7 @@ fn ovl_mem_write_after_mkdir() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/newdir/file.txt".into())),
-        MontyValue::string("content".to_owned())
+        MontyObject::string("content".to_owned())
     );
 }
 
@@ -1293,11 +1293,11 @@ fn ovl_mem_rename_file_overwrites_existing_file() {
         .unwrap();
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/empty.txt".into())),
-        MontyValue::string("hello world\n".to_owned())
+        MontyObject::string("hello world\n".to_owned())
     );
 }
 
@@ -1317,11 +1317,11 @@ fn ovl_mem_rename_overlay_file_overwrites_overlay_file() {
     call(&mut mt, &rename("/mnt/a.txt", "/mnt/b.txt")).unwrap().unwrap();
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/a.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/b.txt".into())),
-        MontyValue::string("aaa".to_owned())
+        MontyObject::string("aaa".to_owned())
     );
 }
 
@@ -1336,11 +1336,11 @@ fn ovl_mem_rename_to_same_path() {
         .unwrap();
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt".into())),
-        MontyValue::string("hello world\n".to_owned())
+        MontyObject::string("hello world\n".to_owned())
     );
 }
 
@@ -1410,7 +1410,7 @@ fn ovl_mem_rename_dir_with_tombstoned_entries() {
         .unwrap();
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/subdir/nested.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
 
     // Rename the directory.
@@ -1419,12 +1419,12 @@ fn ovl_mem_rename_dir_with_tombstoned_entries() {
     // The tombstoned file should still be invisible under the new name.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/moved/nested.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     // Other descendants should still be present.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/moved/deep/file.txt".into())),
-        MontyValue::string("deep file".to_owned())
+        MontyObject::string("deep file".to_owned())
     );
 }
 
@@ -1446,21 +1446,21 @@ fn ovl_mem_rename_deeply_nested_overlay_dirs() {
     // Old paths gone.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/a".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/a/b/c/leaf.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
 
     // New paths present.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/x/b/c".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/x/b/c/leaf.txt".into())),
-        MontyValue::string("leaf".to_owned())
+        MontyObject::string("leaf".to_owned())
     );
 }
 
@@ -1479,15 +1479,15 @@ fn ovl_mem_rename_then_rename_again() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/step1.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/step2.txt".into())),
-        MontyValue::string("hello world\n".to_owned())
+        MontyObject::string("hello world\n".to_owned())
     );
 }
 
@@ -1507,11 +1507,11 @@ fn ovl_mem_rename_overlay_written_file() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/new_file.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/renamed_new.txt".into())),
-        MontyValue::string("overlay only".to_owned())
+        MontyObject::string("overlay only".to_owned())
     );
 }
 
@@ -1558,15 +1558,15 @@ fn ovl_mem_rename_dir_over_empty_overlay_dir() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/subdir".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/target_dir/extra.txt".into())),
-        MontyValue::string("extra".to_owned())
+        MontyObject::string("extra".to_owned())
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/target_dir/nested.txt".into())),
-        MontyValue::string("nested content".to_owned())
+        MontyObject::string("nested content".to_owned())
     );
 }
 
@@ -1633,7 +1633,7 @@ fn mount_sorting_specific_wins() {
     // /data/sub/specific.txt should come from the more specific mount.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/data/sub/specific.txt".into())),
-        MontyValue::string("from specific mount".to_owned())
+        MontyObject::string("from specific mount".to_owned())
     );
 }
 
@@ -1644,7 +1644,7 @@ fn non_filesystem_ops_not_handled() {
 
     let result = mt.handle_os_call(OsFunctionCall::Getenv(monty_types::GetenvArgs {
         key: "PATH".to_owned(),
-        default: MontyValue::none(),
+        default: MontyObject::none(),
     }));
     assert!(
         matches!(result, MountCallOutcome::NotHandled(OsFunctionCall::Getenv(_))),
@@ -1672,7 +1672,7 @@ fn path_with_spaces() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello world.txt".into())),
-        MontyValue::string("spaces".to_owned())
+        MontyObject::string("spaces".to_owned())
     );
 }
 
@@ -1685,7 +1685,7 @@ fn path_with_unicode() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/文件.txt".into())),
-        MontyValue::string("unicode".to_owned())
+        MontyObject::string("unicode".to_owned())
     );
 }
 
@@ -1759,7 +1759,7 @@ fn direct_reads_accept_exact_limit_and_reject_one_byte_over() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/exact.txt".into())),
-        MontyValue::bytes(b"12345".to_vec())
+        MontyObject::bytes(b"12345".to_vec())
     );
     let exc = call_err(&mut mt, &OsFunctionCall::ReadBytes("/mnt/large.txt".into()));
     assert_exc(
@@ -1850,14 +1850,14 @@ fn in_place_append_obeys_memory_budget() {
     expected.extend(vec![b'b'; 200]);
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/a.bin".into())),
-        MontyValue::bytes(expected.clone())
+        MontyObject::bytes(expected.clone())
     );
 
     let exc = call_err(&mut mt, &append_bytes("/mnt/a.bin", vec![b'c'; 3_000]));
     assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 3 KB exceeded");
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/a.bin".into())),
-        MontyValue::bytes(expected)
+        MontyObject::bytes(expected)
     );
 }
 
@@ -1921,7 +1921,7 @@ fn fall_through_reads_share_budget_with_retained_data() {
     // with nothing retained the 800-byte host file fits...
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/large.bin".into())),
-        MontyValue::bytes(vec![b'x'; 800])
+        MontyObject::bytes(vec![b'x'; 800])
     );
     // ...but after retaining overlay data it no longer does
     call_ok(&mut mt, &write_bytes("/mnt/keep.bin", vec![b'k'; 100]));
@@ -1944,11 +1944,11 @@ fn overlay_directory_rename_obeys_memory_budget() {
     call_ok(&mut mt, &rename("/mnt/d", "/mnt/e"));
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/d".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/e/f0".into())),
-        MontyValue::bytes(vec![b'x'])
+        MontyObject::bytes(vec![b'x'])
     );
 
     // tight budget: the added tombstones and destination entries do not fit,
@@ -1963,11 +1963,11 @@ fn overlay_directory_rename_obeys_memory_budget() {
     assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 5 KB exceeded");
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/d/f0".into())),
-        MontyValue::bytes(vec![b'x'])
+        MontyObject::bytes(vec![b'x'])
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/e".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
 }
 
@@ -1990,7 +1990,7 @@ fn real_directory_rename_capture_obeys_memory_budget() {
     // the source is untouched in the overlay and on the host
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/subdir/nested.txt".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert!(dir.path().join("subdir/nested.txt").is_file());
 }
@@ -2018,7 +2018,7 @@ fn rw_write_text_within_limit() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/a.txt".into())),
-        MontyValue::string("hello".to_owned())
+        MontyObject::string("hello".to_owned())
     );
 }
 
@@ -2127,7 +2127,7 @@ fn ovl_append_existing_real_file_counts_existing_bytes_toward_limit() {
     assert_exc(&exc, ExcType::OSError, "disk write limit of 5 bytes exceeded");
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/large.bin".into())),
-        MontyValue::bytes(vec![0u8; 10]),
+        MontyObject::bytes(vec![0u8; 10]),
         "failed append should leave the real backing file visible and unchanged"
     );
 
@@ -2315,17 +2315,17 @@ fn ovl_rename_directory_preserves_descendants() {
 
     // Descendants should be accessible under the new prefix.
     let result = call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/renamed_dir/nested.txt".into()));
-    assert_eq!(result, MontyValue::string("nested content".to_owned()));
+    assert_eq!(result, MontyObject::string("nested content".to_owned()));
 
     let result = call_ok(
         &mut mt,
         &OsFunctionCall::ReadText("/mnt/renamed_dir/deep/file.txt".into()),
     );
-    assert_eq!(result, MontyValue::string("deep file".to_owned()));
+    assert_eq!(result, MontyObject::string("deep file".to_owned()));
 
     // Old paths should not exist.
     let result = call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/subdir/nested.txt".into()));
-    assert_eq!(result, MontyValue::bool(false));
+    assert_eq!(result, MontyObject::bool(false));
 }
 
 // =============================================================================
@@ -2411,7 +2411,7 @@ fn ovl_mem_rename_of_a_symlink_is_refused() {
     // that the name is a link, which is what CPython reports too.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsSymlink("/mnt/link.txt".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
 
     let exc = call_err(&mut mt, &rename("/mnt/link.txt", "/mnt/moved_link.txt"));
@@ -2424,11 +2424,11 @@ fn ovl_mem_rename_of_a_symlink_is_refused() {
     // Nothing moved, and the link's target is untouched.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/moved_link.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt".into())),
-        MontyValue::string("hello world\n".to_owned())
+        MontyObject::string("hello world\n".to_owned())
     );
 }
 
@@ -2466,11 +2466,11 @@ fn ovl_mem_read_through_a_symlink_cannot_go_stale() {
     // Predicates stay silent, as they do for any path leaving the mount.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/link.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt".into())),
-        MontyValue::string("OVERWRITTEN".to_owned())
+        MontyObject::string("OVERWRITTEN".to_owned())
     );
 }
 
@@ -2515,7 +2515,7 @@ fn ovl_mem_every_operation_on_a_symlink_is_refused() {
     // Nothing was shadowed by a refused call: the real names still work.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt".into())),
-        MontyValue::string("hello world\n".to_owned())
+        MontyObject::string("hello world\n".to_owned())
     );
     assert_eq!(
         sorted_names(&call_ok(&mut mt, &OsFunctionCall::Iterdir("/mnt/subdir".into()))),
@@ -2523,7 +2523,7 @@ fn ovl_mem_every_operation_on_a_symlink_is_refused() {
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsSymlink("/mnt/link_dir".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
 }
 
@@ -2551,7 +2551,7 @@ fn ovl_mem_read_below_a_symlinked_directory_is_refused() {
     // Reached by its real name, the same file reads normally.
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/subdir/nested.txt".into())),
-        MontyValue::string("nested content".to_owned())
+        MontyObject::string("nested content".to_owned())
     );
 }
 
@@ -2598,7 +2598,7 @@ fn ovl_mem_rmdir_real_dir_with_overlay_children() {
         &mut mt,
         &OsFunctionCall::ReadText("/mnt/subdir/overlay_only.txt".into()),
     );
-    assert_eq!(result, MontyValue::string("overlay".to_owned()));
+    assert_eq!(result, MontyObject::string("overlay".to_owned()));
 }
 
 // =============================================================================
@@ -2621,7 +2621,7 @@ fn mkdir_on_symlink_to_dir_follows_for_exist_ok() {
 
         assert_eq!(
             call_ok(&mut mt, &mkdir("/mnt/link_dir", parents, true)),
-            MontyValue::none(),
+            MontyObject::none(),
             "exist_ok on a symlink to a directory must succeed (parents={parents})"
         );
         // Without `exist_ok` it is still `FileExistsError`, as in CPython.
@@ -2678,21 +2678,21 @@ fn ovl_mem_rename_onto_tombstoned_dir_succeeds() {
     call_ok(&mut mt, &OsFunctionCall::Rmdir("/mnt/target".into()));
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/target".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
 
     call_ok(&mut mt, &rename("/mnt/hello.txt", "/mnt/target"));
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/target".into())),
-        MontyValue::string("hello world\n".to_owned())
+        MontyObject::string("hello world\n".to_owned())
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsFile("/mnt/target".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
-        MontyValue::bool(false)
+        MontyObject::bool(false)
     );
 }
 
@@ -2708,11 +2708,11 @@ fn ovl_mem_rename_dir_onto_tombstoned_file_succeeds() {
 
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::IsDir("/mnt/hello.txt".into())),
-        MontyValue::bool(true)
+        MontyObject::bool(true)
     );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/hello.txt/nested.txt".into())),
-        MontyValue::string("nested content".to_owned())
+        MontyObject::string("nested content".to_owned())
     );
 }
 

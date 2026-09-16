@@ -1,7 +1,7 @@
 //! Host-supplied results fed back into a suspended run:
 //! [`NameLookupResult`] and [`ExtFunctionResult`].
 
-use crate::{exceptions::MontyException, value::MontyValue};
+use crate::{exceptions::MontyException, object::MontyObject};
 /// Result of a name lookup from the host.
 ///
 /// When the VM encounters an unresolved name (or a lazy attribute on a
@@ -15,7 +15,7 @@ use crate::{exceptions::MontyException, value::MontyValue};
 #[derive(Debug)]
 pub enum NameLookupResult {
     /// The name resolves to this value.
-    Value(MontyValue),
+    Value(MontyObject),
     /// The name is undefined — the VM raises `NameError` / `AttributeError`.
     Undefined,
     /// Resolving the name raised this exception on the host; the VM raises
@@ -23,15 +23,15 @@ pub enum NameLookupResult {
     Error(MontyException),
 }
 
-impl From<MontyValue> for NameLookupResult {
-    fn from(value: MontyValue) -> Self {
+impl From<MontyObject> for NameLookupResult {
+    fn from(value: MontyObject) -> Self {
         Self::Value(value)
     }
 }
 
-impl From<Option<MontyValue>> for NameLookupResult {
+impl From<Option<MontyObject>> for NameLookupResult {
     /// `Some` resolves the name, `None` leaves it undefined.
-    fn from(value: Option<MontyValue>) -> Self {
+    fn from(value: Option<MontyObject>) -> Self {
         value.map_or(Self::Undefined, Self::Value)
     }
 }
@@ -46,7 +46,7 @@ impl From<MontyException> for NameLookupResult {
 #[derive(Debug)]
 pub enum ExtFunctionResult {
     /// Continues execution with the return value from the external function.
-    Return(MontyValue),
+    Return(MontyObject),
     /// Continues execution with the exception raised by the external function.
     Error(MontyException),
     /// Pending future — the external function is a coroutine.
@@ -59,8 +59,8 @@ pub enum ExtFunctionResult {
     NotFound(String),
 }
 
-impl From<MontyValue> for ExtFunctionResult {
-    fn from(value: MontyValue) -> Self {
+impl From<MontyObject> for ExtFunctionResult {
+    fn from(value: MontyObject) -> Self {
         Self::Return(value)
     }
 }

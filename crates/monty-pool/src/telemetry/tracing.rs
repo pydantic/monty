@@ -978,7 +978,7 @@ mod tests {
 
     use logfire::{Logfire, config::AdvancedOptions, set_local_logfire};
     use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
-    use monty_types::{CallArgs, MontyValue, NameLookupResult};
+    use monty_types::{CallArgs, MontyObject, NameLookupResult};
     use opentelemetry::{logs::AnyValue, trace::SpanId};
     use opentelemetry_sdk::{
         logs::{InMemoryLogExporter, SimpleLogProcessor},
@@ -1060,17 +1060,17 @@ mod tests {
         })));
         recorder.event(&event(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
             "double".to_owned(),
-            CallArgs::from(vec![MontyValue::int(2)]),
+            CallArgs::from(vec![MontyObject::int(2)]),
             1,
             None,
             false,
         ))));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
-            ..pb::ResumeCall::from(MontyValue::int(4))
+            ..pb::ResumeCall::from(MontyObject::int(4))
         })));
         recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
-            MontyValue::int(4),
+            MontyObject::int(4),
         ))));
         recorder.begin_turn(&request(pb::parent_request::Kind::Reset(pb::Reset {})));
 
@@ -1117,7 +1117,7 @@ mod tests {
             object_id: None,
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
-            NameLookupResult::from(MontyValue::string("<function>".to_owned())).into(),
+            NameLookupResult::from(MontyObject::string("<function>".to_owned())).into(),
         )));
         recorder.event(&event(pb::child_event::Kind::OsCall(pb::OsCall {
             call_id: 1,
@@ -1129,7 +1129,7 @@ mod tests {
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
-            ..pb::ResumeCall::from(MontyValue::string(long))
+            ..pb::ResumeCall::from(MontyObject::string(long))
         })));
 
         let spans = spans.get_finished_spans().unwrap();
@@ -1220,7 +1220,7 @@ mod tests {
             cwd: "/".to_owned(),
         })));
         recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
-            MontyValue::int(1),
+            MontyObject::int(1),
         ))));
         recorder.begin_turn(&request(pb::parent_request::Kind::Reset(pb::Reset {})));
 
@@ -1244,10 +1244,10 @@ mod tests {
             object_id: None,
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
-            NameLookupResult::from(MontyValue::int(1)).into(),
+            NameLookupResult::from(MontyObject::int(1)).into(),
         )));
         recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
-            MontyValue::int(1),
+            MontyObject::int(1),
         ))));
 
         let spans = spans.get_finished_spans().unwrap();
@@ -1273,7 +1273,7 @@ mod tests {
         let _guard = set_local_logfire(logfire);
         let mut recorder = Recorder::new(None);
         recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
-            MontyValue::int(7),
+            MontyObject::int(7),
         ))));
 
         let logs = logs.get_emitted_logs().unwrap();

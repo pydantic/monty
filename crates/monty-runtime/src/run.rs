@@ -24,7 +24,7 @@ use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, HostClock, MontyException,
-    MontyValue, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig,
+    MontyObject, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig,
     validate_cwd,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
@@ -433,7 +433,7 @@ fn execute_repl_snippet(
     if mount_table.is_some() {
         match execute_repl_with_mounts(r, snippet, mount_table, suspensions) {
             Ok((returned_repl, output)) => {
-                if output != MontyValue::none() {
+                if output != MontyObject::none() {
                     println!("{output}");
                 }
                 *repl = Some(returned_repl);
@@ -448,7 +448,7 @@ fn execute_repl_snippet(
         let mut r = r;
         match r.feed_run(snippet, vec![], PrintWriter::Stdout) {
             Ok(output) => {
-                if output != MontyValue::none() {
+                if output != MontyObject::none() {
                     println!("{output}");
                 }
             }
@@ -470,7 +470,7 @@ fn execute_repl_with_mounts(
     snippet: &str,
     mount_table: &mut Option<MountTable>,
     suspensions: &mut SuspensionBudget,
-) -> Result<(MontyRepl, MontyValue), (MontyRepl, String)> {
+) -> Result<(MontyRepl, MontyObject), (MontyRepl, String)> {
     let mut progress = match r.feed_start(snippet, vec![], PrintWriter::Stdout) {
         Ok(p) => p,
         Err(err) => return Err((err.repl, format!("{}", err.error))),
@@ -532,7 +532,7 @@ fn run_until_complete(
     mut progress: RunProgress,
     mount_table: &mut Option<MountTable>,
     suspensions: &mut SuspensionBudget,
-) -> Result<MontyValue, String> {
+) -> Result<MontyObject, String> {
     loop {
         // The CLI, as host, enforces `--max-suspensions`.
         if !matches!(progress, RunProgress::Complete(_))
@@ -564,7 +564,7 @@ fn run_until_complete(
             }
             RunProgress::NameLookup(lookup) => {
                 let result = if lookup.name == "add_ints" {
-                    NameLookupResult::from(MontyValue::function("add_ints".to_string(), None))
+                    NameLookupResult::from(MontyObject::function("add_ints".to_string(), None))
                 } else {
                     NameLookupResult::Undefined
                 };
@@ -627,7 +627,7 @@ impl SuspensionBudget {
 ///
 /// Consumes the call (moving write payloads into the mount backend) and
 /// returns the operation result as an `ExtFunctionResult` — either a
-/// successful `MontyValue` or an exception for errors / unsupported
+/// successful `MontyObject` or an exception for errors / unsupported
 /// operations.
 fn handle_os_call(call: OsFunctionCall, mount_table: &mut Option<MountTable>) -> ExtFunctionResult {
     // The clock answers `date.today()` / `datetime.now()` here for the same
@@ -653,7 +653,7 @@ fn handle_os_call(call: OsFunctionCall, mount_table: &mut Option<MountTable>) ->
 ///
 /// Returns a runtime-like error string for unknown function names, wrong arity,
 /// or incorrect argument types.
-fn resolve_external_call(function_name: &str, args: &CallArgs) -> Result<MontyValue, String> {
+fn resolve_external_call(function_name: &str, args: &CallArgs) -> Result<MontyObject, String> {
     let rendered = || args.args().map(|arg| arg.py_repr()).collect::<Vec<_>>().join(", ");
     if function_name != "add_ints" {
         return Err(format!("unknown external function: {function_name}({})", rendered()));
@@ -670,7 +670,7 @@ fn resolve_external_call(function_name: &str, args: &CallArgs) -> Result<MontyVa
         args.arg(0).and_then(|a| a.as_int()),
         args.arg(1).and_then(|b| b.as_int()),
     ) {
-        (Some(a), Some(b)) => Ok(MontyValue::int(a + b)),
+        (Some(a), Some(b)) => Ok(MontyObject::int(a + b)),
         _ => Err(format!("add_ints requires integer arguments, got {}", rendered())),
     }
 }

@@ -17,8 +17,7 @@ use crate::{
     file_mode::FileMode,
     format::StringRepr,
     graph::{MontyGraph, MontyNode, NodeId},
-    object::MontyTimeZone,
-    value::{CallArgs, MontyValue},
+    object::{CallArgs, MontyObject, MontyTimeZone},
     virtual_path::normalize_virtual_path,
 };
 // =============================================================================
@@ -402,7 +401,7 @@ pub struct RenameCallArgs {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct GetenvArgs {
     pub key: String,
-    pub default: MontyValue,
+    pub default: MontyObject,
 }
 
 /// `os.urandom(size)` shape. The interpreter rejects a negative `size` before
@@ -491,7 +490,7 @@ impl PushValue for MontyPath {
 /// * `size` - File size in bytes
 /// * `mtime` - Modification time as Unix timestamp
 #[must_use]
-pub fn file_stat(mode: i64, size: i64, mtime: f64) -> MontyValue {
+pub fn file_stat(mode: i64, size: i64, mtime: f64) -> MontyObject {
     let mode = if mode < 0o1000 { mode | 0o100_000 } else { mode };
     stat_result(mode, 0, 0, 1, 0, 0, size, mtime, mtime, mtime)
 }
@@ -507,7 +506,7 @@ pub fn file_stat(mode: i64, size: i64, mtime: f64) -> MontyValue {
 ///   - `0o040755` - same as 0o755 with explicit directory type bits
 /// * `mtime` - Modification time as Unix timestamp
 #[must_use]
-pub fn dir_stat(mode: i64, mtime: f64) -> MontyValue {
+pub fn dir_stat(mode: i64, mtime: f64) -> MontyObject {
     let mode = if mode < 0o1000 { mode | 0o040_000 } else { mode };
     stat_result(mode, 0, 0, 2, 0, 0, 4096, mtime, mtime, mtime)
 }
@@ -522,7 +521,7 @@ pub fn dir_stat(mode: i64, mtime: f64) -> MontyValue {
 ///   - `0o120777` - same as 0o777 with explicit symlink type bits
 /// * `mtime` - Modification time as Unix timestamp
 #[must_use]
-pub fn symlink_stat(mode: i64, mtime: f64) -> MontyValue {
+pub fn symlink_stat(mode: i64, mtime: f64) -> MontyObject {
     let mode = if mode < 0o1000 { mode | 0o120_000 } else { mode };
     stat_result(mode, 0, 0, 1, 0, 0, 0, mtime, mtime, mtime)
 }
@@ -544,21 +543,21 @@ pub fn stat_result(
     st_atime: f64,
     st_mtime: f64,
     st_ctime: f64,
-) -> MontyValue {
-    MontyValue::named_tuple(
+) -> MontyObject {
+    MontyObject::named_tuple(
         STAT_RESULT_TYPE_NAME,
         STAT_RESULT_FIELDS.iter().copied(),
         [
-            MontyValue::int(st_mode),
-            MontyValue::int(st_ino),
-            MontyValue::int(st_dev),
-            MontyValue::int(st_nlink),
-            MontyValue::int(st_uid),
-            MontyValue::int(st_gid),
-            MontyValue::int(st_size),
-            MontyValue::float(st_atime),
-            MontyValue::float(st_mtime),
-            MontyValue::float(st_ctime),
+            MontyObject::int(st_mode),
+            MontyObject::int(st_ino),
+            MontyObject::int(st_dev),
+            MontyObject::int(st_nlink),
+            MontyObject::int(st_uid),
+            MontyObject::int(st_gid),
+            MontyObject::int(st_size),
+            MontyObject::float(st_atime),
+            MontyObject::float(st_mtime),
+            MontyObject::float(st_ctime),
         ],
     )
 }
