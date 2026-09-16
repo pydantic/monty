@@ -35,7 +35,7 @@ use super::{
 pub fn py_to_monty(obj: &Bound<'_, PyAny>, store: &InstanceStore) -> PyResult<MontyObject> {
     let mut encoder = GraphEncoder::new(obj.py(), store);
     let root = encoder.push(obj)?;
-    Ok(encoder.finish_value(root))
+    Ok(encoder.finish_object(root))
 }
 
 /// Like [`py_to_monty`], but converts any `PyErr` into a `MontyException`.
@@ -144,7 +144,7 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
 
     /// The arena as one value rooted at `root`, an id [`push`](Self::push) returned.
     #[must_use]
-    pub fn finish_value(self, root: NodeId) -> MontyObject {
+    pub fn finish_object(self, root: NodeId) -> MontyObject {
         // `push` returned `root`, so it is in range
         MontyObject {
             graph: self.graph,

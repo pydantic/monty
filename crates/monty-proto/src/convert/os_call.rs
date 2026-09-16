@@ -9,7 +9,7 @@ use monty_types::{
 };
 
 use crate::{
-    convert::{ProtoConvertError, value_from_parts},
+    convert::{ProtoConvertError, object_from_parts},
     pb::{
         self, TimeZone, Unit,
         os_call::{self, Call},
@@ -34,7 +34,7 @@ pub fn os_call_from_proto(call: pb::OsCall) -> Result<(u32, OsFunctionCall), Pro
     let function_call = match kind {
         os_call::Call::Getenv(g) => OsFunctionCall::Getenv(GetenvArgs {
             key: g.key,
-            default: value_from_parts(call.values, g.default, "OsCall.values")?,
+            default: object_from_parts(call.values, g.default, "OsCall.values")?,
         }),
         other => other.try_into()?,
     };

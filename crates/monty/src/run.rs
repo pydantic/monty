@@ -582,7 +582,7 @@ impl Executor {
     /// exits no host will serve by raising `NameError` / `AttributeError`
     /// through the VM so tracebacks are properly captured, and answers the
     /// clock OS calls from [`Executor::clock`]. Finally converts the result via
-    /// [`frame_exit_to_value`].
+    /// [`frame_exit_to_object`].
     ///
     /// This is the shared non-iterative execution core used by both the standard
     /// `run` path and the REPL's `feed_run` path.
@@ -616,9 +616,9 @@ impl Executor {
                 // answered in-process; every other exit converts as before.
                 Ok(exit) => match self.resolve_clock_call(vm, exit) {
                     ControlFlow::Continue(resumed) => frame_exit_result = resumed,
-                    ControlFlow::Break(exit) => return frame_exit_to_value(Ok(exit), vm),
+                    ControlFlow::Break(exit) => return frame_exit_to_object(Ok(exit), vm),
                 },
-                err => return frame_exit_to_value(err, vm),
+                err => return frame_exit_to_object(err, vm),
             }
         }
     }
@@ -710,7 +710,7 @@ impl Executor {
             let globals = vm.take_globals();
 
             // Read refcounts BEFORE converting the return value, because
-            // `frame_exit_to_value` drops the return value (decrementing its refcount).
+            // `frame_exit_to_object` drops the return value (decrementing its refcount).
             let mut counts = ahash::AHashMap::new();
             let mut roots = Vec::new();
 
@@ -724,7 +724,7 @@ impl Executor {
                 }
             }
             // The module's result is a root too: it is still owned by the pending
-            // `FrameExit::Return` here, since `frame_exit_to_value` below is what drops it.
+            // `FrameExit::Return` here, since `frame_exit_to_object` below is what drops it.
             if let Ok(FrameExit::Return(Value::Ref(id))) = &frame_exit_result {
                 roots.push(*id);
             }
@@ -740,7 +740,7 @@ impl Executor {
 
             // Convert return value while VM is still alive (needs access to interns).
             // Non-REPL: single source, so every frame resolves to `executor.code`.
-            let value = frame_exit_to_value(frame_exit_result, &mut vm)
+            let value = frame_exit_to_object(frame_exit_result, &mut vm)
                 .map_err(|e| e.into_python_exception(&executor.interns, |_| Some(&*executor.code)))?;
 
             // Drop globals with proper ref counting
@@ -802,7 +802,7 @@ pub(crate) fn default_clock() -> HostClock {
 /// Used by non-iterative execution paths: lookups are answered as no host
 /// would (see [`answer_unserved_lookups`]) and the remaining suspendable
 /// outcomes (external calls, futures) produce errors.
-pub(crate) fn frame_exit_to_value(frame_exit_result: RunResult<FrameExit>, vm: &mut VM<'_>) -> RunResult<MontyObject> {
+pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: &mut VM<'_>) -> RunResult<MontyObject> {
     // Suspensions this path cannot service. The error is built from a borrow
     // so one `drop_with` releases whatever the exit owns, fields added later
     // included.

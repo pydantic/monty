@@ -502,7 +502,7 @@ fn create_js_attr_pairs<'e>(
 pub fn js_to_monty<'e>(value: Unknown<'e>, env: &'e Env) -> Result<MontyObject> {
     let mut encoder = GraphEncoder::new(env)?;
     let root = encoder.push(value)?;
-    Ok(encoder.finish_value(root))
+    Ok(encoder.finish_object(root))
 }
 
 /// Builds one message's arena from JS values, preserving sharing.
@@ -592,7 +592,7 @@ impl<'e> GraphEncoder<'e> {
 
     /// The arena as one value rooted at `root`, an id [`push`](Self::push) returned.
     #[must_use]
-    pub fn finish_value(self, root: NodeId) -> MontyObject {
+    pub fn finish_object(self, root: NodeId) -> MontyObject {
         // `push` returned `root`, so it is in range
         MontyObject {
             graph: self.graph,

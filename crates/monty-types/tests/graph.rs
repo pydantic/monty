@@ -268,7 +268,7 @@ fn call_args_share_one_arena() {
 }
 
 #[test]
-fn value_ref_copy_preserves_sharing() {
+fn object_ref_copy_preserves_sharing() {
     let ladder = doubling_ladder(3);
     let copy = ladder.as_ref().to_owned();
     assert_eq!(copy.graph.len(), ladder.graph.len());

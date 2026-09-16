@@ -87,7 +87,7 @@ impl TryFrom<pb::Complete> for MontyObject {
     type Error = ProtoConvertError;
 
     fn try_from(complete: pb::Complete) -> Result<Self, ProtoConvertError> {
-        value_from_parts(complete.values, complete.value, "Complete.values")
+        object_from_parts(complete.values, complete.value, "Complete.values")
     }
 }
 
@@ -120,7 +120,7 @@ pub fn named_values_from_proto(
 
 /// Pairs a message's arena with the root it names, rejecting an absent arena
 /// (`field` names it) or an out-of-range root.
-pub(crate) fn value_from_parts(
+pub(crate) fn object_from_parts(
     values: Option<WireArena>,
     root: u32,
     field: &'static str,

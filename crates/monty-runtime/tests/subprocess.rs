@@ -238,12 +238,12 @@ impl Drop for ChildProc {
 
 #[track_caller]
 fn expect_complete(event: pb::child_event::Kind) -> MontyObject {
-    expect_complete_value(event)
+    expect_complete_object(event)
 }
 
 /// The completed value as its arena, for assertions about its shape.
 #[track_caller]
-fn expect_complete_value(event: pb::child_event::Kind) -> MontyObject {
+fn expect_complete_object(event: pb::child_event::Kind) -> MontyObject {
     match event {
         pb::child_event::Kind::Complete(complete) => MontyObject::try_from(complete).expect("invalid complete value"),
         other => panic!("expected Complete, got {other:?}"),
@@ -1182,7 +1182,7 @@ fn exporting_a_shared_graph_is_linear_in_heap_objects() {
     child.create_repl_with(configure_with_max_memory(4 * 1024 * 1024));
     let code = "x = [0]\nfor _ in range(20):\n    x = [x]\nfor _ in range(15):\n    x = [x, x]\nx";
     let (_, event) = child.feed(code);
-    let value = expect_complete_value(event);
+    let value = expect_complete_object(event);
     assert_eq!(value.graph.len(), 37);
     // the session survives: nothing overshot into a soft-limit `MemoryError`
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
@@ -1196,7 +1196,7 @@ fn exporting_a_small_shared_graph_round_trips() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("x = [0]\nx = [x, x]\nx = [x, x]\nx");
-    let value = expect_complete_value(event);
+    let value = expect_complete_object(event);
     // `0`, `[0]`, `[[0], [0]]` and the outer list: sharing costs nothing
     assert_eq!(value.graph.len(), 4);
     let leaf = MontyObject::list([MontyObject::int(0)]);
@@ -1213,7 +1213,7 @@ fn exporting_a_deeply_nested_value_does_not_overflow_the_stack() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("x = [1]\nfor _ in range(300):\n    x = [x]\nx");
-    let value = expect_complete_value(event);
+    let value = expect_complete_object(event);
     // one node per list plus the leaf
     assert_eq!(value.graph.len(), 302);
     let expected = (0..301).fold(MontyObject::int(1), |inner, _| MontyObject::list([inner]));

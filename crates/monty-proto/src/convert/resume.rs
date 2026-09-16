@@ -5,7 +5,7 @@
 use monty_types::{ExtFunctionResult, MontyException, MontyGraph, MontyObject, NameLookupResult, NodeId};
 
 use crate::{
-    convert::{ProtoConvertError, arena_or_empty, value_from_parts},
+    convert::{ProtoConvertError, arena_or_empty, object_from_parts},
     pb,
     wire::{WireArena, graph_error},
 };
@@ -36,7 +36,7 @@ pub fn ext_result_from_proto(
         .ok_or(ProtoConvertError::MissingField("ExtFunctionResult.kind"))?;
     match kind {
         pb::ext_function_result::Kind::ReturnValue(root) => {
-            Ok(ExtFunctionResult::Return(value_from_parts(values, root, "values")?))
+            Ok(ExtFunctionResult::Return(object_from_parts(values, root, "values")?))
         }
         pb::ext_function_result::Kind::Error(err) => Ok(ExtFunctionResult::Error(MontyException::try_from(err)?)),
         pb::ext_function_result::Kind::Future(call_id) => Ok(ExtFunctionResult::Future(call_id)),
@@ -77,7 +77,7 @@ impl TryFrom<pb::ResumeNameLookup> for NameLookupResult {
             .kind
             .ok_or(ProtoConvertError::MissingField("ResumeNameLookup.kind"))?;
         match kind {
-            pb::resume_name_lookup::Kind::Value(root) => Ok(Self::Value(value_from_parts(
+            pb::resume_name_lookup::Kind::Value(root) => Ok(Self::Value(object_from_parts(
                 lookup.values,
                 root,
                 "ResumeNameLookup.values",
