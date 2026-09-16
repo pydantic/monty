@@ -196,7 +196,7 @@ fn call_lru_cache_factory(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
             lru_cache::allocate(Some(func), Some(DEFAULT_MAXSIZE), typed_flag, vm)
         }
         Value::None => decorator(None, typed_flag, vm),
-        _ => Err(ExcType::lru_cache_bad_maxsize()),
+        _ => Err(lru_cache::bad_maxsize_error()),
     }
 }
 
