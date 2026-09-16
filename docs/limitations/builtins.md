@@ -82,7 +82,12 @@ These raise `NameError`:
     is snapshotted before the operation begins, so mutating that one is never
     observed at all — `s | t` and `t.update(s)` see all of `s`'s original
     elements even when `__eq__` clears `s` partway through, where CPython's
-    merge stops early.
+    merge stops early. A mutation that empties the set being *probed* rather
+    than walked is a resize to neither engine, but they still answer from
+    different sides of it: with `s`'s own `__eq__` clearing `s`,
+    `s.isdisjoint(t)` is `False` in Monty, which keeps the comparison that
+    matched, and `True` in CPython, which restarts the probe and finds the set
+    empty.
 - **Dict-view set operators re-hash the view's own keys** — `d.keys() - s`,
     `|`, `^`, `isdisjoint` and the reflected forms collect those keys through a
     live, resize-checked walk that calls `__hash__` on each one. CPython probes
@@ -91,8 +96,11 @@ These raise `NameError`:
     `RuntimeError: dictionary changed size during iteration` in Monty where
     CPython completes, as in `d.keys() - s`; CPython raises too wherever its own
     walk observes the change, as in `s - d.keys()` and `d.items() - s`.
-    `d.keys() & s` is the exception on both engines, walking the other operand
-    and probing the live dict instead, so the view's keys are never re-hashed.
+    `d.keys() & s` diverges the other way: Monty always walks the other operand
+    and probes the live dict, so the view's keys are never hashed and the
+    intersection completes, while CPython walks the view whenever the dict is no
+    larger than the other operand — hashing each of its keys into that operand —
+    and so raises where Monty returns a result.
     The operand that is *not* the view is snapshotted before the operation
     begins, so mutating that one is never observed. Absent mutation every result
     agrees. Set-to-set operators do not re-hash at all, and dict-view equality
