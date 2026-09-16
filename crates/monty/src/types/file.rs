@@ -69,7 +69,7 @@ use monty_types::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataAr
 use super::{
     LazyHeapSet, List, PyTrait, Type,
     bytes::{Bytes, bytes_repr_fmt},
-    str::{allocate_string, allocate_string_no_interning, allocate_string_with_interns},
+    str::{allocate_string, allocate_string_no_interning},
 };
 use crate::{
     args::ArgValues,
@@ -427,14 +427,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
         let file = self.get(vm.heap);
         let value = match method {
             StaticStrings::Name => file.name.as_ref().map_or_else(
-                || allocate_string_with_interns(file.path.as_str(), vm.heap, vm.interns),
+                || allocate_string(file.path.as_str(), vm.heap),
                 |name| name.to_value(vm.heap),
             ),
-            StaticStrings::Mode => allocate_string_with_interns(file.mode.as_str().to_owned(), vm.heap, vm.interns),
+            StaticStrings::Mode => allocate_string(file.mode.as_str().to_owned(), vm.heap),
             StaticStrings::Closed => Value::Bool(file.closed),
-            StaticStrings::Encoding if !file.mode.is_binary() => {
-                allocate_string_with_interns("utf-8", vm.heap, vm.interns)
-            }
+            StaticStrings::Encoding if !file.mode.is_binary() => allocate_string("utf-8", vm.heap),
             _ => {
                 return Err(ExcType::attribute_error(
                     self.py_type(vm).name(vm.heap, vm.interns),
@@ -972,7 +970,7 @@ fn compute_slice_text<'h>(
                     vm.heap.inc_ref(buffer_id);
                     Value::Ref(buffer_id)
                 } else {
-                    allocate_string_with_interns(tail.to_owned(), vm.heap, vm.interns)
+                    allocate_string(tail.to_owned(), vm.heap)
                 };
                 // Preserve `position` if it was already past `buffer_total`
                 // (set there by `seek()`) — CPython's read-at-EOF leaves the
@@ -985,7 +983,7 @@ fn compute_slice_text<'h>(
                 let take = buffer_total.saturating_sub(position).min(n);
                 let bytes_taken = tail.char_indices().nth(take).map_or(tail.len(), |(i, _)| i);
                 let slice = &tail[..bytes_taken];
-                let value = allocate_string_with_interns(slice.to_owned(), vm.heap, vm.interns);
+                let value = allocate_string(slice.to_owned(), vm.heap);
                 let new_pos = position + take;
                 let new_byte_pos = byte_position + bytes_taken;
                 (value, new_pos, new_byte_pos, new_pos >= buffer_total)
@@ -998,7 +996,7 @@ fn compute_slice_text<'h>(
                     }
                     None => (tail, tail.chars().count()),
                 };
-                let value = allocate_string_with_interns(slice.to_owned(), vm.heap, vm.interns);
+                let value = allocate_string(slice.to_owned(), vm.heap);
                 let new_pos = position + chars_consumed;
                 let new_byte_pos = byte_position + slice.len();
                 (value, new_pos, new_byte_pos, new_pos >= buffer_total)
@@ -1010,7 +1008,7 @@ fn compute_slice_text<'h>(
                     let rest = &tail[start..];
                     let end = rest.find('\n').map_or(rest.len(), |i| i + 1);
                     let line = &rest[..end];
-                    items.push(allocate_string_with_interns(line.to_owned(), vm.heap, vm.interns));
+                    items.push(allocate_string(line.to_owned(), vm.heap));
                     start += end;
                 }
                 let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
@@ -1311,7 +1309,7 @@ fn empty_result(binary: bool, vm: &VM<'_>) -> Value {
     if binary {
         Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(Vec::new()))))
     } else {
-        allocate_string_with_interns("", vm.heap, vm.interns)
+        allocate_string("", vm.heap)
     }
 }
 

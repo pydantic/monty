@@ -200,11 +200,9 @@ for i in range(10_000):
 r
 ";
 
-/// Method-dispatch benchmark: a tight loop of attribute calls spread across
-/// list, dict and str, where the methods themselves are trivial so the cost is
-/// dominated by resolving each attribute name to its implementation. Guards the
-/// `CallAttr` name-resolution path, which every builtin method call pays and
-/// which `list_append_*` only exercises through a single method name.
+/// Mixed list, dict and str method workload, including scanning and allocation.
+/// Kept for continuity with existing measurements; it does not isolate dispatch.
+/// Compare with [`ATTR_DISPATCH_MINIMAL`] to distinguish method costs from dispatch.
 const ATTR_DISPATCH: &str = "
 xs = []
 d = {}
@@ -216,6 +214,23 @@ for i in range(10_000):
     d['k'] = i
     r += d.get('k', 0)
     r += len(s.upper()) + len(s.lower()) + s.count('n') + len(s.split(' ')) + len(s.strip())
+r
+";
+
+/// Exercises several attribute names with cheap, non-allocating method bodies:
+/// operations on an empty list, a one-entry dict and a single-character string.
+/// Loop, argument binding, branching and arithmetic remain part of the measurement.
+const ATTR_DISPATCH_MINIMAL: &str = "
+xs = []
+d = {'k': 1}
+s = 'x'
+r = 0
+for _ in range(10_000):
+    xs.clear()
+    xs.reverse()
+    r += d.get('k', 0)
+    r += 1 if s.startswith('x') else 0
+    r += 1 if s.endswith('x') else 0
 r
 ";
 
@@ -601,6 +616,14 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("attr_dispatch__monty", |b| run_monty(b, ATTR_DISPATCH, 50_715_000));
     #[cfg(not(codspeed))]
     c.bench_function("attr_dispatch__cpython", |b| run_cpython(b, ATTR_DISPATCH, 50_715_000));
+
+    c.bench_function("attr_dispatch_minimal__monty", |b| {
+        run_monty(b, ATTR_DISPATCH_MINIMAL, 30_000);
+    });
+    #[cfg(not(codspeed))]
+    c.bench_function("attr_dispatch_minimal__cpython", |b| {
+        run_cpython(b, ATTR_DISPATCH_MINIMAL, 30_000);
+    });
 
     c.bench_function("list_append_str__monty", |b| run_monty(b, LIST_APPEND_STR, 100_000));
     #[cfg(not(codspeed))]

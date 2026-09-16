@@ -9,9 +9,10 @@
 //!
 //! StringIds are laid out as follows:
 //! * 0 to 127 - single character strings for all 128 ASCII characters
-//! * 128+ - strings interned per executor
+//! * 128 - the empty string
+//! * 129+ - strings interned per executor
 //!
-//! Static strings occupy ordinary executor-local slots. Their interner entries
+//! Other static strings occupy ordinary executor-local slots. Their interner entries
 //! retain a [`StaticStrings`] tag for dispatch, while snapshots serialize only
 //! their text so another build can load an unknown static string as owned text.
 
@@ -25,7 +26,7 @@ use strum::{EnumString, FromRepr, IntoStaticStr};
 use crate::function::FunctionMetadataFault;
 use crate::{
     function::Function,
-    hash::{ASCII_HASHES, HashValue, WithHash, hash_python_str},
+    hash::{HashValue, RESERVED_STRING_HASHES, WithHash, hash_python_str},
     heap::{HeapId, StableHeap},
 };
 
@@ -37,6 +38,9 @@ use crate::{
 pub struct StringId(u32);
 
 impl StringId {
+    /// Executor-independent ID for the empty string, immediately after ASCII.
+    pub const EMPTY: Self = Self(128);
+
     /// Creates a StringId from a raw index value.
     ///
     /// Used by the bytecode VM to reconstruct StringIds from operands stored
@@ -59,12 +63,11 @@ impl StringId {
     }
 }
 
-/// Executor-local intern IDs follow the globally reserved ASCII IDs.
-const INTERN_STRING_ID_OFFSET: usize = ASCII_STRS.len();
+/// Executor-local intern IDs follow ASCII and the empty string.
+const INTERN_STRING_ID_OFFSET: usize = RESERVED_STRS.len();
 
 /// Strings runtime paths can materialize without a corresponding source name.
 const CORE_STATIC_STRINGS: &[StaticStrings] = &[
-    StaticStrings::EmptyString,
     StaticStrings::Module,
     StaticStrings::NoneRepr,
     StaticStrings::TrueRepr,
@@ -75,11 +78,9 @@ const CORE_STATIC_STRINGS: &[StaticStrings] = &[
     StaticStrings::DunderDoc,
 ];
 
-/// Static strings for all 128 ASCII characters.
-///
-/// Exposed `pub(crate)` so the [`crate::hash::ASCII_HASHES`] table can hash
-/// them in lockstep — both tables must agree on the same `&str` per byte.
-pub(crate) static ASCII_STRS: [&str; 128] = const {
+/// Executor-independent text for ASCII IDs 0–127 and the empty-string ID 128.
+/// Hashes in [`crate::hash::RESERVED_STRING_HASHES`] use the same indices.
+pub(crate) static RESERVED_STRS: [&str; 129] = const {
     // Initialize array of 128 bytes which will be used as the raw storage
     const ASCII_BYTES: [u8; 128] = const {
         let mut bytes: [u8; 128] = [0; 128];
@@ -91,7 +92,7 @@ pub(crate) static ASCII_STRS: [&str; 128] = const {
         bytes
     };
     // Index into the above array to build the `&'static str` forms
-    let mut strs: [&str; 128] = [""; 128];
+    let mut strs: [&str; 129] = [""; 129];
     let mut i = 0;
     while i < 128 {
         strs[i] = match str::from_utf8(from_ref(&ASCII_BYTES[i])) {
@@ -1942,7 +1943,7 @@ impl<'de> serde::Deserialize<'de> for StringEntries {
 
 /// Interns `s` into the executor-local string table.
 ///
-/// ASCII remains globally addressable; every other string receives an ordinary
+/// ASCII and empty strings remain globally addressable; other strings receive an ordinary
 /// dense interner slot. Static text retains a tag in that slot rather than
 /// encoding the tag in its `StringId`.
 fn intern_str(
@@ -1951,7 +1952,9 @@ fn intern_str(
     strings: &StringEntries,
     s: &str,
 ) -> StringId {
-    if s.len() == 1 {
+    if s.is_empty() {
+        StringId::EMPTY
+    } else if s.len() == 1 {
         StringId::from_ascii(s.as_bytes()[0])
     } else if let Ok(value) = StaticStrings::from_str(s) {
         intern_static(static_string_ids, strings, value)
@@ -1970,20 +1973,21 @@ fn intern_static(
     strings: &StringEntries,
     value: StaticStrings,
 ) -> StringId {
-    let existing = static_string_ids.borrow().get(&value).copied();
-    if let Some(id) = existing {
-        id
+    let text: &'static str = value.into();
+    if text.is_empty() {
+        StringId::EMPTY
+    } else if text.len() == 1 {
+        StringId::from_ascii(text.as_bytes()[0])
     } else {
-        let text: &'static str = value.into();
-        let id = if text.len() == 1 {
-            StringId::from_ascii(text.as_bytes()[0])
+        let existing = static_string_ids.borrow().get(&value).copied();
+        if let Some(id) = existing {
+            id
         } else {
             let id = next_string_id(strings.len());
             strings.push(InternedString::static_string(value));
+            static_string_ids.borrow_mut().insert(value, id);
             id
-        };
-        static_string_ids.borrow_mut().insert(value, id);
-        id
+        }
     }
 }
 
@@ -1999,7 +2003,9 @@ fn get_string_id_by_name(
     static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
     s: &str,
 ) -> Option<StringId> {
-    if s.len() == 1 {
+    if s.is_empty() {
+        Some(StringId::EMPTY)
+    } else if s.len() == 1 {
         Some(StringId::from_ascii(s.as_bytes()[0]))
     } else if let Ok(value) = StaticStrings::from_str(s) {
         static_string_ids.borrow().get(&value).copied()
@@ -2012,10 +2018,10 @@ fn get_string_id_by_name(
 ///
 /// # Panics
 ///
-/// Panics if the ID is neither ASCII nor a slot in this interner.
+/// Panics if the ID is neither reserved nor a slot in this interner.
 fn get_str(strings: &StringEntries, id: StringId) -> &str {
-    if let Some(ascii_str) = ASCII_STRS.get(id.index()) {
-        ascii_str
+    if let Some(text) = RESERVED_STRS.get(id.index()) {
+        text
     } else {
         strings[id.index() - INTERN_STRING_ID_OFFSET].as_str()
     }
@@ -2024,7 +2030,9 @@ fn get_str(strings: &StringEntries, id: StringId) -> &str {
 /// Returns the static tag stored at `id`, if any.
 #[inline]
 fn get_static_string(strings: &StringEntries, id: StringId) -> Option<StaticStrings> {
-    if id.index() < INTERN_STRING_ID_OFFSET {
+    if id == StringId::EMPTY {
+        Some(StaticStrings::EmptyString)
+    } else if id.index() < INTERN_STRING_ID_OFFSET {
         StaticStrings::from_repr(u16::try_from(id.index()).expect("ASCII ID fits u16"))
     } else {
         strings[id.index() - INTERN_STRING_ID_OFFSET].static_tag
@@ -2218,7 +2226,7 @@ impl Interns {
     }
 
     /// Interns source or host-supplied text, deduplicating it against existing entries.
-    /// ASCII uses reserved IDs; all other strings receive stable session-local IDs.
+    /// ASCII and empty strings use reserved IDs; others receive stable session-local IDs.
     pub(crate) fn intern(&mut self, s: &str) -> StringId {
         intern_str(&mut self.string_id_by_name, &self.static_string_ids, &self.strings, s)
     }
@@ -2286,7 +2294,7 @@ impl Interns {
 
     /// Returns the Python hash for an interned string.
     ///
-    /// ASCII hashes remain globally lazy. Every executor-local entry, static
+    /// Reserved-string hashes remain globally lazy. Every executor-local entry, static
     /// or owned, computes and stores its hash once when interned or loaded.
     ///
     /// All three paths must agree with [`hash_python_str`] applied to the
@@ -2298,8 +2306,8 @@ impl Interns {
     /// Panics if the `StringId` is invalid (same as [`Self::get_str`]).
     #[inline]
     pub fn str_hash(&self, id: StringId) -> HashValue {
-        if id.index() < ASCII_STRS.len() {
-            ASCII_HASHES.get_or_compute(id.index(), || hash_python_str(ASCII_STRS[id.index()]))
+        if id.index() < RESERVED_STRS.len() {
+            RESERVED_STRING_HASHES.get_or_compute(id.index(), || hash_python_str(RESERVED_STRS[id.index()]))
         } else {
             self.strings[id.index() - INTERN_STRING_ID_OFFSET].hash()
         }

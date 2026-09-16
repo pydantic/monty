@@ -6,11 +6,14 @@
 //! it is `Serialize`/`Deserialize`, so it is round-tripped through postcard
 //! directly to cover the serde impls a dump ultimately rests on.
 
+use std::fmt::Write;
+
 use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, MontyException, MontyObject, MontyType, NameLookupResult, PrintWriter, ResourceTracker,
 };
 use serde::{Serialize, de::DeserializeOwned};
+use serde_json::to_value;
 
 /// Round-trips compiled code through postcard.
 fn round_trip<T: Serialize + DeserializeOwned>(value: &T) -> T {
@@ -148,6 +151,52 @@ fn static_interns_deserialize_as_unknown_text() {
     assert_eq!(
         loaded.run_no_limits(vec![]).unwrap(),
         MontyObject::String("mystery".to_owned()),
+    );
+}
+
+/// Reserved strings retain their IDs across snapshots without occupying local slots.
+#[test]
+fn reserved_strings_round_trip_without_local_entries() {
+    let mut code = String::from("['',");
+    let mut expected = vec![MontyObject::String(String::new())];
+    for byte in 0..128u8 {
+        write!(code, "'\\x{byte:02x}',").unwrap();
+        expected.push(MontyObject::String(char::from(byte).to_string()));
+    }
+    code.push(']');
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+    let serialized = to_value(&runner).unwrap();
+    for entry in serialized["executor"]["interns"]["strings"].as_array().unwrap() {
+        assert!(entry.as_str().unwrap().len() > 1);
+    }
+    let loaded = round_trip(&runner);
+    assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::List(expected));
+}
+
+/// Heap-only allocation paths, builders and static attributes reuse the empty ID.
+#[test]
+fn empty_string_allocation_after_snapshot() {
+    let code = "
+import sys
+empty = ''
+values = [empty, x, str(), str(encoding='utf-8'), b''.decode(),
+          '{}'.format(x), f'{x}', ''.join([]), 'x'[:0], 'x' * 0,
+          empty + empty, 'x'.replace('x', ''), sys.prefix]
+assert len(set(values)) == 1
+assert len({value: 1 for value in values}) == 1
+[value is empty for value in values]
+";
+    let runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let loaded = round_trip(&runner);
+    assert_eq!(
+        loaded.run_no_limits(vec![MontyObject::String(String::new())]).unwrap(),
+        MontyObject::List(vec![MontyObject::Bool(true); 13]),
     );
 }
 

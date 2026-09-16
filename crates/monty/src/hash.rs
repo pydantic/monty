@@ -18,8 +18,8 @@
 //!   keeps the invariant "interned and heap values with equal content hash
 //!   identically" local rather than scattered, since otherwise dict lookups
 //!   would silently miss.
-//! * [`ASCII_HASHES`] — lazily computed hashes for the pre-interned ASCII
-//!   single-character strings.
+//! * [`RESERVED_STRING_HASHES`] — lazily computed hashes for the reserved ASCII
+//!   single-character strings and the empty string.
 
 use std::{
     collections::hash_map::DefaultHasher,
@@ -300,7 +300,7 @@ impl<'de> serde::Deserialize<'de> for WithHash<BigInt> {
 /// to fill the same slot is benign: they compute the same value and one
 /// wins the store; the other's store overwrites with the same bits.
 ///
-/// Used for `static` precomputed-hash tables (ASCII / `StaticStrings`).
+/// Used for the reserved ASCII and empty-string hash table.
 /// `Cell<Option<HashValue>>` would be the equivalent for non-`static` /
 /// per-instance use (Phase 2's per-type heap caches).
 pub(crate) struct LazyHashTable<const N: usize> {
@@ -333,9 +333,6 @@ impl<const N: usize> LazyHashTable<N> {
     }
 }
 
-/// Per-slot lazy hashes for the 128 ASCII single-character strings.
-///
-/// Indexed by the byte value (`0..128`). Each slot is filled on first
-/// access via [`hash_python_str`] applied to the matching entry of
-/// [`ASCII_STRS`].
-pub(crate) static ASCII_HASHES: LazyHashTable<128> = LazyHashTable::new();
+/// Per-slot lazy hashes for ASCII IDs 0–127 and the empty-string ID 128.
+/// Each slot hashes the matching entry of [`crate::intern::RESERVED_STRS`].
+pub(crate) static RESERVED_STRING_HASHES: LazyHashTable<129> = LazyHashTable::new();

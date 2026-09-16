@@ -82,9 +82,7 @@ impl Str {
         defer_drop!(errors, vm);
         if encoding.is_none() && errors.is_none() {
             return match object {
-                None => Ok(Value::InternString(
-                    vm.interns.intern_static(StaticStrings::EmptyString),
-                )),
+                None => Ok(Value::InternString(StringId::EMPTY)),
                 Some(v) => v.py_str(vm),
             };
         }
@@ -94,9 +92,7 @@ impl Str {
         str_ctor_arg_check(errors.as_ref(), "errors", vm)?;
         let Some(object) = object else {
             // A missing object wins over the decoding args: `str(encoding='utf-8')` is ''.
-            return Ok(Value::InternString(
-                vm.interns.intern_static(StaticStrings::EmptyString),
-            ));
+            return Ok(Value::InternString(StringId::EMPTY));
         };
         let bytes: &[u8] = match object {
             Value::InternBytes(bytes_id) => vm.interns.get_bytes(*bytes_id),
@@ -112,7 +108,7 @@ impl Str {
         let errors = ctor_str_arg(errors.as_ref(), "strict", vm)?;
         let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
         let s = codec.decode(bytes, errors)?;
-        Ok(allocate_string_with_interns(s, vm.heap, vm.interns))
+        Ok(allocate_string(s, vm.heap))
     }
 
     /// Handles slice-based indexing for strings.
@@ -120,7 +116,7 @@ impl Str {
     /// Returns a new string containing the selected characters (Unicode-aware).
     fn getitem_slice(&self, vm: &VM<'_>, slice: &super::Slice) -> RunResult<Value> {
         let result_str: Box<str> = slice_collect_iterator(vm, slice, self.0.chars(), |c| c)?;
-        Ok(allocate_string_with_interns(result_str, vm.heap, vm.interns))
+        Ok(allocate_string(result_str, vm.heap))
     }
 }
 
@@ -165,36 +161,15 @@ fn ctor_str_arg<'a>(arg: Option<&'a Value>, default: &'a str, vm: &'a VM<'_>) ->
     }
 }
 
-/// Allocates a string, using interned versions when possible.
-///
-/// Single ASCII characters use their reserved IDs; all other strings are
-/// allocated on the heap because this heap-only helper has no executor interner.
-///
-/// Prefer this over manual `Str` construction so callsites consistently reuse
-/// ASCII values. When the caller can prove the string is not one ASCII byte,
-/// [`allocate_string_no_interning`] avoids the length branch.
-///
-/// The dual bound `AsRef<str> + Into<Box<str>>` lets the function peek the
-/// length via the borrow before committing to a conversion. Callers with an
-/// owned `String`/`Box<str>` move the value in (consumed only on the heap
-/// path), and borrowed `&str` callers avoid an upfront `to_owned()` —
-/// allocation happens only when the string actually needs heap storage.
-///
+/// Allocates a string, reusing reserved IDs for empty strings and ASCII characters.
+/// Other strings are heap-allocated without consulting the executor interner.
+/// Owned buffers move into heap storage; borrowed text is copied only when needed.
 pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Value {
     let bytes = s.as_ref().as_bytes();
     match bytes.len() {
-        0 => allocate_string_no_interning(s, heap),
+        0 => Value::InternString(StringId::EMPTY),
         1 => Value::InternString(StringId::from_ascii(bytes[0])),
         _ => allocate_string_no_interning(s, heap),
-    }
-}
-
-/// Allocates a string while reusing the executor's canonical empty value.
-pub fn allocate_string_with_interns(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap, interns: &Interns) -> Value {
-    if s.as_ref().is_empty() {
-        Value::InternString(interns.intern_static(StaticStrings::EmptyString))
-    } else {
-        allocate_string(s, heap)
     }
 }
 
@@ -211,9 +186,9 @@ pub fn allocate_string_no_interning(s: impl Into<Box<str>>, heap: &Heap) -> Valu
 }
 
 /// Repeats a string after validating the allocation against resource limits.
-pub(crate) fn repeat_str(value: &str, count: usize, heap: &Heap, interns: &Interns) -> Result<Value, ResourceError> {
+pub(crate) fn repeat_str(value: &str, count: usize, heap: &Heap) -> Result<Value, ResourceError> {
     check_repeat_size(value.len(), count, &heap.tracker)?;
-    Ok(allocate_string_with_interns(value.repeat(count), heap, interns))
+    Ok(allocate_string(value.repeat(count), heap))
 }
 
 /// Allocates a single character as a string value.
@@ -237,13 +212,13 @@ pub fn allocate_char(c: char, heap: &Heap) -> Value {
 /// via `push_str`, instead of `format!`'s runtime formatting machinery. The
 /// result size is bounded by two already-tracked inputs, so a plain `String`
 /// is fine per the `StringBuilder` rule.
-pub(crate) fn concat_allocate_str(a: &str, b: &str, heap: &Heap, interns: &Interns) -> Result<Value, ResourceError> {
+pub(crate) fn concat_allocate_str(a: &str, b: &str, heap: &Heap) -> Result<Value, ResourceError> {
     let result_len = a.len().saturating_add(b.len());
     check_repeat_size(result_len, 1, &heap.tracker)?;
     let mut concat = String::with_capacity(result_len);
     concat.push_str(a);
     concat.push_str(b);
-    Ok(allocate_string_with_interns(concat, heap, interns))
+    Ok(allocate_string(concat, heap))
 }
 
 /// Gets the character at a given index in a string, handling negative indices.
@@ -349,11 +324,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     }
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(allocate_string_with_interns(
-            self.get(vm.heap).as_str(),
-            vm.heap,
-            vm.interns,
-        ))
+        Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap))
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -362,24 +333,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
             Value::Ref(id) if let HeapData::Str(value) = vm.heap.get(*id) => value.as_str(),
             _ => return Ok(None),
         };
-        Ok(Some(concat_allocate_str(
-            self.get(vm.heap).as_str(),
-            other,
-            vm.heap,
-            vm.interns,
-        )?))
+        Ok(Some(concat_allocate_str(self.get(vm.heap).as_str(), other, vm.heap)?))
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(count) = repeat_count(other, vm)? else {
             return Ok(None);
         };
-        Ok(Some(repeat_str(
-            self.get(vm.heap).as_str(),
-            count,
-            vm.heap,
-            vm.interns,
-        )?))
+        Ok(Some(repeat_str(self.get(vm.heap).as_str(), count, vm.heap)?))
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -644,7 +605,7 @@ fn str_join<'h>(separator: &HeapRead<'h, str>, iterable: Value, vm: &mut VM<'h>)
     }
 
     // Allocate result (uses interned empty string if result is empty)
-    Ok(allocate_string_with_interns(result, vm.heap, vm.interns))
+    Ok(allocate_string(result, vm.heap))
 }
 
 // =============================================================================
@@ -653,12 +614,12 @@ fn str_join<'h>(separator: &HeapRead<'h, str>, iterable: Value, vm: &mut VM<'h>)
 
 /// Implements Python's `str.lower()` method.
 fn str_lower(s: &str, vm: &VM<'_>) -> Value {
-    allocate_string_with_interns(lowercase(s), vm.heap, vm.interns)
+    allocate_string(lowercase(s), vm.heap)
 }
 
 /// Implements Python's `str.upper()` method.
 fn str_upper(s: &str, vm: &VM<'_>) -> Value {
-    allocate_string_with_interns(uppercase(s), vm.heap, vm.interns)
+    allocate_string(uppercase(s), vm.heap)
 }
 
 /// Implements Python's `str.capitalize()` method.
@@ -673,7 +634,7 @@ fn str_capitalize(s: &str, vm: &VM<'_>) -> Value {
             type_record(c).push_lower(&mut result, s, i, c);
         }
     }
-    allocate_string_with_interns(result, vm.heap, vm.interns)
+    allocate_string(result, vm.heap)
 }
 
 /// Implements Python's `str.title()` method.
@@ -693,7 +654,7 @@ fn str_title(s: &str, vm: &VM<'_>) -> Value {
         prev_is_cased = record.is_cased();
     }
 
-    allocate_string_with_interns(result, vm.heap, vm.interns)
+    allocate_string(result, vm.heap)
 }
 
 /// Implements Python's `str.swapcase()` method.
@@ -713,14 +674,14 @@ fn str_swapcase(s: &str, vm: &VM<'_>) -> Value {
         }
     }
 
-    allocate_string_with_interns(result, vm.heap, vm.interns)
+    allocate_string(result, vm.heap)
 }
 
 /// Implements Python's `str.casefold()` method.
 ///
 /// Uses full default Unicode folding without normalization or locale tailoring.
 fn str_casefold(s: &str, vm: &VM<'_>) -> Value {
-    allocate_string_with_interns(casefold(s), vm.heap, vm.interns)
+    allocate_string(casefold(s), vm.heap)
 }
 
 // =============================================================================
@@ -1128,7 +1089,7 @@ fn str_strip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
         Some(c) => s.trim_matches(|ch| c.contains(ch)).to_owned(),
         None => s.trim_matches(is_space).to_owned(),
     };
-    Ok(allocate_string_with_interns(result, vm.heap, vm.interns))
+    Ok(allocate_string(result, vm.heap))
 }
 
 /// Implements Python's `str.lstrip(chars?)` method.
@@ -1141,7 +1102,7 @@ fn str_lstrip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
         Some(c) => s.trim_start_matches(|ch| c.contains(ch)).to_owned(),
         None => s.trim_start_matches(is_space).to_owned(),
     };
-    Ok(allocate_string_with_interns(result, vm.heap, vm.interns))
+    Ok(allocate_string(result, vm.heap))
 }
 
 /// Implements Python's `str.rstrip(chars?)` method.
@@ -1154,7 +1115,7 @@ fn str_rstrip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
         Some(c) => s.trim_end_matches(|ch| c.contains(ch)).to_owned(),
         None => s.trim_end_matches(is_space).to_owned(),
     };
-    Ok(allocate_string_with_interns(result, vm.heap, vm.interns))
+    Ok(allocate_string(result, vm.heap))
 }
 
 /// Parses the optional chars argument for strip methods.
@@ -1184,7 +1145,7 @@ fn str_removeprefix<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>)
 
     let s = s.get(vm.heap);
     let result = s.strip_prefix(&prefix).unwrap_or(s).to_owned();
-    Ok(allocate_string_with_interns(result, vm.heap, vm.interns))
+    Ok(allocate_string(result, vm.heap))
 }
 
 /// Implements Python's `str.removesuffix(suffix)` method.
@@ -1198,7 +1159,7 @@ fn str_removesuffix<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>)
 
     let s = s.get(vm.heap);
     let result = s.strip_suffix(&suffix).unwrap_or(s).to_owned();
-    Ok(allocate_string_with_interns(result, vm.heap, vm.interns))
+    Ok(allocate_string(result, vm.heap))
 }
 
 // =============================================================================
@@ -1243,7 +1204,7 @@ fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
     let mut list_items = Vec::with_capacity(parts.len());
     for (i, part) in parts.into_iter().enumerate() {
         vm.heap.tracker.check_memory_time_every(i)?;
-        list_items.push(allocate_string_with_interns(part, vm.heap, vm.interns));
+        list_items.push(allocate_string(part, vm.heap));
     }
 
     let list = super::List::new(list_items);
@@ -1292,7 +1253,7 @@ fn str_rsplit<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
     let mut list_items = Vec::with_capacity(parts.len());
     for (i, part) in parts.into_iter().enumerate() {
         vm.heap.tracker.check_memory_time_every(i)?;
-        list_items.push(allocate_string_with_interns(part, vm.heap, vm.interns));
+        list_items.push(allocate_string(part, vm.heap));
     }
 
     let list = super::List::new(list_items);
@@ -1431,7 +1392,7 @@ fn str_splitlines<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
 
         let line = if keepends { &s[start..end] } else { &s[start..line_end] };
 
-        lines.push(allocate_string_with_interns(line, vm.heap, vm.interns));
+        lines.push(allocate_string(line, vm.heap));
 
         start = end;
     }
@@ -1490,9 +1451,9 @@ fn str_partition<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) ->
         None => (s, "", ""),
     };
 
-    let before_val = allocate_string_with_interns(before, vm.heap, vm.interns);
-    let sep_val = allocate_string_with_interns(sep_found, vm.heap, vm.interns);
-    let after_val = allocate_string_with_interns(after, vm.heap, vm.interns);
+    let before_val = allocate_string(before, vm.heap);
+    let sep_val = allocate_string(sep_found, vm.heap);
+    let after_val = allocate_string(after, vm.heap);
 
     Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
@@ -1519,9 +1480,9 @@ fn str_rpartition<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
         None => ("", "", s),
     };
 
-    let before_val = allocate_string_with_interns(before, vm.heap, vm.interns);
-    let sep_val = allocate_string_with_interns(sep_found, vm.heap, vm.interns);
-    let after_val = allocate_string_with_interns(after, vm.heap, vm.interns);
+    let before_val = allocate_string(before, vm.heap);
+    let sep_val = allocate_string(sep_found, vm.heap);
+    let after_val = allocate_string(after, vm.heap);
 
     Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
@@ -1551,7 +1512,7 @@ fn str_replace<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> R
         s.replacen(&old, &new, n)
     };
 
-    Ok(allocate_string_with_interns(result, vm.heap, vm.interns))
+    Ok(allocate_string(result, vm.heap))
 }
 
 /// Parses arguments for the replace method.
@@ -1597,7 +1558,7 @@ fn str_center<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
     let len = s.chars().count();
 
     if width <= len {
-        Ok(allocate_string_with_interns(s, vm.heap, vm.interns))
+        Ok(allocate_string(s, vm.heap))
     } else {
         // Exact byte capacity: the original string (`s.len()` bytes, possibly
         // multibyte) plus `pad` fillchars of `fillchar.len_utf8()` bytes each.
@@ -1627,7 +1588,7 @@ fn str_ljust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
     let len = s.chars().count();
 
     if width <= len {
-        Ok(allocate_string_with_interns(s, vm.heap, vm.interns))
+        Ok(allocate_string(s, vm.heap))
     } else {
         let pad = width - len;
         let capacity = s.len().saturating_add(pad.saturating_mul(fillchar.len_utf8()));
@@ -1649,7 +1610,7 @@ fn str_rjust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
     let len = s.chars().count();
 
     if width <= len {
-        Ok(allocate_string_with_interns(s, vm.heap, vm.interns))
+        Ok(allocate_string(s, vm.heap))
     } else {
         let pad = width - len;
         let capacity = s.len().saturating_add(pad.saturating_mul(fillchar.len_utf8()));
@@ -1714,7 +1675,7 @@ fn str_zfill<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
     let len = s.chars().count();
 
     if width <= len {
-        Ok(allocate_string_with_interns(s, vm.heap, vm.interns))
+        Ok(allocate_string(s, vm.heap))
     } else {
         // Exact byte capacity: zfill pads with ASCII '0' (1 byte each), so the
         // result is `s.len() + pad` bytes — `s.len()` (possibly multibyte)
