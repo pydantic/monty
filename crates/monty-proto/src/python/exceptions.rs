@@ -2,7 +2,7 @@
 //! exceptions, in both directions.
 //!
 //! `exc_monty_to_py` rebuilds the closest native exception for a sandbox error
-//! surfacing to the host; `exc_py_to_monty`/`exc_to_monty_object` classify a
+//! surfacing to the host; `exc_py_to_monty`/`exc_to_monty_node` classify a
 //! host exception flowing into the sandbox (external-function errors, resumed
 //! snapshots). The Python-facing `MontyError` class hierarchy stays in
 //! `pydantic-monty` — this module only maps values.

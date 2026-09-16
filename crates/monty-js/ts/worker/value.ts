@@ -35,11 +35,12 @@ export function decodeValue(value: { root: number; nodes: ValueNode[] }): unknow
 /**
  * Builds one message's arena from JavaScript values, preserving sharing.
  *
- * Every container and marker object is memoized by identity for the life of
- * the encoder, so pushing the same object twice (within one value, or across
- * the inputs of a feed) yields the same node index and the sandbox sees one
- * object; primitives are re-encoded per reference. A class with no eager
- * attrs has one node per id however it is spelled. Nesting is walked on an
+ * Every container, class instance and class type is memoized by identity for
+ * the life of the encoder, so pushing the same object twice (within one
+ * value, or across the inputs of a feed) yields the same node index and the
+ * sandbox sees one object; primitives and leaf markers (dates, exceptions,
+ * ...) are immutable values and are re-encoded per reference. A class with no
+ * eager attrs has one node per id however it is spelled. Nesting is walked on an
  * explicit stack, so depth is bounded by memory, not the call stack. A cycle
  * is rejected with `TypeError`: the arena is post-order, so a value cannot
  * reach itself.
@@ -123,7 +124,9 @@ export class ArenaEncoder {
     } else if (typeof value !== 'object') {
       throw unsupported(`value of type ${typeof value}`)
     } else if (Array.isArray(value)) {
-      return this.enter(value, { kind: isTuple(value) ? 'tuple-value' : 'list-value' }, value.map(asChild))
+      // `Array.from` visits the holes of a sparse array as `undefined` (`None`)
+      // where `map` would skip them and leave holes in the children
+      return this.enter(value, { kind: isTuple(value) ? 'tuple-value' : 'list-value' }, Array.from(value, asChild))
     } else if (value instanceof Map) {
       return this.enter(value, { kind: 'dict' }, pairChildren([...value.entries()]))
     } else if (value instanceof Set) {

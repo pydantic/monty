@@ -3,8 +3,9 @@
 //! Bidirectional conversions between PyO3 Python objects and the boundary's
 //! value arenas (`MontyGraph`) and `MontyException`, shared by every embedder
 //! that hosts a real CPython (currently the `pydantic-monty` extension module).
-//! Sharing is preserved both ways: one host object referenced twice in a
-//! message crosses as one node, and one node decodes to one Python object.
+//! Sharing is preserved both ways for containers and wrappers: one such host
+//! object referenced twice in a message crosses as one node, and one node
+//! decodes to one Python object (leaves are re-encoded per reference).
 //! Lives here (rather than in `pydantic-monty`) so consumers depend on one
 //! leaf crate instead of linking the whole extension module as an rlib.
 //!

@@ -317,3 +317,28 @@ fn arena_round_trips_through_serde() {
     let bytes = postcard::to_allocvec(&value).unwrap();
     assert_eq!(postcard::from_bytes::<MontyObject>(&bytes).unwrap(), value);
 }
+
+/// A list nested `depth` times around `1`, built without recursion.
+fn deep_chain(depth: usize) -> MontyObject {
+    let mut graph = MontyGraph::new();
+    let mut root = graph.push(MontyNode::Int(1));
+    for _ in 0..depth {
+        root = graph.push(MontyNode::List(vec![root]));
+    }
+    MontyObject::new(graph, root).unwrap()
+}
+
+/// Copying a value out of an arena and rendering its repr walk the arena
+/// without recursing, so a deep value from an untrusted worker cannot
+/// overflow the host's stack.
+#[test]
+fn deep_values_copy_and_render_without_recursion() {
+    let depth = 200_000;
+    let chain = deep_chain(depth);
+    let copy = chain.as_ref().to_owned();
+    assert_eq!(copy.graph.len(), depth + 1);
+    assert_eq!(copy, chain);
+    let repr = chain.py_repr();
+    assert_eq!(repr.len(), 2 * depth + 1);
+    assert_eq!(&repr[depth - 1..=depth + 1], "[1]");
+}

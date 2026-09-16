@@ -521,10 +521,11 @@ pub fn js_to_monty<'e>(value: Unknown<'e>, env: &'e Env) -> Result<MontyObject> 
 /// - `Object` with `__monty_type__` → corresponding Monty type
 /// - `Object` → `Dict` (string keys only)
 ///
-/// Every container and marker is memoized by JS identity (in a JS `Map`, which
-/// also keeps it alive) for the life of the encoder, so pushing the same
-/// object twice yields the same node id and the sandbox sees one object;
-/// leaves are re-encoded per reference. Nesting is walked on an explicit
+/// Every container, class instance and class type is memoized by JS identity
+/// (in a JS `Map`, which also keeps it alive) for the life of the encoder, so
+/// pushing the same object twice yields the same node id and the sandbox sees
+/// one object; leaves, including leaf markers such as dates, are immutable
+/// values and are re-encoded per reference. Nesting is walked on an explicit
 /// stack, so depth is bounded by memory, not the native stack. A cycle is an
 /// error: the arena is post-order, so a value cannot reach itself.
 pub struct GraphEncoder<'e> {

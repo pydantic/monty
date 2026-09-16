@@ -17,8 +17,10 @@
 //!   an unvalidated value, then checks the arena's index invariants once.
 //!
 //! The arena is flat, so decoding never recurses: nesting depth is not
-//! bounded by prost's recursion limit and the decode budget is charged per
-//! node, including the vector slots the arena reserves.
+//! bounded by prost's recursion limit. The decode budget is charged before
+//! anything grows — the arena's slots, every container's child ids, a call's
+//! argument ids — and each leaf's payload once built, with no temporary
+//! vectors, so a frame never occupies more host memory than the budget.
 //!
 //! Byte-for-byte compatibility with prost's generated encoding is enforced by
 //! the differential tests in `tests/differential.rs`, which compare this
@@ -71,20 +73,6 @@ impl WireArena {
     pub fn into_graph(self) -> Result<MontyGraph, ProtoConvertError> {
         MontyGraph::from_nodes(self.0).map_err(|err| graph_error(&err))
     }
-
-    /// Appends a decoded node, charging the decode budget for the vector
-    /// slot (doubling growth, as `Vec` does) and the node's own payload.
-    fn push_charged(&mut self, node: MontyNode) -> Result<(), DecodeError> {
-        let nodes = &mut self.0;
-        if nodes.len() == nodes.capacity() {
-            let new_capacity = nodes.capacity().saturating_mul(2).max(MIN_ARENA_CAPACITY);
-            charge_decode((new_capacity - nodes.capacity()).saturating_mul(size_of::<MontyNode>()))?;
-            nodes.reserve_exact(new_capacity - nodes.len());
-        }
-        charge_decode(node.host_size().saturating_sub(size_of::<MontyNode>()))?;
-        nodes.push(node);
-        Ok(())
-    }
 }
 
 impl From<MontyGraph> for WireArena {
@@ -93,8 +81,8 @@ impl From<MontyGraph> for WireArena {
     }
 }
 
-/// Smallest reservation the decoder makes when an arena starts growing.
-const MIN_ARENA_CAPACITY: usize = 4;
+/// Smallest reservation the decoder makes when a vector starts growing.
+const MIN_VEC_CAPACITY: usize = 4;
 
 /// Fewest wire bytes one arena node can occupy (entry key, length, kind key,
 /// empty `Unit` payload), which caps how many nodes a `node_count` hint may
@@ -135,23 +123,25 @@ impl Message for WireArena {
                 // frame's budget.
                 if self.0.capacity() == 0 {
                     let reserve = (hint as usize).min(buf.remaining() / MIN_NODE_WIRE_BYTES);
-                    charge_decode(reserve.saturating_mul(size_of::<MontyNode>()))?;
-                    self.0.reserve_exact(reserve);
+                    reserve_charged(&mut self.0, reserve)?;
                 }
                 Ok(())
             }
             2 => {
+                // the node's payload was charged as it decoded; this charges its slot
                 let node = merge_message::<NodeBody>(wire_type, buf, ctx)?
                     .0
                     .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("MontyNode.kind")))?;
-                self.push_charged(node)
+                push_charged(&mut self.0, node)
             }
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
 
+    /// Releases the nodes rather than keeping their capacity, so a reused
+    /// arena never holds slots the next frame's budget did not charge.
     fn clear(&mut self) {
-        self.0.clear();
+        self.0 = Vec::new();
     }
 }
 
@@ -258,8 +248,7 @@ impl Message for WireFunctionCall {
             2 => merge_ids(wire_type, buf, ctx, &mut self.args),
             3 => {
                 let pair: pb::NodePair = merge_message(wire_type, buf, ctx)?;
-                self.kwargs.push((NodeId(pair.key), NodeId(pair.value)));
-                Ok(())
+                push_charged(&mut self.kwargs, (NodeId(pair.key), NodeId(pair.value)))
             }
             4 => encoding::uint32::merge(wire_type, &mut self.call_id, buf, ctx),
             5 => {
@@ -277,8 +266,8 @@ impl Message for WireFunctionCall {
     fn clear(&mut self) {
         self.function_name.clear();
         self.values.clear();
-        self.args.clear();
-        self.kwargs.clear();
+        self.args = Vec::new();
+        self.kwargs = Vec::new();
         self.call_id = 0;
         self.object_id = None;
         self.allow_eager_await = false;
@@ -820,7 +809,52 @@ impl Message for NodeBody {
 /// means the tag was unknown and skipped (forward compatibility, matching
 /// prost's generated decoder). Child ids are range-checked later by
 /// [`WireArena::into_graph`], once every node has arrived.
+///
+/// Container kinds decode through the charged bodies below, so their id and
+/// name vectors are paid for as they fill; leaves are charged once built.
 fn decode_field(
+    tag: u32,
+    wire_type: WireType,
+    buf: &mut impl Buf,
+    ctx: DecodeContext,
+) -> Result<Option<MontyNode>, DecodeError> {
+    let node = match tag {
+        tag::LIST => MontyNode::List(merge_message::<IdList>(wire_type, buf, ctx)?.0),
+        tag::TUPLE => MontyNode::Tuple(merge_message::<IdList>(wire_type, buf, ctx)?.0),
+        tag::SET => MontyNode::Set(merge_message::<IdList>(wire_type, buf, ctx)?.0),
+        tag::FROZEN_SET => MontyNode::FrozenSet(merge_message::<IdList>(wire_type, buf, ctx)?.0),
+        tag::NAMED_TUPLE => {
+            let nt: NamedTupleBody = merge_message(wire_type, buf, ctx)?;
+            MontyNode::NamedTuple {
+                type_name: nt.type_name,
+                field_names: nt.field_names,
+                values: nt.values,
+            }
+        }
+        tag::DICT => MontyNode::Dict(merge_message::<IdPairs>(wire_type, buf, ctx)?.0),
+        tag::TYPE => type_to_node(merge_message(wire_type, buf, ctx)?)?,
+        tag::CLASS_INSTANCE => {
+            let ci: ClassInstanceBody = merge_message(wire_type, buf, ctx)?;
+            let instance_id = ci
+                .instance_id
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstanceNode.instance_id")))?;
+            let attrs = ci
+                .attrs
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstanceNode.attrs")))?;
+            MontyNode::ClassInstance {
+                class_type: NodeId(ci.class_type),
+                instance_id: pb_uuid_to_monty(&instance_id, "ClassInstanceNode.instance_id")?,
+                attrs: attrs.0,
+            }
+        }
+        _ => return decode_leaf(tag, wire_type, buf, ctx),
+    };
+    Ok(Some(node))
+}
+
+/// Decodes one leaf kind, charging its payload once built: a leaf owns at
+/// most its own wire bytes, so nothing amplifies before the charge.
+fn decode_leaf(
     tag: u32,
     wire_type: WireType,
     buf: &mut impl Buf,
@@ -861,19 +895,6 @@ fn decode_field(
             encoding::bytes::merge(wire_type, &mut v, buf, ctx)?;
             MontyNode::Bytes(v)
         }
-        tag::LIST => MontyNode::List(merge_indexes(wire_type, buf, ctx)?),
-        tag::TUPLE => MontyNode::Tuple(merge_indexes(wire_type, buf, ctx)?),
-        tag::NAMED_TUPLE => {
-            let nt: pb::NamedTupleNode = merge_message(wire_type, buf, ctx)?;
-            MontyNode::NamedTuple {
-                type_name: nt.type_name,
-                field_names: nt.field_names,
-                values: to_ids(nt.values),
-            }
-        }
-        tag::DICT => MontyNode::Dict(merge_node_pairs(wire_type, buf, ctx)?),
-        tag::SET => MontyNode::Set(merge_indexes(wire_type, buf, ctx)?),
-        tag::FROZEN_SET => MontyNode::FrozenSet(merge_indexes(wire_type, buf, ctx)?),
         tag::DATE => {
             let d: pb::Date = merge_message(wire_type, buf, ctx)?;
             MontyNode::Date(date_from_proto(&d).map_err(to_decode_err)?)
@@ -907,10 +928,6 @@ fn decode_field(
                 arg: exc.arg,
             }
         }
-        tag::TYPE => {
-            let ty: pb::Type = merge_message(wire_type, buf, ctx)?;
-            type_to_node(ty)?
-        }
         tag::BUILTIN_FUNCTION => {
             let name = merge_string(wire_type, buf, ctx)?;
             MontyNode::BuiltinFunction(
@@ -930,20 +947,6 @@ fn decode_field(
                 position: fh.position,
             })
         }
-        tag::CLASS_INSTANCE => {
-            let ci: pb::ClassInstanceNode = merge_message(wire_type, buf, ctx)?;
-            let instance_id = ci
-                .instance_id
-                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstanceNode.instance_id")))?;
-            let attrs = ci
-                .attrs
-                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstanceNode.attrs")))?;
-            MontyNode::ClassInstance {
-                class_type: NodeId(ci.class_type),
-                instance_id: pb_uuid_to_monty(&instance_id, "ClassInstanceNode.instance_id")?,
-                attrs: to_id_pairs(attrs),
-            }
-        }
         tag::FUNCTION => {
             let func: pb::Function = merge_message(wire_type, buf, ctx)?;
             MontyNode::Function {
@@ -958,6 +961,7 @@ fn decode_field(
             return Ok(None);
         }
     };
+    charge_decode(node.host_size().saturating_sub(size_of::<MontyNode>()))?;
     Ok(Some(node))
 }
 
@@ -981,43 +985,275 @@ fn merge_string(wire_type: WireType, buf: &mut impl Buf, ctx: DecodeContext) -> 
     Ok(s)
 }
 
-/// Decodes an `Indexes` message (list/tuple/set/frozenset payload) into child ids.
-fn merge_indexes(wire_type: WireType, buf: &mut impl Buf, ctx: DecodeContext) -> Result<Vec<NodeId>, DecodeError> {
-    Ok(to_ids(merge_message::<pb::Indexes>(wire_type, buf, ctx)?.items))
-}
-
-/// Decodes a `NodePairs` message (dict payload) into `(key, value)` ids.
-fn merge_node_pairs(
-    wire_type: WireType,
-    buf: &mut impl Buf,
-    ctx: DecodeContext,
-) -> Result<Vec<(NodeId, NodeId)>, DecodeError> {
-    Ok(to_id_pairs(merge_message::<pb::NodePairs>(wire_type, buf, ctx)?))
-}
-
-/// Decodes one `repeated uint32` field (packed or not) of node ids.
+/// Decodes one `repeated uint32` field of node ids (packed or not) straight
+/// into `ids`, charging the slots before they are allocated: a packed run of
+/// `n` bytes holds at most `n` ids, so that many are reserved up front. No
+/// temporary vector, so a hostile run costs the budget exactly once.
 fn merge_ids(
     wire_type: WireType,
     buf: &mut impl Buf,
     ctx: DecodeContext,
     ids: &mut Vec<NodeId>,
 ) -> Result<(), DecodeError> {
-    let mut raw = Vec::new();
-    encoding::uint32::merge_repeated(wire_type, &mut raw, buf, ctx)?;
-    ids.extend(raw.into_iter().map(NodeId));
+    let mut id = 0u32;
+    if wire_type == WireType::LengthDelimited {
+        // the same length checks as prost's packed `merge_loop`
+        let len = encoding::decode_varint(buf)?;
+        let len = usize::try_from(len)
+            .ok()
+            .filter(|len| *len <= buf.remaining())
+            .ok_or_else(|| to_decode_err("buffer underflow"))?;
+        reserve_charged(ids, len)?;
+        let end = buf.remaining() - len;
+        while buf.remaining() > end {
+            encoding::uint32::merge(WireType::Varint, &mut id, buf, ctx.clone())?;
+            ids.push(NodeId(id));
+        }
+        if buf.remaining() == end {
+            Ok(())
+        } else {
+            Err(to_decode_err("delimited length exceeded"))
+        }
+    } else {
+        encoding::uint32::merge(wire_type, &mut id, buf, ctx)?;
+        push_charged(ids, NodeId(id))
+    }
+}
+
+/// Appends `item`, charging the decode budget for the slots the vector grows
+/// into (doubling, as `Vec` does) before it allocates them.
+fn push_charged<T>(vec: &mut Vec<T>, item: T) -> Result<(), DecodeError> {
+    if vec.len() == vec.capacity() {
+        let new_capacity = vec.capacity().saturating_mul(2).max(MIN_VEC_CAPACITY);
+        reserve_charged(vec, new_capacity - vec.len())?;
+    }
+    vec.push(item);
     Ok(())
 }
 
-fn to_ids(raw: Vec<u32>) -> Vec<NodeId> {
-    raw.into_iter().map(NodeId).collect()
+/// Reserves room for `additional` more items, charging every slot the vector
+/// gains so all of its capacity is paid for.
+fn reserve_charged<T>(vec: &mut Vec<T>, additional: usize) -> Result<(), DecodeError> {
+    let spare = vec.capacity() - vec.len();
+    if additional > spare {
+        charge_decode((additional - spare).saturating_mul(size_of::<T>()))?;
+        vec.reserve_exact(additional);
+    }
+    Ok(())
 }
 
-fn to_id_pairs(pairs: pb::NodePairs) -> Vec<(NodeId, NodeId)> {
-    pairs
-        .pairs
-        .into_iter()
-        .map(|pair| (NodeId(pair.key), NodeId(pair.value)))
-        .collect()
+/// Decodes one string field, charging its bytes once prost has read them (a
+/// string owns no more than its wire bytes, so nothing amplifies first).
+fn merge_string_charged(
+    wire_type: WireType,
+    buf: &mut impl Buf,
+    ctx: DecodeContext,
+    value: &mut String,
+) -> Result<(), DecodeError> {
+    encoding::string::merge(wire_type, value, buf, ctx)?;
+    charge_decode(value.len())
+}
+
+/// Decode-only `Indexes` (list, tuple, set and frozenset payloads): the
+/// packed ids land straight in the node's vector, charged as they arrive.
+#[derive(Default)]
+struct IdList(Vec<NodeId>);
+
+impl Message for IdList {
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        match tag {
+            1 => merge_ids(wire_type, buf, ctx, &mut self.0),
+            _ => skip_field(wire_type, tag, buf, ctx),
+        }
+    }
+
+    fn encode_raw(&self, _buf: &mut impl BufMut) {
+        unreachable!("IdList is decode-only")
+    }
+
+    fn encoded_len(&self) -> usize {
+        unreachable!("IdList is decode-only")
+    }
+
+    fn clear(&mut self) {
+        self.0 = Vec::new();
+    }
+}
+
+/// Decode-only `NodePairs` (dict and attribute payloads), each pair charged
+/// as it is pushed.
+#[derive(Default)]
+struct IdPairs(Vec<(NodeId, NodeId)>);
+
+impl Message for IdPairs {
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        match tag {
+            1 => {
+                let pair: pb::NodePair = merge_message(wire_type, buf, ctx)?;
+                push_charged(&mut self.0, (NodeId(pair.key), NodeId(pair.value)))
+            }
+            _ => skip_field(wire_type, tag, buf, ctx),
+        }
+    }
+
+    fn encode_raw(&self, _buf: &mut impl BufMut) {
+        unreachable!("IdPairs is decode-only")
+    }
+
+    fn encoded_len(&self) -> usize {
+        unreachable!("IdPairs is decode-only")
+    }
+
+    fn clear(&mut self) {
+        self.0 = Vec::new();
+    }
+}
+
+/// Decode-only `NamedTupleNode`: names and value ids charged as they arrive
+/// (a field name costs its `String` slot plus its bytes).
+#[derive(Default)]
+struct NamedTupleBody {
+    type_name: String,
+    field_names: Vec<String>,
+    values: Vec<NodeId>,
+}
+
+impl Message for NamedTupleBody {
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        match tag {
+            1 => merge_string_charged(wire_type, buf, ctx, &mut self.type_name),
+            2 => {
+                let mut name = String::new();
+                merge_string_charged(wire_type, buf, ctx, &mut name)?;
+                push_charged(&mut self.field_names, name)
+            }
+            3 => merge_ids(wire_type, buf, ctx, &mut self.values),
+            _ => skip_field(wire_type, tag, buf, ctx),
+        }
+    }
+
+    fn encode_raw(&self, _buf: &mut impl BufMut) {
+        unreachable!("NamedTupleBody is decode-only")
+    }
+
+    fn encoded_len(&self) -> usize {
+        unreachable!("NamedTupleBody is decode-only")
+    }
+
+    fn clear(&mut self) {
+        self.type_name.clear();
+        self.field_names = Vec::new();
+        self.values = Vec::new();
+    }
+}
+
+/// Decode-only `Type`: the fields [`type_to_node`] validates, with the name
+/// and attrs charged as they arrive.
+#[derive(Default)]
+struct TypeBody {
+    name: String,
+    id: Option<pb::Uuid>,
+    origin: i32,
+    is_dataclass: bool,
+    attrs: Option<IdPairs>,
+}
+
+impl Message for TypeBody {
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        match tag {
+            1 => merge_string_charged(wire_type, buf, ctx, &mut self.name),
+            2 => {
+                self.id = Some(merge_message(wire_type, buf, ctx)?);
+                Ok(())
+            }
+            3 => encoding::int32::merge(wire_type, &mut self.origin, buf, ctx),
+            4 => encoding::bool::merge(wire_type, &mut self.is_dataclass, buf, ctx),
+            5 => {
+                self.attrs = Some(merge_message(wire_type, buf, ctx)?);
+                Ok(())
+            }
+            _ => skip_field(wire_type, tag, buf, ctx),
+        }
+    }
+
+    fn encode_raw(&self, _buf: &mut impl BufMut) {
+        unreachable!("TypeBody is decode-only")
+    }
+
+    fn encoded_len(&self) -> usize {
+        unreachable!("TypeBody is decode-only")
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Decode-only `ClassInstanceNode`, its attrs charged as they arrive.
+#[derive(Default)]
+struct ClassInstanceBody {
+    class_type: u32,
+    instance_id: Option<pb::Uuid>,
+    attrs: Option<IdPairs>,
+}
+
+impl Message for ClassInstanceBody {
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        match tag {
+            1 => encoding::uint32::merge(wire_type, &mut self.class_type, buf, ctx),
+            2 => {
+                self.instance_id = Some(merge_message(wire_type, buf, ctx)?);
+                Ok(())
+            }
+            3 => {
+                self.attrs = Some(merge_message(wire_type, buf, ctx)?);
+                Ok(())
+            }
+            _ => skip_field(wire_type, tag, buf, ctx),
+        }
+    }
+
+    fn encode_raw(&self, _buf: &mut impl BufMut) {
+        unreachable!("ClassInstanceBody is decode-only")
+    }
+
+    fn encoded_len(&self) -> usize {
+        unreachable!("ClassInstanceBody is decode-only")
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
 }
 
 /// Maps a semantic validation failure onto prost's decode error so it
@@ -1064,11 +1300,12 @@ fn builtin_type_to_pb(t: &MontyType) -> pb::Type {
 }
 
 /// Validates a decoded wire `Type` and converts it to a node: a builtin type
-/// leaf, or a class node.
+/// leaf, or a class node (its boxed payload charged here; the name and attrs
+/// were charged as they decoded).
 ///
 /// Enforces the id-presence invariants per origin (BUILTIN must not carry an
 /// id or attrs; SANDBOX/HOST must carry an id).
-fn type_to_node(ty: pb::Type) -> Result<MontyNode, DecodeError> {
+fn type_to_node(ty: TypeBody) -> Result<MontyNode, DecodeError> {
     let origin = pb::TypeOrigin::try_from(ty.origin).map_err(|_| {
         to_decode_err(ProtoConvertError::InvalidValue {
             field: "Type.origin",
@@ -1096,12 +1333,13 @@ fn type_to_node(ty: pb::Type) -> Result<MontyNode, DecodeError> {
         }
         pb::TypeOrigin::Sandbox | pb::TypeOrigin::Host => {
             let id = ty.id.ok_or_else(|| invalid("a class type must carry an id"))?;
+            charge_decode(size_of::<ClassTypeNode>())?;
             Ok(MontyNode::ClassType(Box::new(ClassTypeNode {
                 name: ty.name,
                 id: pb_uuid_to_monty(&id, "Type.id")?,
                 host_defined: origin == pb::TypeOrigin::Host,
                 is_dataclass: ty.is_dataclass,
-                attrs: ty.attrs.map(to_id_pairs).unwrap_or_default(),
+                attrs: ty.attrs.map(|attrs| attrs.0).unwrap_or_default(),
             })))
         }
     }
@@ -1322,10 +1560,10 @@ pub fn reset_decode_budget() {
 }
 
 /// Charges `bytes` of decoded host memory against the current frame's budget,
-/// erroring once a frame would exceed it. [`WireArena`] charges every vector
-/// slot it reserves and every node payload it decodes, so this bounds the
-/// host memory an arena occupies incrementally, rejecting an over-budget frame
-/// before its nodes are fully built.
+/// erroring once a frame would exceed it. Every vector the decoders grow and
+/// every payload they build is charged first, so this bounds the host memory a
+/// frame occupies incrementally, rejecting an over-budget frame before it is
+/// fully built.
 fn charge_decode(bytes: usize) -> Result<(), DecodeError> {
     DECODE_BUDGET.with(|budget| match budget.get().checked_sub(bytes) {
         Some(remaining) => {

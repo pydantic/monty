@@ -176,11 +176,13 @@ properties that real CPython does not provide, per the caveat above.
     arrives as **one host object** (`[x, x]` gives the same list twice, `f(x, x)`
     hands a host function the same object twice), as it would in CPython. Each
     separate feed or call still gets its own copy.
-- A self-referential container arrives as its placeholder string (`[...]`,
-    `{...}`, `(...)`, `...`) at the point of the cycle — a
-    [`Cycle`](../api/rust/monty-types.md#montynode) node that a worker can send
-    but that is rejected as an input. A cyclic host value cannot be sent at all:
-    Python raises `ValueError: Circular reference detected`, JS `TypeError`.
+- A self-referential container arrives with a
+    [`Cycle`](../api/rust/monty-types.md#montynode) node at the point of the
+    cycle, carrying its placeholder (`[...]`, `{...}`, `(...)`, `...`): Python
+    and JS expose that node as the placeholder string, Rust as the node itself.
+    A worker can send it, but it is rejected as an input. A cyclic host value
+    cannot be sent at all: Python raises
+    `ValueError: Circular reference detected`, JS `TypeError`.
 - A sandbox value with no `MontyObject` equivalent — a class, a class
     instance, a function, a compiled `re` pattern — is **silently degraded to
     its repr string** on the way out, rather than failing. A host function

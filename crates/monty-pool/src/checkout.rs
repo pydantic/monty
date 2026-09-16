@@ -824,7 +824,7 @@ impl Checkout {
     }
 
     /// Answers a [`TurnEvent::NameLookup`] with a [`NameLookupResult`] (or a
-    /// `MontyObject` / `MontyObject`, an `Option` of either where `None` is
+    /// `MontyObject`, or an `Option<MontyObject>` where `None` is
     /// `Undefined`, or a `MontyException` for `Error`): a value resolves the name; `Undefined`
     /// makes the sandbox raise `NameError` for a plain lookup, or
     /// `AttributeError` when the lookup carried an `object_id` (a lazy

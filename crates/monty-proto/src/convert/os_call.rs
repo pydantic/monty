@@ -10,23 +10,17 @@ use monty_types::{
 
 use crate::{
     convert::{ProtoConvertError, value_from_parts},
-    pb::{self, TimeZone, Unit, os_call},
+    pb::{
+        self, TimeZone, Unit,
+        os_call::{self, Call},
+    },
     wire::WireArena,
 };
 
 /// Projects a suspension's OS call onto the wire envelope.
 #[must_use]
 pub fn os_call_to_proto(call_id: u32, call: OsFunctionCall) -> pb::OsCall {
-    let (call, values) = match call {
-        OsFunctionCall::Getenv(a) => (
-            os_call::Call::Getenv(os_call::Getenv {
-                key: a.key,
-                default: a.default.root.0,
-            }),
-            Some(WireArena::new(a.default.graph)),
-        ),
-        other => (other.into(), None),
-    };
+    let (call, values) = call_to_proto(call);
     pb::OsCall {
         call_id,
         values,
@@ -47,56 +41,59 @@ pub fn os_call_from_proto(call: pb::OsCall) -> Result<(u32, OsFunctionCall), Pro
     Ok((call.call_id, function_call))
 }
 
-/// The value-free arms; `Getenv` needs the envelope's arena, see
-/// [`os_call_to_proto`].
-impl From<OsFunctionCall> for os_call::Call {
-    fn from(call: OsFunctionCall) -> Self {
-        match call {
-            OsFunctionCall::Exists(p) => Self::Exists(p.into_string()),
-            OsFunctionCall::IsFile(p) => Self::IsFile(p.into_string()),
-            OsFunctionCall::IsDir(p) => Self::IsDir(p.into_string()),
-            OsFunctionCall::IsSymlink(p) => Self::IsSymlink(p.into_string()),
-            OsFunctionCall::ReadText(p) => Self::ReadText(p.into_string()),
-            OsFunctionCall::ReadBytes(p) => Self::ReadBytes(p.into_string()),
-            OsFunctionCall::Stat(p) => Self::Stat(p.into_string()),
-            OsFunctionCall::Iterdir(p) => Self::Iterdir(p.into_string()),
-            OsFunctionCall::Resolve(p) => Self::Resolve(p.into_string()),
-            OsFunctionCall::Absolute(p) => Self::Absolute(p.into_string()),
-            OsFunctionCall::Unlink(p) => Self::Unlink(p.into_string()),
-            OsFunctionCall::Rmdir(p) => Self::Rmdir(p.into_string()),
-            OsFunctionCall::WriteText(a) => Self::WriteText(text_write(a)),
-            OsFunctionCall::AppendText(a) => Self::AppendText(text_write(a)),
-            OsFunctionCall::WriteBytes(a) => Self::WriteBytes(bytes_write(a)),
-            OsFunctionCall::AppendBytes(a) => Self::AppendBytes(bytes_write(a)),
-            OsFunctionCall::Open(a) => Self::Open(os_call::Open {
-                path: a.path.into_string(),
-                mode: a.mode.as_str().to_owned(),
-            }),
-            OsFunctionCall::Mkdir(a) => Self::Mkdir(os_call::Mkdir {
-                path: a.path.into_string(),
-                parents: a.parents,
-                exist_ok: a.exist_ok,
-            }),
-            OsFunctionCall::Rename(a) => Self::Rename(os_call::Rename {
-                src: a.src.into_string(),
-                dst: a.dst.into_string(),
-            }),
-            // Only reachable through `os_call_to_proto`, which handles the arena.
-            OsFunctionCall::Getenv(a) => Self::Getenv(os_call::Getenv {
+/// The typed wire arm of a call, with the arena `Getenv.default` indexes
+/// (`None` for the value-free arms). Private so no caller can project a
+/// `Getenv` without its arena.
+fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
+    let mut values = None;
+    let call = match call {
+        OsFunctionCall::Exists(p) => Call::Exists(p.into_string()),
+        OsFunctionCall::IsFile(p) => Call::IsFile(p.into_string()),
+        OsFunctionCall::IsDir(p) => Call::IsDir(p.into_string()),
+        OsFunctionCall::IsSymlink(p) => Call::IsSymlink(p.into_string()),
+        OsFunctionCall::ReadText(p) => Call::ReadText(p.into_string()),
+        OsFunctionCall::ReadBytes(p) => Call::ReadBytes(p.into_string()),
+        OsFunctionCall::Stat(p) => Call::Stat(p.into_string()),
+        OsFunctionCall::Iterdir(p) => Call::Iterdir(p.into_string()),
+        OsFunctionCall::Resolve(p) => Call::Resolve(p.into_string()),
+        OsFunctionCall::Absolute(p) => Call::Absolute(p.into_string()),
+        OsFunctionCall::Unlink(p) => Call::Unlink(p.into_string()),
+        OsFunctionCall::Rmdir(p) => Call::Rmdir(p.into_string()),
+        OsFunctionCall::WriteText(a) => Call::WriteText(text_write(a)),
+        OsFunctionCall::AppendText(a) => Call::AppendText(text_write(a)),
+        OsFunctionCall::WriteBytes(a) => Call::WriteBytes(bytes_write(a)),
+        OsFunctionCall::AppendBytes(a) => Call::AppendBytes(bytes_write(a)),
+        OsFunctionCall::Open(a) => Call::Open(os_call::Open {
+            path: a.path.into_string(),
+            mode: a.mode.as_str().to_owned(),
+        }),
+        OsFunctionCall::Mkdir(a) => Call::Mkdir(os_call::Mkdir {
+            path: a.path.into_string(),
+            parents: a.parents,
+            exist_ok: a.exist_ok,
+        }),
+        OsFunctionCall::Rename(a) => Call::Rename(os_call::Rename {
+            src: a.src.into_string(),
+            dst: a.dst.into_string(),
+        }),
+        OsFunctionCall::Getenv(a) => {
+            values = Some(WireArena::new(a.default.graph));
+            Call::Getenv(os_call::Getenv {
                 key: a.key,
                 default: a.default.root.0,
-            }),
-            OsFunctionCall::GetEnviron => Self::GetEnviron(Unit {}),
-            OsFunctionCall::DateToday => Self::DateToday(Unit {}),
-            OsFunctionCall::DateTimeNow(tz) => Self::DateTimeNow(os_call::DateTimeNow {
-                tz: tz.map(|tz| TimeZone {
-                    offset_seconds: tz.offset_seconds,
-                    name: tz.name,
-                }),
-            }),
-            OsFunctionCall::Urandom(a) => Self::Urandom(os_call::Urandom { size: a.size }),
+            })
         }
-    }
+        OsFunctionCall::GetEnviron => Call::GetEnviron(Unit {}),
+        OsFunctionCall::DateToday => Call::DateToday(Unit {}),
+        OsFunctionCall::DateTimeNow(tz) => Call::DateTimeNow(os_call::DateTimeNow {
+            tz: tz.map(|tz| TimeZone {
+                offset_seconds: tz.offset_seconds,
+                name: tz.name,
+            }),
+        }),
+        OsFunctionCall::Urandom(a) => Call::Urandom(os_call::Urandom { size: a.size }),
+    };
+    (call, values)
 }
 
 /// The value-free arms; `Getenv` needs the envelope's arena, see

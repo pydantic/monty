@@ -258,7 +258,7 @@ fn expect_error(event: pb::child_event::Kind) -> pb::RaisedException {
     }
 }
 
-/// The positional arguments of an announced call, expanded into trees.
+/// The positional arguments of an announced call, each copied out of the call's arena.
 #[track_caller]
 fn call_args(call: &WireFunctionCall) -> Vec<MontyObject> {
     call.clone()

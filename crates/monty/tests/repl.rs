@@ -11,8 +11,8 @@ use monty::{
     detect_repl_continuation_mode, dump,
 };
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyNode, MontyObject, MontyUuid, NameLookupResult,
-    PrintWriter, ResourceLimits, ResourceTracker,
+    CallArgs, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyNode, MontyObject, MontyUuid,
+    NameLookupResult, PrintWriter, ResourceLimits, ResourceTracker,
 };
 
 #[test]
@@ -1858,4 +1858,19 @@ fn split_instance(instance: &MontyObject) -> (MontyObject, MontyUuid) {
         panic!("expected a ClassInstance, got {instance:?}");
     };
     (instance.graph.value(*class_type).to_owned(), *instance_id)
+}
+
+/// The synthetic call site is `name(*args)`, so keyword arguments are refused
+/// rather than silently dropped.
+#[test]
+fn call_function_rejects_keyword_arguments() {
+    let mut s = repl_with_code("def f(a, b=0): return a + b");
+    let mut args = CallArgs::new();
+    args.push_arg(MontyObject::int(1));
+    args.push_kwarg("b", MontyObject::int(2));
+    let err = s.call_function("f", args, PrintWriter::Stdout).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "TypeError: call_function() takes positional arguments only"
+    );
 }

@@ -15,8 +15,10 @@ use std::{
     error::Error,
     fmt::{self, Write},
     hash::{Hash, Hasher},
+    vec,
 };
 
+use ReprPiece::{Child, Text};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta};
 use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
@@ -32,7 +34,7 @@ use crate::{
     uuid::MontyUuid,
 };
 
-///
+/// One owned value: an arena plus its root.
 /// The single-value form carried by `Complete`, resume results, name lookups
 /// and `os.getenv` defaults, and the value hosts construct inputs with. Two
 /// values are equal when they are structurally equal as Python values,
@@ -542,19 +544,106 @@ impl<'a> ObjectRef<'a> {
         }
     }
 
-    /// Writes the comma-separated `repr()`s of the nodes at `ids`.
-    fn repr_items(&self, f: &mut impl Write, ids: &[NodeId]) -> fmt::Result {
-        for (i, id) in ids.iter().enumerate() {
-            if i > 0 {
-                f.write_str(", ")?;
+    /// Writes the Python `repr()`. Containers are walked on an explicit stack
+    /// of their [`ReprPiece`]s, so a deeply nested value costs heap rather than
+    /// native stack; a sub-object shared `n` times renders `n` times, as
+    /// CPython's `repr()` does.
+    fn repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
+        let mut stack: Vec<vec::IntoIter<ReprPiece<'a>>> = Vec::new();
+        let mut pending = Some(self.id);
+        loop {
+            if let Some(id) = pending.take() {
+                let value = self.child(id);
+                match value.repr_pieces() {
+                    Some(pieces) => stack.push(pieces.into_iter()),
+                    None => value.leaf_repr_fmt(f)?,
+                }
             }
-            self.child(*id).repr_fmt(f)?;
+            let Some(pieces) = stack.last_mut() else {
+                return Ok(());
+            };
+            match pieces.next() {
+                Some(ReprPiece::Text(text)) => f.write_str(text)?,
+                Some(ReprPiece::Child(child)) => pending = Some(child),
+                None => {
+                    stack.pop();
+                }
+            }
         }
-        Ok(())
     }
 
-    /// Writes the Python `repr()`, recursing into containers.
-    fn repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
+    /// The pieces of a container's `repr()` in order, or `None` for a leaf.
+    fn repr_pieces(&self) -> Option<Vec<ReprPiece<'a>>> {
+        let mut pieces = Vec::new();
+        match self.node() {
+            MontyNode::List(ids) => {
+                pieces.push(Text("["));
+                push_repr_items(&mut pieces, ids);
+                pieces.push(Text("]"));
+            }
+            MontyNode::Tuple(ids) => {
+                pieces.push(Text("("));
+                push_repr_items(&mut pieces, ids);
+                pieces.push(Text(")"));
+            }
+            MontyNode::NamedTuple {
+                type_name,
+                field_names,
+                values,
+            } => {
+                // type_name(field1=value1, field2=value2, ...)
+                pieces.extend([Text(type_name), Text("(")]);
+                for (i, (name, id)) in field_names.iter().zip(values).enumerate() {
+                    push_repr_separator(&mut pieces, i);
+                    pieces.extend([Text(name), Text("="), Child(*id)]);
+                }
+                pieces.push(Text(")"));
+            }
+            MontyNode::Dict(pairs) => {
+                pieces.push(Text("{"));
+                for (i, (key, value)) in pairs.iter().enumerate() {
+                    push_repr_separator(&mut pieces, i);
+                    pieces.extend([Child(*key), Text(": "), Child(*value)]);
+                }
+                pieces.push(Text("}"));
+            }
+            MontyNode::Set(ids) if ids.is_empty() => pieces.push(Text("set()")),
+            MontyNode::Set(ids) => {
+                pieces.push(Text("{"));
+                push_repr_items(&mut pieces, ids);
+                pieces.push(Text("}"));
+            }
+            MontyNode::FrozenSet(ids) => {
+                pieces.push(Text("frozenset("));
+                if !ids.is_empty() {
+                    pieces.push(Text("{"));
+                    push_repr_items(&mut pieces, ids);
+                    pieces.push(Text("}"));
+                }
+                pieces.push(Text(")"));
+            }
+            MontyNode::ClassInstance { attrs, .. } => {
+                // ClassName(attr1=value1, attr2=value2, ...) over the eager
+                // attrs in order; a non-string key renders via repr rather
+                // than panicking, since inputs are host-built
+                pieces.extend([Text(self.type_name()), Text("(")]);
+                for (i, (key, value)) in attrs.iter().enumerate() {
+                    push_repr_separator(&mut pieces, i);
+                    match self.graph.node(*key) {
+                        MontyNode::String(key) => pieces.push(Text(key)),
+                        _ => pieces.push(Child(*key)),
+                    }
+                    pieces.extend([Text("="), Child(*value)]);
+                }
+                pieces.push(Text(")"));
+            }
+            _ => return None,
+        }
+        Some(pieces)
+    }
+
+    /// Writes the `repr()` of a leaf node.
+    fn leaf_repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
         match self.node() {
             MontyNode::Ellipsis => f.write_str("Ellipsis"),
             MontyNode::NotImplemented => f.write_str("NotImplemented"),
@@ -566,64 +655,6 @@ impl<'a> ObjectRef<'a> {
             MontyNode::Float(v) => write!(f, "{}", FormatFloat(*v)),
             MontyNode::String(s) => string_repr_fmt(s, f),
             MontyNode::Bytes(b) => bytes_repr_fmt(b, f),
-            MontyNode::List(ids) => {
-                f.write_char('[')?;
-                self.repr_items(f, ids)?;
-                f.write_char(']')
-            }
-            MontyNode::Tuple(ids) => {
-                f.write_char('(')?;
-                self.repr_items(f, ids)?;
-                f.write_char(')')
-            }
-            MontyNode::NamedTuple {
-                type_name,
-                field_names,
-                values,
-            } => {
-                // type_name(field1=value1, field2=value2, ...)
-                f.write_str(type_name)?;
-                f.write_char('(')?;
-                for (i, (name, id)) in field_names.iter().zip(values).enumerate() {
-                    if i > 0 {
-                        f.write_str(", ")?;
-                    }
-                    f.write_str(name)?;
-                    f.write_char('=')?;
-                    self.child(*id).repr_fmt(f)?;
-                }
-                f.write_char(')')
-            }
-            MontyNode::Dict(pairs) => {
-                f.write_char('{')?;
-                for (i, (key, value)) in pairs.iter().enumerate() {
-                    if i > 0 {
-                        f.write_str(", ")?;
-                    }
-                    self.child(*key).repr_fmt(f)?;
-                    f.write_str(": ")?;
-                    self.child(*value).repr_fmt(f)?;
-                }
-                f.write_char('}')
-            }
-            MontyNode::Set(ids) => {
-                if ids.is_empty() {
-                    f.write_str("set()")
-                } else {
-                    f.write_char('{')?;
-                    self.repr_items(f, ids)?;
-                    f.write_char('}')
-                }
-            }
-            MontyNode::FrozenSet(ids) => {
-                f.write_str("frozenset(")?;
-                if !ids.is_empty() {
-                    f.write_char('{')?;
-                    self.repr_items(f, ids)?;
-                    f.write_char('}')?;
-                }
-                f.write_char(')')
-            }
             MontyNode::Date(date) => write!(f, "datetime.date({}, {}, {})", date.year, date.month, date.day),
             MontyNode::DateTime(datetime) => {
                 write!(
@@ -704,25 +735,6 @@ impl<'a> ObjectRef<'a> {
                 }
                 f.write_char(')')
             }
-            MontyNode::ClassInstance { attrs, .. } => {
-                // ClassName(attr1=value1, attr2=value2, ...) over the eager
-                // attrs in order; a non-string key renders via repr rather
-                // than panicking, since inputs are host-built
-                f.write_str(self.type_name())?;
-                f.write_char('(')?;
-                for (i, (key, value)) in attrs.iter().enumerate() {
-                    if i > 0 {
-                        f.write_str(", ")?;
-                    }
-                    match self.graph.node(*key) {
-                        MontyNode::String(key) => f.write_str(key)?,
-                        _ => self.child(*key).repr_fmt(f)?,
-                    }
-                    f.write_char('=')?;
-                    self.child(*value).repr_fmt(f)?;
-                }
-                f.write_char(')')
-            }
             MontyNode::Path(p) => write!(f, "PosixPath('{p}')"),
             MontyNode::FileHandle(handle) => write!(f, "{handle}"),
             MontyNode::Type(t) => write!(f, "<class '{t}'>"),
@@ -731,7 +743,36 @@ impl<'a> ObjectRef<'a> {
             MontyNode::Function { name, .. } => write!(f, "<function '{name}' external>"),
             MontyNode::Repr(s) => write!(f, "Repr({})", StringRepr(s)),
             MontyNode::Cycle(placeholder) => f.write_str(placeholder),
+            MontyNode::List(_)
+            | MontyNode::Tuple(_)
+            | MontyNode::NamedTuple { .. }
+            | MontyNode::Dict(_)
+            | MontyNode::Set(_)
+            | MontyNode::FrozenSet(_)
+            | MontyNode::ClassInstance { .. } => unreachable!("containers render through repr_pieces"),
         }
+    }
+}
+
+/// One step of a container's `repr()`: literal text, or a child rendered in
+/// place. Text borrows the arena (a type or field name) or is static.
+enum ReprPiece<'a> {
+    Text(&'a str),
+    Child(NodeId),
+}
+
+/// Pushes the children at `ids`, comma-separated.
+fn push_repr_items(pieces: &mut Vec<ReprPiece<'_>>, ids: &[NodeId]) {
+    for (i, id) in ids.iter().enumerate() {
+        push_repr_separator(pieces, i);
+        pieces.push(ReprPiece::Child(*id));
+    }
+}
+
+/// Pushes the `, ` that precedes every entry but the first.
+fn push_repr_separator(pieces: &mut Vec<ReprPiece<'_>>, index: usize) {
+    if index > 0 {
+        pieces.push(ReprPiece::Text(", "));
     }
 }
 
@@ -1077,14 +1118,30 @@ impl PushValue for MontyObject {
 }
 
 impl PushValue for ObjectRef<'_> {
-    /// Copies the reachable nodes; a sub-object shared inside the value stays shared.
+    /// Copies the reachable nodes; a sub-object shared inside the value stays
+    /// shared. Two linear sweeps, no recursion, so a deep value from an
+    /// untrusted worker costs heap rather than native stack.
     fn push_into(self, graph: &mut MontyGraph) -> NodeId {
-        let mut copier = Copier {
-            source: self.graph,
-            target: graph,
-            copied: vec![None; self.graph.len()],
-        };
-        copier.copy(self.id)
+        let source = &self.graph.nodes()[..=self.id.index()];
+        // Every child id is lower than its holder's, so sweeping downwards
+        // from the root visits each holder before its children.
+        let mut reachable = vec![false; source.len()];
+        reachable[self.id.index()] = true;
+        for (index, node) in source.iter().enumerate().rev() {
+            if reachable[index] {
+                node.for_each_child(|child| reachable[child.index()] = true);
+            }
+        }
+        // Copying upwards then meets every child before the node holding it.
+        let mut copied: Vec<Option<NodeId>> = vec![None; source.len()];
+        for (index, node) in source.iter().enumerate() {
+            if reachable[index] {
+                let mut node = node.clone();
+                node.for_each_child_mut(|child| *child = copied[child.index()].expect("children are copied first"));
+                copied[index] = Some(graph.push(node));
+            }
+        }
+        copied[self.id.index()].expect("the root is copied")
     }
 }
 
@@ -1101,30 +1158,6 @@ fn push_pairs(
             (key, value)
         })
         .collect()
-}
-
-/// Copies the nodes reachable from one root of `source` into `target`,
-/// memoized so sharing within the value is preserved.
-struct Copier<'a> {
-    source: &'a MontyGraph,
-    target: &'a mut MontyGraph,
-    /// Target id of each source node already copied.
-    copied: Vec<Option<NodeId>>,
-}
-
-impl Copier<'_> {
-    fn copy(&mut self, id: NodeId) -> NodeId {
-        if let Some(copied) = self.copied[id.index()] {
-            return copied;
-        }
-        // Children first: every child id is lower, so this recursion is
-        // bounded by the arena and terminates.
-        let mut node = self.source.node(id).clone();
-        node.for_each_child_mut(|child| *child = self.copy(*child));
-        let target_id = self.target.push(node);
-        self.copied[id.index()] = Some(target_id);
-        target_id
-    }
 }
 
 /// The Python type of a builtin at the host boundary — the public mirror of

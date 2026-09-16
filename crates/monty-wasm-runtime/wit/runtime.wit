@@ -150,7 +150,7 @@ interface worker {
         function(function-node),
         repr(string),
         /// An output-only reference back to an enclosing container, as its
-        /// placeholder text (`[...]`, `{...}`).
+        /// placeholder text (`[...]`, `(...)`, `{...}` or `...`).
         cycle(string),
     }
 

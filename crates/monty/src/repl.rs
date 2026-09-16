@@ -372,6 +372,12 @@ impl MontyRepl {
         print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         let args: CallArgs = args.into();
+        // the synthetic call site is `name(*args)`: keyword arguments have
+        // no slot, so they are refused rather than silently dropped
+        if !args.kwargs.is_empty() {
+            return Err(ExcType::type_error("call_function() takes positional arguments only")
+                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
+        }
         let Some(name_id) = self.interns.get_string_id_by_name(name) else {
             return Err(RunError::from(ExcType::name_error(name))
                 .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
@@ -421,7 +427,6 @@ impl MontyRepl {
             let result = match convert_args(args, vm) {
                 Ok(args) => {
                     let (args, kwargs) = args.into_parts();
-                    debug_assert!(kwargs.is_empty(), "host function calls only have positional arguments");
                     kwargs.drop_with(vm);
                     let args_tuple = allocate_tuple(args.collect(), vm.heap);
                     let args_slot = executor.input_slots[0].index();
@@ -1329,12 +1334,9 @@ fn build_repl_progress(
     }
 }
 
-/// Converts host call arguments to internal `ArgValues` for function calls.
+/// Converts host call arguments to internal `ArgValues` for function calls;
+/// `call_function` has already refused keyword arguments.
 fn convert_args(args: CallArgs, vm: &mut VM<'_>) -> Result<ArgValues, MontyException> {
-    debug_assert!(
-        args.kwargs.is_empty(),
-        "host function calls only have positional arguments"
-    );
     let values = args
         .values
         .to_values(vm)

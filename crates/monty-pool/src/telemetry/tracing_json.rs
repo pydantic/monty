@@ -25,7 +25,7 @@ use std::{
 
 use monty_types::{MontyDateTime, MontyNode, MontyTime, NodeId, bytes_repr};
 use num_traits::ToPrimitive;
-use serde::ser::{Serialize, SerializeMap, Serializer};
+use serde::ser::{Error as _, Serialize, SerializeMap, Serializer};
 
 /// Nesting past which a value renders as `"<too deep>"`: the encoder recurses
 /// per level, and the arena's index guard alone allows one level per node.
@@ -344,9 +344,13 @@ fn serialize_pairs<S: Serializer>(
         if let Some(MontyNode::String(k)) = key.node() {
             map.serialize_entry(k, &value)?;
         } else {
-            // the key's own encoding, capped like everything else; a cut
-            // key cannot be reported separately, so the value cap catches it
-            let (rendered, _) = capped(&key, holder.limit);
+            // the key's own encoding, capped like everything else; a cut key
+            // is reported as a cut of the whole encoding, since the rendered
+            // part may fit the outer cap on its own
+            let (rendered, cut) = capped(&key, holder.limit);
+            if cut {
+                return Err(S::Error::custom("byte limit reached"));
+            }
             map.serialize_entry(&rendered, &value)?;
         }
     }
@@ -665,6 +669,17 @@ mod tests {
         assert!(cut);
         assert!(s.len() <= 20);
         assert!(s.starts_with("[0,1,"));
+    }
+
+    /// A non-string key that the cap cuts marks the whole encoding as cut,
+    /// even when the part of it that was rendered fits the outer map.
+    #[test]
+    fn oversize_non_string_key_is_flagged() {
+        let key = MontyObject::tuple([MontyObject::string("k".repeat(100))]);
+        let value = MontyObject::dict([(key, MontyObject::int(1))]);
+        let (s, cut) = capped(&value, 32);
+        assert!(cut);
+        assert!(s.len() <= 32);
     }
 
     /// A `bytes` leaf is escaped only as far as the byte cap can keep, so a

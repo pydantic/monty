@@ -284,4 +284,4 @@ assert_eq!(result, MontyObject::int(42));
 - [`RunProgress::OsCall`](../api/rust/monty.md#runprogress) and [`RunProgress::NameLookup`](../api/rust/monty.md#runprogress) — the filesystem/`os` operations and undefined-name reads the host
     intercepts.
 - [`FunctionCall::object_id`](../api/rust/monty.md#functioncall) and [`NameLookup::object_id`](../api/rust/monty.md#namelookup) — set for method calls and lazy attribute lookups routed to a
-    host object sent as [`MontyObject::ClassInstance`](../api/rust/monty-types.md#montyobject) or [`MontyObject::Type`](../api/rust/monty-types.md#montyobject); the receiver is not in `args`.
+    host object sent as a [`MontyNode::ClassInstance`](../api/rust/monty-types.md#montynode) or [`MontyNode::ClassType`](../api/rust/monty-types.md#montynode) node; the receiver is not in `args`.

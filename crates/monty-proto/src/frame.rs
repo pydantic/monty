@@ -33,14 +33,15 @@ pub const MAX_FRAME_LEN: u32 = 256 * 1024 * 1024;
 /// turn a ≤256 MiB frame into multiple GiB on the host. The budget caps
 /// decoded size so amplification is bounded regardless of frame contents.
 ///
-/// The budget bounds bytes *resident* at once. `WireArena` charges the vector
-/// slots it reserves (the sender's `node_count` hint up front, capped by the
-/// message size, then doubling growth) and each node's payload as it decodes,
-/// so a frame is rejected before its arena outgrows the budget. Sharing no
-/// longer amplifies on decode: a sub-object referenced twice is one node. The
-/// host *peak* is therefore ~1× the budget plus the ≤256 MiB frame buffer
-/// (~1.25 GiB); the 4× multiplier keeps the hard 1 GiB ceiling comfortably
-/// below host limits. Multiplies per concurrent worker.
+/// The budget bounds bytes *resident* at once. `WireArena` charges every
+/// vector before it grows (the arena's slots from the sender's `node_count`
+/// hint, capped by the message size, then doubling growth; each container's
+/// child ids; a call's argument ids) and each leaf's payload once built, with
+/// no temporary copies, so a frame is rejected before it outgrows the budget.
+/// Sharing does not amplify on decode: a sub-object referenced twice is one
+/// node. The host *peak* is therefore ~1× the budget plus the ≤256 MiB frame
+/// buffer (~1.25 GiB); the 4× multiplier keeps the hard 1 GiB ceiling
+/// comfortably below host limits. Multiplies per concurrent worker.
 pub const DEFAULT_MAX_DECODE_BYTES: usize = 4 * MAX_FRAME_LEN as usize;
 
 /// Framing or decoding failure while reading or writing protocol messages.

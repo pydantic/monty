@@ -670,7 +670,10 @@ fn resolve_external_call(function_name: &str, args: &CallArgs) -> Result<MontyOb
         args.arg(0).and_then(|a| a.as_int()),
         args.arg(1).and_then(|b| b.as_int()),
     ) {
-        (Some(a), Some(b)) => Ok(MontyObject::int(a + b)),
+        (Some(a), Some(b)) => a
+            .checked_add(b)
+            .map(MontyObject::int)
+            .ok_or_else(|| format!("add_ints result is out of i64 range, got {}", rendered())),
         _ => Err(format!("add_ints requires integer arguments, got {}", rendered())),
     }
 }
