@@ -1,8 +1,9 @@
-# The `field(...)` spec is unwrapped at decoration and then cleared out of the
-# class namespace, so the spec object itself keeps nothing alive. `Item` is a
-# heap-allocated class used as the factory, referenced by its module global and
-# by the metadata that captured it; `shared` by its global, the metadata, and
-# the class attribute that replaced the spec.
+# The `field(...)` spec is adopted at decoration: the same object goes into
+# `__dataclass_fields__` and keeps owning what it captured, while the class
+# namespace loses its binding to it. `Item` is a heap-allocated class used as
+# the factory, referenced by its module global and by the field that captured
+# it; `shared` by its global, that field's default, and the class attribute
+# that replaced the spec.
 from dataclasses import dataclass, field
 
 

@@ -691,6 +691,12 @@ pub(crate) fn dataclass_fields(class_id: HeapId, vm: &VM<'_>) -> Option<Vec<Stri
 /// Each field's `(name, has_default)`, in definition order — everything
 /// `bind_dataclass_fields` needs once the heap borrow is released.
 ///
+/// The name is the mapping **key**, not the live `Field.name`: adoption writes
+/// that name into the `field()` object itself, so one object shared by two
+/// classes ends up reporting the *second* class's name. The key is the snapshot
+/// of what this class was decorated with, matching the name CPython baked into
+/// the `__init__` it generated for it.
+///
 /// A `default_factory` counts as a default: the parameter is optional, and the
 /// factory runs when nothing is bound to it.
 fn field_specs(fields_id: HeapId, vm: &VM<'_>) -> Vec<(StringId, bool)> {
@@ -699,11 +705,8 @@ fn field_specs(fields_id: HeapId, vm: &VM<'_>) -> Vec<(StringId, bool)> {
     };
     fields
         .iter()
-        .filter_map(|(_, value)| match value {
-            Value::Ref(id) => {
-                let field = field_at_id(vm, *id)?;
-                Some((field.name()?, field.has_default()))
-            }
+        .filter_map(|(key, value)| match (key, value) {
+            (Value::InternString(name), Value::Ref(id)) => Some((*name, field_at_id(vm, *id)?.has_default())),
             _ => None,
         })
         .collect()
@@ -877,6 +880,10 @@ fn bind_dataclass_fields<'h>(
     // entry is taken out of the plan as it is used, so an error part-way leaves
     // the guard only the ones still to come.
     for idx in 0..plan.len() {
+        // Each factory re-enters `run()` with a fresh dispatch countdown, so a
+        // short one reaches no checkpoint: this is the construction's only clock
+        // poll, as it is for the sorting key loop.
+        vm.heap.tracker.check_time_every(idx)?;
         if values[idx].is_some() {
             continue;
         }

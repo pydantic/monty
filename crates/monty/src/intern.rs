@@ -1755,6 +1755,8 @@ pub enum StaticStrings {
     Compare,
     /// `field(metadata=...)`.
     Metadata,
+    /// `field(doc=...)`, CPython's per-field docstring.
+    Doc,
     /// `__post_init__` — the hook the synthesized `__init__` calls last.
     #[strum(serialize = "__post_init__")]
     PostInit,

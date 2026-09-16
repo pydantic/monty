@@ -2,6 +2,7 @@
 ///
 /// Allocator-backed memory limits are exercised through worker subprocesses.
 use std::{
+    fmt::Write,
     thread,
     time::{Duration, Instant},
 };
@@ -930,6 +931,40 @@ s = 'a\n' * 5_000_000
 s.splitlines()
 ";
     assert_timeout_in_builtin(code, "str.splitlines()");
+}
+
+/// A `default_factory` re-enters `run()` with a fresh dispatch countdown, so a
+/// construction whose factories are each shorter than the interval reaches no
+/// checkpoint of its own. The binder therefore polls the clock itself, like
+/// every other native loop that calls back into Python.
+#[test]
+fn timeout_in_dataclass_default_factories() {
+    const FIELDS: usize = 200;
+
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    let body = (0..FIELDS).fold(String::new(), |mut body, i| {
+        let _ = writeln!(body, "    f{i}: int = field(default_factory=tick)");
+        body
+    });
+    repl.feed_run(
+        &format!(
+            "from dataclasses import dataclass, field\ndef tick():\n    print('.', end='')\n    return 1\n@dataclass\nclass Many:\n{body}"
+        ),
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .expect("the class should build without a limit");
+
+    // Also resets the execution clock, so the budget is spent a few factories in.
+    repl.tracker_mut().set_max_duration(Duration::from_nanos(1));
+    let mut printed = String::new();
+    let exc = repl
+        .feed_run("Many()", vec![], PrintWriter::collect_string(&mut printed))
+        .expect_err("the factory loop must hit the time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    // The poll fires on the interval's last index, before the factory it guards,
+    // so anything near `FIELDS` means the loop never checked at all.
+    assert_eq!(printed.len(), ResourceTracker::LOOP_CHECK_INTERVAL - 1);
 }
 
 #[test]
