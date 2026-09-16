@@ -216,15 +216,17 @@ pub(crate) fn allocate_offset(offset_seconds: i32, heap: &Heap) -> Value {
 /// Validates the `dt` argument every `tzinfo` method takes.
 ///
 /// The offset is fixed, so the argument is never read. CPython still requires
-/// it to be a `datetime` or `None`, and so does this.
+/// it to be a `datetime` or `None`, and so does this. It names the method
+/// without a class prefix in the message:
+/// `utcoffset(dt) argument must be a datetime instance or None, not int`.
 fn check_tzinfo_dt_arg(method: &str, dt: &Value, heap: &Heap, interns: &Interns) -> RunResult<()> {
     match dt {
         Value::None => Ok(()),
         Value::Ref(id) if matches!(heap.get(*id), HeapData::DateTime(_)) => Ok(()),
-        _ => Err(ExcType::type_error_tzinfo_dt_arg(
-            method,
-            &dt.py_type_heap(heap).cpython_arg_name(heap, interns),
-        )),
+        _ => Err(ExcType::type_error(format!(
+            "{method}(dt) argument must be a datetime instance or None, not {}",
+            dt.py_type_heap(heap).cpython_arg_name(heap, interns)
+        ))),
     }
 }
 
