@@ -903,11 +903,19 @@ impl Set {
         let mut iterator = iterator.read(vm);
         let hint = iterator.iter_size_hint(vm);
         let capacity = checked_preallocation_hint(hint, mem::size_of::<SetEntry>(), &vm.heap.tracker)?;
-        let mut set = Self::with_capacity(capacity);
-        while let Some(item) = iterator.py_next(vm)? {
+        // Both the item being hashed and the items already inserted have to
+        // survive an insertion that raises — an unhashable item, or a
+        // colliding `__eq__` that raises — so the half-built set rides in a
+        // guard until it is handed back whole.
+        let mut set_guard = DropGuard::new(Self::with_capacity(capacity), vm);
+        loop {
+            let (set, vm) = set_guard.as_parts_mut();
+            let Some(item) = iterator.py_next(vm)? else {
+                break;
+            };
             set.add(item, vm)?;
         }
-        Ok(set)
+        Ok(set_guard.into_inner())
     }
 }
 

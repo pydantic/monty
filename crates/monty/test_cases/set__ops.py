@@ -367,3 +367,24 @@ assert len(clearing) == 2
 # the control: a membership probe does hash, so the same class empties the set
 assert (Clearing() in clearing) is False
 assert len(clearing) == 0
+
+
+# === a failed set construction releases the items it already took ===
+# Regression: the set literal and `set(iterable)` built into an unguarded local,
+# so an item that could not be inserted stranded every item before it.
+class Plain:
+    pass
+
+
+def build_trips(fn):
+    try:
+        fn()
+    except TypeError as exc:
+        return str(exc) == "cannot use 'list' as a set element (unhashable type: 'list')"
+    return False
+
+
+assert build_trips(lambda: {Plain(), [], Plain()})
+assert build_trips(lambda: set([Plain(), [], Plain()]))
+assert build_trips(lambda: frozenset([Plain(), [], Plain()]))
+assert build_trips(lambda: {x for x in (Plain(), [], Plain())})
