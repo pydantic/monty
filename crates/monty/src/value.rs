@@ -8,6 +8,7 @@ use std::{
 
 use num_bigint::{BigInt, Sign};
 use num_traits::{FromPrimitive, ToPrimitive};
+use smallvec::smallvec;
 
 use crate::{
     builtins::{Builtins, BuiltinsFunctions},
@@ -31,7 +32,7 @@ use crate::{
         host_class_type,
         instance::{instance_dataclass_eq, instance_getattr, instance_str, instance_user_eq},
         long_int::{
-            bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, bigint_true_divide,
+            bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, bigint_true_divide,
             check_bits_str_digits_limit, i64_cmp_f64, repeat_count, wide_i128_into_value,
         },
         namedtuple::cmp_item_seqs,
@@ -40,6 +41,7 @@ use crate::{
             allocate_char, allocate_string, concat_allocate_str, copy_format_template, get_char_at_index, repeat_str,
             str_contains, string_repr_fmt,
         },
+        tuple::allocate_tuple,
     },
 };
 
@@ -1005,6 +1007,28 @@ impl<'h> PyTrait<'h> for Value {
     fn py_rmod_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         if let Self::Ref(id) = self {
             vm.heap.read(*id).py_rmod_impl(other, vm)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// One-sided implementation of Python `divmod()`.
+    fn py_divmod_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        if let (Some(lhs), Some(rhs)) = (immediate_int(self), immediate_int(other)) {
+            int_divmod_tuple(lhs, rhs, vm.heap).map(Some)
+        } else if let (Some(lhs), Some(rhs)) = (immediate_float(self), immediate_float(other)) {
+            float_divmod_tuple(lhs, rhs, vm.heap).map(Some)
+        } else if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_divmod_impl(other, vm)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Reflected implementation of Python `divmod()`.
+    fn py_rdivmod_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_rdivmod_impl(other, vm)
         } else {
             Ok(None)
         }
@@ -2044,6 +2068,20 @@ impl Value {
         )
     }
 
+    /// Performs Python `divmod()` with reflected-operation fallback.
+    ///
+    /// CPython spells the operator as `divmod()` in the `TypeError` an
+    /// unsupported pair raises, so that is the name passed through.
+    pub(crate) fn py_divmod(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        self.binary_op(
+            other,
+            vm,
+            |vm| self.py_divmod_impl(other, vm),
+            |vm| other.py_rdivmod_impl(self, vm),
+            "divmod()",
+        )
+    }
+
     /// Performs Python `** or pow()` with reflected-operation fallback.
     pub(crate) fn py_pow(&self, other: &Self, modulus: Option<&Self>, vm: &mut VM<'_>) -> RunResult<Self> {
         self.binary_op(
@@ -2539,6 +2577,50 @@ fn immediate_int(value: &Value) -> Option<i64> {
         Value::Int(value) => Some(*value),
         Value::Bool(value) => Some(i64::from(*value)),
         _ => None,
+    }
+}
+
+/// Widens any immediate number to `f64`, for the arms where one operand is a float.
+///
+/// Callers must try [`immediate_int`] first: an all-integer pair must stay exact.
+fn immediate_float(value: &Value) -> Option<f64> {
+    match value {
+        Value::Float(value) => Some(*value),
+        Value::Int(value) => Some(*value as f64),
+        Value::Bool(value) => Some(f64::from(*value)),
+        _ => None,
+    }
+}
+
+/// Builds `divmod()`'s `(quotient, remainder)` tuple for two machine integers.
+///
+/// Only `i64::MIN // -1` overflows `i64`, and that lone case promotes to a
+/// `LongInt` pair — too small to be worth preflighting against the tracker.
+fn int_divmod_tuple(lhs: i64, rhs: i64, heap: &Heap) -> RunResult<Value> {
+    if rhs == 0 {
+        Err(ExcType::zero_division().into())
+    } else if let Some((quotient, remainder)) = floor_divmod(lhs, rhs) {
+        Ok(allocate_tuple(
+            smallvec![Value::Int(quotient), Value::Int(remainder)],
+            heap,
+        ))
+    } else {
+        Ok(bigint_divmod_tuple(&BigInt::from(lhs), &BigInt::from(rhs), heap))
+    }
+}
+
+/// Builds `divmod()`'s `(quotient, remainder)` tuple for float operands.
+///
+/// Shared with [`LongInt`]'s mixed-type arms, which widen their long operand first.
+pub(crate) fn float_divmod_tuple(lhs: f64, rhs: f64, heap: &Heap) -> RunResult<Value> {
+    if rhs == 0.0 {
+        Err(ExcType::zero_division().into())
+    } else {
+        let (quotient, remainder) = py_float_divmod(lhs, rhs);
+        Ok(allocate_tuple(
+            smallvec![Value::Float(quotient), Value::Float(remainder)],
+            heap,
+        ))
     }
 }
 

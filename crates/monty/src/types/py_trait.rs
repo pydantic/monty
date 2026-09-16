@@ -380,6 +380,16 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         Ok(None)
     }
 
+    /// One-sided implementation of Python `divmod()` (`__divmod__`).
+    fn py_divmod_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python `divmod()` (`__rdivmod__`).
+    fn py_rdivmod_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
     /// One-sided implementation of Python power (`__pow__`).
     fn py_pow_impl(&self, _other: &Value, _modulus: Option<&Value>, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)

@@ -1737,15 +1737,6 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
-    /// Creates a ZeroDivisionError for divmod by zero (both integer and float).
-    ///
-    /// Matches CPython's format: `ZeroDivisionError: division by zero`
-    /// Note: CPython uses the same message for both integer and float divmod.
-    #[must_use]
-    fn divmod_by_zero() -> RunError {
-        SimpleException::new_msg(ExcType::ZeroDivisionError, "division by zero").into()
-    }
-
     /// Creates a TypeError for str.join() when an item is not a string.
     ///
     /// Matches CPython's format: `TypeError: sequence item {index}: expected str instance, {type} found`

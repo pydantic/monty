@@ -12,6 +12,7 @@ use std::{
 };
 
 use chrono::TimeDelta as ChronoTimeDelta;
+use smallvec::smallvec;
 
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
@@ -20,7 +21,9 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{CmpOrder, LazyHeapSet, PyTrait, Type, date, datetime, long_int, str::allocate_string},
+    types::{
+        CmpOrder, LazyHeapSet, PyTrait, Type, date, datetime, long_int, str::allocate_string, tuple::allocate_tuple,
+    },
     value::{EitherStr, Value},
 };
 
@@ -519,6 +522,18 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         let (_, remainder) = floor_div_rem(total_microseconds(self.get(vm.heap)), rhs);
         let result = from_total_microseconds(remainder)?;
         Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result)))))
+    }
+
+    fn py_divmod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        // Like `%`, only defined against another timedelta. It pairs the whole
+        // count `//` yields with the duration `%` leaves over.
+        let Some(rhs) = rhs_microseconds(other, vm)? else {
+            return Ok(None);
+        };
+        let (quotient, remainder) = floor_div_rem(total_microseconds(self.get(vm.heap)), rhs);
+        let quotient = int_from_microseconds(quotient, vm.heap);
+        let remainder = allocate_micros(remainder, vm.heap);
+        Ok(Some(allocate_tuple(smallvec![quotient, remainder], vm.heap)))
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
