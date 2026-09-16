@@ -119,7 +119,7 @@ impl SetStorage {
         let (value, vm) = value_guard.as_parts();
         let hash = set_element_hash(value, vm)?;
         let (value, vm) = value_guard.into_parts();
-        Ok(self.add_with_hash(value, hash, vm))
+        self.add_with_hash(value, hash, vm)
     }
 
     /// Adds an element whose hash the caller already knows.
@@ -128,25 +128,49 @@ impl SetStorage {
     /// re-running `__hash__`, matching CPython's `set_add_entry`. Passing a
     /// hash that does not match the value corrupts the index table, so only
     /// pass one taken from an existing entry for the same value.
-    fn add_with_hash(&mut self, value: Value, hash: u64, vm: &mut VM<'_>) -> bool {
+    ///
+    /// Only for storages guest code cannot reach — a set still being built, or
+    /// the fresh result of an algebra op. Those cannot be mutated mid-probe,
+    /// so unlike [`HeapRead::find_index`] this needs no revalidation; it does
+    /// still have to let a raising `__eq__` out, which is what the error slot
+    /// below is for. Use the `HeapRead` twin for a published set.
+    fn add_with_hash(&mut self, value: Value, hash: u64, vm: &mut VM<'_>) -> RunResult<bool> {
         let mut value_guard = DropGuard::new(value, vm);
         let (value, vm) = value_guard.as_parts_mut();
 
         // Check if value already exists. CPython compares the stored element on
         // the left, which an asymmetric user `__eq__` can tell apart — the
         // mutation-safe twin ([`HeapRead::find_index`]) does the same.
-        let existing = self
-            .indices
-            .find(hash, |&idx| self.entries[idx].value.py_eq(value, vm).unwrap_or(false));
+        //
+        // `HashTable::find` wants a `-> bool` closure, so an exception is
+        // parked here and re-raised once the probe has let go of the table.
+        // Stopping the probe on the first error matches CPython, which aborts
+        // the lookup as soon as a comparison raises.
+        let mut error = None;
+        let existing = self.indices.find(hash, |&idx| {
+            if error.is_some() {
+                return false;
+            }
+            match self.entries[idx].value.py_eq(value, vm) {
+                Ok(eq) => eq,
+                Err(err) => {
+                    error = Some(err);
+                    false
+                }
+            }
+        });
+        let existing = existing.is_some();
 
-        if existing.is_some() {
-            false
+        if let Some(err) = error {
+            Err(err)
+        } else if existing {
+            Ok(false)
         } else {
             let index = self.entries.len();
             let value = value_guard.into_inner();
             self.entries.push(SetEntry { value, hash });
             self.indices.insert_unique(hash, index, |&idx| self.entries[idx].hash);
-            true
+            Ok(true)
         }
     }
 }
@@ -611,7 +635,7 @@ impl<'h> HeapRead<'h, SetStorage> {
             defer_drop_mut!(iter, vm);
             while let Some((value, hash)) = iter.next_entry(vm)? {
                 let value = value.clone_with_heap(vm.heap);
-                result.add_with_hash(value, hash, vm);
+                result.add_with_hash(value, hash, vm)?;
             }
         }
         Ok(result_guard.into_inner())
@@ -636,7 +660,7 @@ impl<'h> HeapRead<'h, SetStorage> {
             while let Some((value, hash)) = iter.next_entry(vm)? {
                 if larger.contains_with_hash(value, hash, vm)? {
                     let value = value.clone_with_heap(vm.heap);
-                    result.add_with_hash(value, hash, vm);
+                    result.add_with_hash(value, hash, vm)?;
                 }
             }
         }
@@ -653,7 +677,7 @@ impl<'h> HeapRead<'h, SetStorage> {
             while let Some((value, hash)) = iter.next_entry(vm)? {
                 if !other.contains_with_hash(value, hash, vm)? {
                     let value = value.clone_with_heap(vm.heap);
-                    result.add_with_hash(value, hash, vm);
+                    result.add_with_hash(value, hash, vm)?;
                 }
             }
         }
@@ -672,7 +696,7 @@ impl<'h> HeapRead<'h, SetStorage> {
             while let Some((value, hash)) = iter.next_entry(vm)? {
                 if !other.contains_with_hash(value, hash, vm)? {
                     let value = value.clone_with_heap(vm.heap);
-                    result.add_with_hash(value, hash, vm);
+                    result.add_with_hash(value, hash, vm)?;
                 }
             }
         }
@@ -685,7 +709,7 @@ impl<'h> HeapRead<'h, SetStorage> {
             while let Some((value, hash)) = iter.next_entry(vm)? {
                 if !self.contains_with_hash(value, hash, vm)? {
                     let value = value.clone_with_heap(vm.heap);
-                    result.add_with_hash(value, hash, vm);
+                    result.add_with_hash(value, hash, vm)?;
                 }
             }
         }

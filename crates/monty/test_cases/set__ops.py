@@ -369,6 +369,61 @@ assert (Clearing() in clearing) is False
 assert len(clearing) == 0
 
 
+# === an `__eq__` that raises during insertion propagates ===
+# Regression: building a fresh set probed the new table with an `__eq__` whose
+# exception was discarded as "not equal", so colliding elements both landed and
+# the operation returned a set where CPython raises.
+_raising = False
+
+
+class Raising:
+    def __init__(self, n):
+        self.n = n
+
+    def __hash__(self):
+        return 0
+
+    def __eq__(self, other):
+        if _raising:
+            raise ValueError('boom')
+        return isinstance(other, Raising) and self.n == other.n
+
+
+def raises_boom(fn):
+    try:
+        fn()
+    except ValueError as exc:
+        return str(exc) == 'boom'
+    return False
+
+
+left = {Raising(1)}
+right = {Raising(2)}
+frozen = frozenset({Raising(3)})
+mapping = {Raising(4): 4}
+_raising = True
+
+# operations that build the result by inserting into a fresh table
+assert raises_boom(lambda: left | right)
+assert raises_boom(lambda: left.union(right))
+assert raises_boom(lambda: frozen | right)
+assert raises_boom(lambda: {Raising(5), Raising(6)})
+assert raises_boom(lambda: {Raising(n) for n in (7, 8)})
+assert raises_boom(lambda: set([Raising(9), Raising(10)]))
+assert raises_boom(lambda: frozenset([Raising(11), Raising(12)]))
+assert raises_boom(lambda: mapping.keys() | right)
+
+# operations that probe an existing set already propagated, and still do
+assert raises_boom(lambda: left & right)
+assert raises_boom(lambda: left - right)
+assert raises_boom(lambda: left ^ right)
+assert raises_boom(lambda: left.add(Raising(13)))
+assert raises_boom(lambda: left.update(right))
+
+# the left-hand set is unchanged by the failed operations
+_raising = False
+assert len(left) == 1
+
 # === a failed set construction releases the items it already took ===
 # Regression: the set literal and `set(iterable)` built into an unguarded local,
 # so an item that could not be inserted stranded every item before it.
