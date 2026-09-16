@@ -137,8 +137,9 @@ subprocesses:
     Generated decoders use `budgeted_prost` via `prost_path`: vector/buffer growth
     and hand-written boxed payloads share a cumulative per-frame allocation budget.
     Decode through `decode_frame` or `FrameReader::read`, which scope the budget;
-    raw prost decoding cannot allocate outside a frame. Integration tests enable
-    the internal `test-util` feature for smaller budgets and accounting checks.
+    decoding these protocol types cannot allocate payload storage outside a frame.
+    Integration tests enable the internal `test-util` feature for smaller budgets
+    and accounting checks.
     New allocation forms must extend the adapter and its tests; codegen rejects
     unsupported maps, groups, generated boxes and `Bytes` fields.
     `monty-proto` depends only on `monty-types` by default; its `worker` feature
