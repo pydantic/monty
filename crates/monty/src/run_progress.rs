@@ -31,7 +31,7 @@ use crate::{
 ///
 /// Each variant wraps a dedicated struct that owns the execution state and
 /// exposes only the resume methods relevant to that suspension reason.
-///
+/// Deserialization requires trusted, unmodified state; see [`crate::Dump::load`].
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum RunProgress {
     /// Execution paused at an external function call, or a method call on a

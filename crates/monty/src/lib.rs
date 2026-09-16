@@ -40,9 +40,6 @@ mod types;
 mod value;
 mod virtual_path;
 
-#[cfg(feature = "test-hooks")]
-#[doc(hidden)]
-pub use crate::function::FunctionMetadataFault;
 #[cfg(feature = "ref-count-return")]
 pub use crate::run::RefCountOutput;
 pub use crate::{

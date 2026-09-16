@@ -83,6 +83,13 @@ pub struct Dump {
 impl Dump {
     /// Restores a session dumped by [`dump`].
     ///
+    /// # Snapshot trust
+    /// The caller must establish that the bytes are unmodified output from a trusted,
+    /// compatible Monty producer. Invalid snapshots have no correctness or availability
+    /// guarantees: loading or using them may panic, abort, hang, or produce wrong results,
+    /// but must not cause undefined behaviour. Successful decoding does not authenticate
+    /// or fully validate a snapshot. The same contract applies to direct serde deserialization.
+    ///
     /// # Errors
     /// Returns [`DumpError`] for a dump this build cannot read — most usefully
     /// [`DumpError::VersionMismatch`], which names both versions so a host can

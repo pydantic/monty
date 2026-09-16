@@ -72,6 +72,9 @@ restores line buffering, one event per completed line); `Checkout::feed` accepts
 per-feed filesystem mounts (`MountSpec`) and, through `Checkout::feed_with_cwd`, a switch of the
 sandbox's working directory (the first feed's first mount by default; it then persists across feeds). Sessions can be snapshotted with `Checkout::dump`
 and restored later — including on a different worker or machine — with `Checkout::restore`.
+The caller must establish that restored bytes are unmodified output from a trusted, compatible Monty producer.
+Neither the pool nor the interpreter authenticates snapshots; successful loading does not establish validity.
+Invalid snapshots have no correctness or availability guarantees, but must not cause undefined behaviour.
 
 ## Protections over in-process execution
 

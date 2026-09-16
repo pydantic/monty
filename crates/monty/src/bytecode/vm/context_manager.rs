@@ -47,11 +47,7 @@ impl VM<'_> {
         let this = self;
         let ctx = this.pop();
         let Value::Ref(ctx_id) = ctx else {
-            // Unreachable in well-formed bytecode (BeforeWith would have rejected
-            // a non-Ref ctx), but guard rather than panic so a corrupt VM
-            // surfaces a clear internal error instead of an uncontrolled drop.
-            ctx.drop_with(this);
-            return Err(RunError::internal("WithExit: expected context-manager ref on stack"));
+            unreachable!("WithExit: expected context-manager ref on stack");
         };
         // Drop the ctx reference on every exit path of this function — whether
         // py_exit returns a value, yields, or errors. This matches the ref-count
@@ -69,16 +65,10 @@ impl VM<'_> {
         let len = self.stack.len();
         // Pattern-match via place expressions so neither stack slot is moved.
         let Value::Ref(exc_id) = self.stack[len - 1] else {
-            // The exception value pushed by `handle_exception` is always a heap
-            // ref; reaching this branch means the VM is in a corrupted state.
-            return Err(RunError::internal("WithExceptStart: expected exception ref on stack"));
+            unreachable!("WithExceptStart: expected exception ref on stack");
         };
         let Value::Ref(ctx_id) = self.stack[len - 2] else {
-            // BeforeWith already validated ctx as Value::Ref before pushing it
-            // onto the stack, so a non-Ref here means the VM is corrupted.
-            return Err(RunError::internal(
-                "WithExceptStart: expected context-manager ref on stack",
-            ));
+            unreachable!("WithExceptStart: expected context-manager ref on stack");
         };
         self.heap.read(ctx_id).py_exit(self, Some(exc_id))
     }

@@ -78,10 +78,25 @@ Possible security risks to consider:
 - subprocess/shell execution - os.system, subprocess, etc.
 - import system abuse - importing modules with side effects or accessing `__import__`
 - external function/callback misuse - callbacks run in host environment
-- deserialization attacks - loading untrusted serialized Monty/snapshot data
+- deserialization attacks - worker frames are untrusted; snapshots follow the trust contract below
 - regex/string DoS - catastrophic backtracking or operations bypassing limits
 - information leakage via timing or error messages
 - Python/Javascript/Rust APIs that accidentally allow developers to expose their host to monty code
+
+### Snapshot trust
+
+Snapshots and direct serde-serialized interpreter state must be unmodified output from a trusted, compatible Monty producer.
+The caller is responsible for establishing provenance and integrity before loading; the interpreter does not authenticate
+snapshots or fully validate their contents.
+Invalid snapshots have no correctness or availability guarantees: loading or using them may panic, abort, hang, or produce
+incorrect results, but MUST NOT cause undefined behaviour.
+Successful deserialization is not proof of validity.
+Genuine snapshots produced while running untrusted Python remain supported.
+
+Do not add semantic validation or graceful error paths solely for tampered snapshots.
+Keep memory-safety checks (including rejecting transient Gray/White GC states), reconstruction needed by valid snapshots,
+format/version checks, and transport compatibility checks.
+Worker frames, host values, callbacks and filesystem mounts remain untrusted boundaries independently of snapshot trust.
 
 ## Filesystem Mounts (`crates/monty-fs/`)
 
@@ -112,7 +127,7 @@ followed, even inside the mount (see `limitations/filesystem.md`) — do not
 check-then-use this removes.
 
 **Changes to `mount_table.rs` or `path_security.rs` require careful security
-review.** `heap.rs` and the mount boundary are the most security-critical
+review.** `heap/mod.rs` and the mount boundary are the most security-critical
 code in the codebase.
 
 ## Subprocess isolation (`monty-proto`, `monty subprocess`, `monty-pool`)
@@ -179,7 +194,7 @@ discriminating operand would cost measurable dispatch time.
 
 All heap-allocated Python objects (lists, dicts, strings, etc.) are stored in a paged arena (`Heap`). The `HeapReader` API provides **compile-time safe** access to heap data. This is the primary mechanism for reading and mutating heap objects throughout the codebase.
 
-**`heap.rs` is a critical safety boundary.** It contains `unsafe` code that underpins the soundness of the entire `HeapReader`/`HeapRead` system (pointer arithmetic, `UnsafeCell` access, reader-count invariants). Do NOT modify `heap.rs` without explicit user approval. Changes to this file require careful review of the safety invariants documented in the code comments.
+**`heap/mod.rs` is a critical safety boundary.** It contains `unsafe` code that underpins the soundness of the entire `HeapReader`/`HeapRead` system (pointer arithmetic, `UnsafeCell` access, reader-count invariants). Do NOT modify `heap/mod.rs` without explicit user approval. Changes to this file require careful review of the safety invariants documented in the code comments.
 
 #### Core concepts
 
@@ -837,7 +852,7 @@ If you find yourself fighting the borrow checker around `clone_with_heap` or `al
 ### Cycle collection — Bacon–Rajan trial deletion
 
 Reference counting alone cannot reclaim cycles. Monty uses **Bacon–Rajan trial deletion**
-(`Heap::collect_cycles` in `crates/monty/src/heap.rs`).
+(`Heap::collect_cycles` in `crates/monty/src/heap/mod.rs`).
 
 **Resource limits**: When a memory or time limit is exceeded, execution terminates with a `ResourceError`. No guarantees are made about the state of the heap or reference counts after a resource limit is exceeded. The heap may contain orphaned objects with incorrect refcounts. This is acceptable because resource exhaustion is a terminal error - the execution context should be discarded.
 

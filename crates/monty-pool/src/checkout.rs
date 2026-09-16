@@ -583,6 +583,11 @@ impl Checkout {
     /// Returns the re-announced suspension (`Some` — a suspended dump) or `None`
     /// (an idle dump), paired with the worker's adopted script name (the dump's,
     /// not the `Configure` one), which the parent surfaces in restored snapshots.
+    ///
+    /// # Snapshot trust
+    /// The caller must verify the dump's provenance and integrity before restoring it.
+    /// Invalid snapshots have no correctness or availability guarantees, but must not
+    /// cause undefined behaviour. Successful loading is not authentication or validation.
     pub async fn restore(
         &mut self,
         state: Vec<u8>,

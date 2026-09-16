@@ -722,6 +722,11 @@ class MontySession:
 
         Use `load_snapshot` for a dump taken mid-execution.
 
+        Only load unmodified bytes from a trusted, compatible Monty producer.
+        The caller must establish provenance and integrity; Monty does not authenticate
+        snapshots. Invalid snapshots have no correctness or availability guarantees,
+        but must not cause undefined behaviour. Successful loading does not establish validity.
+
         The dump restores its own `script_name` /
         limits / type-check state (the `checkout()` config for those is not
         applied). The class-instance store starts empty — it is host state and
@@ -744,6 +749,7 @@ class MontySession:
         after `feed_start`) and return the re-announced snapshot to resume.
 
         Use `load_session` for a dump taken between feeds.
+        The snapshot trust requirements of `load_session` also apply here.
 
         Valid only on a fresh session, before any feed or load; raises
         `RuntimeError` otherwise. The dump restores its own `script_name` /

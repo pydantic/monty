@@ -426,9 +426,8 @@ fn load_rejects_old_dump_version() {
     );
 }
 
-/// A forged suspended dump whose call arguments nest deeper than the wire
-/// depth bound must be rejected at `Load` with a protocol violation — not
-/// re-announced as an event the parent cannot decode.
+/// A genuine in-process dump can exceed the wire depth bound. `Load` must
+/// reject it rather than announce an event the parent cannot decode.
 #[test]
 fn load_rejects_dump_with_over_deep_suspension_args() {
     // suspend in-process (no wire depth bound) at `f(x)` with x nested 100

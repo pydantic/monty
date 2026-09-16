@@ -732,9 +732,8 @@ impl Child {
             type_check,
             state,
         } = restored;
-        // the depth/oversize checks below can only fail on a forged or corrupted
-        // dump — `drive` enforces them on every fresh suspension before it is
-        // stored
+        // In-process Rust producers can dump values exceeding the wire limits;
+        // check transport compatibility even though snapshot integrity is the host's responsibility.
         let mut event = match state {
             Session::Idle(repl) => {
                 self.state = SessionState::Ready(repl);
@@ -744,8 +743,8 @@ impl Child {
             // execution has no way to accept further feeds
             Session::Running(_) => protocol_violation("dump holds a one-shot run, not a repl session"),
             Session::Suspended(progress) => match *progress {
-                // a dump is never taken at Complete, but a forged one could
-                // contain it; surface the value rather than fail
+                // The public Rust dump API can serialize Complete, even though
+                // this worker only dumps idle or suspended sessions.
                 ReplProgress::Complete { repl, value } => {
                     if exceeds_max_value_depth(&value) {
                         protocol_violation("dump value exceeds the maximum wire depth")
@@ -1025,7 +1024,7 @@ fn complete_event(value: MontyObject) -> pb::ChildEvent {
 }
 
 /// Whether a suspension's argument payload nests too deeply for the wire —
-/// used by `drive` (fresh) and `handle_load` (restored, i.e. forged dumps).
+/// used by `drive` and `handle_load`, including dumps from in-process Rust producers.
 fn suspension_args_too_deep(progress: &ReplProgress) -> bool {
     match progress {
         ReplProgress::FunctionCall(call) => function_call_args_too_deep(call),

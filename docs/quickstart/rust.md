@@ -104,6 +104,8 @@ trusted back into the pool.
 
 [`ReplConfig`](../api/rust/monty-pool.md#replconfig) carries the per-session sandbox [`ResourceLimits`](../api/rust/monty-types.md#resourcelimits) and type-checking options.
 [`Checkout::dump`](../api/rust/monty-pool.md#checkout) and [`Checkout::restore`](../api/rust/monty-pool.md#checkout) snapshot and restore a session, including onto a different worker or machine.
+Restore only unmodified snapshots whose provenance and integrity the caller has established;
+see [snapshot security](../security.md#deserializing-snapshots).
 
 ### What the pool adds over in-process execution
 
@@ -252,7 +254,11 @@ A host driving the interpreter directly must count suspensions and call `abort` 
 
 The free function `monty::dump` serializes a session — idle between feeds ([`SessionRef::Idle`](../api/rust/monty.md#sessionref)) or suspended mid-run
 ([`SessionRef::Suspended`](../api/rust/monty.md#sessionref)) — together with its script name and type-check state.
-[`Dump::load`](../api/rust/monty.md#dump) restores it, in the same process or a different one:
+[`Dump::load`](../api/rust/monty.md#dump) restores it, in the same process or a different one.
+Both this method and direct serde deserialization require unmodified bytes from a trusted, compatible Monty producer.
+The caller must establish provenance and integrity; invalid snapshots have no correctness or availability guarantees,
+but must not cause undefined behaviour.
+See [snapshot security](../security.md#deserializing-snapshots).
 
 ```rust
 use monty::{Dump, MontyRepl, Session, SessionRef, dump};

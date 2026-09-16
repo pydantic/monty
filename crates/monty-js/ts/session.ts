@@ -284,6 +284,11 @@ export class MontySession {
    * Valid only on a fresh session, before any feed or load (it replaces the
    * whole session); throws otherwise. The dump restores its own resource limits
    * and type-check state. Throws if the dump is actually a suspended snapshot.
+   *
+   * Only load unmodified bytes from a trusted, compatible Monty producer.
+   * The caller must establish provenance and integrity; Monty does not authenticate
+   * snapshots. Invalid snapshots have no correctness or availability guarantees,
+   * but must not cause undefined behaviour. Successful loading does not establish validity.
    */
   async loadSession(state: Uint8Array): Promise<void> {
     this.claimFresh()
@@ -308,7 +313,8 @@ export class MontySession {
   /**
    * Restores a dumped **suspended** snapshot — bytes from `feedStart` +
    * `snapshot.dump()` — and resolves to the snapshot to resume. Use
-   * [`loadSession`] for a dump taken between feeds.
+   * [`loadSession`] for a dump taken between feeds. Its snapshot trust requirements
+   * also apply here.
    *
    * Valid only on a fresh session, before any feed or load; throws otherwise.
    * Re-supply the same `mount`s the paused feed used (their host paths are not

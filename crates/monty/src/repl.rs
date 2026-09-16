@@ -18,8 +18,6 @@ use monty_types::{
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
 
-#[cfg(feature = "test-hooks")]
-use crate::function::FunctionMetadataFault;
 use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::{FrameExit, VM, VMSnapshot},
@@ -43,6 +41,7 @@ use crate::{
 /// [`MontyRepl`] preserves heap and global variable state between snippets.
 /// Each [`feed_run`](Self::feed_run) or [`feed_start`](Self::feed_start) call compiles and executes only the new snippet against the current
 /// state, avoiding the cost and semantic risks of replaying prior code.
+/// Deserialization requires trusted, unmodified state; see [`crate::Dump::load`].
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct MontyRepl {
     /// Script name used for runtime error messages and REPL identification,
@@ -148,17 +147,6 @@ impl MontyRepl {
     /// again.
     pub fn set_cwd(&mut self, cwd: &str) {
         self.cwd = canonical_cwd(cwd);
-    }
-
-    /// Injects `fault` into a compiled function's metadata.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `name` does not identify a function suitable for `fault`.
-    #[cfg(feature = "test-hooks")]
-    #[doc(hidden)]
-    pub fn __corrupt_function_metadata_for_tests(&mut self, name: &str, fault: FunctionMetadataFault) {
-        self.interns.corrupt_function_metadata_for_tests(name, fault);
     }
 
     /// Returns the resource tracker that will be used for the next snippet.
@@ -559,7 +547,7 @@ impl Drop for MontyRepl {
 /// This mirrors [`RunProgress`](crate::RunProgress) but returns the updated [`MontyRepl`] on completion
 /// so callers can continue feeding additional snippets without replaying prior code.
 /// Each variant (except [`Complete`](Self::Complete)) wraps a dedicated struct with only the relevant
-/// resume methods.
+/// resume methods. Deserialization requires trusted, unmodified state; see [`crate::Dump::load`].
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum ReplProgress {
     /// Execution paused at an external function call or dataclass method call.

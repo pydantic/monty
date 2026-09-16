@@ -409,15 +409,24 @@ sandbox.
 
 ### Deserializing snapshots
 
-[Snapshots](snapshots.md) are opaque bytes restored into a worker.
-Treat a snapshot from an untrusted source the way you would treat any untrusted serialized data: restore it into a
-worker you are willing to lose.
+[Snapshots](snapshots.md) must be unmodified output from a trusted, compatible Monty producer.
+The caller must establish their provenance and integrity before restoring them; Monty does not authenticate snapshots.
+Use trusted storage or verify a MAC/signature before loading bytes received through an untrusted channel.
+A checksum supplied alongside untrusted bytes is not authentication.
+
+Invalid snapshots have no correctness or availability guarantees: loading or using them may return incorrect results,
+panic, terminate the process, or fail to terminate, but must not cause undefined behaviour.
+Successful decoding does not establish that a snapshot is valid.
+Worker isolation does not replace verification: restored state carries resource limits and can request host callbacks.
+These rules also apply to direct serde deserialization in Rust.
+Genuine snapshots produced while running untrusted Python remain supported; the trust requirement concerns the producer
+and serialized bytes, not the Python source.
 
 ## The parts that are most security-critical
 
 If you are reviewing or contributing to Monty, two files carry most of the weight:
 
-- `crates/monty/src/heap.rs` — the heap and reference counting.
+- `crates/monty/src/heap/mod.rs` — the heap and reference counting.
 - `crates/monty-fs/src/mount_table.rs` — the mount boundary: the `Dir` descriptor every filesystem operation runs
     against, with `path_security.rs` beside it holding the virtual-path policy.
 

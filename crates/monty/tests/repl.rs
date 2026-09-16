@@ -6,8 +6,6 @@
 use std::fmt::Write;
 
 use insta::assert_snapshot;
-#[cfg(feature = "test-hooks")]
-use monty::FunctionMetadataFault;
 use monty::{
     DUMP_VERSION, Dump, DumpError, MontyRepl, ReplContinuationMode, ReplProgress, ReplStartError, Session, SessionRef,
     detect_repl_continuation_mode, dump,
@@ -100,100 +98,25 @@ fn dump_header_rejects_incompatible_data() {
     );
 }
 
-/// A dump is untrusted input, and the heap it carries is installed verbatim. A
-/// `time` entry that no constructor could have produced must be rejected at load
-/// rather than panicking, or contradicting itself, later — when the ranges and the
-/// `tzinfo` reference are read back as established facts.
-///
-/// A `time` stores only a reference to its zone, so a disagreement between an
-/// attached offset and the object it points at is not representable. What is left
-/// is a component out of range, a reference that is not a timezone, and an offset
-/// out of range on the timezone itself.
+/// Transient GC colors cannot be restored: the collector's reader protection
+/// relies on establishing Gray/White itself, even when the snapshot is invalid.
 #[test]
-fn dump_rejects_forged_time_entries() {
-    // Distinctive components so the encoded `time` can be found in the payload:
-    // three single-byte fields, then 444555 as a postcard varint.
-    const COMPONENTS: [u8; 6] = [11, 22, 33, 0x8B, 0x91, 0x1B];
-
-    let naive = dump_repl("import datetime\nt = datetime.time(11, 22, 33, 444555)");
-    // ... followed by fold and a `None` tzinfo.
-    let hour = offset_of(&naive, &[COMPONENTS.as_slice(), &[0, 0]].concat());
-    assert!(Dump::load(&naive).is_ok());
-
-    let mut forged = naive;
-    forged[hour] = 255;
-    assert_eq!(
-        Dump::load(&forged).unwrap_err(),
-        DumpError::Payload(postcard::Error::SerdeDeCustom)
-    );
-
-    // A *named* offset keeps a timezone entry of its own instead of canonicalizing
-    // onto the `timezone.utc` singleton, and 23 hours encodes as a three-byte
-    // varint, leaving room to forge a value outside the range `timezone()` accepts.
-    let aware = dump_repl(
-        "import datetime\ntz = datetime.timezone(datetime.timedelta(hours=23), 'AB')\nt = datetime.time(11, 22, 33, 444555, tzinfo=tz)",
-    );
-    assert!(Dump::load(&aware).is_ok());
-
-    // ... followed by fold and `Some(_)`, so the heap id ends the marker.
-    let tzinfo_ref = offset_of(&aware, &[COMPONENTS.as_slice(), &[0, 1]].concat()) + 8;
-    // The timezone entry: 82800 seconds zigzag-encoded, then `Some("AB")`.
-    let tz_offset = offset_of(&aware, &[0xE0, 0x8D, 0x0A, 1, 2, b'A', b'B']);
-
-    for (index, byte, what) in [
-        // The empty-tuple singleton: a live entry, but not a timezone.
-        (
-            tzinfo_ref,
-            0,
-            "a `tzinfo` reference to something that is not a timezone",
-        ),
-        (tzinfo_ref, 100, "a `tzinfo` reference to no entry at all"),
-        // `format_offset_hms` negates the offset, which panics on `i32::MIN`.
-        (tz_offset + 2, 0x7f, "a `tzinfo` object whose offset is out of range"),
-    ] {
-        let mut forged = aware.clone();
-        forged[index] = byte;
-        assert_eq!(
-            Dump::load(&forged).unwrap_err(),
-            DumpError::Payload(postcard::Error::SerdeDeCustom),
-            "a time with {what} must be rejected"
-        );
-    }
-}
-
-/// The `timezone_utc` cache is a raw heap id restored verbatim, and
-/// `get_timezone_utc` hands its target back as `datetime.timezone.utc` after an
-/// `inc_ref` that panics on a freed or out-of-range id. A forged cache must be
-/// rejected at load, whether it points at nothing, at a live non-timezone, or at
-/// a timezone that is not UTC.
-#[test]
-fn dump_rejects_forged_timezone_utc_cache() {
-    let bytes = dump_repl(
-        "import datetime\nutc = datetime.timezone.utc\nplus2 = datetime.timezone(datetime.timedelta(hours=2))",
-    );
+fn dump_rejects_transient_gc_colors() {
+    // A distinctive naive time payload: hour, minute, second, microsecond
+    // (varint), fold, tzinfo. The heap entry's color immediately follows it.
+    const TIME: [u8; 8] = [11, 22, 33, 0x8B, 0x91, 0x1B, 0, 0];
+    let bytes = dump_repl("import datetime\nt = datetime.time(11, 22, 33, 444555)");
+    let color = offset_of(&bytes, &TIME) + TIME.len();
+    assert_eq!(bytes[color], 0); // Black
     assert!(Dump::load(&bytes).is_ok());
 
-    // `timezone_utc` is the heap's last serialized field and `globals` is the
-    // session's, so the cached id sits a fixed distance from the end: `Some(2)`
-    // followed by the three globals, one of which is the `+02:00` timezone at 4.
-    let cached_id = bytes.len() - 8;
-    assert_eq!(
-        &bytes[cached_id - 1..=cached_id],
-        &[1, 2],
-        "timezone_utc is Some(HeapId(2))"
-    );
-
-    for (forged_id, what) in [
-        (100, "no entry at all"),
-        (0, "the empty-tuple singleton"),
-        (4, "the +02:00 timezone"),
-    ] {
+    for transient in [1, 2] {
+        // Gray, White
         let mut forged = bytes.clone();
-        forged[cached_id] = forged_id;
+        forged[color] = transient;
         assert_eq!(
             Dump::load(&forged).unwrap_err(),
-            DumpError::Payload(postcard::Error::SerdeDeCustom),
-            "a timezone.utc cache pointing at {what} must be rejected"
+            DumpError::Payload(postcard::Error::SerdeDeCustom)
         );
     }
 }
@@ -468,55 +391,30 @@ fn repl_dump_load_derives_exact_positional_call_plans() {
     assert_eq!(err.message(), Some("add() missing 1 required positional argument: 'b'"));
 }
 
-#[cfg(feature = "test-hooks")]
+/// Default arguments, variadics and nested closure slots survive restoration.
 #[test]
-fn repl_dump_load_rejects_invalid_function_metadata() {
-    /// Checks forged function metadata is rejected at dump load.
-    fn assert_rejected(function: &str, fault: FunctionMetadataFault) {
-        let code = r"
-def variadic(*args, **kwargs):
-    return args, kwargs
-
-def pos_defaults(value=1, /):
-    return value
-
-def defaults(value=1):
-    return value
-
-def kw_defaults(*, first=1, second=2):
-    return first, second
-
-def outer(first, second):
-    def middle():
+fn repl_dump_load_preserves_function_metadata() {
+    let (repl, _) = init_repl(
+        r"
+def outer(pos=10, /, arg=20, *, kw=12):
+    def middle(*args, **kwargs):
         local = 1
         def inner():
-            return first + second + local
+            return pos + arg + kw + local, args, kwargs
         return inner
     return middle
-";
-        let (mut repl, _) = init_repl(code);
-        repl.__corrupt_function_metadata_for_tests(function, fault);
-        let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
-        assert_eq!(
-            Dump::load(&bytes).unwrap_err(),
-            DumpError::Payload(postcard::Error::SerdeDeCustom)
-        );
-    }
-
-    assert_rejected("variadic", FunctionMetadataFault::SignatureSlotsBeyondNamespace);
-    assert_rejected("variadic", FunctionMetadataFault::NamespaceTooLarge);
-    assert_rejected("inner", FunctionMetadataFault::FreeVarLengthMismatch);
-    assert_rejected("outer", FunctionMetadataFault::CellVarLengthMismatch);
-    assert_rejected("inner", FunctionMetadataFault::FreeVarSlotOutOfRange);
-    assert_rejected("outer", FunctionMetadataFault::CellVarSlotOutOfRange);
-    assert_rejected("outer", FunctionMetadataFault::CellParamIndexOutOfRange);
-    assert_rejected("pos_defaults", FunctionMetadataFault::PosDefaultsCountOutOfRange);
-    assert_rejected("defaults", FunctionMetadataFault::ArgDefaultsCountOutOfRange);
-    assert_rejected("kw_defaults", FunctionMetadataFault::KwargDefaultMapLengthMismatch);
-    assert_rejected("kw_defaults", FunctionMetadataFault::KwargDefaultIndexGap);
-    assert_rejected("defaults", FunctionMetadataFault::DefaultsCountMismatch);
-    assert_rejected("inner", FunctionMetadataFault::DuplicateFreeVarSlot);
-    assert_rejected("middle", FunctionMetadataFault::CellFreeVarSlotOverlap);
+saved = outer()(99, tag='saved')
+",
+    );
+    let mut loaded = round_trip_repl(&repl);
+    feed_run_print(
+        &mut loaded,
+        r"
+assert saved() == (43, (99,), {'tag': 'saved'})
+assert outer(1, arg=2, kw=3)(4, extra=5)() == (7, (4,), {'extra': 5})
+",
+    )
+    .unwrap();
 }
 
 #[test]
