@@ -1142,7 +1142,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
             let HeapReadOutput::List(mut dest) = vm.heap.read(copy_id) else {
                 unreachable!("copy was allocated as a list")
             };
-            dest.append(vm, copied);
+            dest.append(vm, copied)?;
         }
         let (copy, _) = guard.into_parts();
         Ok(copy)

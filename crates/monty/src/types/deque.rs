@@ -1159,7 +1159,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Deque> {
             let HeapReadOutput::Deque(mut dest) = vm.heap.read(copy_id) else {
                 unreachable!("copy was allocated as a deque")
             };
-            dest.append(vm, copied);
+            dest.append(vm, copied)?;
         }
         let (copy, _) = guard.into_parts();
         Ok(copy)
