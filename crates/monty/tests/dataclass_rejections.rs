@@ -107,10 +107,50 @@ class F:
         ("compare", "False"),
         ("metadata", "{}"),
         ("kw_only", "True"),
+        ("doc", "'what it is'"),
     ] {
         let err = expect_message(&format!("from dataclasses import field\nfield({arg}={value})\n"));
         assert_eq!(err, format!("field() does not yet support the {arg} argument"));
     }
+}
+
+/// CPython raises `ValueError` before it builds the `Field` at all, so it never
+/// looks at the other arguments. Monty reads the flags to refuse them, and
+/// `NotImplemented` is the one value whose truthiness raises — that must not
+/// pre-empt the error CPython reports.
+#[test]
+fn both_defaults_outrank_an_unreadable_flag() {
+    let err =
+        expect_message("from dataclasses import field\nfield(default=1, default_factory=int, init=NotImplemented)\n");
+    assert_eq!(err, "cannot specify both default and default_factory");
+}
+
+/// A refusal that fires *after* the default was captured must still release it.
+/// Reading a flag's truthiness raises for `NotImplemented`, which is exactly the
+/// window between capturing the default and allocating the `Field` that owns it.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn an_unreadable_flag_releases_the_captured_default() {
+    let mut run = MontyRun::new(
+        r"
+from dataclasses import field
+
+shared = (1, 2)
+try:
+    field(default=shared, init=NotImplemented)
+except TypeError:
+    pass
+"
+        .to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .expect("code should compile");
+    let output = run.run_ref_counts(vec![]).expect("should not raise");
+    // The global binding is the only reference left; a leaked capture reads 2.
+    assert_eq!(output.counts.get("shared"), Some(&1));
+    assert!(output.unreachable.is_empty(), "leaked {:?}", output.unreachable);
 }
 
 /// A quoted `ClassVar` is excluded from the fields, matching what CPython does

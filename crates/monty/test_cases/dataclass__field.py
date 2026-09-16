@@ -277,3 +277,48 @@ def never(self):
 
 Late.__post_init__ = never
 assert Late().a == 1
+
+
+# === A field object adopted twice keeps each class's own parameter name ===
+# Adoption writes the name into the `field()` object itself, so the second
+# class overwrites what the first recorded. Each class was built from its own
+# snapshot, so its `__init__` and repr keep the name it was decorated with.
+reused = field(default=1)
+
+
+@dataclass
+class First:
+    x: int = reused
+
+
+@dataclass
+class Second:
+    y: int = reused
+
+
+assert reused.name == 'y'
+assert First.__dataclass_fields__['x'] is reused
+assert list(First.__dataclass_fields__) == ['x']
+assert First().x == 1
+assert First(x=5).x == 5
+assert repr(First(5)) == 'First(x=5)'
+assert Second(2).y == 2
+try:
+    First(y=5)
+    assert False, 'expected a TypeError'
+except TypeError as e:
+    assert str(e) == "First.__init__() got an unexpected keyword argument 'y'"
+
+# One object bound under two names in the *same* class body is adopted twice
+# before the mapping is built, so both collapse onto the last name.
+shared = field(default=2)
+
+
+@dataclass
+class Collapses:
+    a: int = shared
+    b: int = shared
+
+
+assert list(Collapses.__dataclass_fields__) == ['b']
+assert Collapses().b == 2

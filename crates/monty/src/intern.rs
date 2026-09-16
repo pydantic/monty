@@ -848,6 +848,8 @@ pub enum StaticStrings {
     Discard,
     /// `math.dist()` function.
     Dist,
+    /// `field(doc=...)`, CPython's per-field docstring.
+    Doc,
     /// `sys.dont_write_bytecode` attribute.
     DontWriteBytecode,
     /// `re.DOTALL` flag
