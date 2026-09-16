@@ -221,7 +221,7 @@ fn exception_and_type_values_round_trip() {
     let dotted = MontyValue::builtin_function_from_name("object.__setattr__").expect("object.__setattr__ is a builtin");
     assert_value_round_trip(&dotted);
     assert_eq!(
-        serde_json::to_string(&dotted).expect("serializes"),
+        serde_json::to_string(dotted.root_node()).expect("serializes"),
         r#"{"BuiltinFunction":"object.__setattr__"}"#
     );
 }

@@ -1205,6 +1205,22 @@ fn exporting_a_small_shared_graph_round_trips() {
     child.shutdown();
 }
 
+/// Export recurses once per nesting level, so a value this deep overflows a
+/// 1 MiB stack in a debug build; the worker's own fixed-size stack keeps the
+/// budget the same on every OS rather than Windows' main-thread default.
+#[test]
+fn exporting_a_deeply_nested_value_does_not_overflow_the_stack() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let (_, event) = child.feed("x = [1]\nfor _ in range(300):\n    x = [x]\nx");
+    let value = expect_complete_value(event);
+    // one node per list plus the leaf
+    assert_eq!(value.graph.len(), 302);
+    let expected = (0..301).fold(MontyValue::int(1), |inner, _| MontyValue::list([inner]));
+    assert_eq!(value, expected);
+    child.shutdown();
+}
+
 /// A call's arguments share one arena: an object passed twice (positionally
 /// and by keyword) is one node, so the host receives one object.
 #[test]

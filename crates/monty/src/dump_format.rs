@@ -212,7 +212,6 @@ mod tests {
         // every postcard discriminant. Asserted rather than assumed, so a strum
         // upgrade that changed it says so instead of quietly narrowing the guard.
         assert!(Type::VARIANTS.contains(&"instance"));
-        assert!(MontyType::VARIANTS.contains(&"instance"));
         assert!(MontyType::VARIANTS.contains(&"exception"));
 
         assert_eq!(
@@ -223,7 +222,7 @@ mod tests {
         );
         assert_eq!(
             variant_order_fingerprint(MontyType::VARIANTS),
-            0xbde0_3964_2ba2_2ce1,
+            0x0e43_247e_0759_a195,
             "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_order_fingerprint(MontyType::VARIANTS))
         );
@@ -254,9 +253,9 @@ mod tests {
     /// failing the version check. Appending leaves this unchanged for every
     /// existing variant; inserting or reordering does not.
     ///
-    /// The list covers the `#[strum(disabled)]` variants too — `Type::Instance`,
-    /// `MontyType::{Instance, Exception}` — which carry discriminants like any
-    /// other despite having no name to round-trip through `EnumString`.
+    /// The list covers the `#[strum(disabled)]` variants too — `Type::Instance`
+    /// and `MontyType::Exception` — which carry discriminants like any other
+    /// despite having no name to round-trip through `EnumString`.
     fn variant_order_fingerprint(variants: &[&str]) -> u64 {
         const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
         const PRIME: u64 = 0x0100_0000_01b3;
