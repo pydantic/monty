@@ -154,18 +154,31 @@ pub(super) fn field(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         hash,
         metadata,
         kw_only,
+        doc,
     } = FieldArgs::from_args(args, vm)?;
+    // `MISSING` means "not given", since `None` is a legitimate default.
+    let spec = DataclassField::new_spec(
+        (!is_missing(&default)).then_some(default),
+        (!is_missing(&default_factory)).then_some(default_factory),
+    );
+    // Guarded together, because the spec owns the captured default and factory
+    // before anything below has run and reading a flag's truthiness can raise
+    // (`NotImplemented` refuses it), which would otherwise strand them.
+    let mut guard = DropGuard::new((spec, [init, repr, hash, compare, metadata, kw_only, doc]), vm);
+    let ((spec, flags), vm) = guard.as_parts();
+    // Both given is CPython's own error, raised before it builds the `Field` at
+    // all — so it outranks the Monty-only refusals below, and no flag may be
+    // read ahead of it.
+    if spec.default().is_some() && spec.default_factory().is_some() {
+        return Err(ExcType::value_error("cannot specify both default and default_factory"));
+    }
     // Arguments Monty does not implement are refused when set away from their
     // CPython default, as `@dataclass(...)` refuses its own. That includes the
     // three flags: nothing consults them when the dunders are synthesized, so
     // accepting `init=False` would silently give the field an `__init__`
     // parameter anyway. Listed in signature order, which is the order CPython
     // would hit them.
-    // Truthiness runs user code — a `__bool__` may raise — so the flags are
-    // guarded before the first read.
-    let mut guard = DropGuard::new([init, repr, hash, compare, metadata, kw_only], vm);
-    let (flags, vm) = guard.as_parts();
-    let [init, repr, hash, compare, metadata, kw_only] = flags;
+    let [init, repr, hash, compare, metadata, kw_only, doc] = flags;
     let unimplemented = [
         ("init", !init.py_bool(vm)?),
         ("repr", !repr.py_bool(vm)?),
@@ -173,27 +186,15 @@ pub(super) fn field(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         ("compare", !compare.py_bool(vm)?),
         ("metadata", !matches!(metadata, Value::None)),
         ("kw_only", !is_missing(kw_only)),
+        ("doc", !matches!(doc, Value::None)),
     ]
     .into_iter()
     .find(|&(_, given)| given);
-    let (flags, vm) = guard.into_parts();
-    flags.drop_with(vm);
-
-    // `MISSING` means "not given", since `None` is a legitimate default.
-    let spec = DataclassField::new_spec(
-        (!is_missing(&default)).then_some(default),
-        (!is_missing(&default_factory)).then_some(default_factory),
-    );
-    let mut guard = DropGuard::new(spec, vm);
-    let (spec, _) = guard.as_parts();
-    // Both given is CPython's own error, so it outranks the Monty-only refusals.
-    if spec.default().is_some() && spec.default_factory().is_some() {
-        return Err(ExcType::value_error("cannot specify both default and default_factory"));
-    }
     if let Some((name, _)) = unimplemented {
         return Err(ExcType::not_implemented(format!("field() does not yet support the {name} argument")).into());
     }
-    let (spec, vm) = guard.into_parts();
+    let ((spec, flags), vm) = guard.into_parts();
+    flags.drop_with(vm);
     Ok(vm.heap.allocate_as(spec).into_value())
 }
 
@@ -223,6 +224,10 @@ struct FieldArgs {
     metadata: Value,
     #[from_args(kw_only, default = Value::Marker(Marker(StaticStrings::Missing)))]
     kw_only: Value,
+    /// CPython's optional per-field docstring. Monty stores none, so anything
+    /// but the `None` default is refused rather than silently dropped.
+    #[from_args(kw_only, default = Value::None)]
+    doc: Value,
 }
 
 /// The `Field` a heap id points at, if it is one.

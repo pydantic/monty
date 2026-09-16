@@ -15,9 +15,9 @@ wrap them in `ClassInstance` explicitly.
 
 `@dataclass`, `@dataclass(...)` with `eq` and/or `frozen`, `field()` with
 `default`/`default_factory`, `MISSING`, `__post_init__` and `is_dataclass`
-exist. Everything below **raises where it is written** — at the decoration, or
-at the `field()` call — rather than producing a subtly wrong class, so a class
-body Monty cannot honour never silently misbehaves.
+exist. Each unsupported feature listed below **raises where it is written** —
+at the decoration, or at the `field()` call — rather than producing a subtly
+wrong class, so a class body Monty cannot honour never silently misbehaves.
 
 Each raises `NotImplementedError`, marking a feature Monty has not built yet
 rather than a mistake in the calling code. CPython accepts all of them, so the
@@ -36,13 +36,14 @@ around a decoration will not catch these.
     Detected textually, since annotations are never evaluated: the name need not
     be imported to be rejected.
 - **Every `field(...)` argument except `default` and `default_factory`** —
-    `init`, `repr`, `hash`, `compare`, `metadata` and `kw_only`. Setting one away
-    from its CPython default raises
+    `init`, `repr`, `hash`, `compare`, `metadata`, `kw_only` and `doc`. Setting one
+    away from its CPython default raises
     `NotImplementedError: field() does not yet support the <name> argument`, at the `field()` call rather than at
     decoration. Nothing consults the three flags when the dunders are
     synthesized, so `init=False` would otherwise leave the field in `__init__`
-    regardless. They therefore always read back as CPython's defaults
-    (`f.init is True`, `f.kw_only is False`).
+    regardless, and Monty stores no per-field docstring for `doc` to fill. They
+    therefore always read back as CPython's defaults (`f.init is True`,
+    `f.kw_only is False`, `f.doc is None`).
 - **`Field.metadata` and `Field._field_type`** — raise
     `NotImplementedError: Field.metadata is not yet supported, types.MappingProxyType is not implemented` (and likewise
     `dataclasses._FIELD`), the objects behind them being unimplemented.
