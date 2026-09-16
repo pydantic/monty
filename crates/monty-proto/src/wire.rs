@@ -29,7 +29,12 @@
 //! both `encoded_len` and `encode_raw`; those arms are rare in real payloads
 //! and the strings are tiny.
 
-use std::{cell::Cell, fmt::Display, ops::RangeInclusive};
+use std::{
+    fmt::Display,
+    io::{Cursor, Write},
+    ops::RangeInclusive,
+    str,
+};
 
 use monty_types::{
     DictPairs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyClassInstance, MontyClassType, MontyDate,
@@ -39,10 +44,10 @@ use num_bigint::{BigInt, Sign};
 use prost::{
     DecodeError, Message,
     bytes::{Buf, BufMut},
-    encoding::{self, DecodeContext, WireType, encode_key, encode_varint, encoded_len_varint, key_len, skip_field},
+    encoding::{DecodeContext, WireType, encode_key, encode_varint, encoded_len_varint, key_len, skip_field},
 };
 
-use crate::{convert::ProtoConvertError, frame::DEFAULT_MAX_DECODE_BYTES, pb};
+use crate::{budgeted_prost::encoding, convert::ProtoConvertError, decode_budget, pb};
 
 /// The wire form of a [`MontyObject`]: what the `monty.v1.MontyObject` proto
 /// message decodes into and encodes from.
@@ -659,7 +664,7 @@ fn decode_field(
             encoding::sint64::merge(wire_type, &mut v, buf, ctx)?;
             MontyObject::Int(v)
         }
-        tag::BIGINT => MontyObject::BigInt(bigint_from_proto(&merge_message(wire_type, buf, ctx)?)),
+        tag::BIGINT => MontyObject::BigInt(bigint_from_proto(merge_message(wire_type, buf, ctx)?)?),
         tag::FLOAT => {
             let mut v = 0f64;
             encoding::double::merge(wire_type, &mut v, buf, ctx)?;
@@ -757,11 +762,11 @@ fn decode_field(
             let attrs = ci
                 .attrs
                 .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstance.attrs")))?;
-            MontyObject::ClassInstance(Box::new(MontyClassInstance {
+            MontyObject::ClassInstance(decode_budget::boxed(MontyClassInstance {
                 class_type: *class_type,
                 instance_id: pb_uuid_to_monty(&instance_id, "ClassInstance.instance_id")?,
                 attrs: DictPairs::from(attrs.0),
-            }))
+            })?)
         }
         tag::FUNCTION => {
             let func: pb::Function = merge_message(wire_type, buf, ctx)?;
@@ -786,9 +791,6 @@ fn decode_field(
             return Ok(None);
         }
     };
-    // Charge against the frame budget — every value flows through here, so this
-    // is the bound that stops a cheap frame OOMing the host on decode.
-    charge_decode(obj.host_size())?;
     Ok(Some(obj))
 }
 
@@ -836,6 +838,7 @@ fn merge_object_item(
     ctx: DecodeContext,
     items: &mut Vec<MontyObject>,
 ) -> Result<(), DecodeError> {
+    decode_budget::reserve_slot(items)?;
     let item: WireObject = merge_message(wire_type, buf, ctx)?;
     items.push(item.into_object().map_err(to_decode_err)?);
     Ok(())
@@ -848,6 +851,7 @@ fn merge_pair_item(
     ctx: DecodeContext,
     pairs: &mut Vec<(MontyObject, MontyObject)>,
 ) -> Result<(), DecodeError> {
+    decode_budget::reserve_slot(pairs)?;
     let pair: pb::Pair = merge_message(wire_type, buf, ctx)?;
     pairs.push(pair_to_kv(pair)?);
     Ok(())
@@ -941,7 +945,7 @@ impl Message for PairList {
 }
 
 /// Decode-only `prost::Message` for a wire `Type`, materializing `attrs`
-/// straight into a [`PairList`] (each value charged as it decodes) instead of
+/// straight into a [`PairList`] (budgeting its allocation as it grows) instead of
 /// the `Vec<pb::Pair>` the generated `pb::Type` would force. Decode-only;
 /// types encode via [`monty_type_to_pb`].
 #[derive(Default)]
@@ -1089,15 +1093,22 @@ impl Message for ClassInstanceBody {
     }
 }
 
-/// Maps a semantic validation failure onto prost's decode error so it
-/// surfaces through the normal frame-decode path.
+/// Maps semantic failures to decode errors, bounding diagnostics that quote
+/// attacker-controlled names independently of the allocation budget.
 //
 // `DecodeError::new` is deprecated but has no public replacement in prost
 // 0.14 (`DecodeErrorKind` is crate-private); the deprecation note itself
 // acknowledges external users. Revisit when prost ships a public constructor.
 #[expect(deprecated)]
 fn to_decode_err(err: impl Display) -> DecodeError {
-    DecodeError::new(err.to_string())
+    let mut buffer = [0; 512];
+    let mut cursor = Cursor::new(buffer.as_mut_slice());
+    if write!(cursor, "{err}").is_ok() {
+        let len = usize::try_from(cursor.position()).expect("bounded error buffer");
+        DecodeError::new(str::from_utf8(&buffer[..len]).expect("Display writes UTF-8").to_owned())
+    } else {
+        DecodeError::new("invalid wire value (error message exceeds 512 bytes)")
+    }
 }
 
 // ============================================================================
@@ -1198,16 +1209,15 @@ fn type_body_to_monty(ty: TypeBody) -> Result<MontyType, DecodeError> {
         }
         pb::TypeOrigin::Sandbox | pb::TypeOrigin::Host => {
             let id = ty.id.ok_or_else(|| invalid("a class type must carry an id"))?;
-            // `PairList` already validated each pair (key and value present)
-            // and charged their values against the budget while decoding.
+            // `PairList` already validated each pair and budgeted its backing storage.
             let attrs = ty.attrs.map(|pairs| DictPairs::from(pairs.0)).unwrap_or_default();
-            Ok(MontyType::Instance(Box::new(MontyClassType {
+            Ok(MontyType::Instance(decode_budget::boxed(MontyClassType {
                 name: ty.name,
                 id: pb_uuid_to_monty(&id, "Type.id")?,
                 host_defined: origin == pb::TypeOrigin::Host,
                 is_dataclass: ty.is_dataclass,
                 attrs,
-            })))
+            })?))
         }
     }
 }
@@ -1225,9 +1235,19 @@ fn bigint_to_proto(bi: &BigInt) -> pb::BigInt {
 ///
 /// An all-zero/empty magnitude decodes to zero regardless of the sign flag —
 /// `BigInt` normalizes the sign of zero, so no invalid state is possible.
-fn bigint_from_proto(bi: &pb::BigInt) -> BigInt {
+fn bigint_from_proto(mut bi: pb::BigInt) -> Result<BigInt, DecodeError> {
     let sign = if bi.negative { Sign::Minus } else { Sign::Plus };
-    BigInt::from_bytes_be(sign, &bi.magnitude)
+    // Avoid num-bigint's temporary reversed copy, and trim zero padding before
+    // it can trigger a second (shrinking) allocation during normalization.
+    bi.magnitude.reverse();
+    let len = bi.magnitude.iter().rposition(|&byte| byte != 0).map_or(0, |i| i + 1);
+    bi.magnitude.truncate(len);
+    if len > 0 {
+        // num-bigint collects into 32- or 64-bit limbs. Cover rounding and the
+        // Vec minimum capacity on either target, independently of its inline form.
+        decode_budget::charge((len.div_ceil(8) * 8).max(32))?;
+    }
+    Ok(BigInt::from_bytes_le(sign, &bi.magnitude))
 }
 
 fn date_to_proto(d: &MontyDate) -> pb::Date {
@@ -1391,52 +1411,4 @@ fn bounded(value: u32, max: u32, field: &'static str) -> Result<u32, ProtoConver
             reason: format!("{value} exceeds maximum {max}"),
         })
     }
-}
-
-// ============================================================================
-// Decode memory budget
-// ============================================================================
-
-thread_local! {
-    /// Host-memory budget (bytes) left for the value(s) decoding in the current
-    /// frame on this thread.
-    ///
-    /// Thread-local because the budget must be *ambient*: a frame is decoded by
-    /// prost's generated `Message::decode`, which calls our
-    /// [`WireObject::merge_field`] — and that fixed signature has no slot to
-    /// thread a budget through. Per *thread* rather than a global atomic because
-    /// concurrent workers decode on separate threads. The limit is a hard
-    /// constant ([`DEFAULT_MAX_DECODE_BYTES`]): the resting value, and what
-    /// [`reset_decode_budget`] restores per frame.
-    static DECODE_BUDGET: Cell<usize> = const { Cell::new(DEFAULT_MAX_DECODE_BYTES) };
-}
-
-/// Resets this thread's decode budget to the full [`DEFAULT_MAX_DECODE_BYTES`].
-///
-/// [`crate::FrameReader::read`] calls this before decoding each frame, which is
-/// what makes the budget *per frame* rather than cumulative — a (possibly
-/// compromised) child can't drain it across many frames, and a single ≤256 MiB
-/// frame still can't amplify cheap elements into GiB of host `MontyObject`s.
-///
-/// Callers that decode a message *without* going through [`crate::FrameReader`]
-/// (e.g. a transport that does its own framing, like a WebSocket) MUST call
-/// this before each `Message::decode`, or the budget drains cumulatively across
-/// decodes on the same thread and eventually rejects legitimate messages.
-pub fn reset_decode_budget() {
-    DECODE_BUDGET.set(DEFAULT_MAX_DECODE_BYTES);
-}
-
-/// Charges `bytes` of decoded host memory against the current frame's budget,
-/// erroring once a frame would exceed it. Called once per [`MontyObject`] from
-/// [`decode_field`] — the choke point every value routes through — so it bounds
-/// total host memory incrementally, rejecting an over-budget frame before its
-/// value tree is fully built.
-fn charge_decode(bytes: usize) -> Result<(), DecodeError> {
-    DECODE_BUDGET.with(|budget| match budget.get().checked_sub(bytes) {
-        Some(remaining) => {
-            budget.set(remaining);
-            Ok(())
-        }
-        None => Err(to_decode_err("frame exceeds decode memory budget")),
-    })
 }

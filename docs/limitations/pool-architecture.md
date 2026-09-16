@@ -193,23 +193,16 @@ properties that real CPython does not provide, per the caveat above.
     (heap plus any retained suspension payload) exceeds 256 MiB cannot be
     dumped. The call raises a `RuntimeError` and the session is unaffected: a
     suspended session stays suspended and resumable.
-- On protobuf transports, independently of the wire-byte limit, a frame is
-    rejected if the values it decodes into would exceed a **per-frame host-memory budget**, a hard,
-    non-configurable limit of 1 GiB of *resident* decoded bytes. The wire cap
-    bounds bytes, but the cheapest elements (e.g. `None` in a list, ~4 wire bytes)
-    materialize into 88-byte `MontyObject`s, a ~22× blow-up that a ≤256 MiB frame
-    could turn into multiple GiB on the host. The budget is charged incrementally
-    during decode and trips before the full value is built, so a parent reading
-    such a frame discards the worker with a protocol error rather than risking an
-    out-of-memory abort. A value large enough to hit it (tens of millions of
-    elements) cannot cross the boundary even though it is under the wire-byte
-    limit. Every payload, containers and function/OS-call args & kwargs alike,
-    decodes straight into its final type with no intermediate copy, so the
-    worst-case host *peak* is ~1× the budget plus the ≤256 MiB frame buffer, and
-    the bound applies per concurrent worker. The browser component applies the
-    same expanded-value budget across all WIT value arenas in a request before
-    constructing their `MontyObject`s, and before lifting a semantic event into
-    JavaScript.
+- On protobuf transports, a frame is rejected when cumulative decoded allocation requests exceed 1 GiB,
+    independently of the 256 MiB wire limit and the session's `max_memory`.
+    This includes repeated-field capacity, strings, byte buffers, boxed values and BigInt storage.
+    Growing a buffer charges the whole replacement allocation, and discarded payloads are not refunded,
+    so a frame can exceed the budget even when its final decoded value occupies less than 1 GiB.
+    The receiver rejects growth before allocating; a parent receiving such a frame discards the worker with a protocol error.
+    The budget applies per concurrent decode, excluding the wire buffer, bounded stack/error overhead,
+    allocator metadata and subsequent host conversions; it is not a process-memory limit.
+    The browser component separately budgets expanded values across WIT arenas in a request before constructing
+    their `MontyObject`s, and before lifting a semantic event into JavaScript.
 - Semantic validation of protobuf values (date ranges, timedelta normalization,
     exception/type/builtin names) happens *while decoding* the frame; the browser
     component applies the same checks while converting its WIT value arena. A frame

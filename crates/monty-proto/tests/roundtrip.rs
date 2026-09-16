@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
+use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, decode_frame, exceeds_max_value_depth, pb};
 use monty_types::{
     CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
     MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
@@ -18,7 +18,7 @@ use prost::Message;
 #[track_caller]
 fn assert_value_round_trip(obj: &MontyObject) {
     let bytes = WireObject::new(obj.clone()).encode_to_vec();
-    let back = WireObject::decode(bytes.as_slice())
+    let back = decode_frame::<WireObject>(&bytes)
         .expect("wire bytes -> WireObject failed")
         .into_object()
         .expect("decoded value has no kind");
@@ -138,11 +138,10 @@ fn datetime_values_round_trip() {
     }));
 }
 
-/// The decode budget is charged `host_size`, so every owned string a decoded
-/// value carries has to be counted there — the temporal values each hold a
-/// caller-supplied timezone name, and the rest of their fields are scalars.
+/// Temporal values' owned timezone names count in host-size estimates.
+/// Decode allocation accounting is tested separately in `decode_budget.rs`.
 #[test]
-fn timezone_names_are_charged_to_the_decode_budget() {
+fn timezone_names_are_counted_in_host_size() {
     let name = "z".repeat(500);
     let sizes = |name: Option<String>| {
         [
@@ -748,7 +747,7 @@ fn decodes_in_frame(value: &MontyObject) -> bool {
         })),
         trace_parent: None,
     };
-    pb::ParentRequest::decode(request.encode_to_vec().as_slice()).is_ok()
+    decode_frame::<pb::ParentRequest>(&request.encode_to_vec()).is_ok()
 }
 
 /// The sender-side depth check must agree exactly with what the receiver can
@@ -807,7 +806,7 @@ fn assert_os_call_round_trip(call: OsFunctionCall) {
         call: Some(call.into()),
     }
     .encode_to_vec();
-    let decoded = pb::OsCall::decode(bytes.as_slice()).expect("wire bytes -> OsCall failed");
+    let decoded = decode_frame::<pb::OsCall>(&bytes).expect("wire bytes -> OsCall failed");
     assert_eq!(decoded.call_id, 3);
     let back = OsFunctionCall::try_from(decoded.call.expect("decoded OsCall has no call"))
         .expect("wire call -> OsFunctionCall failed");
@@ -933,13 +932,13 @@ fn shutdown_event_round_trips() {
         })),
         ..Default::default()
     };
-    let back = pb::ChildEvent::decode(event.encode_to_vec().as_slice()).expect("ShutdownDump event decodes");
+    let back = decode_frame::<pb::ChildEvent>(&event.encode_to_vec()).expect("ShutdownDump event decodes");
     assert_eq!(back, event);
     // a shutdown with nothing to dump (no session yet) also round-trips
     let bare = pb::ChildEvent {
         kind: Some(pb::child_event::Kind::Shutdown(pb::ShutdownDump { dump: None })),
         ..Default::default()
     };
-    let back = pb::ChildEvent::decode(bare.encode_to_vec().as_slice()).expect("bare ShutdownDump decodes");
+    let back = decode_frame::<pb::ChildEvent>(&bare.encode_to_vec()).expect("bare ShutdownDump decodes");
     assert_eq!(back, bare);
 }

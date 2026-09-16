@@ -184,7 +184,7 @@ impl MontyObject {
         name.parse::<BuiltinsFunctions>().ok().map(Self::BuiltinFunction)
     }
 
-    /// Returns the fixed host footprint charged for each decoded object.
+    /// Inline value size used by host-size estimates.
     #[must_use]
     pub const fn host_base_size() -> usize {
         size_of::<Self>()
@@ -196,14 +196,10 @@ impl MontyObject {
         size_of::<String>().saturating_add(value.len())
     }
 
-    /// Shallow host footprint of a freshly decoded `obj`: the fixed [`MontyObject`]
-    /// size plus any leaf payload it owns *directly* (string/bytes/bigint bytes, and
-    /// the `Vec<String>` field names of structured values, which aren't themselves
-    /// [`MontyObject`]s and would otherwise be uncharged). Boxed payloads
-    /// (`ClassInstance`, `Type(Instance)`) charge their heap allocation plus the
-    /// class name; their eager attrs are charged like container elements.
-    /// Container elements are excluded — each charges its own size via
-    /// `monty-proto`'s `decode_field`, so a list charges `size_of::<MontyObject>()` here.
+    /// Shallow host-size estimate: the inline value plus directly owned payloads,
+    /// including metadata strings and boxes. Container elements and spare buffer
+    /// capacity are excluded; use [`Self::deep_host_size`] to include elements.
+    /// This is a value-size estimate, not an allocation or peak-memory bound.
     pub fn host_size(&self) -> usize {
         let names_len =
             |names: &[String]| -> usize { names.iter().map(|value| Self::host_metadata_string_size(value)).sum() };

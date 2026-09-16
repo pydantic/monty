@@ -17,7 +17,7 @@ use std::{
 
 use prost::Message;
 
-use crate::wire::reset_decode_budget;
+use crate::decode_budget::with_decode_budget;
 
 /// Default maximum frame length (256 MiB).
 ///
@@ -25,23 +25,11 @@ use crate::wire::reset_decode_budget;
 /// prefix cannot trigger a multi-gigabyte allocation in the receiver.
 pub const MAX_FRAME_LEN: u32 = 256 * 1024 * 1024;
 
-/// Hard, fixed per-frame budget for *resident* decoded value bytes (1 GiB = 4×
-/// the frame cap).
-///
-/// `MAX_FRAME_LEN` bounds the *wire* size, but the cheapest elements (`None` in a
-/// list ≈ 4 wire bytes) decode into 88-byte `MontyObject`s — a ~22× blow-up that
-/// could turn a ≤256 MiB frame into multiple GiB on the host. The budget caps
-/// decoded size so amplification is bounded regardless of frame contents.
-///
-/// The budget bounds bytes *resident* at once. The decoder materializes every
-/// payload straight into its final type — containers via `ObjectList`/
-/// `PairList`/`NamedTupleBody`/`ClassInstanceBody`, and function-call args &
-/// kwargs via `WireFunctionCall` — so no path builds an
-/// intermediate `Vec<WireObject>`/`Vec<Pair>` and then converts it; only a
-/// single per-element value is transient at any moment. The host *peak* is
-/// therefore ~1× the budget plus the ≤256 MiB frame buffer (~1.25 GiB); the 4×
-/// multiplier keeps the hard 1 GiB ceiling comfortably below host limits.
-/// Multiplies per concurrent worker.
+/// Per-frame ceiling on cumulative decoded allocation requests (1 GiB).
+/// Generated protocol messages and hand-written values budget vectors, buffers
+/// and boxes before allocating, including full replacement buffers on growth.
+/// Freed payloads are not refunded. Excludes the wire buffer, bounded decode
+/// stack/error overhead and allocator metadata; multiplies per concurrent decode.
 pub const DEFAULT_MAX_DECODE_BYTES: usize = 4 * MAX_FRAME_LEN as usize;
 
 /// Framing or decoding failure while reading or writing protocol messages.
@@ -160,9 +148,9 @@ pub fn encode_framed_into(msg: &impl Message, buf: &mut Vec<u8>) -> Result<(), F
 ///
 /// The message-oriented counterpart to one [`FrameReader::read`]: a transport
 /// whose boundary *is* the frame (a WebSocket) hands the payload straight here.
-/// Resets the per-frame decode budget first so an untrusted peer gets the same
-/// host-memory bound as the length-prefixed reader, and rejects payloads over
-/// [`MAX_FRAME_LEN`].
+/// Rejects payloads over [`MAX_FRAME_LEN`] and scopes the decode allocation
+/// budget, restoring any enclosing budget on return or unwind. The budget
+/// applies to this crate's protocol types, not arbitrary third-party messages.
 pub fn decode_frame<M: Message + Default>(bytes: &[u8]) -> Result<M, FrameError> {
     if bytes.len() > MAX_FRAME_LEN as usize {
         return Err(FrameError::FrameTooLarge {
@@ -170,8 +158,7 @@ pub fn decode_frame<M: Message + Default>(bytes: &[u8]) -> Result<M, FrameError>
             max: MAX_FRAME_LEN,
         });
     }
-    reset_decode_budget();
-    M::decode(bytes).map_err(FrameError::Decode)
+    with_decode_budget(DEFAULT_MAX_DECODE_BYTES, || M::decode(bytes)).map_err(FrameError::Decode)
 }
 
 /// Reads length-prefixed protobuf frames from a byte stream.
@@ -224,10 +211,9 @@ impl<R: Read> FrameReader<R> {
             // EOF after a length prefix is always mid-frame.
             ReadOutcome::CleanEof | ReadOutcome::Truncated => return Err(FrameError::Truncated),
         }
-        // Bound host memory for this decode: the wire size is capped, but cheap
-        // elements amplify ~22× into `MontyObject`s. Reset the per-frame budget.
-        reset_decode_budget();
-        M::decode(body.as_slice()).map(Some).map_err(FrameError::Decode)
+        with_decode_budget(DEFAULT_MAX_DECODE_BYTES, || M::decode(body.as_slice()))
+            .map(Some)
+            .map_err(FrameError::Decode)
     }
 }
 

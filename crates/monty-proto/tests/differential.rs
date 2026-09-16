@@ -16,7 +16,7 @@
 //! messages a misbehaving peer produces.
 
 use monty::MontyRun;
-use monty_proto::{WireFunctionCall, WireObject, pb};
+use monty_proto::{FrameError, WireFunctionCall, WireObject, decode_frame, pb};
 use monty_types::{
     CompileOptions, DictPairs, ExcType, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle,
     MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
@@ -416,7 +416,10 @@ fn oracle_pairs<'a>(pairs: impl IntoIterator<Item = &'a (MontyObject, MontyObjec
 
 /// Decodes wire bytes through the hand-written codec.
 fn decode_wire(bytes: &[u8]) -> Result<MontyObject, String> {
-    let wire = WireObject::decode(bytes).map_err(|err| err.to_string())?;
+    let wire = decode_frame::<WireObject>(bytes).map_err(|err| match err {
+        FrameError::Decode(err) => err.to_string(),
+        other => other.to_string(),
+    })?;
     wire.into_object().map_err(|err| err.to_string())
 }
 
@@ -492,8 +495,7 @@ fn hand_call_payloads_match_generated_encoding() {
         };
         assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
         assert_eq!(
-            WireFunctionCall::decode(generated_call.encode_to_vec().as_slice())
-                .expect("generated function call decodes"),
+            decode_frame::<WireFunctionCall>(&generated_call.encode_to_vec()).expect("generated function call decodes"),
             hand_call
         );
         assert_eq!(
@@ -524,7 +526,7 @@ fn hand_call_payloads_match_generated_encoding() {
     };
     assert_eq!(hand_os.encode_to_vec(), generated_os.encode_to_vec());
     assert_eq!(
-        pb::OsCall::decode(generated_os.encode_to_vec().as_slice()).expect("generated os call decodes"),
+        decode_frame::<pb::OsCall>(&generated_os.encode_to_vec()).expect("generated os call decodes"),
         hand_os
     );
 
@@ -550,7 +552,7 @@ fn hand_call_payloads_match_generated_encoding() {
     };
     assert_eq!(hand_now.encode_to_vec(), generated_now.encode_to_vec());
     assert_eq!(
-        pb::OsCall::decode(generated_now.encode_to_vec().as_slice()).expect("generated now call decodes"),
+        decode_frame::<pb::OsCall>(&generated_now.encode_to_vec()).expect("generated now call decodes"),
         hand_now
     );
 }

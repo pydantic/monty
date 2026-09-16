@@ -133,6 +133,12 @@ Later feeds run until they suspend; the count remains spent.
 
 ### Transports
 
+Custom protobuf transports should decode protocol messages through
+[`decode_frame`](../api/rust/monty-proto.md#decode_frame) or [`FrameReader`](../api/rust/monty-proto.md#framereader).
+Both manage the per-frame allocation budget automatically, including cleanup on errors or unwinding.
+Raw `prost::Message::decode` calls fail if they attempt an allocation without a frame budget.
+See [wire limits](../limitations/pool-architecture.md) for the budget's scope.
+
 [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) spawns local `monty subprocess` children over framed stdio.
 These are the poolable workers: prewarmed, reused across checkouts, replaced on crash.
 

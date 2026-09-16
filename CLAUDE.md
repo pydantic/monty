@@ -134,6 +134,13 @@ subprocesses:
     regenerated and CI-checked together with the main codegen). Parents must
     treat frames from a (possibly compromised) child as untrusted — wire
     decoding and proto→Rust conversions validate everything and never panic.
+    Generated decoders use `budgeted_prost` via `prost_path`: vector/buffer growth
+    and hand-written boxed payloads share a cumulative per-frame allocation budget.
+    Decode through `decode_frame` or `FrameReader::read`, which scope the budget;
+    raw prost decoding cannot allocate outside a frame. Integration tests enable
+    the internal `test-util` feature for smaller budgets and accounting checks.
+    New allocation forms must extend the adapter and its tests; codegen rejects
+    unsupported maps, groups, generated boxes and `Bytes` fields.
     `monty-proto` depends only on `monty-types` by default; its `worker` feature
     (enabled by `monty-runtime`/`monty-wasm-runtime`) pulls in the full `monty`
     interpreter for the child-side `worker` state machine.

@@ -60,6 +60,10 @@ untrusted input: conversions from proto to Rust are fallible by design,
 decoding enforces depth and size budgets, and nothing in this crate panics on
 malformed wire data.
 
+Decode protocol types through `decode_frame` or `FrameReader::read`, which manage the per-frame allocation budget automatically.
+Raw `Message::decode` calls fail if they attempt an allocation without a frame budget.
+See [wire limits](https://github.com/pydantic/monty/blob/main/docs/limitations/pool-architecture.md) for the budget's scope.
+
 ## Worker state machine
 
 The `worker` cargo feature (off by default) adds the `worker` module: the
