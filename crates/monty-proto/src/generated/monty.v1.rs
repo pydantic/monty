@@ -434,6 +434,13 @@ pub struct ResourceLimits {
     pub max_recursion_depth: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "5")]
     pub max_suspensions: ::core::option::Option<u64>,
+    /// Per-feed and per-turn execution budgets. Same clock as
+    /// `max_duration_micros`, narrower scope: the feed budget resets at each
+    /// feed, the turn budget at each feed and each resume.
+    #[prost(uint64, optional, tag = "6")]
+    pub max_feed_duration_micros: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "7")]
+    pub max_turn_duration_micros: ::core::option::Option<u64>,
 }
 /// Outcome of an external function / OS call, decided by the parent. Mirrors
 /// monty's `ExtFunctionResult`, plus `not_handled` (which only the child can
@@ -733,6 +740,20 @@ pub struct ChildEvent {
     /// recover it.
     #[prost(uint64, optional, tag = "22")]
     pub max_suspensions: ::core::option::Option<u64>,
+    /// Execution time consumed by the feed in progress, in microseconds — the
+    /// `total_execution_micros` clock restarted at the feed that is running.
+    /// Lets the parent backstop `max_feed_duration_micros` without tracking feed
+    /// boundaries against a clock it cannot see. Zero outside a session.
+    #[prost(uint64, tag = "24")]
+    pub feed_execution_micros: u64,
+    /// The session's `max_feed_duration` and `max_turn_duration` limits in
+    /// microseconds, when configured. Reported for the same reason as
+    /// `max_duration_micros`: a session restored via `Load` carries its limits
+    /// inside the opaque state bytes.
+    #[prost(uint64, optional, tag = "25")]
+    pub max_feed_duration_micros: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "26")]
+    pub max_turn_duration_micros: ::core::option::Option<u64>,
     /// The session's script name, surfaced on a `Load` reply so a parent that
     /// restored a session (whose script name, like the limits above, travels
     /// inside the opaque dump bytes) learns it without parsing the dump. Set only

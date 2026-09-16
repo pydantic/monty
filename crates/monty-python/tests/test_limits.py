@@ -158,7 +158,8 @@ def test_limits_unknown_key_raises_error(pool: Monty):
         with pool.checkout(limits={'max_memroy': 10_000_000}):  # pyright: ignore[reportArgumentType]
             pass
     assert exc_info.value.args[0] == snapshot(
-        "unknown limits key 'max_memroy'; accepted keys are 'max_duration_secs', 'max_memory', "
+        "unknown limits key 'max_memroy'; accepted keys are 'max_duration_secs', "
+        "'max_feed_duration_secs', 'max_turn_duration_secs', 'max_memory', "
         "'gc_interval', 'max_recursion_depth', 'max_suspensions'"
     )
 
@@ -168,7 +169,8 @@ def test_limits_non_string_key_raises_error(pool: Monty):
         with pool.checkout(limits={1: 100}):  # pyright: ignore[reportArgumentType]
             pass
     assert exc_info.value.args[0] == snapshot(
-        "unknown limits key 1; accepted keys are 'max_duration_secs', 'max_memory', "
+        "unknown limits key 1; accepted keys are 'max_duration_secs', "
+        "'max_feed_duration_secs', 'max_turn_duration_secs', 'max_memory', "
         "'gc_interval', 'max_recursion_depth', 'max_suspensions'"
     )
 
@@ -182,7 +184,8 @@ def test_limits_unprintable_key_still_raises_value_error(pool: Monty):
         with pool.checkout(limits={BadRepr(): 1}):  # pyright: ignore[reportArgumentType]
             pass
     assert exc_info.value.args[0] == snapshot(
-        "unknown limits key <unprintable key>; accepted keys are 'max_duration_secs', 'max_memory', "
+        "unknown limits key <unprintable key>; accepted keys are 'max_duration_secs', "
+        "'max_feed_duration_secs', 'max_turn_duration_secs', 'max_memory', "
         "'gc_interval', 'max_recursion_depth', 'max_suspensions'"
     )
 
@@ -262,3 +265,44 @@ def test_timeout_enforced_in_builtin_loops(monty_run: RunMonty, code: str):
     assert isinstance(exc_info.value.exception(), TimeoutError)
     # Should terminate promptly - well under 2 seconds
     assert elapsed < 2.0
+
+
+def test_feed_duration_limit_restarts_each_feed(pool: Monty):
+    """Unlike `max_duration_secs`, the per-feed budget restarts, so the session
+    stays usable after one over-long feed."""
+    with pool.checkout(limits={'max_feed_duration_secs': 0.1}) as session:
+        for _ in range(3):
+            assert session.feed_run('1 + 1') == snapshot(2)
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('while True:\n    pass')
+        assert isinstance(exc_info.value.exception(), TimeoutError)
+        assert exc_info.value.display(format='type-msg').startswith('TimeoutError: feed time limit exceeded')
+        # the budget restarted, so the session is still good
+        assert session.feed_run('2 + 2') == snapshot(4)
+
+
+def test_turn_duration_limit(pool: Monty):
+    with pool.checkout(limits={'max_turn_duration_secs': 0.1}) as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('while True:\n    pass')
+        assert isinstance(exc_info.value.exception(), TimeoutError)
+        assert exc_info.value.display(format='type-msg').startswith('TimeoutError: turn time limit exceeded')
+        assert session.feed_run('2 + 2') == snapshot(4)
+
+
+@pytest.mark.parametrize('grace', ['duration_limit_grace', 'feed_limit_grace', 'turn_limit_grace'])
+def test_backstop_grace_can_be_disabled(grace: str):
+    """`None` turns a backstop off, leaving the in-sandbox limit to end the feed
+    on its own — which it still does, with the session intact."""
+    with Monty(**{grace: None}) as pool:
+        with pool.checkout(limits={'max_feed_duration_secs': 0.1}) as session:
+            with pytest.raises(MontyRuntimeError) as exc_info:
+                session.feed_run('while True:\n    pass')
+            assert isinstance(exc_info.value.exception(), TimeoutError)
+            assert session.feed_run('1 + 1') == snapshot(2)
+
+
+def test_negative_grace_is_rejected():
+    with pytest.raises(ValueError) as exc_info:
+        Monty(turn_limit_grace=-1.0)
+    assert exc_info.value.args[0] == snapshot("invalid turn_limit_grace: cannot convert float seconds to Duration: value is negative")

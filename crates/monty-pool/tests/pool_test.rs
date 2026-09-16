@@ -2435,3 +2435,117 @@ async fn worker_environment_is_empty() {
     assert_eq!(expect_complete(event), MontyObject::int(2));
     session.finish().await.unwrap();
 }
+
+/// The per-feed budget restarts at each feed, so a session survives any number
+/// of short feeds and the worker is never killed — the sandbox raises
+/// `TimeoutError` well inside `feed_limit_grace`.
+#[tokio::test]
+async fn max_feed_duration_bounds_each_feed_without_killing_the_worker() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        let event = session
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert_eq!(expect_complete(event), MontyObject::Int(2));
+    }
+    let err = session
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.exc_type().to_string(), "TimeoutError");
+    // The session survived, so the budget really did restart.
+    let event = session
+        .feed("2 + 2", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(4));
+    session.finish().await.unwrap();
+    assert_eq!(pool.idle_workers(), 1);
+}
+
+/// The per-turn budget is enforced in the sandbox too, and likewise leaves the
+/// session usable.
+#[tokio::test]
+async fn max_turn_duration_bounds_a_runaway_turn() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_turn_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let err = session
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.exc_type().to_string(), "TimeoutError");
+    session.finish().await.unwrap();
+    assert_eq!(pool.idle_workers(), 1);
+}
+
+/// Budgets near `Duration::MAX` must not overflow the parent's backstop
+/// arithmetic (remaining budget plus grace), for the feed and turn scopes as
+/// well as the session one.
+#[tokio::test]
+async fn huge_feed_and_turn_budgets_do_not_overflow_the_backstop() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(
+                ResourceLimits::default()
+                    .max_feed_duration(Duration::MAX)
+                    .max_turn_duration(Duration::MAX),
+            ),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
+}
+
+/// With the grace turned off the parent does not backstop that budget at all,
+/// so the sandbox's own `TimeoutError` is what ends the feed — the worker must
+/// still come back alive.
+#[tokio::test]
+async fn a_disabled_grace_leaves_the_sandbox_limit_in_charge() {
+    let mut pool_config = config();
+    pool_config.feed_limit_grace = None;
+    pool_config.turn_limit_grace = None;
+    let pool = Pool::new(pool_config).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let err = session
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.exc_type().to_string(), "TimeoutError");
+    session.finish().await.unwrap();
+    assert_eq!(pool.idle_workers(), 1);
+}

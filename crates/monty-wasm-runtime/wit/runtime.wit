@@ -172,6 +172,8 @@ interface worker {
     /// enforces the others.
     record resource-limits {
         max-duration-micros: option<u64>,
+        max-feed-duration-micros: option<u64>,
+        max-turn-duration-micros: option<u64>,
         max-memory-bytes: option<u64>,
         gc-interval: option<u64>,
         max-recursion-depth: option<u64>,

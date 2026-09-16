@@ -113,7 +113,8 @@ see [snapshot security](../security.md#deserializing-snapshots).
     the pool discards the worker and spawns a replacement.
 - **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds `request_timeout`
     ([`PoolError::Timeout`](../api/rust/monty-pool.md#poolerror)), catching hangs the in-sandbox limits cannot see.
-    With a `max_duration` budget the deadline also enforces that from outside the child, plus `duration_limit_grace`.
+    With a `max_duration`, `max_feed_duration` or `max_turn_duration` budget the deadline also enforces that from
+    outside the child, each plus its own grace (`duration_limit_grace`, `feed_limit_grace`, `turn_limit_grace`).
     [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) sets neither `request_timeout` nor `checkout_timeout` by default; set `request_timeout`
     yourself for untrusted code.
 - **Suspension limits** — the pool counts external calls, OS calls, name lookups and future-resolution turns against
@@ -127,7 +128,8 @@ Runtime errors inside the sandbox ([`PoolError::Runtime`](../api/rust/monty-pool
 usable.
 Memory and time limits return `PoolError::Runtime` with a `MemoryError` or `TimeoutError`, but
 [no guarantees hold about heap state afterwards](../resource-limits.md#after-a-limit-fires).
-A spent `max_duration` rejects every later `feed`.
+A spent `max_duration` rejects every later `feed`; `max_feed_duration` and `max_turn_duration` restart instead, so a
+later feed runs against a heap you can no longer trust.
 Finish the checkout and take a fresh one.
 
 `max_suspensions` also returns `PoolError::Runtime`, but leaves the session consistent.

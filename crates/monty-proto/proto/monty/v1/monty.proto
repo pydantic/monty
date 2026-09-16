@@ -365,6 +365,11 @@ message ResourceLimits {
   optional uint64 gc_interval = 3;
   optional uint64 max_recursion_depth = 4;
   optional uint64 max_suspensions = 5;
+  // Per-feed and per-turn execution budgets. Same clock as
+  // `max_duration_micros`, narrower scope: the feed budget resets at each
+  // feed, the turn budget at each feed and each resume.
+  optional uint64 max_feed_duration_micros = 6;
+  optional uint64 max_turn_duration_micros = 7;
 }
 
 // ============================================================================
@@ -641,6 +646,19 @@ message ChildEvent {
   // Echoes the parent-enforced budget so a host restoring an opaque dump can
   // recover it.
   optional uint64 max_suspensions = 22;
+
+  // Execution time consumed by the feed in progress, in microseconds — the
+  // `total_execution_micros` clock restarted at the feed that is running.
+  // Lets the parent backstop `max_feed_duration_micros` without tracking feed
+  // boundaries against a clock it cannot see. Zero outside a session.
+  uint64 feed_execution_micros = 24;
+
+  // The session's `max_feed_duration` and `max_turn_duration` limits in
+  // microseconds, when configured. Reported for the same reason as
+  // `max_duration_micros`: a session restored via `Load` carries its limits
+  // inside the opaque state bytes.
+  optional uint64 max_feed_duration_micros = 25;
+  optional uint64 max_turn_duration_micros = 26;
 
   // The session's script name, surfaced on a `Load` reply so a parent that
   // restored a session (whose script name, like the limits above, travels

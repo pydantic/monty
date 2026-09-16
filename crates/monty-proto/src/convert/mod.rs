@@ -15,7 +15,7 @@
 //! index is in range.
 
 mod exception;
-mod limits;
+pub(crate) mod limits;
 mod os_call;
 mod resume;
 mod type_checking;

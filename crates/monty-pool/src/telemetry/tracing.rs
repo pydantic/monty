@@ -1033,6 +1033,9 @@ mod tests {
             max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: None,
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
         }
     }
 
@@ -1167,6 +1170,9 @@ mod tests {
             max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: Some("dumped.py".to_owned()),
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
         });
         recorder.begin_turn(&request(pb::parent_request::Kind::Dump(pb::Dump {})));
         recorder.event(&event(pb::child_event::Kind::DumpResult(pb::DumpResult {
@@ -1215,6 +1221,9 @@ mod tests {
             max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: Some("restored.py".to_owned()),
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
         });
         recorder.begin_turn(&request(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1".to_owned(),

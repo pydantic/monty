@@ -34,7 +34,7 @@ use super::{
     check_protocol_version, exceeds_max_frame_len, ext_result_from_proto, future_results_from_proto,
     named_values_from_proto, os_call_from_proto, os_call_to_proto, pb, write_frame,
 };
-use crate::wire::uuid_to_pb;
+use crate::{convert::limits::micros_field, wire::uuid_to_pb};
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
@@ -941,9 +941,10 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
 /// is size-checked with the stamps it will carry.
 fn stamp_budget(event: &mut pb::ChildEvent, tracker: &ResourceTracker) {
     event.total_execution_micros = u64::try_from(tracker.elapsed().as_micros()).unwrap_or(u64::MAX);
-    event.max_duration_micros = tracker
-        .max_duration()
-        .map(|max| u64::try_from(max.as_micros()).unwrap_or(u64::MAX));
+    event.feed_execution_micros = u64::try_from(tracker.feed_elapsed().as_micros()).unwrap_or(u64::MAX);
+    event.max_duration_micros = micros_field(tracker.max_duration());
+    event.max_feed_duration_micros = micros_field(tracker.max_feed_duration());
+    event.max_turn_duration_micros = micros_field(tracker.max_turn_duration());
     event.max_suspensions = Some(tracker.max_suspensions() as u64);
 }
 

@@ -105,6 +105,12 @@ pub struct NativePoolOptions {
     /// Grace for the automatic `maxDurationSecs` backstop (ms). Absent:
     /// backstop disabled.
     pub duration_limit_grace_ms: Option<f64>,
+    /// Grace for the automatic `maxFeedDurationSecs` backstop (ms). Absent:
+    /// backstop disabled.
+    pub feed_limit_grace_ms: Option<f64>,
+    /// Grace for the automatic `maxTurnDurationSecs` backstop (ms). Absent:
+    /// backstop disabled.
+    pub turn_limit_grace_ms: Option<f64>,
     /// Recycle a worker after serving this many checkouts.
     pub max_checkouts_per_worker: Option<u32>,
 }
@@ -221,6 +227,14 @@ impl NativePool {
         config.duration_limit_grace = options
             .duration_limit_grace_ms
             .map(|ms| duration_from_ms("durationLimitGrace", ms))
+            .transpose()?;
+        config.feed_limit_grace = options
+            .feed_limit_grace_ms
+            .map(|ms| duration_from_ms("feedLimitGrace", ms))
+            .transpose()?;
+        config.turn_limit_grace = options
+            .turn_limit_grace_ms
+            .map(|ms| duration_from_ms("turnLimitGrace", ms))
             .transpose()?;
         config.max_checkouts_per_worker = options.max_checkouts_per_worker;
         config.metrics = configured_adapter().map(TelemetryAdapterHandle::metrics);

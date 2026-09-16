@@ -440,7 +440,7 @@ Enforced inside the worker, configured per session:
 
 ```ts
 const limited = await pool.checkout({
-  limits: { maxMemory: 100 * 1024 * 1024, maxDurationSecs: 5, maxRecursionDepth: 100 },
+  limits: { maxMemory: 100 * 1024 * 1024, maxDurationSecs: 5, maxTurnDurationSecs: 1, maxRecursionDepth: 100 },
 })
 ```
 
@@ -450,12 +450,17 @@ interpreter itself: the worker is killed and the session fails with
 
 `maxDurationSecs` limits cumulative _execution_ time: the sandbox clock runs
 only while the interpreter executes, never while suspended waiting on an
-external function or between feeds. Sessions with the limit also get an
-automatic backstop: the worker reports its execution time on every protocol
-turn and the host kills it `durationLimitGrace` (default 1s) after the
-remaining budget expires, covering cases where the in-sandbox limit cannot
-fire (its check only runs at interpreter checkpoints). Set
-`durationLimitGrace: null` to disable it.
+external function or between feeds. `maxFeedDurationSecs` and
+`maxTurnDurationSecs` bound the same clock over a narrower scope — one
+`feedRun`, and one stretch of code between host round trips — by restarting it
+at each feed and at each host answer respectively.
+
+Each of the three also gets an automatic backstop: the worker reports its
+consumed time on every protocol turn and the host kills it a grace period
+after the budget expires, covering cases where the in-sandbox limit cannot
+fire (its check only runs at interpreter checkpoints). The graces are
+`durationLimitGrace`, `feedLimitGrace` and `turnLimitGrace` (default 1s each);
+set one to `null` to disable that backstop.
 
 `maxSuspensions` limits the host round trips the pool services per checkout
 (default 1000; it cannot be disabled). Exceeding it ends the feed with an
@@ -530,6 +535,8 @@ const pool = await Monty.create({
   checkoutTimeout: 10, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline (seconds)
   durationLimitGrace: 1, // maxDurationSecs backstop grace (seconds, null disables)
+  feedLimitGrace: 1, // maxFeedDurationSecs backstop grace
+  turnLimitGrace: 1, // maxTurnDurationSecs backstop grace
   maxCheckoutsPerWorker: 100, // recycle workers after this many sessions
   binaryPath: '/path/to/monty', // explicit binary (default: auto-resolved)
 })

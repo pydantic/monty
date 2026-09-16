@@ -1075,6 +1075,9 @@ mod tests {
             max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: None,
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
         }
     }
 
@@ -1297,6 +1300,9 @@ mod tests {
                 max_duration_micros: None,
                 max_suspensions: None,
                 restored_script_name: None,
+                feed_execution_micros: 0,
+                max_feed_duration_micros: None,
+                max_turn_duration_micros: None,
             });
         }
 
@@ -1386,6 +1392,9 @@ mod tests {
             max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: Some("dumped.py".to_owned()),
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
         });
         metrics.begin_turn(&feed());
         metrics.event(&pb::ChildEvent {
@@ -1394,6 +1403,9 @@ mod tests {
             max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: None,
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
         });
 
         let execution = capture.histograms("monty.run.execution_time");
@@ -1419,6 +1431,9 @@ mod tests {
             max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: None,
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
         });
         let turns = capture.attributes("monty.turn.duration");
         assert_eq!(
@@ -1438,6 +1453,9 @@ mod tests {
             max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: None,
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
         });
         let execution = capture.histograms("monty.run.execution_time");
         assert_eq!(execution[0].0, 1);

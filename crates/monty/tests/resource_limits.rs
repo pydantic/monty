@@ -1688,3 +1688,133 @@ fn a_refused_unpacked_call_releases_its_kwargs() {
         .expect_err("the *args clone should be refused");
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }
+
+// ---------------------------------------------------------------------------
+// Per-feed and per-turn duration limits
+// ---------------------------------------------------------------------------
+
+/// Builds a REPL whose only time limit is a per-feed one.
+fn feed_limited_repl(limit: Duration) -> MontyRepl {
+    let limits = ResourceLimits::default().max_feed_duration(limit);
+    MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default())
+}
+
+/// The feed clock restarts at each feed, so a session may run indefinitely in
+/// short snippets — the case `max_duration` alone cannot express.
+#[test]
+fn max_feed_duration_restarts_each_feed() {
+    let mut repl = feed_limited_repl(Duration::from_millis(200));
+    for _ in 0..5 {
+        repl.feed_run("sum(range(20_000))", vec![], PrintWriter::Stdout)
+            .expect("each feed is well inside its own budget");
+    }
+    let exc = repl
+        .feed_run("while True:\n    pass", vec![], PrintWriter::Stdout)
+        .expect_err("one over-long feed must still be caught");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.starts_with("feed time limit exceeded:")),
+        "the scope must be named, got {exc}"
+    );
+}
+
+/// The session budget out-ranks the feed budget when a single check blows
+/// both, because a new feed cannot recover from it.
+#[test]
+fn session_limit_outranks_feed_limit() {
+    let limits = ResourceLimits::default()
+        .max_duration(Duration::from_millis(50))
+        .max_feed_duration(Duration::from_millis(50));
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default());
+    let exc = repl
+        .feed_run("while True:\n    pass", vec![], PrintWriter::Stdout)
+        .expect_err("both budgets are exceeded");
+    assert!(
+        exc.message().is_some_and(|m| m.starts_with("time limit exceeded:")),
+        "the session limit should be reported, got {exc}"
+    );
+}
+
+/// Time spent suspended on the host is excluded from the feed budget, exactly
+/// as it is from the session budget.
+#[test]
+fn suspension_time_does_not_count_toward_max_feed_duration() {
+    let code = "interrupt()\nsum(range(100))";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(100));
+    let progress = run
+        .start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .unwrap();
+    let call = resolve_name_lookups(progress)
+        .unwrap()
+        .into_function_call()
+        .expect("interrupt call");
+
+    thread::sleep(Duration::from_millis(300));
+
+    let progress = call.resume(MontyObject::None, PrintWriter::Stdout).unwrap();
+    assert_eq!(progress.into_complete(), Some(MontyObject::Int(4950)));
+}
+
+/// The turn clock restarts at each resume, so work split across host round
+/// trips stays inside a per-turn budget that its total would blow.
+#[test]
+fn max_turn_duration_restarts_each_resume() {
+    // Three stretches of work, each well under the per-turn budget but adding
+    // up to more than it.
+    let code = "
+total = sum(range(200_000))
+interrupt()
+total += sum(range(200_000))
+interrupt()
+total += sum(range(200_000))
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_turn_duration(Duration::from_secs(5));
+    let mut progress = resolve_name_lookups(
+        run.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+            .unwrap(),
+    )
+    .unwrap();
+    while let Some(call) = progress.into_function_call() {
+        progress = resolve_name_lookups(call.resume(MontyObject::None, PrintWriter::Stdout).unwrap()).unwrap();
+    }
+}
+
+/// A turn that runs away is caught even though neither the session nor the
+/// feed has a budget at all.
+#[test]
+fn max_turn_duration_is_enforced_alone() {
+    let limits = ResourceLimits::default().max_turn_duration(Duration::from_millis(50));
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default());
+    let exc = repl
+        .feed_run("while True:\n    pass", vec![], PrintWriter::Stdout)
+        .expect_err("the runaway turn must be caught");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.starts_with("turn time limit exceeded:")),
+        "the scope must be named, got {exc}"
+    );
+}
+
+/// `call_function` is its own unit of work: it opens a fresh feed, so a
+/// session that has already fed a lot still gets the full per-feed budget.
+#[test]
+fn call_function_starts_a_fresh_feed_budget() {
+    let mut repl = feed_limited_repl(Duration::from_millis(500));
+    repl.feed_run(
+        "def work():\n    return sum(range(10_000))",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    // Burn most of a feed budget, then check the call is not charged for it.
+    repl.feed_run("sum(range(300_000))", vec![], PrintWriter::Stdout)
+        .unwrap();
+    let value = repl
+        .call_function("work", vec![], PrintWriter::Stdout)
+        .expect("the call gets its own budget");
+    assert_eq!(value, MontyObject::Int(49_995_000));
+}

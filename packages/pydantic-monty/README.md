@@ -255,11 +255,15 @@ invokes trusted Python SDK callbacks synchronously; enforcement is
 delayed while such a callback runs. `max_duration_secs`
 limits cumulative *execution* time — the clock runs only while the
 interpreter executes, never while suspended waiting on the host, and
-accumulates across feeds. The worker reports its execution time on every
-protocol turn, and sessions with the limit are additionally killed
-`duration_limit_grace` (1s, not currently configurable from Python) after
-the remaining budget expires, covering hangs the in-sandbox limit cannot
-catch (its check only runs at interpreter checkpoints). `max_suspensions`
+accumulates across feeds. `max_feed_duration_secs` and
+`max_turn_duration_secs` bound the same clock over a narrower scope, one
+`feed_run` and one host round trip, by restarting it at each feed and at each
+host answer. The worker reports its consumed time on every protocol turn, and
+each budget is additionally backstopped by killing the worker a grace period
+after it expires, covering hangs the in-sandbox limit cannot catch (its check
+only runs at interpreter checkpoints). The graces are the pool's
+`duration_limit_grace`, `feed_limit_grace` and `turn_limit_grace` (1s each;
+`None` disables that backstop). `max_suspensions`
 limits the host round trips the pool services per checkout; exceeding it ends
 the feed with an uncatchable `RuntimeError`.
 

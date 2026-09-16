@@ -40,8 +40,8 @@ use std::{
 };
 
 use monty_pool::{
-    Checkout, CheckoutOptions, MountSpec, OnPrint, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue,
-    TurnEvent,
+    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, MountSpec, OnPrint, Pool, PoolConfig, PoolError,
+    PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value};
 use monty_types::{
@@ -123,7 +123,11 @@ impl PyMonty {
         checkout_timeout = None,
         request_timeout = None,
         max_checkouts_per_worker = None,
+        duration_limit_grace = 1.0,
+        feed_limit_grace = 1.0,
+        turn_limit_grace = 1.0,
     ))]
+    #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
         binary_path: Option<PathBuf>,
@@ -132,6 +136,9 @@ impl PyMonty {
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
         max_checkouts_per_worker: Option<u32>,
+        duration_limit_grace: Option<f64>,
+        feed_limit_grace: Option<f64>,
+        turn_limit_grace: Option<f64>,
     ) -> PyResult<Self> {
         Ok(Self {
             config: parse_pool_config(
@@ -142,6 +149,11 @@ impl PyMonty {
                 checkout_timeout,
                 request_timeout,
                 max_checkouts_per_worker,
+                GraceArgs {
+                    session: duration_limit_grace,
+                    feed: feed_limit_grace,
+                    turn: turn_limit_grace,
+                },
             )?,
             pool: Arc::new(Mutex::new(None)),
         })
@@ -499,7 +511,11 @@ impl PyAsyncMonty {
         checkout_timeout = None,
         request_timeout = None,
         max_checkouts_per_worker = None,
+        duration_limit_grace = 1.0,
+        feed_limit_grace = 1.0,
+        turn_limit_grace = 1.0,
     ))]
+    #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
         binary_path: Option<PathBuf>,
@@ -508,6 +524,9 @@ impl PyAsyncMonty {
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
         max_checkouts_per_worker: Option<u32>,
+        duration_limit_grace: Option<f64>,
+        feed_limit_grace: Option<f64>,
+        turn_limit_grace: Option<f64>,
     ) -> PyResult<Self> {
         Ok(Self {
             config: parse_pool_config(
@@ -518,6 +537,11 @@ impl PyAsyncMonty {
                 checkout_timeout,
                 request_timeout,
                 max_checkouts_per_worker,
+                GraceArgs {
+                    session: duration_limit_grace,
+                    feed: feed_limit_grace,
+                    turn: turn_limit_grace,
+                },
             )?,
             pool: Arc::new(Mutex::new(None)),
         })
@@ -637,7 +661,11 @@ impl PyAsyncMontyWebsocket {
         checkout_timeout = None,
         request_timeout = 10.0,
         connect_headers = None,
+        duration_limit_grace = 1.0,
+        feed_limit_grace = 1.0,
+        turn_limit_grace = 1.0,
     ))]
+    #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
         url: String,
@@ -645,10 +673,23 @@ impl PyAsyncMontyWebsocket {
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
         connect_headers: Option<Py<PyAny>>,
+        duration_limit_grace: Option<f64>,
+        feed_limit_grace: Option<f64>,
+        turn_limit_grace: Option<f64>,
     ) -> PyResult<Self> {
         check_callable(py, connect_headers.as_ref())?;
         Ok(Self {
-            config: parse_websocket_config(url, max_processes, checkout_timeout, request_timeout)?,
+            config: parse_websocket_config(
+                url,
+                max_processes,
+                checkout_timeout,
+                request_timeout,
+                GraceArgs {
+                    session: duration_limit_grace,
+                    feed: feed_limit_grace,
+                    turn: turn_limit_grace,
+                },
+            )?,
             pool: Arc::new(Mutex::new(None)),
             connect_headers,
         })
@@ -985,6 +1026,7 @@ impl PyAsyncMontySession {
 /// Builds the subprocess-transport `monty-pool` config from the (shared)
 /// `Monty`/`AsyncMonty` constructor arguments, resolving the binary via
 /// `pydantic_monty._binary` when not given explicitly.
+#[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
 fn parse_pool_config(
     py: Python<'_>,
     binary_path: Option<PathBuf>,
@@ -993,6 +1035,7 @@ fn parse_pool_config(
     checkout_timeout: Option<f64>,
     request_timeout: Option<f64>,
     max_checkouts_per_worker: Option<u32>,
+    graces: GraceArgs,
 ) -> PyResult<PoolConfig> {
     let binary_path = match binary_path {
         Some(path) => path,
@@ -1014,6 +1057,7 @@ fn parse_pool_config(
         .map(|secs| duration_from_secs("request_timeout", secs))
         .transpose()?;
     config.max_checkouts_per_worker = max_checkouts_per_worker;
+    graces.apply(&mut config)?;
     config.metrics = pool_metrics();
     Ok(config)
 }
@@ -1123,6 +1167,7 @@ fn parse_websocket_config(
     max_processes: Option<usize>,
     checkout_timeout: Option<f64>,
     request_timeout: Option<f64>,
+    graces: GraceArgs,
 ) -> PyResult<PoolConfig> {
     let mut config = PoolConfig::websocket(url);
     if let Some(max) = max_processes {
@@ -1134,8 +1179,45 @@ fn parse_websocket_config(
     config.request_timeout = request_timeout
         .map(|secs| duration_from_secs("request_timeout", secs))
         .transpose()?;
+    graces.apply(&mut config)?;
     config.metrics = pool_metrics();
     Ok(config)
+}
+
+// Each pool constructor defaults its three graces to a literal `1.0` second,
+// because pyo3 renders a non-literal `signature` default as `...` in the
+// generated signature (and stubtest then flags the stub). The literal is
+// `monty-pool`'s own default, and this pins the two together.
+const _: () = assert!(
+    DEFAULT_DURATION_LIMIT_GRACE.as_secs() == 1 && DEFAULT_DURATION_LIMIT_GRACE.subsec_nanos() == 0,
+    "the pool's default duration grace changed: update the `1.0` literals in the constructor signatures"
+);
+
+/// The three duration-backstop graces as a pool constructor takes them, in
+/// seconds, with `None` meaning that limit is not backstopped.
+///
+/// `None` keeps its ordinary Python meaning here — "no grace at all" — rather
+/// than doubling as "unspecified", which is why the constructors default these
+/// to a real number instead.
+struct GraceArgs {
+    session: Option<f64>,
+    feed: Option<f64>,
+    turn: Option<f64>,
+}
+
+impl GraceArgs {
+    /// Writes the three graces onto `config`, rejecting a value that is not a
+    /// valid duration.
+    fn apply(self, config: &mut PoolConfig) -> PyResult<()> {
+        for (secs, name, slot) in [
+            (self.session, "duration_limit_grace", &mut config.duration_limit_grace),
+            (self.feed, "feed_limit_grace", &mut config.feed_limit_grace),
+            (self.turn, "turn_limit_grace", &mut config.turn_limit_grace),
+        ] {
+            *slot = secs.map(|secs| duration_from_secs(name, secs)).transpose()?;
+        }
+        Ok(())
+    }
 }
 
 /// Builds the worker-side REPL session config from the (shared) `checkout`

@@ -67,6 +67,20 @@ pub(crate) struct Cli {
     #[arg(long)]
     max_duration: Option<f64>,
 
+    /// Maximum execution time for a single feed, in seconds.
+    ///
+    /// Only the REPL (`--interactive`) feeds more than once; elsewhere this
+    /// bounds the one run, like `--max-duration`.
+    #[arg(long)]
+    max_feed_duration: Option<f64>,
+
+    /// Maximum execution time between host round trips, in seconds.
+    ///
+    /// Bounds the stretch of code before each external call, so a snippet may
+    /// still run longer than this in total.
+    #[arg(long)]
+    max_turn_duration: Option<f64>,
+
     /// Maximum heap memory (e.g. `1024`, `512KB`, `10MB`, `1GB`).
     #[arg(long, value_parser = parse_memory_size)]
     max_memory: Option<usize>,
@@ -135,6 +149,8 @@ impl Cli {
     /// swallowed and let an invalid flag slip past the conflict guard.
     fn any_resource_limit_flag(&self) -> bool {
         self.max_duration.is_some()
+            || self.max_feed_duration.is_some()
+            || self.max_turn_duration.is_some()
             || self.max_memory.is_some()
             || self.gc_interval.is_some()
             || self.max_recursion_depth.is_some()
@@ -150,10 +166,13 @@ impl Cli {
     fn resource_limits(&self) -> Result<monty_types::ResourceLimits, String> {
         let mut limits = monty_types::ResourceLimits::default();
         if let Some(secs) = self.max_duration {
-            limits = limits.max_duration(
-                #[expect(clippy::absolute_paths)]
-                std::time::Duration::try_from_secs_f64(secs).map_err(|err| format!("invalid --max-duration: {err}"))?,
-            );
+            limits = limits.max_duration(duration_flag(secs, "--max-duration")?);
+        }
+        if let Some(secs) = self.max_feed_duration {
+            limits = limits.max_feed_duration(duration_flag(secs, "--max-feed-duration")?);
+        }
+        if let Some(secs) = self.max_turn_duration {
+            limits = limits.max_turn_duration(duration_flag(secs, "--max-turn-duration")?);
         }
         if let Some(bytes) = self.max_memory {
             limits = limits.max_memory(bytes);
@@ -213,6 +232,14 @@ fn run_standalone(cli: Cli) -> ExitCode {
 fn run_standalone(_cli: Cli) -> ExitCode {
     eprintln!("error: this build runs `monty subprocess` only — rebuild with the `standalone` feature for the CLI");
     ExitCode::FAILURE
+}
+
+/// Converts a duration flag's seconds into a `Duration`, naming the flag in
+/// the rejection so a caller who passed several knows which one was bad.
+#[cfg(feature = "standalone")]
+#[expect(clippy::absolute_paths, reason = "std::time is only needed by this one helper")]
+fn duration_flag(secs: f64, flag: &str) -> Result<std::time::Duration, String> {
+    std::time::Duration::try_from_secs_f64(secs).map_err(|err| format!("invalid {flag}: {err}"))
 }
 
 /// Parses a memory size string with optional unit suffix.

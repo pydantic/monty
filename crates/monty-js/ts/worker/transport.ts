@@ -48,6 +48,8 @@ function flushIntervalMs(interval: number): number {
 /** Resource limits mirrored from the napi pool; the transport enforces `maxSuspensions`. */
 export interface ResourceLimits {
   maxDurationSecs?: number
+  maxFeedDurationSecs?: number
+  maxTurnDurationSecs?: number
   maxMemory?: number
   gcInterval?: number
   maxRecursionDepth?: number
@@ -415,14 +417,19 @@ function componentTypeCheckFormat(format: TypeCheckFormat): ComponentTypeCheckFo
 /** Converts JavaScript-facing limits to canonical WIT integer fields. */
 function encodeLimits(limits: ResourceLimits): ComponentResourceLimits {
   return {
-    ...(limits.maxDurationSecs === undefined
-      ? {}
-      : { maxDurationMicros: BigInt(Math.round(limits.maxDurationSecs * 1_000_000)) }),
+    ...micros('maxDurationMicros', limits.maxDurationSecs),
+    ...micros('maxFeedDurationMicros', limits.maxFeedDurationSecs),
+    ...micros('maxTurnDurationMicros', limits.maxTurnDurationSecs),
     ...(limits.maxMemory === undefined ? {} : { maxMemoryBytes: BigInt(limits.maxMemory) }),
     ...(limits.gcInterval === undefined ? {} : { gcInterval: BigInt(limits.gcInterval) }),
     ...(limits.maxRecursionDepth === undefined ? {} : { maxRecursionDepth: BigInt(limits.maxRecursionDepth) }),
     ...(limits.maxSuspensions === undefined ? {} : { maxSuspensions: BigInt(limits.maxSuspensions) }),
   }
+}
+
+/** Renders one optional duration limit as its canonical WIT microsecond field. */
+function micros(key: string, seconds: number | undefined): Record<string, bigint> {
+  return seconds === undefined ? {} : { [key]: BigInt(Math.round(seconds * 1_000_000)) }
 }
 
 /** Identifies turns that consume the host-side suspension budget. */

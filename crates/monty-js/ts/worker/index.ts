@@ -27,6 +27,10 @@ export interface WasmPoolOptions {
   requestTimeout?: number
   /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
   durationLimitGrace?: number | null
+  /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
+  feedLimitGrace?: number | null
+  /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
+  turnLimitGrace?: number | null
   /** Recycle a worker after serving this many sessions. */
   maxCheckoutsPerWorker?: number
   /** Overrides the worker entry URL used by the browser backend. */

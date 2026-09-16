@@ -84,8 +84,10 @@ Invalid snapshots have no correctness or availability guarantees.
 - **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds
   `request_timeout` (`PoolError::Timeout`), backstopping the sandbox's own resource limits
   and catching hangs those limits cannot see. Synchronous host telemetry processors delay
-  enforcement while they run because the timer cannot be polled. When a session has a `max_duration` budget,
-  the deadline also enforces it (plus `duration_limit_grace`) from outside the child.
+  enforcement while they run because the timer cannot be polled. When a session has a `max_duration`,
+  `max_feed_duration` or `max_turn_duration` budget, the deadline also enforces it from outside the child,
+  each with its own grace (`duration_limit_grace`, `feed_limit_grace`, `turn_limit_grace`, 1s by default;
+  `None` disables that backstop).
   A `max_suspensions` budget is enforced by the pool alone: it counts the suspensions it services
   and ends the feed past the budget with an uncatchable `RuntimeError` in the sandbox.
   `PoolConfig::subprocess` sets neither `request_timeout` nor `checkout_timeout` by

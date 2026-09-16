@@ -44,26 +44,29 @@ Monty enforces hard limits on memory, execution time and recursion depth, config
     }
     ```
 
-## The five settings
+## The seven settings
 
-| Key                   | Meaning                                                                                                               |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `max_memory`          | Maximum heap memory in bytes                                                                                          |
-| `max_duration_secs`   | Maximum cumulative execution time in seconds                                                                          |
-| `max_recursion_depth` | Maximum function call stack depth (default 1000)                                                                      |
-| `gc_interval`         | Run garbage collection every N allocations                                                                            |
-| `max_suspensions`     | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000) |
+| Key                      | Meaning                                                                                                               |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `max_memory`             | Maximum heap memory in bytes                                                                                          |
+| `max_duration_secs`      | Maximum cumulative execution time per session, in seconds                                                             |
+| `max_feed_duration_secs` | Maximum execution time per `feed_run`, in seconds                                                                     |
+| `max_turn_duration_secs` | Maximum execution time per host round trip, in seconds                                                                |
+| `max_recursion_depth`    | Maximum function call stack depth (default 1000)                                                                      |
+| `gc_interval`            | Run garbage collection every N allocations                                                                            |
+| `max_suspensions`        | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000) |
 
 Every key is optional.
-Omit `max_memory` or `max_duration_secs`, or set them to `None`, to disable that limit.
+Omit `max_memory` or any of the three duration keys, or set them to `None`, to disable that limit.
 `max_recursion_depth` and `max_suspensions` cannot be disabled: omitting either, or passing `None`, leaves its 1000
 default.
 `gc_interval` omitted or `None` uses the built-in schedule of every 100,000 allocations; collection cannot be turned
 off.
 
-In JavaScript the same fields are `maxMemory`, `maxDurationSecs`, `maxRecursionDepth`, `gcInterval` and
-`maxSuspensions`, passed as `limits` to `pool.checkout()`.
-In Rust they are the fields of [`monty_types::ResourceLimits`](api/rust/monty-types.md#resourcelimits), where the duration is a `Duration` named `max_duration`.
+In JavaScript the same fields are `maxMemory`, `maxDurationSecs`, `maxFeedDurationSecs`, `maxTurnDurationSecs`,
+`maxRecursionDepth`, `gcInterval` and `maxSuspensions`, passed as `limits` to `pool.checkout()`.
+In Rust they are the fields of [`monty_types::ResourceLimits`](api/rust/monty-types.md#resourcelimits), where the
+durations are `Duration`s named `max_duration`, `max_feed_duration` and `max_turn_duration`.
 
 ## Memory
 
@@ -97,29 +100,52 @@ A few integer operations carry their own caps regardless of `max_memory`:
 
 ## Time
 
-`max_duration_secs` counts **cumulative execution time**, not wall clock:
+The three duration limits all count **execution time**, not wall clock:
 
 - The clock runs only while the interpreter executes bytecode.
 - It is paused while execution is suspended waiting on the host — a [host function](host-functions.md) that takes a
     minute costs nothing, and neither does a `time.sleep()` your `os=` handler waited out.
-- It accumulates across `feed_run` calls for the life of the session.
-- It is serialized into [snapshots](snapshots.md), so a restored session resumes its budget rather than restarting from
-    zero.
-- There is no way for sandboxed code to observe the budget or the time remaining.
+- There is no way for sandboxed code to observe a budget or the time remaining.
+
+They read the same clock and differ only in when it restarts:
+
+| Key                      | Restarts            | Bounds                                                   |
+| ------------------------ | ------------------- | -------------------------------------------------------- |
+| `max_duration_secs`      | never               | the whole session, across every `feed_run`               |
+| `max_feed_duration_secs` | at each feed        | one `feed_run`, including every host round trip it makes |
+| `max_turn_duration_secs` | at each host answer | the stretch of code between two host round trips         |
+
+So a turn's time is also charged to its feed and to the session, and whichever budget is tightest fires first.
+When one check blows more than one, the widest is reported, because a new feed cannot recover from it.
+
+`max_duration_secs` and `max_feed_duration_secs` are serialized into [snapshots](snapshots.md), so a restored session
+resumes those budgets rather than restarting from zero.
+A snapshot is only ever taken between turns, so `max_turn_duration_secs` has nothing to carry.
+
+Reach for `max_duration_secs` to cap what a session may ever cost, `max_feed_duration_secs` to keep a long-lived
+session responsive per request, and `max_turn_duration_secs` to bound how long a host callback may be kept waiting.
+
+Exceeding any of them raises `TimeoutError` in the sandbox and leaves the session usable.
+
+### Host-side backstops
 
 The in-sandbox check runs at interpreter checkpoints, so it cannot catch code that wedges the interpreter itself.
-Two host-side backstops cover that:
+Host-side deadlines cover that:
 
 - **`request_timeout`** on the pool is a hard per-turn deadline.
     A worker that exceeds it is killed and the call raises [`MontyCrashedError`][pydantic_monty.MontyCrashedError] with `timed_out=True`.
     Each resume after a host-function or mount call starts a new deadline, so a program that suspends often can outlive
     any single timeout.
-- **The duration backstop.** For sessions with a `max_duration_secs` limit, the worker reports its execution time on
+- **A duration backstop per limit.** For each duration budget a session sets, the worker reports its consumed time on
     every protocol turn, and the host kills the worker a grace period after the budget expires.
-    The grace period defaults to 1 second; in JavaScript it is the `durationLimitGrace` pool option (`null` disables it),
-    and from Python it is not currently configurable.
 
-Set `max_duration_secs` for untrusted code that may suspend repeatedly; `request_timeout` alone does not bound the
+The grace is what the sandbox gets to raise `TimeoutError` itself and keep the session alive; missing it costs the
+session, so set it well above how long a checkpoint may be away.
+Each grace defaults to 1 second and is a pool option: `duration_limit_grace`, `feed_limit_grace` and `turn_limit_grace`
+in Python, `durationLimitGrace`, `feedLimitGrace` and `turnLimitGrace` in JavaScript.
+`None` (`null` in JavaScript) disables that backstop, leaving only the in-sandbox check and `request_timeout`.
+
+Set a duration limit for untrusted code that may suspend repeatedly; `request_timeout` alone does not bound the
 overall call.
 These deadlines are polled: synchronous host telemetry callbacks and decoding a large reply can delay enforcement.
 Neither deadline covers [host mount I/O](filesystem.md#io-timeouts-and-cancellation).
@@ -186,7 +212,9 @@ The session remains usable until code suspends again.
 The pool does **not** do this for you.
 The checkout stays open and accepts further `feed_run` calls.
 Because `max_duration_secs` is a cumulative budget, once it is spent every later feed immediately fails with the same
-`TimeoutError`; after a `max_memory` trip a later feed may quietly succeed against a heap you can no longer trust.
+`TimeoutError`; `max_feed_duration_secs` and `max_turn_duration_secs` restart instead, so a later feed runs — against a
+heap that a trip still leaves untrustworthy.
+After a `max_memory` trip a later feed may likewise quietly succeed against a heap you can no longer trust.
 Ending the session is your job.
 A caught `RecursionError` is the exception; it does not invalidate anything and execution may continue.
 

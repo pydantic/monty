@@ -556,6 +556,8 @@ fn bogus_json_payloads_are_dropped_not_trusted() {
 fn resource_limits_round_trip() {
     let limits = ResourceLimits {
         max_duration: Some(Duration::from_millis(1500)),
+        max_feed_duration: Some(Duration::from_millis(900)),
+        max_turn_duration: Some(Duration::from_millis(250)),
         max_memory: Some(64 * 1024 * 1024),
         gc_interval: Some(100),
         max_recursion_depth: 50,
@@ -563,6 +565,8 @@ fn resource_limits_round_trip() {
     };
     let back = ResourceLimits::from(pb::ResourceLimits::from(&limits));
     assert_eq!(back.max_duration, limits.max_duration);
+    assert_eq!(back.max_feed_duration, limits.max_feed_duration);
+    assert_eq!(back.max_turn_duration, limits.max_turn_duration);
     assert_eq!(back.max_memory, limits.max_memory);
     assert_eq!(back.gc_interval, limits.gc_interval);
     assert_eq!(back.max_recursion_depth, limits.max_recursion_depth);
@@ -576,6 +580,8 @@ fn empty_resource_limits_default_recursion_depth() {
     let back = ResourceLimits::from(pb::ResourceLimits::default());
     let expected = ResourceLimits::default();
     assert_eq!(back.max_duration, expected.max_duration);
+    assert_eq!(back.max_feed_duration, expected.max_feed_duration);
+    assert_eq!(back.max_turn_duration, expected.max_turn_duration);
     assert_eq!(back.max_memory, expected.max_memory);
     assert_eq!(back.gc_interval, expected.gc_interval);
     assert_eq!(back.max_recursion_depth, expected.max_recursion_depth);

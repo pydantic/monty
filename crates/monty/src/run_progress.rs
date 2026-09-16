@@ -427,6 +427,7 @@ impl NameLookup {
         let scope = self.scope;
         let name = self.name;
 
+        heap.tracker.on_turn_start();
         let (converted, vm_state) =
             HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
                 // Restore the VM first, then convert inside its lifetime
@@ -732,6 +733,7 @@ impl ResolveFutures {
             .find(|(call_id, _)| !pending_call_ids.contains(call_id))
             .map(|(call_id, _)| *call_id);
 
+        heap.tracker.on_turn_start();
         let (converted, vm_state) =
             HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
                 // Restore the VM from the snapshot (must happen before any error return to clean up properly).
@@ -805,6 +807,7 @@ impl Snapshot {
             mut heap,
         } = self;
 
+        heap.tracker.on_turn_start();
         let (converted, vm_state) =
             HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
                 let mut vm = VM::restore(
@@ -910,6 +913,7 @@ fn abort_restored(
     exc: MontyException,
     print: PrintWriter<'_>,
 ) -> Result<RunProgress, MontyException> {
+    heap.tracker.on_turn_start();
     let (converted, vm_state) = HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
         let mut vm = VM::restore(
             vm_state,

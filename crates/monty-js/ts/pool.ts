@@ -43,6 +43,20 @@ export interface MontyOptions {
    * (`timedOut: true`), losing the session. `requestTimeout` is independent.
    */
   durationLimitGrace?: number | null
+  /**
+   * Grace period in seconds for the automatic `maxFeedDurationSecs` backstop
+   * (default 1, `null` disables). Works exactly like `durationLimitGrace`,
+   * one scope in: the deadline is what the running feed has left of its
+   * budget, plus this.
+   */
+  feedLimitGrace?: number | null
+  /**
+   * Grace period in seconds for the automatic `maxTurnDurationSecs` backstop
+   * (default 1, `null` disables). Works exactly like `durationLimitGrace`,
+   * two scopes in: the deadline is that limit plus this, since a turn's clock
+   * starts at zero.
+   */
+  turnLimitGrace?: number | null
   /** Recycle a worker (kill and replace) after serving this many sessions. */
   maxCheckoutsPerWorker?: number
 }
@@ -97,9 +111,19 @@ export interface CheckoutOptions {
  * `maxRecursionDepth` and `maxSuspensions`, which keep their 1000 defaults.
  * The pool counts `maxSuspensions` per checkout and aborts an over-budget
  * feed with an uncatchable `RuntimeError`.
+ *
+ * The three duration limits measure the same clock — it runs only while
+ * sandboxed code executes, never while a call is suspended on the host — and
+ * differ only in when it restarts: never, at each feed, and at each host
+ * round trip. Exceeding any raises `TimeoutError` in the sandbox.
  */
 export interface ResourceLimits {
+  /** Maximum execution time for the whole session. */
   maxDurationSecs?: number
+  /** Maximum execution time for a single `feedRun`. */
+  maxFeedDurationSecs?: number
+  /** Maximum execution time between host round trips. */
+  maxTurnDurationSecs?: number
   maxMemory?: number
   gcInterval?: number
   maxRecursionDepth?: number
@@ -133,10 +157,10 @@ export class Monty {
       maxProcesses: options.maxProcesses ?? availableParallelism(),
       ...(options.checkoutTimeout !== undefined ? { checkoutTimeoutMs: options.checkoutTimeout * 1000 } : {}),
       ...(options.requestTimeout !== undefined ? { requestTimeoutMs: options.requestTimeout * 1000 } : {}),
-      // `null` disables the backstop; omitted means the 1s default
-      ...(options.durationLimitGrace !== null
-        ? { durationLimitGraceMs: (options.durationLimitGrace ?? 1) * 1000 }
-        : {}),
+      // `null` disables a backstop; omitted means the 1s default
+      ...graceMs('durationLimitGraceMs', options.durationLimitGrace),
+      ...graceMs('feedLimitGraceMs', options.feedLimitGrace),
+      ...graceMs('turnLimitGraceMs', options.turnLimitGrace),
       ...(options.maxCheckoutsPerWorker !== undefined ? { maxCheckoutsPerWorker: options.maxCheckoutsPerWorker } : {}),
     })
     await native.start()
@@ -183,4 +207,14 @@ export class Monty {
   async [Symbol.asyncDispose](): Promise<void> {
     await this.close()
   }
+}
+
+/**
+ * Renders one duration-backstop grace as the native option the pool takes.
+ *
+ * `null` means "do not backstop that limit", so it yields no key at all;
+ * `undefined` (the absent case) falls back to the 1s default.
+ */
+function graceMs(key: string, seconds: number | null | undefined): Record<string, number> {
+  return seconds === null ? {} : { [key]: (seconds ?? 1) * 1000 }
 }

@@ -130,6 +130,25 @@ test('time limit', async () => {
   t.regex(error.display('msg'), /^time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
 })
 
+test('feed duration limit restarts each feed', async () => {
+  // Unlike maxDurationSecs the budget restarts, so the session survives one
+  // over-long feed.
+  await using session = await pool().checkout({ limits: { maxFeedDurationSecs: 0.1 } })
+  t.is(await session.feedRun('1 + 1'), 2)
+  const error = await t.throwsAsync(() => session.feedRun('while True:\n    pass\n'), isRuntimeError)
+  t.is(error.exception.typeName, 'TimeoutError')
+  t.regex(error.display('msg'), /^feed time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
+  t.is(await session.feedRun('2 + 2'), 4)
+})
+
+test('turn duration limit', async () => {
+  await using session = await pool().checkout({ limits: { maxTurnDurationSecs: 0.1 } })
+  const error = await t.throwsAsync(() => session.feedRun('while True:\n    pass\n'), isRuntimeError)
+  t.is(error.exception.typeName, 'TimeoutError')
+  t.regex(error.display('msg'), /^turn time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
+  t.is(await session.feedRun('2 + 2'), 4)
+})
+
 // =============================================================================
 // Suspension limit tests
 // =============================================================================
