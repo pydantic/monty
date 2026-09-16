@@ -232,6 +232,13 @@ pub(crate) fn allocate(func: Option<Value>, maxsize: Option<u32>, typed: bool, v
     }
 }
 
+/// The TypeError `lru_cache()` raises for a first argument that is neither a
+/// size, a callable, nor `None`.
+#[cold]
+pub(crate) fn bad_maxsize_error() -> RunError {
+    ExcType::type_error("Expected first argument to be an integer, a callable, or None")
+}
+
 /// The cached results as a dict handle, for the `HeapRead<Dict>` methods.
 fn cache_mut<'r, 'h>(cache: &'r mut HeapObjectRead<'h, LruCache>) -> BorrowedHeapReadMut<'r, 'h, Dict> {
     heap_read_ref_as_field_mut!(cache, LruCache, cache)

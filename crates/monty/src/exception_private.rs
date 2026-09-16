@@ -1179,13 +1179,6 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("first argument must be callable or None")
     }
 
-    /// Creates the TypeError `functools.lru_cache()` raises for a first
-    /// argument that is neither a size, a callable, nor `None`.
-    #[must_use]
-    fn lru_cache_bad_maxsize() -> RunError {
-        Self::type_error("Expected first argument to be an integer, a callable, or None")
-    }
-
     /// Creates a TypeError for the right operand of `in` / `not in` supporting
     /// neither `__contains__` nor iteration.
     ///
