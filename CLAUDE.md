@@ -357,12 +357,11 @@ already-tracked input (path joins) — rare oversized cases there are the hard
 limit's job. The exception is a loop allocating per item, where a preflight on
 the result buffer cannot see what the items themselves cost:
 `tracker.check_memory_time_every(i)` is the amortized poll for that, as in
-`parse_json_array`, where an array of empty containers turns three source bytes
-into a heap entry. `*args` tuples, regex match lists and parsed JSON arrays were
-listed here too, until each was found to kill the worker on ordinary code.
-`*args`, parsed JSON arrays and `re.findall` with at most one capture group are
-preflighted now; a wider `findall` and `re.finditer` allocate per match between
-the checks and are still open. Test each graceful path in
+`parse_json_array` and `re_pattern`'s match and split loops. `*args`, parsed
+JSON arrays and `re.findall` with at most one capture group are preflighted now
+— each killed the worker on ordinary code while listed as bounded-by-input
+above; a wider `findall` and `re.finditer` allocate per match between the checks
+and are still open. Test each graceful path in
 `large_allocations_are_rejected_before_the_hard_limit`
 (`crates/monty-runtime/tests/subprocess.rs`) — the interpreter's own tests
 never arm the allocator, so only subprocess tests exercise `max_memory`.

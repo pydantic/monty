@@ -1764,9 +1764,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
 
 /// Preflights the growth one insertion would cause in a set's two buffers.
 ///
-/// The dense entry vector and the `HashTable<usize>` beside it can both
-/// reallocate on the same insertion, so their increments are checked together —
-/// see [`check_entry_table_growth`] for why they cannot be checked apart.
+/// The entry vector and the index table beside it can reallocate on the same
+/// insertion, so [`check_entry_table_growth`] sums their increments into one check.
 fn check_storage_growth(storage: &SetStorage, tracker: &ResourceTracker) -> Result<(), ResourceError> {
     check_entry_table_growth(
         storage.entries.len(),

@@ -1209,18 +1209,15 @@ fn tee_group_is_charged_before_it_is_built() {
     }
 }
 
-/// Containers grown one element at a time must raise `MemoryError` and leave the
-/// session usable, whatever the limit.
+/// Containers grown one element at a time must raise `MemoryError` and leave
+/// the session usable, whatever the limit.
 ///
-/// A `Vec` doubling charges its whole increment in a single allocation, so a
-/// push that straddles the soft limit used to land past the allocator's hard
-/// ceiling with no checkpoint in between. The two limits here catch the two
-/// halves of that. At 24 MB — the limit reported in #700 — the doubling clears
-/// the fixed headroom, the worker is killed and the follow-up feed EOFs. At
-/// 6 MB the doubling fits the headroom, so the worker survives, but the buffer
-/// is allocated before the checkpoint notices and the session is left over its
-/// limit with the next statement failing too. Refusing the growth up front
-/// fixes both.
+/// A `Vec` doubling charges its whole increment in one allocation, so a push
+/// straddling the soft limit used to land past the hard ceiling with no
+/// checkpoint in between. The limits here catch both halves: at 24 MB (the
+/// limit reported in #700) the doubling cleared the headroom, killing the
+/// worker; at 6 MB it fits, so the worker survived but the session was left
+/// over its limit with the next statement failing too.
 #[test]
 fn incremental_container_growth_stays_graceful() {
     let cases = [
@@ -1240,8 +1237,8 @@ fn incremental_container_growth_stays_graceful() {
             let (_, event) = child.feed(code);
             let error = expect_error(event);
             assert_eq!(error.exc_type, "MemoryError", "{limit_mb}MB: {code}");
-            // The session outliving the error is the whole point — a worker that
-            // hit the hard limit would be gone by now.
+            // The session outliving the error is the whole point: a worker
+            // that hit the hard limit would be gone by now.
             assert_eq!(
                 child.feed_complete("1 + 1"),
                 MontyObject::Int(2),
@@ -1255,10 +1252,10 @@ fn incremental_container_growth_stays_graceful() {
 /// Buffers of interpreter values that native code fills in one call must raise
 /// `MemoryError` rather than kill the worker.
 ///
-/// These are the sites where the result is a constant multiple of an
-/// already-tracked input, which used to be reason enough to skip the preflight.
-/// It is not: the increment still clears the allocator's fixed headroom in one
-/// allocation, and each of these killed the worker at the limit named.
+/// Each result here is a constant multiple of an already-tracked input, which
+/// used to be reason enough to skip the preflight. It is not: the increment
+/// still clears the allocator's fixed headroom in one allocation, and every
+/// case below killed the worker at the limit named.
 #[test]
 fn native_value_buffers_stay_graceful() {
     let cases = [
@@ -1274,9 +1271,8 @@ fn native_value_buffers_stay_graceful() {
         ("import re\nlen(re.findall('a', 'a' * 2_000_000))", 24),
         ("import re\nlen(re.findall('(a)', 'a' * 2_000_000))", 24),
         ("import json\nlen(json.loads('[' + '0,' * 1_500_000 + '0]'))", 24),
-        // Elements that cost more on the heap than in the source: an empty
-        // container is three bytes of JSON and a heap entry apiece, so a window
-        // between the buffer's doublings outweighs the headroom on its own.
+        // Elements costing more on the heap than in the source: `[],` is three
+        // bytes of JSON but a whole heap entry, so one doubling clears the headroom.
         ("import json\nlen(json.loads('[' + '[],' * 700_000 + '[]]'))", 24),
         ("import json\nlen(json.loads('[' + '{},' * 700_000 + '{}]'))", 24),
         (
@@ -1336,9 +1332,8 @@ fn empty_product_pool_is_not_preflighted() {
 ///
 /// `import` rebuilds a module namespace on every execution, and module
 /// construction has no error channel — `StandardLib::create` and
-/// `VM::load_module` both return infallibly, so `Module::set_attr` can only
-/// panic. Preflighting those inserts would therefore turn a session that merely
-/// ran out of memory into a dead child, which is why they skip the check.
+/// `VM::load_module` are infallible, so a refusal inside `Module::set_attr`
+/// could only panic. That is why those inserts skip the growth check.
 #[test]
 fn importing_under_memory_pressure_stays_graceful() {
     let mut child = ChildProc::spawn();
@@ -1348,7 +1343,7 @@ fn importing_under_memory_pressure_stays_graceful() {
     let code = "def f():\n    xs = []\n    for _ in range(1_000_000):\n        xs.append('x' * 1000)\n        import functools\nf()";
     let (_, event) = child.feed(code);
     assert_eq!(expect_error(event).exc_type, "MemoryError");
-    // The session outliving the error is the whole point — a panicking
+    // The session outliving the error is the whole point: a panicking
     // `set_attr` would have taken the worker with it.
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
     child.shutdown();
@@ -1356,11 +1351,11 @@ fn importing_under_memory_pressure_stays_graceful() {
 
 /// The growth preflights must leave ordinary work alone.
 ///
-/// Everything here fits the limit several times over, so a check that charged a
-/// growth the buffer will not perform — or ran on every push rather than at a
+/// Everything here fits the limit several times over, so a check that charged
+/// a growth the buffer never performs — or ran on every push rather than at a
 /// capacity boundary — would turn a working program into a `MemoryError`. The
-/// refusal tests above cannot catch that: they only assert that a refusal
-/// happens.
+/// refusal tests above only assert that a refusal happens, so they cannot
+/// catch that.
 #[test]
 fn container_growth_preflight_leaves_ordinary_work_alone() {
     let mut child = ChildProc::spawn();
@@ -1388,10 +1383,10 @@ fn bounded_deque_extend_is_not_preflighted() {
 
 /// A deque that has reached `maxlen` is not exempt from the growth preflight.
 ///
-/// `append` and `appendleft` push before they evict, so a bounded deque whose
-/// ring is exactly full still reallocates on that push — once, by its whole
-/// length. Unchecked, that single allocation cleared the hard-limit headroom
-/// and killed the worker.
+/// `append` and `appendleft` push before they evict, so a deque whose ring is
+/// exactly full still reallocates on that push — once, by its whole length.
+/// Unchecked, that one allocation cleared the hard-limit headroom and killed
+/// the worker.
 #[test]
 fn full_bounded_deque_growth_stays_graceful() {
     let mut child = ChildProc::spawn();
@@ -1408,7 +1403,7 @@ fn full_bounded_deque_growth_stays_graceful() {
 /// `re.split` must preflight the pieces it collects, not only the list it
 /// builds from them.
 ///
-/// The pieces are 16 bytes each and bounded only by the subject, and the whole
+/// The pieces are 16 bytes each, bounded only by the subject, and the whole
 /// `Vec` was collected before the first check ran — splitting a 1.5 MB subject
 /// on a comma killed the worker.
 #[test]
@@ -1423,11 +1418,11 @@ fn oversized_split_stays_graceful() {
 
 /// A refused `findall` must leave nothing of its partial result behind.
 ///
-/// Its scan allocates no heap values, only borrowed slices, so a refusal has
+/// Its scan collects borrowed slices rather than heap values, so a refusal has
 /// nothing to strand — which matters because it could not release them anyway:
 /// that needs `&mut Heap`, and the compiled pattern is borrowed out of the heap
-/// for as long as the match iterator lives. The allocation afterwards fits only
-/// if the session got its memory back.
+/// while the match iterator lives. The allocation afterwards fits only if the
+/// session got its memory back.
 #[test]
 fn refused_findall_leaves_no_partial_result() {
     for pattern in ["'ab'", "'(a)(b)'"] {

@@ -108,11 +108,10 @@ pub fn check_replace_size(
 /// Pre-checks the reallocation a push into a full `Value` buffer causes,
 /// dropping `item` if the container cannot grow.
 ///
-/// Only called at a capacity boundary, so its cost amortizes away. Without it
-/// the doubling that straddles the soft memory limit lands past the allocator's
-/// hard ceiling in one allocation, killing the worker instead of raising
-/// `MemoryError`. Buffers of anything but `Value` take
-/// [`ResourceTracker::check_growth`] directly, with their own element size.
+/// Callers reach it only at a capacity boundary, hence `#[cold]`. Without it the
+/// doubling that straddles the soft memory limit lands past the allocator's hard
+/// ceiling in one allocation, killing the worker instead of raising `MemoryError`.
+/// Buffers of other element types call [`ResourceTracker::check_growth`] directly.
 #[cold]
 pub(crate) fn check_value_buffer_growth(vm: &mut VM<'_>, len: usize, capacity: usize, item: Value) -> RunResult<Value> {
     match vm.heap.tracker.check_growth(len, capacity, VALUE_SIZE) {
@@ -125,15 +124,12 @@ pub(crate) fn check_value_buffer_growth(vm: &mut VM<'_>, len: usize, capacity: u
 }
 
 /// Pre-checks the reallocation one insertion into a dict or set would cause,
-/// across both of the buffers it grows.
+/// summing both of the buffers it grows.
 ///
 /// The dense entry vector and the `HashTable<usize>` indexing it reallocate
-/// independently, and an insertion that fills both grows both with no
-/// allocation in between. Checking each increment against the same
-/// pre-insertion usage passes both while their sum clears the allocator's hard
-/// headroom, so the two are summed into one check — see
-/// [`ResourceTracker::check_growth`] for what that headroom costs when it is
-/// crossed.
+/// independently, with no allocation in between, so checking each increment
+/// against the same pre-insertion usage lets both pass while their sum clears
+/// the allocator's hard headroom.
 pub(crate) fn check_entry_table_growth(
     entries_len: usize,
     entries_capacity: usize,
@@ -154,10 +150,9 @@ pub(crate) fn check_entry_table_growth(
 /// twice `allocation_size()`.
 fn table_growth(indices: &HashTable<usize>) -> usize {
     let current = indices.allocation_size();
-    // A table that has never allocated reports `allocation_size() == 0` while
-    // also reporting `len == capacity == 0`, so the doubling model has nothing
-    // to work from. Its first table is a few dozen bytes — far too small to
-    // clear the hard-limit headroom this check exists for.
+    // An unallocated table reports `allocation_size() == 0` with `len == capacity == 0`,
+    // so the doubling model has nothing to work from; its first table is a few dozen
+    // bytes, far below the headroom this check guards.
     if current == 0 || indices.len() < indices.capacity() {
         0
     } else {

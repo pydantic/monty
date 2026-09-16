@@ -234,12 +234,10 @@ impl RePattern {
     /// - One capture group: returns a list of the group's matched strings
     /// - Multiple capture groups: returns a list of tuples of matched strings
     ///
-    /// Scanning and allocating are separate passes, and only the scan can fail.
-    /// A scan that stopped half way through a list of heap values would have no
-    /// way to release them — releasing a reference needs `&mut Heap`, and the
-    /// compiled pattern is borrowed out of the heap for as long as the match
-    /// iterator lives. Borrowed `&str` slices own nothing, so the scan collects
-    /// those and the allocating pass that follows it cannot fail.
+    /// The scan collects borrowed `&str` slices and a second pass allocates them,
+    /// so only the scan can fail: a scan abandoned half way through a list of heap
+    /// values could not release them, since `dec_ref` needs `&mut Heap` while the
+    /// match iterator borrows the compiled pattern out of it.
     pub fn findall(&self, text: &str, heap: &Heap) -> RunResult<Value> {
         let cap_count = self.compiled.captures_len();
 
@@ -357,10 +355,9 @@ impl RePattern {
 
 /// Preflights the growth one more match result would cause.
 ///
-/// A match list is as long as the subject allows, and the whole scan runs inside
-/// one native call, so the buffer's doubling is the only thing between a
-/// graceful `MemoryError` and an allocation that clears the allocator's
-/// hard-limit headroom and kills the worker.
+/// A match list grows as long as the subject allows with no instruction
+/// checkpoint in between, so without this the buffer's doubling can clear the
+/// allocator's hard-limit headroom and kill the worker.
 fn check_results_growth(results: &Vec<Value>, heap: &Heap) -> RunResult<()> {
     Ok(heap
         .tracker
@@ -376,8 +373,8 @@ fn check_slice_growth(slices: &Vec<&str>, heap: &Heap) -> RunResult<()> {
 
 /// Collects the pieces an iterator yields, preflighting the buffer as it grows.
 ///
-/// The collection is what a split allocates first and it is bounded only by the
-/// subject, so it cannot be left to the check on the result list behind it.
+/// A split's piece buffer is bounded only by the subject and is filled before the
+/// result list exists, so the check on that list comes too late.
 fn collect_slices<'t>(
     pieces: impl Iterator<Item = Result<&'t str, RegexError>>,
     heap: &Heap,

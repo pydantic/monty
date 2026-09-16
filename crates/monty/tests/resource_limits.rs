@@ -1673,10 +1673,10 @@ fn timeout_in_a85decode_ignorechars() {
 ///
 /// `f(*args, **kwargs)` owns the kwargs dict until the argument pack is built,
 /// and building it became fallible when the `*args` clone gained its size
-/// preflight. Dropping a `Value` does not decrement its refcount, so the
-/// kwargs were stranded on the heap — which `memory-model-checks` turns into a
-/// panic. The limit sits between what the tuple costs to build and what the
-/// `*args` clone estimates, so only the clone is refused.
+/// preflight. Dropping a `Value` does not decrement its refcount, so the kwargs
+/// were stranded on the heap, which `memory-model-checks` turns into a panic.
+/// The limit sits between the tuple's cost and the clone's estimate, so only
+/// the clone is refused.
 #[test]
 fn a_refused_unpacked_call_releases_its_kwargs() {
     let code = "def f(*a, **k):\n    return len(a)\nt = tuple(range(10_000))\nf(*t, **{'a': [1, 2, 3]})";

@@ -158,11 +158,9 @@ struct DictEntry {
 
 /// Whether an insertion preflights the memory limit before growing.
 ///
-/// [`GrowthCheck::Skip`] exists for dicts a sandboxed program cannot grow —
-/// module namespaces, built once at import from a fixed set of pre-interned
-/// keys. Preflighting those hands a `MemoryError` to construction paths with no
-/// way to report it (see `Module::set_attr`), and their handful of entries can
-/// never be the allocation that clears the hard-limit headroom.
+/// [`GrowthCheck::Skip`] is for dicts a sandboxed program cannot grow — module
+/// namespaces, whose construction cannot report a `MemoryError` (see
+/// `Module::set_attr`) and whose few entries can never clear the hard-limit headroom.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum GrowthCheck {
     Preflight,
@@ -171,9 +169,8 @@ enum GrowthCheck {
 
 /// Preflights the growth one insertion would cause in a dict's two buffers.
 ///
-/// The dense entry vector and the `HashTable<usize>` beside it can both
-/// reallocate on the same insertion, so their increments are checked together —
-/// see [`check_entry_table_growth`] for why they cannot be checked apart.
+/// The entry vector and the index table beside it can reallocate on the same
+/// insertion, so [`check_entry_table_growth`] sums their increments into one check.
 fn check_dict_growth(dict: &Dict, tracker: &ResourceTracker) -> Result<(), ResourceError> {
     check_entry_table_growth(
         dict.entries.len(),

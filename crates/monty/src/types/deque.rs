@@ -263,9 +263,8 @@ impl<'h> HeapRead<'h, Deque> {
     /// Appends to the right, evicting from the left if `maxlen` is reached.
     ///
     /// Ownership of `item` transfers to the deque (refcount already handled by
-    /// the caller); any evicted item is released here. Fails with a terminal
-    /// `MemoryError` if the push would grow the ring past the memory limit,
-    /// dropping `item` on that path.
+    /// the caller); any evicted item is released here. A push that would grow the
+    /// ring past the memory limit fails with `MemoryError`, dropping `item`.
     pub fn append(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
         let item = self.check_push(vm, item)?;
         if matches!(item, Value::Ref(_)) {
@@ -300,9 +299,8 @@ impl<'h> HeapRead<'h, Deque> {
     /// Preflights the ring growth a single-element push would cause, dropping
     /// `item` if the deque cannot grow.
     ///
-    /// Reaching `maxlen` is no exemption: `append` and `appendleft` push before
-    /// they evict, so a bounded deque whose ring is exactly full reallocates on
-    /// that push like any other — once, and by its whole length.
+    /// `maxlen` is no exemption: `append` and `appendleft` push before they
+    /// evict, so a bounded deque whose ring is full still reallocates.
     fn check_push(&self, vm: &mut VM<'h>, item: Value) -> RunResult<Value> {
         let this = self.get(vm.heap);
         let (len, capacity) = (this.items.len(), this.items.capacity());

@@ -133,9 +133,8 @@ impl<'h> HeapRead<'h, List> {
     /// is NOT incremented here - the caller is responsible for ensuring the refcount
     /// was already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
     ///
-    /// Fails with a terminal `MemoryError` when the push would grow the buffer
-    /// past the memory limit; `item` is dropped on that path, so the ownership
-    /// transfer holds either way.
+    /// A push that would grow the buffer past the memory limit fails with
+    /// `MemoryError` and drops `item`, so the ownership transfer holds either way.
     pub fn append(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
         // Track whether the list now contains heap refs so child-walk fast paths
         // can short-circuit; cycle-collector seeding is handled by `dec_ref`,
@@ -162,6 +161,9 @@ impl<'h> HeapRead<'h, List> {
     /// The caller transfers ownership of `item` to the list. The item's refcount
     /// is NOT incremented here - the caller is responsible for ensuring the refcount
     /// was already incremented.
+    ///
+    /// Like [`append`](Self::append), an insert that would grow the buffer past the
+    /// memory limit fails with `MemoryError` and drops `item`.
     ///
     /// # Arguments
     /// * `index` - The position to insert at (0-based). If index >= len(),

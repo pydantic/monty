@@ -58,10 +58,9 @@ impl Module {
     /// Panics if the attribute name string has not been pre-interned.
     pub fn set_attr(&mut self, name: impl Into<StringId>, value: Value, vm: &mut VM<'_>) {
         let key = Value::InternString(name.into());
-        // Module construction has no error channel — `StandardLib::create` and
-        // `VM::load_module` both return infallibly — so this insert must not be
-        // able to fail. Skipping the growth preflight leaves hashing as the only
-        // failure source, and an `InternString` key always hashes.
+        // Module construction is infallible (`StandardLib::create`,
+        // `VM::load_module`), so this insert must not be able to fail: skipping
+        // the growth preflight leaves hashing, and `InternString` always hashes.
         self.attrs
             .set_without_growth_check(key, value, vm)
             .expect("module attribute keys are pre-interned, so hashing cannot fail");

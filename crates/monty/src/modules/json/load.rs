@@ -234,20 +234,17 @@ fn parse_json_array(
     let mut values_guard = DropGuard::new(values, vm);
     loop {
         let (values, vm) = values_guard.as_parts_mut();
-        // Elements allocate on the heap as they are parsed, and an array of
-        // empty containers turns three source bytes into a heap entry, so the
-        // buffer check below cannot see what a window of elements has cost.
+        // The buffer check below cannot see what the elements themselves cost:
+        // `[{},{},...]` turns every three source bytes into a heap entry.
         vm.heap
             .tracker
             .check_memory_time_every(values.len())
             .map_err(RunError::from)?;
-        // The array is as long as the input allows and the whole parse runs
-        // inside one native call, so the buffer's doubling is the only thing
-        // between a graceful `MemoryError` and an allocation that clears the
-        // allocator's hard-limit headroom and kills the worker.
         let value = parse_json_value_from_peek(next, jiter, depth + 1, cache, vm)?;
-        // Checked behind the element so the doubling is weighed against usage
-        // that counts it; the guard hands the element back on a refusal.
+        // The whole parse runs inside one native call, so this doubling is the only
+        // thing between a graceful `MemoryError` and an allocation past the allocator's
+        // hard-limit headroom. Checked behind the element so it is weighed against
+        // usage that counts the element, with the guard releasing it on a refusal.
         let mut value_guard = DropGuard::new(value, vm);
         value_guard
             .ctx()
