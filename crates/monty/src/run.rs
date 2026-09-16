@@ -15,9 +15,8 @@ use ruff_python_stdlib::identifiers::is_identifier;
 use crate::{
     bytecode::{Code, CodeBuilder, Compiler, FrameExit, Opcode, VM},
     exception_private::{ExcTypeExt, RunError, RunResult},
-    function::Function,
     heap::{DropWithContext, Heap, HeapReader},
-    intern::{InternerBuilder, Interns, StringId},
+    intern::{Interns, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     object_bridge::MontyObjectExt,
@@ -273,26 +272,19 @@ impl Executor {
     ) -> Result<Self, MontyException> {
         check_identifier(&input_names)?;
         let parse_result = parse(&code, script_name).map_err(|e| e.into_python_exc(script_name, &code))?;
-        let prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
+        let mut prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
 
         // Compile the module to bytecode, which also compiles all nested functions.
         // The compiler enforces the bytecode-format namespace-size limit and reports
         // it as a `SyntaxError` rather than panicking on the `u16` cast.
         let namespace_size = prepared.globals.len();
-        let mut functions = Vec::new();
-        let module_code = Compiler::compile_module(
-            &prepared.nodes,
-            &prepared.interner,
-            &prepared.globals,
-            &mut functions,
-            options,
-        )
-        .map_err(|e| e.into_python_exc(script_name, &code))?;
+        let module_code = Compiler::compile_module(&prepared.nodes, &mut prepared.interner, &prepared.globals, options)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
 
         Ok(Self {
             globals: prepared.globals,
             module_code: Arc::new(module_code),
-            interns: Interns::new(prepared.interner, functions),
+            interns: prepared.interner,
             code,
             input_slots: Vec::new(),
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
@@ -342,20 +334,7 @@ impl Executor {
         check_identifier(input_names)?;
 
         let globals_len = globals.len();
-        let (mut interner, mut functions) = interns.take().into_builder();
-        let compiled = compile_repl_snippet(
-            &code,
-            script_name,
-            globals,
-            &mut interner,
-            &mut functions,
-            input_names,
-            options,
-        );
-        // Whether or not compilation succeeded, the extended tables are the
-        // session's tables from here on (`compile_module` has already rolled
-        // back `functions` on failure).
-        *interns = Interns::new(interner, functions);
+        let compiled = compile_repl_snippet(&code, script_name, globals, interns, input_names, options);
         if compiled.is_err() {
             globals.truncate(globals_len);
         }
@@ -778,8 +757,7 @@ fn compile_repl_snippet(
     code: &str,
     script_name: &str,
     globals: &mut NameMap,
-    interner: &mut InternerBuilder,
-    functions: &mut Vec<Function>,
+    interner: &mut Interns,
     input_names: &[String],
     options: CompileOptions,
 ) -> Result<(Code, Vec<NamespaceId>), MontyException> {
@@ -802,7 +780,7 @@ fn compile_repl_snippet(
     let nodes = parse_with_interner(code, script_name, interner).map_err(|e| e.into_python_exc(script_name, code))?;
     let nodes =
         prepare_with_existing_names(nodes, interner, globals).map_err(|e| e.into_python_exc(script_name, code))?;
-    let module_code = Compiler::compile_module(&nodes, interner, globals, functions, options)
+    let module_code = Compiler::compile_module(&nodes, interner, globals, options)
         .map_err(|e| e.into_python_exc(script_name, code))?;
     Ok((module_code, input_slots))
 }

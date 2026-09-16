@@ -4,8 +4,8 @@
 //! and return indices (`StringId`, `BytesId`, `LongIntId`) for efficient storage and comparison.
 //! This avoids the overhead of cloning strings or using atomic reference counting.
 //!
-//! The interners are populated during parsing and preparation, then owned by the `Executor`.
-//! During execution, lookups are needed only for error messages and repr output.
+//! One table serves parsing, preparation, compilation and execution. Runtime paths
+//! can append static strings without invalidating existing borrows.
 //!
 //! StringIds are laid out as follows:
 //! * 0 to 127 - single character strings for all 128 ASCII characters
@@ -1754,117 +1754,6 @@ impl<'de> serde::Deserialize<'de> for StringEntries {
     }
 }
 
-/// A string, bytes, and long integer interner that stores unique values and returns indices for lookup.
-///
-/// Interns are deduplicated on insertion - interning the same string twice returns
-/// the same `StringId`. Bytes and long integers are NOT deduplicated (rare enough that it's not worth it).
-/// The interner owns all strings/bytes/long integers and provides lookup by index.
-///
-/// # Thread Safety
-///
-/// The interner is single-threaded. Entries are immutable, but new static strings
-/// may be appended through shared references during execution.
-#[derive(Debug, Clone)]
-pub struct InternerBuilder {
-    /// Maps owned strings to their executor-local IDs.
-    string_map: AHashMap<String, StringId>,
-    /// Sparse static-tag cache, allocated only when a tag is interned.
-    static_string_ids: RefCell<AHashMap<StaticStrings, StringId>>,
-    /// Storage for all non-ASCII interned strings, indexed by `StringId`.
-    strings: StringEntries,
-    /// Storage for interned bytes literals, indexed by `BytesId`. Each
-    /// entry carries its precomputed [`HashValue`].
-    /// Not deduplicated since bytes literals are rare.
-    bytes: Vec<WithHash<Vec<u8>>>,
-    /// Storage for interned long integer literals, indexed by `LongIntId`.
-    /// Each entry carries its precomputed [`HashValue`].
-    /// Not deduplicated since long integer literals are rare.
-    long_ints: Vec<WithHash<BigInt>>,
-}
-
-impl Default for InternerBuilder {
-    fn default() -> Self {
-        Self::new("")
-    }
-}
-
-impl InternerBuilder {
-    /// Creates an interner containing the small set of strings any execution
-    /// may materialize without an explicit source reference.
-    ///
-    /// Other static strings receive ordinary slots only when parsing encounters
-    /// them or an imported module materializes its attributes.
-    /// `code` supplies a rough capacity estimate for additional literals.
-    pub fn new(code: &str) -> Self {
-        // Rough guess: count quotes and divide by 2 (open+close per string).
-        let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
-        let interner = Self::empty(capacity);
-        interner
-            .static_string_ids
-            .borrow_mut()
-            .reserve(CORE_STATIC_STRINGS.len());
-        for entry in CORE_ENTRIES.iter() {
-            let value = entry.static_value().expect("core entries are static");
-            let id = next_string_id(interner.strings.len());
-            interner.strings.push(entry.clone());
-            interner.static_string_ids.borrow_mut().insert(value, id);
-        }
-        interner
-    }
-
-    /// Reserves room for core entries and estimated source strings.
-    fn empty(string_capacity: usize) -> Self {
-        Self {
-            string_map: AHashMap::with_capacity(string_capacity),
-            static_string_ids: RefCell::new(AHashMap::new()),
-            strings: StringEntries::with_capacity(string_capacity + CORE_STATIC_STRINGS.len()),
-            bytes: Vec::new(),
-            long_ints: Vec::new(),
-        }
-    }
-
-    /// Interns a string, returning its `StringId`.
-    ///
-    /// ASCII characters use their reserved IDs. All other strings are
-    /// deduplicated in the executor-local table; recognized static text stores
-    /// a compact tag rather than an owned allocation.
-    pub fn intern(&mut self, s: &str) -> StringId {
-        intern_str(&mut self.string_map, &self.static_string_ids, &self.strings, s)
-    }
-
-    /// Looks up the `StringId` for an ASCII character or previously interned string.
-    ///
-    /// Mirrors [`Interns::get_string_id_by_name`] so the compiler can resolve
-    /// builtin names before the runtime table is built.
-    pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
-        get_string_id_by_name(&self.string_map, &self.static_string_ids, s)
-    }
-
-    /// Interns bytes, returning its `BytesId`.
-    ///
-    /// Unlike interns, bytes are not deduplicated (bytes literals are rare).
-    pub fn intern_bytes(&mut self, b: &[u8]) -> BytesId {
-        let id = BytesId(self.bytes.len().try_into().expect("BytesId overflow"));
-        self.bytes.push(WithHash::for_bytes(b.to_vec()));
-        id
-    }
-
-    /// Interns a long integer, returning its `LongIntId`.
-    ///
-    /// Big integers are not deduplicated since literals exceeding i64 are rare.
-    pub fn intern_long_int(&mut self, bi: BigInt) -> LongIntId {
-        let id = LongIntId(self.long_ints.len().try_into().expect("LongIntId overflow"));
-        self.long_ints.push(WithHash::for_long_int(bi));
-        id
-    }
-
-    /// Looks up a string by its `StringId`.
-    #[inline]
-    pub fn get_str(&self, id: StringId) -> &str {
-        get_str(&self.strings, id)
-    }
-}
-
 /// Interns `s` into the executor-local string table.
 ///
 /// ASCII remains globally addressable; every other string receives an ordinary
@@ -1958,14 +1847,15 @@ fn get_static_string(strings: &StringEntries, id: StringId) -> Option<StaticStri
 
 /// Storage for interned strings, bytes, long integers and compiled functions.
 ///
-/// This provides lookup by `StringId`, `BytesId`, `LongIntId` and `FunctionId` for interned literals and functions.
+/// One table serves parsing, preparation, compilation and execution. Strings
+/// are deduplicated; bytes and long integers are not (large literals are rare).
+/// The table is single-threaded, with static strings appendable through `&self`.
 ///
 /// # Append-only ownership in the REPL
 ///
-/// Ids are stable and only ever appended, so a REPL session never copies this
-/// table: it hands it to each snippet via [`into_builder`](Self::into_builder)
-/// (or extends it in place with [`intern`](Self::intern)) and takes the extended
-/// table back afterwards — whether the snippet succeeded or not.
+/// Snippets extend the session's table in place, keeping existing IDs stable.
+/// Failed compilation rolls back appended functions; interned literals remain.
+/// Execution takes ownership of the table and hands it back afterwards.
 ///
 /// # Hash tables
 ///
@@ -2000,7 +1890,7 @@ pub(crate) struct Interns {
 
 impl Default for Interns {
     fn default() -> Self {
-        Self::new(InternerBuilder::default(), Vec::new())
+        Self::new("")
     }
 }
 
@@ -2069,8 +1959,8 @@ fn build_string_maps(strings: &StringEntries) -> Result<StringMaps, String> {
 impl Interns {
     /// Moves this table out while leaving a cheap, intentionally unusable placeholder.
     ///
-    /// REPL compilation replaces the placeholder before exposing the session
-    /// again, avoiding full interner initialization on every feed.
+    /// Transferring the table between a REPL session and its executor avoids
+    /// full interner initialization on every feed.
     pub(crate) fn take(&mut self) -> Self {
         mem::replace(self, Self::placeholder())
     }
@@ -2087,41 +1977,62 @@ impl Interns {
         }
     }
 
-    /// Builds the runtime table from a finished parse/prepare interner and the
-    /// functions compiled against it.
-    pub fn new(interner: InternerBuilder, functions: Vec<Function>) -> Self {
-        // `InternerBuilder` already maintains the `String → StringId` map
-        // during the parse/prepare phase to deduplicate `intern` calls;
-        // we move it across so `Interns::get_string_id_by_name` doesn't
-        // have to rebuild the same table from `strings`.
-        Self {
-            strings: interner.strings,
-            bytes: interner.bytes,
-            long_ints: interner.long_ints,
-            functions,
-            string_id_by_name: interner.string_map,
-            static_string_ids: interner.static_string_ids,
-        }
-    }
-
-    /// Inverse of [`new`](Self::new): moves the tables back into a builder so
-    /// the next REPL snippet can parse against them, with the function table
-    /// alongside for the compiler to extend. Nothing is copied or rehashed.
-    pub(crate) fn into_builder(self) -> (InternerBuilder, Vec<Function>) {
-        let builder = InternerBuilder {
-            string_map: self.string_id_by_name,
-            static_string_ids: self.static_string_ids,
-            strings: self.strings,
-            bytes: self.bytes,
-            long_ints: self.long_ints,
+    /// Creates a table containing the core strings any execution may materialize.
+    /// Other static strings are interned on demand; `code` supplies a rough
+    /// capacity estimate for source literals.
+    pub fn new(code: &str) -> Self {
+        // Rough guess: count quotes and divide by 2 (open+close per string).
+        let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
+        let interns = Self {
+            strings: StringEntries::with_capacity(capacity + CORE_STATIC_STRINGS.len()),
+            bytes: Vec::new(),
+            long_ints: Vec::new(),
+            functions: Vec::new(),
+            string_id_by_name: AHashMap::with_capacity(capacity),
+            static_string_ids: RefCell::new(AHashMap::with_capacity(CORE_STATIC_STRINGS.len())),
         };
-        (builder, self.functions)
+        for entry in CORE_ENTRIES.iter() {
+            let value = entry.static_value().expect("core entries are static");
+            let id = next_string_id(interns.strings.len());
+            interns.strings.push(entry.clone());
+            interns.static_string_ids.borrow_mut().insert(value, id);
+        }
+        interns
     }
 
-    /// Interns a string directly into the runtime table.
-    ///
-    /// Used by synthetic REPL inputs and lazily created runtime objects; IDs
-    /// remain stable because the table is append-only.
+    /// Interns bytes without deduplication, since bytes literals are rare.
+    pub fn intern_bytes(&mut self, b: &[u8]) -> BytesId {
+        let id = BytesId(self.bytes.len().try_into().expect("BytesId overflow"));
+        self.bytes.push(WithHash::for_bytes(b.to_vec()));
+        id
+    }
+
+    /// Interns a big integer without deduplication, since literals exceeding i64 are rare.
+    pub fn intern_long_int(&mut self, bi: BigInt) -> LongIntId {
+        let id = LongIntId(self.long_ints.len().try_into().expect("LongIntId overflow"));
+        self.long_ints.push(WithHash::for_long_int(bi));
+        id
+    }
+
+    /// Appends a compiled function, returning its index for bytecode operands.
+    pub(crate) fn push_function(&mut self, function: Function) -> usize {
+        let index = self.functions.len();
+        self.functions.push(function);
+        index
+    }
+
+    /// Records the function count before compilation so failures can roll back.
+    pub(crate) fn functions_len(&self) -> usize {
+        self.functions.len()
+    }
+
+    /// Removes functions appended by a rejected compilation.
+    pub(crate) fn truncate_functions(&mut self, len: usize) {
+        self.functions.truncate(len);
+    }
+
+    /// Interns source or host-supplied text, deduplicating it against existing entries.
+    /// ASCII uses reserved IDs; all other strings receive stable session-local IDs.
     pub(crate) fn intern(&mut self, s: &str) -> StringId {
         intern_str(&mut self.string_id_by_name, &self.static_string_ids, &self.strings, s)
     }

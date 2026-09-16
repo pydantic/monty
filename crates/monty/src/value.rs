@@ -2616,7 +2616,7 @@ mod tests {
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::{bytecode::Code, heap::HeapReader, intern::InternerBuilder};
+    use crate::{bytecode::Code, heap::HeapReader};
 
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///
@@ -2631,8 +2631,7 @@ mod tests {
 
     /// Creates a minimal Interns for testing.
     fn create_test_interns() -> Interns {
-        let interner = InternerBuilder::new("");
-        Interns::new(interner, vec![])
+        Interns::default()
     }
 
     /// Tests that `as_index()` correctly handles a LongInt containing an i64-fitting value.
