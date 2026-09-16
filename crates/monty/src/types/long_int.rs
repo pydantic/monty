@@ -625,20 +625,21 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
 
     fn py_divmod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let lhs = self.get(vm.heap);
-        let rhs = match other {
-            Value::Int(0) | Value::Bool(false) => return Err(ExcType::zero_division().into()),
-            Value::Int(rhs) => BigInt::from(*rhs),
-            Value::Bool(rhs) => BigInt::from(*rhs),
-            Value::Float(0.0) => return Err(ExcType::zero_division().into()),
-            Value::Float(rhs) => return float_divmod_tuple(lhs.to_f64_checked()?, *rhs, vm.heap).map(Some),
-            Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => {
-                if rhs.is_zero() {
-                    return Err(ExcType::zero_division().into());
-                }
-                rhs.inner().clone()
-            }
-            _ => return Ok(None),
+        if let Value::Float(rhs) = other {
+            return if *rhs == 0.0 {
+                Err(ExcType::zero_division().into())
+            } else {
+                float_divmod_tuple(lhs.to_f64_checked()?, *rhs, vm.heap).map(Some)
+            };
+        }
+        // A long divisor stays borrowed: it is already on the heap and accounted
+        // for there, so copying its digits would be memory the tracker never sees.
+        let Some(rhs) = integer_value(other, vm.heap) else {
+            return Ok(None);
         };
+        if rhs.is_zero() {
+            return Err(ExcType::zero_division().into());
+        }
         check_div_size(lhs.bits(), &vm.heap.tracker)?;
         Ok(Some(bigint_divmod_tuple(lhs.inner(), &rhs, vm.heap)))
     }
