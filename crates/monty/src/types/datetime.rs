@@ -23,7 +23,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     types::{
-        AttrCallResult, CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
+        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
         date::{self, StrftimeArgs},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         time, timedelta, timezone,
@@ -258,14 +258,14 @@ struct DatetimeInitArgs {
 /// `DateTimeNow` OS call carrying the tz argument as a typed
 /// [`Option<MontyTimeZone>`] — validated here, so the call can never carry an
 /// arbitrary object.
-pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<AttrCallResult> {
+pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let NowArgs { tz } = NowArgs::from_args(args, vm)?;
     defer_drop!(tz, vm);
     let tz = tzinfo_from_value(tz, vm.heap, vm.interns)?.0.map(|tz| MontyTimeZone {
         offset_seconds: tz.offset_seconds,
         name: tz.name,
     });
-    Ok(AttrCallResult::OsCall(OsFunctionCall::DateTimeNow(tz)))
+    Ok(CallResult::OsCall(OsFunctionCall::DateTimeNow(tz)))
 }
 
 /// Argument shape for `datetime.now(tz=None)`.

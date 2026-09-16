@@ -18,7 +18,8 @@ npm packages installed automatically (like esbuild). Browser builds use the
 package `browser` export and never import the napi loader; they run the sandbox
 in a Web Worker as a WIT-defined WASI 0.2 component with the same pool/session
 API. Advanced Node-only helpers are available from `@pydantic/monty/node`, and wasm-specific
-factories from `@pydantic/monty/wasm`.
+factories from `@pydantic/monty/wasm`: `Monty.create()` there is `createWorkerPool(await loadModule())`,
+and both are exported so an app can fetch and compile the wasm ahead of starting workers.
 
 ## Installation
 
@@ -46,6 +47,10 @@ await session.feedRun('x * 2') // 42
 
 Without `await using`, call `session.close()` (returns the worker to the pool)
 and `pool.close()` explicitly.
+
+`checkout({ scriptName })` names the script in tracebacks and type-checking
+diagnostics; its final path component is what the sandbox's `__file__` places
+under its working directory (`/main.py` by default).
 
 ## Inputs
 
@@ -239,8 +244,9 @@ pass an `externalLookup` (and/or `os`) to `feedStart` and drive with
 `snapshot.resumeAuto()`, which resolves each external call and name lookup from
 them automatically — the same resolution `feedRun` performs, but one step at a
 time so you can inspect or `dump()` each snapshot along the way. A
-promise-returning external is awaited concurrently (surfacing as an intermediate
-`FutureSnapshot`), exactly as under `feedRun`:
+promise-returning external is awaited directly when the snapshot's
+`allowEagerAwait` is true, and otherwise concurrently (surfacing as an
+intermediate `FutureSnapshot`), exactly as under `feedRun`:
 
 ```ts
 let snap = await session.feedStart('greet(name) + "!"', {
@@ -325,6 +331,16 @@ import { MountDir } from '@pydantic/monty/node'
 
 const mount = new MountDir({ hostPath: '/path/on/host', virtualPath: '/mnt/data', mode: 'read-only' })
 await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
+```
+
+The sandbox's working directory is session state: the first feed sets it to
+the first mount's virtual path, or `/` without mounts, and it then persists
+(`os.chdir()` included) unless `cwd` switches it to another absolute virtual
+path. `os.getcwd()` reports it and relative paths resolve against it before
+reaching a mount or the `os` callback.
+
+```ts
+await session.feedRun("open('file.txt').read()", { mount, cwd: '/mnt/data' })
 ```
 
 Each mount has a 100 MB aggregate memory budget by default. Configure it with

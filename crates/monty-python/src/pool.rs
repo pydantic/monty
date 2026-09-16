@@ -62,7 +62,7 @@ use tokio::{
 };
 
 use crate::{
-    async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
+    async_dispatch::{Dispatched, coroutine_future, dispatch_function_call, spawn_coroutine_task, wait_for_futures},
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
@@ -264,7 +264,7 @@ impl PyMontySession {
     ///
     /// Blocks the calling thread with the GIL released; async external
     /// functions are not supported here — use [`AsyncMonty`].
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, cwd=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
     fn feed_run(
         &self,
@@ -274,6 +274,7 @@ impl PyMontySession {
         external_lookup: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
+        cwd: Option<String>,
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
     ) -> PyResult<Py<PyAny>> {
@@ -286,6 +287,7 @@ impl PyMontySession {
             inputs,
             print_callback,
             mount,
+            cwd,
             os,
             skip_type_check,
         )?;
@@ -305,7 +307,7 @@ impl PyMontySession {
     /// captured on the snapshot so `snapshot.resume_auto()` can answer
     /// subsequent suspensions from them (and from this feed's mounts), letting
     /// a caller iterate to completion without resolving each call by hand.
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, cwd=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
     fn feed_start(
         &self,
@@ -315,6 +317,7 @@ impl PyMontySession {
         external_lookup: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
+        cwd: Option<String>,
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
     ) -> PyResult<Py<PyAny>> {
@@ -327,6 +330,7 @@ impl PyMontySession {
             inputs,
             print_callback,
             mount,
+            cwd,
             os,
             skip_type_check,
         )?;
@@ -789,7 +793,7 @@ impl PyAsyncMontySession {
     /// print callbacks in this process. Session state persists across feeds.
     ///
     /// Worker I/O runs on the tokio runtime, off the asyncio event loop.
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, cwd=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
     fn feed_run<'py>(
         &self,
@@ -799,6 +803,7 @@ impl PyAsyncMontySession {
         external_lookup: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
+        cwd: Option<String>,
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -811,6 +816,7 @@ impl PyAsyncMontySession {
             inputs,
             print_callback,
             mount,
+            cwd,
             os,
             skip_type_check,
         )?;
@@ -824,7 +830,7 @@ impl PyAsyncMontySession {
     /// is awaitable) or a `MontyComplete`. See that method for the
     /// snapshot-driven protocol and the `external_lookup` / `os` capture that
     /// backs `resume_auto()`.
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, cwd=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
     fn feed_start<'py>(
         &self,
@@ -834,6 +840,7 @@ impl PyAsyncMontySession {
         external_lookup: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
+        cwd: Option<String>,
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -846,6 +853,7 @@ impl PyAsyncMontySession {
             inputs,
             print_callback,
             mount,
+            cwd,
             os,
             skip_type_check,
         )?;
@@ -1238,6 +1246,9 @@ pub(crate) struct FeedArgs {
     pub(crate) code: String,
     pub(crate) inputs: Vec<(String, MontyObject)>,
     pub(crate) mounts: Vec<MountSpec>,
+    /// Explicit sandbox working directory for the feed; `None` takes the
+    /// pool default (first mount, else `/`).
+    pub(crate) cwd: Option<String>,
     pub(crate) skip_type_check: bool,
     pub(crate) os: Option<Py<PyAny>>,
     pub(crate) print_target: PrintTarget,
@@ -1255,6 +1266,7 @@ impl FeedArgs {
         inputs: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
+        cwd: Option<String>,
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
     ) -> PyResult<Self> {
@@ -1264,6 +1276,7 @@ impl FeedArgs {
             code: extract_source_code(py, code)?,
             inputs: extract_repl_inputs(inputs, instances)?,
             mounts: extract_mount_specs(mount)?,
+            cwd,
             skip_type_check,
             os,
             print_target: PrintTarget::from_py(print_callback)?,
@@ -1285,6 +1298,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
         code,
         inputs,
         mounts,
+        cwd,
         skip_type_check,
         os,
         print_target,
@@ -1296,7 +1310,12 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
         py,
         &checkout,
         &print_target,
-        turn_fn(move |c, p| Box::pin(async move { c.feed(&code, inputs, mounts, skip_type_check, p).await })),
+        turn_fn(move |c, p| {
+            Box::pin(async move {
+                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                    .await
+            })
+        }),
     )?;
 
     loop {
@@ -1362,6 +1381,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                     match resume_with {
                         TurnAnswer::Call(value) => c.resume(value, p).await,
                         TurnAnswer::Name(value) => c.resume_name_lookup(value, p).await,
+                        TurnAnswer::Eager(..) => unreachable!("eager awaits require AsyncMonty"),
                     }
                 })
             }),
@@ -1467,8 +1487,8 @@ impl Drop for AbandonGuard {
 }
 
 /// The drive loop itself: protocol turns are awaited directly on the runtime;
-/// coroutine external functions are spawned as tasks and resolved via
-/// `ResolveFutures`.
+/// eligible coroutine calls are awaited directly, with others spawned for
+/// later resolution via `ResolveFutures`.
 async fn drive_async_inner(
     args: FeedArgs,
     external_lookup: Option<Py<PyDict>>,
@@ -1479,6 +1499,7 @@ async fn drive_async_inner(
         code,
         inputs,
         mounts,
+        cwd,
         skip_type_check,
         os,
         print_target,
@@ -1495,7 +1516,10 @@ async fn drive_async_inner(
             // from here a cancelled drive must poison the session (see
             // `AbandonGuard`)
             started.store(true, Ordering::Release);
-            Box::pin(async move { c.feed(&code, inputs, mounts, skip_type_check, p).await })
+            Box::pin(async move {
+                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                    .await
+            })
         }),
     )
     .await?;
@@ -1567,10 +1591,16 @@ async fn drive_async_inner(
                 })?;
                 TurnAnswer::Call(value)
             }
-            event => match Python::attach(|py| {
-                let _guard = callback_context.enter(py, &native)?;
-                async_turn_answer(event, external_lookup.as_ref(), &instances, &mut join_set)
-            }) {
+            event => match async_turn_answer(
+                event,
+                external_lookup.as_ref(),
+                &instances,
+                &mut join_set,
+                &callback_context,
+                &native,
+            )
+            .await
+            {
                 Ok(answer) => answer,
                 Err(err) => {
                     discard_checkout(&checkout).await;
@@ -1586,6 +1616,7 @@ async fn drive_async_inner(
                     match answer {
                         TurnAnswer::Call(value) => c.resume(value, p).await,
                         TurnAnswer::Name(value) => c.resume_name_lookup(value, p).await,
+                        TurnAnswer::Eager(call_id, value) => c.resume_futures(vec![(call_id, value)], p).await,
                     }
                 })
             }),
@@ -1597,11 +1628,16 @@ async fn drive_async_inner(
 /// Async counterpart of [`sync_turn_answer`] (minus `ResolveFutures`, which
 /// must await in [`drive_async`]'s loop): a failure here lets the loop discard
 /// the suspended worker instead of leaving it waiting forever for a resume.
-fn async_turn_answer(
+///
+/// Host callbacks run under `callback_context`; only an eager coroutine's
+/// await happens outside the guard (and the GIL).
+async fn async_turn_answer(
     event: TurnEvent,
     external_lookup: Option<&Py<PyDict>>,
     instances: &InstanceStore,
     join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    callback_context: &CallbackContext,
+    native: &opentelemetry::Context,
 ) -> PyResult<TurnAnswer> {
     match event {
         TurnEvent::FunctionCall {
@@ -1610,22 +1646,39 @@ fn async_turn_answer(
             kwargs,
             call_id,
             object_id,
-        } => match dispatch_function_call(&function_name, object_id, &args, &kwargs, external_lookup, instances) {
-            CallResult::Sync(result) => Ok(TurnAnswer::Call(ext_to_resume(result)?)),
-            CallResult::Coroutine(coro) => {
-                spawn_coroutine_task(join_set, call_id, coro, instances)?;
-                Ok(TurnAnswer::Call(ResumeValue::Future))
+            allow_eager_await,
+        } => {
+            let dispatched = Python::attach(|py| {
+                let _guard = callback_context.enter(py, native)?;
+                match dispatch_function_call(&function_name, object_id, &args, &kwargs, external_lookup, instances) {
+                    CallResult::Sync(result) => Ok(Dispatched::Done(ext_to_resume(result)?)),
+                    CallResult::Coroutine(coro) if allow_eager_await => {
+                        coroutine_future(coro, instances).map(Dispatched::Eager)
+                    }
+                    CallResult::Coroutine(coro) => {
+                        spawn_coroutine_task(join_set, call_id, coro, instances)?;
+                        Ok(Dispatched::Done(ResumeValue::Future))
+                    }
+                }
+            })?;
+            match dispatched {
+                Dispatched::Done(value) => Ok(TurnAnswer::Call(value)),
+                Dispatched::Eager(future) => Ok(TurnAnswer::Eager(call_id, ext_to_resume(future.await)?)),
             }
-        },
+        }
         TurnEvent::NameLookup {
             name,
             object_id: Some(object_id),
         } => {
-            let value = Python::attach(|py| resolve_object_attr(py, &name, &object_id, instances));
+            let value = Python::attach(|py| {
+                let _guard = callback_context.enter(py, native)?;
+                Ok::<_, PyErr>(resolve_object_attr(py, &name, &object_id, instances))
+            })?;
             Ok(TurnAnswer::Name(value))
         }
         TurnEvent::NameLookup { name, object_id: None } => {
             let value = Python::attach(|py| {
+                let _guard = callback_context.enter(py, native)?;
                 ExternalLookup::new(py, external_lookup.map(|d| d.bind(py)), instances).resolve_name(&name)
             })?;
             Ok(TurnAnswer::Name(value.into()))
@@ -1643,6 +1696,8 @@ fn async_turn_answer(
 enum TurnAnswer {
     Call(ResumeValue),
     Name(NameLookupResult),
+    /// A settled coroutine answered at its function-call suspension.
+    Eager(u32, ResumeValue),
 }
 
 /// What a turn helper may return, so one implementation serves both an

@@ -10,6 +10,7 @@ For tests of the AbstractOS interface via custom subclasses, see test_os_access_
 import datetime
 from pathlib import PurePosixPath
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from conftest import RunMonty
@@ -76,6 +77,44 @@ def test_time_methods_direct_api():
     assert naive_now.tzinfo is None
     assert isinstance(aware_now, datetime.datetime)
     assert aware_now.tzinfo == datetime.timezone.utc
+
+
+@pytest.mark.parametrize('limit', [0, 8, 1_048_576, 2_097_152])
+def test_urandom_limit(monty_run: RunMonty, monkeypatch: pytest.MonkeyPatch, limit: int):
+    """The configured cap rejects oversized requests before calling the host."""
+
+    def fake_urandom(size: int) -> bytes:
+        return b'\x07' * size
+
+    entropy = Mock(side_effect=fake_urandom)
+    monkeypatch.setattr('pydantic_monty.os_access.os.urandom', entropy)
+    fs = OSAccess(max_urandom_bytes=limit)
+
+    assert monty_run(f'import os\nos.urandom({limit})', os=fs) == b'\x07' * limit
+    entropy.assert_called_once_with(limit)
+    entropy.reset_mock()
+
+    for size in (limit + 1, 2**40):
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            monty_run(f'import os\nos.urandom({size})', os=fs)
+        assert str(exc_info.value) == f'MemoryError: os.urandom() size exceeds max_urandom_bytes ({limit})'
+        assert isinstance(exc_info.value.exception(), MemoryError)
+    entropy.assert_not_called()
+
+
+def test_urandom_limit_default_and_validation():
+    """The default cap is 1 MiB; negative caps are rejected at construction."""
+    assert OSAccess().max_urandom_bytes == 1_048_576
+    with pytest.raises(ValueError, match='^max_urandom_bytes must be non-negative$'):
+        OSAccess(max_urandom_bytes=-1)
+
+
+@pytest.mark.parametrize('limit', [float('nan'), 1.5, '8', None])
+def test_urandom_limit_must_be_int(limit: Any):
+    """A non-int cap (a float NaN in particular) would compare false and disable the cap."""
+    with pytest.raises(TypeError) as exc_info:
+        OSAccess(max_urandom_bytes=limit)
+    assert str(exc_info.value) == f'max_urandom_bytes must be an int, not {type(limit).__name__}'
 
 
 # =============================================================================

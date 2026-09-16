@@ -27,6 +27,7 @@ pub(crate) mod json;
 pub(crate) mod math;
 pub(crate) mod os;
 pub(crate) mod pathlib;
+pub(crate) mod random;
 pub(crate) mod re;
 pub(crate) mod sys;
 pub(crate) mod typing;
@@ -55,8 +56,8 @@ pub(crate) enum StandardLib {
     Datetime,
     /// The `unicodedata` module providing Unicode Character Database access.
     Unicodedata,
-    /// The `itertools` module providing lazy iterators (only `count` and
-    /// `repeat` implemented).
+    /// The `itertools` module providing lazy iterators — every name CPython
+    /// exports, the private ones included.
     Itertools,
     /// The `dataclasses` module providing `@dataclass` and helpers.
     Dataclasses,
@@ -70,6 +71,9 @@ pub(crate) enum StandardLib {
     /// The `binascii` module providing binary-to-ASCII conversions, CRC32,
     /// and the `Error` class used by `base64`.
     Binascii,
+    /// The `random` module: CPython's Mersenne Twister generator and the
+    /// distributions built on it.
+    Random,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -97,6 +101,7 @@ impl StandardLib {
             StaticStrings::Functools => Some(Self::Functools),
             StaticStrings::Base64 => Some(Self::Base64),
             StaticStrings::Binascii => Some(Self::Binascii),
+            StaticStrings::Random => Some(Self::Random),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -123,6 +128,7 @@ impl StandardLib {
             Self::Functools => functools::create_module(vm),
             Self::Base64 => base64::create_module(vm),
             Self::Binascii => binascii::create_module(vm),
+            Self::Random => random::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -150,6 +156,7 @@ pub(crate) enum ModuleFunctions {
     Functools(functools::FunctoolsFunctions),
     Base64(base64::Base64Functions),
     Binascii(binascii::BinasciiFunctions),
+    Random(random::RandomFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -178,6 +185,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Functools(func) => write!(f, "{func}"),
             Self::Base64(func) => write!(f, "{func}"),
             Self::Binascii(func) => write!(f, "{func}"),
+            Self::Random(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -205,6 +213,7 @@ impl ModuleFunctions {
             Self::Functools(functions) => functools::call(vm, functions, args).map(CallResult::Value),
             Self::Base64(functions) => base64::call(vm, functions, args).map(CallResult::Value),
             Self::Binascii(functions) => binascii::call(vm, functions, args).map(CallResult::Value),
+            Self::Random(functions) => random::call(vm, functions, args),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

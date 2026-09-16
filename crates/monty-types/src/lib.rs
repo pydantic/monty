@@ -17,6 +17,7 @@ mod results;
 mod run_options;
 mod type_checking;
 mod uuid;
+mod virtual_path;
 
 pub use crate::{
     builtins::BuiltinsFunctions,
@@ -38,7 +39,7 @@ pub use crate::{
     },
     os::{
         GetenvArgs, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-        RenameCallArgs, dir_stat, file_stat, stat_result, symlink_stat,
+        RenameCallArgs, UrandomArgs, dir_stat, file_stat, stat_result, symlink_stat,
     },
     resource::{
         BASELINE_MEMORY, DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MAX_SUSPENSIONS, LARGE_RESULT_THRESHOLD, LIVE_MEMORY,
@@ -48,4 +49,5 @@ pub use crate::{
     run_options::{AssertMessageAnnotations, CompileOptions},
     type_checking::{TypeCheckState, TypeCheckingConfig, TypeCheckingFormat},
     uuid::MontyUuid,
+    virtual_path::{normalize_virtual_path, validate_cwd},
 };

@@ -310,15 +310,16 @@ fn not_implemented_in_list_sort_key_names_sort() {
 /// function and the call would succeed.
 ///
 /// Every call site is covered — the predicate helper shared by `takewhile`,
-/// `dropwhile` and `filterfalse`, plus `starmap` and `accumulate`, which each
-/// call their callable themselves and so name themselves in the error.
-/// `accumulate` needs two items, since the first is yielded untouched.
+/// `dropwhile` and `filterfalse`, plus `starmap`, `accumulate` and `groupby`,
+/// which each call their callable themselves and so name themselves in the
+/// error. `accumulate` needs two items, since the first is yielded untouched.
 #[test]
 fn external_function_as_itertools_callable_raises_not_implemented() {
     for (call, adaptor) in [
         ("itertools.takewhile(ext_fn, [1])", "takewhile"),
         ("itertools.starmap(ext_fn, [(1,)])", "starmap"),
         ("itertools.accumulate([1, 2], ext_fn)", "accumulate"),
+        ("itertools.groupby([1], ext_fn)", "groupby"),
     ] {
         let expr = format!("list({call})");
         let code = format!("import itertools\n\n{expr}");
@@ -496,4 +497,46 @@ d";
         result,
         MontyObject::List(vec![evil_instance(), MontyObject::Int(1), MontyObject::Int(2)])
     );
+}
+
+/// A `groupby` key comparison that steps the same `groupby` and consumes the
+/// pair it was comparing must not leave the skip loop with nothing to open a
+/// group from.
+///
+/// Rust-side because CPython segfaults on this program (its `_grouper` reaches
+/// through a parent whose state the comparison invalidated), so there is no
+/// shared behaviour for a `test_cases` fixture to assert. Monty reads the next
+/// pair instead, as CPython's own loop condition intends, and the run finishes
+/// with an ordinary `StopIteration` the program can catch.
+#[test]
+fn reentrant_groupby_key_comparison_does_not_panic() {
+    let code = "import itertools
+
+depth = [0]
+holder = [None]
+
+class Key:
+    def __eq__(self, other):
+        if depth[0] == 0 and holder[0] is not None:
+            depth[0] += 1
+            try:
+                key, group = next(holder[0])
+                next(group, None)
+            except StopIteration:
+                pass
+            depth[0] -= 1
+        return False
+
+grouped = itertools.groupby([Key(), Key(), Key(), Key(), Key()])
+holder[0] = grouped
+seen = 0
+try:
+    while True:
+        next(grouped)
+        seen += 1
+except StopIteration:
+    pass
+seen";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(ex.run_no_limits(vec![]).unwrap(), MontyObject::Int(1));
 }

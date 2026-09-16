@@ -498,6 +498,10 @@ message Feed {
   repeated NamedValue inputs = 2;
   // Skip type checking for this feed even when the session enables it.
   bool skip_type_check = 3;
+  // Absolute virtual working directory to switch the session to before the
+  // feed, resolved by the parent (an explicit choice, or the first mount on
+  // the session's first feed). Empty keeps the session's current directory.
+  string cwd = 4;
 }
 
 // Ends a pending suspension by raising `exception` uncatchably at its site.
@@ -532,6 +536,8 @@ message ResumeNameLookup {
 // Answers a `ResolveFutures` suspension with results for some or all pending
 // call ids.
 message ResumeFutures {
+  // Also answers an eager FunctionCall with exactly one result matching its
+  // call_id. The worker creates a settled awaitable before continuing.
   repeated FutureResult results = 1;
 }
 
@@ -660,6 +666,10 @@ message FunctionCall {
   uint32 call_id = 4;
   // The uuid of the receiver; absent for plain external function calls.
   Uuid object_id = 5;
+  // The host may await a coroutine and answer with ResumeFutures for this
+  // call_id. Synchronous results use ResumeCall; returning a pending
+  // future remains valid. Absent/false requires the ordinary call reply.
+  bool allow_eager_await = 6;
 }
 
 // Suspension: the sandbox performed an OS operation, surfaced for the parent
@@ -706,6 +716,8 @@ message OsCall {
     Unit date_today = 23; // date.today()
     // datetime.now(tz) — the timezone argument (absent for a naive result).
     DateTimeNow date_time_now = 24;
+    // os.urandom(size), also how `random` seeds an unseeded generator.
+    Urandom urandom = 25;
   }
 
   message TextWrite {
@@ -741,6 +753,11 @@ message OsCall {
   message DateTimeNow {
     // Fixed-offset timezone for an aware result; absent for a naive one.
     optional TimeZone tz = 1;
+  }
+  // os.urandom(size) — the byte count the sandbox validated; unsigned so
+  // a negative count cannot be expressed on the wire.
+  message Urandom {
+    uint64 size = 1;
   }
 }
 

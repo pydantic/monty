@@ -400,6 +400,8 @@ make test-docs            Test docs examples only
 make test                 Run rust tests
 make testcov              Run Rust tests with coverage, print table, and generate HTML report
 make complete-tests       Fill in incomplete test expectations using CPython
+make generate-unicode-type Regenerate the str character-property tables from the current CPython
+make check-unicode-type   Verify the checked-in str character-property tables match the current CPython
 make update-typeshed      Update vendored typeshed from upstream
 make bench                Run benchmarks
 make bench-pool           Run subprocess pool benchmarks (spawn, checkout, wire round-trips)
@@ -709,6 +711,7 @@ All these markers must be at the start of comment lines to be recognized.
 - Run `make lint-py` after adding tests
 - Use `make complete-tests` to fill in blank expectations
 - Regression tests run via `datatest-stable` harness in `crates/monty-datatest/src/main.rs`, use `make test-cases` to run them
+- The CPython side of each case runs under a 30s watchdog (`CpythonWatchdog` in the harness): a hanging case fails on its own instead of stalling the whole run, and one stuck in C code aborts the run naming the test
 
 ### Rust integration tests and `insta` snapshots
 

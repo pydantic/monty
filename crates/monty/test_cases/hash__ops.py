@@ -160,3 +160,12 @@ assert hash(1) == hash(1.0) and 1 == 1.0, 'int 1 and float 1.0 hash and compare 
 assert hash(0) == hash(0.0) and 0 == 0.0, 'int 0 and float 0.0 hash and compare equal'
 assert hash(0.0) == hash(False) and 0.0 == False, 'float 0.0 and bool False hash and compare equal'
 assert hash(1.0) == hash(True) and 1.0 == True, 'float 1.0 and bool True hash and compare equal'
+
+# === int hashes to itself, matching CPython below its 2**61-1 modulus ===
+assert hash(0) == 0
+assert hash(42) == 42
+assert hash(-42) == -42
+assert hash(True) == 1
+assert hash(False) == 0
+assert hash(2**61 - 2) == 2305843009213693950
+assert hash(-(2**61 - 2)) == -2305843009213693950

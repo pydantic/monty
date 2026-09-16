@@ -16,10 +16,6 @@ export interface PoolFixture {
   pool: () => Monty
 }
 
-/**
- * Registers before/after hooks creating and closing the spec file's shared
- * pool, and returns the `run` helper bound to it.
- */
 export function setupPool(): PoolFixture {
   let pool: Monty | null = null
   beforeEachFile(async () => {

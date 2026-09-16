@@ -603,6 +603,7 @@ pub enum StaticStrings {
     Encode,
     Isidentifier,
     Istitle,
+    Isprintable,
 
     // ==========================
     // Bytes methods
@@ -635,6 +636,76 @@ pub enum StaticStrings {
     #[strum(serialize = "3.14.0 (Monty)")]
     MontyVersionString,
     Monty,
+    Argv,
+    Hexversion,
+    ApiVersion,
+    Copyright,
+    /// The value of `sys.copyright`.
+    #[strum(serialize = "Copyright (c) Pydantic Services Inc. 2026 to present")]
+    MontyCopyright,
+    BuiltinModuleNames,
+    Maxsize,
+    Maxunicode,
+    Byteorder,
+    /// The value of `sys.byteorder` on every target Monty builds for.
+    Little,
+    FloatReprStyle,
+    /// The value of `sys.float_repr_style`.
+    Short,
+    Executable,
+    Prefix,
+    ExecPrefix,
+    BasePrefix,
+    BaseExecPrefix,
+    Platlibdir,
+    /// The value of `sys.platlibdir`.
+    Lib,
+    Abiflags,
+    DontWriteBytecode,
+    PycachePrefix,
+
+    // ==========================
+    // sys.float_info fields
+    FloatInfo,
+    #[strum(serialize = "sys.float_info")]
+    SysFloatInfo,
+    Max,
+    MaxExp,
+    #[strum(serialize = "max_10_exp")]
+    Max10Exp,
+    Min,
+    MinExp,
+    #[strum(serialize = "min_10_exp")]
+    Min10Exp,
+    Dig,
+    MantDig,
+    Epsilon,
+    Radix,
+    Rounds,
+
+    // ==========================
+    // sys.flags fields
+    // `flags` itself reuses the `Flags` variant added for `pattern.flags`.
+    #[strum(serialize = "sys.flags")]
+    SysFlags,
+    Debug,
+    Inspect,
+    Interactive,
+    Optimize,
+    NoUserSite,
+    NoSite,
+    IgnoreEnvironment,
+    Verbose,
+    BytesWarning,
+    Quiet,
+    HashRandomization,
+    Isolated,
+    DevMode,
+    #[strum(serialize = "utf8_mode")]
+    Utf8Mode,
+    WarnDefaultEncoding,
+    SafePath,
+    IntMaxStrDigits,
 
     // ==========================
     // os.stat_result fields
@@ -754,6 +825,8 @@ pub enum StaticStrings {
     WithStem,
     WithSuffix,
     AsPosix,
+    /// `Path.cwd()` classmethod: answered from the VM's working directory, no host call.
+    Cwd,
     #[strum(serialize = "__fspath__")]
     Fspath,
 
@@ -1130,6 +1203,12 @@ pub enum StaticStrings {
     Listdir,
     /// `os.makedirs()` function.
     Makedirs,
+    /// `os.getcwd()` function.
+    Getcwd,
+    /// `os.getcwdb()` function.
+    Getcwdb,
+    /// `os.chdir()` function.
+    Chdir,
     /// `os.fspath()` function — distinct from `Fspath` (`__fspath__`).
     #[strum(serialize = "fspath")]
     OsFspath,
@@ -1550,6 +1629,103 @@ pub enum StaticStrings {
     /// `header` parameter of the `binascii` quoted-printable pair.
     #[strum(serialize = "header")]
     Header,
+    /// `__origin__` of a `types.GenericAlias`.
+    #[strum(serialize = "__origin__")]
+    DunderOrigin,
+    /// `__args__` of a `types.GenericAlias`.
+    #[strum(serialize = "__args__")]
+    DunderArgs,
+    /// `__parameters__` of a `types.GenericAlias`.
+    #[strum(serialize = "__parameters__")]
+    DunderParameters,
+    /// `__class_getitem__`, the classmethod behind `list[int]`.
+    #[strum(serialize = "__class_getitem__")]
+    ClassGetitem,
+    // ==========================
+    // Batch-four itertools module strings: the combinatoric iterators,
+    // `groupby` and `chain.from_iterable`. Appended for the same reason as
+    // every block above.
+    /// `itertools.combinations()` function.
+    Combinations,
+    /// `itertools.combinations_with_replacement()` function.
+    #[strum(serialize = "combinations_with_replacement")]
+    CombinationsWithReplacement,
+    /// `itertools.permutations()` function.
+    Permutations,
+    /// `itertools.product()` function.
+    Product,
+    /// `itertools.groupby()` function.
+    Groupby,
+    /// `chain.from_iterable` — the one attribute an `itertools` type carries.
+    #[strum(serialize = "from_iterable")]
+    FromIterable,
+
+    // ==========================
+    // `itertools.tee` and the private types CPython exposes alongside it.
+    /// `itertools.tee()` function.
+    Tee,
+    /// `itertools._tee`, the iterator `tee()` hands out.
+    #[strum(serialize = "_tee")]
+    TeeType,
+    /// `itertools._tee_dataobject`, the buffer those iterators share.
+    #[strum(serialize = "_tee_dataobject")]
+    TeeDataObject,
+    /// `itertools._grouper`, the sub-iterator `groupby` hands out.
+    #[strum(serialize = "_grouper")]
+    Grouper,
+
+    // ==========================
+    // `random` module: its name doubles as the `random()` function's
+    Random,
+    /// The `random.Random` class.
+    #[strum(serialize = "Random")]
+    RandomClass,
+    /// `Random.VERSION`, the `getstate()` format number.
+    #[strum(serialize = "VERSION")]
+    RandomVersion,
+    Seed,
+    Getstate,
+    Setstate,
+    Getrandbits,
+    Randbytes,
+    Randrange,
+    Randint,
+    Choice,
+    Choices,
+    Shuffle,
+    Sample,
+    Uniform,
+    Triangular,
+    Normalvariate,
+    Gauss,
+    Lognormvariate,
+    Expovariate,
+    Vonmisesvariate,
+    Gammavariate,
+    Betavariate,
+    Paretovariate,
+    Weibullvariate,
+    Binomialvariate,
+    /// `os.urandom()` function.
+    Urandom,
+    // `random` parameter names
+    Weights,
+    CumWeights,
+    Counts,
+    Population,
+    Seq,
+    Mu,
+    Sigma,
+    Lambd,
+    Kappa,
+    Alpha,
+    Beta,
+    Low,
+    High,
+    /// `size` parameter of `os.urandom()`.
+    Size,
+    /// `state` parameter of `Random.setstate()`.
+    State,
 }
 
 /// One immutable interned string with directly accessible dispatch metadata.

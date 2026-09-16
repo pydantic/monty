@@ -118,6 +118,7 @@ impl ChildProc {
             code: code.to_owned(),
             inputs,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         }));
         self.recv_turn()
     }
@@ -149,6 +150,7 @@ impl ChildProc {
             code: code.to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         }));
         self.expect_death();
     }
@@ -376,6 +378,7 @@ fn near_limit_suspension_is_refused_cleanly() {
             kwargs: vec![],
             call_id: 1,
             object_id: None,
+            allow_eager_await: false,
         })),
         ..Default::default()
     };
@@ -878,7 +881,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // Each formatter builder must fail softly before the worker reaches its hard ceiling.
         ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_231_000),
         ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_431_791),
-        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_230_835),
+        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_231_849),
         // `%` formatting: padding, float digits, integer zero-extension and output growth.
         ("'%*d' % (2_000_000, 1)", 2_031_460),
         ("'%.*f' % (1_000_000, 1.0)", 1_160_498),
@@ -890,12 +893,29 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("[None] * 1_000_000", 16_031_391),
         ("2 ** 10_000_000", 10_031_230),
         ("1 << 10_000_000", 1_281_231),
+        // `int / int` scales one operand before dividing; both shift directions are
+        // preflighted.
+        ("x = 1 << 3_000_000\nx / (x - 1)", 1_531_926),
+        ("x = 1 << 3_000_000\nx / (x >> 100)", 1_531_908),
+        // `math.factorial`, `comb` and `perm` preflight their product's size.
+        ("import math\nmath.factorial(2_000_000)", 10_535_476),
+        // A binomial is bounded by `2**n`, so `comb` needs a larger `n` to trip the check.
+        ("import math\nmath.comb(9_000_000, 4_500_000)", 2_285_542),
+        ("import math\nmath.perm(4_000_000, 2_000_000)", 11_035_608),
+        // `math.lcm` of two large coprime ints is a product, preflighted like `*`.
+        ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_285_845),
         ("('a' * 1000).replace('a', 'b' * 2000)", 2_034_769),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.
         ("x = [None] * 40_000\nx += x", 1_951_835),
         ("t = (None,) * 40_000\nt + t", 1_311_835),
         ("x = [None] * 40_000\nx.copy()", 1_311_585),
+        // `dict | dict` snapshots the left pairs and builds the merged dict
+        // while that snapshot is live, so both are preflighted together.
+        ("d = dict.fromkeys(range(12_000))\nd | {}", 1_794_799),
+        // The right operand is snapshotted inside the same call, so that copy is
+        // preflighted too. Only the copy: see the overlap test below.
+        ("d = dict.fromkeys(range(12_000))\n{} | d", 1_218_799),
         // A partial re-clones its bound arguments on every call, so that clone
         // is preflighted like any other bulk container copy.
         (
@@ -917,10 +937,29 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
             16_031_971,
         ),
+        // `randbytes` charges its word buffer and the byte buffer it fills.
+        ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_236_172),
+        // A `range` population can be as long as `i64::MAX` while costing nothing,
+        // so `sample` must saturate its size arithmetic and refuse the pick buffer.
+        (
+            "import random\nrandom.seed(0)\nrandom.sample(range(2**63 - 1), 2**63 - 1)",
+            u64::MAX,
+        ),
         // `itertools.batched` preflights one batch, capped at `n`.
         (
             "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",
-            16_032_590,
+            16_033_693,
+        ),
+        // The two combinatoric iterators whose width is not bounded by their
+        // pool preflight that width: `r` repeats of a one-item pool, and
+        // `repeat` copies of the argument list.
+        (
+            "import itertools\nnext(itertools.combinations_with_replacement('a', 1_000_000))",
+            24_033_508,
+        ),
+        (
+            "import itertools\nnext(itertools.product('ab', repeat=1_000_000))",
+            24_033_570,
         ),
     ];
 
@@ -937,6 +976,19 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
     }
 }
 
+/// A merge charges the pairs it copies out, but not room for every one of them
+/// in the target: `a | b` over keys `a` already holds grows the result by
+/// nothing, so charging per source pair refused merges that comfortably fit.
+/// This limit sits between the two, so it only passes if the growth is left out.
+#[test]
+fn overlapping_dict_merges_are_not_charged_for_absent_growth() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(23 * 1024 * 1024));
+    child.feed_complete("a = dict.fromkeys(range(100_000))\nb = dict.fromkeys(range(100_000))");
+    assert_eq!(child.feed_complete("x = a | b\nlen(x)"), MontyObject::Int(100_000));
+    child.shutdown();
+}
+
 /// `inf` and `nan` print as they are, so a huge float precision costs nothing
 /// and must not be charged against the limit.
 #[test]
@@ -947,6 +999,29 @@ fn non_finite_float_precision_is_not_charged() {
         child.feed_complete("'%.2000000000f' % float('inf')"),
         MontyObject::String("inf".to_owned())
     );
+}
+
+/// `Path.iterdir()` repeats the receiver in every joined entry, so the joins
+/// are preflighted in one shot before any is built.
+#[test]
+fn iterdir_joins_are_preflighted() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "from pathlib import Path\nlist(Path('/' + 'd' * 100_000).iterdir())";
+    let (_, event) = child.feed(code);
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    let entries = MontyObject::List(vec![MontyObject::String("x".to_owned()); 20]);
+    let (_, event) = child.resume_call(
+        call.call_id,
+        pb::ext_function_result::Kind::ReturnValue(WireObject::new(entries)),
+    );
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError");
+    let message = error.message.expect("MemoryError should have a message");
+    assert_reported_usage(&message, 2_234_235, code);
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
     child.shutdown();
 }
 
@@ -1089,6 +1164,60 @@ fn small_batched_n_is_not_preflighted() {
     child.create_repl_with(configure_with_max_memory(1024 * 1024));
     let code = "import itertools\nlen(next(itertools.batched(range(500_000), 8)))";
     assert_eq!(child.feed_complete(code), MontyObject::Int(8));
+    child.shutdown();
+}
+
+/// A `tee` group costs a heap entry and a buffer slot per consumer, all built
+/// inside one builtin call, so the whole group is charged before any of it
+/// exists. Charging only the positions and the result tuple under-counted it
+/// by about four times, and an `n` in that window killed the worker rather
+/// than raising.
+#[test]
+fn tee_group_is_charged_before_it_is_built() {
+    for n in ["20_000", "200_000"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(1024 * 1024));
+        let code = format!("import itertools\nlen(itertools.tee([1], {n}))");
+        let (_, event) = child.feed(&code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+        // The session survives, which is what charging early buys.
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
+        child.shutdown();
+    }
+}
+
+/// A consumer that is dropped stops holding the read-ahead back: the blocks it
+/// would have read are freed as the surviving consumer moves past them, so a
+/// long source costs a block at a time rather than all of it.
+#[test]
+fn a_dropped_tee_consumer_does_not_pin_the_read_ahead() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    // Buffering all 2M items would need ~32 MB against a 1 MiB limit.
+    let code = "import itertools\na, b = itertools.tee(range(2_000_000))\na = None\nsum(b)";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(1_999_999_000_000));
+    child.shutdown();
+}
+
+/// A group small enough to fit is untouched by that charge.
+#[test]
+fn small_tee_group_is_not_preflighted() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "import itertools\nlen(list(itertools.tee(range(1000), 8)[0]))";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(1000));
+    child.shutdown();
+}
+
+/// An empty pool empties the whole product, so `itertools.product` allocates no
+/// index vector however large `repeat` is — the `repeat`-sized preflight must
+/// not refuse a call that costs nothing.
+#[test]
+fn empty_product_pool_is_not_preflighted() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "import itertools\nlen(list(itertools.product([1], [], repeat=1_000_000)))";
+    assert_eq!(child.feed_complete(code), MontyObject::Int(0));
     child.shutdown();
 }
 
@@ -1736,6 +1865,7 @@ fn killed_child_is_detected_as_eof() {
         code: "while True:\n    pass".to_owned(),
         inputs: vec![],
         skip_type_check: false,
+        cwd: "/".to_owned(),
     }));
     thread::sleep(Duration::from_millis(200));
     child.child.kill().expect("kill");

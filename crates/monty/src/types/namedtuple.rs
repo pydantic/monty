@@ -39,7 +39,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     resource_checks::check_repeat_size,
     types::{
-        Dict, Type, allocate_tuple,
+        Dict, Type, Union, allocate_tuple,
         iter::collect_owned_iterable,
         long_int::repeat_count,
         py_trait::LazyHeapSet,
@@ -830,6 +830,11 @@ impl NamedTupleClass {
     pub(crate) fn module(&self) -> &Value {
         &self.module
     }
+
+    /// The class name, `Point` for `namedtuple('Point', ...)`.
+    pub(crate) fn name<'a>(&'a self, interns: &'a Interns) -> &'a str {
+        self.name.as_str(interns)
+    }
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
@@ -845,6 +850,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // Class objects compare by identity, resolved before reaching here.
         Ok(None)
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_or(self, other, vm)
+    }
+
+    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_ror(self, other, vm)
+    }
+
+    /// `Point[int]` raises here where CPython builds a `types.GenericAlias`
+    /// via the inherited `tuple.__class_getitem__` (see `limitations/namedtuple.md`).
+    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+        Err(ExcType::type_error_type_not_subscriptable(
+            self.get(vm.heap).name(vm.interns),
+        ))
     }
 
     fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {

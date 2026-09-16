@@ -513,6 +513,11 @@ pub struct Feed {
     /// Skip type checking for this feed even when the session enables it.
     #[prost(bool, tag = "3")]
     pub skip_type_check: bool,
+    /// Absolute virtual working directory to switch the session to before the
+    /// feed, resolved by the parent (an explicit choice, or the first mount on
+    /// the session's first feed). Empty keeps the session's current directory.
+    #[prost(string, tag = "4")]
+    pub cwd: ::prost::alloc::string::String,
 }
 /// Ends a pending suspension by raising `exception` uncatchably at its site.
 /// The session returns ready in an `Error` event. Hosts use this to stop a feed,
@@ -559,6 +564,8 @@ pub mod resume_name_lookup {
 /// call ids.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResumeFutures {
+    /// Also answers an eager FunctionCall with exactly one result matching its
+    /// call_id. The worker creates a settled awaitable before continuing.
     #[prost(message, repeated, tag = "1")]
     pub results: ::prost::alloc::vec::Vec<FutureResult>,
 }
@@ -700,7 +707,7 @@ pub struct OsCall {
     pub call_id: u32,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -760,6 +767,13 @@ pub mod os_call {
         /// Fixed-offset timezone for an aware result; absent for a naive one.
         #[prost(message, optional, tag = "1")]
         pub tz: ::core::option::Option<super::TimeZone>,
+    }
+    /// os.urandom(size) — the byte count the sandbox validated; unsigned so
+    /// a negative count cannot be expressed on the wire.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Urandom {
+        #[prost(uint64, tag = "1")]
+        pub size: u64,
     }
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
@@ -835,6 +849,9 @@ pub mod os_call {
         /// datetime.now(tz) — the timezone argument (absent for a naive result).
         #[prost(message, tag = "24")]
         DateTimeNow(DateTimeNow),
+        /// os.urandom(size), also how `random` seeds an unseeded generator.
+        #[prost(message, tag = "25")]
+        Urandom(Urandom),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether

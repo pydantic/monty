@@ -127,11 +127,15 @@ export class WorkerTransport {
     code: string,
     inputs: Record<string, unknown> | null,
     mounts: readonly unknown[],
-    skipTypeCheck: boolean,
+    options: { cwd?: string; skipTypeCheck: boolean },
     onPrint: OnPrint,
   ): Promise<NativeTurn> {
     if (mounts.length > 0) {
       throw new Error('the wasm worker does not support filesystem mounts (browser has no host filesystem)')
+    }
+    const cwd = feedCwd(options.cwd)
+    if (typeof cwd !== 'string') {
+      return Promise.resolve(cwd)
     }
     return this.turn(
       {
@@ -139,7 +143,8 @@ export class WorkerTransport {
         val: {
           code,
           inputs: Object.entries(inputs ?? {}).map(([name, value]) => ({ name, value: encodeValue(value) })),
-          skipTypeCheck,
+          skipTypeCheck: options.skipTypeCheck,
+          cwd,
         },
       },
       onPrint,
@@ -357,6 +362,7 @@ export class WorkerTransport {
           callId: event.val.callId,
           // null (not undefined) for plain calls, matching the napi turn shape
           objectId: event.val.objectId ?? null,
+          allowEagerAwait: event.val.allowEagerAwait,
         }
       case 'os-call':
         this.pendingCallId = event.val.callId
@@ -416,6 +422,61 @@ function returnValue(value: unknown): CallResult {
   } catch (error) {
     return errorResult('TypeError', error instanceof Error ? error.message : String(error))
   }
+}
+
+/**
+ * Resolves a feed's working directory the way `monty-pool` does for native
+ * workers: unset keeps the session's current directory (the root until a
+ * feed or `os.chdir` changes it — there are no mounts in the browser to
+ * default to), an explicit value must be an absolute POSIX path without NUL
+ * bytes and loses its trailing slashes. A rejected value is the
+ * session-preserving `ValueError` turn the native path produces, so keep
+ * this in step with `validate_cwd` in `monty-types` (`mount.spec.ts` runs
+ * the same rejected values through both backends).
+ */
+function feedCwd(cwd: string | undefined): string | NativeTurn {
+  const invalid = (problem: string): NativeTurn => ({
+    kind: 'error',
+    exception: {
+      excType: 'ValueError',
+      message: `cwd ${problem}: ${rustDebugString(cwd ?? '')}`,
+      traceback: '',
+      frames: [],
+    },
+  })
+  if (cwd === undefined) {
+    return ''
+  }
+  if (cwd.includes('\0')) {
+    return invalid('must not contain NUL bytes')
+  }
+  if (!cwd.startsWith('/')) {
+    return invalid('must be an absolute POSIX path')
+  }
+  const trimmed = cwd.replace(/\/+$/, '')
+  return trimmed === '' ? '/' : trimmed
+}
+
+/**
+ * Quotes a string the way Rust's `{:?}` does for ASCII (`\0`, `\n`, `\t`,
+ * `\r`, `\\`, `\"`, other control characters as `\u{xx}`), so a wasm-side
+ * `ValueError` matches the native one byte for byte. Non-ASCII passes through,
+ * which Rust also does for printable characters.
+ */
+function rustDebugString(value: string): string {
+  const escapes: Record<string, string> = {
+    '\0': '\\0',
+    '\n': '\\n',
+    '\t': '\\t',
+    '\r': '\\r',
+    '\\': '\\\\',
+    '"': '\\"',
+  }
+  // oxlint-disable-next-line no-control-regex
+  const quoted = value.replace(/[\0\n\t\r\\"\x01-\x1f\x7f]/g, (char) => {
+    return escapes[char] ?? `\\u{${char.charCodeAt(0).toString(16)}}`
+  })
+  return `"${quoted}"`
 }
 
 /** Creates a traceback-free host exception result. */

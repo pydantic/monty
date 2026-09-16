@@ -322,11 +322,17 @@ impl CodeBuilder {
         }))
     }
 
-    /// Emits `LoadLocal`, using specialized opcodes for slots 0-3.
+    /// Registers the names of slots `0..names.len()` in one pass.
     ///
-    /// Slots 0-3 use zero-operand opcodes (`LoadLocal0`, etc.) for efficiency.
-    /// Slots 4-255 use `LoadLocal` with a u8 operand.
-    /// Slots 256+ use `LoadLocalW` with a u16 operand.
+    /// Used for module frames, whose namespace is known in full before
+    /// compilation starts; a long REPL session's globals run to thousands of
+    /// slots, so this must stay a plain copy rather than a per-slot insert.
+    /// Must be called before any [`register_local_name`](Self::register_local_name).
+    pub fn register_local_names(&mut self, names: &[StringId]) {
+        debug_assert!(self.local_names.is_empty(), "register_local_names must run first");
+        self.local_names.extend(names.iter().map(|&name| Some(name)));
+    }
+
     /// Registers a local variable name for a given slot.
     ///
     /// This is called during compilation when we encounter a variable access.

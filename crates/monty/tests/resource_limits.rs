@@ -938,21 +938,25 @@ fn timeout_in_str_format_parser() {
     repl.feed_run("template = '{' + 'x' * 20_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
 
-    let start = Instant::now();
-    let exc = repl
-        .feed_run("template.format()", vec![], PrintWriter::Stdout)
-        .expect_err("an unterminated field must fail without a time limit");
-    let full_scan = start.elapsed();
-    assert_eq!(exc.exc_type(), ExcType::ValueError);
+    let full_scan = fastest_of_attempts(|| {
+        let start = Instant::now();
+        let exc = repl
+            .feed_run("template.format()", vec![], PrintWriter::Stdout)
+            .expect_err("an unterminated field must fail without a time limit");
+        assert_eq!(exc.exc_type(), ExcType::ValueError);
+        start.elapsed()
+    });
 
-    repl.tracker_mut().set_max_duration(full_scan / 10);
-    let start = Instant::now();
-    let exc = repl
-        .feed_run("template.format()", vec![], PrintWriter::Stdout)
-        .expect_err("the format-string parser must hit the time limit");
-    let elapsed = start.elapsed();
+    let elapsed = fastest_of_attempts(|| {
+        repl.tracker_mut().set_max_duration(full_scan / 10);
+        let start = Instant::now();
+        let exc = repl
+            .feed_run("template.format()", vec![], PrintWriter::Stdout)
+            .expect_err("the format-string parser must hit the time limit");
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+        start.elapsed()
+    });
 
-    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
     assert!(
         elapsed < full_scan / 2,
         "str.format() should stop during the scan; full scan {full_scan:?}, timed scan {elapsed:?}"
@@ -968,21 +972,25 @@ fn timeout_in_str_format_receiver_snapshot() {
     repl.feed_run("template = '{missing}' + 'x' * 20_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
 
-    let before = repl.tracker().elapsed();
-    let exc = repl
-        .feed_run("template.format()", vec![], PrintWriter::Stdout)
-        .expect_err("the missing field must fail after snapshotting the receiver");
-    let full_snapshot = repl.tracker().elapsed().saturating_sub(before);
-    assert_eq!(exc.exc_type(), ExcType::KeyError);
+    let full_snapshot = fastest_of_attempts(|| {
+        let before = repl.tracker().elapsed();
+        let exc = repl
+            .feed_run("template.format()", vec![], PrintWriter::Stdout)
+            .expect_err("the missing field must fail after snapshotting the receiver");
+        assert_eq!(exc.exc_type(), ExcType::KeyError);
+        repl.tracker().elapsed().saturating_sub(before)
+    });
 
-    // resets the execution clock, so the next feed's elapsed time starts at zero
-    repl.tracker_mut().set_max_duration(full_snapshot / 10);
-    let exc = repl
-        .feed_run("template.format()", vec![], PrintWriter::Stdout)
-        .expect_err("the receiver snapshot must hit the time limit before field lookup");
-    let elapsed = repl.tracker().elapsed();
+    let elapsed = fastest_of_attempts(|| {
+        // resets the execution clock, so the next feed's elapsed time starts at zero
+        repl.tracker_mut().set_max_duration(full_snapshot / 10);
+        let exc = repl
+            .feed_run("template.format()", vec![], PrintWriter::Stdout)
+            .expect_err("the receiver snapshot must hit the time limit before field lookup");
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+        repl.tracker().elapsed()
+    });
 
-    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
     assert!(
         elapsed < full_snapshot / 2,
         "str.format() should stop while copying the receiver; full snapshot {full_snapshot:?}, timed snapshot {elapsed:?}"
@@ -995,22 +1003,33 @@ fn timeout_in_str_format_escaped_braces() {
     repl.feed_run("template = '{{' * 5_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
 
-    let start = Instant::now();
-    repl.feed_run("template.format()", vec![], PrintWriter::Stdout).unwrap();
-    let full_scan = start.elapsed();
+    let full_scan = fastest_of_attempts(|| {
+        let start = Instant::now();
+        repl.feed_run("template.format()", vec![], PrintWriter::Stdout).unwrap();
+        start.elapsed()
+    });
 
-    repl.tracker_mut().set_max_duration(full_scan / 10);
-    let start = Instant::now();
-    let exc = repl
-        .feed_run("template.format()", vec![], PrintWriter::Stdout)
-        .expect_err("escaped braces must not bypass the time limit");
-    let elapsed = start.elapsed();
+    let elapsed = fastest_of_attempts(|| {
+        repl.tracker_mut().set_max_duration(full_scan / 10);
+        let start = Instant::now();
+        let exc = repl
+            .feed_run("template.format()", vec![], PrintWriter::Stdout)
+            .expect_err("escaped braces must not bypass the time limit");
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+        start.elapsed()
+    });
 
-    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
     assert!(
         elapsed < full_scan / 2,
         "str.format() should stop during the scan; full scan {full_scan:?}, timed scan {elapsed:?}"
     );
+}
+
+/// Fastest of several timings of `measure`: the `str.format()` timeout tests
+/// compare millisecond-scale runs, and one run preempted by the parallel test
+/// threads can lose a scheduler slice longer than the work being timed.
+fn fastest_of_attempts(mut measure: impl FnMut() -> Duration) -> Duration {
+    (0..5).map(|_| measure()).min().expect("at least one attempt")
 }
 
 #[test]
@@ -1216,11 +1235,32 @@ fn erroring_turns_still_hit_limits_at_exit() {
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
 
-/// Helper: builds a large object without time limit, then runs `repr()` on it
-/// with a short time limit and asserts it produces a TimeoutError promptly.
-///
-/// The code must call `interrupt()` between object construction and `repr()`.
-fn assert_repr_timeout(code: &str, label: &str) {
+/// A caller-supplied generator state or NaN can make a rejection loop run forever.
+#[test]
+fn random_rejection_loops_observe_deadlines() {
+    for expression in [
+        "rng.normalvariate()",
+        "rng.lognormvariate(0, 1)",
+        "rng.gammavariate(2, 1)",
+        "rng.gammavariate(float('nan'), 1)",
+        "rng.betavariate(2, 3)",
+        "rng.vonmisesvariate(0, float('nan'))",
+        "rng.binomialvariate(5, 0.1)",
+        "rng.binomialvariate(100, 0.5)",
+        "rng.sample(range(100), 2)",
+    ] {
+        let code = format!(
+            "import random\nrng = random.Random(0)\nrng.setstate((3, (0,) * 625, None))\ninterrupt()\n{expression}"
+        );
+        assert_timeout_promptly(&code, expression);
+    }
+}
+
+/// Helper: runs `code` up to its `interrupt()` call without a time limit,
+/// then resumes under a short one and asserts the rest raises `TimeoutError`
+/// promptly — the native loop after `interrupt()` (a `repr()`, a union
+/// construction) must poll the limit rather than run to completion.
+fn assert_timeout_promptly(code: &str, label: &str) {
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     // Phase 1: build the large object with no time limit
@@ -1267,7 +1307,7 @@ x = ['abcdefghij'] * 100_000
 interrupt()
 repr(x)
 ";
-    assert_repr_timeout(code, "list repr");
+    assert_timeout_promptly(code, "list repr");
 }
 
 /// Test that `repr(large_dict)` respects the time limit.
@@ -1281,7 +1321,7 @@ x = {i: 'abcdefghij' for i in range(100_000)}
 interrupt()
 repr(x)
 ";
-    assert_repr_timeout(code, "dict repr");
+    assert_timeout_promptly(code, "dict repr");
 }
 
 /// Test that `repr()` of a widely bound `functools.partial` respects the time
@@ -1301,7 +1341,39 @@ p = functools.partial(target, *(['abcdefghij'] * 500_000))
 interrupt()
 repr(p)
 ";
-    assert_repr_timeout(code, "partial repr");
+    assert_timeout_promptly(code, "partial repr");
+}
+
+/// Test that `repr()` of a `types.GenericAlias` with many arguments respects
+/// the time limit.
+///
+/// The arguments are formatted in one native loop, as a tuple's are, so the
+/// same `repr_check_time` poll has to truncate it.
+#[test]
+fn timeout_truncation_in_generic_alias_repr() {
+    let code = r"
+alias = tuple[tuple(['abcdefghij'] * 500_000)]
+interrupt()
+repr(alias)
+";
+    assert_timeout_promptly(code, "generic alias repr");
+}
+
+/// Test that building a `typing.Union` from a huge tuple respects the time
+/// limit.
+///
+/// Deduplication is a linear scan per member, so 200k distinct members would
+/// run to completion in one native loop without the poll in
+/// `Union::from_members`.
+#[test]
+fn timeout_in_union_construction() {
+    let code = r"
+import typing
+members = tuple(range(200_000))
+interrupt()
+typing.Union[members]
+";
+    assert_timeout_promptly(code, "union construction");
 }
 
 /// Test that `repr(large_set)` respects the time limit.
@@ -1317,7 +1389,7 @@ x = {i for i in range(300_000)}
 interrupt()
 repr(x)
 ";
-    assert_repr_timeout(code, "set repr");
+    assert_timeout_promptly(code, "set repr");
 }
 /// Test that `re.sub` raises `re.PatternError` when the regex engine hits its backtracking limit.
 ///
@@ -1411,7 +1483,10 @@ fn itertools_adaptors_charge_recursion_only_when_they_delegate() {
     // The shallowest limit that runs a fixed nest, found rather than pinned:
     // what matters is the difference between the two innermost iterators, not
     // the absolute depth the surrounding frames happen to use.
-    let min_depth = |inner: &str| {
+    // `yields` is the one item the innermost iterator produces, which differs
+    // per adaptor — the combinatoric family yields tuples where the rest yield
+    // whatever their source held.
+    let min_depth = |inner: &str, yields: MontyObject| {
         let code = format!(
             r"
 import itertools
@@ -1427,7 +1502,7 @@ next(source)
                 let limits = ResourceLimits::default().max_recursion_depth(depth);
                 match ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout) {
                     Ok(value) => {
-                        assert_eq!(value, MontyObject::Int(1), "inner: {inner}");
+                        assert_eq!(value, yields, "inner: {inner}");
                         true
                     }
                     Err(_) => false,
@@ -1437,9 +1512,16 @@ next(source)
     };
 
     assert_eq!(
-        min_depth("itertools.accumulate([], initial=1)"),
-        min_depth("iter([1])"),
+        min_depth("itertools.accumulate([], initial=1)", MontyObject::Int(1)),
+        min_depth("iter([1])", MontyObject::Int(1)),
         "answering from adaptor state should cost no recursion level"
+    );
+    // The combinatoric family never delegates at all: the pool is collected at
+    // construction, so every step is index arithmetic over values it owns.
+    assert_eq!(
+        min_depth("itertools.product([1])", MontyObject::Tuple(vec![MontyObject::Int(1)])),
+        min_depth("iter([(1,)])", MontyObject::Tuple(vec![MontyObject::Int(1)])),
+        "stepping a pool should cost no recursion level"
     );
 }
 
@@ -1487,6 +1569,11 @@ const ITERTOOLS_INFINITE_LOOPS: &[&str] = &[
     "next(itertools.islice(itertools.count(1), 10**18, None))",
     "next(itertools.starmap(max, itertools.repeat(itertools.count(1))))",
     "next(itertools.batched(itertools.count(1), 10**18))",
+    // `groupby`'s skip loop: the key never changes, so the second `next` runs
+    // over the source forever looking for the next group.
+    "g = itertools.groupby(itertools.repeat(1))\nnext(g)\nnext(g)",
+    // `chain.from_iterable` resolving empty sources, none of which yields.
+    "next(itertools.chain.from_iterable(itertools.repeat([])))",
 ];
 
 /// Test that adaptors discarding items from an infinite source still time out.

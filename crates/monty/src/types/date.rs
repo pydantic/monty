@@ -21,7 +21,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     types::{
-        AttrCallResult, CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type,
+        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,
     },
@@ -138,9 +138,9 @@ struct DateInitArgs {
 ///
 /// Issues a `DateToday` OS call with no arguments. The host should return
 /// `MontyObject::Date` directly.
-pub(crate) fn class_today(heap: &mut Heap, args: ArgValues) -> RunResult<AttrCallResult> {
+pub(crate) fn class_today(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("date.today", heap)?;
-    Ok(AttrCallResult::OsCall(OsFunctionCall::DateToday))
+    Ok(CallResult::OsCall(OsFunctionCall::DateToday))
 }
 
 /// Classmethod `date.fromisoformat(date_string)`.

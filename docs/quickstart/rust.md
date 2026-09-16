@@ -34,6 +34,10 @@ at all; `monty-proto` links it only with its `worker` feature, which the workers
 The [Rust API](../api/rust/monty.md) pages document `monty`, `monty-pool`, `monty-types`, `monty-fs`, `monty-proto` and
 `monty-type-checking`.
 
+Custom OS handlers can use `monty_types::normalize_virtual_path` after validating the received path.
+It shares the mounts' lexical POSIX normalization; see [filesystem callbacks](../filesystem.md#working-directory)
+for validation order and access checks.
+
 ## Two ways to run Monty
 
 - **[`monty-pool`](../api/rust/monty-pool.md)** runs the interpreter only in `monty` worker subprocesses.
@@ -82,7 +86,9 @@ async fn main() -> Result<(), PoolError> {
 ```
 
 [`Checkout::feed`](../api/rust/monty-pool.md#checkout) takes the code, inputs (host values bound as sandbox globals), per-feed filesystem mounts
-([`MountSpec`](../api/rust/monty-pool.md#mountspec)), a `skip_type_check` flag and a print sink.
+([`MountSpec`](../api/rust/monty-pool.md#mountspec)), a `skip_type_check` flag and a print sink;
+[`Checkout::feed_with_cwd`](../api/rust/monty-pool.md#checkout) also sets the sandbox's
+[working directory](../filesystem.md#working-directory), which otherwise defaults to the first mount.
 It returns a [`TurnEvent`](../api/rust/monty-pool.md#turnevent):
 
 | `TurnEvent`                                                             | Meaning                                                                                                                                                                | Answer with                                                                      |
@@ -201,6 +207,9 @@ could not read their wall time at all, and `HostClock::Fixed` freezes an instant
 
 `start` ignores this: there the call pauses and the host answers it, like any other OS call, and the same is true of
 every pool session (see [the clock](../security.md#the-clock)).
+Entropy has no in-process fallback.
+Under `run`, an unseeded `random` draw or `os.urandom()` raises `NotImplementedError`.
+Under `start` it pauses on an `os.urandom` call for the host to answer (see [random](../limitations/random.md)).
 
 ### Host functions and pausing
 
@@ -231,6 +240,8 @@ assert_eq!(result, MontyObject::Int(42));
 
 Async host functions work the same way: [`FunctionCall::resume_pending`](../api/rust/monty.md#functioncall) continues with a pending future the sandboxed
 code can `await`, and when every task is blocked the run yields [`RunProgress::ResolveFutures`](../api/rust/monty.md#runprogress) for the host to settle.
+When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the
+result can pass it to [`FunctionCall::resume_eager`](../api/rust/monty.md#functioncall) and skip the `ResolveFutures` round trip.
 
 [`FunctionCall`](../api/rust/monty.md#functioncall), [`OsCall`](../api/rust/monty.md#oscall), [`NameLookup`](../api/rust/monty.md#namelookup) and [`ResolveFutures`](../api/rust/monty.md#resolvefutures) expose `abort`, which raises a host-supplied
 [`MontyException`](../api/rust/monty-types.md#montyexception) uncatchably at the suspension point and unwinds the run with a traceback.

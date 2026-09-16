@@ -149,3 +149,81 @@ membership = {'a': 1, 'b': 2}
 assert 'a' in membership
 assert 'z' not in membership
 assert 1 not in membership
+
+# === `|` merges into a new dict, right operand winning ===
+left = {'a': 1, 'b': 2}
+right = {'b': 3, 'c': 4}
+assert left | right == {'a': 1, 'b': 3, 'c': 4}
+assert right | left == {'b': 2, 'c': 4, 'a': 1}
+assert list(left | right) == ['a', 'b', 'c']
+assert list(right | left) == ['b', 'c', 'a']
+assert left == {'a': 1, 'b': 2}
+assert right == {'b': 3, 'c': 4}
+assert left | {} == left
+
+
+# A right-hand key that collides with an existing one whose `__eq__` raises,
+# so the merge fails partway through `right`
+class CollidingKey:
+    def __hash__(self):
+        return 1
+
+    def __eq__(self, other):
+        raise ValueError('collide')
+
+
+class SameHash:
+    def __hash__(self):
+        return 1
+
+
+colliding_right = {SameHash(): 1, 'after': [2]}
+try:
+    {CollidingKey(): 0} | colliding_right
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'collide'
+try:
+    {CollidingKey(): 0}.update(colliding_right)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'collide'
+assert {} | right == right
+assert (left | right) is not left
+assert type(left | right) is dict
+
+# === `|` rejects anything but a dict ===
+for other in ([('c', 4)], {'c'}, None, 1):
+    try:
+        left | other
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == f"unsupported operand type(s) for |: 'dict' and '{type(other).__name__}'"
+try:
+    [('c', 4)] | left
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "unsupported operand type(s) for |: 'list' and 'dict'"
+
+# === `|=` updates in place and accepts what update() accepts ===
+target = {'a': 1}
+alias = target
+target |= {'a': 2, 'b': 3}
+assert target is alias
+assert target == {'a': 2, 'b': 3}
+target |= [('c', 4), ('a', 5)]
+assert target == {'a': 5, 'b': 3, 'c': 4}
+target |= right.items()
+assert target == {'a': 5, 'b': 3, 'c': 4}
+target |= {}
+assert target == {'a': 5, 'b': 3, 'c': 4}
+try:
+    target |= None
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'NoneType' object is not iterable"
+try:
+    target |= [('x', 1, 2)]
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'dictionary update sequence element #0 has length 3; 2 is required'

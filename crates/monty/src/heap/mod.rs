@@ -844,6 +844,13 @@ pub struct HeapEntry {
     color: Cell<CcColor>,
 }
 
+/// What one heap entry costs, payload and bookkeeping together.
+///
+/// For preflighting a burst of allocations whose count is caller-controlled:
+/// charging only the payloads would under-count by the refcount, reader count
+/// and collector colour every entry also carries.
+pub(crate) const HEAP_ENTRY_SIZE: usize = size_of::<HeapEntry>();
+
 /// This wrapper containing `UnsafeCell` exists to allow for data inside of `HeapValue`
 /// to be safely pointed to via the `HeapReader` API.
 ///
@@ -2064,6 +2071,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::CallableIterator(iter) => iter.for_each_child_id(on_child),
         HeapData::Itertools(iter) => iter.for_each_child_id(on_child),
         HeapData::Partial(partial) => partial.for_each_child_id(on_child),
+        HeapData::GenericAlias(alias) => alias.for_each_child_id(on_child),
+        HeapData::Union(union) => union.for_each_child_id(on_child),
         HeapData::Module(m) => {
             // Module attrs can contain references to heap values
             if !m.has_refs() {
@@ -2210,6 +2219,8 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::CallableIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Itertools(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Partial(partial) => partial.py_dec_ref_ids(stack),
+        HeapData::GenericAlias(alias) => alias.py_dec_ref_ids(stack),
+        HeapData::Union(union) => union.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {
             // Decrement ref count for namespace values that are heap references

@@ -36,6 +36,23 @@ These raise `NameError`:
 
 ## Behavioural divergences
 
+- **No `__class__` on builtin values** — `[].__class__`, `list.__class__` and
+    `list[int].__class__` raise `AttributeError`; only instances of Monty classes
+    carry it (see [classes.md](classes.md)). Use `type(x)`.
+- **Builtin methods are call-only** — reading one without calling it raises
+    `AttributeError`, so `[1].append`, `'a'.upper`, `{}.get`, `dict.fromkeys`
+    and `list.__class_getitem__` cannot be assigned, passed as a callback or
+    reached through `getattr`. Call them directly (`list.__class_getitem__(int)`).
+- **`hash(x)`** — Monty hashes `str`, `bytes`, `float` and every container with
+    its own algorithm, so the values differ from CPython's. Only `bool` and
+    small `int` agree: an `int` hashes to itself, which is what CPython does
+    while `abs(x) < 2**61 - 1`, but CPython reduces modulo `2**61 - 1` from
+    there up (`hash(2**62)` is `2` in CPython, `4611686018427387904` in Monty)
+    and Monty hashes an `int` too large for an `i64` differently again. Monty's
+    hashes are stable within a run and across runs of the same build (there is
+    no hash randomisation), but never persist one or compare one against a
+    CPython hash. `sys.hash_info` is not exposed, so the parameters CPython
+    publishes are unavailable (see [sys.md](sys.md)).
 - **`repr` of a dict being mutated by its own elements** — Monty iterates the
     live entries like CPython, but deletion compacts Monty's dense entry storage
     where CPython leaves a tombstone in place: a key deleted from inside a user
@@ -94,13 +111,20 @@ These raise `NameError`:
     `OverflowError: cannot fit 'int' into an index-sized integer`.
 - **`isinstance(obj, T)`** — `T` must be a built-in type (`int`, `str`,
     `list`, ...), a built-in exception class, a sandbox-defined class (see
-    [classes.md](classes.md)), or a tuple of those. Passing a host-supplied
-    dataclass / namedtuple as the second argument raises `TypeError`.
+    [classes.md](classes.md)), a `|` union of those (see [typing.md](typing.md)),
+    or a tuple of those. Passing a host-supplied dataclass / namedtuple as the
+    second argument raises `TypeError`.
 - **`iter()`** — see [iter.md](iter.md) for iterator and `iter(callable, sentinel)` divergences.
 - **`pow(base, exp, mod)`** — the three-argument form requires all integers and
     rejects negative exponents with `ValueError` instead of computing a modular
     inverse. Non-modular exponents whose result cannot be materialized raise
     `OverflowError` (see [resource_limits.md](resource_limits.md)).
+- **`pow(base, exp)` and `**` with a negative float base and a fractional
+    exponent** — gives `nan` where CPython returns a `complex` (Monty has no
+    complex type). Overflow raises `OverflowError` like CPython, always worded
+    `(34, 'Numerical result out of range')` (glibc's `strerror(ERANGE)`; CPython
+    on macOS and Windows says `(34, 'Result too large')`), and `exc.args` is that
+    text as one string rather than CPython's `(34, '...')` tuple.
 - **`sorted(iterable, *, key=None, reverse=False)`** — `key` and `reverse`
     must be passed by keyword; positional forms raise `TypeError`.
 - **`round(n, ndigits)`** — `ndigits` values outside the i64 range are

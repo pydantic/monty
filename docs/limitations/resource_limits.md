@@ -30,7 +30,8 @@ WebAssembly runtimes do.
     are **pre-checked** before allocating: integer multiplication, left
     shift, integer power, sequence repeat (`'x' * n`), replacement
     (`str.replace`, `bytes.replace`), `re.sub`, padding (`str.ljust`, `str.center`,
-    `str.zfill`, `bytes.ljust`, …), integer division and `divmod`, deque
+    `str.zfill`, `bytes.ljust`, …), integer division and `divmod`,
+    `math.factorial`, `math.comb` and `math.perm`, deque
     rotation, slicing and repeat, materialising an iterator into a
     container, and string formatting with dynamic width or precision, for
     f-strings (`f"{v:>{w}}"`, `f"{v:.{p}f}"`), `str.format()`
@@ -183,6 +184,14 @@ indistinguishable from a stack overflow.
     themselves (iterator advancement, sequence repeats, comparisons, `repr`)
     do so every 64th item. Both are unconditional overshoots of ordinary
     `max_duration` enforcement, on top of the per-operation cases below.
+- A container narrower than that 64-item interval never reaches a poll at all.
+    Structures that share sub-objects are walked once per path rather than once per
+    object, so `repr` and `==` over one nested `n` levels deep do work exponential
+    in `n` (`x = (x, x)` repeated, and the same through a generic alias). Neither
+    limit is consulted until the walk finishes, and the two end differently: `repr`
+    grows a result string until it crosses the allocator's hard ceiling, while `==`
+    allocates nothing proportional, so only the pool's `request_timeout` ends it.
+    `hash` is unaffected, each tuple caching its own.
 - Every host turn re-checks both limits as it returns, so a turn that
     finished without reaching a checkpoint still fails rather than returning
     its result. Two consequences: a turn whose Python code raised an exception
@@ -199,6 +208,10 @@ indistinguishable from a stack overflow.
     **not** polled and run to completion however large the input: `in` with an
     integer probe (a single-byte scan) and `split()`/`rsplit()` left to their
     default `sep=None` (whitespace splitting).
+- The `str` case methods (`lower`, `upper`, `casefold`, `capitalize`, `title`,
+    `swapcase`) and `is*()` predicates are **not** polled and run to completion.
+    Their cost is linear in the input, so the overshoot is bounded by the largest
+    string `max_memory` admits.
 - `base64.a85decode()` polls the clock every 64th byte that matches no
     Ascii85 digit and so reaches `ignorechars`. Each of those bytes is one
     `in` test against the container, so a large explicit `ignorechars`

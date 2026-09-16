@@ -6,6 +6,7 @@ import itertools
 import pathlib
 import re
 import sys
+import types
 import zoneinfo
 from typing import NamedTuple
 
@@ -169,7 +170,7 @@ from collections import deque
 def test_type_object_input_roundtrip(monty_run: RunMonty):
     """A type object passed in as an input is preserved as a type (not degraded to
     a callable) and round-trips back out by identity."""
-    types: list[type[object]] = [
+    type_objects: list[type[object]] = [
         int,
         str,
         type,
@@ -189,12 +190,16 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         re.Pattern,
         re.Match,
         collections.deque,
+        types.GenericAlias,
     ]
-    for ty in types:
+    for ty in type_objects:
         # The pathlib family all collapses to a single Monty path type, which
         # re-emerges as PurePosixPath; everything else round-trips by identity.
         expected: type[object] = pathlib.PurePosixPath if issubclass(ty, pathlib.PurePath) else ty
         assert monty_run('x', inputs={'x': ty}) is expected
+    # The type of `int | None`: `types.UnionType` on every host, which is
+    # `typing.Union` itself from 3.14 (and a `_SpecialForm` before it).
+    assert monty_run('x', inputs={'x': types.UnionType}) is types.UnionType
 
 
 @pytest.mark.skipif(sys.version_info >= (3, 12), reason='batched round-trips like the rest from 3.12')
@@ -213,13 +218,21 @@ def test_itertools_batched_type_on_older_host(monty_run: RunMonty):
 ITERTOOLS_TYPES: list[tuple[type[object], str]] = [
     (itertools.accumulate, 'itertools.accumulate([1, 2])'),
     (itertools.chain, 'itertools.chain([1], [2])'),
+    (itertools.combinations, 'itertools.combinations([1, 2], 2)'),
+    (
+        itertools.combinations_with_replacement,
+        'itertools.combinations_with_replacement([1, 2], 2)',
+    ),
     (itertools.compress, 'itertools.compress([1, 2], [1, 0])'),
     (itertools.count, 'itertools.count()'),
     (itertools.cycle, 'itertools.cycle([1, 2])'),
     (itertools.dropwhile, 'itertools.dropwhile(bool, [1, 2])'),
     (itertools.filterfalse, 'itertools.filterfalse(bool, [1, 2])'),
+    (itertools.groupby, 'itertools.groupby([1, 1, 2])'),
     (itertools.islice, 'itertools.islice([1, 2], 1)'),
     (itertools.pairwise, 'itertools.pairwise([1, 2])'),
+    (itertools.permutations, 'itertools.permutations([1, 2])'),
+    (itertools.product, 'itertools.product([1], [2])'),
     (itertools.repeat, 'itertools.repeat(1)'),
     (itertools.starmap, 'itertools.starmap(max, [(1, 2)])'),
     (itertools.takewhile, 'itertools.takewhile(bool, [1, 2])'),
@@ -227,6 +240,11 @@ ITERTOOLS_TYPES: list[tuple[type[object], str]] = [
 ]
 if sys.version_info >= (3, 12):
     ITERTOOLS_TYPES.append((itertools.batched, 'itertools.batched([1, 2], 1)'))
+
+# The private types are reached through what hands them out rather than by
+# name, since only CPython lets you build one directly.
+ITERTOOLS_TYPES.append((type(next(itertools.groupby([1]))[1]), 'next(itertools.groupby([1]))[1]'))
+ITERTOOLS_TYPES.append((type(itertools.tee([1])[0]), 'itertools.tee([1])[0]'))
 
 
 @pytest.mark.parametrize(('ty', 'build'), ITERTOOLS_TYPES, ids=[ty.__name__ for ty, _ in ITERTOOLS_TYPES])
@@ -243,6 +261,44 @@ def test_itertools_type_object_isinstance(monty_run: RunMonty, ty: type[object],
     which is what identity recognition is actually for."""
     code = f'import itertools\nisinstance({build}, t)'
     assert monty_run(code, inputs={'t': ty}) is True
+
+
+def test_generic_alias_crosses_as_repr(monty_run: RunMonty):
+    """A `list[int]` built in the sandbox has no host counterpart that could be
+    rebuilt faithfully, so it crosses as its repr, while its type object is the
+    host's `types.GenericAlias` and its `__args__` are real type objects."""
+    assert monty_run('list[int]') == snapshot('list[int]')
+    assert monty_run('type(dict[str, int])') is types.GenericAlias
+    # A plain comparison: inline-snapshot reads `...` inside `snapshot()` as its placeholder.
+    assert monty_run('tuple[int, str, ...].__args__') == (int, str, ...)
+
+
+def test_union_crosses_as_repr(monty_run: RunMonty):
+    """`int | None` built in the sandbox crosses as its repr, its type object is
+    the host's `types.UnionType` (`typing.Union` itself from 3.14), and its
+    `__args__` are real type objects."""
+    assert monty_run('int | None') == snapshot('int | None')
+    assert monty_run('type(int | None)') is types.UnionType
+    assert monty_run('(int | None).__args__') == (int, type(None))
+
+
+def test_generic_alias_input_becomes_callable(monty_run: RunMonty):
+    """A host-built `list[int]` has no `MontyObject` form; being callable, it
+    degrades to an external function the way an unmodeled class does."""
+    assert monty_run('(type(x).__name__, repr(x))', inputs={'x': list[int]}) == snapshot(
+        ('function', "<function 'list' external>")
+    )
+
+
+def test_union_input_is_rejected(monty_run: RunMonty):
+    """A host-built `int | None` is not even callable, so it has no boundary form.
+    The message names the host's union type, which differs before 3.14."""
+    with pytest.raises(MontyConversionError) as exc_info:
+        monty_run('x', inputs={'x': int | None})
+    union_type = f'{types.UnionType.__module__}.{types.UnionType.__qualname__}'
+    assert str(exc_info.value) == (
+        f'Cannot convert {union_type} to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+    )
 
 
 def test_type_object_input_isinstance(monty_run: RunMonty):
