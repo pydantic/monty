@@ -1186,16 +1186,10 @@ impl Message for TypeBody {
     ) -> Result<(), DecodeError> {
         match tag {
             1 => merge_string_charged(wire_type, buf, ctx, &mut self.name),
-            2 => {
-                self.id = Some(merge_message(wire_type, buf, ctx)?);
-                Ok(())
-            }
+            2 => encoding::message::merge(wire_type, self.id.get_or_insert_default(), buf, ctx),
             3 => encoding::int32::merge(wire_type, &mut self.origin, buf, ctx),
             4 => encoding::bool::merge(wire_type, &mut self.is_dataclass, buf, ctx),
-            5 => {
-                self.attrs = Some(merge_message(wire_type, buf, ctx)?);
-                Ok(())
-            }
+            5 => encoding::message::merge(wire_type, self.attrs.get_or_insert_default(), buf, ctx),
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
@@ -1231,14 +1225,8 @@ impl Message for ClassInstanceBody {
     ) -> Result<(), DecodeError> {
         match tag {
             1 => encoding::uint32::merge(wire_type, &mut self.class_type, buf, ctx),
-            2 => {
-                self.instance_id = Some(merge_message(wire_type, buf, ctx)?);
-                Ok(())
-            }
-            3 => {
-                self.attrs = Some(merge_message(wire_type, buf, ctx)?);
-                Ok(())
-            }
+            2 => encoding::message::merge(wire_type, self.instance_id.get_or_insert_default(), buf, ctx),
+            3 => encoding::message::merge(wire_type, self.attrs.get_or_insert_default(), buf, ctx),
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }

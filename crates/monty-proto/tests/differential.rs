@@ -23,7 +23,10 @@ use monty_types::{
     OsFunctionCall, PrintWriter, ResourceTracker,
 };
 use num_bigint::{BigInt, Sign};
-use prost::Message;
+use prost::{
+    Message,
+    encoding::{WireType, encode_key, encode_varint},
+};
 
 use crate::oracle::monty_node::Kind;
 
@@ -828,6 +831,61 @@ fn present_but_empty_class_attrs_decode_as_absent() {
             },
         ]
     );
+}
+
+/// A message field repeated on the wire merges, as prost's generated decoder
+/// does: two `Type.attrs` payloads decode to their concatenated pairs on both
+/// sides, so a hand-decoded class node never diverges from the oracle.
+#[test]
+fn repeated_attrs_fields_merge_like_the_oracle() {
+    let pair = |key: u32, value: u32| oracle::NodePairs {
+        pairs: vec![oracle::NodePair { key, value }],
+    };
+    // the second `Type` carries only `attrs`: concatenating two encodings of
+    // a message is how protobuf spells "merge these"
+    let mut type_body = oracle::Type {
+        attrs: Some(pair(0, 1)),
+        ..class_type("Foo")
+    }
+    .encode_to_vec();
+    type_body.extend(
+        oracle::Type {
+            attrs: Some(pair(1, 0)),
+            ..oracle::Type::default()
+        }
+        .encode_to_vec(),
+    );
+    let mut node = Vec::new();
+    encode_key(23, WireType::LengthDelimited, &mut node);
+    encode_varint(type_body.len() as u64, &mut node);
+    node.extend(type_body);
+    let mut bytes = oracle::Arena {
+        node_count: 3,
+        nodes: vec![
+            oracle::MontyNode {
+                kind: Some(Kind::Str("a".to_owned())),
+            },
+            oracle::MontyNode {
+                kind: Some(Kind::Int(1)),
+            },
+        ],
+    }
+    .encode_to_vec();
+    encode_key(2, WireType::LengthDelimited, &mut bytes);
+    encode_varint(node.len() as u64, &mut bytes);
+    bytes.extend(node);
+
+    let merged = vec![(NodeId(0), NodeId(1)), (NodeId(1), NodeId(0))];
+    let graph = decode_wire(&bytes).unwrap();
+    let MontyNode::ClassType(class) = &graph.nodes()[2] else {
+        panic!("expected a class node");
+    };
+    assert_eq!(class.attrs, merged);
+    let back = oracle::Arena::decode(bytes.as_slice()).expect("oracle decode failed");
+    let Some(Kind::Type(ty)) = &back.nodes[2].kind else {
+        panic!("expected an oracle type");
+    };
+    assert_eq!(ty.attrs.as_ref().unwrap().pairs.len(), 2);
 }
 
 /// The wire is untrusted: temporal values that fit their integer fields but
