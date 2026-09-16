@@ -207,6 +207,9 @@ could not read their wall time at all, and `HostClock::Fixed` freezes an instant
 
 `start` ignores this: there the call pauses and the host answers it, like any other OS call, and the same is true of
 every pool session (see [the clock](../security.md#the-clock)).
+Entropy has no in-process fallback.
+Under `run`, an unseeded `random` draw or `os.urandom()` raises `NotImplementedError`.
+Under `start` it pauses on an `os.urandom` call for the host to answer (see [random](../limitations/random.md)).
 
 ### Host functions and pausing
 

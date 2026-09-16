@@ -17,11 +17,8 @@ use crate::{
 
 /// Creates the `pathlib` module and allocates it on the heap.
 ///
-/// # Panics
-///
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Pathlib);
+    let mut module = Module::new(StaticStrings::Pathlib, vm.interns);
 
     // pathlib.Path - the Path class (callable to create Path instances)
     module.set_attr(StaticStrings::PathClass, Value::Builtin(Builtins::Type(Type::Path)), vm);

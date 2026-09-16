@@ -194,7 +194,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (origin, args) = self.parts(vm);
         defer_drop!(args, vm);
-        match attr.static_string() {
+        match attr.static_string(vm.interns) {
             Some(StaticStrings::DunderOrigin) => Ok(Some(CallResult::Value(self.get(vm.heap).origin_value()))),
             Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(args.clone_with_heap(vm)))),
             Some(StaticStrings::DunderParameters) => Ok(Some(CallResult::Value(vm.heap.get_empty_tuple()))),
@@ -208,7 +208,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     /// the origin's own attributes.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         if matches!(
-            attr.static_string(),
+            attr.static_string(vm.interns),
             Some(StaticStrings::DunderOrigin | StaticStrings::DunderArgs | StaticStrings::DunderParameters)
         ) {
             let Some(CallResult::Value(value)) = self.py_getattr(attr, vm)? else {

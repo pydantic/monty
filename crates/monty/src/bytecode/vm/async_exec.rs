@@ -6,7 +6,7 @@
 //! - Task completion and failure handling
 //! - External future resolution
 
-use std::{mem, rc::Rc, task::Poll};
+use std::{mem, task::Poll};
 
 use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
@@ -381,7 +381,7 @@ impl<'h> VM<'h> {
         globals: Option<HeapId>,
     ) -> Result<(), RunError> {
         let call_offset = self.current_offset();
-        let code = Rc::clone(&self.interns.get_function(func_id).code);
+        let code = &self.interns.get_function(func_id).code;
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
 
         // Extend the stack with the coroutine's pre-bound locals.
@@ -392,7 +392,7 @@ impl<'h> VM<'h> {
         let exc_stack_base = self.exception_stack.len();
         let namespace = function_namespace(globals, &*self.heap);
         self.push_frame(CallFrame::new_function(
-            &code,
+            code,
             stack_base,
             locals_count,
             exc_stack_base,
@@ -669,9 +669,9 @@ impl<'h> VM<'h> {
                 .into_iter()
                 .map(|sf| {
                     let code = match sf.function_id {
-                        Some(func_id) => Rc::clone(&self.interns.get_function(func_id).code),
+                        Some(func_id) => &self.interns.get_function(func_id).code,
                         // The main task's module-level code.
-                        None => Rc::clone(&self.module_code),
+                        None => self.module_code,
                     };
                     CallFrame {
                         ip: code.bytecode_base() + frame_ip(sf.ip),
@@ -752,7 +752,7 @@ impl<'h> VM<'h> {
         // Push locals onto stack and push frame directly (can't use start_coroutine_frame
         // because that needs a current frame for call_offset, but spawned tasks
         // don't have a parent frame — the coroutine is the root)
-        let code = Rc::clone(&self.interns.get_function(func_id).code);
+        let code = &self.interns.get_function(func_id).code;
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
 
         let stack_base = self.stack.len();
@@ -761,7 +761,7 @@ impl<'h> VM<'h> {
         let exc_stack_base = self.exception_stack.len();
         let namespace = function_namespace(globals, &*self.heap);
         self.current_frame = CallFrame::new_function(
-            &code,
+            code,
             stack_base,
             locals_count,
             exc_stack_base,

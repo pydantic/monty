@@ -200,7 +200,7 @@ anything.
     ```
 
 A separate `os=` callback handles operations no mount covers: the remaining `pathlib` operations, `os.getenv`,
-`os.environ`, `date.today()` and `datetime.now()`.
+`os.environ`, `date.today()`, `datetime.now()` and `os.urandom()`.
 [`AbstractOS`][pydantic_monty.AbstractOS] is the typed form of that callback; [`OSAccess`][pydantic_monty.OSAccess] implements it over in-memory files and an `environ` mapping
 you supply, and overriding one of its methods replaces one operation.
 JavaScript has only the callback form, so the TypeScript tab answers the same three operations by hand:
@@ -304,6 +304,19 @@ In-process Rust runs have no host loop to ask, so they read this machine's clock
 
 Wall-clock time is a weak capability, but it is one — it is what makes elapsed time measurable from inside the sandbox,
 and a naive `datetime.now()` is read in the host's local zone, which discloses its UTC offset.
+
+### Entropy
+
+`os.urandom()` is the only call that reads entropy.
+The `random` module uses the same call: an unseeded generator requests 2496 bytes from the host on its first draw.
+Through the pool the request reaches your `os=` handler like any other OS call.
+With no handler, an unseeded `random.random()` raises `RuntimeError`.
+Answer with fixed bytes when a run has to be reproducible.
+Seeded code (`random.seed(42)`) never makes the call.
+Python's default `AbstractOS.urandom()` raises `MemoryError` before allocating when a request exceeds
+`max_urandom_bytes`, 1 MiB by default; `OSAccess(max_urandom_bytes=...)` sets the cap.
+A custom handler allocates in the host process, outside the worker's memory limit, so it must apply its own cap.
+See [random](limitations/random.md).
 
 ## Crash isolation
 

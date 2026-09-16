@@ -7,13 +7,11 @@
 //! globals through that dict at every call. [`FrameNamespace`] records which
 //! case a frame is in; the descriptor owns the dict references it names.
 
-use std::rc::Rc;
-
 use ahash::AHashSet;
 
 use super::{CallFrame, VM};
 use crate::{
-    bytecode::{FrameExit, NAME_CALLABLE, NAME_GLOBAL_ONLY},
+    bytecode::{Code, FrameExit, NAME_CALLABLE, NAME_GLOBAL_ONLY},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::{FunctionId, StringId},
@@ -169,13 +167,17 @@ impl VM<'_> {
     /// The snippet is a `<module>`-named function with no locals; the frame
     /// takes ownership of `namespace`, and releases it if the push is refused
     /// by the recursion limit.
-    pub(crate) fn push_snippet_frame(&mut self, func_id: FunctionId, namespace: Box<FrameNamespace>) -> RunResult<()> {
+    pub(crate) fn push_snippet_frame(
+        &mut self,
+        func_id: FunctionId,
+        code: &Code,
+        namespace: Box<FrameNamespace>,
+    ) -> RunResult<()> {
         let call_offset = self.current_offset();
-        let code = Rc::clone(&self.interns.get_function(func_id).code);
         let stack_base = self.stack.len();
         let exc_stack_base = self.exception_stack.len();
         self.push_frame(CallFrame::new_function(
-            &code,
+            code,
             stack_base,
             0,
             exc_stack_base,
@@ -324,7 +326,7 @@ impl VM<'_> {
         let cell_slots: AHashSet<usize> = this
             .current_frame
             .function_id
-            .map(|id| this.interns.function(id))
+            .map(|id| this.interns.get_function(id))
             .into_iter()
             .flat_map(|func| {
                 func.cell_var_slots

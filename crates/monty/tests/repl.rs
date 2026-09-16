@@ -16,6 +16,7 @@ use monty_types::{
     CompileOptions, DictPairs, ExcType, ExtFunctionResult, MontyClassInstance, MontyClassType, MontyException,
     MontyObject, MontyType, MontyUuid, NameLookupResult, PrintWriter, ResourceLimits, ResourceTracker,
 };
+use serde_json::to_value;
 
 #[test]
 fn repl_executes_only_new_code() {
@@ -80,12 +81,13 @@ fn dump_header_rejects_incompatible_data() {
     wrong_magic[0] = b'X';
     assert_eq!(Dump::load(&wrong_magic).unwrap_err(), DumpError::NotADump);
 
+    let previous_version = DUMP_VERSION - 1;
     let mut wrong_version = bytes.clone();
-    wrong_version[6] = 1;
+    wrong_version[6..8].copy_from_slice(&previous_version.to_le_bytes());
     assert_eq!(
         Dump::load(&wrong_version).unwrap_err(),
         DumpError::VersionMismatch {
-            found: 1,
+            found: previous_version,
             expected: DUMP_VERSION
         }
     );
@@ -642,7 +644,7 @@ fn repl_abandoned_snippet_keeps_rebound_globals_usable() {
 
 /// Snippets that fail before running (syntax error, compile error, invalid
 /// input) leave the session's earlier definitions callable and later
-/// definitions working — the tables are handed back, not lost.
+/// definitions working — compilation retains the session's tables.
 #[test]
 fn repl_failed_snippets_keep_session_tables() {
     let (mut repl, _) = init_repl("def f():\n    return 1");
@@ -679,6 +681,33 @@ fn repl_failed_snippets_keep_session_tables() {
     assert_eq!(feed_run_print(&mut repl, "h()").unwrap(), MontyObject::Int(2));
 }
 
+/// Rejection at any compiler stage leaves all committed tables unchanged.
+#[test]
+fn repl_rejected_compilation_keeps_no_products() {
+    let (mut repl, _) = init_repl("def existing():\n    return 'retained'");
+    let before = to_value(&repl).unwrap();
+    let mut errors = Vec::new();
+    for code in [
+        "def broken(:",
+        "def pending():\n    nonlocal absent",
+        "def pending():\n    return ('uncommitted', b'uncommitted', 123456789012345678901234567890)\n__name__ = 'rejected'",
+    ] {
+        errors.push(feed_run_print(&mut repl, code).unwrap_err().to_string());
+        let after = to_value(&repl).unwrap();
+        assert_eq!(after["interns"], before["interns"]);
+        assert_eq!(after["global_names"], before["global_names"]);
+    }
+    assert_snapshot!("rejected_compilation_errors", errors.join("\n\n"));
+    let mut repl = round_trip_repl(&repl);
+    assert_eq!(
+        feed_run_print(&mut repl, "existing()").unwrap(),
+        MontyObject::String("retained".to_owned())
+    );
+    feed_run_print(&mut repl, "exec('def accepted():\\n    return 42')").unwrap();
+    let mut repl = round_trip_repl(&repl);
+    assert_eq!(feed_run_print(&mut repl, "accepted()").unwrap(), MontyObject::Int(42));
+}
+
 /// A snippet rejected at compile time, after prepare has allocated its
 /// global slots and the compiler has emitted its functions, must not consume
 /// those `u16` ids. One successful snippet takes the session to within a few
@@ -693,10 +722,12 @@ fn repl_rejected_snippets_do_not_consume_slots_or_function_ids() {
     }
     let (mut repl, _) = init_repl(&prefill);
 
-    // Each would take four slots (input, function, global, `__name__`) and a
-    // function id; a second rejection would overflow if the first one leaked.
+    // Each would take four slots (input, function, global, `__name__`) and
+    // two function ids; repeated rejections would overflow if either leaked.
     for i in 0..4 * HEADROOM {
-        let code = format!("def bad_{i}():\n    pass\nname_{i} = 1\n__name__ = 'x'");
+        let code = format!(
+            "def bad_{i}():\n    def inner():\n        return 1\n    return inner\nname_{i} = 1\n__name__ = 'x'"
+        );
         let err = repl
             .feed_run(
                 &code,
@@ -706,6 +737,7 @@ fn repl_rejected_snippets_do_not_consume_slots_or_function_ids() {
             .unwrap_err();
         assert_eq!(err.exc_type(), ExcType::NotImplementedError);
     }
+    let mut repl = round_trip_repl(&repl);
     feed_run_print(&mut repl, "def h():\n    return g_0() is None\nok = h()").unwrap();
     assert_eq!(feed_run_print(&mut repl, "ok").unwrap(), MontyObject::Bool(true));
 }
@@ -2041,4 +2073,20 @@ fn repl_eval_suspends_at_external_call() {
         MontyObject::None
     );
     assert_eq!(feed_run_print(&mut repl, "double(21)").unwrap(), MontyObject::Int(42));
+}
+
+/// Equal displayed filenames retain distinct source locations after loading a session.
+#[test]
+fn repl_snippet_sources_survive_round_trip() {
+    let (repl, _) = init_repl(
+        "filename = '<string>'\nexec('def first():\\n    raise ValueError')\nexec('\\n\\ndef second():\\n    raise ValueError')",
+    );
+    let mut repl = round_trip_repl(&repl);
+    assert_eq!(
+        feed_run_print(&mut repl, "filename == eval(\"'<string>'\")").unwrap(),
+        MontyObject::Bool(true)
+    );
+    let first = feed_run_print(&mut repl, "first()").unwrap_err();
+    let second = feed_run_print(&mut repl, "second()").unwrap_err();
+    assert_snapshot!("snippet_sources", format!("{first}\n\n{second}"));
 }

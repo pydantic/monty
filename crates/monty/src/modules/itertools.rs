@@ -9,91 +9,127 @@ use std::mem;
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
+    builtins::Builtins,
     bytecode::VM,
-    defer_drop_mut,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId},
+    heap::{DropGuard, DropWithContext, HEAP_ENTRY_SIZE, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
+    resource_checks::check_estimated_size,
     types::{
-        ItertoolsIter, Module, Type,
+        ItertoolsIter, Module, TupleVec, Type, allocate_tuple,
+        iter::collect_owned_iterable,
         itertools::{
-            Accumulate, Batched, Chain, Compress, Count, Cycle, DropWhile, FilterFalse, Islice, Pairwise, Repeat,
-            StarMap, TakeWhile, ZipLongest,
+            Accumulate, Batched, Chain, Combinations, Compress, Count, Cycle, DropWhile, FilterFalse, GroupBy, Islice,
+            Pairwise, Permutations, Product, Repeat, StarMap, TakeWhile, ZipLongest, tee,
         },
     },
-    value::Value,
+    value::{VALUE_SIZE, Value},
 };
 
-/// `itertools` module functions — each variant is a Python-visible callable.
+/// The `itertools` callables that are not type objects.
+///
+/// CPython models all but one of this module's names as classes, and so does
+/// Monty — `itertools.count` IS `Type::ItertoolsCount`, constructed through
+/// [`construct`]. Only `tee` is a plain function there, and `from_iterable` is
+/// reached through the `chain` type rather than the module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum ItertoolsFunctions {
-    Count,
-    Repeat,
-    Pairwise,
-    Compress,
-    Islice,
-    Chain,
-    Cycle,
-    Takewhile,
-    Dropwhile,
-    Filterfalse,
-    Starmap,
-    Accumulate,
-    Batched,
-    ZipLongest,
+    Tee,
+    /// `chain.from_iterable`, an attribute of the `chain` type rather than a
+    /// name in the module — resolved by `Value::py_getattr`.
+    #[strum(serialize = "from_iterable")]
+    ChainFromIterable,
 }
 
-/// Static mapping of attribute names to functions for module creation.
-const ITERTOOLS_FUNCTIONS: &[(StaticStrings, ItertoolsFunctions)] = &[
-    (StaticStrings::Count, ItertoolsFunctions::Count),
-    (StaticStrings::Repeat, ItertoolsFunctions::Repeat),
-    (StaticStrings::Pairwise, ItertoolsFunctions::Pairwise),
-    (StaticStrings::Compress, ItertoolsFunctions::Compress),
-    (StaticStrings::Islice, ItertoolsFunctions::Islice),
-    (StaticStrings::Chain, ItertoolsFunctions::Chain),
-    (StaticStrings::Cycle, ItertoolsFunctions::Cycle),
-    (StaticStrings::Takewhile, ItertoolsFunctions::Takewhile),
-    (StaticStrings::Dropwhile, ItertoolsFunctions::Dropwhile),
-    (StaticStrings::Filterfalse, ItertoolsFunctions::Filterfalse),
-    (StaticStrings::Starmap, ItertoolsFunctions::Starmap),
-    (StaticStrings::Accumulate, ItertoolsFunctions::Accumulate),
-    (StaticStrings::Batched, ItertoolsFunctions::Batched),
-    (StaticStrings::ZipLongest, ItertoolsFunctions::ZipLongest),
+/// The module's type objects, by the name each is bound to.
+const ITERTOOLS_TYPES: &[(StaticStrings, Type)] = &[
+    (StaticStrings::Count, Type::ItertoolsCount),
+    (StaticStrings::Repeat, Type::ItertoolsRepeat),
+    (StaticStrings::Pairwise, Type::ItertoolsPairwise),
+    (StaticStrings::Compress, Type::ItertoolsCompress),
+    (StaticStrings::Islice, Type::ItertoolsIslice),
+    (StaticStrings::Chain, Type::ItertoolsChain),
+    (StaticStrings::Cycle, Type::ItertoolsCycle),
+    (StaticStrings::Takewhile, Type::ItertoolsTakeWhile),
+    (StaticStrings::Dropwhile, Type::ItertoolsDropWhile),
+    (StaticStrings::Filterfalse, Type::ItertoolsFilterFalse),
+    (StaticStrings::Starmap, Type::ItertoolsStarMap),
+    (StaticStrings::Accumulate, Type::ItertoolsAccumulate),
+    (StaticStrings::Batched, Type::ItertoolsBatched),
+    (StaticStrings::ZipLongest, Type::ItertoolsZipLongest),
+    (StaticStrings::Combinations, Type::ItertoolsCombinations),
+    (
+        StaticStrings::CombinationsWithReplacement,
+        Type::ItertoolsCombinationsWithReplacement,
+    ),
+    (StaticStrings::Permutations, Type::ItertoolsPermutations),
+    (StaticStrings::Product, Type::ItertoolsProduct),
+    (StaticStrings::Groupby, Type::ItertoolsGroupBy),
+    (StaticStrings::Grouper, Type::ItertoolsGrouper),
+    (StaticStrings::TeeType, Type::ItertoolsTee),
+    (StaticStrings::TeeDataObject, Type::ItertoolsTeeDataObject),
 ];
 
 /// Creates the `itertools` module on the heap.
-///
-/// # Panics
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Itertools);
+    let mut module = Module::new(StaticStrings::Itertools, vm.interns);
 
-    for (name, func) in ITERTOOLS_FUNCTIONS {
-        module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Itertools(*func)), vm);
+    for (name, type_) in ITERTOOLS_TYPES {
+        module.set_attr(*name, Value::Builtin(Builtins::Type(*type_)), vm);
     }
+    module.set_attr(
+        StaticStrings::Tee,
+        Value::ModuleFunction(ModuleFunctions::Itertools(ItertoolsFunctions::Tee)),
+        vm,
+    );
 
     vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 
-/// Dispatches a call to an `itertools` module function.
-pub(super) fn call(vm: &mut VM<'_>, function: ItertoolsFunctions, args: ArgValues) -> RunResult<Value> {
+/// Dispatches a call to one of the module's two plain functions.
+pub(crate) fn call(vm: &mut VM<'_>, function: ItertoolsFunctions, args: ArgValues) -> RunResult<Value> {
     match function {
-        ItertoolsFunctions::Count => call_count(vm, args),
-        ItertoolsFunctions::Repeat => call_repeat(vm, args),
-        ItertoolsFunctions::Pairwise => call_pairwise(vm, args),
-        ItertoolsFunctions::Compress => call_compress(vm, args),
-        ItertoolsFunctions::Islice => call_islice(vm, args),
-        ItertoolsFunctions::Chain => call_chain(vm, args),
-        ItertoolsFunctions::Cycle => call_cycle(vm, args),
-        ItertoolsFunctions::Takewhile => call_takewhile(vm, args),
-        ItertoolsFunctions::Dropwhile => call_dropwhile(vm, args),
-        ItertoolsFunctions::Filterfalse => call_filterfalse(vm, args),
-        ItertoolsFunctions::Starmap => call_starmap(vm, args),
-        ItertoolsFunctions::Accumulate => call_accumulate(vm, args),
-        ItertoolsFunctions::Batched => call_batched(vm, args),
-        ItertoolsFunctions::ZipLongest => call_zip_longest(vm, args),
+        ItertoolsFunctions::Tee => call_tee(vm, args),
+        ItertoolsFunctions::ChainFromIterable => call_chain_from_iterable(vm, args),
+    }
+}
+
+/// Constructs one of the module's iterators, reached through [`Type::call`].
+///
+/// # Panics
+/// Panics on a type this module does not own, which `Type::call` never passes.
+pub(crate) fn construct(type_: Type, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    match type_ {
+        Type::ItertoolsCount => call_count(vm, args),
+        Type::ItertoolsRepeat => call_repeat(vm, args),
+        Type::ItertoolsPairwise => call_pairwise(vm, args),
+        Type::ItertoolsCompress => call_compress(vm, args),
+        Type::ItertoolsIslice => call_islice(vm, args),
+        Type::ItertoolsChain => call_chain(vm, args),
+        Type::ItertoolsCycle => call_cycle(vm, args),
+        Type::ItertoolsTakeWhile => call_takewhile(vm, args),
+        Type::ItertoolsDropWhile => call_dropwhile(vm, args),
+        Type::ItertoolsFilterFalse => call_filterfalse(vm, args),
+        Type::ItertoolsStarMap => call_starmap(vm, args),
+        Type::ItertoolsAccumulate => call_accumulate(vm, args),
+        Type::ItertoolsBatched => call_batched(vm, args),
+        Type::ItertoolsZipLongest => call_zip_longest(vm, args),
+        Type::ItertoolsCombinations => call_combinations(vm, args),
+        Type::ItertoolsCombinationsWithReplacement => call_combinations_with_replacement(vm, args),
+        Type::ItertoolsPermutations => call_permutations(vm, args),
+        Type::ItertoolsProduct => call_product(vm, args),
+        Type::ItertoolsGroupBy => call_groupby(vm, args),
+        // Exposed under their CPython names so `type()` and `isinstance()`
+        // work, but not constructible here — CPython builds them from the
+        // arguments its internals use. See `limitations/itertools.md`.
+        Type::ItertoolsGrouper | Type::ItertoolsTee | Type::ItertoolsTeeDataObject => {
+            args.drop_with(vm);
+            Err(ExcType::type_error_not_callable(&type_.name(vm.heap, vm.interns)))
+        }
+        other => unreachable!("{other} is not an itertools type"),
     }
 }
 
@@ -533,27 +569,29 @@ fn call_batched(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// Coerces `batched`'s `n` and enforces CPython's "at least one" floor.
+fn batched_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
+    let n = ssize_arg(value, vm)?;
+    if n < 1 {
+        Err(ExcType::batched_bad_n())
+    } else {
+        Ok(n.cast_unsigned())
+    }
+}
+
+/// Coerces an argument the way CPython's `Py_ssize_t` converters do.
 ///
 /// Needs `&mut VM` because `as_int` dispatches `__index__`, re-entering the
 /// interpreter; the caller's other arguments are owned, so that cannot
 /// invalidate them. `as_int` raises `OverflowError` past `i64` as the
-/// `Py_ssize_t` conversion does, and the bound below reports the same for the
-/// range between `isize` and `i64` that only a 32-bit host (`wasm32-wasip1`)
-/// has — `batched('AB', 2**40)` there.
-fn batched_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
+/// conversion does, and the bound below reports the same for the range between
+/// `isize` and `i64` that only a 32-bit host (`wasm32-wasip1`) has —
+/// `batched('AB', 2**40)` there.
+fn ssize_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<isize> {
     let n = match value {
         Value::Bool(b) => i64::from(*b),
         other => other.as_int(vm)?,
     };
-    if n < 1 {
-        Err(ExcType::batched_bad_n())
-    } else {
-        // CPython's `n` is a `Py_ssize_t`, so `isize` is the ceiling to check
-        // against; the sign is already known positive.
-        isize::try_from(n)
-            .map(isize::cast_unsigned)
-            .map_err(|_| ExcType::overflow_c_ssize_t())
-    }
+    isize::try_from(n).map_err(|_| ExcType::overflow_c_ssize_t())
 }
 
 /// Argument shape for `zip_longest(*iterables, fillvalue=None)`.
@@ -594,6 +632,314 @@ fn call_zip_longest(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (sources, vm) = guard.into_parts();
     let iter = ItertoolsIter::ZipLongest(ZipLongest::new(sources, fillvalue));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+}
+
+/// Argument shape for `combinations(iterable, r)` and its
+/// `_with_replacement` twin.
+///
+/// Argument Clinic with both parameters keyword-capable, so `c_named` (see
+/// [`AccumulateArgs`]), and `at_most_total` because a stray keyword reports
+/// `takes at most 2 arguments (3 given)`. `r` stays a raw `Value`: its
+/// `Py_ssize_t` conversion runs in the body, ahead of the pool being collected
+/// and before the sign check, as the clinic converter and body order them.
+macro_rules! iterable_and_r_args {
+    ($struct_name:ident, $py_name:literal) => {
+        #[derive(FromArgs)]
+        #[from_args(name = $py_name, style = c_named, at_most_total)]
+        struct $struct_name {
+            #[from_args(static_string = "IterableArg")]
+            iterable: Value,
+            r: Value,
+        }
+    };
+}
+
+iterable_and_r_args!(CombinationsArgs, "combinations");
+iterable_and_r_args!(CombinationsWithReplacementArgs, "combinations_with_replacement");
+
+/// `itertools.combinations(iterable, r)` — `r`-length subsequences.
+fn call_combinations(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let CombinationsArgs { iterable, r } = CombinationsArgs::from_args(args, vm)?;
+    build_combinations(iterable, r, false, vm)
+}
+
+/// `itertools.combinations_with_replacement(iterable, r)` — the same, with
+/// each item allowed to repeat.
+fn call_combinations_with_replacement(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let CombinationsWithReplacementArgs { iterable, r } = CombinationsWithReplacementArgs::from_args(args, vm)?;
+    build_combinations(iterable, r, true, vm)
+}
+
+/// Collects the pool and builds either `combinations` flavour.
+///
+/// `r` is converted before the pool is collected, but its sign is checked
+/// after: `combinations(5, -1)` reports the non-iterable, `combinations(5, 'x')`
+/// the bad `r`.
+fn build_combinations(iterable: Value, r: Value, replacement: bool, vm: &mut VM<'_>) -> RunResult<Value> {
+    let converted = ssize_arg(&r, vm);
+    r.drop_with(vm);
+    let r = match converted {
+        Ok(r) => r,
+        Err(error) => {
+            iterable.drop_with(vm);
+            return Err(error);
+        }
+    };
+    let pool: Vec<Value> = collect_owned_iterable(iterable, vm)?;
+    let mut pool_guard = DropGuard::new(pool, vm);
+    let (pool, vm) = pool_guard.as_parts_mut();
+    let r = usize::try_from(r).map_err(|_| ExcType::combinatoric_negative_r())?;
+    // Without replacement `r` past the pool yields nothing and allocates
+    // nothing; with it `r` is unbounded, so the index vector and the result
+    // tuples it sizes are preflighted (`combinations_with_replacement('a', 10**9)`).
+    // An `r` whose vector no allocation could address is CPython's bare
+    // `MemoryError` rather than a limit refusal, and stops `Vec` panicking on
+    // a capacity that overflows.
+    if replacement && !pool.is_empty() {
+        let bytes = index_bytes(r).ok_or_else(ExcType::allocation_too_large)?;
+        check_estimated_size(bytes.saturating_add(r.saturating_mul(VALUE_SIZE)), &vm.heap.tracker)?;
+    }
+    let (pool, vm) = pool_guard.into_parts();
+    let iter = ItertoolsIter::Combinations(Box::new(Combinations::new(pool, r, replacement)));
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+}
+
+/// Argument shape for `permutations(iterable, r=None)`.
+///
+/// Clinic and keyword-capable like [`CombinationsArgs`]. `r` is an `object`
+/// to clinic, so the body inspects it — and only once the pool exists.
+#[derive(FromArgs)]
+#[from_args(name = "permutations", style = c_named, at_most_total)]
+struct PermutationsArgs {
+    #[from_args(static_string = "IterableArg")]
+    iterable: Value,
+    #[from_args(default = Value::None)]
+    r: Value,
+}
+
+/// `itertools.permutations(iterable, r=None)` — `r`-length orderings.
+fn call_permutations(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let PermutationsArgs { iterable, r } = PermutationsArgs::from_args(args, vm)?;
+    let mut r_guard = DropGuard::new(r, vm);
+    let pool: Vec<Value> = collect_owned_iterable(iterable, r_guard.ctx())?;
+    let (r, vm) = r_guard.into_parts();
+    let mut pool_guard = DropGuard::new(pool, vm);
+    let (pool, vm) = pool_guard.as_parts_mut();
+    let r = permutations_r(r, pool.len(), vm)?;
+    let (pool, vm) = pool_guard.into_parts();
+    let iter = ItertoolsIter::Permutations(Box::new(Permutations::new(pool, r)));
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+}
+
+/// Resolves `permutations`' `r`: `None` means every item, and only a real
+/// `int` is accepted.
+///
+/// CPython checks the type rather than calling `__index__`, so `1.0` and an
+/// `__index__` object are both `Expected int as r`; a `bool` passes as an
+/// `int` subclass.
+fn permutations_r(r: Value, n: usize, vm: &mut VM<'_>) -> RunResult<usize> {
+    defer_drop!(r, vm);
+    if matches!(r, Value::None) {
+        Ok(n)
+    } else if matches!(r.py_type_heap(vm.heap), Type::Int | Type::Bool) {
+        usize::try_from(ssize_arg(r, vm)?).map_err(|_| ExcType::combinatoric_negative_r())
+    } else {
+        Err(ExcType::permutations_bad_r())
+    }
+}
+
+/// Argument shape for `product(*iterables, repeat=1)`.
+///
+/// CPython hand-parses this: the positionals are taken as they come, and the
+/// keywords alone go through `PyArg_ParseTupleAndKeywords`, whose one-slot
+/// `kwlist` gives the derive's `got an unexpected keyword argument 'x'`
+/// wording for a bad name. `repeat` stays a raw `Value` for the `Py_ssize_t`
+/// conversion in the body.
+#[derive(FromArgs)]
+#[from_args(name = "product")]
+struct ProductArgs {
+    #[from_args(varargs)]
+    iterables: Vec<Value>,
+    #[from_args(kw_only, default = Value::Int(1))]
+    repeat: Value,
+}
+
+/// `itertools.product(*iterables, repeat=1)` — the cartesian product.
+fn call_product(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let ProductArgs { iterables, repeat } = ProductArgs::from_args(args, vm)?;
+    // Each argument is moved out of the vec as it is collected; the ones a
+    // `repeat` of zero never reaches stay in it and are released by the guard,
+    // as `zip_longest` does — see there for why not `drain`.
+    defer_drop_mut!(iterables, vm);
+    let converted = ssize_arg(&repeat, vm);
+    repeat.drop_with(vm);
+    let repeat = usize::try_from(converted?).map_err(|_| ExcType::product_negative_repeat())?;
+
+    // `repeat=0` never touches the arguments: CPython skips collecting them,
+    // so `product(5, repeat=0)` is the single empty tuple, not a `TypeError`.
+    let width = if repeat == 0 { 0 } else { iterables.len() };
+    let slots = product_slots(width, repeat)?;
+
+    let mut pools_guard = DropGuard::new(Vec::with_capacity(width), vm);
+    for slot in iterables.iter_mut().take(width) {
+        let iterable = mem::replace(slot, Value::None);
+        let (pools, vm) = pools_guard.as_parts_mut();
+        let pool: Vec<Value> = collect_owned_iterable(iterable, vm)?;
+        pools.push(pool);
+    }
+    // The index vector and every result tuple scale with `repeat` alone, so
+    // they are preflighted (`product('ab', repeat=10**9)`). An empty pool
+    // empties the product, and `Product::new` then allocates nothing at all —
+    // so `product([], repeat=10**9)` must not be refused for a cost it never
+    // pays.
+    let (pools, vm) = pools_guard.as_parts_mut();
+    if pools.iter().all(|pool| !pool.is_empty()) {
+        check_estimated_size(slots.saturating_mul(size_of::<usize>() + VALUE_SIZE), &vm.heap.tracker)?;
+    }
+    let (pools, vm) = pools_guard.into_parts();
+    let iter = ItertoolsIter::Product(Box::new(Product::new(pools, slots)));
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+}
+
+/// The number of slots `product` will step, rejecting a `repeat` that puts the
+/// index vector beyond what a machine integer can address.
+///
+/// CPython bounds `nargs * repeat * sizeof(Py_ssize_t)` by `PY_SSIZE_T_MAX` and
+/// raises before it touches the arguments. The count this returns is the one
+/// [`Product::new`] is given, so the multiplication happens once, here, where
+/// it is checked.
+fn product_slots(width: usize, repeat: usize) -> RunResult<usize> {
+    match width.checked_mul(repeat) {
+        Some(slots) if index_bytes(slots).is_some() => Ok(slots),
+        _ => Err(ExcType::product_repeat_too_large()),
+    }
+}
+
+/// The byte size of an index vector of `slots` entries, or `None` when that is
+/// more than any allocation could address.
+fn index_bytes(slots: usize) -> Option<usize> {
+    slots
+        .checked_mul(size_of::<usize>())
+        .filter(|bytes| *bytes <= isize::MAX.cast_unsigned())
+}
+
+/// Argument shape for `groupby(iterable, key=None)`.
+///
+/// Clinic and keyword-capable like [`CombinationsArgs`]; `key` is never
+/// type-checked, as CPython discovers a non-callable only when the first
+/// item is keyed.
+#[derive(FromArgs)]
+#[from_args(name = "groupby", style = c_named, at_most_total)]
+struct GroupbyArgs {
+    #[from_args(static_string = "IterableArg")]
+    iterable: Value,
+    #[from_args(default = Value::None)]
+    key: Value,
+}
+
+/// `itertools.groupby(iterable, key=None)` — `(key, group)` per run of equal keys.
+fn call_groupby(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let GroupbyArgs { iterable, key } = GroupbyArgs::from_args(args, vm)?;
+    let (key, source) = resolve_source(key, iterable, vm)?;
+    let iter = ItertoolsIter::GroupBy(Box::new(GroupBy::new(source, key)));
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+}
+
+/// `itertools.chain.from_iterable(iterable)` — the items of each of
+/// `iterable`'s items, back to back.
+///
+/// `METH_O` in CPython, so keywords are rejected wholesale and the arity
+/// wording is `takes exactly one argument (N given)`.
+fn call_chain_from_iterable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let mut positional = args.into_pos_only("chain.from_iterable", vm.heap)?;
+    let count = positional.len();
+    if count != 1 {
+        positional.drop_with(vm);
+        return Err(ExcType::type_error_arg_count("chain.from_iterable", 1, count));
+    }
+    let iterable = positional.next().expect("exactly one positional argument");
+    // The outer iterable is resolved now — `chain.from_iterable(5)` raises
+    // here — while its items are resolved one at a time, as `chain`'s
+    // arguments are.
+    let outer = iterable.into_py_iter(vm)?;
+    let iter = ItertoolsIter::Chain(Chain::from_iterable(outer));
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+}
+
+/// Argument shape for `tee(iterable, n=2)`.
+///
+/// `PyArg_UnpackTuple` with a 1..2 arity, so arity errors read `tee expected at
+/// most 2 arguments, got 3`. The blanket keyword rejection is the one in this
+/// module that names the function with its module (`itertools.tee()`), hence
+/// the `kwarg_error_name`. `n` stays a raw `Value` for the `Py_ssize_t`
+/// conversion in the body, as `batched`'s does.
+#[derive(FromArgs)]
+#[from_args(name = "tee", style = unpack, kwarg_error_name = "itertools.tee")]
+struct TeeArgs {
+    #[from_args(pos_only)]
+    iterable: Value,
+    #[from_args(pos_only, default)]
+    n: Option<Value>,
+}
+
+/// `itertools.tee(iterable, n=2)` — `n` iterators over one source.
+fn call_tee(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let TeeArgs { iterable, n } = TeeArgs::from_args(args, vm)?;
+    let consumers = match n {
+        None => Ok(2),
+        Some(n) => {
+            let converted = tee_n(&n, vm);
+            n.drop_with(vm);
+            converted
+        }
+    };
+    let consumers = match consumers {
+        Ok(consumers) => consumers,
+        Err(error) => {
+            iterable.drop_with(vm);
+            return Err(error);
+        }
+    };
+
+    // No consumers means nothing to read from, and CPython never looks at the
+    // iterable in that case: `tee(5, 0)` is the empty tuple, not a `TypeError`.
+    if consumers == 0 {
+        iterable.drop_with(vm);
+        return Ok(allocate_tuple(TupleVec::new(), vm.heap));
+    }
+
+    // Resolved first, then tested: CPython calls `iter()` before it reaches for
+    // `__copy__`, so an object whose `__iter__` hands back an existing `_tee`
+    // is copied too rather than being drained into a second buffer.
+    let source = iterable.into_py_iter(vm)?;
+    // An existing `_tee` is copied rather than drained, so the copies replay
+    // from where it stands — CPython reaches for `__copy__` for the same
+    // reason. Anything else becomes the source of a fresh group.
+    let tees = if let Some(tees) = tee::fork_group(&source, consumers, vm) {
+        source.drop_with(vm);
+        tees
+    } else {
+        tee::new_group(source, consumers, vm)
+    };
+    Ok(allocate_tuple(TupleVec::from_vec(tees), vm.heap))
+}
+
+/// Coerces `tee`'s `n` and enforces CPython's "not negative" floor.
+///
+/// A group of `n` costs a heap entry and a buffer position per consumer, plus
+/// the tuple slot each is returned in — all of it inside one builtin call, so
+/// the whole group is charged before any of it is built. CPython reports an
+/// `n` too large as a bare `MemoryError` when its own allocation fails.
+fn tee_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
+    let n = ssize_arg(value, vm)?;
+    let n = usize::try_from(n).map_err(|_| ExcType::tee_negative_n())?;
+    let per_consumer = HEAP_ENTRY_SIZE + size_of::<usize>() + VALUE_SIZE;
+    let bytes = n
+        .checked_mul(per_consumer)
+        .filter(|bytes| *bytes <= isize::MAX.cast_unsigned())
+        .ok_or_else(ExcType::allocation_too_large)?;
+    check_estimated_size(bytes, &vm.heap.tracker)?;
+    Ok(n)
 }
 
 /// Resolves the iterable while keeping the callable safe from the error path.

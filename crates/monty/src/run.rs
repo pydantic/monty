@@ -1,5 +1,5 @@
 //! Public interface for running Monty code.
-use std::{borrow::Cow, mem, ops::ControlFlow, rc::Rc, sync::Arc};
+use std::{borrow::Cow, mem, ops::ControlFlow, sync::Arc};
 
 use monty_types::{AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker};
 pub use monty_types::{CompileOptions, HostClock};
@@ -9,12 +9,12 @@ use crate::{
     bytecode::{Code, CodeBuilder, Compiler, FrameExit, Opcode, VM},
     exception_private::{ExcTypeExt, RunError, RunResult},
     heap::{DropWithContext, Heap, HeapReader},
-    intern::{Interns, StringId},
+    intern::{CompileInterns, Interns, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     object_bridge::MontyObjectExt,
-    parse::{CodeRange, parse, parse_with_interner},
-    prepare::{prepare, prepare_with_existing_names},
+    parse::{CodeRange, parse_with_interner},
+    prepare::prepare_with_existing_names,
     run_progress::{
         RunProgress, answer_unserved_lookups, build_run_progress, check_snapshot_from_converted, convert_frame_exit,
     },
@@ -239,9 +239,8 @@ pub(crate) struct Executor {
     heap_capacity: usize,
 }
 
-/// The compiler tables a VM borrows mutably for a run: the module-level name
-/// map and the intern/function table. `eval()` / `exec()` extend both, so a
-/// REPL session owns one of these and moves it into each snippet's executor.
+/// Session-owned compiler tables, transferred to each snippet's executor.
+/// The VM borrows names mutably and committed intern entries immutably.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SessionTables {
     /// Module-level global names, slot by slot.
@@ -255,18 +254,13 @@ pub(crate) struct SessionTables {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Program {
     /// Compiled bytecode for the module, shared with the module frame.
-    pub(crate) module_code: Rc<Code>,
+    pub(crate) module_code: Code,
     /// Source code for error reporting (extracting preview lines for
     /// tracebacks). Shared with the REPL's per-snippet source table rather
     /// than copied, since a snippet's text is the largest thing a feed carries.
     pub(crate) code: Arc<str>,
-    /// Namespace slots that the REPL input-injection path writes into.
-    ///
-    /// Pre-resolved at snippet-construction time so the per-call hot path
-    /// (`inject_inputs_into_vm`) is an O(1) slot index instead of an
-    /// O(N-interns) `Interns::get_string_id_by_name` lookup per input.
-    /// One entry per input value, in the order the embedder passed them.
-    /// Empty for the standard (non-REPL) execution path.
+    /// Pre-resolved input slots, avoiding name lookups during REPL input injection.
+    /// Empty for the standard execution path.
     pub(crate) input_slots: Vec<NamespaceId>,
     /// UTF-8 byte cap for each operand repr in introspected assert messages.
     /// Stored with the compiled program and passed to every VM.
@@ -364,31 +358,18 @@ impl Executor {
         options: CompileOptions,
     ) -> Result<Self, MontyException> {
         check_identifier(&input_names)?;
-        let parse_result = parse(&code, script_name).map_err(|e| e.into_python_exc(script_name, &code))?;
-        let mut prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
-
-        // Compile the module to bytecode, which also compiles all nested functions.
-        // The compiler enforces the bytecode-format namespace-size limit and reports
-        // it as a `SyntaxError` rather than panicking on the `u16` cast.
-        let namespace_size = prepared.globals.len();
-        let mut arenas = prepared.interns.take_arenas();
-        let module_code = Compiler::compile_module(
-            &prepared.nodes,
-            &mut prepared.interns,
-            &mut arenas,
-            &prepared.globals,
-            options,
-        )
-        .map_err(|e| e.into_python_exc(script_name, &code))?;
-        prepared.interns.restore_arenas(arenas);
+        let interns = Interns::new(&code);
+        let mut globals = NameMap::new();
+        let (module_code, _) = compile_repl_snippet(&code, script_name, &mut globals, &interns, input_names, options)?;
+        let namespace_size = globals.len();
 
         Ok(Self {
             tables: SessionTables {
-                global_names: prepared.globals,
-                interns: prepared.interns,
+                global_names: globals,
+                interns,
             },
             program: Program {
-                module_code: Rc::new(module_code),
+                module_code,
                 code: Arc::from(code),
                 input_slots: Vec::new(),
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
@@ -414,25 +395,10 @@ impl Executor {
         self
     }
 
-    /// Compiles one REPL snippet against the session's compiler tables.
-    ///
-    /// This differs from [`new`](Self::new) in that it *extends* the session's
-    /// `NameMap` and [`Interns`] rather than building fresh ones, so old
-    /// `StringId`/`FunctionId` values and global slots stay stable and the
-    /// snippet runs without replaying earlier code.
-    ///
-    /// The tables are moved into the returned executor (nothing is cloned — this
-    /// is what keeps feed cost independent of session size) and must be handed
-    /// back to the session once the snippet is finished with. On failure they
-    /// are left in place: the name slots and functions the rejected snippet
-    /// appended are rolled back so they can't eat into the `u16` id spaces,
-    /// while its interned strings stay (u32 ids, harmless and stable).
-    ///
-    /// `input_names` are pre-registered in the globals map before preparation so
-    /// they receive stable namespace slots that the REPL input-injection logic
-    /// can use. `script_name` is the `<python-input-N>` name the snippet is
-    /// parsed under; `session` carries the user-facing name and working
-    /// directory the VM reports.
+    /// Compiles privately against the session's existing IDs and global slots.
+    /// On success the tables move into the executor; on failure they remain unchanged.
+    /// `script_name` identifies this feed's source; `session` supplies the user-facing
+    /// filename and working directory.
     pub(crate) fn new_repl_snippet(
         code: Arc<str>,
         script_name: &str,
@@ -444,9 +410,7 @@ impl Executor {
     ) -> Result<Self, MontyException> {
         check_identifier(input_names)?;
 
-        // Whether or not compilation succeeds, the extended tables are the
-        // session's tables from here on (`compile_module` rolls back the
-        // function table on failure; other ids are stable and harmless).
+        // Preparation assigns provisional global slots alongside the private intern IDs.
         let globals_len = globals.len();
         let compiled = compile_repl_snippet(&code, script_name, globals, interns, input_names, options);
         if compiled.is_err() {
@@ -457,10 +421,10 @@ impl Executor {
         Ok(Self {
             tables: SessionTables {
                 global_names: mem::take(globals),
-                interns: mem::take(interns),
+                interns: interns.take(),
             },
             program: Program {
-                module_code: Rc::new(module_code),
+                module_code,
                 code,
                 input_slots,
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
@@ -504,13 +468,14 @@ impl Executor {
         } else {
             format!("{name}(...)")
         };
-        let filename = interns.intern(script_name);
+        let mut overlay = CompileInterns::new(interns);
+        let filename = overlay.intern(script_name);
         let range = CodeRange {
             filename,
             start_byte: 0,
             end_byte: u32::try_from(code.len()).unwrap_or(u32::MAX),
         };
-        let args_name_id = interns.intern(CALL_ARGS_NAME);
+        let args_name_id = overlay.intern(CALL_ARGS_NAME);
         let args_slot = existing_globals
             .ensure_slot(args_name_id, range)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
@@ -531,20 +496,21 @@ impl Executor {
             .emit(Opcode::ReturnValue)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
-        let mut tables = SessionTables {
-            global_names: existing_globals,
-            interns: mem::take(interns),
-        };
-        let mut arenas = tables.interns.take_arenas();
+        let mut arenas = interns.extend_arenas();
         let module_code = builder
             .build(&mut arenas)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
-        tables.interns.restore_arenas(arenas);
+        overlay.commit();
+        interns.commit_arenas(arenas);
+        let tables = SessionTables {
+            global_names: existing_globals,
+            interns: interns.take(),
+        };
 
         Ok(Self {
             tables,
             program: Program {
-                module_code: Rc::new(module_code),
+                module_code,
                 code: Arc::from(code),
                 input_slots: vec![args_slot],
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
@@ -727,7 +693,7 @@ impl Program {
     #[cfg(test)]
     pub(crate) fn for_tests() -> Self {
         Self {
-            module_code: Rc::new(Code::empty()),
+            module_code: Code::empty(),
             code: Arc::from(""),
             input_slots: Vec::new(),
             assert_repr_max_bytes: AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
@@ -910,44 +876,35 @@ pub struct RefCountOutput {
     pub allocations_since_gc: u32,
 }
 
-/// Parse → prepare → compile pipeline for one REPL snippet, extending the
-/// session tables in place.
-///
-/// Split out of [`Executor::new_repl_snippet`] so every stage works on borrowed
-/// tables and any `?` early-return leaves them with the caller. Returns the
-/// module code and the namespace slot of each input, in order.
+/// Compiles a feed against existing IDs, publishing its intern and code buffers on success.
+/// The caller restores provisional global slots on failure.
 fn compile_repl_snippet(
     code: &str,
     script_name: &str,
     globals: &mut NameMap,
-    interns: &mut Interns,
-    input_names: &[String],
+    interns: &Interns,
+    input_names: impl IntoIterator<Item = impl AsRef<str>>,
     options: CompileOptions,
 ) -> Result<(Code, Vec<NamespaceId>), MontyException> {
-    // Pre-register input names so they get stable slots before preparation,
-    // and capture each input's slot index so injection doesn't have to do a
-    // name→StringId lookup at call time (one slot per input value, in order).
-    //
-    // Surfaced via the standard parse/prepare error path; if the embedder
-    // hands over more than `u16::MAX + 1` names the bytecode encoding can't
-    // represent them all.
-    let mut input_slots = Vec::with_capacity(input_names.len());
+    let mut overlay = CompileInterns::new(interns);
+    let input_names = input_names.into_iter();
+    let mut input_slots = Vec::with_capacity(input_names.size_hint().0);
     for name in input_names {
-        let name_id = interns.intern(name);
+        let name_id = overlay.intern(name.as_ref());
         let slot = globals
             .ensure_slot(name_id, CodeRange::default())
             .map_err(|e| e.into_python_exc(script_name, code))?;
         input_slots.push(slot);
     }
-
-    let nodes = parse_with_interner(code, script_name, interns).map_err(|e| e.into_python_exc(script_name, code))?;
     let nodes =
-        prepare_with_existing_names(nodes, interns, globals).map_err(|e| e.into_python_exc(script_name, code))?;
-    let mut arenas = interns.take_arenas();
-    let module_code = Compiler::compile_module(&nodes, interns, &mut arenas, globals, options)
-        .map_err(|e| e.into_python_exc(script_name, code));
-    interns.restore_arenas(arenas);
-    let module_code = module_code?;
+        parse_with_interner(code, script_name, &mut overlay).map_err(|e| e.into_python_exc(script_name, code))?;
+    let nodes =
+        prepare_with_existing_names(nodes, &overlay, globals).map_err(|e| e.into_python_exc(script_name, code))?;
+    let mut arenas = interns.extend_arenas();
+    let module_code = Compiler::compile_module(&nodes, &mut overlay, &mut arenas, globals, options)
+        .map_err(|e| e.into_python_exc(script_name, code))?;
+    overlay.commit();
+    interns.commit_arenas(arenas);
     Ok((module_code, input_slots))
 }
 

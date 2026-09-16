@@ -1169,6 +1169,71 @@ fn timeout_in_sort_key_loop() {
     );
 }
 
+/// `deepcopy` walks the whole graph inside a single call, reaching no dispatch
+/// checkpoint, so its fill loops are all that bound it. The source is built in
+/// an earlier feed, leaving only the copy to run against the limit.
+#[test]
+fn timeout_in_deepcopy_fill_loop() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("import copy\nx = [[0]] * 4_000_000", vec![], PrintWriter::Stdout)
+        .unwrap();
+    repl.tracker_mut().set_max_duration(Duration::from_millis(50));
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("copy.deepcopy(x)", vec![], PrintWriter::Stdout)
+        .expect_err("the copy must hit the time limit");
+    let elapsed = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    // Polled, this stops one budget in at any machine speed; unpolled it walks
+    // all 4M items before anything re-checks, which takes seconds.
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "should stop promptly, took {elapsed:?}"
+    );
+}
+
+/// `copy.copy` reaches no dispatch checkpoint either, and a dict copy has two
+/// Rust loops to get past: the snapshot of every pair, then the re-hashing
+/// fill. Both poll, so the copy stops a budget in whatever the dict costs per
+/// entry — the claim the tests above make, and what makes a fixed threshold
+/// safe here. Unpolled it copies all 4M entries first, which takes seconds.
+///
+/// Run at two budgets because the snapshot comes first: a short one stops
+/// inside it and never reaches the fill, so only a budget past the snapshot
+/// exercises the fill's own poll. Neither can flake — the passing time is a
+/// budget plus one poll interval either way.
+///
+/// What this cannot see on its own is the snapshot's poll going missing: the
+/// fill's would still stop the copy, a snapshot's worth of work later, which
+/// is under the threshold at this size. That poll shows up instead in what
+/// the passing time does — flat at a budget here, and proportional to the
+/// dict without it, which is what made the earlier version of this test fail
+/// under the coverage build.
+#[test]
+fn timeout_in_shallow_copy_fill_loop() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "import copy\nx = {i: i for i in range(4_000_000)}",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+
+    for budget in [50, 600] {
+        repl.tracker_mut().set_max_duration(Duration::from_millis(budget));
+        let start = Instant::now();
+        let exc = repl
+            .feed_run("copy.copy(x)", vec![], PrintWriter::Stdout)
+            .expect_err("the copy must hit the time limit");
+        let elapsed = start.elapsed();
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "budget {budget}ms");
+        assert!(
+            elapsed < Duration::from_millis(budget + 500),
+            "budget {budget}ms: should stop promptly, took {elapsed:?}"
+        );
+    }
+}
+
 /// Feeds shorter than the dispatch-checkpoint interval never probe GC inside
 /// the run loop, so only the host-boundary probe in `finish_host_turn` keeps
 /// a stream of tiny cycle-making snippets from accumulating garbage (and from
@@ -1233,6 +1298,27 @@ fn erroring_turns_still_hit_limits_at_exit() {
         .call_function("f", vec![], PrintWriter::Stdout)
         .expect_err("the call must fail");
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+/// A caller-supplied generator state or NaN can make a rejection loop run forever.
+#[test]
+fn random_rejection_loops_observe_deadlines() {
+    for expression in [
+        "rng.normalvariate()",
+        "rng.lognormvariate(0, 1)",
+        "rng.gammavariate(2, 1)",
+        "rng.gammavariate(float('nan'), 1)",
+        "rng.betavariate(2, 3)",
+        "rng.vonmisesvariate(0, float('nan'))",
+        "rng.binomialvariate(5, 0.1)",
+        "rng.binomialvariate(100, 0.5)",
+        "rng.sample(range(100), 2)",
+    ] {
+        let code = format!(
+            "import random\nrng = random.Random(0)\nrng.setstate((3, (0,) * 625, None))\ninterrupt()\n{expression}"
+        );
+        assert_timeout_promptly(&code, expression);
+    }
 }
 
 /// Helper: runs `code` up to its `interrupt()` call without a time limit,
@@ -1462,7 +1548,10 @@ fn itertools_adaptors_charge_recursion_only_when_they_delegate() {
     // The shallowest limit that runs a fixed nest, found rather than pinned:
     // what matters is the difference between the two innermost iterators, not
     // the absolute depth the surrounding frames happen to use.
-    let min_depth = |inner: &str| {
+    // `yields` is the one item the innermost iterator produces, which differs
+    // per adaptor — the combinatoric family yields tuples where the rest yield
+    // whatever their source held.
+    let min_depth = |inner: &str, yields: MontyObject| {
         let code = format!(
             r"
 import itertools
@@ -1478,7 +1567,7 @@ next(source)
                 let limits = ResourceLimits::default().max_recursion_depth(depth);
                 match ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout) {
                     Ok(value) => {
-                        assert_eq!(value, MontyObject::Int(1), "inner: {inner}");
+                        assert_eq!(value, yields, "inner: {inner}");
                         true
                     }
                     Err(_) => false,
@@ -1488,9 +1577,16 @@ next(source)
     };
 
     assert_eq!(
-        min_depth("itertools.accumulate([], initial=1)"),
-        min_depth("iter([1])"),
+        min_depth("itertools.accumulate([], initial=1)", MontyObject::Int(1)),
+        min_depth("iter([1])", MontyObject::Int(1)),
         "answering from adaptor state should cost no recursion level"
+    );
+    // The combinatoric family never delegates at all: the pool is collected at
+    // construction, so every step is index arithmetic over values it owns.
+    assert_eq!(
+        min_depth("itertools.product([1])", MontyObject::Tuple(vec![MontyObject::Int(1)])),
+        min_depth("iter([(1,)])", MontyObject::Tuple(vec![MontyObject::Int(1)])),
+        "stepping a pool should cost no recursion level"
     );
 }
 
@@ -1538,6 +1634,11 @@ const ITERTOOLS_INFINITE_LOOPS: &[&str] = &[
     "next(itertools.islice(itertools.count(1), 10**18, None))",
     "next(itertools.starmap(max, itertools.repeat(itertools.count(1))))",
     "next(itertools.batched(itertools.count(1), 10**18))",
+    // `groupby`'s skip loop: the key never changes, so the second `next` runs
+    // over the source forever looking for the next group.
+    "g = itertools.groupby(itertools.repeat(1))\nnext(g)\nnext(g)",
+    // `chain.from_iterable` resolving empty sources, none of which yields.
+    "next(itertools.chain.from_iterable(itertools.repeat([])))",
 ];
 
 /// Test that adaptors discarding items from an infinite source still time out.
@@ -1566,4 +1667,24 @@ fn timeout_in_a85decode_ignorechars() {
         "import base64\ndata = b'\\0' * 1000000\nignore = b'\\xff' * 1000000 + b'\\0'\nbase64.a85decode(data, ignorechars=ignore)",
         "a85decode with large ignorechars",
     );
+}
+
+/// A refused unpacked call must release the kwargs it never passed on.
+///
+/// `f(*args, **kwargs)` owns the kwargs dict until the argument pack is built,
+/// and building it became fallible when the `*args` clone gained its size
+/// preflight. Dropping a `Value` does not decrement its refcount, so the kwargs
+/// were stranded on the heap, which `memory-model-checks` turns into a panic.
+/// The limit sits between the tuple's cost and the clone's estimate, so only
+/// the clone is refused.
+#[test]
+fn a_refused_unpacked_call_releases_its_kwargs() {
+    let code = "def f(*a, **k):\n    return len(a)\nt = tuple(range(10_000))\nf(*t, **{'a': [1, 2, 3]})";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_memory(10_000 * 16 + 8);
+    let exc = ex
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .expect_err("the *args clone should be refused");
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }

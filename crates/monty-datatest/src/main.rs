@@ -954,6 +954,9 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
         })
         .into(),
         OsFunctionCall::DateTimeNow(tz) => dispatch_datetime_now(tz.as_ref()).into(),
+        // Deterministic "entropy": a fixture can only assert invariants on
+        // unseeded draws anyway, since CPython's side reads real entropy.
+        OsFunctionCall::Urandom(args) => MontyObject::Bytes(fixture_entropy(args.size)).into(),
         OsFunctionCall::GetEnviron => {
             let env_dict = vec![
                 (
@@ -1242,6 +1245,12 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
 
 /// Deterministic UTC timestamp for datetime test fixtures (2023-11-14 22:13:20 UTC).
 const DATETIME_FIXTURE_TIMESTAMP: i64 = 1_700_000_000;
+
+/// Answers `os.urandom(size)` with a fixed byte pattern of the requested length.
+fn fixture_entropy(size: u64) -> Vec<u8> {
+    #[expect(clippy::cast_possible_truncation)] // reduced mod 256 first
+    (0..size).map(|i| (i % 256) as u8).collect()
+}
 
 /// Dispatches a `DateTimeNow` OS call, returning a deterministic `MontyDateTime`.
 ///

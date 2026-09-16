@@ -178,6 +178,34 @@ fn external_function_in_reduce_raises_not_implemented() {
     );
 }
 
+/// A `__deepcopy__` reaching an external function cannot suspend either: the
+/// hook runs through `evaluate_function` like any other dunder, so the copy
+/// raises `NotImplementedError` at the `ext_fn()` call site inside the hook
+/// (documented in `limitations/copy.md`). Rust-side for the same reason as the
+/// tests above: on CPython the external is an ordinary function and the copy
+/// would succeed.
+#[test]
+fn external_function_in_deepcopy_raises_not_implemented() {
+    let code = "import copy\n\n\nclass Foo:\n    def __deepcopy__(self, memo):\n        return ext_fn()\n\n\ncopy.deepcopy(Foo())";
+    let mut ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let err = ex
+        .run_no_limits(vec![MontyObject::Function {
+            name: "ext_fn".to_owned(),
+            docstring: None,
+        }])
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 6, in __deepcopy__\n    return ext_fn()\n           ~~~~~~~~\nNotImplementedError: __deepcopy__: external function 'ext_fn' is not yet supported in this context"
+    );
+}
+
 /// A user `__next__` calling an external function cannot suspend: like
 /// `__repr__`/`__str__` it runs synchronously via `evaluate_function`, so the
 /// call raises `NotImplementedError` at the `ext_fn()` call site inside
@@ -310,15 +338,16 @@ fn not_implemented_in_list_sort_key_names_sort() {
 /// function and the call would succeed.
 ///
 /// Every call site is covered — the predicate helper shared by `takewhile`,
-/// `dropwhile` and `filterfalse`, plus `starmap` and `accumulate`, which each
-/// call their callable themselves and so name themselves in the error.
-/// `accumulate` needs two items, since the first is yielded untouched.
+/// `dropwhile` and `filterfalse`, plus `starmap`, `accumulate` and `groupby`,
+/// which each call their callable themselves and so name themselves in the
+/// error. `accumulate` needs two items, since the first is yielded untouched.
 #[test]
 fn external_function_as_itertools_callable_raises_not_implemented() {
     for (call, adaptor) in [
         ("itertools.takewhile(ext_fn, [1])", "takewhile"),
         ("itertools.starmap(ext_fn, [(1,)])", "starmap"),
         ("itertools.accumulate([1, 2], ext_fn)", "accumulate"),
+        ("itertools.groupby([1], ext_fn)", "groupby"),
     ] {
         let expr = format!("list({call})");
         let code = format!("import itertools\n\n{expr}");
@@ -496,4 +525,46 @@ d";
         result,
         MontyObject::List(vec![evil_instance(), MontyObject::Int(1), MontyObject::Int(2)])
     );
+}
+
+/// A `groupby` key comparison that steps the same `groupby` and consumes the
+/// pair it was comparing must not leave the skip loop with nothing to open a
+/// group from.
+///
+/// Rust-side because CPython segfaults on this program (its `_grouper` reaches
+/// through a parent whose state the comparison invalidated), so there is no
+/// shared behaviour for a `test_cases` fixture to assert. Monty reads the next
+/// pair instead, as CPython's own loop condition intends, and the run finishes
+/// with an ordinary `StopIteration` the program can catch.
+#[test]
+fn reentrant_groupby_key_comparison_does_not_panic() {
+    let code = "import itertools
+
+depth = [0]
+holder = [None]
+
+class Key:
+    def __eq__(self, other):
+        if depth[0] == 0 and holder[0] is not None:
+            depth[0] += 1
+            try:
+                key, group = next(holder[0])
+                next(group, None)
+            except StopIteration:
+                pass
+            depth[0] -= 1
+        return False
+
+grouped = itertools.groupby([Key(), Key(), Key(), Key(), Key()])
+holder[0] = grouped
+seen = 0
+try:
+    while True:
+        next(grouped)
+        seen += 1
+except StopIteration:
+    pass
+seen";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(ex.run_no_limits(vec![]).unwrap(), MontyObject::Int(1));
 }

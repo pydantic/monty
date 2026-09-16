@@ -741,6 +741,7 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, pa
                 os_call!("date_time_now")
             }
         }
+        Some(Call::Urandom(u)) => os_call!("urandom", args.size = u.size),
         None => os_call!(MISSING),
     });
     if args_cut {

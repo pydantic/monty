@@ -113,6 +113,10 @@ pub enum OsFunctionCall {
     /// Carries the timezone argument, `None` for a naive result.
     #[strum(serialize = "datetime.now")]
     DateTimeNow(Option<MontyTimeZone>),
+    /// Read `size` bytes of entropy from the host (for `os.urandom(size)`, and
+    /// how the `random` module seeds an unseeded generator).
+    #[strum(serialize = "os.urandom")]
+    Urandom(UrandomArgs),
 }
 
 impl OsFunctionCall {
@@ -159,6 +163,7 @@ impl OsFunctionCall {
             Self::Mkdir(a) => a.to_args(),
             Self::Rename(a) => a.to_args(),
             Self::Getenv(a) => a.to_args(),
+            Self::Urandom(a) => a.to_args(),
             // Unit & single-value non-FS variants.
             Self::GetEnviron | Self::DateToday => (vec![], vec![]),
             Self::DateTimeNow(tz) => (vec![tz.map_or(MontyObject::None, MontyObject::TimeZone)], vec![]),
@@ -260,7 +265,7 @@ impl OsFunctionCall {
             Self::Open(a) => Some(a.path.as_str()),
             Self::Mkdir(a) => Some(a.path.as_str()),
             Self::Rename(a) => Some(a.src.as_str()),
-            Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) => None,
+            Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) | Self::Urandom(_) => None,
         }
     }
 
@@ -298,7 +303,9 @@ impl OsFunctionCall {
             Self::Open(a) => (Some(&mut a.path), None),
             Self::Mkdir(a) => (Some(&mut a.path), None),
             Self::Rename(a) => (Some(&mut a.src), Some(&mut a.dst)),
-            Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) => (None, None),
+            Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) | Self::Urandom(_) => {
+                (None, None)
+            }
         };
         primary.into_iter().chain(dst)
     }
@@ -387,6 +394,14 @@ pub struct RenameCallArgs {
 pub struct GetenvArgs {
     pub key: String,
     pub default: MontyObject,
+}
+
+/// `os.urandom(size)` shape. The interpreter rejects a negative `size` before
+/// suspending, so the count is unsigned; the host answers with exactly `size`
+/// bytes. `size` is sandbox-controlled, so a handler should cap it before allocating.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
+pub struct UrandomArgs {
+    pub size: u64,
 }
 
 // =============================================================================

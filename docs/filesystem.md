@@ -241,10 +241,15 @@ handler at all.
 The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`, `open`,
 `Path.read_text`, `Path.read_bytes`, `Path.write_text`, `Path.write_bytes`, `Path.append_text`, `Path.append_bytes`,
 `Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.stat`, `Path.rename`, `Path.resolve`, `Path.absolute`,
-`os.getenv`, `os.environ`, `date.today` and `datetime.now`.
+`os.getenv`, `os.environ`, `date.today`, `datetime.now` and `os.urandom`.
+`os.urandom` also arrives, for 2496 bytes, the first time an unseeded `random` generator draws a value
+(see [random](limitations/random.md)).
 
 `os` callbacks run in your process with your process's authority.
 Everything in [designing a safe tool surface](host-functions.md#designing-a-safe-tool-surface) applies.
+Python's `AbstractOS.urandom()` raises `MemoryError` before allocating when a request exceeds `max_urandom_bytes`,
+1 MiB by default.
+`OSAccess(max_urandom_bytes=...)` sets the cap; see [os limitations](limitations/os.md).
 
 ### Resolution order
 

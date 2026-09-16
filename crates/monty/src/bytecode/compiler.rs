@@ -6,7 +6,7 @@
 //!
 //! Functions are compiled recursively: when a `PreparedFunctionDef` is encountered,
 //! its body is compiled to bytecode and a `Function` struct is created. All compiled
-//! functions are collected and returned along with the module code.
+//! functions are appended to the session's intern table.
 
 use std::borrow::Cow;
 
@@ -28,8 +28,7 @@ use crate::{
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
-    intern::{Interns, StringId},
-    modules::StandardLib,
+    intern::{CompileInterns, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try, syntax_error_in_snippet},
@@ -128,13 +127,16 @@ fn check_comp_generators(count: usize, position: CodeRange) -> Result<(), Compil
 
 /// Returns a position that locates `target` in source for error reporting.
 ///
-/// `Name` / `Starred` carry the identifier's position; `Tuple` carries its
-/// own. Used by comp-target unpacking when the per-leaf position isn't
-/// available at the error point.
+/// `Name` carries the identifier's position, `Starred` its inner target's, and
+/// every other form its own. Used by comp-target unpacking when the per-leaf
+/// position isn't available at the error point.
 fn target_position(target: &UnpackTarget) -> CodeRange {
     match target {
-        UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => ident.position,
-        UnpackTarget::Tuple { position, .. } => *position,
+        UnpackTarget::Name(ident) => ident.position,
+        UnpackTarget::Starred(inner) => target_position(inner),
+        UnpackTarget::Tuple { position, .. }
+        | UnpackTarget::Attr { position, .. }
+        | UnpackTarget::Subscript { position, .. } => *position,
     }
 }
 
@@ -243,26 +245,18 @@ fn too_many_call_args(count: usize, kind: &'static str, position: CodeRange) -> 
 /// `CodeBuilder`. It handles variable scoping, control flow, and expression
 /// evaluation order following Python semantics.
 ///
-/// Functions are compiled recursively and collected in the `functions` vector.
-/// When a `PreparedFunctionDef` is encountered, its body is compiled first,
-/// creating a `Function` struct that is added to the vector. The index of the
-/// function in this vector becomes the operand for MakeFunction/MakeClosure opcodes.
-pub struct Compiler<'a> {
+/// Functions are compiled recursively into a private [`CompileInterns`] overlay.
+/// Each function's body is compiled before registering it, so nested functions
+/// receive lower IDs. Those IDs become MakeFunction/MakeClosure operands.
+pub struct Compiler<'a, 'i> {
     /// Current code being built.
     code: CodeBuilder,
 
-    /// Intern tables: string lookups plus the function table every compiled
-    /// body is appended to (a `FunctionId` is its index, so nested functions get
-    /// lower ids). Borrowed so nested compilers reborrow it and the REPL keeps
-    /// its session table across a failed snippet;
-    /// [`compile_module`](Self::compile_module) rolls back what a failure appended.
-    interns: &'a mut Interns,
+    /// Private strings, literals and functions, published only after compilation succeeds.
+    interns: &'a mut CompileInterns<'i>,
 
-    /// Session code arenas. Each body's instructions and constants land here as
-    /// one block apiece at `build` time, so jump offsets stay body-relative and
-    /// `LoadConst` operands stay `u16`s from the `Code`'s recorded base.
-    /// Threaded separately from `interns` because a run holds them inline in the
-    /// VM; see [`Interns::take_arenas`].
+    /// Private code buffers with final session offsets. Jump offsets stay body-relative
+    /// and `LoadConst` operands stay `u16`s from the code object's recorded base.
     arenas: &'a mut CodeArenas,
 
     /// Enclosing control blocks whose cleanup is emitted by non-local exits.
@@ -520,12 +514,12 @@ enum CompSlot {
     Cell(u16),
 }
 
-impl<'a> Compiler<'a> {
+impl<'a, 'i> Compiler<'a, 'i> {
     /// Creates a compiler for a module or function.
     /// `frame_locals` is zero at module scope or the function namespace size;
     /// comprehension slots follow it on the operand stack.
     fn new(
-        interns: &'a mut Interns,
+        interns: &'a mut CompileInterns<'i>,
         arenas: &'a mut CodeArenas,
         is_module_scope: bool,
         frame_locals: u16,
@@ -557,7 +551,7 @@ impl<'a> Compiler<'a> {
     /// value of the last expression, or None if empty.
     pub fn compile_module(
         nodes: &[PreparedNode],
-        interns: &mut Interns,
+        interns: &mut CompileInterns<'_>,
         arenas: &mut CodeArenas,
         globals: &NameMap,
         options: CompileOptions,
@@ -582,7 +576,7 @@ impl<'a> Compiler<'a> {
     /// [`compile_module`](Self::compile_module).
     pub(crate) fn compile_snippet(
         nodes: &[PreparedNode],
-        interns: &mut Interns,
+        interns: &mut CompileInterns<'_>,
         arenas: &mut CodeArenas,
         globals: &NameMap,
         options: CompileOptions,
@@ -605,7 +599,7 @@ impl<'a> Compiler<'a> {
     /// `eval()` / `exec()` snippet.
     fn compile_module_inner(
         nodes: &[PreparedNode],
-        interns: &mut Interns,
+        interns: &mut CompileInterns<'_>,
         arenas: &mut CodeArenas,
         globals: &NameMap,
         options: CompileOptions,
@@ -642,7 +636,7 @@ impl<'a> Compiler<'a> {
     /// no explicit return statement.
     fn compile_function_body(
         func_def: &PreparedFunctionDef,
-        interns: &mut Interns,
+        interns: &mut CompileInterns<'_>,
         arenas: &mut CodeArenas,
         num_locals: u16,
         flags: ScopeFlags,
@@ -865,7 +859,7 @@ impl<'a> Compiler<'a> {
     /// This involves:
     /// 1. Recursively compiling the function body to bytecode
     /// 2. Creating a Function struct with the compiled Code
-    /// 3. Adding the Function to the compiler's functions vector
+    /// 3. Adding the Function to the session's intern table
     /// 4. Emitting bytecode to evaluate defaults and create the function at runtime
     fn compile_function_def(
         &mut self,
@@ -936,7 +930,7 @@ impl<'a> Compiler<'a> {
         &mut self,
         func_def: &PreparedFunctionDef,
         what: &'static str,
-        compile_body: impl FnOnce(&mut Interns, &mut CodeArenas, u16) -> Result<Code, CompileError>,
+        compile_body: impl FnOnce(&mut CompileInterns<'_>, &mut CodeArenas, u16) -> Result<Code, CompileError>,
     ) -> Result<(), CompileError> {
         let func_pos = func_def.name.position;
 
@@ -1091,13 +1085,16 @@ impl<'a> Compiler<'a> {
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
     /// emits `LoadLocal`; it would transparently emit `LoadCell` if that ever
     /// changed, so no assumption is hard-coded here.
-    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "class assembly needs its name, members and source location"
+    )]
     fn compile_class_body(
         body: &[PreparedNode],
         members: &[Identifier],
         class_name: &Identifier,
         position: CodeRange,
-        interns: &mut Interns,
+        interns: &mut CompileInterns<'_>,
         arenas: &mut CodeArenas,
         num_locals: u16,
         flags: ScopeFlags,
@@ -1133,36 +1130,17 @@ impl<'a> Compiler<'a> {
         code.build(arenas)
     }
 
-    /// Compiles an import statement.
-    ///
-    /// Emits `LoadModule` to create the module, then stores it to the binding name.
-    /// If the module is unknown, emits `RaiseImportError` to defer the error to runtime.
-    /// This allows imports inside `if TYPE_CHECKING:` blocks to compile successfully.
+    /// Compiles an import, resolving the module only when execution reaches it.
     fn compile_import(&mut self, module_name: StringId, binding: &Identifier) -> Result<(), CompileError> {
         let position = binding.position;
         self.code.set_location(position, None);
-
-        // Look up the module by name
-        if let Some(builtin_module) = StandardLib::from_string_id(module_name) {
-            // Known module - emit LoadModule
-            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8)?;
-            // Store to the binding (respects Local/Global/Cell scope)
-            self.compile_store(binding)?;
-        } else {
-            // Unknown module - defer error to runtime with RaiseImportError
-            // This allows TYPE_CHECKING imports to compile without error
-            let name_const = self.code.add_const(Value::InternString(module_name))?;
-            self.code.emit_u16(Opcode::RaiseImportError, name_const)?;
-        }
-        Ok(())
+        self.code
+            .emit_u16(Opcode::LoadModule, check_name_index_u16(module_name, position)?)?;
+        self.compile_store(binding)
     }
 
-    /// Compiles a `from module import name, ...` statement.
-    ///
-    /// Creates the module once, then loads each attribute and stores to the binding.
-    /// Invalid attribute names will raise `AttributeError` at runtime.
-    /// If the module is unknown, emits `RaiseImportError` to defer the error to runtime.
-    /// This allows imports inside `if TYPE_CHECKING:` blocks to compile successfully.
+    /// Creates the module once, then loads and binds each imported attribute.
+    /// Missing modules and attributes raise only when execution reaches the import.
     fn compile_import_from(
         &mut self,
         module_name: StringId,
@@ -1170,31 +1148,16 @@ impl<'a> Compiler<'a> {
         position: CodeRange,
     ) -> Result<(), CompileError> {
         self.code.set_location(position, None);
-
-        // Look up the module
-        if let Some(builtin_module) = StandardLib::from_string_id(module_name) {
-            // Known module - emit LoadModule
-            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8)?;
-
-            // For each name to import
-            for (i, (import_name, binding)) in names.iter().enumerate() {
-                // Dup the module if this isn't the last import (last one consumes the module)
-                if i < names.len() - 1 {
-                    self.code.emit(Opcode::Dup)?;
-                }
-
-                // Load the attribute from the module (raises ImportError if not found)
-                let name_idx = check_name_index_u16(*import_name, position)?;
-                self.code.emit_u16(Opcode::LoadAttrImport, name_idx)?;
-
-                // Store to the binding
-                self.compile_store(binding)?;
+        self.code
+            .emit_u16(Opcode::LoadModule, check_name_index_u16(module_name, position)?)?;
+        for (i, (import_name, binding)) in names.iter().enumerate() {
+            // Preserve the module for subsequent attributes; the last load consumes it.
+            if i < names.len() - 1 {
+                self.code.emit(Opcode::Dup)?;
             }
-        } else {
-            // Unknown module - defer error to runtime with RaiseImportError
-            // This allows TYPE_CHECKING imports to compile without error
-            let name_const = self.code.add_const(Value::InternString(module_name))?;
-            self.code.emit_u16(Opcode::RaiseImportError, name_const)?;
+            let name_idx = check_name_index_u16(*import_name, position)?;
+            self.code.emit_u16(Opcode::LoadAttrImport, name_idx)?;
+            self.compile_store(binding)?;
         }
         Ok(())
     }
@@ -3293,8 +3256,20 @@ impl<'a> Compiler<'a> {
         };
 
         match target {
-            UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => {
+            UnpackTarget::Name(ident) => {
                 sim.push(SimItem::Leaf(ident.namespace_id().as_u16()));
+            }
+            UnpackTarget::Starred(inner) => {
+                sim.push(SimItem::Pending(inner));
+                self.process_unpack_sim(sim)?;
+            }
+            // `prepare` rejects these in a comprehension target, where a leaf
+            // has to be a comp-var slot rather than a store to an object.
+            UnpackTarget::Attr { position, .. } | UnpackTarget::Subscript { position, .. } => {
+                return Err(CompileError::new(
+                    "internal error: comprehension target must be a name",
+                    *position,
+                ));
             }
             UnpackTarget::Tuple { targets, position } => {
                 // Pick UNPACK_EX vs UNPACK_SEQUENCE based on whether a starred
@@ -3355,11 +3330,17 @@ impl<'a> Compiler<'a> {
                 // Single identifier - just store directly
                 self.compile_store(ident)?;
             }
-            UnpackTarget::Starred(ident) => {
-                // Starred target by itself (shouldn't happen at top level normally)
-                // Just store as if it were a name
-                self.compile_store(ident)?;
+            UnpackTarget::Starred(inner) => {
+                // `UnpackEx` has already built the list for this slot, so the
+                // captured value is stored like any other target.
+                self.compile_unpack_target(inner)?;
             }
+            UnpackTarget::Attr { object, attr, position } => self.emit_attr_store(object, attr, *position)?,
+            UnpackTarget::Subscript {
+                container,
+                index,
+                position,
+            } => self.emit_subscript_store(container, index, *position)?,
             UnpackTarget::Tuple { targets, position } => {
                 // Check if there's a starred target
                 let star_idx = targets.iter().position(|t| matches!(t, UnpackTarget::Starred(_)));

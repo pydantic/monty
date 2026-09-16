@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, Protocol, Sequence, TypeAlias, TypeGuard
@@ -46,7 +47,11 @@ OsFunction = Literal[
     'os.environ',
     'date.today',
     'datetime.now',
+    'os.urandom',
 ]
+
+MAX_URANDOM_BYTES_DEFAULT: int = 1_048_576
+"""Default maximum host allocation per `urandom()` call. 1 MiB."""
 
 
 class StatResult(NamedTuple):
@@ -132,8 +137,11 @@ class AbstractOS(ABC):
     filesystem and selected host-backed operations that Monty code can interact
     with via `pathlib.Path`, `os`, `date.today()`, and `datetime.now()`.
 
-    Pass an instance as the `os` parameter to `Monty.run()`.
+    Pass an instance to `feed_run(code, os=...)`.
     """
+
+    max_urandom_bytes: int = MAX_URANDOM_BYTES_DEFAULT
+    """Maximum host allocation per `urandom()` call; defaults to 1 MiB."""
 
     def __call__(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
         """Adapter used by Monty's `os=` callback surface.
@@ -223,6 +231,8 @@ class AbstractOS(ABC):
                 return self.date_today()
             case 'datetime.now':
                 return self.datetime_now(*args)
+            case 'os.urandom':
+                return self.urandom(*args)
             case _:  # pyright: ignore[reportUnnecessaryComparison]
                 raise NotImplementedError(f'Unknown OS function: {function_name}')
 
@@ -545,6 +555,17 @@ class AbstractOS(ABC):
         """
         return datetime.datetime.now(tz=tz)
 
+    def urandom(self, size: int) -> bytes:
+        """Return `size` random bytes for Monty's `os.urandom(size)` host callback.
+
+        Raises `MemoryError` before allocating if `size` exceeds `max_urandom_bytes`.
+        An unseeded `random` generator requests 2496 bytes on its first draw.
+        An override that allocates host memory must apply its own limit.
+        """
+        if size > self.max_urandom_bytes:
+            raise MemoryError(f'os.urandom() size exceeds max_urandom_bytes ({self.max_urandom_bytes})')
+        return os.urandom(size)
+
 
 class AbstractFile(Protocol):
     """Protocol defining the interface for files used with OSAccess.
@@ -787,6 +808,7 @@ class OSAccess(AbstractOS):
     Attributes:
         files: List of AbstractFile objects registered with this filesystem.
         environ: Dictionary of environment variables accessible via os.getenv().
+        max_urandom_bytes: Maximum bytes per host entropy request.
     """
 
     files: list[AbstractFile]
@@ -799,6 +821,7 @@ class OSAccess(AbstractOS):
         environ: dict[str, str] | None = None,
         *,
         root_dir: str | PurePosixPath = '/',
+        max_urandom_bytes: int = MAX_URANDOM_BYTES_DEFAULT,
     ):
         """Create a virtual filesystem with the given files.
 
@@ -810,12 +833,20 @@ class OSAccess(AbstractOS):
                 Isolated from the real environment.
             root_dir: Base directory for normalizing relative file paths. Relative
                 paths in files will be prefixed with this. Default is '/'.
+            max_urandom_bytes: Maximum bytes per `os.urandom()` call, defaulting to 1 MiB.
+                Zero rejects nonempty requests, including unseeded `random` draws.
 
         Raises:
             AssertionError: If root_dir is not an absolute path.
             ValueError: If a file path conflicts with another file (e.g., trying
-                to create a file inside another file's path).
+                to create a file inside another file's path), or `max_urandom_bytes` is negative.
+            TypeError: If `max_urandom_bytes` is not an int (a float `nan` would disable the cap).
         """
+        if not isinstance(max_urandom_bytes, int):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError(f'max_urandom_bytes must be an int, not {type(max_urandom_bytes).__name__}')
+        if max_urandom_bytes < 0:
+            raise ValueError('max_urandom_bytes must be non-negative')
+        self.max_urandom_bytes = max_urandom_bytes
         self.files = list(files) if files else []
         self.environ = environ or {}
         # Initialize tree with root directory - / is always present

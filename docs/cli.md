@@ -67,6 +67,11 @@ Only the file argument's name is used, so `monty ./scripts/run.py` and `monty /a
 ## The clock
 
 `date.today()` and `datetime.now()` read the machine's clock and local timezone.
+Nothing answers `os.urandom()` in the CLI, so it and any unseeded `random` draw fail.
+Without `--mount` the script runs in-process and the call raises
+`NotImplementedError: OS function 'os.urandom' not implemented with standard execution`; with a mount it goes
+through the host loop and raises `RuntimeError: 'os.urandom' is not supported in this environment`.
+Seed explicitly first, `random.seed(0)` for example: `random.seed()` with no argument also asks for entropy.
 
 ```console
 $ monty -c "from datetime import datetime; print(datetime.now())"

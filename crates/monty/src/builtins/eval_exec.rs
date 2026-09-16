@@ -8,13 +8,13 @@ use std::{str, sync::Arc};
 
 use crate::{
     args::{ArgValues, FromArgs, Signature},
-    bytecode::{CallResult, Compiler, VM},
+    bytecode::{CallResult, Compiler, FrameNamespace, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::{Identifier, Node},
     function::Function,
     heap::{DropGuard, HeapData, HeapId},
-    intern::{FunctionId, InternsCheckpoint, StaticStrings},
+    intern::{CompileInterns, FunctionId, StaticStrings},
     name_map::NameMap,
     parse::{CodeRange, parse_expression_with_interner, parse_module_with_filename_id},
     prepare::{SnippetNames, prepare_snippet},
@@ -117,87 +117,65 @@ fn run_snippet(
             SimpleException::new_msg(ExcType::SyntaxError, "source code string cannot contain null bytes").into(),
         );
     }
-    // Everything a rejected snippet interned or compiled is dropped again, so
-    // a loop of failing calls does not grow the session.
-    let checkpoint = SnippetCheckpoint::take(vm);
-    let filename_id = vm.interns.add_eval_source(Arc::clone(source));
-
-    // `eval` accepts an expression with leading blanks and newlines; the
-    // parser sees the trimmed text, so its offsets are shifted back to the
-    // caller's before a line number is derived from them.
-    let nodes = match builtin {
-        Builtin::Exec => parse_module_with_filename_id(source, filename_id, vm.interns),
-        Builtin::Eval => {
-            let trimmed = source.trim_start();
-            let skipped = u32::try_from(source.len() - trimmed.len()).unwrap_or(u32::MAX);
-            parse_expression_with_interner(trimmed, filename_id, vm.interns)
-                .map(|expr| vec![Node::Return(Some(expr))])
-                .map_err(|e| e.shifted(skipped))
-        }
-    };
-    let nodes = match nodes {
-        Ok(nodes) => nodes,
-        Err(e) => {
-            checkpoint.restore(vm);
-            return Err(e.into_run_error(source));
-        }
-    };
-
-    // The namespace owns its dict references from here; the guard releases
-    // them if compilation fails.
     for dict in globals.into_iter().chain(locals) {
         vm.heap.inc_ref(dict);
     }
     let (names, namespace) = vm.snippet_namespace(globals, locals)?;
+    let globals_len = vm.global_names.len();
+    let result = compile_and_push(builtin, source, names, namespace, vm);
+    if result.is_err() {
+        vm.global_names.truncate(globals_len);
+    }
+    result
+}
+
+/// Compiles privately and publishes only after the snippet's frame is admitted.
+fn compile_and_push(
+    builtin: Builtin,
+    source: &Arc<str>,
+    names: SnippetNames,
+    namespace: Box<FrameNamespace>,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
     let mut namespace_guard = DropGuard::new(namespace, vm);
     let (_, vm) = namespace_guard.as_parts_mut();
+    let mut overlay = CompileInterns::new(vm.interns);
+    let filename_id = overlay.add_eval_source(Arc::clone(source));
+    let nodes = match builtin {
+        Builtin::Exec => parse_module_with_filename_id(source, filename_id, &mut overlay),
+        Builtin::Eval => {
+            let trimmed = source.trim_start();
+            let skipped = u32::try_from(source.len() - trimmed.len()).unwrap_or(u32::MAX);
+            parse_expression_with_interner(trimmed, filename_id, &mut overlay)
+                .map(|expr| vec![Node::Return(Some(expr))])
+                .map_err(|e| e.shifted(skipped))
+        }
+    }
+    .map_err(|e| e.into_run_error(source))?;
 
     let options = vm.env.options;
+    let mut arenas = vm.arenas.extension();
     let code = match names {
-        // Names that exist only inside a dict-namespaced snippet never take
-        // session slots: a scratch map serves the compile.
         SnippetNames::NameOverDict => {
             let mut scratch = NameMap::new();
-            prepare_snippet(nodes, vm.interns, &mut scratch, names)
-                .map_err(|e| e.into_run_error(source))
-                .and_then(|nodes| {
-                    Compiler::compile_snippet(&nodes, vm.interns, &mut vm.arenas, &scratch, options, true)
-                        .map_err(|e| e.into_run_error(source))
-                })
+            let nodes = prepare_snippet(nodes, &overlay, &mut scratch, names).map_err(|e| e.into_run_error(source))?;
+            Compiler::compile_snippet(&nodes, &mut overlay, &mut arenas, &scratch, options, true)
         }
         SnippetNames::Slots | SnippetNames::NameOverSlots => {
-            let compiled = prepare_snippet(nodes, vm.interns, vm.global_names, names)
-                .map_err(|e| e.into_run_error(source))
-                .and_then(|nodes| {
-                    Compiler::compile_snippet(&nodes, vm.interns, &mut vm.arenas, vm.global_names, options, false)
-                        .map_err(|e| e.into_run_error(source))
-                });
-            // An accepted snippet may have added globals the slot array has
-            // to cover; a rejected one gives its slots back with the rest.
-            if compiled.is_ok() {
-                vm.globals.resize_with(vm.global_names.len(), || Value::Undefined);
-            }
-            compiled
+            let nodes =
+                prepare_snippet(nodes, &overlay, vm.global_names, names).map_err(|e| e.into_run_error(source))?;
+            Compiler::compile_snippet(&nodes, &mut overlay, &mut arenas, vm.global_names, options, false)
         }
-    };
-    let code = match code {
-        Ok(code) => code,
-        Err(e) => {
-            checkpoint.restore(vm);
-            return Err(e);
-        }
-    };
+    }
+    .map_err(|e| e.into_run_error(source))?;
 
-    // The snippet is a `<module>`-named function with no parameters or
-    // locals, so its frame serializes and its traceback frames name it like
-    // module code.
     let position = CodeRange {
         filename: filename_id,
         start_byte: 0,
         end_byte: u32::try_from(source.len()).unwrap_or(u32::MAX),
     };
     let function = Function::new(
-        Identifier::new(StaticStrings::Module.into(), position),
+        Identifier::new(overlay.intern_static(StaticStrings::Module), position),
         Signature::default(),
         0,
         Vec::new(),
@@ -208,58 +186,22 @@ fn run_snippet(
         false,
         code,
     );
-    let index = vm.interns.push_function(function);
-    let Ok(func_id) = u16::try_from(index).map(FunctionId::from_index) else {
-        checkpoint.restore(vm);
-        return Err(SimpleException::new_msg(
+    let index = overlay.functions_len();
+    let func_id = u16::try_from(index).map(FunctionId::from_index).map_err(|_| {
+        SimpleException::new_msg(
             ExcType::SyntaxError,
             format!("session defines too many functions; maximum is {}", u16::MAX),
         )
-        .into());
-    };
+    })?;
 
     let (namespace, vm) = namespace_guard.into_parts();
-    // The push releases the namespace itself if it fails (recursion limit).
-    if let Err(e) = vm.push_snippet_frame(func_id, namespace) {
-        checkpoint.restore(vm);
-        return Err(e);
-    }
+    // Frame construction copies offsets, not references. No Python runs before commit.
+    vm.push_snippet_frame(func_id, &function.code, namespace)?;
+    overlay.push_function(function);
+    overlay.commit();
+    vm.arenas.commit(arenas);
+    vm.globals.resize_with(vm.global_names.len(), || Value::Undefined);
     Ok(CallResult::FramePushed)
-}
-
-/// What a snippet appends to the session as it is parsed and compiled: intern
-/// table entries, code arena bytes and module global slots. Taken before the
-/// parse so a snippet rejected at any point up to its frame push can be
-/// dropped again in full.
-#[derive(Clone, Copy)]
-struct SnippetCheckpoint {
-    interns: InternsCheckpoint,
-    bytecode: usize,
-    constants: usize,
-    global_names: usize,
-    globals: usize,
-}
-
-impl SnippetCheckpoint {
-    fn take(vm: &VM<'_>) -> Self {
-        Self {
-            interns: vm.interns.checkpoint(),
-            bytecode: vm.arenas.bytecode.len(),
-            constants: vm.arenas.constants.len(),
-            global_names: vm.global_names.len(),
-            globals: vm.globals.len(),
-        }
-    }
-
-    /// Drops everything appended since [`take`](Self::take). The slots a
-    /// rejected snippet added are still `Undefined`: it never ran.
-    fn restore(self, vm: &mut VM<'_>) {
-        vm.interns.rollback(self.interns);
-        vm.arenas.bytecode.truncate(self.bytecode);
-        vm.arenas.constants.truncate(self.constants);
-        vm.global_names.truncate(self.global_names);
-        vm.globals.truncate(self.globals);
-    }
 }
 
 /// The snippet's text: a `str`, or `bytes` decoded as UTF-8.

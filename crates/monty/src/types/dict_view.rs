@@ -247,7 +247,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictKeysView> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string() {
+        match attr.static_string(vm.interns) {
             Some(StaticStrings::Isdisjoint) => {
                 let other = args.get_one_arg("dict_keys.isdisjoint", vm.heap)?;
                 defer_drop!(other, vm);
@@ -523,7 +523,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictItemsView> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string() {
+        match attr.static_string(vm.interns) {
             Some(StaticStrings::Isdisjoint) => {
                 let other = args.get_one_arg("dict_items.isdisjoint", vm.heap)?;
                 defer_drop!(other, vm);
@@ -647,13 +647,13 @@ fn dict_keys_eq_set_like<'h>(
         return Ok(false);
     }
 
-    let mut guard = vm.recursion_guard()?;
-    let vm = &mut *guard;
-    let len = dict.get(vm.heap).len();
-    for i in 0..len {
-        vm.heap.tracker.check_time_every(i)?;
-        let key = dict.get(vm.heap).key_at(i).unwrap().clone_with_heap(vm);
-        defer_drop!(key, vm);
+    // `contains` runs user `__hash__`/`__eq__`, which can resize this very dict,
+    // so the walk goes through `DictIter`: it re-checks the live length each step
+    // and raises like CPython instead of indexing an entry that is gone. Its
+    // recursion token also bounds a view-vs-view comparison recursing back here.
+    let iter = dict.iter(vm)?;
+    defer_drop_mut!(iter, vm);
+    while let Some(key) = iter.next_key(vm)? {
         if !contains(key, vm)? {
             return Ok(false);
         }
@@ -672,12 +672,10 @@ fn dict_items_eq_set_like<'h>(
         return Ok(false);
     }
 
-    let mut guard = vm.recursion_guard()?;
-    let vm = &mut *guard;
-    let len = dict.get(vm.heap).len();
-    for i in 0..len {
-        vm.heap.tracker.check_time_every(i)?;
-        let (key, value) = dict.get(vm.heap).item_at(i).unwrap();
+    // Mutation-safe for the same reason as the keys twin above.
+    let iter = dict.iter(vm)?;
+    defer_drop_mut!(iter, vm);
+    while let Some((key, value)) = iter.next(vm)? {
         let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], vm.heap);
         defer_drop!(item, vm);
         if !contains(item, vm)? {

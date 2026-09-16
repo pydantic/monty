@@ -267,3 +267,241 @@ assert repr({1} & {1.0}) == '{1.0}'
 assert repr({1.0} & {1}) == '{1}'
 assert repr({1, 2} & {1.0}) == '{1.0}'
 assert repr({1.0} & {1, 2}) == '{1.0}'
+
+# === set-to-set algebra reuses each element's cached hash ===
+# CPython takes the hash stored alongside an entry rather than calling
+# `__hash__` again, so none of these operations run user hash code.
+_hash_calls = []
+
+
+class Counted:
+    def __init__(self, n):
+        self.n = n
+
+    def __hash__(self):
+        _hash_calls.append(self.n)
+        return self.n
+
+    def __eq__(self, other):
+        return isinstance(other, Counted) and self.n == other.n
+
+
+def _counted_pair():
+    a = {Counted(1), Counted(2)}
+    b = {Counted(2), Counted(3)}
+    _hash_calls.clear()
+    return a, b
+
+
+a, b = _counted_pair()
+assert len(a - b) == 1
+assert _hash_calls == []
+
+a, b = _counted_pair()
+assert len(a & b) == 1
+assert _hash_calls == []
+
+a, b = _counted_pair()
+assert len(a | b) == 3
+assert _hash_calls == []
+
+a, b = _counted_pair()
+assert len(a ^ b) == 2
+assert _hash_calls == []
+
+a, b = _counted_pair()
+assert a.issubset(b) is False
+assert a.isdisjoint(b) is False
+assert (a == b) is False
+assert _hash_calls == []
+
+a, b = _counted_pair()
+a.update(b)
+assert len(a) == 3
+assert _hash_calls == []
+
+a, b = _counted_pair()
+assert len(set(a)) == 2
+assert len(frozenset(a)) == 2
+assert len(frozenset(a) - b) == 1
+assert _hash_calls == []
+
+# a frozenset source is copied the same way, hashes and all
+a, b = _counted_pair()
+frozen_a = frozenset(a)
+_hash_calls.clear()
+assert len(set(frozen_a)) == 2
+assert len(frozenset(frozen_a)) == 2
+assert len(frozen_a - b) == 1
+assert _hash_calls == []
+
+# the result holds the right element, and comparing two sets hashes nothing either
+a = {Counted(1), Counted(2)}
+b = {Counted(2), Counted(3)}
+expected = {Counted(1)}
+_hash_calls.clear()
+assert (a - b) == expected
+assert _hash_calls == []
+
+# an arbitrary iterable on the right has no cached hashes, so it is hashed
+a, b = _counted_pair()
+assert len(a.difference(list(b))) == 1
+assert _hash_calls == [2, 3]
+
+
+# === a `__hash__` that mutates the set is never reached by set algebra ===
+# Regression: these walked the left-hand set by index while re-hashing every
+# element, so a `__hash__` clearing the set left the walk indexing past its end.
+_armed = False
+
+
+class Clearing:
+    def __hash__(self):
+        if _armed:
+            clearing.clear()
+        return 0
+
+
+clearing = {Clearing(), Clearing()}
+_armed = True
+assert len(clearing - set()) == 2
+assert len(clearing & clearing) == 2
+assert len(clearing | set()) == 2
+assert len(clearing ^ set()) == 2
+assert len(set(clearing)) == 2
+assert clearing.isdisjoint(set()) is True
+assert clearing.issubset(clearing) is True
+assert len(clearing) == 2
+
+# the control: a membership probe does hash, so the same class empties the set
+assert (Clearing() in clearing) is False
+assert len(clearing) == 0
+
+
+# === an `__eq__` that raises during insertion propagates ===
+# Regression: building a fresh set probed the new table with an `__eq__` whose
+# exception was discarded as "not equal", so colliding elements both landed and
+# the operation returned a set where CPython raises.
+_raising = False
+_raising_eq_calls = []
+
+
+class Raising:
+    def __init__(self, n):
+        self.n = n
+
+    def __hash__(self):
+        return 0
+
+    def __eq__(self, other):
+        if _raising:
+            _raising_eq_calls.append(self.n)
+            raise ValueError('boom')
+        return isinstance(other, Raising) and self.n == other.n
+
+
+def _capture_error(fn):
+    """Runs `fn` and reports the exception it raised as `(type name, message)`."""
+    try:
+        fn()
+    except Exception as exc:
+        return type(exc).__name__, str(exc)
+    return None
+
+
+BOOM = ('ValueError', 'boom')
+
+left = {Raising(1)}
+right = {Raising(2)}
+frozen = frozenset({Raising(3)})
+mapping = {Raising(4): 4}
+_raising = True
+
+# operations that build the result by inserting into a fresh table
+assert _capture_error(lambda: left | right) == BOOM
+assert _capture_error(lambda: left.union(right)) == BOOM
+assert _capture_error(lambda: frozen | right) == BOOM
+assert _capture_error(lambda: {Raising(5), Raising(6)}) == BOOM
+assert _capture_error(lambda: {Raising(n) for n in (7, 8)}) == BOOM
+assert _capture_error(lambda: set([Raising(9), Raising(10)])) == BOOM
+assert _capture_error(lambda: frozenset([Raising(11), Raising(12)])) == BOOM
+assert _capture_error(lambda: mapping.keys() | right) == BOOM
+
+# operations that probe an existing set already propagated, and still do
+assert _capture_error(lambda: left & right) == BOOM
+assert _capture_error(lambda: left - right) == BOOM
+assert _capture_error(lambda: left ^ right) == BOOM
+assert _capture_error(lambda: left.add(Raising(13))) == BOOM
+assert _capture_error(lambda: left.update(right)) == BOOM
+
+# the first raise ends the probe: `crowded` holds two colliding entries, but the
+# insertion compares against one of them and gives up
+_raising = False
+crowded = {Raising(14), Raising(15)}
+_raising = True
+
+_raising_eq_calls.clear()
+assert _capture_error(lambda: crowded | {Raising(16)}) == BOOM
+assert len(_raising_eq_calls) == 1
+
+_raising_eq_calls.clear()
+assert _capture_error(lambda: crowded.union([Raising(17)])) == BOOM
+assert len(_raising_eq_calls) == 1
+
+# the left-hand set is unchanged by the failed operations
+_raising = False
+assert len(left) == 1
+assert len(crowded) == 2
+
+
+# === a failed update releases the entries it never reached ===
+# Regression: `update` copied the source's entries out and consumed them in a
+# plain loop, so a raising insertion abandoned the rest of the copies and their
+# reference counts went with them.
+class Tripwire:
+    def __hash__(self):
+        return 0
+
+    def __eq__(self, other):
+        raise ValueError('tripped')
+
+
+class Colliding:
+    def __hash__(self):
+        return 0
+
+
+TRIPPED = ('ValueError', 'tripped')
+
+
+def _tripwire_target():
+    return {Tripwire()}
+
+
+assert _capture_error(lambda: _tripwire_target().update({Colliding(), Colliding()})) == TRIPPED
+assert _capture_error(lambda: _tripwire_target().update(frozenset({Colliding(), Colliding()}))) == TRIPPED
+assert _capture_error(lambda: _tripwire_target().update([Colliding(), Colliding()])) == TRIPPED
+assert _capture_error(lambda: _tripwire_target().update(iter([Colliding(), Colliding()]))) == TRIPPED
+
+
+def _ior_trip():
+    target = _tripwire_target()
+    target |= {Colliding(), Colliding()}
+
+
+assert _capture_error(_ior_trip) == TRIPPED
+
+
+# === a failed set construction releases the items it already took ===
+# Regression: the set literal and `set(iterable)` built into an unguarded local,
+# so an item that could not be inserted stranded every item before it.
+class Plain:
+    pass
+
+
+UNHASHABLE = ('TypeError', "cannot use 'list' as a set element (unhashable type: 'list')")
+
+assert _capture_error(lambda: {Plain(), [], Plain()}) == UNHASHABLE
+assert _capture_error(lambda: set([Plain(), [], Plain()])) == UNHASHABLE
+assert _capture_error(lambda: frozenset([Plain(), [], Plain()])) == UNHASHABLE
+assert _capture_error(lambda: {x for x in (Plain(), [], Plain())}) == UNHASHABLE

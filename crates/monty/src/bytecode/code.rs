@@ -20,6 +20,30 @@ pub(crate) struct CodeArenas {
     /// Every code object's constants, concatenated. `LoadConst` adds its `u16`
     /// operand to the running frame's base.
     pub(crate) constants: Vec<Value>,
+    /// Final offsets assigned to a private compilation before it is committed.
+    #[serde(skip)]
+    pub(crate) bytecode_offset: usize,
+    #[serde(skip)]
+    pub(crate) constants_offset: usize,
+}
+
+impl CodeArenas {
+    /// Builds an unpublished suffix with final offsets into the committed arenas.
+    pub(crate) fn extension(&self) -> Self {
+        Self {
+            bytecode_offset: self.bytecode.len(),
+            constants_offset: self.constants.len(),
+            ..Self::default()
+        }
+    }
+
+    /// Appends an admitted compilation without relocating instructions or constants.
+    pub(crate) fn commit(&mut self, extension: Self) {
+        assert_eq!(self.bytecode.len(), extension.bytecode_offset);
+        assert_eq!(self.constants.len(), extension.constants_offset);
+        self.bytecode.extend(extension.bytecode);
+        self.constants.extend(extension.constants);
+    }
 }
 
 impl Clone for CodeArenas {
@@ -29,6 +53,8 @@ impl Clone for CodeArenas {
         Self {
             bytecode: self.bytecode.clone(),
             constants: self.constants.iter().map(Value::copy_immediate).collect(),
+            bytecode_offset: self.bytecode_offset,
+            constants_offset: self.constants_offset,
         }
     }
 }
@@ -37,7 +63,7 @@ impl Clone for CodeArenas {
 ///
 /// This is the output of the bytecode compiler and the input to the VM.
 /// Each function has its own Code object; module-level code also gets one.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Code {
     /// Where this code object's instructions start in
     /// [`CodeArenas::bytecode`]. A frame's `ip` starts here and stays an

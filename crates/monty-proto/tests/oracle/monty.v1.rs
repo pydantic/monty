@@ -830,7 +830,7 @@ pub struct OsCall {
     pub call_id: u32,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -890,6 +890,13 @@ pub mod os_call {
         /// Fixed-offset timezone for an aware result; absent for a naive one.
         #[prost(message, optional, tag = "1")]
         pub tz: ::core::option::Option<super::TimeZone>,
+    }
+    /// os.urandom(size) — the byte count the sandbox validated; unsigned so
+    /// a negative count cannot be expressed on the wire.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Urandom {
+        #[prost(uint64, tag = "1")]
+        pub size: u64,
     }
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
@@ -965,6 +972,9 @@ pub mod os_call {
         /// datetime.now(tz) — the timezone argument (absent for a naive result).
         #[prost(message, tag = "24")]
         DateTimeNow(DateTimeNow),
+        /// os.urandom(size), also how `random` seeds an unseeded generator.
+        #[prost(message, tag = "25")]
+        Urandom(Urandom),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether

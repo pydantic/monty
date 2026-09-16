@@ -991,3 +991,28 @@ test('absolute symlink target is refused inside a mount', async (ctx) => {
     cleanup()
   }
 })
+
+// =============================================================================
+// Entropy: os.urandom and unseeded random draws
+// =============================================================================
+
+test('os.urandom and an unseeded random draw are answered by the os handler', async () => {
+  const calls: [string, unknown[]][] = []
+  const os = (name: string, args: unknown[]) => {
+    calls.push([name, args])
+    return Uint8Array.from({ length: args[0] as number }, (_, i) => i % 256)
+  }
+  const bytes = (await run('import os\nos.urandom(3)', { os })) as Uint8Array
+  t.deepEqual([...bytes], [0, 1, 2])
+  // the first draw seeds from one 2496-byte state vector; seeded draws never call out
+  t.deepEqual(
+    await run('import random\n[random.random(), random.Random(1).random()]', { os }),
+    [0.2469864874493971, 0.13436424411240122],
+  )
+  t.deepEqual(calls, [
+    ['os.urandom', [3]],
+    ['os.urandom', [2496]],
+  ])
+  const error = await t.throwsAsync(() => run('import random\nrandom.random()'), { instanceOf: MontyRuntimeError })
+  t.is(error.message, "RuntimeError: 'os.urandom' is not supported in this environment")
+})

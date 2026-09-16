@@ -2398,6 +2398,7 @@ dependencies = [
  "ruff_text_size",
  "serde",
  "serde_json",
+ "sha2",
  "smallvec",
  "speedate",
  "strum 0.27.2",

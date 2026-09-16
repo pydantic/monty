@@ -716,6 +716,8 @@ message OsCall {
     Unit date_today = 23; // date.today()
     // datetime.now(tz) — the timezone argument (absent for a naive result).
     DateTimeNow date_time_now = 24;
+    // os.urandom(size), also how `random` seeds an unseeded generator.
+    Urandom urandom = 25;
   }
 
   message TextWrite {
@@ -751,6 +753,11 @@ message OsCall {
   message DateTimeNow {
     // Fixed-offset timezone for an aware result; absent for a naive one.
     optional TimeZone tz = 1;
+  }
+  // os.urandom(size) — the byte count the sandbox validated; unsigned so
+  // a negative count cannot be expressed on the wire.
+  message Urandom {
+    uint64 size = 1;
   }
 }
 

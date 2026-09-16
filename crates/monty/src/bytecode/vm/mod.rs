@@ -16,10 +16,11 @@ mod namespace;
 mod recursion;
 mod scheduler;
 
-use std::{borrow::Cow, mem, rc::Rc};
+use std::{borrow::Cow, mem};
 
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
+pub(crate) use collections::unpack_exact;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
 pub(crate) use namespace::{FrameNamespace, function_namespace};
 pub(crate) use recursion::{ContainsVM, RecursionToken};
@@ -38,14 +39,14 @@ use crate::{
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
-    modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
+    modules::{StandardLib, json::JsonStringCache, random::apply_seed_random, re::RePatternCache},
     name_map::NameMap,
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect, resolve_call_paths},
     parse::CodeRange,
     run::{Program, SessionTables, VmEnv},
     types::{
-        Dict, LongInt, PyTrait,
+        Dict, LongInt, PyTrait, Random,
         file::{apply_buffer_store, apply_open_name, apply_write_position},
         str::allocate_string,
     },
@@ -672,15 +673,18 @@ pub struct VMSnapshot {
 
     /// Working directory at the pause, including any `os.chdir` so far.
     cwd: String,
+    /// The module-level `random` generator at the pause, seeded or not.
+    random: Random,
 }
 
 impl VMSnapshot {
     /// Discards the in-flight execution state of a snapshot that will never be
     /// restored, releasing every heap reference it holds (operand and exception
-    /// stacks, scheduler tasks, pending resume effects), and returns the globals
-    /// and working directory so an abandoned REPL snippet keeps its namespace
-    /// and any `os.chdir` it made. Mirrors `VM::drop`.
-    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String) {
+    /// stacks, scheduler tasks, pending resume effects), and returns the
+    /// globals, working directory and `random` generator so an abandoned REPL
+    /// snippet keeps its namespace, any `os.chdir` it made and any seed it
+    /// set. Mirrors `VM::drop`.
+    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String, Random) {
         let Self {
             stack,
             globals,
@@ -690,6 +694,7 @@ impl VMSnapshot {
             pending_effect,
             pending_lookup_effect,
             cwd,
+            random,
             ..
         } = self;
         HeapReader::with(heap, &mut (), |heap, ()| {
@@ -702,7 +707,7 @@ impl VMSnapshot {
             }
             scheduler.cleanup(heap);
         });
-        (globals, cwd)
+        (globals, cwd, random)
     }
 
     /// Number of tasks the scheduler held when this snapshot was taken.
@@ -748,9 +753,8 @@ pub struct VM<'h> {
     /// Heap for reference-counted objects.
     pub(crate) heap: &'h mut HeapReader<'h>,
 
-    /// Interned strings, bytes and compiled functions. Held mutably so code
-    /// compiled at runtime (`eval()` / `exec()`) can be appended mid-run.
-    pub(crate) interns: &'h mut Interns,
+    /// Stable committed entries, which remain borrowable across runtime compilation.
+    pub(crate) interns: &'h Interns,
 
     /// The session code arenas, moved in for the run so the dispatch loop
     /// reaches the instruction stream and `LoadConst` reaches a constant with
@@ -790,7 +794,7 @@ pub struct VM<'h> {
     ///
     /// Stored here because the main task's frames have `function_id: None` and
     /// need a reference to the module code when being restored after task switching.
-    module_code: Rc<Code>,
+    module_code: &'h Code,
 
     /// Bytecode IP of the most recent `LoadGlobalCallable` that
     /// pushed an `ExtFunction` for an undefined name.
@@ -855,6 +859,12 @@ pub struct VM<'h> {
     /// snapshotted (a pure performance cache), so default-initialized on restore.
     pub(crate) re_pattern_cache: RePatternCache,
 
+    /// The module-level `random` generator behind `random.random()` and
+    /// friends. Session state like the globals: it travels in snapshots and,
+    /// through the REPL, from one feed to the next, so a `random.seed()` keeps
+    /// governing later draws.
+    pub(crate) random: Random,
+
     /// Working directory, `__file__` inputs and the assert-repr cap for this
     /// run. Rebuilt from the executor on restore, except the working
     /// directory, which travels in the snapshot because `os.chdir` may have
@@ -865,8 +875,8 @@ pub struct VM<'h> {
 impl<'h> VM<'h> {
     /// Creates a new VM ready to run `program`'s module code.
     ///
-    /// `tables` is borrowed mutably for the VM's lifetime because runtime
-    /// compilation extends it; `program` is only read.
+    /// The global-name map is borrowed mutably; committed intern entries and
+    /// `program` remain shared while runtime compilation appends new entries.
     pub fn new(
         globals: Vec<Value>,
         tables: &'h mut SessionTables,
@@ -889,7 +899,7 @@ impl<'h> VM<'h> {
             instruction_ip: 0,
             scheduler: Scheduler::new(),
             ext_function_load_ip: None, // Set by LoadGlobalCallable
-            module_code: Rc::clone(&program.module_code),
+            module_code: &program.module_code,
             json_string_cache: JsonStringCache::default(),
             pending_effect: None,
             pending_lookup_effect: None,
@@ -897,6 +907,7 @@ impl<'h> VM<'h> {
             namespace_scratch: Vec::new(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
+            random: Random::default(),
             env: program.vm_env(),
         }
     }
@@ -921,8 +932,8 @@ impl<'h> VM<'h> {
             .into_iter()
             .map(|sf| {
                 let code = match sf.function_id {
-                    Some(func_id) => Rc::clone(&interns.get_function(func_id).code),
-                    None => Rc::clone(&program.module_code),
+                    Some(func_id) => &interns.get_function(func_id).code,
+                    None => &program.module_code,
                 };
                 CallFrame {
                     ip: code.bytecode_base() + frame_ip(sf.ip),
@@ -962,7 +973,7 @@ impl<'h> VM<'h> {
             exception_stack: snapshot.exception_stack,
             instruction_ip: snapshot.instruction_ip,
             scheduler: snapshot.scheduler,
-            module_code: Rc::clone(&program.module_code),
+            module_code: &program.module_code,
             ext_function_load_ip: None,
             json_string_cache: JsonStringCache::default(),
             pending_effect: snapshot.pending_effect,
@@ -972,6 +983,7 @@ impl<'h> VM<'h> {
             // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
+            random: snapshot.random,
             env: {
                 let mut env = program.vm_env();
                 env.cwd = Cow::Owned(snapshot.cwd);
@@ -1027,6 +1039,7 @@ impl<'h> VM<'h> {
             // Reset to the starting directory rather than `take` (an empty
             // string), so a later `take_changed_cwd` on this VM stays honest.
             cwd: mem::replace(&mut self.env.cwd, Cow::Borrowed(self.env.initial_cwd)).into_owned(),
+            random: mem::take(&mut self.random),
         }
     }
 
@@ -1986,20 +1999,8 @@ impl<'h> VM<'h> {
                 }
                 // Module Operations
                 Opcode::LoadModule => {
-                    let module_id = self.fetch_u8();
-                    self.load_module(module_id);
-                }
-                Opcode::RaiseImportError => {
-                    // Fetch the module name from the constant pool and raise ModuleNotFoundError
-                    let const_idx = self.fetch_u16();
-                    let module_name = self.constant(const_idx);
-                    // The constant should be an InternString from compile_import/compile_import_from
-                    let name_str = match module_name {
-                        Value::InternString(id) => self.interns.get_str(*id),
-                        _ => "<unknown>",
-                    };
-                    let error = ExcType::module_not_found_error(name_str);
-                    catch!(self, error);
+                    let module_id = self.fetch_u16();
+                    try_catch!(self, self.load_module(module_id));
                 }
                 // Context Managers
                 Opcode::BeforeWith => {
@@ -2015,13 +2016,16 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// Loads a built-in module and pushes it onto the stack.
-    fn load_module(&mut self, module_id: u8) {
-        let module = StandardLib::from_repr(module_id).expect("unknown module id");
-
-        // Create the module on the heap using pre-interned strings
-        let heap_id = module.create(self);
-        self.push(Value::Ref(heap_id));
+    /// Loads a built-in module, raising `ModuleNotFoundError` for unknown names.
+    fn load_module(&mut self, module_id: u16) -> RunResult<()> {
+        let name_id = StringId::from_index(module_id);
+        if let Some(module) = self.interns.static_string(name_id).and_then(StandardLib::from_static) {
+            let heap_id = module.create(self);
+            self.push(Value::Ref(heap_id));
+            Ok(())
+        } else {
+            Err(ExcType::module_not_found_error(self.interns.get_str(name_id)))
+        }
     }
 
     /// Resumes execution after an external call completes.
@@ -2063,6 +2067,9 @@ impl<'h> VM<'h> {
                 apply_write_position(file_id, value, self)
             }
             Some(PendingEffect::Post(PostConversionEffect::OpenName { name })) => apply_open_name(name, value, self),
+            Some(PendingEffect::Post(PostConversionEffect::SeedRandom { target, retry })) => {
+                apply_seed_random(target, retry, value, self)
+            }
             // Any pre-conversion effect was consumed above.
             Some(PendingEffect::Pre(_)) | None => Ok(value),
         };
@@ -2112,6 +2119,11 @@ impl<'h> VM<'h> {
                         drop(file);
                     }
                     self.heap.dec_ref(file_id);
+                }
+                // The generator was never seeded, so there is nothing to roll
+                // back: dropping the pin and the stashed retry is the whole undo.
+                PendingEffect::Post(PostConversionEffect::SeedRandom { target, retry }) => {
+                    PostConversionEffect::SeedRandom { target, retry }.release(self.heap);
                 }
                 // Hold no state or heap references — nothing to roll back.
                 PendingEffect::Pre(_) | PendingEffect::Post(PostConversionEffect::OpenName { .. }) => {}
@@ -2329,7 +2341,7 @@ impl<'h> VM<'h> {
             frame.namespace.drop_with(self.heap);
         }
         self.current_frame.namespace.take().drop_with(self.heap);
-        self.current_frame.park(&self.module_code);
+        self.current_frame.park(self.module_code);
     }
 
     /// Runs the trial-deletion cycle collector.
@@ -2394,7 +2406,7 @@ impl<'h> VM<'h> {
     fn frame_code(&self, frame: &CallFrame) -> &Code {
         match frame.function_id {
             Some(func_id) => &self.interns.get_function(func_id).code,
-            None => &self.module_code,
+            None => self.module_code,
         }
     }
 
@@ -2541,7 +2553,7 @@ impl<'h> VM<'h> {
     /// like other unexposed dunders (`__cached__`, …).
     fn module_dunder(&self, name_id: StringId) -> Option<Value> {
         let value = match self.interns.get_str(name_id) {
-            "__name__" => Value::InternString(StaticStrings::DunderMain.into()),
+            "__name__" => Value::InternString(self.interns.intern_static(StaticStrings::DunderMain)),
             "__debug__" => Value::Bool(true),
             "__file__" => allocate_string(self.env.file(), self.heap),
             "__annotations__" => Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))),

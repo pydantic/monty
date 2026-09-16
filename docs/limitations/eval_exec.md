@@ -6,7 +6,7 @@ snapshot of the function's locals (PEP 667) plus the module globals inside a fun
 arguments.
 Functions defined by a snippet under a `globals` dict resolve their globals through that dict at every call, so
 `ns = {}; exec(code, ns); ns['f']()` works as in CPython.
-The snippet runs as a frame of its own: it can call host functions, `await`, and raise into the caller.
+The snippet can call host functions and raise into the caller; top-level `await` is rejected.
 
 ## Arguments
 
@@ -54,7 +54,9 @@ runtime, where no checker runs, so a call a host function stub would reject is o
 
 ## Resource use
 
-Every call parses and compiles inside the VM, so the work is charged against `max_duration`, and the call's source,
-one `<string>` filename string and its bytecode stay allocated for the rest of the session, counted against
-`max_memory`.
+Parsing and compilation count against `max_duration`.
+Once a snippet starts executing, its source, literals, functions and bytecode remain allocated for the rest of the
+session, counted against `max_memory`, even if execution raises an exception.
+A snippet rejected before execution, including one refused by the recursion limit, retains none of its compilation
+products.
 See [resource_limits.md](resource_limits.md).

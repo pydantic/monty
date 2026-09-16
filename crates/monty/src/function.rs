@@ -2,7 +2,6 @@ use std::{
     cell::OnceCell,
     cmp::Ordering,
     fmt::{self, Write},
-    rc::Rc,
 };
 
 use serde::{Deserialize, Deserializer, de::Error as _};
@@ -57,10 +56,8 @@ pub enum FunctionMetadataFault {
 
 /// A defined function once compiled and ready for execution.
 ///
-/// This is created during the compilation phase from a `PreparedFunctionDef`.
-/// Contains everything needed to execute a user-defined function: compiled bytecode,
-/// metadata, and closure information. Functions are stored on the heap and
-/// referenced via HeapId.
+/// Contains compiled code, parameter metadata and closure layout.
+/// Committed functions have stable addresses in `Interns` and are referenced by `FunctionId`.
 ///
 /// # Namespace Layout
 ///
@@ -123,8 +120,8 @@ pub(crate) struct Function {
     /// than merely checked.
     #[serde(skip)]
     exact_positional_call: OnceCell<Option<ExactPositionalCall>>,
-    /// Compiled bytecode for this function body, shared with every frame running it.
-    pub code: Rc<Code>,
+    /// Immutable metadata for this function's code; frames retain arena offsets.
+    pub code: Code,
 }
 
 /// Serialized fields for [`Function`], kept separate so untrusted dumps can be
@@ -150,7 +147,7 @@ struct FunctionFields {
     /// Whether calls create a coroutine rather than a frame.
     is_async: bool,
     /// Compiled function body.
-    code: Rc<Code>,
+    code: Code,
 }
 
 impl FunctionFields {
@@ -278,7 +275,7 @@ impl Function {
             defaults_count,
             is_async,
             exact_positional_call: OnceCell::new(),
-            code: Rc::new(code),
+            code,
         }
     }
 

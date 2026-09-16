@@ -18,7 +18,8 @@ npm packages installed automatically (like esbuild). Browser builds use the
 package `browser` export and never import the napi loader; they run the sandbox
 in a Web Worker as a WIT-defined WASI 0.2 component with the same pool/session
 API. Advanced Node-only helpers are available from `@pydantic/monty/node`, and wasm-specific
-factories from `@pydantic/monty/wasm`.
+factories from `@pydantic/monty/wasm`: `Monty.create()` there is `createWorkerPool(await loadModule())`,
+and both are exported so an app can fetch and compile the wasm ahead of starting workers.
 
 ## Installation
 

@@ -78,6 +78,7 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
             offset_seconds: None,
             timezone_name: None,
         }),
+        OsFunctionCall::Urandom(args) => MontyObject::Bytes(vec![0; usize::try_from(args.size).unwrap()]),
     }
 }
 

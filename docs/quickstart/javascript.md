@@ -303,7 +303,11 @@ import { Monty } from '@pydantic/monty/wasm'
 await using pool = await Monty.create()
 ```
 
+`Monty.create()` is `createWorkerPool(await loadModule())`, and both halves are exported: `loadModule()` fetches and
+compiles the wasm modules, and `createWorkerPool(modules)` starts the workers, so an app can load the wasm ahead of time.
 A bundler resolving the `browser` condition on the main entry point gets this build automatically.
+[`examples/antigravity`](https://github.com/pydantic/monty/tree/main/examples/antigravity) is a worked browser example,
+built with Vite.
 
 Differences from the native path:
 

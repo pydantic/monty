@@ -204,3 +204,41 @@ g2, l2 = {}, {}
 exec('r = locals()', g2, l2)
 assert l2['r'] is l2
 assert eval('locals()', {'p': 1})['p'] == 1
+
+# === Compilation while a builtin borrows an interned receiver ===
+compile_source = '\n'.join(
+    [
+        f'def generated_{i}():\n    return ("literal_{i}", b"literal_{i}", 123456789012345678901234567890 + {i})'
+        for i in range(300)
+    ]
+)
+
+
+class CompilingIterator:
+    def __init__(self, item):
+        self.item = item
+        self.remaining = 2
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.remaining == 0:
+            raise StopIteration
+        self.remaining -= 1
+        exec(compile_source, {})
+        return self.item
+
+
+assert 'borrowed separator'.join(CompilingIterator('x')) == 'xborrowed separatorx'
+assert b'borrowed separator'.join(CompilingIterator(b'x')) == b'xborrowed separatorx'
+assert eval('"borrowed separator"') == 'borrowed separator'
+
+# === A runtime error does not discard published definitions ===
+retained_namespace = {}
+try:
+    exec('def retained():\n    return "published literal"\nraise ValueError("after definition")', retained_namespace)
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'after definition'
+assert retained_namespace['retained']() == 'published literal'

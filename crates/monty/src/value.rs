@@ -8,6 +8,8 @@ use std::{
 
 use num_bigint::{BigInt, Sign};
 use num_traits::{FromPrimitive, ToPrimitive};
+use serde::de::Error as _;
+use smallvec::smallvec;
 
 use crate::{
     builtins::{Builtins, BuiltinsFunctions},
@@ -21,7 +23,7 @@ use crate::{
     heap_data::heap_subscript,
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
-    modules::ModuleFunctions,
+    modules::{ModuleFunctions, itertools::ItertoolsFunctions},
     percent_format::{copy_bytes_template, percent_format, percent_format_bytes},
     resource_checks::check_pow_size,
     types::{
@@ -31,7 +33,7 @@ use crate::{
         host_class_type,
         instance::{instance_dataclass_eq, instance_getattr, instance_str, instance_user_eq},
         long_int::{
-            bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, bigint_true_divide,
+            bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, bigint_true_divide,
             check_bits_str_digits_limit, i64_cmp_f64, repeat_count, wide_i128_into_value,
         },
         namedtuple::cmp_item_seqs,
@@ -40,6 +42,7 @@ use crate::{
             allocate_char, allocate_string, concat_allocate_str, copy_format_template, get_char_at_index, repeat_str,
             str_contains, string_repr_fmt,
         },
+        tuple::allocate_tuple,
     },
 };
 
@@ -329,7 +332,7 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
-        let interns = &*vm.interns;
+        let interns = vm.interns;
         // py_cmp handles numbers, strings, bytes, tuples, and lists.
         // Recursion depth tracking for tuples/lists is handled by their iterators.
         //
@@ -542,11 +545,15 @@ impl<'h> PyTrait<'h> for Value {
     /// of a `str` still needs a buffer for quoting/escaping.
     fn py_repr(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         match self {
-            Self::None => Ok(Self::InternString(StaticStrings::NoneRepr.into())),
-            Self::Bool(true) => Ok(Self::InternString(StaticStrings::TrueRepr.into())),
-            Self::Bool(false) => Ok(Self::InternString(StaticStrings::FalseRepr.into())),
-            Self::Ellipsis => Ok(Self::InternString(StaticStrings::EllipsisRepr.into())),
-            Self::NotImplemented => Ok(Self::InternString(StaticStrings::NotImplementedRepr.into())),
+            Self::None => Ok(Self::InternString(vm.interns.intern_static(StaticStrings::NoneRepr))),
+            Self::Bool(true) => Ok(Self::InternString(vm.interns.intern_static(StaticStrings::TrueRepr))),
+            Self::Bool(false) => Ok(Self::InternString(vm.interns.intern_static(StaticStrings::FalseRepr))),
+            Self::Ellipsis => Ok(Self::InternString(
+                vm.interns.intern_static(StaticStrings::EllipsisRepr),
+            )),
+            Self::NotImplemented => Ok(Self::InternString(
+                vm.interns.intern_static(StaticStrings::NotImplementedRepr),
+            )),
             Self::Int(i) => Ok(allocate_string(itoa::Buffer::new().format(*i), vm.heap)),
             _ => {
                 let mut s = String::new();
@@ -648,7 +655,7 @@ impl<'h> PyTrait<'h> for Value {
 
     /// One-sided implementation of Python `+`.
     fn py_add_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        let interns = &*vm.interns;
+        let interns = vm.interns;
         match (self, other) {
             // Int + Int with overflow detection
             (Self::Int(a), Self::Int(b)) => {
@@ -1010,6 +1017,28 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    /// One-sided implementation of Python `divmod()`.
+    fn py_divmod_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        if let (Some(lhs), Some(rhs)) = (immediate_int(self), immediate_int(other)) {
+            int_divmod_tuple(lhs, rhs, vm.heap).map(Some)
+        } else if let (Some(lhs), Some(rhs)) = (immediate_float(self), immediate_float(other)) {
+            float_divmod_tuple(lhs, rhs, vm.heap).map(Some)
+        } else if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_divmod_impl(other, vm)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Reflected implementation of Python `divmod()`.
+    fn py_rdivmod_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_rdivmod_impl(other, vm)
+        } else {
+            Ok(None)
+        }
+    }
+
     /// One-sided implementation of Python `** or pow()`.
     fn py_pow_impl(&self, other: &Self, modulus: Option<&Self>, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         if modulus.is_some() {
@@ -1316,12 +1345,12 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_setitem(&mut self, key: Self, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
-        match self {
-            Self::Ref(id) => vm.heap.read(*id).py_setitem(key, value, vm),
-            _ => Err(ExcType::type_error(format!(
-                "'{}' object does not support item assignment",
-                self.py_type_name(vm)
-            ))),
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_setitem(key, value, vm)
+        } else {
+            key.drop_with(vm);
+            value.drop_with(vm);
+            Err(ExcType::type_error_not_sub_assignment(&self.py_type_name(vm)))
         }
     }
 
@@ -1418,16 +1447,16 @@ impl Value {
         )
     }
 
-    /// Class name of a named tuple or host class instance, if this value is
-    /// one.
+    /// Class name to use in error messages when [`Type`] does not carry it:
+    /// a named tuple, a host class instance, or a `random.Random`.
     ///
-    /// Both keep their class name in the heap entry rather than in [`Type`],
-    /// which carries no identity for them (unlike `Type::Instance`, whose
-    /// payload is the refcounted class object). Error messages therefore
-    /// reach for it here to name the class (`'P'`, `'Point'`) rather than the
-    /// generic `'namedtuple'` / `'HostClass'`, matching CPython — including
-    /// for structseqs, whose stored name is already the qualified
-    /// `sys.version_info`.
+    /// Named tuples and host classes keep their class name in the heap entry
+    /// (unlike `Type::Instance`, whose payload is the refcounted class
+    /// object), so messages name the class (`'P'`, `'Point'`) rather than
+    /// the generic `'namedtuple'` / `'HostClass'`, matching CPython. That
+    /// includes structseqs, whose stored name is already the qualified
+    /// `sys.version_info`. `Random` is the reverse case: its `Type` name is
+    /// the qualified `random.Random`, but messages use the bare class name.
     #[must_use]
     fn dynamic_class_name<'i>(&self, heap: &Heap, interns: &'i Interns) -> Option<Cow<'i, str>> {
         let Self::Ref(heap_id) = self else {
@@ -1436,6 +1465,9 @@ impl Value {
         let name = match heap.get(*heap_id) {
             HeapData::NamedTuple(nt) => nt.name_either(),
             HeapData::HostClass(hc) => host_class_type(heap, hc.class_id()).name_either(),
+            // A Python class in CPython, so messages carry the bare name and
+            // only `repr(type(x))` the module-qualified one.
+            HeapData::Random(_) => return Some(Cow::Borrowed("Random")),
             _ => return None,
         };
         Some(name.to_cow(interns))
@@ -1753,7 +1785,7 @@ impl Value {
             }
             Self::Builtin(Builtins::Type(t)) => {
                 // Handle type object attributes like __name__
-                let is_dunder_name = attr.static_string().map_or_else(
+                let is_dunder_name = attr.static_string(vm.interns).map_or_else(
                     || attr.as_str(vm.interns) == "__name__",
                     |ss| ss == StaticStrings::DunderName,
                 );
@@ -1763,13 +1795,22 @@ impl Value {
                         vm.heap,
                     )));
                 }
-                if *t == Type::TimeZone && attr.as_str(vm.interns) == "utc" {
-                    return Ok(CallResult::Value(vm.heap.get_timezone_utc()));
+                let t = *t;
+                if let Some(constant) = t.class_constant(attr, vm) {
+                    return Ok(CallResult::Value(constant));
+                }
+                // `chain.from_iterable`, the one attribute an `itertools`
+                // type carries. Handed out as a value so it can be bound and
+                // called later, not only called in place.
+                if t == Type::ItertoolsChain && attr.static_string(vm.interns) == Some(StaticStrings::FromIterable) {
+                    return Ok(CallResult::Value(Self::ModuleFunction(ModuleFunctions::Itertools(
+                        ItertoolsFunctions::ChainFromIterable,
+                    ))));
                 }
                 // `object.__setattr__` is the only member `object` carries: it
                 // exists so a class that hooks attribute writes has a way to
                 // perform one (see `limitations/classes.md`).
-                if *t == Type::Object && attr.as_str(vm.interns) == "__setattr__" {
+                if t == Type::Object && attr.as_str(vm.interns) == "__setattr__" {
                     return Ok(CallResult::Value(Self::Builtin(Builtins::Function(
                         BuiltinsFunctions::ObjectSetattr,
                     ))));
@@ -2032,6 +2073,20 @@ impl Value {
             |vm| self.py_mod_impl(other, vm),
             |vm| other.py_rmod_impl(self, vm),
             "%",
+        )
+    }
+
+    /// Performs Python `divmod()` with reflected-operation fallback.
+    ///
+    /// CPython spells the operator as `divmod()` in the `TypeError` an
+    /// unsupported pair raises, so that is the name passed through.
+    pub(crate) fn py_divmod(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        self.binary_op(
+            other,
+            vm,
+            |vm| self.py_divmod_impl(other, vm),
+            |vm| other.py_rdivmod_impl(self, vm),
+            "divmod()",
         )
     }
 
@@ -2397,20 +2452,10 @@ impl From<StringId> for EitherStr {
     }
 }
 
-impl From<StaticStrings> for EitherStr {
-    fn from(s: StaticStrings) -> Self {
-        Self::Interned(s.into())
-    }
-}
-
-/// Convert String to EitherStr: use Interned for known static strings,
-/// otherwise use Heap for user-defined field names.
+/// Converts owned text without assuming an executor-local intern ID.
 impl From<String> for EitherStr {
     fn from(s: String) -> Self {
-        match StaticStrings::from_str(&s) {
-            Ok(s) => s.into(),
-            Err(_) => Self::Heap(s),
-        }
+        Self::Heap(s)
     }
 }
 
@@ -2468,12 +2513,12 @@ impl EitherStr {
         }
     }
 
-    /// Returns the `StaticStrings` if this is an interned attribute from `StaticStrings`s.
+    /// Returns the static classification of this name, if recognized.
     #[inline]
-    pub fn static_string(&self) -> Option<StaticStrings> {
+    pub fn static_string(&self, interns: &Interns) -> Option<StaticStrings> {
         match self {
-            Self::Interned(id) => StaticStrings::from_string_id(*id),
-            Self::Heap(_) => None,
+            Self::Interned(id) => interns.static_string(*id),
+            Self::Heap(value) => StaticStrings::from_str(value).ok(),
         }
     }
 
@@ -2498,8 +2543,22 @@ impl EitherStr {
 ///   don't need runtime functionality
 ///
 /// Wraps a `StaticStrings` variant to leverage its string conversion capabilities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct Marker(pub StaticStrings);
+
+impl serde::Serialize for Marker {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let value: &'static str = self.0.into();
+        serde::Serialize::serialize(value, serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Marker {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        StaticStrings::from_str(&value).map(Self).map_err(D::Error::custom)
+    }
+}
 
 impl Marker {
     /// Returns the Python type of this marker.
@@ -2547,6 +2606,50 @@ fn immediate_int(value: &Value) -> Option<i64> {
         Value::Int(value) => Some(*value),
         Value::Bool(value) => Some(i64::from(*value)),
         _ => None,
+    }
+}
+
+/// Widens any immediate number to `f64`, for the arms where one operand is a float.
+///
+/// Callers must try [`immediate_int`] first: an all-integer pair must stay exact.
+fn immediate_float(value: &Value) -> Option<f64> {
+    match value {
+        Value::Float(value) => Some(*value),
+        Value::Int(value) => Some(*value as f64),
+        Value::Bool(value) => Some(f64::from(*value)),
+        _ => None,
+    }
+}
+
+/// Builds `divmod()`'s `(quotient, remainder)` tuple for two machine integers.
+///
+/// Only `i64::MIN // -1` overflows `i64`, and that lone case promotes to a
+/// `LongInt` pair — too small to be worth preflighting against the tracker.
+fn int_divmod_tuple(lhs: i64, rhs: i64, heap: &Heap) -> RunResult<Value> {
+    if rhs == 0 {
+        Err(ExcType::zero_division().into())
+    } else if let Some((quotient, remainder)) = floor_divmod(lhs, rhs) {
+        Ok(allocate_tuple(
+            smallvec![Value::Int(quotient), Value::Int(remainder)],
+            heap,
+        ))
+    } else {
+        Ok(bigint_divmod_tuple(&BigInt::from(lhs), &BigInt::from(rhs), heap))
+    }
+}
+
+/// Builds `divmod()`'s `(quotient, remainder)` tuple for float operands.
+///
+/// Shared with [`LongInt`]'s mixed-type arms, which widen their long operand first.
+pub(crate) fn float_divmod_tuple(lhs: f64, rhs: f64, heap: &Heap) -> RunResult<Value> {
+    if rhs == 0.0 {
+        Err(ExcType::zero_division().into())
+    } else {
+        let (quotient, remainder) = py_float_divmod(lhs, rhs);
+        Ok(allocate_tuple(
+            smallvec![Value::Float(quotient), Value::Float(remainder)],
+            heap,
+        ))
     }
 }
 

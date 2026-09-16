@@ -445,8 +445,10 @@ impl CodeBuilder {
     /// contiguous block, so jump offsets stay body-relative `i16`s and
     /// `LoadConst` operands stay `u16` indices from the recorded base.
     pub fn build(self, arenas: &mut CodeArenas) -> Result<Code, CompileError> {
-        let constants_base = u32::try_from(arenas.constants.len()).map_err(|_| self.arena_full("constants"))?;
-        let bytecode_base = u32::try_from(arenas.bytecode.len()).map_err(|_| self.arena_full("instructions"))?;
+        let constants_base = u32::try_from(arenas.constants_offset + arenas.constants.len())
+            .map_err(|_| self.arena_full("constants"))?;
+        let bytecode_base = u32::try_from(arenas.bytecode_offset + arenas.bytecode.len())
+            .map_err(|_| self.arena_full("instructions"))?;
         let bytecode_len = u32::try_from(self.bytecode.len()).map_err(|_| self.arena_full("instructions"))?;
         // Frames hold absolute `u32` IPs, so the body's end must fit as well.
         bytecode_base
@@ -587,7 +589,6 @@ impl CodeBuilder {
             Opcode::ReturnValue
                 | Opcode::Raise
                 | Opcode::Reraise
-                | Opcode::RaiseImportError
                 | Opcode::RaiseUnboundLocal
                 | Opcode::AssertFailed
                 | Opcode::Jump

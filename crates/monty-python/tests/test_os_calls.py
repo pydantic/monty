@@ -15,7 +15,7 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import NOT_HANDLED, MontyFileHandle, MontyRuntimeError, StatResult
+from pydantic_monty import NOT_HANDLED, Monty, MontyFileHandle, MontyRuntimeError, StatResult
 
 # =============================================================================
 # Basic os= callback dispatch
@@ -446,6 +446,89 @@ def test_datetime_now_callback_with_timezone(monty_run: RunMonty):
             'datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc)',
         )
     )
+
+
+# =============================================================================
+# Entropy (os.urandom / random)
+# =============================================================================
+
+SEED_BYTES = bytes(i % 256 for i in range(2496))
+
+
+def test_os_urandom_callback(monty_run: RunMonty):
+    """os.urandom(n) reaches the host as `os.urandom` with the byte count."""
+    calls: list[Any] = []
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bytes:
+        calls.append((function_name, args))
+        return bytes(range(args[0]))
+
+    result = monty_run('import os\nos.urandom(4)', os=os_handler)
+    assert result == snapshot(b'\x00\x01\x02\x03')
+    assert calls == snapshot([('os.urandom', (4,))])
+
+
+def test_random_unseeded_draws_ask_for_entropy_once(monty_run: RunMonty):
+    """An unseeded generator asks for one 2496-byte state vector, then draws are local."""
+    calls: list[Any] = []
+
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bytes:
+        calls.append((function_name, args))
+        return SEED_BYTES
+
+    code = 'import random\n[random.random(), random.randint(1, 100), random.Random(1).random()]'
+    result = monty_run(code, os=os_handler)
+    assert result == snapshot([0.2469864874493971, 77, 0.13436424411240122])
+    assert calls == snapshot([('os.urandom', (2496,))])
+
+
+def test_random_seeded_never_calls_host(monty_run: RunMonty):
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bytes:
+        raise AssertionError(f'unexpected OS call {function_name}')
+
+    assert monty_run('import random\nrandom.seed(42)\nrandom.random()', os=os_handler) == snapshot(0.6394267984578837)
+
+
+@pytest.mark.parametrize('with_callback', [True, False])
+def test_random_without_entropy_raises(monty_run: RunMonty, with_callback: bool):
+    """A missing or declining handler leaves an unseeded draw with no entropy."""
+
+    def os_handler(*args: object) -> object:
+        return NOT_HANDLED
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import random\nrandom.random()', os=os_handler if with_callback else None)
+    assert str(exc_info.value) == snapshot("RuntimeError: 'os.urandom' is not supported in this environment")
+
+
+def test_random_rejects_short_entropy(monty_run: RunMonty):
+    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bytes:
+        return b'abc'
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import random\nrandom.random()', os=os_handler)
+    assert str(exc_info.value) == snapshot("RuntimeError: 'os.urandom' returned 3 bytes, expected 2496")
+
+
+def test_random_seed_persists_across_feeds(pool: Monty):
+    """The module-level generator is session state, like the globals."""
+    with pool.checkout() as session:
+        session.feed_run('import random\nrandom.seed(5)')
+        assert session.feed_run('import random\nrandom.random()') == snapshot(0.6229016948897019)
+
+
+@pytest.mark.parametrize('expression', ['random.Random', 'type(random.Random(1))'])
+def test_random_type_returns_repr(monty_run: RunMonty, expression: str):
+    """The sandbox's Random class crosses as a string, not a host constructor."""
+    assert monty_run(f'import random\n{expression}') == "<class 'random.Random'>"
+
+
+def test_random_instance_returns_repr(monty_run: RunMonty):
+    """Returning a generator exposes only its repr."""
+    result = monty_run('import random\nrandom.Random(1)')
+    assert isinstance(result, str)
+    assert result.startswith('<random.Random object at 0x')
+    assert result.endswith('>')
 
 
 # =============================================================================

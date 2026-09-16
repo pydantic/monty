@@ -145,6 +145,8 @@ macro_rules! heap_payloads {
             GenericAlias(inline $crate::types::GenericAlias),
             /// A `typing.Union` such as `int | None`.
             Union(inline $crate::types::Union),
+            /// A `random.Random` generator instance.
+            Random(boxed $crate::types::Random),
         }
     };
 }
@@ -244,7 +246,8 @@ impl HeapData {
             | Self::DateTime(_)
             | Self::Time(_)
             | Self::TimeDelta(_)
-            | Self::TimeZone(_) => false,
+            | Self::TimeZone(_)
+            | Self::Random(_) => false,
         }
     }
 
@@ -282,6 +285,7 @@ impl HeapData {
             Self::NamedTupleClass(_) => Type::Type,
             Self::Dict(_) => Type::Dict,
             Self::Partial(_) => Type::Partial,
+            Self::Random(_) => Type::Random,
             Self::GenericAlias(_) => Type::GenericAlias,
             Self::Union(_) => Type::Union,
             Self::DictKeysView(_) => Type::DictKeys,
@@ -498,6 +502,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::CallableIterator($value) => $body,
             Self::Itertools($value) => $body,
             Self::Partial($value) => $body,
+            Self::Random($value) => $body,
             Self::GenericAlias($value) => $body,
             Self::Union($value) => $body,
             Self::Tuple($value) => $body,
@@ -636,6 +641,14 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
 
     fn py_rmod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rmod_impl(other, vm), else Ok(None))
+    }
+
+    fn py_divmod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_divmod_impl(other, vm), else Ok(None))
+    }
+
+    fn py_rdivmod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_rdivmod_impl(other, vm), else Ok(None))
     }
 
     fn py_pow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1020,6 +1033,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::FunctionDefaults(_)
             | Self::ExtFunction(_)
             | Self::Partial(_)
+            | Self::Random(_)
             | Self::GenericAlias(_)
             | Self::Union(_)
             | Self::Cell(_)

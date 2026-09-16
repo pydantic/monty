@@ -8,7 +8,7 @@ use monty_types::{
     MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
     MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, OpenCallArgs,
     OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame,
-    UnicodeErrorData,
+    UnicodeErrorData, UrandomArgs,
 };
 use num_bigint::BigInt;
 use prost::Message;
@@ -870,9 +870,25 @@ fn os_calls_round_trip_all_variants() {
             offset_seconds: 3600,
             name: Some("CET".to_owned()),
         })),
+        OsFunctionCall::Urandom(UrandomArgs { size: 2496 }),
     ] {
         assert_os_call_round_trip(call);
     }
+}
+
+/// The byte count is unsigned on the wire, so the parent cannot see a
+/// negative one; a count above `i64::MAX` from a compromised child still
+/// converts, reaching the host handler as an exact `BigInt` for its cap to
+/// reject.
+#[test]
+fn os_call_urandom_size_above_i64_converts_exactly() {
+    let call = OsFunctionCall::Urandom(UrandomArgs { size: u64::MAX });
+    assert_os_call_round_trip(call.clone());
+    let (args, kwargs) = call.to_args();
+    assert_eq!(args, vec![MontyObject::BigInt(BigInt::from(u64::MAX))]);
+    assert!(kwargs.is_empty());
+    let (args, _) = OsFunctionCall::Urandom(UrandomArgs { size: 2496 }).to_args();
+    assert_eq!(args, vec![MontyObject::Int(2496)]);
 }
 
 #[test]

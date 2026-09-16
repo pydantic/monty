@@ -25,8 +25,9 @@ use crate::{
     expressions::Identifier,
     heap::{DropGuard, DropWithContext, HeapData},
     intern::{Interns, StringId},
+    resource_checks::check_estimated_size,
     types::{Dict, allocate_tuple},
-    value::Value,
+    value::{VALUE_SIZE, Value},
 };
 
 /// Represents a Python function signature with all parameter types.
@@ -358,6 +359,11 @@ impl Signature {
         // any excess (the deferred overflow) stays in `pos_iter`, drained by
         // its guard when the overflow error returns below.
         if self.var_args.is_some() {
+            // Preflight the rounded-up reservation, not the length: `TupleVec` is a
+            // `SmallVec` whose `extend` rounds up to the next power of two. Unchecked,
+            // `f(*t)` on a big tuple clears the hard-limit headroom in one allocation.
+            let slots = pos_iter.len().checked_next_power_of_two().unwrap_or(usize::MAX);
+            check_estimated_size(slots.saturating_mul(VALUE_SIZE), &vm.heap.tracker)?;
             namespace[namespace_base + total_positional_params] = allocate_tuple(pos_iter.collect(), vm.heap);
         }
 

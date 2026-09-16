@@ -19,7 +19,7 @@ use crate::{
         long_int::{check_decimal_digit_count, decimal_digit_count_ascii},
         str::allocate_string,
     },
-    value::Value,
+    value::{VALUE_SIZE, Value},
 };
 
 /// Internal error used while building Monty values from streamed JSON.
@@ -88,15 +88,15 @@ struct JsonLoadsArgs {
 /// `jiter` are copied into Monty's heap immediately before any further parser
 /// movement so borrowed tape-backed data never escapes.
 fn parse_json_input(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    // Interned inputs are held by handle so the parser can borrow the VM mutably.
+    // Committed literals remain borrowed while parsing allocates heap values.
     match value {
         Value::InternString(string_id) => {
-            let s = vm.interns.get_str_handle(*string_id);
+            let s = vm.interns.get_str(*string_id);
             parse_json_bytes(s.as_bytes(), vm)
         }
         Value::InternBytes(bytes_id) => {
-            let b = vm.interns.get_bytes_handle(*bytes_id);
-            parse_json_bytes(&b, vm)
+            let b = vm.interns.get_bytes(*bytes_id);
+            parse_json_bytes(b, vm)
         }
         Value::Ref(heap_id) => {
             let bytes = match vm.heap.get(*heap_id) {
@@ -241,15 +241,31 @@ fn parse_json_array(
 
     let values = Vec::new();
     let mut values_guard = DropGuard::new(values, vm);
-    {
+    loop {
         let (values, vm) = values_guard.as_parts_mut();
-        loop {
-            values.push(parse_json_value_from_peek(next, jiter, depth + 1, cache, vm)?);
-            let Some(array_peek) = jiter.array_step()? else {
-                break;
-            };
-            next = array_peek;
-        }
+        // The buffer check below cannot see what the elements themselves cost:
+        // `[{},{},...]` turns every three source bytes into a heap entry.
+        vm.heap
+            .tracker
+            .check_memory_time_every(values.len())
+            .map_err(RunError::from)?;
+        let value = parse_json_value_from_peek(next, jiter, depth + 1, cache, vm)?;
+        // The whole parse runs inside one native call, so this doubling is the only
+        // thing between a graceful `MemoryError` and an allocation past the allocator's
+        // hard-limit headroom. Checked behind the element so it is weighed against
+        // usage that counts the element, with the guard releasing it on a refusal.
+        let mut value_guard = DropGuard::new(value, vm);
+        value_guard
+            .ctx()
+            .heap
+            .tracker
+            .check_growth(values.len(), values.capacity(), VALUE_SIZE)
+            .map_err(RunError::from)?;
+        values.push(value_guard.into_inner());
+        let Some(array_peek) = jiter.array_step()? else {
+            break;
+        };
+        next = array_peek;
     }
 
     let values = values_guard.into_inner();
