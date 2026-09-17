@@ -20,6 +20,28 @@ assert functools.reduce(lambda a, b: (a, b), [1, 2, 3]) == ((1, 2), 3)
 assert functools.reduce(lambda a, b: a + [b], [1, 2], []) == [1, 2]
 
 
+# native setup and the frozen loop share the same iterator
+class Iterator:
+    def __init__(self):
+        self.iter_calls = 0
+        self.value = 0
+
+    def __iter__(self):
+        self.iter_calls += 1
+        return self
+
+    def __next__(self):
+        if self.value == 3:
+            raise StopIteration
+        self.value += 1
+        return self.value
+
+
+iterator = Iterator()
+assert functools.reduce(lambda a, b: a + b, iterator) == 6
+assert iterator.iter_calls == 1
+
+
 # an exception from the function propagates unchanged
 def raiser(a, b):
     raise ValueError('inner')

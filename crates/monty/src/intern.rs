@@ -23,6 +23,7 @@ use num_bigint::BigInt;
 use strum::{EnumString, FromRepr, IntoStaticStr};
 
 use crate::{
+    frozen::{FrozenFunction, FrozenFunctionCode},
     function::Function,
     hash::{HashValue, RESERVED_STRING_HASHES, WithHash, hash_python_str},
     heap::{HeapId, StableHeap},
@@ -2074,6 +2075,8 @@ pub(crate) struct Interns {
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Function>,
+    /// Frozen function bytecode pinned to this compiled program and its dumps.
+    frozen_functions: Vec<FrozenFunctionCode>,
     /// Owned-text reverse lookup for [`Self::get_string_id_by_name`].
     #[serde(skip)]
     string_id_by_name: AHashMap<String, StringId>,
@@ -2095,6 +2098,8 @@ struct InternsWire {
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Function>,
+    /// Frozen function bytecode captured when this program was compiled.
+    frozen_functions: Vec<FrozenFunctionCode>,
 }
 
 impl From<Interns> for InternsWire {
@@ -2104,6 +2109,7 @@ impl From<Interns> for InternsWire {
             bytes: interns.bytes,
             long_ints: interns.long_ints,
             functions: interns.functions,
+            frozen_functions: interns.frozen_functions,
         }
     }
 }
@@ -2118,6 +2124,7 @@ impl TryFrom<InternsWire> for Interns {
             bytes: wire.bytes,
             long_ints: wire.long_ints,
             functions: wire.functions,
+            frozen_functions: wire.frozen_functions,
             string_id_by_name,
             static_string_ids,
         };
@@ -2166,6 +2173,7 @@ impl Interns {
             bytes: Vec::new(),
             long_ints: Vec::new(),
             functions: Vec::new(),
+            frozen_functions: Vec::new(),
             string_id_by_name: AHashMap::new(),
             static_string_ids: RefCell::new(AHashMap::new()),
         }
@@ -2182,6 +2190,7 @@ impl Interns {
             bytes: Vec::new(),
             long_ints: Vec::new(),
             functions: Vec::new(),
+            frozen_functions: Vec::new(),
             string_id_by_name: AHashMap::with_capacity(capacity),
             static_string_ids: RefCell::new(AHashMap::with_capacity(CORE_STATIC_STRINGS.len())),
         };
@@ -2349,5 +2358,17 @@ impl Interns {
     /// Returns `None` if the string was never interned.
     pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
         get_string_id_by_name(&self.string_id_by_name, &self.static_string_ids, s)
+    }
+
+    /// Returns the frozen function selected by its stable identity.
+    pub(crate) fn get_frozen_function(&self, function: FrozenFunction) -> &FrozenFunctionCode {
+        self.frozen_functions
+            .get(function.index())
+            .expect("Frozen function not found")
+    }
+
+    /// Replaces the frozen bytecode captured by this compiled program.
+    pub(crate) fn set_frozen_functions(&mut self, functions: Vec<FrozenFunctionCode>) {
+        self.frozen_functions = functions;
     }
 }

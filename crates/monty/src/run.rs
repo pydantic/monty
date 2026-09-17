@@ -16,12 +16,13 @@ use ruff_python_stdlib::identifiers::is_identifier;
 use crate::{
     bytecode::{Code, CodeBuilder, Compiler, FrameExit, Opcode, VM},
     exception_private::{ExcTypeExt, RunError, RunResult},
+    frozen,
     heap::{DropWithContext, Heap, HeapReader},
     intern::{Interns, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     object_bridge::MontyObjectExt,
-    parse::{CodeRange, parse, parse_with_interner},
+    parse::{CodeRange, ParseResult, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
     run_progress::{
         RunProgress, answer_unserved_lookups, build_run_progress, check_snapshot_from_converted, convert_frame_exit,
@@ -364,8 +365,11 @@ impl Executor {
         options: CompileOptions,
     ) -> Result<Self, MontyException> {
         check_identifier(&input_names)?;
-        let parse_result = parse(&code, script_name).map_err(|e| e.into_python_exc(script_name, &code))?;
-        let mut prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
+        let mut interner = frozen::interns();
+        let nodes = parse_with_interner(&code, script_name, &mut interner)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
+        let mut prepared =
+            prepare(ParseResult { nodes, interner }, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
 
         // Compile the module to bytecode, which also compiles all nested functions.
         // The compiler enforces the bytecode-format namespace-size limit and reports

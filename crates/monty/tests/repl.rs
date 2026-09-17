@@ -631,6 +631,56 @@ fn repl_progress_dump_load_roundtrip() {
     assert_eq!(feed_run_print(&mut repl, "z").unwrap(), MontyObject::Int(1));
 }
 
+/// Frozen code survives in-place compilation, idle dumps, and suspended REPL dumps.
+#[test]
+fn repl_frozen_reduce_survives_incremental_compilation_and_dumps() {
+    let (mut repl, _) = init_repl("import functools\ndef add(a, b):\n    return a + b");
+    assert_eq!(
+        feed_run_print(&mut repl, "functools.reduce(add, [1, 2, 3])").unwrap(),
+        MontyObject::Int(6)
+    );
+    let repl = round_trip_repl(&repl);
+    let progress = repl
+        .feed_start(
+            "functools.reduce(ext_fn, [1, 2, 3])",
+            vec![(
+                "ext_fn".to_owned(),
+                MontyObject::Function {
+                    name: "ext_fn".to_owned(),
+                    docstring: None,
+                },
+            )],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let loaded = round_trip_progress(&progress);
+
+    for mut progress in [progress, loaded] {
+        for (args, result) in [([1, 2], 3), ([3, 3], 6)] {
+            let call = progress.into_function_call().expect("expected reduce callback");
+            assert_eq!(call.function_name, "ext_fn");
+            assert_eq!(call.args, args.into_iter().map(MontyObject::Int).collect::<Vec<_>>());
+            progress = call.resume(MontyObject::Int(result), PrintWriter::Stdout).unwrap();
+        }
+        let (mut repl, value) = progress.into_complete().expect("expected completion");
+        assert_eq!(value, MontyObject::Int(6));
+        feed_run_print(&mut repl, "def multiply(a, b):\n    return a * b").unwrap();
+        assert_eq!(
+            repl.call_function(
+                "multiply",
+                vec![MontyObject::Int(6), MontyObject::Int(7)],
+                PrintWriter::Stdout
+            )
+            .unwrap(),
+            MontyObject::Int(42)
+        );
+        assert_eq!(
+            feed_run_print(&mut repl, "functools.reduce(multiply, [2, 3, 4])").unwrap(),
+            MontyObject::Int(24)
+        );
+    }
+}
+
 #[test]
 fn repl_start_run_pending_resolve_futures_roundtrip() {
     let (mut repl, _) = init_repl("");
