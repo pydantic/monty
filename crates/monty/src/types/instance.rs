@@ -454,6 +454,16 @@ impl<'h> HeapRead<'h, BoundMethod> {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
+    /// Re-dispatches to the underlying function with the captured receiver
+    /// pushed in front of the call's own arguments.
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let bound = self.get(vm.heap);
+        let instance = bound.instance.clone_with_heap(vm);
+        let func = bound.func.clone_with_heap(vm);
+        defer_drop!(func, vm);
+        vm.call_function(func, args.prepend(instance))
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         // Monty has no dedicated `method` type; bound methods report `function`.
         Type::Function

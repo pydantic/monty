@@ -21,7 +21,7 @@ pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
-pub(crate) use recursion::{ContainsVM, RecursionToken};
+pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
 use scheduler::Scheduler;
 
 use crate::{

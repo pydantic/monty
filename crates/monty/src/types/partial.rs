@@ -17,7 +17,7 @@ use smallvec::SmallVec;
 
 use crate::{
     args::{ArgValues, KwargsValues},
-    bytecode::{CallResult, VM},
+    bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
@@ -181,8 +181,10 @@ fn check_clone_slots(slots: usize, heap: &impl ContainsHeap) -> RunResult<()> {
 /// Merges a call's `args` beneath the arguments a `partial` has bound.
 ///
 /// The bound halves are already owned clones (see [`Partial::clone_parts`]), so
-/// the heap borrow on the partial has ended by the time this runs and the
-/// resulting call may re-enter that same partial.
+/// no `&Partial` borrow is live by the time this runs and the resulting call may
+/// re-enter that same partial. The `HeapRead` reader count does outlive it, but
+/// that bars only freeing the entry, which the caller's own reference prevents
+/// anyway.
 pub(crate) fn partial_call_args(
     bound_args: Vec<Value>,
     bound_keywords: Vec<(Value, Value)>,
@@ -296,6 +298,40 @@ impl HeapItem for Partial {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
+    /// Calls the wrapped callable with the bound arguments merged beneath the
+    /// call's own.
+    ///
+    /// A partial stored as a class attribute binds as a `BoundMethod` whose
+    /// `__func__` is another partial, so a chain of them nests on the native
+    /// stack without ever pushing a VM frame. Charging the native re-entry
+    /// budget is what bounds such a chain by `RecursionError` rather than a
+    /// stack overflow.
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let parts = self.get(vm.heap).clone_parts(vm);
+        let (func, bound_args, bound_keywords) = match parts {
+            Ok(parts) => parts,
+            Err(err) => {
+                // The preflight rejected the per-call clone before anything was
+                // lifted out, so only the call's own arguments need releasing.
+                args.drop_with(vm);
+                return Err(err);
+            }
+        };
+        if let Err(err) = vm.enter_run_reentry() {
+            // Bailing before `partial_call_args` takes ownership, so reclaim
+            // what was lifted out of the partial as well as the call's own
+            // arguments.
+            (func, (bound_args, bound_keywords)).drop_with(vm);
+            args.drop_with(vm);
+            return Err(err.into());
+        }
+        let mut guard = RunReentryGuard::new(vm);
+        let vm = &mut *guard;
+        defer_drop!(func, vm);
+        let args = partial_call_args(bound_args, bound_keywords, args, vm);
+        vm.call_function(func, args)
+    }
+
     fn py_type(&self, _: &VM<'h>) -> Type {
         Type::Partial
     }

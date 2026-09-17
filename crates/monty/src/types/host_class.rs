@@ -465,6 +465,16 @@ impl<'h> HeapRead<'h, HostClassType> {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
+    /// Suspends as a `__call__` on the class's uuid: constructing a host class
+    /// is the host's own policy decision, not the sandbox's.
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::MethodCall {
+            name: EitherStr::Heap("__call__".to_owned()),
+            args,
+            object_id: self.get(vm.heap).type_id(),
+        })
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Type
     }

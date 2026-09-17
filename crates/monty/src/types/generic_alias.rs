@@ -112,6 +112,13 @@ impl<'h> HeapObjectRead<'h, GenericAlias> {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
+    /// `list[int](x)` is `list(x)`: the subscript is erased at runtime, so the
+    /// arguments go straight to the origin type.
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let origin = self.get(vm.heap).origin_value();
+        vm.call_function(&origin, args)
+    }
+
     fn py_type(&self, _: &VM<'h>) -> Type {
         Type::GenericAlias
     }

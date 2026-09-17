@@ -857,6 +857,11 @@ impl NamedTupleClass {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
+    /// Builds an instance from the field values, with no `__init__` to run.
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        construct_namedtuple(self.id(), vm, args).map(CallResult::Value)
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         // The type of a class object is `type` (matching `type(Point) is type`).
         Type::Type
@@ -1114,8 +1119,8 @@ fn synthesise_doc(class: &NamedTupleClass, interns: &Interns) -> String {
 /// Binds positional and keyword arguments to the class's fields, applies
 /// defaults for omitted trailing fields, and reports arity/keyword errors with
 /// CPython's exact `<lambda>()` wording (its generated `__new__` is a lambda).
-/// Called from the VM's `call_heap_callable` dispatch.
-pub(crate) fn construct_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+/// Called from this type's [`PyTrait::py_call`].
+fn construct_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let HeapData::NamedTupleClass(c) = vm.heap.get(class_id) else {
         unreachable!("construct_namedtuple called on a non-namedtuple-class heap entry");
     };
