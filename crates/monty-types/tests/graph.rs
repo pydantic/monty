@@ -345,3 +345,16 @@ fn deep_values_copy_and_render_without_recursion() {
     assert_eq!(repr.len(), 2 * depth + 1);
     assert_eq!(&repr[depth - 1..=depth + 1], "[1]");
 }
+
+/// Copying a value out of a merged arena takes only its own nodes, wherever
+/// in the arena it sits.
+#[test]
+fn to_owned_copies_only_the_value() {
+    let mut call = CallArgs::new();
+    call.push_arg(MontyObject::list((0..100).map(MontyObject::int)));
+    let shared = MontyObject::list([MontyObject::int(1)]);
+    let second = call.push_arg(MontyObject::tuple([shared.clone(), shared]));
+    let copy = call.graph.value(second).to_owned();
+    assert_eq!(copy.py_repr(), "([1], [1])");
+    assert_eq!(copy.graph.len(), 5);
+}

@@ -591,3 +591,15 @@ Browser/WASM does not yet implement this instrumentation path.
 | class instances   | `ClassInstance` wrappers / `MontyClassProxy` stand-ins |
 
 Plain objects are accepted as dict inputs (string keys).
+
+Object identity is kept within one message.
+A value the sandbox references twice (a returned `[x, x]`, or `f(x, x)` to a host function) arrives as one JavaScript
+object, and an object passed under two inputs is one sandbox object.
+Each separate feed or call gets its own copy.
+
+A cyclic input or return value is rejected with `TypeError: Circular reference detected`.
+A self-referential sandbox value arrives with its placeholder string (`'[...]'`, `'{...}'`) at the point of the cycle.
+
+The wire imposes no nesting limit, but a sandbox value nested deeper than `maxRecursionDepth` (1000 by default) arrives
+with the part below that depth replaced by the string `'<deeply nested>'`; see
+[`limitations/pool-architecture.md`](https://github.com/pydantic/monty/blob/main/limitations/pool-architecture.md#values-crossing-the-process-boundary).

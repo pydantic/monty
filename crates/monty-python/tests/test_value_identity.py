@@ -14,7 +14,7 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import ClassInstance, MontyClassProxy, MontySession
+from pydantic_monty import ClassInstance, FunctionSnapshot, MontyClassProxy, MontySession
 
 
 def distinct_containers(value: object) -> int:
@@ -171,3 +171,14 @@ def test_separate_calls_get_separate_objects(session: MontySession):
     session.feed_run('x = [1]\nf(x)\nf(x)', external_lookup={'f': f})
     assert seen == snapshot([[1], [1]])
     assert seen[0] is not seen[1]
+
+
+def test_snapshot_args_and_kwargs_share_one_object(session: MontySession):
+    snap = session.feed_start('x = [1]\nf(x, y=x)')
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.args == snapshot(([1],))
+    assert snap.kwargs == snapshot({'y': [1]})
+    assert snap.args[0] is snap.kwargs['y']
+    # decoded once: every read returns the same objects
+    assert snap.args is snap.args
+    assert snap.kwargs is snap.kwargs

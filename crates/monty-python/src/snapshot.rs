@@ -40,6 +40,7 @@ use pyo3::{
     exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
     intern,
     prelude::*,
+    sync::PyOnceLock,
     types::{PyBytes, PyDict, PyTuple},
 };
 use pyo3_async_runtimes::tokio::future_into_py;
@@ -345,9 +346,9 @@ fn function_snapshot_py(
 ) -> PyResult<Py<PyAny>> {
     let snapshot = SnapshotState::new(ctx);
     if is_async {
-        Py::new(py, PyAsyncFunctionSnapshot(FunctionSnapshot { snapshot, call })).map(Py::into_any)
+        Py::new(py, PyAsyncFunctionSnapshot(FunctionSnapshot::new(snapshot, call))).map(Py::into_any)
     } else {
-        Py::new(py, PyFunctionSnapshot(FunctionSnapshot { snapshot, call })).map(Py::into_any)
+        Py::new(py, PyFunctionSnapshot(FunctionSnapshot::new(snapshot, call))).map(Py::into_any)
     }
 }
 
@@ -521,16 +522,6 @@ fn parse_external_result(
     }
 }
 
-/// The pending call's positional args as a Python tuple.
-fn args_to_py<'py>(py: Python<'py>, args: &CallArgs, instances: &InstanceStore) -> PyResult<Bound<'py, PyTuple>> {
-    wire_call_arguments(py, args, instances).map(|(args, _)| args)
-}
-
-/// The pending call's keyword args as a Python dict.
-fn kwargs_to_py<'py>(py: Python<'py>, args: &CallArgs, instances: &InstanceStore) -> PyResult<Bound<'py, PyDict>> {
-    wire_call_arguments(py, args, instances).map(|(_, kwargs)| kwargs)
-}
-
 // =============================================================================
 // FunctionSnapshot (external / OS call) — sync and async
 // =============================================================================
@@ -555,9 +546,38 @@ struct FunctionCallData {
 struct FunctionSnapshot {
     snapshot: SnapshotState,
     call: FunctionCallData,
+    /// The call's arguments as Python objects, decoded on first read. One
+    /// decode serves `args` and `kwargs`, so `f(x, y=x)` is one object in both.
+    py_arguments: PyOnceLock<(Py<PyTuple>, Py<PyDict>)>,
 }
 
 impl FunctionSnapshot {
+    fn new(snapshot: SnapshotState, call: FunctionCallData) -> Self {
+        Self {
+            snapshot,
+            call,
+            py_arguments: PyOnceLock::new(),
+        }
+    }
+
+    /// The decoded `(args, kwargs)` of the pending call.
+    fn py_arguments(&self, py: Python<'_>) -> PyResult<&(Py<PyTuple>, Py<PyDict>)> {
+        self.py_arguments.get_or_try_init(py, || {
+            let (args, kwargs) = wire_call_arguments(py, &self.call.args, &self.snapshot.ctx.instances)?;
+            Ok((args.unbind(), kwargs.unbind()))
+        })
+    }
+
+    /// The pending call's positional args.
+    fn args<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        Ok(self.py_arguments(py)?.0.bind(py).clone())
+    }
+
+    /// The pending call's keyword args; the same dict on every read.
+    fn kwargs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        Ok(self.py_arguments(py)?.1.bind(py).clone())
+    }
+
     fn resume_value(&self, py: Python<'_>, result: &Bound<'_, PyDict>) -> PyResult<ResumeValue> {
         parse_external_result(py, result, &self.snapshot.ctx.instances)
     }
@@ -615,12 +635,12 @@ impl PyFunctionSnapshot {
 
     #[getter]
     fn args<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        args_to_py(py, &self.0.call.args, &self.0.snapshot.ctx.instances)
+        self.0.args(py)
     }
 
     #[getter]
     fn kwargs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        kwargs_to_py(py, &self.0.call.args, &self.0.snapshot.ctx.instances)
+        self.0.kwargs(py)
     }
 
     /// Resumes execution with an `ExternalResult` (return value, exception, or
@@ -741,12 +761,12 @@ impl PyAsyncFunctionSnapshot {
 
     #[getter]
     fn args<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        args_to_py(py, &self.0.call.args, &self.0.snapshot.ctx.instances)
+        self.0.args(py)
     }
 
     #[getter]
     fn kwargs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        kwargs_to_py(py, &self.0.call.args, &self.0.snapshot.ctx.instances)
+        self.0.kwargs(py)
     }
 
     fn resume<'py>(&self, py: Python<'py>, result: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {

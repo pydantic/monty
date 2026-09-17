@@ -1116,29 +1116,44 @@ impl PushValue for MontyObject {
 
 impl PushValue for ObjectRef<'_> {
     /// Copies the reachable nodes; a sub-object shared inside the value stays
-    /// shared. Two linear sweeps, no recursion, so a deep value from an
-    /// untrusted worker costs heap rather than native stack.
+    /// shared. Linear sweeps over the value's index span, no recursion, so a
+    /// deep value from an untrusted worker costs heap rather than native stack.
     fn push_into(self, graph: &mut MontyGraph) -> NodeId {
-        let source = &self.graph.nodes()[..=self.id.index()];
-        // Every child id is lower than its holder's, so sweeping downwards
-        // from the root visits each holder before its children.
-        let mut reachable = vec![false; source.len()];
-        reachable[self.id.index()] = true;
-        for (index, node) in source.iter().enumerate().rev() {
-            if reachable[index] {
-                node.for_each_child(|child| reachable[child.index()] = true);
+        let nodes = self.graph.nodes();
+        let root = self.id.index();
+        // Children are lower than their holder, so the value is inside
+        // `lowest..=root`. A merged arena keeps each value contiguous, so the
+        // sweeps cost the value rather than the whole arena before it.
+        let mut lowest = root;
+        let mut index = root;
+        loop {
+            nodes[index].for_each_child(|child| lowest = lowest.min(child.index()));
+            if index == lowest {
+                break;
+            }
+            index -= 1;
+        }
+        let span = &nodes[lowest..=root];
+        // Sweeping downwards from the root visits each holder before its children.
+        let mut reachable = vec![false; span.len()];
+        reachable[root - lowest] = true;
+        for (offset, node) in span.iter().enumerate().rev() {
+            if reachable[offset] {
+                node.for_each_child(|child| reachable[child.index() - lowest] = true);
             }
         }
         // Copying upwards then meets every child before the node holding it.
-        let mut copied: Vec<Option<NodeId>> = vec![None; source.len()];
-        for (index, node) in source.iter().enumerate() {
-            if reachable[index] {
+        let mut copied: Vec<Option<NodeId>> = vec![None; span.len()];
+        for (offset, node) in span.iter().enumerate() {
+            if reachable[offset] {
                 let mut node = node.clone();
-                node.for_each_child_mut(|child| *child = copied[child.index()].expect("children are copied first"));
-                copied[index] = Some(graph.push(node));
+                node.for_each_child_mut(|child| {
+                    *child = copied[child.index() - lowest].expect("children are copied first");
+                });
+                copied[offset] = Some(graph.push(node));
             }
         }
-        copied[self.id.index()].expect("the root is copied")
+        copied[root - lowest].expect("the root is copied")
     }
 }
 

@@ -9,6 +9,7 @@ import { t } from './assertions.js'
 
 import { ClassInstance, MontyClassProxy } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
+import { InstanceStore, prepare, restore } from '../ts/classInstance.js'
 
 const { run, pool } = setupPool()
 
@@ -90,6 +91,26 @@ test('a result nested past the export guard degrades to a repr string', async ()
     innermost = (innermost as unknown[])[0]
   }
   t.is(innermost, '<deeply nested>')
+})
+
+test('the host walks handle a value nested past the JS call stack', () => {
+  // `prepare` and `restore` walk on an explicit stack: 100,000 levels would
+  // overflow a recursive walk with `RangeError`
+  let deep: unknown = [1]
+  for (let i = 0; i < 100_000; i++) {
+    deep = [deep]
+  }
+  t.is(nesting(prepare(deep, new InstanceStore())), 100_001)
+  t.is(nesting(restore(deep, new InstanceStore())), 100_001)
+})
+
+test('an input nested past the JS call stack reaches the sandbox', async () => {
+  let deep: unknown = [1]
+  for (let i = 0; i < 20_000; i++) {
+    deep = [deep]
+  }
+  const code = 'depth = 0\nwhile isinstance(x, list):\n    x = x[0]\n    depth += 1\ndepth'
+  t.is(await run(code, { inputs: { x: deep } }), 20_001)
 })
 
 test('many references to one object are one host object', async () => {

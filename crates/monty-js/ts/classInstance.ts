@@ -390,19 +390,10 @@ export class MontyClassProxy {
     this.attributes = attributes
   }
 
-  /** @internal — the wire marker `prepare` sends when the proxy is passed back
-   *  into the sandbox, which hands over the original object by `id`. */
-  toMarker(store: InstanceStore, memo: WalkMemo): Record<string, unknown> {
-    const attrs = Object.keys(this.attributes).map((key): [string, unknown] => [
-      key,
-      prepareInner(this.attributes[key], store, memo),
-    ])
-    return {
-      __monty_type__: 'ClassInstance',
-      type: { ...this.classType, attrs: [] },
-      instanceId: this.id,
-      attrs,
-    }
+  /** @internal — the class as `prepare` sends it back: class attrs are
+   *  never resent, the sandbox resolves the original object by `id`. */
+  wireClassType(): Record<string, unknown> {
+    return { ...this.classType, attrs: [] }
   }
 }
 
@@ -498,23 +489,125 @@ const IN_PROGRESS: unique symbol = Symbol('in progress')
 /**
  * Outbound walk over a host value heading into the sandbox: replaces
  * [`ClassInstance`] wrappers with their wire marker (registering them in
- * `store`, eager attrs prepared recursively), recurses into arrays / Maps /
- * Sets / plain objects, and rejects any other non-plain object with a
- * `TypeError` telling the caller to wrap it. A cyclic value is rejected with
- * `TypeError`: the wire arena is post-order, so a value cannot reach itself.
+ * `store`, eager attrs prepared too), walks arrays / Maps / Sets / plain
+ * objects, and rejects any other non-plain object with a `TypeError` telling
+ * the caller to wrap it. A cyclic value is rejected with `TypeError`: the wire
+ * arena is post-order, so a value cannot reach itself.
  */
 export function prepare(value: unknown, store: InstanceStore, memo: WalkMemo = new Map()): unknown {
-  return prepareInner(value, store, memo)
+  return walkValue(value, memo, (object) => openPrepared(object, store, memo))
 }
 
-function prepareInner(value: unknown, store: InstanceStore, memo: WalkMemo): unknown {
-  if (typeof value !== 'object' || value === null || value instanceof Uint8Array) {
-    return value
+/**
+ * Inbound walk over a sandbox value reaching the host: maps `ClassInstance`
+ * markers to the original wrapped object when the id is in `store` (identity
+ * preserved), else to a [`MontyClassProxy`] with restored attrs; maps a
+ * host-class `Type` marker to the registered class object the same way (an
+ * unregistered class stays a marker). A sandbox value never contains a cycle
+ * (the wire arena cannot express one), and the memo keeps a sub-object the
+ * sandbox shared as one host object.
+ */
+export function restore(value: unknown, store: InstanceStore, memo: WalkMemo = new Map()): unknown {
+  return walkValue(value, memo, (object) => openRestored(object, store, memo))
+}
+
+// === the walk driver ===
+
+/**
+ * One object whose children are still being walked: the explicit-stack form
+ * of a recursive call, so a deeply nested value costs heap, not call stack.
+ */
+class Frame {
+  /** Index of the next child to walk. */
+  next = 0
+  /** The frame holding this one, and the child index it fills there. */
+  parent: Frame | undefined = undefined
+  index = 0
+  /** Memo key that receives the frame's result when it closes. */
+  memoKey: object | undefined = undefined
+
+  constructor(
+    readonly children: readonly unknown[],
+    /** Stores the walked form of child `index`; called in index order. */
+    readonly put: (index: number, walked: unknown) => void,
+    /** The walked object, called once every child has been put. */
+    readonly close: () => unknown,
+  ) {}
+}
+
+/** Opens one object: a [`Frame`] when it has children to walk, else its walked form. */
+type Open = (value: object) => unknown
+
+/** Walks `root` depth-first on an explicit stack, each object's children in order. */
+function walkValue(root: unknown, memo: WalkMemo, open: Open): unknown {
+  let result: unknown
+  const stack: Frame[] = []
+  const deliver = (parent: Frame | undefined, index: number, walked: unknown): void => {
+    if (parent === undefined) {
+      result = walked
+    } else {
+      parent.put(index, walked)
+    }
+  }
+  const visit = (value: unknown, parent: Frame | undefined, index: number): void => {
+    if (typeof value !== 'object' || value === null || value instanceof Uint8Array) {
+      deliver(parent, index, value)
+      return
+    }
+    const opened = open(value)
+    if (opened instanceof Frame) {
+      opened.parent = parent
+      opened.index = index
+      stack.push(opened)
+    } else {
+      deliver(parent, index, opened)
+    }
+  }
+  visit(root, undefined, 0)
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1]!
+    if (frame.next < frame.children.length) {
+      const index = frame.next++
+      visit(frame.children[index], frame, index)
+    } else {
+      stack.pop()
+      const walked = frame.close()
+      if (frame.memoKey !== undefined) {
+        memo.set(frame.memoKey, walked)
+      }
+      deliver(frame.parent, frame.index, walked)
+    }
+  }
+  return result
+}
+
+// === prepare ===
+
+/** A `ClassType` wrapper to walk as the plain `classType` object of a marker,
+ *  not as a `Type` marker of its own. */
+class ClassTypeRef {
+  constructor(
+    readonly wrapper: ClassType,
+    /** Register the class for routing only if it has no wrapper yet, so an
+     *  auto-materialized default never clobbers an explicit grant. */
+    readonly registerIfAbsent: boolean,
+  ) {}
+}
+
+/** Opens one object of the outbound walk through the memo. */
+function openPrepared(value: object, store: InstanceStore, memo: WalkMemo): unknown {
+  if (value instanceof ClassTypeRef) {
+    return openClassTypeObject(value, store, memo)
   }
   // `ClassType` and `ClassInstance` are sibling `BaseWrapper`s; the class
-  // check comes first, and keeps its own memo entry (see `classTypeObject`).
+  // check comes first, and its memo entry belongs to `openClassTypeObject`.
   if (value instanceof ClassType) {
-    return classTypeToMarker(value, store, memo)
+    store.registerClass(value)
+    const marker: Record<string, unknown> = { __monty_type__: 'Type', classType: undefined }
+    const put = (_: number, walked: unknown): void => {
+      marker.classType = walked
+    }
+    return new Frame([new ClassTypeRef(value, false)], put, () => marker)
   }
   const seen = memo.get(value)
   if (seen === IN_PROGRESS) {
@@ -523,29 +616,35 @@ function prepareInner(value: unknown, store: InstanceStore, memo: WalkMemo): unk
   if (seen !== undefined) {
     return seen
   }
-  memo.set(value, IN_PROGRESS)
-  const prepared = prepareObject(value, store, memo)
-  memo.set(value, prepared)
-  return prepared
+  const opened = prepareObject(value, store)
+  if (opened instanceof Frame) {
+    memo.set(value, IN_PROGRESS)
+    opened.memoKey = value
+  } else {
+    memo.set(value, opened)
+  }
+  return opened
 }
 
-/** The outbound walk of one object not yet in the memo. */
-function prepareObject(value: object, store: InstanceStore, memo: WalkMemo): unknown {
-  const walk = (item: unknown) => prepareInner(item, store, memo)
+/** The outbound form of one object not yet in the memo. */
+function prepareObject(value: object, store: InstanceStore): unknown {
   if (value instanceof ClassInstance) {
-    return wrapperToMarker(value, store, memo)
+    return wrapperFrame(value, store)
   }
   if (value instanceof MontyClassProxy) {
-    return value.toMarker(store, memo)
+    // crosses back with the ids it arrived with, so the sandbox resolves it
+    // to its original object
+    const keys = Object.keys(value.attributes)
+    return instanceMarkerFrame(
+      value.id,
+      keys,
+      keys.map((key) => value.attributes[key]),
+      value.wireClassType(),
+    )
   }
-  if (Array.isArray(value)) {
-    return walkArray(value, walk)
-  }
-  if (value instanceof Map) {
-    return walkMap(value, walk)
-  }
-  if (value instanceof Set) {
-    return walkSet(value, walk)
+  const container = containerFrame(value)
+  if (container !== undefined) {
+    return container
   }
   const marker = readTypeMarker(value)
   if (marker === 'ClassInstance') {
@@ -564,107 +663,65 @@ function prepareObject(value: object, store: InstanceStore, memo: WalkMemo): unk
     return value
   }
   if (isPlainObject(value)) {
-    return walkPlainObject(value as Record<string, unknown>, walk)
+    return plainObjectFrame(value as Record<string, unknown>)
   }
   throw new TypeError(
     `Cannot convert ${constructorName(value)} instance to a Monty value — wrap it in ClassInstance(...)`,
   )
 }
 
-/**
- * Inbound walk over a sandbox value reaching the host: maps `ClassInstance`
- * markers to the original wrapped object when the id is in `store` (identity
- * preserved), else to a [`MontyClassProxy`] proxy with recursively
- * restored attrs; maps a host-class `Type` marker to the registered class
- * object the same way (an unregistered class stays a marker); recurses into
- * containers. A sandbox value never contains a cycle (the wire arena cannot
- * express one), and the memo keeps a sub-object the sandbox shared as one
- * host object.
- */
-export function restore(value: unknown, store: InstanceStore, memo: WalkMemo = new Map()): unknown {
-  if (typeof value !== 'object' || value === null || value instanceof Uint8Array) {
-    return value
-  }
-  const seen = memo.get(value)
-  if (seen !== undefined) {
-    return seen
-  }
-  const restored = restoreObject(value, store, memo)
-  memo.set(value, restored)
-  return restored
-}
-
-/** The inbound walk of one object not yet in the memo. */
-function restoreObject(value: object, store: InstanceStore, memo: WalkMemo): unknown {
-  const walk = (item: unknown) => restore(item, store, memo)
-  if (Array.isArray(value)) {
-    return walkArray(value, walk)
-  }
-  if (value instanceof Map) {
-    return walkMap(value, walk)
-  }
-  if (value instanceof Set) {
-    return walkSet(value, walk)
-  }
-  const marker = readTypeMarker(value)
-  if (marker === 'ClassInstance') {
-    return markerToInstance(value as Record<string, unknown>, store, memo)
-  }
-  if (marker === 'Type') {
-    return markerToClass(value as Record<string, unknown>, store)
-  }
-  if (marker === undefined && isPlainObject(value)) {
-    return walkPlainObject(value as Record<string, unknown>, walk)
-  }
-  return value
-}
-
-/** Registers `wrapper` and builds its wire marker, preparing eager attrs
- *  recursively so nested wrappers register themselves too. */
-function wrapperToMarker(wrapper: ClassInstance, store: InstanceStore, memo: WalkMemo): Record<string, unknown> {
+/** Registers `wrapper` and opens its wire marker: eager attrs first, then the
+ *  class, whose eager attrs cross with every instance so the sandbox's one
+ *  type object per class sees them whichever crossing arrives first. */
+function wrapperFrame(wrapper: ClassInstance, store: InstanceStore): Frame {
   const instanceId = store.register(wrapper)
-  const attrs = wrapper
-    .getEagerAttrs()
-    .map(([name, value]): [string, unknown] => [name, prepareInner(value, store, memo)])
-  return {
-    __monty_type__: 'ClassInstance',
-    type: instanceTypeObject(wrapper, store, memo),
+  const eager = wrapper.getEagerAttrs()
+  return instanceMarkerFrame(
     instanceId,
-    attrs,
-  }
+    eager.map(([name]) => name),
+    eager.map(([, value]) => value),
+    new ClassTypeRef(wrapper.classType, true),
+  )
 }
 
-/** The `type` object for an instance marker, from the wrapper's [`ClassType`].
- *  Registered for routing only when the class has no wrapper yet, so an
- *  auto-materialized default never clobbers an explicit grant. The class's
- *  eager attrs cross with every instance, so the sandbox's one type object
- *  per class sees them whichever crossing arrives first. */
-function instanceTypeObject(wrapper: ClassInstance, store: InstanceStore, memo: WalkMemo): Record<string, unknown> {
-  store.registerClassIfAbsent(wrapper.classType)
-  return classTypeObject(wrapper.classType, store, memo)
-}
-
-/** Registers a `ClassType` wrapper and builds its `Type` wire marker. */
-function classTypeToMarker(wrapper: ClassType, store: InstanceStore, memo: WalkMemo): Record<string, unknown> {
-  store.registerClass(wrapper)
-  return {
-    __monty_type__: 'Type',
-    classType: classTypeObject(wrapper, store, memo),
+/** A `ClassInstance` marker whose attr `values` are still to be walked. A
+ *  [`ClassTypeRef`] `classType` is walked after them; a finished one is used as is. */
+function instanceMarkerFrame(
+  instanceId: string,
+  names: string[],
+  values: unknown[],
+  classType: ClassTypeRef | Record<string, unknown>,
+): Frame {
+  const attrs = names.map((name): [string, unknown] => [name, undefined])
+  const marker: Record<string, unknown> = { __monty_type__: 'ClassInstance', type: classType, instanceId, attrs }
+  const put = (index: number, walked: unknown): void => {
+    const attr = attrs[index]
+    if (attr === undefined) {
+      marker.type = walked
+    } else {
+      attr[1] = walked
+    }
   }
+  const children = classType instanceof ClassTypeRef ? [...values, classType] : values
+  return new Frame(children, put, () => marker)
 }
 
 /**
  * The plain `classType` object shared by ClassInstance and Type markers:
  * name, the wrapper's uuid, and the eager class attrs (static class
- * constants), each prepared recursively so nested wrappers register too.
+ * constants), prepared too so nested wrappers register.
  * One object per wrapper per message, so every crossing of the class shares
  * it; a class met again while its own attrs are walked (a class constant that
  * is an instance of the class) gets an attr-less duplicate, not a cycle error.
  */
-function classTypeObject(wrapper: ClassType, store: InstanceStore, memo: WalkMemo): Record<string, unknown> {
+function openClassTypeObject(ref: ClassTypeRef, store: InstanceStore, memo: WalkMemo): unknown {
+  const wrapper = ref.wrapper
+  if (ref.registerIfAbsent) {
+    store.registerClassIfAbsent(wrapper)
+  }
   const seen = memo.get(wrapper)
   if (seen !== undefined && seen !== IN_PROGRESS) {
-    return seen as Record<string, unknown>
+    return seen
   }
   const header = {
     name: wrapper.getName(),
@@ -677,33 +734,84 @@ function classTypeObject(wrapper: ClassType, store: InstanceStore, memo: WalkMem
     return { ...header, attrs: [] }
   }
   memo.set(wrapper, IN_PROGRESS)
-  const attrs = wrapper
-    .getEagerAttrs()
-    .map(([name, value]): [string, unknown] => [name, prepareInner(value, store, memo)])
+  const eager = wrapper.getEagerAttrs()
+  const attrs = eager.map(([name]): [string, unknown] => [name, undefined])
   const object = { ...header, attrs }
-  memo.set(wrapper, object)
-  return object
+  const put = (index: number, walked: unknown): void => {
+    attrs[index]![1] = walked
+  }
+  const frame = new Frame(
+    eager.map(([, value]) => value),
+    put,
+    () => object,
+  )
+  frame.memoKey = wrapper
+  return frame
 }
 
-/** Maps an inbound `ClassInstance` marker to the original instance or a proxy. */
-function markerToInstance(marker: Record<string, unknown>, store: InstanceStore, memo: WalkMemo): unknown {
-  if (typeof marker.instanceId !== 'string') {
+// === restore ===
+
+/** Opens one object of the inbound walk through the memo. */
+function openRestored(value: object, store: InstanceStore, memo: WalkMemo): unknown {
+  const seen = memo.get(value)
+  if (seen !== undefined) {
+    return seen
+  }
+  const opened = restoreObject(value, store)
+  if (opened instanceof Frame) {
+    opened.memoKey = value
+  } else {
+    memo.set(value, opened)
+  }
+  return opened
+}
+
+/** The inbound form of one object not yet in the memo. */
+function restoreObject(value: object, store: InstanceStore): unknown {
+  const container = containerFrame(value)
+  if (container !== undefined) {
+    return container
+  }
+  const marker = readTypeMarker(value)
+  if (marker === 'ClassInstance') {
+    return markerToInstance(value as Record<string, unknown>, store)
+  }
+  if (marker === 'Type') {
+    return markerToClass(value as Record<string, unknown>, store)
+  }
+  if (marker === undefined && isPlainObject(value)) {
+    return plainObjectFrame(value as Record<string, unknown>)
+  }
+  return value
+}
+
+/** Maps an inbound `ClassInstance` marker to the original instance, or opens
+ *  the proxy that stands in for it. */
+function markerToInstance(marker: Record<string, unknown>, store: InstanceStore): unknown {
+  const instanceId = marker.instanceId
+  if (typeof instanceId !== 'string') {
     throw new TypeError('ClassInstance marker instanceId must be a uuid string')
   }
-  const wrapper = store.get(marker.instanceId)
+  const wrapper = store.get(instanceId)
   if (wrapper !== undefined) {
     return wrapper.instance
   }
-  const attrs: Array<[string, unknown]> = []
+  const names: string[] = []
+  const values: unknown[] = []
   if (Array.isArray(marker.attrs)) {
     for (const pair of marker.attrs as unknown[]) {
       if (Array.isArray(pair) && typeof pair[0] === 'string') {
-        attrs.push([pair[0], restore(pair[1], store, memo)])
+        names.push(pair[0])
+        values.push(pair[1])
       }
     }
   }
+  const attrs: Array<[string, unknown]> = []
+  const put = (index: number, walked: unknown): void => {
+    attrs.push([names[index]!, walked])
+  }
   const classType = (marker.type ?? {}) as Record<string, unknown>
-  return new MontyClassProxy(classType, marker.instanceId, attrs)
+  return new Frame(values, put, () => new MontyClassProxy(classType, instanceId, attrs))
 }
 
 /** Maps an inbound `Type` marker to the registered host class, else leaves
@@ -714,35 +822,57 @@ function markerToClass(marker: Record<string, unknown>, store: InstanceStore): u
   return wrapper instanceof ClassType ? wrapper.instance : marker
 }
 
-// === shared container walks (used by both prepare and restore) ===
+// === container frames (shared by prepare and restore) ===
 
-type Walk = (value: unknown) => unknown
-
-/** Walks array items, preserving the `__tuple__` marker on the rebuilt array. */
-function walkArray(array: unknown[], walk: Walk): unknown[] {
-  const items = array.map(walk)
-  if ((array as { __tuple__?: unknown }).__tuple__ === true) {
-    Object.defineProperty(items, '__tuple__', { value: true, enumerable: false })
+/** The frame of an array, Map or Set; `undefined` for anything else. The
+ *  rebuilt array keeps the `__tuple__` marker. */
+function containerFrame(value: object): Frame | undefined {
+  if (Array.isArray(value)) {
+    const items: unknown[] = []
+    if ((value as { __tuple__?: unknown }).__tuple__ === true) {
+      Object.defineProperty(items, '__tuple__', { value: true, enumerable: false })
+    }
+    const put = (_: number, walked: unknown): void => {
+      items.push(walked)
+    }
+    return new Frame(value, put, () => items)
   }
-  return items
+  if (value instanceof Map) {
+    const out = new Map<unknown, unknown>()
+    let key: unknown
+    // children alternate key, value
+    const put = (index: number, walked: unknown): void => {
+      if (index % 2 === 0) {
+        key = walked
+      } else {
+        out.set(key, walked)
+      }
+    }
+    return new Frame([...value].flat(), put, () => out)
+  }
+  if (value instanceof Set) {
+    const out = new Set<unknown>()
+    const put = (_: number, walked: unknown): void => {
+      out.add(walked)
+    }
+    return new Frame([...value], put, () => out)
+  }
+  return undefined
 }
 
-function walkMap(map: Map<unknown, unknown>, walk: Walk): Map<unknown, unknown> {
-  return new Map([...map].map(([key, value]) => [walk(key), walk(value)]))
-}
-
-function walkSet(set: Set<unknown>, walk: Walk): Set<unknown> {
-  return new Set([...set].map(walk))
-}
-
-/** Walks a plain object's own enumerable entries; the rebuilt object has a
- *  null prototype so no key can land on `Object.prototype`. */
-function walkPlainObject(obj: Record<string, unknown>, walk: Walk): Record<string, unknown> {
+/** The frame of a plain object's own enumerable entries; the rebuilt object
+ *  has a null prototype so no key can land on `Object.prototype`. */
+function plainObjectFrame(obj: Record<string, unknown>): Frame {
+  const keys = Object.keys(obj)
   const out: Record<string, unknown> = Object.create(null)
-  for (const [key, value] of Object.entries(obj)) {
-    out[key] = walk(value)
+  const put = (index: number, walked: unknown): void => {
+    out[keys[index]!] = walked
   }
-  return out
+  return new Frame(
+    keys.map((key) => obj[key]),
+    put,
+    () => out,
+  )
 }
 
 // === identity / classification helpers ===

@@ -807,12 +807,17 @@ impl<'e> GraphEncoder<'e> {
     /// being pushed (a class constant that is an instance of the class) gets an
     /// attr-less duplicate rather than a cycle error, as the sandbox's export does.
     fn enter_class_type(&mut self, object: Object<'e>) -> Result<Step<'e>> {
-        let header = ClassHeader::read(&object)?;
-        match self.memo_get(object)? {
-            Some(MemoEntry::Done(id)) => return Ok(Step::Done(id)),
-            Some(MemoEntry::InProgress) => return Ok(self.leaf(header.node(vec![]))),
-            None => self.memo_set(object, MemoEntry::InProgress)?,
+        // the memo comes first: a class crosses with every instance of it, and
+        // a repeat needs none of the header
+        let seen = self.memo_get(object)?;
+        if let Some(MemoEntry::Done(id)) = seen {
+            return Ok(Step::Done(id));
         }
+        let header = ClassHeader::read(&object)?;
+        if seen.is_some() {
+            return Ok(self.leaf(header.node(vec![])));
+        }
+        self.memo_set(object, MemoEntry::InProgress)?;
         let children = js_attr_pairs(object.get_named_property("attrs")?, "ClassType")?;
         if children.is_empty() {
             if let Some(id) = self.class_types.get(&header.id).copied() {
@@ -836,11 +841,20 @@ impl<'e> GraphEncoder<'e> {
             Pending::Set => MontyNode::Set(ids),
             Pending::Dict => MontyNode::Dict(id_pairs(&ids)),
             Pending::ClassType(header) => header.node(id_pairs(&ids)),
-            Pending::ClassInstance { instance_id } => MontyNode::ClassInstance {
-                class_type: ids[0],
-                instance_id,
-                attrs: id_pairs(&ids[1..]),
-            },
+            Pending::ClassInstance { instance_id } => {
+                // The memo is shared with plain containers, so a `type` object
+                // already pushed as a dict resolves to that node; `push` would
+                // panic on it, and a panic here aborts the Node process.
+                let class_type = ids[0];
+                if !matches!(self.graph.node(class_type), MontyNode::ClassType(_)) {
+                    return Err(Error::from_reason("ClassInstance `type` is not a class type object"));
+                }
+                MontyNode::ClassInstance {
+                    class_type,
+                    instance_id,
+                    attrs: id_pairs(&ids[1..]),
+                }
+            }
         };
         let attr_less_class = match &node {
             MontyNode::ClassType(class) if class.attrs.is_empty() => Some(class.id),
