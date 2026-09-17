@@ -117,7 +117,7 @@ class F:
 /// CPython raises `ValueError` before it builds the `Field` at all, so it never
 /// looks at the other arguments. Monty reads the flags to refuse them, and
 /// `NotImplemented` is the one value whose truthiness raises — that must not
-/// pre-empt the error CPython reports.
+/// preempt the error CPython reports.
 #[test]
 fn both_defaults_outrank_an_unreadable_flag() {
     let err =
