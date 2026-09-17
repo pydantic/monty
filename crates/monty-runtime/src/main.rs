@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 
 use std::process::ExitCode;
+#[cfg(feature = "standalone")]
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use monty_types::TypeCheckingFormat;
@@ -237,9 +239,8 @@ fn run_standalone(_cli: Cli) -> ExitCode {
 /// Converts a duration flag's seconds into a `Duration`, naming the flag in
 /// the rejection so a caller who passed several knows which one was bad.
 #[cfg(feature = "standalone")]
-#[expect(clippy::absolute_paths, reason = "std::time is only needed by this one helper")]
-fn duration_flag(secs: f64, flag: &str) -> Result<std::time::Duration, String> {
-    std::time::Duration::try_from_secs_f64(secs).map_err(|err| format!("invalid {flag}: {err}"))
+fn duration_flag(secs: f64, flag: &str) -> Result<Duration, String> {
+    Duration::try_from_secs_f64(secs).map_err(|err| format!("invalid {flag}: {err}"))
 }
 
 /// Parses a memory size string with optional unit suffix.

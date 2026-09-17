@@ -418,10 +418,14 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
 - `max_duration_secs` counts **cumulative execution time**, not wall clock.
     The clock is paused while the sandbox waits on a host function, so a slow host function does not consume the budget.
     It accumulates across feeds for the life of the session.
+    `max_feed_duration_secs` and `max_turn_duration_secs` bound the same clock over one feed and one host round trip.
 - The in-sandbox time check only runs at interpreter checkpoints.
-    Two host-side backstops cover a wedged worker: `request_timeout` (a per-turn deadline; a loop of quick host calls
-    resets it) and `duration_limit_grace` (fires only if the session also set `max_duration_secs`).
-    Set both `request_timeout` and `max_duration_secs` for untrusted code.
+    Host-side backstops cover a wedged worker: `request_timeout` (a per-turn deadline; a loop of quick host calls
+    resets it), and one grace per duration limit — `duration_limit_grace`, `feed_limit_grace` and `turn_limit_grace` —
+    each firing only if the session also set the limit it backs.
+    Set `request_timeout` and at least one duration limit for untrusted code.
+    `max_turn_duration_secs` closes the gap named above, since it bounds the code between two host round trips rather
+    than the session total, and a loop of quick host calls cannot reset it.
     Every local pool ([`Monty`][pydantic_monty.Monty], [`AsyncMonty`][pydantic_monty.AsyncMonty], JavaScript `Monty.create()`, [`PoolConfig::subprocess`](api/rust/monty-pool.md#poolconfig)) defaults
     `request_timeout` to no deadline; only [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket] sets one, at 10 seconds.
 - **After a memory or time limit fires, no guarantees are made about heap state or reference counts.** Discard the

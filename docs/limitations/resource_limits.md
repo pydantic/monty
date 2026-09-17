@@ -262,9 +262,11 @@ indistinguishable from a stack overflow.
     `max_duration` spans the two.
 - A turn's clock restarts at the resume, not at the point the host answered,
     so it never includes the time the host spent deciding.
-- Continuations the VM resolves without the host — a name lookup answered as
-    `Undefined`, an `await` on an already-settled future, a task switch — stay
-    inside the turn that started them and do not restart the turn clock.
+- Continuations the VM resolves without the host — an `await` on an
+    already-settled future, a task switch — stay inside the turn that started
+    them and do not restart the turn clock.
+- A name lookup the host answers restarts the turn clock, including one
+    answered as `Undefined`: the round trip happened either way.
 - `max_feed_duration` is serialized into dumps/snapshots like `max_duration`;
     `max_turn_duration`'s clock is not, because a dump is only ever taken
     between turns.

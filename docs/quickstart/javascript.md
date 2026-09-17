@@ -223,6 +223,8 @@ console.log(await session.feedRun('fetch_data()', { externalLookup: { fetch_data
 ```
 
 Omitted `maxMemory` / `maxDurationSecs` means unlimited.
+`maxFeedDurationSecs` and `maxTurnDurationSecs` bound the same execution clock as `maxDurationSecs` over one `feedRun`
+and one stretch of code between host round trips; each is unlimited when omitted.
 `maxRecursionDepth` and `maxSuspensions` default to 1000 and cannot be disabled.
 `gcInterval` defaults to every 100,000 allocations.
 The pool enforces `maxSuspensions`: the first suspension over the budget ends the feed with an uncatchable
@@ -271,6 +273,8 @@ await using pool = await Monty.create({
   checkoutTimeout: 5, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline; kills the worker
   durationLimitGrace: 1, // grace before the maxDurationSecs backstop fires; null disables
+  feedLimitGrace: 1, // the same, for maxFeedDurationSecs
+  turnLimitGrace: 1, // the same, for maxTurnDurationSecs
   maxCheckoutsPerWorker: 100, // recycle a worker after N sessions
 })
 ```
@@ -347,9 +351,9 @@ Differences from the native path:
     Where one does not, the same API degrades to in-process execution: no crash isolation and no preemption, so a runaway
     turn cannot be interrupted.
 - **`maxProcesses` defaults to 4**, not the CPU count.
-- **`checkoutTimeout`, `durationLimitGrace` and `binaryPath` are accepted and ignored.** A checkout on an exhausted pool
-    waits forever rather than failing, nothing backs up `maxDurationSecs` from outside the worker, and the bundled wasm
-    asset is always used.
+- **`checkoutTimeout`, the three duration graces and `binaryPath` are accepted and ignored.** A checkout on an exhausted
+    pool waits forever rather than failing, nothing backs up the duration limits from outside the worker, and the
+    bundled wasm asset is always used.
     `requestTimeout` does apply, wherever a real `Worker` exists.
 - **Prints are buffered per turn** rather than streamed live.
 
