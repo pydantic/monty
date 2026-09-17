@@ -292,22 +292,48 @@ def test_turn_duration_limit(pool: Monty):
 
 
 @pytest.mark.parametrize(
-    'disable_one_grace',
+    ('disable_one_grace', 'limits', 'budget_resets'),
     [
-        pytest.param(lambda: Monty(duration_limit_grace=None), id='duration_limit_grace'),
-        pytest.param(lambda: Monty(feed_limit_grace=None), id='feed_limit_grace'),
-        pytest.param(lambda: Monty(turn_limit_grace=None), id='turn_limit_grace'),
+        pytest.param(
+            lambda: Monty(duration_limit_grace=None),
+            ResourceLimits(max_duration_secs=0.1),
+            False,
+            id='duration_limit_grace',
+        ),
+        pytest.param(
+            lambda: Monty(feed_limit_grace=None),
+            ResourceLimits(max_feed_duration_secs=0.1),
+            True,
+            id='feed_limit_grace',
+        ),
+        pytest.param(
+            lambda: Monty(turn_limit_grace=None),
+            ResourceLimits(max_turn_duration_secs=0.1),
+            True,
+            id='turn_limit_grace',
+        ),
     ],
 )
-def test_backstop_grace_can_be_disabled(disable_one_grace: Callable[[], Monty]):
-    """`None` turns a backstop off, leaving the in-sandbox limit to end the feed
-    on its own — which it still does, with the session intact."""
+def test_backstop_grace_can_be_disabled(
+    disable_one_grace: Callable[[], Monty], limits: ResourceLimits, budget_resets: bool
+):
+    """`None` turns a backstop off, leaving the in-sandbox limit to end the feed on its
+    own — which it still does, and the worker comes back either way.
+
+    Each case pairs the disabled grace with the budget it backs, since a grace only
+    ever fires for a limit the session set. Only the two resetting budgets leave the
+    session able to run more code; a spent `max_duration_secs` fails every later feed."""
     with disable_one_grace() as pool:
-        with pool.checkout(limits={'max_feed_duration_secs': 0.1}) as session:
+        with pool.checkout(limits=limits) as session:
             with pytest.raises(MontyRuntimeError) as exc_info:
                 session.feed_run('while True:\n    pass')
             assert isinstance(exc_info.value.exception(), TimeoutError)
-            assert session.feed_run('1 + 1') == snapshot(2)
+            if budget_resets:
+                assert session.feed_run('1 + 1') == snapshot(2)
+            else:
+                with pytest.raises(MontyRuntimeError) as spent:
+                    session.feed_run('1 + 1')
+                assert isinstance(spent.value.exception(), TimeoutError)
 
 
 def test_negative_grace_is_rejected():

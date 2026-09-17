@@ -424,8 +424,10 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     resets it), and one grace per duration limit — `duration_limit_grace`, `feed_limit_grace` and `turn_limit_grace` —
     each firing only if the session also set the limit it backs.
     Set `request_timeout` and at least one duration limit for untrusted code.
-    `max_turn_duration_secs` closes the gap named above, since it bounds the code between two host round trips rather
-    than the session total, and a loop of quick host calls cannot reset it.
+    `max_turn_duration_secs` does not close the gap named above: its clock also restarts at each host answer, so a loop
+    of quick host calls resets it just as it resets `request_timeout`.
+    It bounds each individual stretch of sandbox code, and what bounds the loop itself is a budget that never resets —
+    `max_duration_secs`, or `max_suspensions` on the number of round trips.
     Every local pool ([`Monty`][pydantic_monty.Monty], [`AsyncMonty`][pydantic_monty.AsyncMonty], JavaScript `Monty.create()`, [`PoolConfig::subprocess`](api/rust/monty-pool.md#poolconfig)) defaults
     `request_timeout` to no deadline; only [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket] sets one, at 10 seconds.
 - **After a memory or time limit fires, no guarantees are made about heap state or reference counts.** Discard the

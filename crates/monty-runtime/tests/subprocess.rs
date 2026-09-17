@@ -2286,6 +2286,23 @@ fn undeclared_protocol_version_is_a_fatal_error() {
     );
 }
 
+/// The oldest served version still works: the point of a bump is to refuse a
+/// peer that would silently drop a field, not to close the migration window on
+/// parents that never send one.
+#[test]
+fn oldest_supported_protocol_version_is_accepted() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+        MIN_SUPPORTED_PROTOCOL_VERSION,
+        env!("CARGO_PKG_VERSION"),
+    )));
+    assert!(
+        matches!(child.recv(), pb::child_event::Kind::Ok(_)),
+        "a parent one version behind must still be served"
+    );
+    child.shutdown();
+}
+
 /// The package version is informational: a parent from a different build is
 /// served as long as its protocol version is one this build speaks.
 #[test]

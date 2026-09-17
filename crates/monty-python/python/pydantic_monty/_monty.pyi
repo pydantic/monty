@@ -528,9 +528,13 @@ class Monty:
             max_checkouts_per_worker: Recycle a worker after this many sessions.
             duration_limit_grace: Seconds the parent waits past a session's
                 `max_duration_secs` before killing the worker, giving the sandbox
-                time to raise `TimeoutError` itself and keep the session alive.
+                time to raise `TimeoutError` itself. That keeps the worker, not
+                the session: the cumulative budget is spent, so every later feed
+                raises too — finish the checkout rather than reusing it.
                 `None` disables this backstop.
-            feed_limit_grace: The same, for `max_feed_duration_secs`.
+            feed_limit_grace: The same, for `max_feed_duration_secs`, whose clock
+                restarts at the next feed — so here the session really is usable
+                afterwards.
             turn_limit_grace: The same, for `max_turn_duration_secs`.
         """
 
@@ -945,9 +949,13 @@ class AsyncMontyWebsocket:
                 the session is entered.
             duration_limit_grace: Seconds the parent waits past a session's
                 `max_duration_secs` before killing the worker, giving the sandbox
-                time to raise `TimeoutError` itself and keep the session alive.
+                time to raise `TimeoutError` itself. That keeps the worker, not
+                the session: the cumulative budget is spent, so every later feed
+                raises too — finish the checkout rather than reusing it.
                 `None` disables this backstop.
-            feed_limit_grace: The same, for `max_feed_duration_secs`.
+            feed_limit_grace: The same, for `max_feed_duration_secs`, whose clock
+                restarts at the next feed — so here the session really is usable
+                afterwards.
             turn_limit_grace: The same, for `max_turn_duration_secs`.
         """
 

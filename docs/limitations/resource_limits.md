@@ -255,8 +255,9 @@ indistinguishable from a stack overflow.
     only in when the clock restarts: at each feed, and at each feed or
     answered suspension respectively.
 - A feed that the host never resumes leaves its `max_feed_duration` clock
-    where it stopped. The next feed resets it, so the abandoned feed's time is
-    never charged to anything else.
+    where it stopped. The next feed resets it, so the abandoned feed's time
+    does not carry into it — but it stays charged to `max_duration`, which
+    never resets.
 - `MontyRepl::call_function` counts as its own feed *and* its own turn, so a
     host-driven call is never charged for the feeds before it. Only
     `max_duration` spans the two.

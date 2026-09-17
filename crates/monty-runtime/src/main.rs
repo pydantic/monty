@@ -71,8 +71,9 @@ pub(crate) struct Cli {
 
     /// Maximum execution time for a single feed, in seconds.
     ///
-    /// Only the REPL (`--interactive`) feeds more than once; elsewhere this
-    /// bounds the one run, like `--max-duration`.
+    /// Only the REPL feeds more than once — `monty` with no file, or
+    /// `--interactive`; elsewhere this bounds the one run, like
+    /// `--max-duration`.
     #[arg(long)]
     max_feed_duration: Option<f64>,
 

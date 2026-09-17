@@ -16,7 +16,10 @@
 // (`MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION` in `monty-proto`).
 // Prefer additive changes (fresh tag numbers, `reserved` removals) so a
 // separately-deployed parent has a migration window; a change an older peer
-// could mis-read needs a `PROTOCOL_VERSION` bump instead.
+// could mis-read needs a `PROTOCOL_VERSION` bump instead. A field the child
+// must act on counts as mis-read: an older child ignores it and the parent
+// never learns, so `max_feed_duration_micros` and `max_turn_duration_micros`
+// took version 4 despite being additive.
 
 syntax = "proto3";
 

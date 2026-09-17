@@ -36,6 +36,8 @@ use monty_types::{
     TypeCheckingConfig, TypeCheckingFormat,
 };
 use tokio::time::sleep;
+#[cfg(unix)]
+use tokio::time::timeout;
 
 /// Locates (building once if needed) the `monty` CLI binary for tests.
 fn monty_binary() -> PathBuf {
@@ -2508,6 +2510,7 @@ async fn huge_feed_and_turn_budgets_do_not_overflow_the_backstop() {
         .checkout(&ReplConfig {
             limits: Some(
                 ResourceLimits::default()
+                    .max_duration(Duration::MAX)
                     .max_feed_duration(Duration::MAX)
                     .max_turn_duration(Duration::MAX),
             ),
@@ -2520,6 +2523,140 @@ async fn huge_feed_and_turn_budgets_do_not_overflow_the_backstop() {
         .await
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(2));
+}
+
+/// A worker that reports less feed time than it already reported cannot rewind
+/// the parent's feed backstop.
+///
+/// The stand-in spends the whole 60s budget on its first suspension, then
+/// claims zero on the second and goes quiet. The ratchet keeps the spent
+/// figure, so the next turn is armed with the grace alone — without it the
+/// parent would hand a hostile worker the budget back, every turn, for free.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
+    let dir = tempfile::tempdir().unwrap();
+    let suspension = |feed_execution_micros| pb::ChildEvent {
+        feed_execution_micros,
+        ..child_event(pb::child_event::Kind::NameLookup(pb::NameLookup {
+            name: "x".to_owned(),
+            object_id: None,
+        }))
+    };
+    // `Ok` answers Configure, then the honest suspension and the rewound one.
+    // Nothing answers the third request: that is the turn the backstop must end.
+    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    replies.extend(framed(&suspension(60_000_000)));
+    replies.extend(framed(&suspension(0)));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 30\n", replies_path.display()),
+    );
+
+    let grace = Duration::from_millis(100);
+    let mut config = PoolConfig::subprocess(&fake);
+    config.feed_limit_grace = Some(grace);
+    // The feed backstop must be what fires, not a blanket per-turn deadline.
+    config.request_timeout = None;
+    let pool = Pool::new(config).await.unwrap();
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_secs(60))),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("the stand-in answers Configure with Ok");
+
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "x".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+            cwd: "/".to_owned(),
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let resume = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+            kind: Some(pb::resume_name_lookup::Kind::Undefined(pb::Unit {})),
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    checkout.turn_raw(&feed, &mut on_event).await.unwrap();
+    checkout.turn_raw(&resume, &mut on_event).await.unwrap();
+
+    // Bounded so a regression fails here rather than waiting out the 60s
+    // budget the rewind would have restored.
+    let outcome = timeout(Duration::from_secs(5), checkout.turn_raw(&resume, &mut on_event)).await;
+    let Ok(Err(PoolError::Timeout { timeout })) = outcome else {
+        panic!("the spent feed budget must still backstop the next turn, got {outcome:?}");
+    };
+    assert_eq!(timeout, grace);
+}
+
+/// A second raw `Feed` restarts the parent's feed clock, as `Checkout::feed`
+/// does — the previous feed's total must not shorten the new feed's backstop.
+///
+/// The deadline is read off the `Timeout` error rather than timed, so the
+/// assertion is exact: `begin_feed` gives the whole budget back, and without
+/// it the second feed would be armed with the grace alone.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_raw_feed_restarts_the_parent_feed_clock() {
+    let dir = tempfile::tempdir().unwrap();
+    let budget = Duration::from_millis(300);
+    let grace = Duration::from_millis(100);
+    // `Ok` answers Configure; the suspension ends the first feed having spent
+    // the whole budget. The second feed goes unanswered.
+    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    replies.extend(framed(&pb::ChildEvent {
+        feed_execution_micros: u64::try_from(budget.as_micros()).unwrap(),
+        ..child_event(pb::child_event::Kind::NameLookup(pb::NameLookup {
+            name: "x".to_owned(),
+            object_id: None,
+        }))
+    }));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 30\n", replies_path.display()),
+    );
+
+    let mut config = PoolConfig::subprocess(&fake);
+    config.feed_limit_grace = Some(grace);
+    config.request_timeout = None;
+    let pool = Pool::new(config).await.unwrap();
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_feed_duration(budget)),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("the stand-in answers Configure with Ok");
+
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "x".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+            cwd: "/".to_owned(),
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    checkout.turn_raw(&feed, &mut on_event).await.unwrap();
+    let err = checkout
+        .turn_raw(&feed, &mut on_event)
+        .await
+        .expect_err("the stand-in never answers the second feed");
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected the feed backstop to fire, got {err:?}");
+    };
+    assert_eq!(timeout, budget + grace);
 }
 
 /// With the grace turned off the parent does not backstop that budget at all,

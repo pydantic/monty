@@ -116,16 +116,23 @@ They read the same clock and differ only in when it restarts:
 | `max_turn_duration_secs` | at each host answer | the stretch of code between two host round trips  |
 
 So a turn's time is also charged to its feed and to the session, and whichever budget is tightest fires first.
-When one check blows more than one, the widest is reported, because a new feed cannot recover from it.
+When one check blows more than one, the widest is reported — the session before the feed, the feed before the turn.
 
 `max_duration_secs` and `max_feed_duration_secs` are serialized into [snapshots](snapshots.md), so a restored session
 resumes those budgets rather than restarting from zero.
 A snapshot is only ever taken between turns, so `max_turn_duration_secs` has nothing to carry.
 
 Reach for `max_duration_secs` to cap what a session may ever cost, `max_feed_duration_secs` to keep a long-lived
-session responsive per request, and `max_turn_duration_secs` to bound how long a host callback may be kept waiting.
+session responsive per request, and `max_turn_duration_secs` to bound one uninterrupted stretch of sandbox code, so a
+host driving the session gets control back within a known time.
+It does not bound how long a host callback itself may take: the clock is paused for exactly that, and a host that needs
+to bound its own waiting wants `request_timeout`.
 
-Exceeding any of them raises `TimeoutError` in the sandbox and leaves the session usable.
+Exceeding any of them raises `TimeoutError` in the sandbox.
+The session survives a `max_feed_duration_secs` or `max_turn_duration_secs` trip, because the next feed resets those
+clocks.
+A spent `max_duration_secs` is cumulative and does not reset, so every later feed on that session raises immediately —
+finish the checkout instead of reusing it.
 
 ### Host-side backstops
 

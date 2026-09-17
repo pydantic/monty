@@ -21,12 +21,15 @@ pub mod worker;
 /// or repurposing a field, changing a field's meaning, or adding one the child
 /// requires. Purely additive changes an older peer can ignore do not need a
 /// bump.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///
 /// Version 3 is not served: it carried values as recursive `MontyObject`
-/// trees, where this build carries one flat `Arena` per message.
+/// trees, where this build carries one flat `Arena` per message. Version 4 is
+/// served: a parent that old cannot ask for `max_feed_duration` or
+/// `max_turn_duration`. It is the version 4 *child* that has to be refused —
+/// hence the bump above — since it would accept those limits and ignore them.
 pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 4;
 
 /// How long the child holds buffered `print()` output before emitting it as a

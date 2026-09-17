@@ -144,10 +144,19 @@ pub struct ResourceLimits {
     /// Maximum execution time for a single feed (`feed_start`, `feed_run` or
     /// `call_function`), summed over the turns it takes and excluding time
     /// suspended on the host. Bounds one snippet, not the session.
+    ///
+    /// Defaulted on deserialization so limits written by a build without this
+    /// field still load from a self-describing format; a postcard dump of an
+    /// older layout is rejected by `DUMP_VERSION` instead.
+    #[serde(default)]
     pub max_feed_duration: Option<Duration>,
     /// Maximum execution time for a single host turn, reset at each feed and
     /// each resume. Bounds the stretch of sandbox code between two host round
     /// trips, so a host can bound its own response time per call.
+    ///
+    /// Defaulted on deserialization like
+    /// [`max_feed_duration`](Self::max_feed_duration).
+    #[serde(default)]
     pub max_turn_duration: Option<Duration>,
     /// Maximum allocator-backed memory in bytes.
     ///

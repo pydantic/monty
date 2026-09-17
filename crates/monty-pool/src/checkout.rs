@@ -406,10 +406,11 @@ struct SessionBudget {
     /// Monotonic worker-reported sandbox time, preventing a compromised worker
     /// from rewinding the parent's view.
     reported_execution: Duration,
-    /// Worker-reported sandbox time consumed by the feed in progress. Not
-    /// ratcheted like `reported_execution` — it legitimately drops to zero at
-    /// each feed — so a worker can rewind it, loosening only its own feed
-    /// backstop; `request_timeout` and the session backstop still bound it.
+    /// Worker-reported sandbox time consumed by the feed in progress,
+    /// ratcheted like `reported_execution`. The legitimate drop to zero is
+    /// [`begin_feed`](Self::begin_feed), driven by the `Feed` request going
+    /// out, so a worker reporting less than it did mid-feed cannot loosen its
+    /// own feed backstop.
     reported_feed_execution: Duration,
     /// The session's `max_suspensions` in force (the configured one, else
     /// [`DEFAULT_MAX_SUSPENSIONS`]).
@@ -457,7 +458,9 @@ impl SessionBudget {
         self.reported_execution = self
             .reported_execution
             .max(Duration::from_micros(event.total_execution_micros));
-        self.reported_feed_execution = Duration::from_micros(event.feed_execution_micros);
+        self.reported_feed_execution = self
+            .reported_feed_execution
+            .max(Duration::from_micros(event.feed_execution_micros));
         if self.duration_budget.is_none() {
             self.duration_budget = event.max_duration_micros.map(Duration::from_micros);
         }
@@ -1248,6 +1251,12 @@ impl Checkout {
         let is_load = matches!(request.kind, Some(pb::parent_request::Kind::Load(_)));
         if is_load {
             self.begin_load();
+        }
+        // A raw `Feed` restarts the child's feed clock exactly as `feed` does,
+        // so the parent's must follow it rather than carry the last feed's
+        // total into this feed's backstop.
+        if matches!(request.kind, Some(pb::parent_request::Kind::Feed(_))) {
+            self.budget.begin_feed();
         }
         self.turn_in_flight = true;
         // as `expect_turn`: `request_timeout` alone would drop the `max_duration`

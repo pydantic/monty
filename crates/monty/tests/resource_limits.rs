@@ -1701,22 +1701,45 @@ fn feed_limited_repl(limit: Duration) -> MontyRepl {
 
 /// The feed clock restarts at each feed, so a session may run indefinitely in
 /// short snippets — the case `max_duration` alone cannot express.
+///
+/// Each round spends the whole budget on purpose instead of timing a feed to
+/// eat part of it: a feed clock only grows within its scope, so without the
+/// reset the next feed would start already over budget. That is the same
+/// assertion, off the wall clock.
 #[test]
 fn max_feed_duration_restarts_each_feed() {
-    let mut repl = feed_limited_repl(Duration::from_millis(200));
-    for _ in 0..5 {
-        repl.feed_run("sum(range(20_000))", vec![], PrintWriter::Stdout)
-            .expect("each feed is well inside its own budget");
+    let mut repl = feed_limited_repl(Duration::from_millis(50));
+    for _ in 0..3 {
+        let exc = repl
+            .feed_run("while True:\n    pass", vec![], PrintWriter::Stdout)
+            .expect_err("the runaway feed must exhaust its budget");
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+        assert!(
+            exc.message()
+                .is_some_and(|m| m.starts_with("feed time limit exceeded:")),
+            "the scope must be named, got {exc}"
+        );
+        assert_eq!(
+            repl.feed_run("sum(range(1_000))", vec![], PrintWriter::Stdout)
+                .expect("the next feed gets the whole budget back"),
+            MontyObject::Int(499_500)
+        );
     }
+}
+
+/// A spent `max_duration` stays spent: it never resets, so every later feed
+/// raises too. This is what the feed and turn budgets are not, and what the
+/// docs and binding docstrings promise about reusing an exhausted session.
+#[test]
+fn a_spent_session_budget_fails_every_later_feed() {
+    let limits = ResourceLimits::default().max_duration(Duration::from_millis(50));
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default());
+    repl.feed_run("while True:\n    pass", vec![], PrintWriter::Stdout)
+        .expect_err("the runaway feed must exhaust the session budget");
     let exc = repl
-        .feed_run("while True:\n    pass", vec![], PrintWriter::Stdout)
-        .expect_err("one over-long feed must still be caught");
+        .feed_run("1 + 1", vec![], PrintWriter::Stdout)
+        .expect_err("the budget does not come back");
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
-    assert!(
-        exc.message()
-            .is_some_and(|m| m.starts_with("feed time limit exceeded:")),
-        "the scope must be named, got {exc}"
-    );
 }
 
 /// The session budget out-ranks the feed budget when a single check blows
@@ -1759,24 +1782,39 @@ fn suspension_time_does_not_count_toward_max_feed_duration() {
 
 /// The turn clock restarts at each resume, so work split across host round
 /// trips stays inside a per-turn budget that its total would blow.
+///
+/// The loop runs until the session clock — the same clock the turn budget
+/// reads — has passed several budgets' worth, which a cumulative turn budget
+/// could not survive. A faster machine takes more turns to get there rather
+/// than reaching the assertion on less work, so nothing here rides on
+/// wall-clock speed.
 #[test]
 fn max_turn_duration_restarts_each_resume() {
+    let budget = Duration::from_millis(50);
+    // `interrupt` is resolved once, so the drive loop below is resumes only:
+    // a repeated name lookup would restart the turn clock by itself.
     let code = "
-total = sum(range(200_000))
-interrupt()
-total += sum(range(200_000))
-interrupt()
-total += sum(range(200_000))
+pause = interrupt
+total = 0
+while True:
+    total += sum(range(1_000))
+    pause()
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let limits = ResourceLimits::default().max_turn_duration(Duration::from_secs(5));
-    let mut progress = resolve_name_lookups(
+    let limits = ResourceLimits::default().max_turn_duration(budget);
+    let mut call = resolve_name_lookups(
         run.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
             .unwrap(),
     )
-    .unwrap();
-    while let Some(call) = progress.into_function_call() {
-        progress = resolve_name_lookups(call.resume(MontyObject::None, PrintWriter::Stdout).unwrap()).unwrap();
+    .unwrap()
+    .into_function_call()
+    .expect("the first iteration suspends");
+    while call.tracker().elapsed() < budget * 3 {
+        call = call
+            .resume(MontyObject::None, PrintWriter::Stdout)
+            .expect("the turn budget must not accumulate across resumes")
+            .into_function_call()
+            .expect("every iteration suspends");
     }
 }
 
