@@ -1281,9 +1281,10 @@ pub fn format_string(value: &str, spec: &ParsedFormatSpec, tracker: &ResourceTra
 pub fn format_int(n: i64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
     let is_negative = n < 0;
     // Use unsigned_abs() to avoid overflow panic on i64::MIN
-    let abs_str = n.unsigned_abs().to_string();
-    let sign = numeric_sign(is_negative, &abs_str, spec);
-    pad_signed_numeric(sign, "", &abs_str, spec, tracker)
+    let mut buffer = itoa::Buffer::new();
+    let abs_str = buffer.format(n.unsigned_abs());
+    let sign = numeric_sign(is_negative, abs_str, spec);
+    pad_signed_numeric(sign, "", abs_str, spec, tracker)
 }
 
 /// Formats an integer in binary (base 2), octal (base 8), or hexadecimal (base 16).

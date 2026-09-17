@@ -386,7 +386,7 @@ impl<'h> Encoder<'_, 'h> {
                 Ok(())
             }
             Value::Int(value) => {
-                write!(self.out, "{value}").expect("writing to String cannot fail");
+                self.out.push_str(itoa::Buffer::new().format(*value));
                 Ok(())
             }
             Value::Float(value) => serialize_float(*value, self.out, self.config),
@@ -636,7 +636,7 @@ fn write_json_key(key: &Value, out: &mut String, config: &JsonDumpsConfig, vm: &
         Value::None => write_json_ascii_key("null", out),
         Value::Bool(true) => write_json_ascii_key("true", out),
         Value::Bool(false) => write_json_ascii_key("false", out),
-        Value::Int(value) => write_json_display_key(value, out),
+        Value::Int(value) => write_json_ascii_key(itoa::Buffer::new().format(*value), out),
         Value::Float(value) => {
             serialize_float_key(*value, out, config)?;
         }

@@ -804,7 +804,7 @@ fn small_digits(magnitude: u64, base: u32, uppercase: bool) -> String {
         (8, _) => format!("{magnitude:o}"),
         (16, true) => format!("{magnitude:X}"),
         (16, false) => format!("{magnitude:x}"),
-        _ => magnitude.to_string(),
+        _ => itoa::Buffer::new().format(magnitude).to_owned(),
     }
 }
 

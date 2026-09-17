@@ -134,6 +134,9 @@ impl VM<'_> {
     /// Applies the f-string and `str.format()` conversion flags to a value.
     pub(crate) fn convert_value(&mut self, value: &Value, conversion: u8) -> Result<String, RunError> {
         match conversion {
+            // Every conversion agrees for a small int; format it directly
+            // rather than round-tripping a heap `str`.
+            _ if let Value::Int(i) = value => Ok(itoa::Buffer::new().format(*i).to_owned()),
             0 | 1 if value.py_type(self) == Type::Str => Ok(value.to_str(self)?.to_owned()),
             2 => str_value_into_string(value.py_repr(self)?, self),
             3 => {

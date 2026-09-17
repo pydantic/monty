@@ -50,6 +50,11 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         } else {
             vm.print_writer.push(stream, ' ')?;
         }
+        // Small ints go straight to the stream, with no heap `str` in between.
+        if let Value::Int(i) = value {
+            vm.print_writer.write(stream, itoa::Buffer::new().format(*i).into())?;
+            continue;
+        }
         let s = value.py_str(vm)?;
         defer_drop!(s, vm);
         // Resolve the `str` `Value` against the heap/interns tables directly so
