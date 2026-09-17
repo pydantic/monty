@@ -351,9 +351,9 @@ fn single_arg(value: impl PushValue) -> CallArgs {
 // =============================================================================
 //
 // Each variant carries a struct that derives `ToArgs` for projection to
-// `CallArgs`. Zero-arg variants use empty structs so
-// `to_args()` has no special arms. Producers construct these directly via
-// struct literals (see `types/path.rs`, `builtins/open.rs`, etc.).
+// `CallArgs`. Zero-arg variants use empty structs so `to_args()` has no
+// special arms. Producers construct these directly via struct literals (see
+// `types/path.rs`, `builtins/open.rs`, etc.).
 
 /// `path + str data` shape used by `WriteText` and `AppendText`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]

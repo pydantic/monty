@@ -82,7 +82,7 @@ test('a deeply nested result crosses intact', async () => {
 test('a result nested past the export guard degrades to a repr string', async () => {
   // export recurses once per nesting level under the sandbox's recursion
   // limit, so the value arrives truncated at that depth with a string in
-  // place of the rest, and the host's own walk copes with 1000 levels
+  // place of the rest; the host walk handles 1000 levels
   const result = await run('x = [1]\nfor _ in range(2000):\n    x = [x]\nx')
   t.is(nesting(result), 1000)
   let innermost: unknown = result

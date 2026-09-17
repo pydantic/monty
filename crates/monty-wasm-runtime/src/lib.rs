@@ -145,14 +145,14 @@ impl EventSink for ComponentEventSink {
             let component_event = match event.kind.take() {
                 Some(pb::child_event::Kind::OsCall(call)) => match PreparedOsEvent::from_proto(call) {
                     Ok(event) => {
-                        check_event_value_budget(event.values_host_size())?;
+                        check_event_value_budget(event.values_decoded_size())?;
                         event.into_component()
                     }
                     Err(message) => invalid_event(&message),
                 },
                 kind => {
                     event.kind = kind;
-                    check_event_value_budget(event_values_host_size(&event))?;
+                    check_event_value_budget(event_values_decoded_size(&event))?;
                     event_from_proto(event)
                 }
             };
@@ -175,19 +175,21 @@ fn check_event_value_budget(size: usize) -> Result<(), FrameError> {
 
 /// Estimates the expanded host size of an event's arena before lifting it
 /// into JS.
-fn event_values_host_size(event: &pb::ChildEvent) -> usize {
+fn event_values_decoded_size(event: &pb::ChildEvent) -> usize {
     match &event.kind {
         Some(pb::child_event::Kind::Complete(complete)) => {
-            complete.values.as_ref().map_or(0, |arena| nodes_host_size(&arena.0))
+            complete.values.as_ref().map_or(0, |arena| nodes_decoded_size(&arena.0))
         }
-        Some(pb::child_event::Kind::FunctionCall(call)) => nodes_host_size(&call.values.0),
+        Some(pb::child_event::Kind::FunctionCall(call)) => nodes_decoded_size(&call.values.0),
         _ => 0,
     }
 }
 
 /// Totals the host footprint of an arena's nodes.
-fn nodes_host_size(nodes: &[MontyNode]) -> usize {
-    nodes.iter().fold(0, |size, node| size.saturating_add(node.host_size()))
+fn nodes_decoded_size(nodes: &[MontyNode]) -> usize {
+    nodes
+        .iter()
+        .fold(0, |size, node| size.saturating_add(node.decoded_size()))
 }
 
 /// An OS call projected once into the generic callback values lifted to JS.
@@ -210,17 +212,17 @@ impl PreparedOsEvent {
     }
 
     /// Returns the host footprint of the call's arena.
-    fn values_host_size(&self) -> usize {
-        self.args.values.host_size()
+    fn values_decoded_size(&self) -> usize {
+        self.args.graph.decoded_size()
     }
 
     /// Moves the already-budgeted values into the semantic component arena.
     fn into_component(self) -> Event {
         Event::OsCall(OsCallEvent {
             function_name: self.function_name,
-            values: value::into_component(self.args.values.into_nodes()),
-            args: value::raw_ids(self.args.args),
-            kwargs: value::raw_pairs(self.args.kwargs),
+            values: value::into_component(self.args.graph.into_nodes()),
+            args: value::raw_ids(self.args.arg_ids),
+            kwargs: value::raw_pairs(self.args.kwarg_ids),
             call_id: self.call_id,
         })
     }

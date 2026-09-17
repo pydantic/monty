@@ -26,15 +26,15 @@ fn decode(bytes: &[u8]) -> Result<Vec<MontyNode>, String> {
 }
 
 /// A hint far beyond the bytes present reserves only what those bytes could
-/// hold, so a lying peer cannot make the receiver allocate on its say-so.
+/// hold.
 #[test]
 fn node_count_hint_is_capped_by_the_message_size() {
     let nodes = decode(&arena_bytes(u32::MAX, 2)).expect("a lying hint still decodes");
     assert_eq!(nodes, vec![MontyNode::None, MontyNode::None]);
 }
 
-/// An arena whose nodes would outgrow the budget once decoded is refused up
-/// front, while the bytes are still just bytes.
+/// An arena whose nodes would outgrow the budget is rejected when its hint is
+/// charged, before any node is built.
 #[test]
 fn oversized_arena_is_rejected_before_it_is_built() {
     let too_many = DEFAULT_MAX_DECODE_BYTES / size_of::<MontyNode>() + 1;
@@ -84,7 +84,7 @@ fn nearly_full_arena(last: Option<Vec<u8>>) -> Vec<u8> {
 }
 
 /// A `FunctionCall` frame: the arena first, then `args` (packed when `packed`)
-/// and `kwargs` pairs, so the arena's charge lands before the ids are read.
+/// and `kwargs` pairs, so the arena is charged before the ids are read.
 fn function_call_bytes(arena: &[u8], args: usize, packed: bool, kwargs: usize) -> Vec<u8> {
     let mut bytes = vec![0x3a];
     encode_varint(arena.len() as u64, &mut bytes);

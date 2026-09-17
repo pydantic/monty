@@ -14,16 +14,16 @@ use crate::{
 /// Consumes `self` to avoid cloning owned fields.
 ///
 /// Inverse of `monty`'s internal `FromArgs` (`ArgValues` → struct); [`ToArgs`]
-/// is struct → host-facing `(args, kwargs)`. Driven by
+/// is struct → [`CallArgs`]. Driven by
 /// [`crate::os::OsFunctionCall::to_args`] for the monty-python / monty-js bindings.
 pub trait ToArgs {
     fn to_args(self) -> CallArgs;
 }
-/// Consume `self` into a node of `graph`, returning its id.
+/// Consumes `self` into a node of `graph`, returning its id.
 ///
-/// Implementers shape themselves into the most natural [`MontyNode`] —
-/// `String` → [`MontyNode::String`], `Vec<u8>` → [`MontyNode::Bytes`], etc.
-/// A composite value pushes its children first so the arena stays post-order.
+/// Implementers push the [`MontyNode`] that matches them (`String` →
+/// [`MontyNode::String`], `Vec<u8>` → [`MontyNode::Bytes`], ...); a composite
+/// value pushes its children first so the arena stays post-order.
 pub trait PushValue {
     fn push_into(self, graph: &mut MontyGraph) -> NodeId;
 }

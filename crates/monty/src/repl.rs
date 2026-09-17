@@ -207,7 +207,7 @@ impl MontyRepl {
         }
 
         let NamedValues {
-            values: input_values,
+            graph: input_values,
             names,
         } = inputs.into();
         let (input_names, input_ids): (Vec<_>, Vec<_>) = names.into_iter().unzip();
@@ -293,7 +293,7 @@ impl MontyRepl {
         }
 
         let NamedValues {
-            values: input_values,
+            graph: input_values,
             names,
         } = inputs.into();
         let (input_names, input_ids): (Vec<_>, Vec<_>) = names.into_iter().unzip();
@@ -372,9 +372,9 @@ impl MontyRepl {
         print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         let args: CallArgs = args.into();
-        // the synthetic call site is `name(*args)`: keyword arguments have
-        // no slot, so they are refused rather than silently dropped
-        if !args.kwargs.is_empty() {
+        // The synthetic call site is `name(*args)`: keyword arguments have
+        // no slot, so they are refused rather than silently dropped.
+        if !args.kwarg_ids.is_empty() {
             return Err(ExcType::type_error("call_function() takes positional arguments only")
                 .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
         }
@@ -398,7 +398,7 @@ impl MontyRepl {
             name,
             name_id,
             slot_idx,
-            args.args.len(),
+            args.arg_ids.len(),
             &input_script_name,
             self.global_names.clone(),
             &mut self.interns,
@@ -1338,12 +1338,12 @@ fn build_repl_progress(
 /// `call_function` has already refused keyword arguments.
 fn convert_args(args: CallArgs, vm: &mut VM<'_>) -> Result<ArgValues, MontyException> {
     let values = args
-        .values
+        .graph
         .to_values(vm)
         .map_err(|e| MontyException::runtime_error(format!("invalid argument type: {e}")))?;
     defer_drop!(values, vm);
     let mut positional: Vec<Value> = args
-        .args
+        .arg_ids
         .iter()
         .map(|id| values[id.index()].clone_with_heap(vm.heap))
         .collect();

@@ -1,12 +1,11 @@
 //! Interpreter-side bridge for the boundary value types in `monty-types`:
-//! export of VM `Value`s into a [`MontyGraph`] arena and import of an arena
-//! back into heap values, plus the [`MontyType`] ↔ [`Type`] mirror. The
-//! types themselves (and their pure methods) live in `monty-types`.
+//! export of VM `Value`s into a [`MontyGraph`] arena, import of an arena
+//! back into heap values, and the [`MontyType`] ↔ [`Type`] mirror. The
+//! types themselves (and their pure methods) are defined in `monty-types`.
 //!
-//! Export walks the heap once per message with a memo, so a sub-object
-//! reachable twice is one node referenced twice and the arena is
-//! O(heap objects) rather than O(paths). Import builds every node in one
-//! forward pass because a node's children always precede it.
+//! Export memoizes heap objects per message, so a sub-object reachable twice
+//! is one node referenced twice and the arena is O(heap objects) rather than
+//! O(paths). Import is one forward pass because a node's children precede it.
 
 use std::mem;
 
@@ -39,8 +38,8 @@ use crate::{
 
 /// Crate-internal conversions between a single [`MontyObject`] and a VM `Value`.
 ///
-/// `MontyObject` lives in `monty-types`; building one from a heap `Value` (and
-/// back) requires the VM, so the conversions stay here as a `pub(crate)`
+/// `MontyObject` is defined in `monty-types`; building one from a heap `Value`
+/// (and back) requires the VM, so the conversions stay here as a `pub(crate)`
 /// extension trait. Multi-value messages use [`GraphExporter`] and
 /// [`MontyGraphExt::to_values`] directly so their values share one arena.
 pub(crate) trait MontyObjectExt: Sized {
@@ -50,8 +49,8 @@ pub(crate) trait MontyObjectExt: Sized {
 
     /// Imports this value into the heap. Fails with `InvalidInputError` on
     /// output-only nodes (`Repr`, `Cycle`), on a sandbox class or instance
-    /// whose sandbox object no longer exists, and on malformed input; memory
-    /// overshoot surfaces at the next soft-limit checkpoint, not here.
+    /// whose sandbox object no longer exists, and on malformed input; a
+    /// memory overshoot is caught at the next soft-limit checkpoint, not here.
     fn to_value(self, vm: &mut VM<'_>) -> Result<Value, InvalidInputError>;
 }
 
@@ -86,9 +85,8 @@ pub(crate) trait MontyGraphExt {
 impl MontyGraphExt for MontyGraph {
     fn to_values(self, vm: &mut VM<'_>) -> Result<Vec<Value>, InvalidInputError> {
         let nodes = self.into_nodes();
-        // A host-defined class node resolves like a type object (sandbox
-        // class first); an instance of it needs the host class instead, so
-        // keep the node data for the instance path.
+        // A host-defined class node imports as a type object; a `ClassInstance`
+        // of it needs the node's data to build a `HostClass`, so keep it by id.
         let host_classes: AHashMap<NodeId, Box<ClassTypeNode>> = nodes
             .iter()
             .enumerate()
@@ -112,19 +110,17 @@ impl MontyGraphExt for MontyGraph {
 /// Builds the arena for one outgoing message: the final value, or every
 /// argument of a call. One exporter per message is what lets an object
 /// reachable from two arguments cross once.
-///
-/// `done` memoizes finished heap objects; `in_progress` holds the ones on the
-/// current descent, so a reference back to one of them becomes a
-/// [`MontyNode::Cycle`] leaf rather than infinite recursion.
-///
-/// `pinned` owns a reference to every memoized object: a user `__repr__` run
-/// by [`repr_or_error`] can free an exported object mid-message, and the heap
-/// reuses freed slots, so an unpinned memo could hand a new object the node
-/// of the old one. The pins are released by [`finish`](Self::finish).
 pub(crate) struct GraphExporter {
+    /// The arena under construction.
     graph: MontyGraph,
-    done: AHashMap<HeapId, NodeId>,
+    /// The node of every finished heap object, reused on a second reference.
+    memo: AHashMap<HeapId, NodeId>,
+    /// Objects on the current descent; a reference back to one becomes a
+    /// [`MontyNode::Cycle`] leaf rather than infinite recursion.
     in_progress: AHashSet<HeapId>,
+    /// A reference to every memoized object, released by [`finish`](Self::finish):
+    /// a user `__repr__` run by [`repr_node`] can free an exported object
+    /// mid-message, and a new object in the reused slot would inherit its node.
     pinned: Vec<Value>,
 }
 
@@ -132,7 +128,7 @@ impl GraphExporter {
     pub(crate) fn new() -> Self {
         Self {
             graph: MontyGraph::new(),
-            done: AHashMap::new(),
+            memo: AHashMap::new(),
             in_progress: AHashSet::new(),
             pinned: Vec::new(),
         }
@@ -145,7 +141,7 @@ impl GraphExporter {
         id
     }
 
-    /// Appends a leaf node (e.g. an interned keyword name) directly.
+    /// Appends a node the caller built; nothing is memoized.
     pub(crate) fn push_node(&mut self, node: MontyNode) -> NodeId {
         self.graph.push(node)
     }
@@ -160,23 +156,11 @@ impl GraphExporter {
     fn memoize(&mut self, id: HeapId, node_id: NodeId, vm: &VM<'_>) {
         vm.heap.inc_ref(id);
         self.pinned.push(Value::Ref(id));
-        self.done.insert(id, node_id);
+        self.memo.insert(id, node_id);
     }
 
-    /// Exports a borrowed value and returns its node.
-    ///
-    /// Non-`Ref` variants are produced inline using only the interner — they
-    /// never recurse through the heap. `Ref` variants dispatch via
-    /// `vm.heap.read(id)` so the resulting `HeapRead` keeps the heap entry
-    /// alive (through its reader count) without retaining a borrow on
-    /// `vm.heap`. Recursing can run a user-defined `__repr__` (via
-    /// [`repr_or_error`] on a value with no node of its own, such as a
-    /// `functools.partial` bound to an instance), so mutable containers (list,
-    /// dict, set, dataclass attrs) snapshot ALL children up front — the
-    /// `inc_ref`s keep each child alive and the snapshot keeps iteration valid
-    /// even if that `__repr__` mutates the container. Immutable containers
-    /// (tuple, namedtuple, frozenset) clone per-item: their length and slots
-    /// cannot change mid-iteration.
+    /// Exports a borrowed value and returns its node. Non-`Ref` values need
+    /// only the interner; heap objects go through [`push_ref`](Self::push_ref).
     pub(crate) fn push(&mut self, value: &Value, vm: &mut VM<'_>) -> NodeId {
         // Check depth limit before processing
         let Ok(mut guard) = vm.recursion_guard() else {
@@ -200,21 +184,23 @@ impl GraphExporter {
             Value::Builtin(Builtins::Type(Type::Instance(class_id))) => return self.sandbox_class_node(*class_id, vm),
             Value::Builtin(Builtins::Type(t)) => match MontyType::from_internal_static(*t) {
                 Some(ty) => MontyNode::Type(ty),
-                None => repr_or_error(value, vm),
+                None => repr_node(value, vm),
             },
             Value::Builtin(Builtins::ExcType(e)) => MontyNode::Type(MontyType::Exception(*e)),
             Value::Builtin(Builtins::Function(f)) => MontyNode::BuiltinFunction(*f),
             #[cfg(feature = "memory-model-checks")]
             Value::Dereferenced => panic!("Dereferenced found while exporting a value"),
-            _ => repr_or_error(value, vm),
+            _ => repr_node(value, vm),
         };
         self.push_node(node)
     }
 
     /// Exports a heap object through the memo: a finished object is reused, one
     /// still being exported is a cycle, anything else is converted then recorded.
+    /// `vm.heap.read(id)` yields a `HeapRead` that keeps the entry alive without
+    /// borrowing `vm.heap`, so the conversion can recurse.
     fn push_ref(&mut self, id: HeapId, value: &Value, vm: &mut VM<'_>) -> NodeId {
-        if let Some(node_id) = self.done.get(&id) {
+        if let Some(node_id) = self.memo.get(&id) {
             return *node_id;
         }
         // A host class's type object *is* its shared class node.
@@ -251,8 +237,13 @@ impl GraphExporter {
         node_id
     }
 
-    /// Converts one heap object into its node; container children are pushed
-    /// first so their ids exist.
+    /// Converts one heap object into its node, pushing container children first.
+    /// Recursing can run a user `__repr__` ([`repr_node`] on e.g. a
+    /// `functools.partial` bound to an instance), so mutable containers clone
+    /// every child before recursing: the clones keep the children alive and the
+    /// iteration valid if that `__repr__` mutates the container. Immutable
+    /// containers (tuple, namedtuple, frozenset) cannot change length, so they
+    /// clone per item.
     fn convert_heap_object<'h>(
         &mut self,
         id: HeapId,
@@ -386,7 +377,7 @@ impl GraphExporter {
                         timezone_name: datetime_type::timezone_info(dt.get(vm.heap)).and_then(|tz| tz.name),
                     })
                 } else {
-                    repr_or_error(value, vm)
+                    repr_node(value, vm)
                 }
             }
             HeapReadOutput::Time(t) => {
@@ -505,20 +496,20 @@ impl GraphExporter {
                 name: function.get(vm.heap).as_str().to_owned(),
                 docstring: None,
             },
-            _ => repr_or_error(value, vm),
+            _ => repr_node(value, vm),
         }
     }
 
     /// The class node of a sandbox-defined class, generating and storing its
-    /// boundary uuid on first crossing so repeated crossings (and
-    /// dump/restore) observe the same id. Attrs are never sent for sandbox
-    /// classes, so the node has no children and is memoized on the class.
+    /// boundary uuid on first crossing so repeated crossings (and dump/restore)
+    /// observe the same id. Sandbox classes never send attrs, so the node has
+    /// no children and is memoized by `class_id`.
     ///
     /// # Panics
     /// If `class_id` does not refer to a `Class` heap entry — every producer of a
     /// class id guarantees it does, so this is a programmer-error tripwire.
     fn sandbox_class_node(&mut self, class_id: HeapId, vm: &mut VM<'_>) -> NodeId {
-        if let Some(node_id) = self.done.get(&class_id) {
+        if let Some(node_id) = self.memo.get(&class_id) {
             return *node_id;
         }
         let node = MontyNode::ClassType(Box::new(ClassTypeNode {
@@ -534,13 +525,13 @@ impl GraphExporter {
     }
 
     /// The class node of a host-defined class (`type_id` is its `HostClassType`
-    /// entry), carrying its eager class attrs so an echoed type round-trips
-    /// intact. Memoized so every instance of the class, and the type object
-    /// itself, share one node; a class reached again while its own attrs are
-    /// still being exported gets an attr-less duplicate, since a
-    /// `ClassInstance` must point at a class node, never a `Cycle` leaf.
+    /// entry), with its eager class attrs so an echoed type round-trips.
+    /// Memoized so every instance of the class and the type object itself share
+    /// one node; a class reached again while its own attrs are still being
+    /// exported gets an attr-less duplicate, since a `ClassInstance` must point
+    /// at a class node, never a `Cycle` leaf.
     fn host_class_node(&mut self, type_id: HeapId, vm: &mut VM<'_>) -> NodeId {
-        if let Some(node_id) = self.done.get(&type_id) {
+        if let Some(node_id) = self.memo.get(&type_id) {
             return *node_id;
         }
         let HeapReadOutput::HostClassType(ty) = vm.heap.read(type_id) else {
@@ -569,11 +560,8 @@ impl GraphExporter {
         node_id
     }
 
-    /// Exports a guarded snapshot of container children.
-    ///
-    /// Taking a `&[Value]` snapshot (cloned and guarded by the caller) is what
-    /// keeps [`push`](Self::push) safe against a nested `__repr__` mutating the
-    /// source container mid-iteration.
+    /// Exports a snapshot of container children, cloned and guarded by the
+    /// caller (see [`convert_heap_object`](Self::convert_heap_object)).
     fn push_all(&mut self, children: &[Value], vm: &mut VM<'_>) -> Vec<NodeId> {
         children.iter().map(|child| self.push(child, vm)).collect()
     }
@@ -603,13 +591,13 @@ pub(crate) trait CallArgsExt {
 impl CallArgsExt for CallArgs {
     fn export_arg(&mut self, exporter: &mut GraphExporter, value: Value, vm: &mut VM<'_>) {
         let id = exporter.push_owned(value, vm);
-        self.args.push(id);
+        self.arg_ids.push(id);
     }
 
     fn export_kwarg(&mut self, exporter: &mut GraphExporter, key: Value, value: Value, vm: &mut VM<'_>) {
         let key = exporter.push_owned(key, vm);
         let value = exporter.push_owned(value, vm);
-        self.kwargs.push((key, value));
+        self.kwarg_ids.push((key, value));
     }
 }
 
@@ -717,13 +705,12 @@ impl MontyTypeExt for MontyType {
         }
     }
 
-    /// Mirrors a runtime [`Type`] whose class identity is NOT needed; a
-    /// sandbox class (`Type::Instance`) exports as a class node instead, and a
-    /// type with no boundary form returns `None` to cross as a repr.
+    /// Mirrors a runtime [`Type`] without heap access; a type with no boundary
+    /// form returns `None` and crosses as a repr.
     ///
     /// # Panics
-    /// On `Instance`, whose class name cannot be resolved without a heap; the
-    /// exporter routes it to [`GraphExporter::sandbox_class_node`] first.
+    /// On `Instance` and `HostClass`, which have no `MontyType`: the exporter
+    /// routes a sandbox class to [`GraphExporter::sandbox_class_node`] first.
     fn from_internal_static(ty: Type) -> Option<Self> {
         Some(match ty {
             Type::Ellipsis => Self::Ellipsis,
@@ -828,9 +815,6 @@ impl MontyTypeExt for MontyType {
 /// lower, so they always are). A child used twice becomes a shared heap
 /// object: the sandbox sees the identity the host sent. `host_classes` holds
 /// the host-defined class nodes, by id, for instances of them.
-///
-/// Immediate values (None, Bool, Int, Float, Ellipsis, Exception) are created
-/// directly; heap values are allocated and wrapped in `Value::Ref`.
 fn import_node(
     node: MontyNode,
     built: &[Value],
@@ -848,11 +832,11 @@ fn import_node(
         MontyNode::String(s) => Ok(allocate_string(s, vm.heap)),
         MontyNode::Bytes(b) => Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b))))),
         MontyNode::List(ids) => {
-            let values = import_children(&ids, built, vm);
+            let values = clone_children(&ids, built, vm);
             Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(values)))))
         }
         MontyNode::Tuple(ids) => {
-            let values = import_children(&ids, built, vm);
+            let values = clone_children(&ids, built, vm);
             Ok(allocate_tuple(values.into(), vm.heap))
         }
         MontyNode::NamedTuple {
@@ -867,13 +851,13 @@ fn import_node(
                     "NamedTuple field_names and values must have the same length",
                 ));
             }
-            let values = import_children(&values, built, vm);
+            let values = clone_children(&values, built, vm);
             let field_name_strs: Vec<EitherStr> = field_names.into_iter().map(Into::into).collect();
             let nt = NamedTuple::new(type_name, field_name_strs, values);
             Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(nt)))))
         }
         MontyNode::Dict(pairs) => {
-            let pairs = import_pairs(&pairs, built, vm);
+            let pairs = clone_pairs(&pairs, built, vm);
             let dict =
                 Dict::from_pairs(pairs, vm).map_err(|_| InvalidInputError::invalid_type("unhashable dict keys"))?;
             Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
@@ -983,7 +967,7 @@ fn import_node(
                 Ok(Value::Ref(class_id))
             }
             _ if class.host_defined => {
-                let attrs = import_pairs(&class.attrs, built, vm);
+                let attrs = clone_pairs(&class.attrs, built, vm);
                 intern_host_class_type(class.name, class.id, class.is_dataclass, attrs, vm).map(Value::Ref)
             }
             _ => Err(InvalidInputError::invalid_type(format!(
@@ -1007,14 +991,14 @@ fn import_node(
             }
             _ if host_classes.contains_key(&class_type) => {
                 let class = &host_classes[&class_type];
-                let pairs = import_pairs(&attrs, built, vm);
+                let pairs = clone_pairs(&attrs, built, vm);
                 let dict = Dict::from_pairs(pairs, vm)
                     .map_err(|_| InvalidInputError::invalid_type("unhashable class instance attr keys"))?;
                 // Guarded while the class type interns (its attrs can fail
                 // too); `HostClass::new` then takes both.
                 let mut dict_guard = DropGuard::new(dict, vm);
                 let (_, vm) = dict_guard.as_parts_mut();
-                let class_attrs = import_pairs(&class.attrs, built, vm);
+                let class_attrs = clone_pairs(&class.attrs, built, vm);
                 let class_id =
                     intern_host_class_type(class.name.clone(), class.id, class.is_dataclass, class_attrs, vm)?;
                 let (dict, vm) = dict_guard.into_parts();
@@ -1045,14 +1029,14 @@ fn import_node(
 }
 
 /// Owned clones of already-imported children.
-fn import_children(ids: &[NodeId], built: &[Value], vm: &VM<'_>) -> Vec<Value> {
+fn clone_children(ids: &[NodeId], built: &[Value], vm: &VM<'_>) -> Vec<Value> {
     ids.iter()
         .map(|id| built[id.index()].clone_with_heap(vm.heap))
         .collect()
 }
 
 /// Owned clones of already-imported `(key, value)` children.
-fn import_pairs(pairs: &[(NodeId, NodeId)], built: &[Value], vm: &VM<'_>) -> Vec<(Value, Value)> {
+fn clone_pairs(pairs: &[(NodeId, NodeId)], built: &[Value], vm: &VM<'_>) -> Vec<(Value, Value)> {
     pairs
         .iter()
         .map(|(key, value)| {
@@ -1129,7 +1113,7 @@ fn snapshot_dict_pairs(dict: &Dict, heap: &Heap) -> Vec<(Value, Value)> {
 
 /// Converts a value to its repr node, falling back to a descriptive error
 /// message if `py_repr` fails (e.g. INT_MAX_STR_DIGITS).
-fn repr_or_error(value: &Value, vm: &mut VM<'_>) -> MontyNode {
+fn repr_node(value: &Value, vm: &mut VM<'_>) -> MontyNode {
     match value.py_repr(vm) {
         Ok(s) => {
             // `py_repr` yields a heap `str` `Value`; extract its text and drop it.

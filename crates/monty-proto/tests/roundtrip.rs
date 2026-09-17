@@ -144,7 +144,7 @@ fn datetime_values_round_trip() {
     }));
 }
 
-/// The decode budget is charged `host_size`, so every owned string a decoded
+/// The decode budget is charged `decoded_size`, so every owned string a decoded
 /// value carries has to be counted there — the temporal values each hold a
 /// caller-supplied timezone name, and the rest of their fields are scalars.
 #[test]
@@ -177,7 +177,7 @@ fn timezone_names_are_charged_to_the_decode_budget() {
                 name,
             }),
         ]
-        .map(|obj| obj.root_node().host_size())
+        .map(|obj| obj.root_node().decoded_size())
     };
     let named = sizes(Some(name.clone()));
     let unnamed = sizes(None);

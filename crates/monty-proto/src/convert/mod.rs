@@ -9,10 +9,10 @@
 //!   treated as untrusted — unknown names, out-of-range numbers, and missing
 //!   oneof arms are errors, never panics.
 //!
-//! Values cross as a flat arena per message ([`crate::WireArena`]) with the
-//! message naming its roots by index, so a value's nesting depth is never a
-//! wire concern; the conversions here only pair each root with its arena and
-//! check the index is in range.
+//! Values cross as one flat arena per message ([`crate::WireArena`]) with the
+//! message naming its roots by index, so nesting depth is unbounded on the
+//! wire; the conversions here pair each root with its arena and check the
+//! index is in range.
 
 mod exception;
 mod limits;
@@ -25,7 +25,8 @@ use std::{error, fmt};
 use monty_types::{MontyGraph, MontyObject, NamedValues, NodeId};
 pub use os_call::{os_call_from_proto, os_call_to_proto};
 pub use resume::{
-    ext_result_from_proto, ext_result_to_proto, future_results_from_proto, future_results_to_proto, resume_call_result,
+    ext_result_from_proto, ext_result_to_proto, future_results_from_proto, future_results_to_proto,
+    resume_call_from_proto,
 };
 
 use crate::{
@@ -87,11 +88,11 @@ impl TryFrom<pb::Complete> for MontyObject {
     type Error = ProtoConvertError;
 
     fn try_from(complete: pb::Complete) -> Result<Self, ProtoConvertError> {
-        object_from_parts(complete.values, complete.value, "Complete.values")
+        root_object(complete.values, complete.value, "Complete.values")
     }
 }
 
-/// Projects named inputs onto the wire: the `NamedRef`s and the arena they index.
+/// Splits named inputs into `NamedRef`s and the arena they index.
 #[must_use]
 pub fn named_values_to_proto(inputs: NamedValues) -> (Vec<pb::NamedRef>, WireArena) {
     let refs = inputs
@@ -99,7 +100,7 @@ pub fn named_values_to_proto(inputs: NamedValues) -> (Vec<pb::NamedRef>, WireAre
         .into_iter()
         .map(|(name, id)| pb::NamedRef { name, value: id.0 })
         .collect();
-    (refs, WireArena::new(inputs.values))
+    (refs, WireArena::new(inputs.graph))
 }
 
 /// Validates decoded named inputs against their arena.
@@ -108,7 +109,7 @@ pub fn named_values_from_proto(
     values: Option<WireArena>,
 ) -> Result<NamedValues, ProtoConvertError> {
     let named = NamedValues {
-        values: arena_or_empty(values)?,
+        graph: graph_or_empty(values)?,
         names: inputs
             .into_iter()
             .map(|input| (input.name, NodeId(input.value)))
@@ -120,7 +121,7 @@ pub fn named_values_from_proto(
 
 /// Pairs a message's arena with the root it names, rejecting an absent arena
 /// (`field` names it) or an out-of-range root.
-pub(crate) fn object_from_parts(
+pub(crate) fn root_object(
     values: Option<WireArena>,
     root: u32,
     field: &'static str,
@@ -131,6 +132,6 @@ pub(crate) fn object_from_parts(
 
 /// A message's arena, or an empty one when the field is absent (a message
 /// with no value-typed fields set never needs one).
-pub(crate) fn arena_or_empty(values: Option<WireArena>) -> Result<MontyGraph, ProtoConvertError> {
+pub(crate) fn graph_or_empty(values: Option<WireArena>) -> Result<MontyGraph, ProtoConvertError> {
     values.map_or_else(|| Ok(MontyGraph::new()), WireArena::into_graph)
 }

@@ -27,14 +27,11 @@ pub fn monty_to_py(py: Python<'_>, value: &MontyObject, store: &InstanceStore) -
 
 /// One message's arena as Python objects.
 ///
-/// Every node is converted once, in arena order, so a child always exists
-/// before its holder and a node referenced twice (a shared sub-object, an
-/// argument passed twice) is one Python object. The pass is a loop, not a
-/// recursion: nesting depth costs nothing on the native stack. Class nodes
-/// resolve to the registered class or a `MontyClassTypeProxy`, and every
-/// instance of one shares that object; namedtuple types are built once per
-/// `(name, fields)` so shared namedtuples share their type. Output-only nodes
-/// (`Repr`, `Cycle`, `Function`) become strings.
+/// Every node is converted once, in arena order (a loop, not a recursion, so
+/// nesting depth costs no native stack), so a node referenced twice (a shared
+/// sub-object, an argument passed twice) is one Python object. A class node
+/// resolves to the registered class or one `MontyClassTypeProxy` shared by
+/// every instance of it.
 pub struct DecodedArena {
     built: Vec<Py<PyAny>>,
 }
@@ -167,14 +164,13 @@ impl Decoder<'_, '_> {
                 }
             }
             MontyNode::Path(p) => Ok(get_pure_posix_path(py)?.call1((p,))?.into_any().unbind()),
-            // A Monty file object has no faithful host-Python representation
-            // (it is not a real OS file). Surface it as a `MontyFileHandle` so
-            // callers can inspect `path`, `mode`, `position` directly.
+            // a sandbox file is not an OS file, so it decodes to a
+            // `MontyFileHandle` exposing `path`, `mode` and `position`
             MontyNode::FileHandle(handle) => Ok(Py::new(py, PyMontyFileHandle::from_inner(handle.clone()))?.into_any()),
             // output-only nodes become their text
             MontyNode::Repr(s) | MontyNode::Cycle(s) => Ok(PyString::new(py, s).into_any().unbind()),
-            // function objects belong to the name-lookup protocol and should
-            // not normally be output values; if they are, show the name
+            // function nodes belong to the name-lookup protocol; one reaching
+            // an output value decodes to its name
             MontyNode::Function { name, .. } => Ok(PyString::new(py, name).into_any().unbind()),
         }
     }

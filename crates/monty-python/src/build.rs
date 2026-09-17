@@ -88,7 +88,7 @@ pub(crate) fn extract_repl_inputs(
         names.push((name, id));
     }
     Ok(NamedValues {
-        values: encoder.finish(),
+        graph: encoder.finish(),
         names,
     })
 }

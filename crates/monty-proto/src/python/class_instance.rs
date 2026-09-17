@@ -4,7 +4,7 @@
 //! - [`InstanceStore`]: the per-session uuid → wrapper/class maps that route
 //!   method calls and lazy attribute lookups (on instances and class types
 //!   alike — construction arrives as a `__call__` method call) back to the
-//!   host objects, and hand original objects back when the sandbox returns them
+//!   host objects, and resolve returned instances to their original objects
 //! - [`PyMontyClassProxy`] / [`PyMontyClassTypeProxy`]: read-only stand-ins
 //!   for instances and classes the host has no original object for
 //!

@@ -472,7 +472,7 @@ fn repl_feed_start_restores_comprehension_slots_before_next_turn() {
     let progress = repl.feed_start("foo()", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "foo");
-    assert!(call.args.args.is_empty());
+    assert!(call.args.arg_ids.is_empty());
     let _repl = call.into_repl();
 }
 
@@ -487,7 +487,7 @@ fn repl_feed_start_restores_comprehension_slots_after_runtime_error() {
     let progress = err.repl.feed_start("foo()", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "foo");
-    assert!(call.args.args.is_empty());
+    assert!(call.args.arg_ids.is_empty());
     let _repl = call.into_repl();
 }
 
@@ -740,7 +740,7 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
         Some(MontyUuid::from_u128(42)),
         "should be a method call on instance 42"
     );
-    assert!(call.args.args.is_empty(), "receiver must not be included in args");
+    assert!(call.args.arg_ids.is_empty(), "receiver must not be included in args");
 
     // Resume with a return value (sum of x + y = 3)
     let progress = call.resume(MontyObject::int(3), PrintWriter::Stdout).unwrap();

@@ -68,17 +68,16 @@ fn call_object_method_raw<'py>(
 }
 
 /// Converts a call's arguments into the Python tuple/dict a host call needs.
-/// The arena is decoded once, so an object passed twice arrives twice as one
-/// Python object.
+/// The arena is decoded once, so an object passed twice is one Python object.
 pub(crate) fn wire_call_arguments<'py>(
     py: Python<'py>,
     args: &CallArgs,
     instances: &InstanceStore,
 ) -> PyResult<(Bound<'py, PyTuple>, Bound<'py, PyDict>)> {
-    let arena = DecodedArena::new(py, &args.values, instances)?;
-    let py_args_tuple = PyTuple::new(py, args.args.iter().map(|id| arena.get(py, *id)))?;
+    let arena = DecodedArena::new(py, &args.graph, instances)?;
+    let py_args_tuple = PyTuple::new(py, args.arg_ids.iter().map(|id| arena.get(py, *id)))?;
     let py_kwargs = PyDict::new(py);
-    for (key, value) in &args.kwargs {
+    for (key, value) in &args.kwarg_ids {
         py_kwargs.set_item(arena.get(py, *key), arena.get(py, *value))?;
     }
     Ok((py_args_tuple, py_kwargs))

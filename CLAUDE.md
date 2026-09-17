@@ -19,8 +19,8 @@ Project goals:
 
 ## `monty-types` — shared boundary types
 
-The public data types (`MontyObject`, the value arena `MontyGraph`/`MontyNode` with
-`MontyObject`/`CallArgs`/`NamedValues`, `MontyException`/`ExcType`, `OsFunctionCall` +
+The public data types (the `MontyGraph`/`MontyNode` value graph and the `MontyObject`/`CallArgs`/`NamedValues`
+built on it, `MontyException`/`ExcType`, `OsFunctionCall` +
 its arg structs, `ResourceLimits`/`ResourceTracker`, `PrintStream`/`PrintWriter`,
 `CompileOptions`, `ExtFunctionResult`, `FileMode`, ...) live in `crates/monty-types`,
 which depends on no other monty crate except the `monty-macros` derives. `monty`
@@ -41,11 +41,11 @@ Interpreter-coupled methods on these types live in `monty` as `pub(crate)`
 extension traits (`ExcTypeExt`, `MontyObjectExt`, `MontyGraphExt`, `CallArgsExt`,
 `MontyTypeExt`, `StackFrameExt`, `FileModeExt`, `BuiltinsFunctionsExt`,
 `ExtFunctionResultExt`) — import the trait to call e.g. `ExcType::type_error(...)` or
-`MontyObject::export(value, vm)`. Values leave the interpreter as a `MontyGraph` arena
-built by `object_bridge::GraphExporter` (one per message, so a shared sub-object
-crosses once) and re-enter through `MontyGraphExt::to_values`; `MontyObject` is one
-owned value (an arena plus its root) that hosts build inputs with and read results
-from through `ObjectRef` accessors.
+`MontyObject::export(value, vm)`.
+`object_bridge::GraphExporter` builds one `MontyGraph` per outgoing message, so a sub-object shared in the sandbox
+crosses once; `MontyGraphExt::to_values` converts an incoming graph back into interpreter values.
+`MontyObject` is one owned value, a graph plus its root node: hosts build inputs with it and read results through its
+`ObjectRef` accessors.
 
 ## Cross-Platform Requirements
 
@@ -146,15 +146,12 @@ subprocesses:
     (`proto/monty/v1/monty.proto`), checked-in prost-generated code (regenerate
     with `make generate-proto`; CI enforces sync via `make check-proto`),
     4-byte LE length-prefixed framing, and fallible conversions between wire
-    types and `MontyException`/etc. Values cross as one flat post-order node
-    arena per message (`monty.v1.Arena`; every child index is lower than its
-    holder's, an index used twice is a shared object) with each message naming
-    its roots by index, so a sub-object shared in the sandbox crosses once and
-    nesting depth is never a wire concern. The message is mapped via prost
-    `extern_path` onto `WireArena` (`src/wire.rs`), a hand-written
-    `prost::Message` impl that encodes borrowed `MontyNode`s and validates
-    *while* decoding — no mirror struct, no deep clone, no recursion on the hot
-    path. `tests/differential.rs` proves it
+    types and `MontyException`/etc. Values cross as one flat post-order `MontyGraph` per message (`monty.v1.Arena`):
+    every child index is lower than its holder's, an index used twice is a shared object, and the message names its
+    roots by index, so a shared sub-object crosses once and the wire imposes no nesting limit.
+    prost `extern_path` maps the message onto `WireArena` (`src/wire.rs`), a hand-written `prost::Message` impl that
+    encodes borrowed `MontyNode`s and validates *while* decoding, with no mirror struct, deep clone or recursion on
+    the hot path. `tests/differential.rs` proves it
     byte-compatible against a fully prost-generated oracle (`tests/oracle/`,
     regenerated and CI-checked together with the main codegen). Parents must
     treat frames from a (possibly compromised) child as untrusted — wire
@@ -882,7 +879,7 @@ recovery, framing and value conversion all live in Rust.
 
 - `crates/monty-js/src/` - Rust napi crate (native-only): `pool.rs`
     (NativePool / NativeSession over `monty-pool`), `convert.rs`
-    (JS ↔ value arenas, sharing preserved both ways), `exceptions.rs`, `limits.rs`
+    (JS ↔ `MontyGraph`; an object referenced twice crosses once in either direction), `exceptions.rs`, `limits.rs`
 - `crates/monty-js/ts/` - TypeScript wrapper: `pool.ts` (Monty),
     `session.ts` (MontySession + drive loop), `errors.ts`, `binary.ts`
     (monty binary resolution), `mount.ts`, `native.ts` (turn-object typings)

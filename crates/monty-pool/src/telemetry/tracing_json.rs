@@ -5,11 +5,11 @@
 //! total seconds, and opaque objects fall back to their `repr`. Output is capped
 //! at a byte limit so a huge value cannot blow up the telemetry pipeline.
 //!
-//! Values are rendered straight from the wire arena (`&[MontyNode]` plus a
-//! root id), which may come from an event the pool has not validated yet: a
-//! child id that is not strictly lower than its holder, or out of range,
-//! renders as a placeholder rather than being followed, so a hostile arena can
-//! neither loop nor index out of bounds, and nesting stops at [`MAX_JSON_DEPTH`].
+//! Values are rendered from the wire arena (`&[MontyNode]` plus a root id),
+//! which the pool may not have validated yet. A child id out of range, or not
+//! strictly lower than its holder, renders as a placeholder instead of being
+//! followed, so a hostile arena cannot loop or index out of bounds; nesting
+//! stops at [`MAX_JSON_DEPTH`].
 //!
 //! Divergences from the Python encoder: sets are encoded in storage order
 //! (Python sorts them when comparable), integers beyond `i128` become their
@@ -31,8 +31,8 @@ use serde::ser::{Error as _, Serialize, SerializeMap, Serializer};
 /// per level, and the arena's index guard alone allows one level per node.
 const MAX_JSON_DEPTH: usize = 64;
 
-/// What a child id the arena cannot vouch for renders as.
-const INVALID: &str = "<invalid>";
+/// Placeholder for an id that is out of range or not below its holder.
+const INVALID_PLACEHOLDER: &str = "<invalid>";
 
 /// Serializes the value rooted at `id` to logfire-style JSON (see the module
 /// docs), capped at `limit` bytes. The bool is true when the cap cut
@@ -119,8 +119,8 @@ impl Write for CappedWriter {
 ///
 /// `limit` is carried down the value tree so a huge `bytes` leaf is escaped
 /// only as far as the cap can keep — the writer alone cannot help, since it
-/// sees the escaped string only once it is built. `id` may be out of range or
-/// [`INVALID_ID`], which renders the placeholder.
+/// sees the escaped string only once it is built. An `id` out of range or
+/// equal to [`INVALID_ID`] renders as [`INVALID_PLACEHOLDER`].
 struct JsonEncoded<'a> {
     nodes: &'a [MontyNode],
     id: NodeId,
@@ -128,12 +128,12 @@ struct JsonEncoded<'a> {
     depth: usize,
 }
 
-/// The id a child that is not strictly lower than its holder is replaced by:
-/// never in range, so it renders as [`INVALID`].
+/// Replaces a child id that is not below its holder; never in range, so it
+/// renders as [`INVALID_PLACEHOLDER`].
 const INVALID_ID: NodeId = NodeId(u32::MAX);
 
 impl<'a> JsonEncoded<'a> {
-    /// An encoder for a root the carrying message named.
+    /// An encoder for a root named by the message.
     const fn root(nodes: &'a [MontyNode], id: NodeId, limit: usize) -> Self {
         Self {
             nodes,
@@ -143,9 +143,9 @@ impl<'a> JsonEncoded<'a> {
         }
     }
 
-    /// An encoder for a child of this node, carrying `limit` down the tree.
-    /// A child that is not below its holder cannot be part of a valid arena
-    /// and is not followed, which is what keeps a hostile arena from looping.
+    /// An encoder for a child of this node. A child id not below its holder is
+    /// invalid in a post-order arena and is not followed, so a hostile arena
+    /// cannot make the encoder loop.
     const fn nested(&self, child: NodeId) -> Self {
         let id = if child.0 < self.id.0 { child } else { INVALID_ID };
         Self {
@@ -156,6 +156,7 @@ impl<'a> JsonEncoded<'a> {
         }
     }
 
+    /// The node at `id`, or `None` when it is out of range.
     fn node(&self) -> Option<&'a MontyNode> {
         self.nodes.get(self.id.0 as usize)
     }
@@ -164,7 +165,7 @@ impl<'a> JsonEncoded<'a> {
 impl Serialize for JsonEncoded<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         let Some(node) = self.node() else {
-            return s.serialize_str(INVALID);
+            return s.serialize_str(INVALID_PLACEHOLDER);
         };
         if self.depth > MAX_JSON_DEPTH {
             return s.serialize_str("<too deep>");
@@ -284,13 +285,13 @@ impl Serialize for JsonAttrs<'_> {
 }
 
 /// A class node as a JSON object mirroring its fields, `attrs` through the
-/// capped dict encoding; anything but a class node renders as [`INVALID`].
+/// capped dict encoding; anything but a class node renders as [`INVALID_PLACEHOLDER`].
 struct JsonClassType<'a>(JsonEncoded<'a>);
 
 impl Serialize for JsonClassType<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         let Some(MontyNode::ClassType(class)) = self.0.node() else {
-            return s.serialize_str(INVALID);
+            return s.serialize_str(INVALID_PLACEHOLDER);
         };
         let mut map = s.serialize_map(Some(5))?;
         map.serialize_entry("name", &class.name)?;
@@ -344,9 +345,8 @@ fn serialize_pairs<S: Serializer>(
         if let Some(MontyNode::String(k)) = key.node() {
             map.serialize_entry(k, &value)?;
         } else {
-            // the key's own encoding, capped like everything else; a cut key
-            // is reported as a cut of the whole encoding, since the rendered
-            // part may fit the outer cap on its own
+            // a cut key fails the whole encoding: its rendered prefix might
+            // fit the outer cap and hide the cut
             let (rendered, cut) = capped(&key, holder.limit);
             if cut {
                 return Err(S::Error::custom("byte limit reached"));

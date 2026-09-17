@@ -20,7 +20,7 @@ use monty_pool::{
     Checkout, CheckoutOptions, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
     ResumeValue, TurnEvent,
 };
-use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb, resume_call_result};
+use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb, resume_call_from_proto};
 use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
@@ -441,7 +441,7 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
             panic!("expected ResumeCall");
         };
         assert_eq!(resume.call_id, 7);
-        let ExtFunctionResult::Return(value) = resume_call_result(resume).expect("valid result") else {
+        let ExtFunctionResult::Return(value) = resume_call_from_proto(resume).expect("valid result") else {
             panic!("expected a ReturnValue result");
         };
         assert_eq!(value, MontyObject::string("parent-side bytes".to_owned()));

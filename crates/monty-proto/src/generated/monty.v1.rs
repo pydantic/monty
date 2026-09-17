@@ -10,7 +10,7 @@ pub struct Unit {}
 /// the indexes of their children.
 ///
 /// `repr` and `cycle` are OUTPUT-ONLY: the child may emit them (e.g. inside a
-/// `Complete` value) but rejects them as inputs, exactly like `MontyNode`.
+/// `Complete` value) but rejects them as inputs.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MontyNode {
     #[prost(

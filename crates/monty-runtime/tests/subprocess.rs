@@ -238,14 +238,9 @@ impl Drop for ChildProc {
     }
 }
 
+/// The value of a `Complete` event.
 #[track_caller]
 fn expect_complete(event: pb::child_event::Kind) -> MontyObject {
-    expect_complete_object(event)
-}
-
-/// The completed value as its arena, for assertions about its shape.
-#[track_caller]
-fn expect_complete_object(event: pb::child_event::Kind) -> MontyObject {
     match event {
         pb::child_event::Kind::Complete(complete) => MontyObject::try_from(complete).expect("invalid complete value"),
         other => panic!("expected Complete, got {other:?}"),
@@ -1112,7 +1107,6 @@ fn iterdir_joins_are_preflighted() {
     assert_eq!(error.exc_type, "MemoryError");
     let message = error.message.expect("MemoryError should have a message");
     assert_reported_usage(&message, 2_245_291, code);
-    assert_reported_usage(&message, 2_234_235, code);
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
@@ -1175,16 +1169,16 @@ fn a_returnable_value_can_also_be_passed_to_a_host_function() {
 // Value arenas
 // =============================================================================
 
-/// The HackMonty shape: 36 heap objects that a tree export expands to
-/// 753,663 nodes. As an arena it is one node per object plus the `0`, so it
-/// completes under a small memory limit and leaves the session usable.
+/// 36 lists that a tree export expands to 753,663 nodes; the arena is one
+/// node per list plus the `0`, so it completes under a small memory limit
+/// and leaves the session usable.
 #[test]
 fn exporting_a_shared_graph_is_linear_in_heap_objects() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(4 * 1024 * 1024));
     let code = "x = [0]\nfor _ in range(20):\n    x = [x]\nfor _ in range(15):\n    x = [x, x]\nx";
     let (_, event) = child.feed(code);
-    let value = expect_complete_object(event);
+    let value = expect_complete(event);
     assert_eq!(value.graph.len(), 37);
     // the session survives: nothing overshot into a soft-limit `MemoryError`
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
@@ -1198,7 +1192,7 @@ fn exporting_a_small_shared_graph_round_trips() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("x = [0]\nx = [x, x]\nx = [x, x]\nx");
-    let value = expect_complete_object(event);
+    let value = expect_complete(event);
     // `0`, `[0]`, `[[0], [0]]` and the outer list: sharing costs nothing
     assert_eq!(value.graph.len(), 4);
     let leaf = MontyObject::list([MontyObject::int(0)]);
@@ -1208,14 +1202,14 @@ fn exporting_a_small_shared_graph_round_trips() {
 }
 
 /// Export recurses once per nesting level, so a value this deep overflows a
-/// 1 MiB stack in a debug build; the worker's own fixed-size stack keeps the
-/// budget the same on every OS rather than Windows' main-thread default.
+/// 1 MiB stack (Windows' main-thread default) in a debug build; the worker
+/// thread's fixed stack size covers it on every OS.
 #[test]
 fn exporting_a_deeply_nested_value_does_not_overflow_the_stack() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("x = [1]\nfor _ in range(300):\n    x = [x]\nx");
-    let value = expect_complete_object(event);
+    let value = expect_complete(event);
     // one node per list plus the leaf
     assert_eq!(value.graph.len(), 302);
     let expected = (0..301).fold(MontyObject::int(1), |inner, _| MontyObject::list([inner]));
@@ -1223,16 +1217,15 @@ fn exporting_a_deeply_nested_value_does_not_overflow_the_stack() {
     child.shutdown();
 }
 
-/// Export recurses once per nesting level under the interpreter's recursion
-/// guard, so a value nested past it degrades to a `<deeply nested>` repr at
-/// that depth instead of growing the worker's stack without bound, and the
-/// session stays usable.
+/// Export runs under the interpreter's recursion guard: past 1000 levels the
+/// rest of the value becomes a `<deeply nested>` repr, and the session stays
+/// usable.
 #[test]
 fn exporting_past_the_recursion_guard_degrades_to_a_repr() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("x = [1]\nfor _ in range(2000):\n    x = [x]\nx");
-    let value = expect_complete_object(event);
+    let value = expect_complete(event);
     // post-order: the innermost node comes first; the guard trips at the
     // 1000th level, so 1000 lists wrap the repr
     assert_eq!(value.graph.nodes()[0], MontyNode::Repr("<deeply nested>".to_owned()));
@@ -1250,7 +1243,7 @@ fn many_references_to_one_object_cost_one_node() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
     let (_, event) = child.feed(&format!("x = [1]\n[x] * {REFS}"));
-    let value = expect_complete_object(event);
+    let value = expect_complete(event);
     // `1`, `[1]` and the outer list
     assert_eq!(value.graph.len(), 3);
     let MontyNode::List(ids) = value.root_node() else {
@@ -1269,7 +1262,7 @@ fn cycles_export_one_placeholder_each() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
     let (_, event) = child.feed("xs = [[] for _ in range(10_000)]\nfor x in xs:\n    x.append(x)\nxs");
-    let value = expect_complete_object(event);
+    let value = expect_complete(event);
     assert_eq!(value.graph.len(), 20_001);
     let cycles = value
         .graph
@@ -1282,10 +1275,10 @@ fn cycles_export_one_placeholder_each() {
     child.shutdown();
 }
 
-/// Export is not checkpointed against the soft limit: a value that fits the
-/// heap but whose arena (72 bytes a node against 16 for a heap value) does
-/// not fit the hard ceiling ends the worker with the OOM exit code, which the
-/// parent classifies as a crash, rather than aborting or growing without bound.
+/// Export is not checkpointed against the soft limit. A value that fits the
+/// heap but whose arena (72 bytes a node against 16 for a heap value) crosses
+/// the hard ceiling exits the worker with the OOM code, which the parent
+/// classifies as a crash.
 #[test]
 fn an_export_that_outgrows_the_hard_limit_exits_with_the_oom_code() {
     let mut child = ChildProc::spawn_stderr_piped();

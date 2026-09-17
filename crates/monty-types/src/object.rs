@@ -35,10 +35,10 @@ use crate::{
 };
 
 /// One owned value: an arena plus its root.
-/// The single-value form carried by `Complete`, resume results, name lookups
-/// and `os.getenv` defaults, and the value hosts construct inputs with. Two
-/// values are equal when they are structurally equal as Python values,
-/// whatever the layout of their arenas.
+///
+/// Carried by `Complete`, resume results, name lookups and `os.getenv`
+/// defaults, and the type hosts build inputs with. Equality is structural as
+/// Python values, whatever the layout of the arenas.
 #[derive(Debug, Clone, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MontyObject {
     /// The arena holding the value and everything it references.
@@ -57,7 +57,7 @@ impl MontyObject {
     /// A value made of one leaf node.
     ///
     /// # Panics
-    /// If `node` holds child ids (a leaf never does).
+    /// If `node` holds child ids.
     #[must_use]
     pub fn leaf(node: MontyNode) -> Self {
         let mut graph = MontyGraph::with_capacity(1);
@@ -623,9 +623,8 @@ impl<'a> ObjectRef<'a> {
                 pieces.push(Text(")"));
             }
             MontyNode::ClassInstance { attrs, .. } => {
-                // ClassName(attr1=value1, attr2=value2, ...) over the eager
-                // attrs in order; a non-string key renders via repr rather
-                // than panicking, since inputs are host-built
+                // ClassName(attr1=value1, ...); a non-string key (possible in
+                // host-built input) renders via its repr rather than panicking.
                 pieces.extend([Text(self.type_name()), Text("(")]);
                 for (i, (key, value)) in attrs.iter().enumerate() {
                     push_repr_separator(&mut pieces, i);
@@ -950,15 +949,15 @@ fn queue_pairs(xs: &[(NodeId, NodeId)], ys: &[(NodeId, NodeId)], pending: &mut V
 /// positional arguments and `(key, value)` keyword pairs in it.
 ///
 /// One arena per call means an object passed twice is sent once and the
-/// host receives it as one object, as CPython would.
+/// host receives it as one object, as in CPython.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CallArgs {
-    /// The arena every argument lives in.
-    pub values: MontyGraph,
-    /// Positional arguments, in order.
-    pub args: Vec<NodeId>,
-    /// Keyword arguments as `(key, value)` ids, in order; keys are usually strings.
-    pub kwargs: Vec<(NodeId, NodeId)>,
+    /// The arena holding every argument.
+    pub graph: MontyGraph,
+    /// Ids of the positional arguments, in order.
+    pub arg_ids: Vec<NodeId>,
+    /// Ids of the keyword arguments as `(key, value)` pairs, in order; keys are usually strings.
+    pub kwarg_ids: Vec<(NodeId, NodeId)>,
 }
 
 impl CallArgs {
@@ -970,34 +969,34 @@ impl CallArgs {
 
     /// Appends a positional argument.
     pub fn push_arg(&mut self, value: impl PushValue) -> NodeId {
-        let id = value.push_into(&mut self.values);
-        self.args.push(id);
+        let id = value.push_into(&mut self.graph);
+        self.arg_ids.push(id);
         id
     }
 
     /// Appends a keyword argument with a string key.
     pub fn push_kwarg(&mut self, name: &str, value: impl PushValue) {
-        let key = self.values.push(MontyNode::String(name.to_owned()));
-        let value = value.push_into(&mut self.values);
-        self.kwargs.push((key, value));
+        let key = self.graph.push(MontyNode::String(name.to_owned()));
+        let value = value.push_into(&mut self.graph);
+        self.kwarg_ids.push((key, value));
     }
 
     /// The `index`th positional argument.
     #[must_use]
     pub fn arg(&self, index: usize) -> Option<ObjectRef<'_>> {
-        self.args.get(index).map(|id| self.values.value(*id))
+        self.arg_ids.get(index).map(|id| self.graph.value(*id))
     }
 
     /// The positional arguments, in order.
     pub fn args(&self) -> impl Iterator<Item = ObjectRef<'_>> {
-        self.args.iter().map(|id| self.values.value(*id))
+        self.arg_ids.iter().map(|id| self.graph.value(*id))
     }
 
     /// The keyword arguments as `(key, value)` views, in order.
     pub fn kwargs(&self) -> impl Iterator<Item = (ObjectRef<'_>, ObjectRef<'_>)> {
-        self.kwargs
+        self.kwarg_ids
             .iter()
-            .map(|(key, value)| (self.values.value(*key), self.values.value(*value)))
+            .map(|(key, value)| (self.graph.value(*key), self.graph.value(*value)))
     }
 
     /// The keyword argument named `name`, if present.
@@ -1010,12 +1009,10 @@ impl CallArgs {
 
     /// Checks every argument id is inside the arena; run on decoded messages.
     pub fn check_roots(&self) -> Result<(), GraphError> {
-        self.args.iter().try_for_each(|id| self.values.check_root(*id))?;
-        self.kwargs.iter().try_for_each(|(key, value)| {
-            self.values
-                .check_root(*key)
-                .and_then(|()| self.values.check_root(*value))
-        })
+        self.arg_ids.iter().try_for_each(|id| self.graph.check_root(*id))?;
+        self.kwarg_ids
+            .iter()
+            .try_for_each(|(key, value)| self.graph.check_root(*key).and_then(|()| self.graph.check_root(*value)))
     }
 }
 
@@ -1033,7 +1030,7 @@ impl From<(Vec<MontyObject>, Vec<(MontyObject, MontyObject)>)> for CallArgs {
         for arg in args {
             call.push_arg(arg);
         }
-        call.kwargs = push_pairs(kwargs, &mut call.values);
+        call.kwarg_ids = push_pairs(kwargs, &mut call.graph);
         call
     }
 }
@@ -1041,8 +1038,8 @@ impl From<(Vec<MontyObject>, Vec<(MontyObject, MontyObject)>)> for CallArgs {
 /// Named values sharing one arena: the inputs of a feed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NamedValues {
-    /// The arena every value lives in.
-    pub values: MontyGraph,
+    /// The arena holding every value.
+    pub graph: MontyGraph,
     /// `(name, id)` pairs, in order.
     pub names: Vec<(String, NodeId)>,
 }
@@ -1056,7 +1053,7 @@ impl NamedValues {
 
     /// Appends a named value.
     pub fn push(&mut self, name: impl Into<String>, value: impl PushValue) -> NodeId {
-        let id = value.push_into(&mut self.values);
+        let id = value.push_into(&mut self.graph);
         self.names.push((name.into(), id));
         id
     }
@@ -1077,12 +1074,12 @@ impl NamedValues {
     pub fn iter(&self) -> impl Iterator<Item = (&str, ObjectRef<'_>)> {
         self.names
             .iter()
-            .map(|(name, id)| (name.as_str(), self.values.value(*id)))
+            .map(|(name, id)| (name.as_str(), self.graph.value(*id)))
     }
 
     /// Checks every id is inside the arena; run on decoded messages.
     pub fn check_roots(&self) -> Result<(), GraphError> {
-        self.names.iter().try_for_each(|(_, id)| self.values.check_root(*id))
+        self.names.iter().try_for_each(|(_, id)| self.graph.check_root(*id))
     }
 }
 
@@ -1160,12 +1157,10 @@ fn push_pairs(
         .collect()
 }
 
-/// The Python type of a builtin at the host boundary — the public mirror of
-/// the internal runtime `Type` enum, minus class types, which cross as their
-/// own [`ClassType`](crate::MontyNode::ClassType) arena node.
-///
-/// Self-contained: it can be serialized, sent over the subprocess wire
-/// protocol, and displayed without heap access.
+/// The Python type of a builtin at the host boundary: the public mirror of
+/// the runtime `Type` enum, minus class types, which cross as their own
+/// [`ClassType`](crate::MontyNode::ClassType) node. Serializable and
+/// displayable without heap access.
 #[derive(
     Debug,
     Clone,
@@ -1582,8 +1577,8 @@ impl Hash for MontyTimeZone {
 
 /// Error returned when a [`MontyObject`] cannot be converted to the requested Rust type.
 ///
-/// This error is returned by the `TryFrom` implementations when attempting to extract
-/// a specific type from a [`ObjectRef`](crate::ObjectRef) that holds a different kind of value.
+/// Returned by the `TryFrom` implementations when an [`ObjectRef`] holds a
+/// different kind of value than the one requested.
 #[derive(Debug)]
 pub struct ConversionError {
     /// The type name that was expected (e.g., "int", "str").

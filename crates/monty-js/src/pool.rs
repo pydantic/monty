@@ -872,9 +872,9 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("kind", "functionCall")?;
             obj.set("allowEagerAwait", allow_eager_await)?;
             obj.set("functionName", function_name)?;
-            let arena = DecodedArena::new(&args.values, env)?;
-            obj.set("args", values_to_js(env, &arena, &args.args)?)?;
-            obj.set("kwargs", pairs_to_js(env, &arena, &args.kwargs)?)?;
+            let arena = DecodedArena::new(&args.graph, env)?;
+            obj.set("args", values_to_js(env, &arena, &args.arg_ids)?)?;
+            obj.set("kwargs", pairs_to_js(env, &arena, &args.kwarg_ids)?)?;
             obj.set("callId", call_id)?;
             // the routed receiver uuid as a canonical string
             obj.set("objectId", object_id.map(|uuid| uuid.to_string()))?;
@@ -886,9 +886,9 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
         }) => {
             obj.set("kind", "osCall")?;
             obj.set("functionName", function_name)?;
-            let arena = DecodedArena::new(&args.values, env)?;
-            obj.set("args", values_to_js(env, &arena, &args.args)?)?;
-            obj.set("kwargs", pairs_to_js(env, &arena, &args.kwargs)?)?;
+            let arena = DecodedArena::new(&args.graph, env)?;
+            obj.set("args", values_to_js(env, &arena, &args.arg_ids)?)?;
+            obj.set("kwargs", pairs_to_js(env, &arena, &args.kwarg_ids)?)?;
             obj.set("callId", call_id)?;
         }
         TurnOutcome::Event(TurnEvent::NameLookup { name, object_id }) => {
@@ -998,10 +998,10 @@ fn frame_to_js<'env>(env: &'env Env, frame: &StackFrame) -> Result<Object<'env>>
     Ok(obj)
 }
 
-/// Converts the `inputs` record into the named values of a feed — one arena
-/// for every input, so an object passed under two names is one sandbox
-/// object — rejecting values the wire cannot carry (the feed has not started,
-/// so failing here is safe).
+/// Converts the `inputs` record into a feed's named values. One arena holds
+/// every input, so an object passed under two names is one sandbox object.
+/// An unconvertible value fails the call: the feed has not started, so
+/// failing here is safe.
 fn convert_inputs<'env>(env: &'env Env, inputs: Option<Object<'env>>) -> Result<NamedValues> {
     let Some(inputs) = inputs else {
         return Ok(NamedValues::new());
@@ -1017,7 +1017,7 @@ fn convert_inputs<'env>(env: &'env Env, inputs: Option<Object<'env>>) -> Result<
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(NamedValues {
-        values: encoder.finish(),
+        graph: encoder.finish(),
         names,
     })
 }

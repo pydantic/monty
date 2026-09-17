@@ -35,15 +35,12 @@ export function decodeValue(value: { root: number; nodes: ValueNode[] }): unknow
 /**
  * Builds one message's arena from JavaScript values, preserving sharing.
  *
- * Every container, class instance and class type is memoized by identity for
- * the life of the encoder, so pushing the same object twice (within one
- * value, or across the inputs of a feed) yields the same node index and the
- * sandbox sees one object; primitives and leaf markers (dates, exceptions,
- * ...) are immutable values and are re-encoded per reference. A class with no
- * eager attrs has one node per id however it is spelled. Nesting is walked on an
- * explicit stack, so depth is bounded by memory, not the call stack. A cycle
- * is rejected with `TypeError`: the arena is post-order, so a value cannot
- * reach itself.
+ * Containers, class instances and class types are memoized by identity, so an
+ * object pushed twice (within one value or across a feed's inputs) is one node
+ * and one sandbox object; primitives and leaf markers (dates, exceptions, ...)
+ * are re-encoded per reference. Children are walked on an explicit stack, so
+ * depth is bounded by memory, not the call stack. A cycle is rejected with
+ * `TypeError`: the arena is post-order, so a value cannot reach itself.
  */
 export class ArenaEncoder {
   private readonly nodes: ValueNode[] = []
@@ -69,7 +66,7 @@ export class ArenaEncoder {
       } else {
         done = this.complete(step)
       }
-      // hand the finished node up, completing every holder it finishes
+      // record the finished node in its holder, completing each holder it fills
       for (;;) {
         const frame = stack.pop()
         if (frame === undefined) {
@@ -96,6 +93,7 @@ export class ArenaEncoder {
     return 'classType' in child ? this.enterClassType(child.classType) : this.encode(child.value)
   }
 
+  /** Dispatches on the JavaScript type. */
   private encode(value: unknown): number | Frame {
     if (value === null || value === undefined) {
       return this.leaf({ tag: 'none' })
@@ -266,8 +264,8 @@ export class ArenaEncoder {
 
   /**
    * Opens a frame for a class node, or reuses one: the same `classType`
-   * object gives the same node, and a class with no eager attrs has one node
-   * per id however it is spelled. A class met again while its own attrs are
+   * object gives the same node, and an attr-less class has one node per id
+   * whichever object carries it. A class met again while its own attrs are
    * being pushed (a class constant that is an instance of the class) gets an
    * attr-less duplicate rather than a cycle error, as the sandbox's export does.
    */

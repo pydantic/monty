@@ -9,7 +9,7 @@ use monty_types::{
 };
 
 use crate::{
-    convert::{ProtoConvertError, object_from_parts},
+    convert::{ProtoConvertError, root_object},
     pb::{
         self, TimeZone, Unit,
         os_call::{self, Call},
@@ -17,7 +17,8 @@ use crate::{
     wire::WireArena,
 };
 
-/// Projects a suspension's OS call onto the wire envelope.
+/// Builds the `OsCall` envelope: call id, typed arm and, for `Getenv`, the
+/// arena its default indexes.
 #[must_use]
 pub fn os_call_to_proto(call_id: u32, call: OsFunctionCall) -> pb::OsCall {
     let (call, values) = call_to_proto(call);
@@ -34,7 +35,7 @@ pub fn os_call_from_proto(call: pb::OsCall) -> Result<(u32, OsFunctionCall), Pro
     let function_call = match kind {
         os_call::Call::Getenv(g) => OsFunctionCall::Getenv(GetenvArgs {
             key: g.key,
-            default: object_from_parts(call.values, g.default, "OsCall.values")?,
+            default: root_object(call.values, g.default, "OsCall.values")?,
         }),
         other => other.try_into()?,
     };
@@ -42,7 +43,7 @@ pub fn os_call_from_proto(call: pb::OsCall) -> Result<(u32, OsFunctionCall), Pro
 }
 
 /// The typed wire arm of a call, with the arena `Getenv.default` indexes
-/// (`None` for the value-free arms). Private so no caller can project a
+/// (`None` for the value-free arms). Private so no caller can send a
 /// `Getenv` without its arena.
 fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
     let mut values = None;

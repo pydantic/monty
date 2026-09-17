@@ -228,7 +228,7 @@ pub enum TurnEvent {
     /// spelled `__call__`); the receiver is NOT included in `args`.
     FunctionCall {
         function_name: String,
-        /// The arguments: one arena holding every positional and keyword value.
+        /// One arena holding every positional and keyword argument.
         args: CallArgs,
         call_id: u32,
         object_id: Option<MontyUuid>,
@@ -243,7 +243,7 @@ pub enum TurnEvent {
     /// no-handler default.
     OsCall {
         function_name: String,
-        /// The arguments: one arena holding every positional and keyword value.
+        /// One arena holding every positional and keyword argument.
         args: CallArgs,
         call_id: u32,
     },
@@ -824,8 +824,8 @@ impl Checkout {
     }
 
     /// Answers a [`TurnEvent::NameLookup`] with a [`NameLookupResult`] (or a
-    /// `MontyObject`, or an `Option<MontyObject>` where `None` is
-    /// `Undefined`, or a `MontyException` for `Error`): a value resolves the name; `Undefined`
+    /// `MontyObject`, an `Option<MontyObject>` where `None` is `Undefined`, or
+    /// a `MontyException` for `Error`): a value resolves the name; `Undefined`
     /// makes the sandbox raise `NameError` for a plain lookup, or
     /// `AttributeError` when the lookup carried an `object_id` (a lazy
     /// attribute on a host-backed object — a class instance or class type);

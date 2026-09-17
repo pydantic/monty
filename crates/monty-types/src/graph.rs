@@ -1,19 +1,18 @@
-//! [`MontyGraph`] — the flat node arena Python values cross the sandbox
+//! [`MontyGraph`], the flat node arena Python values cross the sandbox
 //! boundary in, and [`MontyNode`], one entry of it.
 //!
-//! A tree would re-export a shared sub-object once per reference, so a small
-//! heap graph could become an exponentially larger message. The arena keeps
-//! the heap's shape: every container holds the
-//! indexes of its children, a sub-object referenced twice is one node
-//! referenced twice, and a message carries one arena plus the ids of its
-//! roots (see [`MontyObject`](crate::MontyObject), [`CallArgs`](crate::CallArgs)).
+//! A tree would copy a shared sub-object once per reference, so a small heap
+//! graph could become an exponentially larger message. The arena keeps the
+//! heap's shape: a container holds the ids of its children, a sub-object
+//! referenced twice is one node referenced twice, and a message carries one
+//! arena plus the ids of its roots ([`MontyObject`](crate::MontyObject),
+//! [`CallArgs`](crate::CallArgs)).
 //!
-//! Nodes are in post-order: every child index is strictly lower than the
-//! index of the node holding it, so a decoder can build values in one
-//! forward pass with no recursion, and every arena is finite by
-//! construction. A reference back to an enclosing container cannot point
-//! lower, so it is a [`MontyNode::Cycle`] leaf carrying the placeholder
-//! hosts render for it.
+//! Nodes are in post-order: every child id is lower than the id of the node
+//! holding it, so a decoder builds values in one forward pass without
+//! recursion and no arena can contain a cycle. A reference back to an
+//! enclosing container is instead a [`MontyNode::Cycle`] leaf holding the
+//! placeholder its repr shows.
 
 use std::{error::Error, fmt, mem::size_of};
 
@@ -50,10 +49,9 @@ impl fmt::Display for NodeId {
 /// One entry of a [`MontyGraph`]: a leaf value, or a container holding the
 /// ids of its children.
 ///
-/// Containers hold [`NodeId`]s rather than nested values, and a non-builtin
-/// class is its own [`ClassType`](Self::ClassType) node so every instance of
-/// it shares one. Build values with the [`MontyObject`](crate::MontyObject)
-/// constructors rather than nodes.
+/// A non-builtin class is its own [`ClassType`](Self::ClassType) node, shared
+/// by every instance of it. Build values with the
+/// [`MontyObject`](crate::MontyObject) constructors rather than from nodes.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum MontyNode {
     /// Python's `Ellipsis` singleton (`...`).
@@ -91,8 +89,7 @@ pub enum MontyNode {
         /// Optional string argument passed to the exception constructor.
         arg: Option<String>,
     },
-    /// A builtin or otherwise nameable type object. Never
-    /// [`MontyType::Instance`]: a class is a [`ClassType`](Self::ClassType) node.
+    /// A builtin type object; a non-builtin class is a [`ClassType`](Self::ClassType) node.
     Type(MontyType),
     /// A builtin function such as `len`.
     BuiltinFunction(BuiltinsFunctions),
@@ -131,12 +128,10 @@ pub enum MontyNode {
     },
     /// Python dict: `(key, value)` id pairs in insertion order.
     Dict(Vec<(NodeId, NodeId)>),
-    /// A sandbox- or host-defined class (the graph form of
-    /// [`MontyClassType`](crate::MontyClassType)), shared by every instance of it.
-    /// Boxed so the node stays as small as [`MontyObject`].
+    /// A sandbox- or host-defined class, shared by every instance of it.
+    /// Boxed so the variant does not widen the node.
     ClassType(Box<ClassTypeNode>),
-    /// An instance of a non-builtin class (the graph form of
-    /// [`MontyClassInstance`](crate::MontyClassInstance)).
+    /// An instance of a non-builtin class.
     ClassInstance {
         /// Id of the instance's [`ClassType`](Self::ClassType) node.
         class_type: NodeId,
@@ -232,7 +227,7 @@ impl MontyNode {
     /// names, and its child-id vectors). Children charge themselves, so an
     /// arena's footprint is the plain sum over its nodes.
     #[must_use]
-    pub fn host_size(&self) -> usize {
+    pub fn decoded_size(&self) -> usize {
         let name_len = |name: &Option<String>| -> usize { name.as_ref().map_or(0, String::len) };
         let ids = |ids: &[NodeId]| ids.len().saturating_mul(size_of::<NodeId>());
         let pairs = |pairs: &[(NodeId, NodeId)]| pairs.len().saturating_mul(2 * size_of::<NodeId>());
@@ -259,7 +254,7 @@ impl MontyNode {
                 type_name.len().saturating_add(names).saturating_add(ids(values))
             }
             Self::Dict(entries) => pairs(entries),
-            // The boxed payload lives outside `size_of::<Self>()`, so charge it too.
+            // The boxed payload is outside `size_of::<Self>()`, so charge it too.
             Self::ClassType(class) => size_of::<ClassTypeNode>()
                 .saturating_add(class.name.len())
                 .saturating_add(pairs(&class.attrs)),
@@ -287,8 +282,8 @@ pub struct ClassTypeNode {
 }
 
 impl PartialEq for MontyNode {
-    /// Structural equality; floats compare bit-for-bit so a `NaN` round-trips
-    /// equal, as transport tests require.
+    /// Per-node equality (child ids compare as ids); floats compare
+    /// bit-for-bit so `NaN` round-trips equal.
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Ellipsis, Self::Ellipsis)
@@ -372,11 +367,10 @@ impl Eq for MontyNode {}
 
 /// A post-order node arena.
 ///
-/// Valid by construction: [`push`](Self::push) and [`from_nodes`](Self::from_nodes)
-/// enforce the invariants (see [`validate`](Self::validate)), and
-/// [`merge`](Self::merge) preserves them, so consumers index without
-/// re-checking. Roots are not recorded here — the carrying message holds them,
-/// so one arena serves every value in that message.
+/// [`push`](Self::push) and [`from_nodes`](Self::from_nodes) check the
+/// invariants (see [`validate`](Self::validate)) and [`merge`](Self::merge)
+/// preserves them, so readers index without re-checking. Roots are held by
+/// the carrying message, so one arena serves every value in that message.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MontyGraph {
     nodes: Vec<MontyNode>,
@@ -469,9 +463,8 @@ impl MontyGraph {
         &mut self.nodes[id.index()]
     }
 
-    /// Every node, in post-order, for edits that keep every child id where
-    /// it is (an id or a leaf payload); reordering or re-pointing children
-    /// breaks the arena's invariants.
+    /// Every node, in post-order, for editing payloads in place; reordering
+    /// nodes or raising a child id breaks the arena's invariants.
     pub fn nodes_mut(&mut self) -> &mut [MontyNode] {
         &mut self.nodes
     }
@@ -539,13 +532,13 @@ impl MontyGraph {
         }
     }
 
-    /// Sum of [`MontyNode::host_size`] over every node: the arena's decoded
+    /// Sum of [`MontyNode::decoded_size`] over every node: the arena's decoded
     /// footprint, used by transport budgets.
     #[must_use]
-    pub fn host_size(&self) -> usize {
+    pub fn decoded_size(&self) -> usize {
         self.nodes
             .iter()
-            .fold(0usize, |size, node| size.saturating_add(node.host_size()))
+            .fold(0usize, |size, node| size.saturating_add(node.decoded_size()))
     }
 
     /// Validates one node against the nodes that precede it.
@@ -568,7 +561,7 @@ impl MontyGraph {
         }
     }
 
-    /// The id a node at `index` has; ids are `u32`, so an arena cannot outgrow them.
+    /// The id of the node at `index`; panics past `u32::MAX` nodes.
     fn id_at(index: usize) -> NodeId {
         NodeId(u32::try_from(index).expect("MontyGraph exceeds u32::MAX nodes"))
     }

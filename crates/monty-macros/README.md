@@ -122,11 +122,10 @@ unit tests for every attribute-validation error.
 
 ## `#[derive(ToArgs)]`
 
-Inverse of `FromArgs`: projects a struct into the `CallArgs` host callbacks
-expect (one value arena plus positional and keyword ids). Reuses the
-`#[from_args(...)]` field attributes so a struct that derives both stays
-consistent in both directions. Field types must implement
-`monty_types::args::PushValue`.
+Inverse of `FromArgs`: projects a struct into the `CallArgs` a host callback takes (one `MontyGraph` plus the node
+ids of its positional and keyword arguments).
+Reuses the `#[from_args(...)]` field attributes so a struct that derives both stays consistent in both directions.
+Field types must implement `monty_types::args::PushValue`.
 
 ## Not a standalone crate
 

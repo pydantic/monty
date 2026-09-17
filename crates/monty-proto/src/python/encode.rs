@@ -51,29 +51,20 @@ pub fn py_to_monty_value(obj: &Bound<'_, PyAny>, store: &InstanceStore) -> Resul
 
 /// Builds one message's arena from host values, preserving sharing.
 ///
-/// Every container, wrapper and proxy is memoized by host identity for the
-/// life of the encoder, so pushing the same object twice (within one value or
-/// across the inputs of a feed) yields the same node id and the sandbox sees
-/// one object; leaves are re-encoded per reference. Memoized objects are kept
-/// alive so a temporary (an eager-attrs dict, a property result) cannot free
-/// its address for a later object to reuse. Nesting is walked on an explicit
-/// stack, so depth is bounded by memory, not the native stack. A cycle is
-/// rejected with `ValueError`: the arena is post-order, so a value cannot
-/// reach itself.
-///
-/// Class instances cross only when wrapped in `pydantic_monty.ClassInstance`
-/// — the wrapper (nested ones inside eager attrs too) registers in the store
-/// so method calls, lazy lookups and round-tripped returns resolve to the
-/// original object. A bare non-callable instance is a `TypeError`; a callable
-/// one converts as a host function like any other callable.
+/// Containers, wrappers and proxies are memoized by `id()` for the life of the
+/// encoder, so an object pushed twice (in one value, or across a feed's inputs)
+/// is one node and one sandbox object; leaves are re-encoded per reference.
+/// Nesting is walked on an explicit stack, not the native one. A cycle raises
+/// `ValueError`: the arena is post-order, so a node cannot reach itself.
 pub struct GraphEncoder<'a, 'py> {
     py: Python<'py>,
     store: &'a InstanceStore,
     graph: MontyGraph,
     /// `id()` of every container seen → its node, or a marker while its
     /// children are still being pushed (a hit on that marker is a cycle).
-    memo: HashMap<usize, Slot>,
-    /// Pins every memoized object so its `id()` stays unique while encoding.
+    memo: HashMap<usize, MemoEntry>,
+    /// Keeps every memoized object alive, so a temporary (a property result in
+    /// eager attrs) cannot free its address for a later object to reuse.
     keepalive: Vec<Bound<'py, PyAny>>,
     /// Class nodes with no eager attrs, one per class id: every instance of a
     /// class shares its node, as the sandbox's export does.
@@ -81,7 +72,7 @@ pub struct GraphEncoder<'a, 'py> {
 }
 
 /// A memoized container's state.
-enum Slot {
+enum MemoEntry {
     /// Its children are still being pushed.
     InProgress,
     /// Its node.
@@ -120,7 +111,8 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
                     None => self.complete(frame),
                 },
             };
-            // hand the finished node up, completing every holder it finishes
+            // record the finished id in its holder, completing each holder whose
+            // children are all pushed
             loop {
                 let Some(mut frame) = stack.pop() else {
                     return Ok(done);
@@ -231,7 +223,7 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
             self.enter(obj, |encoder| encoder.begin_instance_wrapper(obj))
         } else if let Ok(proxy) = obj.cast::<PyMontyClassProxy>() {
             // a proxy crosses back with the ids it arrived with, so the
-            // sandbox hands over its original object
+            // sandbox resolves it to its original object
             let proxy = proxy.get();
             let class = ClassTypeSource {
                 class_type: proxy.class_type.clone(),
@@ -261,15 +253,15 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
             // `Open` OS callback) crosses back as the file it stands for
             Ok(self.leaf(MontyNode::FileHandle(handle.get().inner().clone())))
         } else if let Ok(ty) = obj.cast::<PyType>() {
-            // A class is callable, so it would otherwise fall into the generic
-            // callable branch. Classes Monty models are preserved as type
-            // objects (they round-trip and `isinstance` works in the sandbox);
-            // any other host class has no Monty `Type` and crosses as a callable.
+            // A class is callable, so this precedes the callable branch. Classes
+            // Monty models cross as type objects (they round-trip and `isinstance`
+            // works in the sandbox); any other host class crosses as a callable.
             match py_type_object_to_monty(ty)? {
                 Some(t) => Ok(self.leaf(MontyNode::Type(t))),
                 None => Ok(self.leaf(callable_node(obj))),
             }
         } else if obj.is_callable() {
+            // a callable class instance ends here too, as a host function
             Ok(self.leaf(callable_node(obj)))
         } else if let Ok(name) = obj.get_type().qualname() {
             let msg = match obj.get_type().module() {
@@ -298,10 +290,10 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
     ) -> PyResult<Step<'py>> {
         let key = obj.as_ptr() as usize;
         match self.memo.get(&key) {
-            Some(Slot::Done(id)) => Ok(Step::Done(*id)),
-            Some(Slot::InProgress) => Err(PyValueError::new_err("Circular reference detected")),
+            Some(MemoEntry::Done(id)) => Ok(Step::Done(*id)),
+            Some(MemoEntry::InProgress) => Err(PyValueError::new_err("Circular reference detected")),
             None => {
-                self.memo.insert(key, Slot::InProgress);
+                self.memo.insert(key, MemoEntry::InProgress);
                 self.keepalive.push(obj.clone());
                 let (pending, children) = begin(self)?;
                 Ok(Step::Enter(Frame::new(pending, Some(key), children)))
@@ -309,10 +301,10 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
         }
     }
 
-    /// The children of a `ClassInstance` wrapper: its class (registered only
-    /// if the class has no entry yet, so an auto-materialized default never
-    /// clobbers an explicitly granted policy) then the eager attrs. The
-    /// wrapper itself is registered under the instance's uuid.
+    /// The children of a `ClassInstance` wrapper: its class, then the eager
+    /// attrs. The wrapper registers under the instance's uuid; the class only
+    /// if its id has no entry, so an auto-materialized `ClassType` never
+    /// clobbers an explicitly granted policy.
     fn begin_instance_wrapper(&mut self, wrapper: &Bound<'py, PyAny>) -> PyResult<(Pending, Vec<Child<'py>>)> {
         let py = self.py;
         // `ClassInstance.__post_init__` always materializes a `ClassType`
@@ -333,10 +325,9 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
 
     /// Opens a frame for a class node, or reuses one: the same wrapper or
     /// proxy gives the same node, and a class with no eager attrs has one
-    /// node per id however it is spelled. A class met again while its own
-    /// attrs are being pushed (a class constant that is an instance of the
-    /// class) gets an attr-less duplicate rather than a cycle error, as the
-    /// sandbox's export does.
+    /// node per id however it arrives. A class met again while its own attrs
+    /// are being pushed (a class constant that is an instance of the class)
+    /// gets an attr-less duplicate, not a cycle error, as the sandbox's export does.
     fn enter_class_type(&mut self, source: ClassTypeSource<'py>) -> PyResult<Step<'py>> {
         if let Some((wrapper, overwrite)) = &source.register {
             if *overwrite {
@@ -349,10 +340,10 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
         let key = source.identity.as_ref().map(|obj| obj.as_ptr() as usize);
         if let Some(key) = key {
             match self.memo.get(&key) {
-                Some(Slot::Done(id)) => return Ok(Step::Done(*id)),
-                Some(Slot::InProgress) => return Ok(self.leaf(source.node(vec![]))),
+                Some(MemoEntry::Done(id)) => return Ok(Step::Done(*id)),
+                Some(MemoEntry::InProgress) => return Ok(self.leaf(source.node(vec![]))),
                 None => {
-                    self.memo.insert(key, Slot::InProgress);
+                    self.memo.insert(key, MemoEntry::InProgress);
                     self.keepalive
                         .push(source.identity.clone().expect("key came from the identity"));
                 }
@@ -363,7 +354,7 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
         {
             let id = *id;
             if let Some(key) = key {
-                self.memo.insert(key, Slot::Done(id));
+                self.memo.insert(key, MemoEntry::Done(id));
             }
             return Ok(Step::Done(id));
         }
@@ -405,7 +396,7 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
             self.class_types.entry(class_id).or_insert(id);
         }
         if let Some(key) = frame.key {
-            self.memo.insert(key, Slot::Done(id));
+            self.memo.insert(key, MemoEntry::Done(id));
         }
         id
     }
@@ -473,7 +464,6 @@ enum Pending {
 /// Where a class node comes from: a `ClassType` wrapper, a proxy, or the
 /// class recorded on an instance proxy.
 struct ClassTypeSource<'py> {
-    /// The class header.
     class_type: ClassHeader,
     /// Eager class attrs, `name -> value`.
     attrs: Bound<'py, PyDict>,
@@ -512,6 +502,7 @@ impl<'py> ClassTypeSource<'py> {
         Self::node_from(self.class_type.clone(), attrs)
     }
 
+    /// The class node for a header and its attr pairs.
     fn node_from(class_type: ClassHeader, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
         MontyNode::ClassType(Box::new(ClassTypeNode {
             name: class_type.name,

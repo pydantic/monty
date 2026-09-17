@@ -487,12 +487,12 @@ fn hand_call_payloads_match_generated_encoding() {
         let hand_call = WireFunctionCall::new("external".to_owned(), call.clone(), 42, object_id, allow_eager_await);
         let generated_call = oracle::FunctionCall {
             function_name: "external".to_owned(),
-            args: call.args.iter().map(|id| id.0).collect(),
-            kwargs: oracle_pairs(&call.kwargs).pairs,
+            args: call.arg_ids.iter().map(|id| id.0).collect(),
+            kwargs: oracle_pairs(&call.kwarg_ids).pairs,
             call_id: 42,
             object_id: oracle_object_id,
             allow_eager_await,
-            values: Some(to_oracle(&call.values)),
+            values: Some(to_oracle(&call.graph)),
         };
         assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
         assert_eq!(
@@ -841,8 +841,8 @@ fn repeated_attrs_fields_merge_like_the_oracle() {
     let pair = |key: u32, value: u32| oracle::NodePairs {
         pairs: vec![oracle::NodePair { key, value }],
     };
-    // the second `Type` carries only `attrs`: concatenating two encodings of
-    // a message is how protobuf spells "merge these"
+    // the second `Type` carries only `attrs`: protobuf merges concatenated
+    // encodings of one message
     let mut type_body = oracle::Type {
         attrs: Some(pair(0, 1)),
         ..class_type("Foo")

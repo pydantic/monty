@@ -1,7 +1,6 @@
-//! Leaf conversions shared by the two directions of the Python boundary:
-//! host type objects, dates and times, file handles and callables. The
-//! arena walkers live in `encode` (Python → sandbox) and `decode`
-//! (sandbox → Python).
+//! Leaf conversions shared by both directions of the Python boundary: host
+//! type objects, dates and times, file handles and callables. The arena walks
+//! are `encode` (Python → sandbox) and `decode` (sandbox → Python).
 
 use std::borrow::Cow;
 

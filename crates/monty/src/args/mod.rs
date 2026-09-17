@@ -243,7 +243,7 @@ impl ArgValues {
                 kwargs.export_into(&mut call, &mut exporter, vm);
             }
         }
-        call.values = exporter.finish(vm);
+        call.graph = exporter.finish(vm);
         call
     }
 
@@ -416,7 +416,7 @@ impl KwargsValues {
                 for (k, v) in kvs {
                     let key = exporter.push_node(MontyNode::String(vm.interns.get_str(k).to_owned()));
                     let value = exporter.push_owned(v, vm);
-                    call.kwargs.push((key, value));
+                    call.kwarg_ids.push((key, value));
                 }
             }
             Self::Pairs(kvs) => {

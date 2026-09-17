@@ -5,7 +5,7 @@ use monty_types::{
     ExcType, MontyDate, MontyDateTime, MontyGraph, MontyNode, MontyObject, MontyTimeDelta, MontyTimeZone, MontyUuid,
 };
 
-/// Tests for `MontyObject::is_truthy()` - Python's truth value testing rules.
+// === is_truthy ===
 
 #[test]
 fn is_truthy_none_is_falsy() {
@@ -104,7 +104,7 @@ fn is_truthy_nonempty_dict_is_truthy() {
     assert!(MontyObject::dict(dict).is_truthy());
 }
 
-/// Tests for `MontyObject::type_name()` - Python type names.
+// === type_name ===
 
 #[test]
 fn type_name() {
@@ -182,7 +182,7 @@ fn type_name() {
     );
 }
 
-// === is_truthy for Set, FrozenSet, Date, DateTime, TimeDelta, TimeZone, Exception, Path, Dataclass ===
+// === is_truthy for the remaining kinds ===
 
 #[test]
 fn is_truthy_set() {
@@ -228,7 +228,6 @@ fn is_truthy_datetime() {
 
 #[test]
 fn is_truthy_timedelta() {
-    // Zero timedelta is falsy
     assert!(
         !MontyObject::timedelta(MontyTimeDelta {
             days: 0,
@@ -237,7 +236,6 @@ fn is_truthy_timedelta() {
         })
         .is_truthy()
     );
-    // Non-zero timedelta is truthy
     assert!(
         MontyObject::timedelta(MontyTimeDelta {
             days: 1,

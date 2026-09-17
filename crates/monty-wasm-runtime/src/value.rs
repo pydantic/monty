@@ -38,7 +38,7 @@ impl DecodeBudget {
     fn charge(&mut self, nodes: &[ValueNode]) -> Result<usize, String> {
         let bytes = nodes
             .iter()
-            .fold(0usize, |total, node| total.saturating_add(node_host_size(node)));
+            .fold(0usize, |total, node| total.saturating_add(node_decoded_size(node)));
         if let Some(remaining) = self.remaining.checked_sub(bytes) {
             self.remaining = remaining;
             Ok(bytes)
@@ -57,15 +57,15 @@ pub fn from_component(arena: Arena, budget: &mut DecodeBudget) -> Result<MontyGr
         .map(node_from_component)
         .collect::<Result<Vec<_>, _>>()?;
     let graph = MontyGraph::from_nodes(nodes).map_err(|err| err.to_string())?;
-    if graph.host_size() > estimated_size {
+    if graph.decoded_size() > estimated_size {
         Err("component value host-memory estimate is smaller than its decoded value".to_owned())
     } else {
         Ok(graph)
     }
 }
 
-/// Conservatively estimates one node using `MontyNode::host_size` accounting.
-fn node_host_size(node: &ValueNode) -> usize {
+/// Conservatively estimates one node using `MontyNode::decoded_size` accounting.
+fn node_decoded_size(node: &ValueNode) -> usize {
     let strings_size = |strings: &[String]| {
         strings.iter().fold(0usize, |size, value| {
             size.saturating_add(MontyNode::metadata_string_size(value))
@@ -240,7 +240,7 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
     })
 }
 
-/// Converts one Monty node into its component twin.
+/// Converts one Monty node into its component node.
 fn node_into_component(node: MontyNode) -> ValueNode {
     match node {
         MontyNode::Ellipsis => ValueNode::Ellipsis,

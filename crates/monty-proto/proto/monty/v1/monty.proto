@@ -16,9 +16,7 @@
 // (`MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION` in `monty-proto`).
 // Prefer additive changes (fresh tag numbers, `reserved` removals) so a
 // separately-deployed parent has a migration window; a change an older peer
-// could mis-read needs a `PROTOCOL_VERSION` bump instead. Version 4 replaced
-// the recursive `MontyObject` value tree with the `Arena` below, which is
-// exactly such a change.
+// could mis-read needs a `PROTOCOL_VERSION` bump instead.
 
 syntax = "proto3";
 
@@ -51,7 +49,7 @@ message Arena {
 // the indexes of their children.
 //
 // `repr` and `cycle` are OUTPUT-ONLY: the child may emit them (e.g. inside a
-// `Complete` value) but rejects them as inputs, exactly like `MontyNode`.
+// `Complete` value) but rejects them as inputs.
 message MontyNode {
   oneof kind {
     Unit ellipsis = 1;

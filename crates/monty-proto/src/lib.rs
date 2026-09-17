@@ -73,7 +73,7 @@ pub fn check_protocol_version(version: u32) -> Result<(), String> {
 
 pub use convert::{
     ProtoConvertError, ext_result_from_proto, ext_result_to_proto, future_results_from_proto, future_results_to_proto,
-    named_values_from_proto, named_values_to_proto, os_call_from_proto, os_call_to_proto, resume_call_result,
+    named_values_from_proto, named_values_to_proto, os_call_from_proto, os_call_to_proto, resume_call_from_proto,
 };
 pub use frame::{
     DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_framed_into,

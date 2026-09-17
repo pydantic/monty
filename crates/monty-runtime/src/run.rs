@@ -659,10 +659,10 @@ fn resolve_external_call(function_name: &str, args: &CallArgs) -> Result<MontyOb
         return Err(format!("unknown external function: {function_name}({})", rendered()));
     }
 
-    if args.args.len() != 2 {
+    if args.arg_ids.len() != 2 {
         return Err(format!(
             "add_ints requires exactly 2 arguments, got {}",
-            args.args.len()
+            args.arg_ids.len()
         ));
     }
 

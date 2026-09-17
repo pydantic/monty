@@ -179,7 +179,7 @@ fn equality_compares_each_node_pair_once() {
     assert_eq!(value, doubling_ladder(60));
     assert_ne!(value, doubling_ladder(59));
     assert_eq!(
-        value.graph.host_size(),
+        value.graph.decoded_size(),
         62 * size_of::<MontyNode>() + 121 * size_of::<NodeId>()
     );
 }
@@ -259,7 +259,7 @@ fn call_args_share_one_arena() {
     let second = call.push_arg(shared.as_ref());
     call.push_kwarg("flag", true);
     assert_ne!(first, second);
-    assert_eq!(call.values.len(), 6);
+    assert_eq!(call.graph.len(), 6);
     assert!(call.check_roots().is_ok());
     assert!(call.args().all(|arg| arg == shared));
     assert_eq!(call.kwarg("flag").unwrap(), MontyObject::bool(true));
@@ -303,8 +303,11 @@ fn node_is_72_bytes() {
 fn host_size_sums_nodes() {
     let value = MontyObject::list([MontyObject::string("abc".to_owned())]);
     let list = MontyNode::List(vec![NodeId(0)]);
-    assert_eq!(list.host_size(), size_of::<MontyNode>() + size_of::<NodeId>());
-    assert_eq!(value.graph.host_size(), size_of::<MontyNode>() + 3 + list.host_size());
+    assert_eq!(list.decoded_size(), size_of::<MontyNode>() + size_of::<NodeId>());
+    assert_eq!(
+        value.graph.decoded_size(),
+        size_of::<MontyNode>() + 3 + list.decoded_size()
+    );
 }
 
 // === serialization ===

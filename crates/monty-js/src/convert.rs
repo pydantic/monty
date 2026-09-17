@@ -1,7 +1,6 @@
-//! Bidirectional conversion between the sandbox boundary's value arenas and
-//! JavaScript values via napi-rs: [`DecodedArena`] / [`monty_to_js`] for
-//! values flowing out, [`GraphEncoder`] / [`js_to_monty`] for values flowing
-//! in. Sharing survives both ways: one JS object referenced twice in a
+//! Conversion between value arenas and JavaScript values via napi-rs:
+//! [`DecodedArena`] / [`monty_to_js`] decode sandbox values, [`GraphEncoder`] /
+//! [`js_to_monty`] encode host values. One JS object referenced twice in a
 //! message crosses as one node, and one node decodes to one JS object.
 //!
 //! ## Type Mappings
@@ -64,13 +63,10 @@ pub fn monty_to_js<'e>(value: &MontyObject, env: &'e Env) -> Result<JsMontyObjec
     Ok(JsMontyObject(DecodedArena::new(&value.graph, env)?.get(value.root)))
 }
 
-/// One message's arena as JS values.
-///
-/// Every node is converted once, in arena order, so a child always exists
-/// before its holder and a node referenced twice (a shared sub-object, an
-/// argument passed twice) is one JS object. Instances of one class share its
-/// `classType` object. The pass is a loop, not a recursion, so nesting depth
-/// costs nothing on the native stack.
+/// One message's arena decoded to JS values, one node at a time in arena
+/// order: every child exists before its holder, a node referenced twice is
+/// one JS object, and instances of one class share its `classType` object.
+/// A loop, not a recursion, so nesting depth never touches the native stack.
 pub struct DecodedArena<'e> {
     built: Vec<Unknown<'e>>,
 }
@@ -132,8 +128,8 @@ fn decode_node<'e>(node: &MontyNode, graph: &MontyGraph, built: &[Unknown<'e>], 
             instance_id,
             attrs,
         } => {
-            // the class object decoded for the instance's class node, so
-            // every instance of a class shares it
+            // the `classType` decoded for the class node, shared by every instance;
+            // the TS layer maps the marker to the wrapped instance or a `MontyClassProxy`
             let class_marker: Object = child(class_type).coerce_to_object()?;
             let class_object: Object = class_marker.get_named_property("classType")?;
             let mut obj = Object::new(env)?;
@@ -465,8 +461,7 @@ fn create_js_file_handle<'e>(handle: &MontyFileHandle, env: &'e Env) -> Result<U
 /// Builds the `[name, value]` pair array attrs cross as (order preserved,
 /// non-string keys skipped): attr names are sandbox-controlled, and pair
 /// entries cannot clobber a prototype the way `obj[k] = v` on a plain object
-/// could. The TS layer maps a `ClassInstance` marker to the original wrapped
-/// instance or a `MontyClassProxy`.
+/// could.
 fn create_js_attr_pairs<'e>(
     attrs: &[(NodeId, NodeId)],
     graph: &MontyGraph,
@@ -494,11 +489,9 @@ fn create_js_attr_pairs<'e>(
 // JS to Monty conversion
 // =============================================================================
 
-/// Encodes one JS value as its own arena.
-///
-/// The single-value form of [`GraphEncoder`]: a return value, a resumed
-/// lookup. Values that share one message (a feed's inputs) go through one
-/// encoder so their sharing survives.
+/// Encodes one JS value as its own arena: the single-value form of
+/// [`GraphEncoder`]. Values sharing one message (a feed's inputs) go through
+/// one encoder, so an object they share is one node.
 pub fn js_to_monty<'e>(value: Unknown<'e>, env: &'e Env) -> Result<MontyObject> {
     let mut encoder = GraphEncoder::new(env)?;
     let root = encoder.push(value)?;
@@ -521,13 +514,12 @@ pub fn js_to_monty<'e>(value: Unknown<'e>, env: &'e Env) -> Result<MontyObject> 
 /// - `Object` with `__monty_type__` → corresponding Monty type
 /// - `Object` → `Dict` (string keys only)
 ///
-/// Every container, class instance and class type is memoized by JS identity
-/// (in a JS `Map`, which also keeps it alive) for the life of the encoder, so
-/// pushing the same object twice yields the same node id and the sandbox sees
-/// one object; leaves, including leaf markers such as dates, are immutable
-/// values and are re-encoded per reference. Nesting is walked on an explicit
-/// stack, so depth is bounded by memory, not the native stack. A cycle is an
-/// error: the arena is post-order, so a value cannot reach itself.
+/// Containers, class instances and class types are memoized by JS identity in
+/// a JS `Map` (which also keeps them alive), so an object pushed twice is one
+/// node and one sandbox object; leaves, dates and other leaf markers included,
+/// are re-encoded per reference. Children are walked on an explicit stack, so
+/// depth is bounded by memory, not the native stack. A cycle is an error: the
+/// arena is post-order, so a value cannot reach itself.
 pub struct GraphEncoder<'e> {
     env: &'e Env,
     graph: MontyGraph,
@@ -568,7 +560,7 @@ impl<'e> GraphEncoder<'e> {
                     None => self.complete(frame)?,
                 },
             };
-            // hand the finished node up, completing every holder it finishes
+            // record the finished node in its holder, completing each holder it fills
             loop {
                 let Some(mut frame) = stack.pop() else {
                     return Ok(done);
@@ -799,10 +791,10 @@ impl<'e> GraphEncoder<'e> {
         begin: impl FnOnce(&mut Self) -> Result<(Pending, Vec<Child<'e>>)>,
     ) -> Result<Step<'e>> {
         match self.memo_get(obj)? {
-            Some(Slot::Done(id)) => Ok(Step::Done(id)),
-            Some(Slot::InProgress) => Err(Error::from_reason("Circular reference detected")),
+            Some(MemoEntry::Done(id)) => Ok(Step::Done(id)),
+            Some(MemoEntry::InProgress) => Err(Error::from_reason("Circular reference detected")),
             None => {
-                self.memo_set(obj, Slot::InProgress)?;
+                self.memo_set(obj, MemoEntry::InProgress)?;
                 let (pending, children) = begin(self)?;
                 Ok(Step::Enter(Frame::new(pending, Some(obj), children)))
             }
@@ -810,22 +802,21 @@ impl<'e> GraphEncoder<'e> {
     }
 
     /// Opens a frame for a class node, or reuses one: the same `classType`
-    /// object gives the same node, and a class with no eager attrs has one
-    /// node per id however it is spelled. A class met again while its own
-    /// attrs are being pushed (a class constant that is an instance of the
-    /// class) gets an attr-less duplicate rather than a cycle error, as the
-    /// sandbox's export does.
+    /// object gives the same node, and an attr-less class has one node per id
+    /// whichever object carries it. A class met again while its own attrs are
+    /// being pushed (a class constant that is an instance of the class) gets an
+    /// attr-less duplicate rather than a cycle error, as the sandbox's export does.
     fn enter_class_type(&mut self, object: Object<'e>) -> Result<Step<'e>> {
         let header = ClassHeader::read(&object)?;
         match self.memo_get(object)? {
-            Some(Slot::Done(id)) => return Ok(Step::Done(id)),
-            Some(Slot::InProgress) => return Ok(self.leaf(header.node(vec![]))),
-            None => self.memo_set(object, Slot::InProgress)?,
+            Some(MemoEntry::Done(id)) => return Ok(Step::Done(id)),
+            Some(MemoEntry::InProgress) => return Ok(self.leaf(header.node(vec![]))),
+            None => self.memo_set(object, MemoEntry::InProgress)?,
         }
         let children = js_attr_pairs(object.get_named_property("attrs")?, "ClassType")?;
         if children.is_empty() {
             if let Some(id) = self.class_types.get(&header.id).copied() {
-                self.memo_set(object, Slot::Done(id))?;
+                self.memo_set(object, MemoEntry::Done(id))?;
                 return Ok(Step::Done(id));
             }
         }
@@ -860,13 +851,13 @@ impl<'e> GraphEncoder<'e> {
             self.class_types.entry(class_id).or_insert(id);
         }
         if let Some(obj) = frame.key {
-            self.memo_set(obj, Slot::Done(id))?;
+            self.memo_set(obj, MemoEntry::Done(id))?;
         }
         Ok(id)
     }
 
     /// The memo entry for `obj`, if any.
-    fn memo_get(&self, obj: Object<'e>) -> Result<Option<Slot>> {
+    fn memo_get(&self, obj: Object<'e>) -> Result<Option<MemoEntry>> {
         let get: Function<Unknown, Unknown> = self.memo.get_named_property("get")?;
         let entry = get.apply(self.memo, obj.into_unknown(self.env)?)?;
         if entry.get_type()? == ValueType::Undefined {
@@ -874,19 +865,19 @@ impl<'e> GraphEncoder<'e> {
         } else {
             let index: i64 = entry.coerce_to_number()?.get_int64()?;
             Ok(Some(if index < 0 {
-                Slot::InProgress
+                MemoEntry::InProgress
             } else {
-                Slot::Done(NodeId(u32::try_from(index).map_err(|_| invalid_memo())?))
+                MemoEntry::Done(NodeId(u32::try_from(index).map_err(|_| invalid_memo())?))
             }))
         }
     }
 
     /// Records the memo entry for `obj`.
-    fn memo_set(&self, obj: Object<'e>, slot: Slot) -> Result<()> {
+    fn memo_set(&self, obj: Object<'e>, slot: MemoEntry) -> Result<()> {
         let env = self.env;
         let index = match slot {
-            Slot::InProgress => -1,
-            Slot::Done(id) => i64::from(id.0),
+            MemoEntry::InProgress => -1,
+            MemoEntry::Done(id) => i64::from(id.0),
         };
         let set: Unknown = self.memo.get_named_property("set")?;
         let index = env.create_int64(index)?;
@@ -895,7 +886,7 @@ impl<'e> GraphEncoder<'e> {
 }
 
 /// A memoized container's state.
-enum Slot {
+enum MemoEntry {
     /// Its children are still being pushed.
     InProgress,
     /// Its node.
@@ -1057,8 +1048,7 @@ fn js_array_items<'e>(arr: &Object<'e>) -> Result<Vec<Child<'e>>> {
 }
 
 /// A plain JS object's own property names and values as pending children,
-/// key then value. Since JS object keys are always strings, every key becomes
-/// a string; for full key type preservation, use a JS `Map` instead.
+/// key then value. Keys are strings; a JS `Map` keeps other key types.
 fn js_object_entries<'e>(obj: &Object<'e>, env: &'e Env) -> Result<Vec<Child<'e>>> {
     let keys = obj.get_property_names()?;
     let length: u32 = keys.get_named_property("length")?;

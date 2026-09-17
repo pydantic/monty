@@ -1,17 +1,17 @@
 //! Conversions for resume payloads: the parent's answers to suspension
 //! events (`ResumeCall`, `ResumeNameLookup`, `ResumeFutures`). A returned
-//! value is an index into the request's arena, so the arena travels alongside.
+//! value is an index into the arena the same message carries.
 
 use monty_types::{ExtFunctionResult, MontyException, MontyGraph, MontyObject, NameLookupResult, NodeId};
 
 use crate::{
-    convert::{ProtoConvertError, arena_or_empty, object_from_parts},
+    convert::{ProtoConvertError, graph_or_empty, root_object},
     pb,
     wire::{WireArena, graph_error},
 };
 
-/// Projects a call result onto the wire, with the arena its value indexes
-/// (`None` for the arms that carry no value).
+/// Splits a call result into its wire kind and the arena a `Return` value
+/// indexes (`None` for the other arms).
 #[must_use]
 pub fn ext_result_to_proto(result: ExtFunctionResult) -> (pb::ExtFunctionResult, Option<WireArena>) {
     let (kind, values) = match result {
@@ -36,7 +36,7 @@ pub fn ext_result_from_proto(
         .ok_or(ProtoConvertError::MissingField("ExtFunctionResult.kind"))?;
     match kind {
         pb::ext_function_result::Kind::ReturnValue(root) => {
-            Ok(ExtFunctionResult::Return(object_from_parts(values, root, "values")?))
+            Ok(ExtFunctionResult::Return(root_object(values, root, "values")?))
         }
         pb::ext_function_result::Kind::Error(err) => Ok(ExtFunctionResult::Error(MontyException::try_from(err)?)),
         pb::ext_function_result::Kind::Future(call_id) => Ok(ExtFunctionResult::Future(call_id)),
@@ -77,7 +77,7 @@ impl TryFrom<pb::ResumeNameLookup> for NameLookupResult {
             .kind
             .ok_or(ProtoConvertError::MissingField("ResumeNameLookup.kind"))?;
         match kind {
-            pb::resume_name_lookup::Kind::Value(root) => Ok(Self::Value(object_from_parts(
+            pb::resume_name_lookup::Kind::Value(root) => Ok(Self::Value(root_object(
                 lookup.values,
                 root,
                 "ResumeNameLookup.values",
@@ -88,8 +88,8 @@ impl TryFrom<pb::ResumeNameLookup> for NameLookupResult {
     }
 }
 
-/// Projects settled futures onto the wire, merging every returned value into
-/// the request's one arena.
+/// Merges every returned value into one arena and points each `ReturnValue`
+/// into it.
 #[must_use]
 pub fn future_results_to_proto(results: Vec<(u32, ExtFunctionResult)>) -> pb::ResumeFutures {
     let mut values = MontyGraph::new();
@@ -124,7 +124,7 @@ pub fn future_results_from_proto(
     results: Vec<pb::FutureResult>,
     values: Option<WireArena>,
 ) -> Result<Vec<(u32, ExtFunctionResult)>, ProtoConvertError> {
-    let graph = arena_or_empty(values)?;
+    let graph = graph_or_empty(values)?;
     results
         .into_iter()
         .map(|fr| {
@@ -147,9 +147,9 @@ pub fn future_results_from_proto(
         .collect()
 }
 
-/// A single-value convenience for tests and hosts: the value of a
-/// `ResumeCall` reply, as [`ext_result_from_proto`] reads it.
-pub fn resume_call_result(call: pb::ResumeCall) -> Result<ExtFunctionResult, ProtoConvertError> {
+/// The result of a `ResumeCall` reply, read with its arena by
+/// [`ext_result_from_proto`].
+pub fn resume_call_from_proto(call: pb::ResumeCall) -> Result<ExtFunctionResult, ProtoConvertError> {
     let result = call
         .result
         .ok_or(ProtoConvertError::MissingField("ResumeCall.result"))?;

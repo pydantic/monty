@@ -485,10 +485,9 @@ export function attributeErrorMessage(typeName: string, attrName: string): strin
 }
 
 /**
- * Identity memo for one message's walk: every object maps to the one object
- * it was walked into, so a value referenced twice (within one value, or
- * across the inputs of a feed or the arguments of a call) stays one object on
- * the other side. Share a memo across everything that travels in one message.
+ * Identity memo for one message's walk: each object maps to the object it was
+ * walked into, so a value referenced twice (within one value, across a feed's
+ * inputs or a call's arguments) stays one object. One memo per message.
  */
 export type WalkMemo = Map<object, unknown>
 
@@ -659,9 +658,8 @@ function classTypeToMarker(wrapper: ClassType, store: InstanceStore, memo: WalkM
  * name, the wrapper's uuid, and the eager class attrs (static class
  * constants), each prepared recursively so nested wrappers register too.
  * One object per wrapper per message, so every crossing of the class shares
- * it; a class met again while its own attrs are being walked (a class
- * constant that is an instance of the class) gets an attr-less duplicate
- * rather than a cycle error, as the sandbox's export does.
+ * it; a class met again while its own attrs are walked (a class constant that
+ * is an instance of the class) gets an attr-less duplicate, not a cycle error.
  */
 function classTypeObject(wrapper: ClassType, store: InstanceStore, memo: WalkMemo): Record<string, unknown> {
   const seen = memo.get(wrapper)

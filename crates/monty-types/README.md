@@ -10,11 +10,10 @@ implementation**.
 - `MontyObject` / `MontyType` — Python values and their types at the host
   boundary, including the `datetime` family (`MontyDate`, `MontyDateTime`,
   `MontyTimeDelta`, `MontyTimeZone`) and `MontyFileHandle`.
-- `MontyGraph` / `MontyNode` — the flat node arena values cross the boundary
-  in, so a sub-object shared inside the sandbox is sent once; `MontyObject`
-  pairs an arena with its root, `ObjectRef` borrows one value inside an arena
-  (with `as_int`, `as_str`, `items`, `pairs` accessors), and `CallArgs` and
-  `NamedValues` carry the arguments or inputs of one message.
+- `MontyGraph` / `MontyNode` — the flat post-order node graph values cross the boundary in; a sub-object shared
+  inside the sandbox is one node however many times it is referenced.
+  `MontyObject` is a graph plus its root node, `ObjectRef` borrows one value inside a graph (`as_int`, `as_str`,
+  `items`, `pairs`), and `CallArgs` / `NamedValues` hold the arguments or inputs of one message.
 - `MontyException` / `ExcType` — exceptions with tracebacks (`StackFrame`,
   `CodeLoc`) and structured payloads (`ExcData`).
 - `OsFunctionCall` — the typed OS-call payloads sandboxed code suspends with

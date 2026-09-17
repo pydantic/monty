@@ -119,7 +119,7 @@ fn json_roundtrip() {
 
 #[test]
 fn cycle_placeholders_follow_the_container() {
-    // A cycle is its placeholder: two distinct cyclic lists render the same.
+    // A cycle carries only its placeholder, chosen by the container's type.
     let result = eval("a = []; a.append(a); b = {}; b['b'] = b; [a, b]");
     assert_eq!(
         result,
