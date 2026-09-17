@@ -55,8 +55,10 @@ Values cross as one flat `monty.v1.Arena` per message: a post-order node arena i
 A sub-object shared inside the sandbox, or between two arguments of one call, is sent once, and the carrying message
 names its roots by index.
 prost `extern_path` maps the message onto `WireArena`, a hand-written `prost::Message` implementation that encodes
-borrowed `MontyNode`s and validates *while* decoding: no mirror struct, no deep clone and no recursion, with the
-decode budget charged as each vector grows.
+borrowed `MontyNode`s without cloning and decodes one generated protobuf node at a time.
+Each node is validated and converted before being retained in the domain arena; temporary payloads and conversion allocations share the frame budget.
+Strings, bytes and reference buffers transfer without copying; reference containers use `WireIndexes`, `WireNodePairs` and `WireNamedTuple` rather than temporary vectors of protobuf ids.
+Duplicate fields follow protobuf merging rules, and value depth does not increase decoding recursion.
 `tests/differential.rs` proves it byte-compatible against a fully prost-generated oracle (`tests/oracle/`, regenerated
 and CI-checked together with the main codegen).
 

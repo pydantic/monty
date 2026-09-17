@@ -15,28 +15,28 @@ fn every_schema_repeated_field_is_budgeted() {
         1,
         WireType::Varint,
         &[0],
-        |message: &pb::Indexes| &message.items,
+        |message: &WireIndexes| &message.0,
     );
     check_repeated(
         "monty.v1.NodePairs.pairs",
         1,
         WireType::LengthDelimited,
         &[],
-        |message: &pb::NodePairs| &message.pairs,
+        |message: &WireNodePairs| &message.0,
     );
     check_repeated(
         "monty.v1.NamedTupleNode.field_names",
         2,
         WireType::LengthDelimited,
         &[],
-        |message: &pb::NamedTupleNode| &message.field_names,
+        |message: &WireNamedTuple| &message.field_names,
     );
     check_repeated(
         "monty.v1.NamedTupleNode.values",
         3,
         WireType::Varint,
         &[0],
-        |message: &pb::NamedTupleNode| &message.values,
+        |message: &WireNamedTuple| &message.values,
     );
     check_repeated(
         "monty.v1.RaisedException.traceback",

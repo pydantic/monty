@@ -205,7 +205,8 @@ properties that real CPython does not provide, per the caveat above.
     suspended session stays suspended and resumable.
 - On protobuf transports, a frame is rejected when cumulative decoded allocation requests exceed 1 GiB,
     independently of the 256 MiB wire limit and the session's `max_memory`.
-    This includes arena slots, repeated-field capacity, strings, byte buffers, boxed values and BigInt storage.
+    This includes arena slots, repeated-field capacity, strings, byte buffers, boxed values and BigInt storage,
+    including temporary protobuf buffers and their conversion into domain nodes.
     Arena references carry an additional allowance for host container storage; shared sub-objects are encoded once.
     Growing a buffer charges the whole replacement allocation, and discarded payloads are not refunded,
     so a frame can exceed the budget even when its final decoded value occupies less than 1 GiB.
@@ -215,7 +216,7 @@ properties that real CPython does not provide, per the caveat above.
     The browser component separately budgets a request's WIT arena before constructing its graph,
     and before lifting a semantic event into JavaScript.
 - Semantic validation of protobuf values (date ranges, timedelta normalization,
-    exception/type/builtin names) happens *while decoding* the frame; the browser
+    exception/type/builtin names) happens after parsing each node, before accepting the frame; the browser
     component applies the same checks while converting its WIT value arena. A frame
     carrying an invalid value therefore fails the whole protocol turn: a parent
     receiving one discards the worker with a protocol error; a worker receiving

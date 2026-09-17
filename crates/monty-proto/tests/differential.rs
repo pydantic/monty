@@ -441,6 +441,19 @@ fn hand_encoding_matches_generated_encoding() {
     }
 }
 
+/// Extern-mapped reference buffers preserve generated node encoding and length calculations.
+#[test]
+fn reference_adapters_match_generated_encoding() {
+    for graph in graphs() {
+        for node in to_oracle(&graph).nodes {
+            let bytes = node.encode_to_vec();
+            let decoded = decode_frame::<pb::MontyNode>(&bytes).unwrap();
+            assert_eq!(decoded.encoded_len(), bytes.len());
+            assert_eq!(decoded.encode_to_vec(), bytes);
+        }
+    }
+}
+
 #[test]
 fn hand_decoder_reads_generated_bytes() {
     for graph in graphs() {
@@ -767,7 +780,7 @@ fn invalid_values_are_rejected_during_decode() {
         "frame decode error: failed to decode Protobuf message: invalid value for DateTime.timezone_name: timezone_name requires offset_seconds"
     );
     // the uuid arm is declared in the schema but not yet implemented: the
-    // hand-written decoder skips it like any unknown tag, leaving no kind
+    // UUID values are reserved by the schema but rejected by domain conversion
     assert_eq!(
         rejected(Kind::Uuid(oracle::Uuid { data: vec![7; 16] })),
         "frame decode error: failed to decode Protobuf message: missing required field MontyNode.kind"
@@ -886,6 +899,63 @@ fn repeated_attrs_fields_merge_like_the_oracle() {
         panic!("expected an oracle type");
     };
     assert_eq!(ty.attrs.as_ref().unwrap().pairs.len(), 2);
+}
+
+/// Duplicate message kinds merge before semantic validation, as in the generated oracle.
+#[test]
+fn repeated_node_kinds_merge_like_the_oracle() {
+    let cases = [
+        (
+            Kind::List(oracle::Indexes { items: vec![0] }),
+            Kind::List(oracle::Indexes { items: vec![1] }),
+            MontyNode::List(vec![NodeId(0), NodeId(1)]),
+        ),
+        (
+            Kind::Date(oracle::Date {
+                year: 2024,
+                month: 2,
+                day: 0,
+            }),
+            Kind::Date(oracle::Date {
+                year: 0,
+                month: 0,
+                day: 29,
+            }),
+            MontyNode::Date(MontyDate {
+                year: 2024,
+                month: 2,
+                day: 29,
+            }),
+        ),
+        (
+            Kind::List(oracle::Indexes { items: vec![u32::MAX] }),
+            Kind::Int(7),
+            MontyNode::Int(7),
+        ),
+    ];
+    for (first, second, expected) in cases {
+        let mut node = oracle::MontyNode { kind: Some(first) }.encode_to_vec();
+        node.extend(oracle::MontyNode { kind: Some(second) }.encode_to_vec());
+        let mut bytes = oracle::Arena {
+            node_count: 3,
+            nodes: vec![
+                oracle::MontyNode {
+                    kind: Some(Kind::None(oracle::Unit {})),
+                },
+                oracle::MontyNode {
+                    kind: Some(Kind::Int(1)),
+                },
+            ],
+        }
+        .encode_to_vec();
+        encode_key(2, WireType::LengthDelimited, &mut bytes);
+        encode_varint(node.len() as u64, &mut bytes);
+        bytes.extend(node);
+
+        let graph = decode_wire(&bytes).unwrap();
+        assert_eq!(graph.nodes()[2], expected);
+        assert_eq!(oracle::Arena::decode(bytes.as_slice()).unwrap(), to_oracle(&graph));
+    }
 }
 
 /// The wire is untrusted: temporal values that fit their integer fields but

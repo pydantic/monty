@@ -150,8 +150,11 @@ subprocesses:
     every child index is lower than its holder's, an index used twice is a shared object, and the message names its
     roots by index, so a shared sub-object crosses once and the wire imposes no nesting limit.
     prost `extern_path` maps the message onto `WireArena` (`src/wire.rs`), a hand-written `prost::Message` impl that
-    encodes borrowed `MontyNode`s and validates *while* decoding, with no mirror struct, deep clone or recursion on
-    the hot path. `tests/differential.rs` proves it
+    encodes borrowed `MontyNode`s without cloning. Decoding parses one generated protobuf node at a time, then
+    validates and converts it into the domain arena; temporary buffers and conversions share the frame budget.
+    `wire/references.rs` maps index, pair and named-tuple messages onto domain reference buffers so node conversion
+    can transfer them without allocating or copying.
+    `tests/differential.rs` proves it
     byte-compatible against a fully prost-generated oracle (`tests/oracle/`,
     regenerated and CI-checked together with the main codegen). Parents must
     treat frames from a (possibly compromised) child as untrusted — wire

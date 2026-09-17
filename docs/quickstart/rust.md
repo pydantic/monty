@@ -140,6 +140,7 @@ Custom protobuf transports should decode protocol messages through
 Both manage the per-frame allocation budget automatically, including cleanup on errors or unwinding.
 Raw `prost::Message::decode` calls fail if they attempt an allocation without a frame budget.
 Protocol repeated fields and byte buffers use [`BudgetVec`](../api/rust/monty-proto.md#budgetvec); convert standard vectors with `.into()` and recover them with `.into_inner()` without copying.
+Reference containers use [`WireIndexes`](../api/rust/monty-proto.md#wireindexes), [`WireNodePairs`](../api/rust/monty-proto.md#wirenodepairs) and [`WireNamedTuple`](../api/rust/monty-proto.md#wirenamedtuple), with domain `NodeId`s rather than raw protobuf integers.
 Host construction and cloning do not use the decode budget.
 See [wire limits](../limitations/pool-architecture.md) for the budget's scope.
 

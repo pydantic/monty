@@ -7,8 +7,9 @@
 //!
 //! - `src/generated/monty.v1.rs` — the protocol messages, with the
 //!   `monty.v1.Arena` message mapped via `extern_path` onto the hand-written
-//!   [`WireArena`](../wire.rs) so values encode/decode straight to
-//!   `monty_types::MontyGraph` with no mirror struct.
+//!   [`WireArena`](../wire.rs) for borrowed encoding and generated node-by-node
+//!   decoding into `monty_types::MontyGraph`. Extern-mapped index, pair and named-tuple
+//!   containers decode reference buffers directly into their domain representation.
 //! - `tests/oracle/monty.v1.rs` — the same schema *without* the mapping: a
 //!   fully prost-generated mirror used only by `tests/differential.rs` to
 //!   prove the hand-written implementation is byte-compatible with prost.
@@ -51,6 +52,9 @@ fn main() {
         .prost_path("crate::budgeted_prost")
         .extern_path(".monty.v1.Arena", "crate::WireArena")
         .extern_path(".monty.v1.FunctionCall", "crate::WireFunctionCall")
+        .extern_path(".monty.v1.Indexes", "crate::WireIndexes")
+        .extern_path(".monty.v1.NodePairs", "crate::WireNodePairs")
+        .extern_path(".monty.v1.NamedTupleNode", "crate::WireNamedTuple")
         .compile_fds(descriptors.clone())
         .expect("failed to generate Rust code from monty.proto");
     let generated = out_dir.join("monty.v1.rs");
@@ -101,7 +105,11 @@ fn generate_repeated_tests(pool: &DescriptorPool, path: &Path) {
                 field.full_name(),
                 field.number(),
                 message_rust_path(&message),
-                if message.full_name() == "monty.v1.Arena" { "0".to_owned() } else { field.name().to_snake_case() },
+                if matches!(message.full_name(), "monty.v1.Arena" | "monty.v1.Indexes" | "monty.v1.NodePairs") {
+                    "0".to_owned()
+                } else {
+                    field.name().to_snake_case()
+                },
             )
             .expect("write to string");
         }
@@ -115,6 +123,9 @@ fn message_rust_path(message: &MessageDescriptor) -> String {
     match message.full_name() {
         "monty.v1.Arena" => "WireArena".to_owned(),
         "monty.v1.FunctionCall" => "WireFunctionCall".to_owned(),
+        "monty.v1.Indexes" => "WireIndexes".to_owned(),
+        "monty.v1.NodePairs" => "WireNodePairs".to_owned(),
+        "monty.v1.NamedTupleNode" => "WireNamedTuple".to_owned(),
         _ => {
             let mut parents = Vec::new();
             let mut parent = message.parent_message();

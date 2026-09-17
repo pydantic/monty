@@ -6,8 +6,8 @@ use std::{io::Cursor, panic::catch_unwind, thread};
 use allocation_counter::measure;
 use insta::{allow_duplicates, assert_snapshot};
 use monty_proto::{
-    BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameReader, WireArena, WireFunctionCall, budgeted_prost::encoding,
-    decode_budget_remaining, decode_frame, pb, with_decode_budget,
+    BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameReader, WireArena, WireFunctionCall, WireIndexes, WireNamedTuple,
+    WireNodePairs, budgeted_prost::encoding, decode_budget_remaining, decode_frame, pb, with_decode_budget,
 };
 use monty_types::{ClassTypeNode, MontyNode, MontyUuid, NodeId};
 use num_bigint::{BigInt, Sign};
@@ -33,7 +33,14 @@ fn check_repeated<M: Message + Default, T>(
         assert_eq!(items(&message).len(), count, "{name}");
         assert!(charged >= items(&message).capacity() * size_of::<T>(), "{name}");
         // No fixtures have nonempty heap payloads, so only vector allocations count.
-        let multiplier = if matches!(name, "monty.v1.FunctionCall.args" | "monty.v1.FunctionCall.kwargs") {
+        let multiplier = if matches!(
+            name,
+            "monty.v1.FunctionCall.args"
+                | "monty.v1.FunctionCall.kwargs"
+                | "monty.v1.Indexes.items"
+                | "monty.v1.NodePairs.pairs"
+                | "monty.v1.NamedTupleNode.values"
+        ) {
             2 * size_of::<usize>() / size_of::<NodeId>()
         } else {
             1
@@ -228,12 +235,21 @@ fn duplicate_buffers_and_oneofs_cannot_refund_budget() {
     assert_eq!(decoded.text, "x");
     assert_eq!(charged, 9);
 
-    // The node decoder replaces a whole kind, so each occurrence allocates afresh.
+    // Repeated occurrences of the same scalar kind reuse their buffer.
     let node = repeated_field(8, WireType::LengthDelimited, b"abc", 10);
     let wire = repeated_field(2, WireType::LengthDelimited, &node, 1);
     let (decoded, charged) = measured_decode::<WireArena>(&wire);
     assert_eq!(decoded.0, vec![MontyNode::String("abc".to_owned())]);
-    assert_eq!(charged, 30 + vector_charge::<MontyNode>(1));
+    assert_eq!(charged, 3 + vector_charge::<MontyNode>(1));
+    with_decode_budget(charged - 1, || assert!(WireArena::decode(wire.as_slice()).is_err()));
+
+    // Switching kinds discards the previous buffer without refunding its charge.
+    let mut node = repeated_field(8, WireType::LengthDelimited, b"abc", 1);
+    node.extend(repeated_field(29, WireType::LengthDelimited, b"def", 1));
+    let wire = repeated_field(2, WireType::LengthDelimited, &node.repeat(10), 1);
+    let (decoded, charged) = measured_decode::<WireArena>(&wire);
+    assert_eq!(decoded.0, vec![MontyNode::Repr("def".to_owned())]);
+    assert_eq!(charged, 60 + vector_charge::<MontyNode>(1));
     with_decode_budget(charged - 1, || assert!(WireArena::decode(wire.as_slice()).is_err()));
 }
 
@@ -356,6 +372,33 @@ fn value_allocations_are_measured_independently() {
     }
 }
 
+/// Small containers allocate only their retained buffers, not a temporary vector of wire ids or pairs.
+#[test]
+fn reference_buffers_decode_without_temporary_vectors() {
+    let cases = [
+        (MontyNode::List(vec![NodeId(0); 3]), 2),
+        (MontyNode::Dict(vec![(NodeId(0), NodeId(0)); 3]), 2),
+        (
+            MontyNode::NamedTuple {
+                type_name: String::new(),
+                field_names: vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+                values: vec![NodeId(0); 3],
+            },
+            6,
+        ),
+    ];
+    for (node, expected_allocations) in cases {
+        let expected = WireArena(vec![MontyNode::None, node].into());
+        let bytes = expected.encode_to_vec();
+        let mut decoded = None;
+        let allocations = measure(|| {
+            decoded = Some(decode_frame::<WireArena>(&bytes).unwrap());
+        });
+        assert_eq!(decoded.unwrap(), expected);
+        assert_eq!(allocations.count_total, expected_allocations);
+    }
+}
+
 /// Named-tuple names pay for capacity and bytes, never an additional inline string header.
 #[test]
 fn named_tuple_has_no_double_charge() {
@@ -426,7 +469,7 @@ fn raw_decodes_fail_without_a_scope() {
     let err = pb::Print::decode(print.as_slice()).unwrap_err();
     assert_snapshot!(err, @"failed to decode Protobuf message: Print.segments: decode allocation outside a frame; use decode_frame or FrameReader");
     let err = WireArena::decode(value.as_slice()).unwrap_err();
-    assert_snapshot!(err, @"failed to decode Protobuf message: decode allocation outside a frame; use decode_frame or FrameReader");
+    assert_snapshot!(err, @"failed to decode Protobuf message: MontyNode.kind: decode allocation outside a frame; use decode_frame or FrameReader");
     assert_eq!(decode_budget_remaining(), None);
 
     // Allocation-free decoding needs no budget.
@@ -683,25 +726,21 @@ fn keyword_pairs_are_charged() {
 }
 
 /// A container's child ids are charged while its node decodes, before it is
-/// pushed, so one huge list cannot be built past the budget. Each id costs two
-/// pointers, not its 4 bytes: 16 ids are 64 bytes of `NodeId` but do not fit.
+/// pushed, so one huge list cannot be built past the budget. Each id includes
+/// an allowance for host references, not just the four bytes in the domain vector.
 #[test]
 fn container_ids_are_charged() {
     let nodes = decode(&nearly_full_arena(Some(list_node(8)))).expect("a short list still fits");
     assert_eq!(nodes.last(), Some(&MontyNode::List(vec![NodeId(0); 8])));
     for ids in [16, 64] {
-        assert_eq!(
-            decode(&nearly_full_arena(Some(list_node(ids)))).unwrap_err(),
-            OVER_BUDGET
-        );
+        allow_duplicates! {
+            assert_snapshot!(decode(&nearly_full_arena(Some(list_node(ids)))).unwrap_err(), @"failed to decode Protobuf message: MontyNode.kind: frame exceeds decode memory budget");
+        }
     }
 }
 
 /// A namedtuple's field names cost a `String` slot each, charged as they arrive.
 #[test]
 fn named_tuple_field_names_are_charged() {
-    assert_eq!(
-        decode(&nearly_full_arena(Some(named_tuple_node(8)))).unwrap_err(),
-        OVER_BUDGET
-    );
+    assert_snapshot!(decode(&nearly_full_arena(Some(named_tuple_node(8)))).unwrap_err(), @"failed to decode Protobuf message: MontyNode.kind: frame exceeds decode memory budget");
 }

@@ -48,21 +48,21 @@ pub mod monty_node {
         Bytes(crate::budgeted_prost::alloc::vec::Vec<u8>),
         /// A uuid.UUID value. Declared so the tag is settled, but NOT YET
         /// IMPLEMENTED: monty has no uuid module, so neither end produces or
-        /// accepts this arm (it decodes like any unknown kind — rejected).
+        /// accepts this arm (conversion to a domain node rejects it).
         #[prost(message, tag = "10")]
         Uuid(super::Uuid),
         #[prost(message, tag = "11")]
-        List(super::Indexes),
+        List(crate::WireIndexes),
         #[prost(message, tag = "12")]
-        Tuple(super::Indexes),
+        Tuple(crate::WireIndexes),
         #[prost(message, tag = "13")]
-        NamedTuple(super::NamedTupleNode),
+        NamedTuple(crate::WireNamedTuple),
         #[prost(message, tag = "14")]
-        Dict(super::NodePairs),
+        Dict(crate::WireNodePairs),
         #[prost(message, tag = "15")]
-        Set(super::Indexes),
+        Set(crate::WireIndexes),
         #[prost(message, tag = "16")]
-        FrozenSet(super::Indexes),
+        FrozenSet(crate::WireIndexes),
         #[prost(message, tag = "17")]
         Date(super::Date),
         #[prost(message, tag = "18")]
@@ -102,13 +102,6 @@ pub mod monty_node {
         Cycle(crate::budgeted_prost::alloc::string::String),
     }
 }
-/// Indexes of a container's children (list, tuple, set, frozenset items).
-#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
-#[prost(prost_path = "crate::budgeted_prost")]
-pub struct Indexes {
-    #[prost(uint32, repeated, tag = "1")]
-    pub items: crate::budgeted_prost::alloc::vec::Vec<u32>,
-}
 /// One key/value entry as node indexes. Used for dicts, attrs and kwargs:
 /// proto maps cannot have message keys and do not preserve order, while
 /// Python dicts allow arbitrary hashable keys and are insertion-ordered.
@@ -120,12 +113,6 @@ pub struct NodePair {
     #[prost(uint32, tag = "2")]
     pub value: u32,
 }
-#[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
-#[prost(prost_path = "crate::budgeted_prost")]
-pub struct NodePairs {
-    #[prost(message, repeated, tag = "1")]
-    pub pairs: crate::budgeted_prost::alloc::vec::Vec<NodePair>,
-}
 /// Arbitrary-precision integer as sign + big-endian magnitude. Exact and O(n);
 /// JS decode is `(negative ? -1n : 1n) * BigInt('0x' + hex(magnitude))`.
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
@@ -135,21 +122,6 @@ pub struct BigInt {
     pub negative: bool,
     #[prost(bytes = "vec", tag = "2")]
     pub magnitude: crate::budgeted_prost::alloc::vec::Vec<u8>,
-}
-#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
-#[prost(prost_path = "crate::budgeted_prost")]
-pub struct NamedTupleNode {
-    /// Type name used in repr, e.g. "os.stat_result".
-    #[prost(string, tag = "1")]
-    pub type_name: crate::budgeted_prost::alloc::string::String,
-    /// Attribute names, one per value.
-    #[prost(string, repeated, tag = "2")]
-    pub field_names: crate::budgeted_prost::alloc::vec::Vec<
-        crate::budgeted_prost::alloc::string::String,
-    >,
-    /// Indexes of the values, one per field name.
-    #[prost(uint32, repeated, tag = "3")]
-    pub values: crate::budgeted_prost::alloc::vec::Vec<u32>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
@@ -294,7 +266,7 @@ pub struct Type {
     /// attrs, an empty set leaves them unchanged. The worker never sends attrs
     /// for a sandbox class.
     #[prost(message, optional, tag = "5")]
-    pub attrs: ::core::option::Option<NodePairs>,
+    pub attrs: ::core::option::Option<crate::WireNodePairs>,
 }
 /// A class instance crossing the sandbox boundary. Host-backed instances route
 /// method calls and lazy attribute lookups back to the real object by uuid
@@ -312,7 +284,7 @@ pub struct ClassInstanceNode {
     pub instance_id: ::core::option::Option<Uuid>,
     /// Eagerly-sent attributes as `(name, value)` node indexes, in order.
     #[prost(message, optional, tag = "3")]
-    pub attrs: ::core::option::Option<NodePairs>,
+    pub attrs: ::core::option::Option<crate::WireNodePairs>,
 }
 /// An external (host-provided) function value, usually supplied by the parent
 /// in response to a `NameLookup` event.
