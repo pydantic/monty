@@ -1,0 +1,26 @@
+docs/limitations/time.md
+  s_6a187c04456a53::t_c28283ca4af714 65
+crates/monty-runtime/tests/mounts.rs
+  s_6a187c04456a53::t_c28283ca4af714 90-91
+crates/monty-python/python/pydantic_monty/os_access.py
+  s_6a187c04456a53::t_c28283ca4af714 648-654,949-951,960-965
+crates/monty-python/tests/test_os_access.py
+  s_6a187c04456a53::t_68f02fd4fa5823 167
+  s_6a187c04456a53::t_c28283ca4af714 146-166,168-169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "005f0371750f64b4178f923a880e20cabc910bd2",
+  "prompts": {},
+  "sessions": {
+    "s_6a187c04456a53": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2a1e3e08-406c-4d77-bc6d-adc0cd98bdfd",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
