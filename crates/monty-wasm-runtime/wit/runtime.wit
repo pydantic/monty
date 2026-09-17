@@ -171,7 +171,6 @@ interface worker {
     /// Resource limits. The host enforces `max-suspensions`; the sandbox
     /// enforces the others.
     record resource-limits {
-        max-duration-micros: option<u64>,
         max-feed-duration-micros: option<u64>,
         max-turn-duration-micros: option<u64>,
         max-memory-bytes: option<u64>,

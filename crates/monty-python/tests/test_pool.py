@@ -181,7 +181,7 @@ def test_concurrent_sessions_run_in_parallel(pool: Monty):
 
 
 def test_limits_enforced_in_worker(pool: Monty):
-    with pool.checkout(limits={'max_duration_secs': 0.1}) as session:
+    with pool.checkout(limits={'max_feed_duration_secs': 0.1}) as session:
         with pytest.raises(MontyRuntimeError) as exc_info:
             session.feed_run('while True:\n    pass')
         assert exc_info.value.display(format='type-msg').startswith('TimeoutError')

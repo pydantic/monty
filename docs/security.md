@@ -415,31 +415,33 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
 - `max_memory` budgets the bytes a worker requests from its global allocator, not process RSS.
     Per-allocation overhead, fragmentation, and memory obtained without the allocator sit outside the count.
     Size the limit with headroom, and keep the worker-level backstop.
-- `max_duration_secs` counts **cumulative execution time**, not wall clock.
+- `max_feed_duration_secs` counts **execution time**, not wall clock.
     The clock is paused while the sandbox waits on a host function, so a slow host function does not consume the budget.
-    It accumulates across feeds for the life of the session.
-    `max_feed_duration_secs` and `max_turn_duration_secs` bound the same clock over one feed and one host round trip.
+    `max_turn_duration_secs` bounds the same clock over one host round trip.
+    Neither accumulates across feeds — there is no session-lifetime budget, so bounding what a session costs in total is
+    the host's job.
 - The in-sandbox time check only runs at interpreter checkpoints.
     Host-side backstops cover a wedged worker: `request_timeout` (a per-turn deadline; a loop of quick host calls
-    resets it), and one grace per duration limit — `duration_limit_grace`, `feed_limit_grace` and `turn_limit_grace` —
-    each firing only if the session also set the limit it backs.
+    resets it), and one grace per duration limit — `feed_limit_grace` and `turn_limit_grace` — each firing only if the
+    session also set the limit it backs.
     Set `request_timeout` and at least one duration limit for untrusted code.
     `max_turn_duration_secs` does not close the gap named above: its clock also restarts at each host answer, so a loop
     of quick host calls resets it just as it resets `request_timeout`.
-    It bounds each individual stretch of sandbox code, and what bounds the loop itself is a budget that never resets —
-    `max_duration_secs`, or `max_suspensions` on the number of round trips.
+    `max_feed_duration_secs` does bound such a loop, because its clock runs for the whole feed; `max_suspensions` bounds
+    the number of round trips.
+    Across feeds neither applies — every in-sandbox budget restarts at the next feed, so a session fed repeatedly is
+    bounded only by what the host counts and ends itself.
     Every local pool ([`Monty`][pydantic_monty.Monty], [`AsyncMonty`][pydantic_monty.AsyncMonty], JavaScript `Monty.create()`, [`PoolConfig::subprocess`](api/rust/monty-pool.md#poolconfig)) defaults
     `request_timeout` to no deadline; only [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket] sets one, at 10 seconds.
 - **After a memory or time limit fires, no guarantees are made about heap state or reference counts.** Discard the
     session rather than continuing to run code in it.
-    The pool does not do this for you, and the two limits do not even fail alike: a spent `max_duration_secs` budget is
-    cumulative, so every later feed fails with the same `TimeoutError`, while after a `max_memory` trip a later feed may
-    quietly succeed against a corrupted heap.
+    The pool does not do this for you, and neither limit stops you: the duration budgets restart at the next feed, and
+    after a `max_memory` trip a later feed may quietly succeed against a corrupted heap.
 - Compilation is not charged against the duration budget.
     It has its own structural caps (AST nesting, bytecode operand sizes, comprehension nesting, `finally` expansion), but
     a host accepting untrusted source should still isolate compilation — as the subprocess and WebAssembly runtimes do.
 - `max_suspensions` bounds suspension events per checkout.
-    A snippet can otherwise retry a rejected host call while `max_duration_secs` is paused.
+    A snippet can otherwise retry a rejected host call while the duration budgets are paused.
     Each allowed `ClassType(init=True)` construction adds an instance-store entry outside `max_memory`.
     The pool aborts the first suspension over the limit with an uncatchable `RuntimeError`.
 

@@ -26,8 +26,6 @@ export interface WasmPoolOptions {
   /** Hard per-turn deadline in seconds; on expiry the worker is terminated. */
   requestTimeout?: number
   /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
-  durationLimitGrace?: number | null
-  /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
   feedLimitGrace?: number | null
   /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
   turnLimitGrace?: number | null

@@ -726,7 +726,7 @@ fn child_enforces_time_limit() {
     child.create_repl_with(pb::Configure {
         script_name: "main.py".to_owned(),
         limits: Some(pb::ResourceLimits {
-            max_duration_micros: Some(100_000), // 100ms
+            max_feed_duration_micros: Some(100_000), // 100ms
             ..Default::default()
         }),
         type_check: false,
@@ -739,10 +739,10 @@ fn child_enforces_time_limit() {
     let (_, event) = child.feed("while True:\n    pass");
     let error = expect_error(event);
     assert_eq!(error.exc_type, "TimeoutError");
-    // resource exhaustion is terminal for the SESSION (the tracker stays
-    // exhausted) but not for the child process: Reset + Configure reuses it
-    let (_, event) = child.feed("1 + 1");
-    assert_eq!(expect_error(event).exc_type, "TimeoutError");
+    // the feed clock restarts, so the next feed gets the whole budget back —
+    // the heap it runs against is what a host should not trust, not the budget
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    // the child process is reusable too: Reset + Configure starts a session over
     child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
     let pb::child_event::Kind::Ok(_) = child.recv() else {
         panic!("expected Ok for Reset");

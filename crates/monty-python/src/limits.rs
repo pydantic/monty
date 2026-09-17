@@ -7,7 +7,6 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 /// Extracts resource limits from a Python dict.
 ///
 /// The dict should have the following optional keys:
-/// - `max_duration_secs`: Maximum execution time per session, in seconds (float)
 /// - `max_feed_duration_secs`: Maximum execution time per feed, in seconds (float)
 /// - `max_turn_duration_secs`: Maximum execution time per host turn, in seconds (float)
 /// - `max_memory`: Maximum heap memory in bytes (int)
@@ -35,7 +34,6 @@ pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty_types::Resourc
             continue;
         }
         limits = match key {
-            LimitKey::MaxDurationSecs => limits.max_duration(extract_duration(&value)?),
             LimitKey::MaxFeedDurationSecs => limits.max_feed_duration(extract_duration(&value)?),
             LimitKey::MaxTurnDurationSecs => limits.max_turn_duration(extract_duration(&value)?),
             LimitKey::MaxMemory => limits.max_memory(value.extract()?),
@@ -57,7 +55,6 @@ fn extract_duration(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
 /// `ValueError`, so a typo can't silently run without the intended cap.
 #[derive(Clone, Copy)]
 enum LimitKey {
-    MaxDurationSecs,
     MaxFeedDurationSecs,
     MaxTurnDurationSecs,
     MaxMemory,
@@ -71,7 +68,6 @@ impl<'a, 'py> FromPyObject<'a, 'py> for LimitKey {
 
     fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         match ob.extract::<&str>().unwrap_or_default() {
-            "max_duration_secs" => Ok(Self::MaxDurationSecs),
             "max_feed_duration_secs" => Ok(Self::MaxFeedDurationSecs),
             "max_turn_duration_secs" => Ok(Self::MaxTurnDurationSecs),
             "max_memory" => Ok(Self::MaxMemory),
@@ -85,7 +81,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for LimitKey {
                     .repr()
                     .map_or_else(|_| "<unprintable key>".to_owned(), |r| r.to_string());
                 Err(PyValueError::new_err(format!(
-                    "unknown limits key {key_repr}; accepted keys are 'max_duration_secs', \
+                    "unknown limits key {key_repr}; accepted keys are \
                      'max_feed_duration_secs', 'max_turn_duration_secs', 'max_memory', \
                      'gc_interval', 'max_recursion_depth', 'max_suspensions'"
                 )))

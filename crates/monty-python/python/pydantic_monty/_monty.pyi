@@ -504,7 +504,6 @@ class Monty:
         checkout_timeout: float | None = None,
         request_timeout: float | None = None,
         max_checkouts_per_worker: int | None = None,
-        duration_limit_grace: float | None = 1.0,
         feed_limit_grace: float | None = 1.0,
         turn_limit_grace: float | None = 1.0,
     ) -> Self:
@@ -526,15 +525,11 @@ class Monty:
                 with `timed_out=True`. Trusted synchronous span and log callbacks
                 delay enforcement while they run. Backstops sandbox `limits`.
             max_checkouts_per_worker: Recycle a worker after this many sessions.
-            duration_limit_grace: Seconds the parent waits past a session's
-                `max_duration_secs` before killing the worker, giving the sandbox
-                time to raise `TimeoutError` itself. That keeps the worker, not
-                the session: the cumulative budget is spent, so every later feed
-                raises too — finish the checkout rather than reusing it.
-                `None` disables this backstop.
-            feed_limit_grace: The same, for `max_feed_duration_secs`, whose clock
-                restarts at the next feed — so here the session really is usable
-                afterwards.
+            feed_limit_grace: Seconds the parent waits past a feed's
+                `max_feed_duration_secs` before killing the worker, giving the
+                sandbox time to raise `TimeoutError` itself and keep the
+                session — its clock restarts at the next feed. `None` disables
+                this backstop.
             turn_limit_grace: The same, for `max_turn_duration_secs`.
         """
 
@@ -843,7 +838,6 @@ class AsyncMonty:
         checkout_timeout: float | None = None,
         request_timeout: float | None = None,
         max_checkouts_per_worker: int | None = None,
-        duration_limit_grace: float | None = 1.0,
         feed_limit_grace: float | None = 1.0,
         turn_limit_grace: float | None = 1.0,
     ) -> Self:
@@ -910,7 +904,6 @@ class AsyncMontyWebsocket:
         checkout_timeout: float | None = None,
         request_timeout: float | None = 10.0,
         connect_headers: Callable[[], Mapping[str, str]] | None = None,
-        duration_limit_grace: float | None = 1.0,
         feed_limit_grace: float | None = 1.0,
         turn_limit_grace: float | None = 1.0,
     ) -> Self:
@@ -947,15 +940,11 @@ class AsyncMontyWebsocket:
                 `user-agent` and the `traceparent` the Logfire integration
                 adds, and a malformed name or value raises `RuntimeError` as
                 the session is entered.
-            duration_limit_grace: Seconds the parent waits past a session's
-                `max_duration_secs` before killing the worker, giving the sandbox
-                time to raise `TimeoutError` itself. That keeps the worker, not
-                the session: the cumulative budget is spent, so every later feed
-                raises too — finish the checkout rather than reusing it.
-                `None` disables this backstop.
-            feed_limit_grace: The same, for `max_feed_duration_secs`, whose clock
-                restarts at the next feed — so here the session really is usable
-                afterwards.
+            feed_limit_grace: Seconds the parent waits past a feed's
+                `max_feed_duration_secs` before killing the worker, giving the
+                sandbox time to raise `TimeoutError` itself and keep the
+                session — its clock restarts at the next feed. `None` disables
+                this backstop.
             turn_limit_grace: The same, for `max_turn_duration_secs`.
         """
 

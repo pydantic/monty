@@ -56,13 +56,13 @@ use monty::MontyRun;
 use monty_types::{CompileOptions, ResourceTracker, PrintWriter, ResourceLimits};
 
 let limits = ResourceLimits {
-    max_duration: Some(Duration::from_millis(20)),
+    max_feed_duration: Some(Duration::from_millis(20)),
     ..ResourceLimits::default()
 };
 
 let runner = MontyRun::new("while True: pass".to_owned(), "spin.py", vec![], CompileOptions::default()).unwrap();
 let err = runner.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout).unwrap_err();
-assert!(err.to_string().contains("time limit exceeded"));
+assert!(err.to_string().contains("feed time limit exceeded"));
 ```
 
 ## External functions and snapshotting

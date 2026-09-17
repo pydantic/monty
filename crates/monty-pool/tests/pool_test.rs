@@ -914,25 +914,6 @@ async fn restored_os_call_is_serviced_by_restore_mounts() {
     restored.finish().await.unwrap();
 }
 
-/// A `max_duration` near `Duration::MAX` must not overflow the parent's
-/// backstop deadline arithmetic (limit plus grace).
-#[tokio::test]
-async fn huge_max_duration_does_not_overflow_the_backstop() {
-    let pool = Pool::new(config()).await.unwrap();
-    let mut session = pool
-        .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::MAX)),
-            ..ReplConfig::default()
-        })
-        .await
-        .unwrap();
-    let event = session
-        .feed("1 + 1", vec![], vec![], false, &mut no_print)
-        .await
-        .unwrap();
-    assert_eq!(expect_complete(event), MontyObject::int(2));
-}
-
 /// An over-limit frame must fail as a clean, session-preserving error rather
 /// than crashing the worker: `Worker::send` rejects it before writing any
 /// bytes, so the stream stays synced. Covers both directions — a request the
@@ -1559,7 +1540,7 @@ async fn child_resource_limits_do_not_kill_the_worker() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .await
@@ -1863,14 +1844,14 @@ async fn special_files_in_mounts_are_rejected_without_blocking() {
 
 #[tokio::test]
 async fn suspension_time_does_not_consume_the_duration_budget() {
-    // `max_duration` measures cumulative sandbox execution time; the worker
-    // reports it on every turn and its clock is paused while suspended. The
-    // host staying away for twice the entire budget must therefore not time
-    // the session out.
+    // `max_feed_duration` measures sandbox execution time; the worker reports
+    // it on every turn and its clock is paused while suspended. The host
+    // staying away for twice the entire budget must therefore not time the
+    // feed out.
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(300))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(300))),
             ..ReplConfig::default()
         })
         .await
@@ -1980,13 +1961,13 @@ async fn restored_session_readopts_its_suspension_limit() {
 
 #[tokio::test]
 async fn loaded_session_keeps_its_duration_budget() {
-    // The `max_duration` budget and consumed execution time travel inside the
-    // dump — a session restored via `restore` keeps the original limits even
-    // though the parent never saw the original `ReplConfig`.
+    // The `max_feed_duration` budget travels inside the dump — a session
+    // restored via `restore` keeps the original limits even though the parent
+    // never saw the original `ReplConfig`.
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .await
@@ -2501,8 +2482,7 @@ async fn max_turn_duration_bounds_a_runaway_turn() {
 }
 
 /// Budgets near `Duration::MAX` must not overflow the parent's backstop
-/// arithmetic (remaining budget plus grace), for the feed and turn scopes as
-/// well as the session one.
+/// arithmetic (remaining budget plus grace), in either scope.
 #[tokio::test]
 async fn huge_feed_and_turn_budgets_do_not_overflow_the_backstop() {
     let pool = Pool::new(config()).await.unwrap();
@@ -2510,7 +2490,6 @@ async fn huge_feed_and_turn_budgets_do_not_overflow_the_backstop() {
         .checkout(&ReplConfig {
             limits: Some(
                 ResourceLimits::default()
-                    .max_duration(Duration::MAX)
                     .max_feed_duration(Duration::MAX)
                     .max_turn_duration(Duration::MAX),
             ),

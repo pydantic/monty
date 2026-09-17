@@ -16,7 +16,7 @@ const isRuntimeError = { instanceOf: MontyRuntimeError }
 
 test('resource limits custom', async () => {
   const limits: ResourceLimits = {
-    maxDurationSecs: 5.0,
+    maxFeedDurationSecs: 5.0,
     maxMemory: 64 * 1024,
     gcInterval: 10,
     maxRecursionDepth: 500,
@@ -27,7 +27,7 @@ test('resource limits custom', async () => {
 })
 
 test('run with limits', async () => {
-  t.is(await run('1 + 1', { limits: { maxDurationSecs: 5.0 } }), 2)
+  t.is(await run('1 + 1', { limits: { maxFeedDurationSecs: 5.0 } }), 2)
 })
 
 // =============================================================================
@@ -84,7 +84,7 @@ test('memory limit accepts values above u32 max', async () => {
 // =============================================================================
 
 test('limits with inputs', async () => {
-  t.is(await run('x * 2', { inputs: { x: 21 }, limits: { maxDurationSecs: 5.0 } }), 42)
+  t.is(await run('x * 2', { inputs: { x: 21 }, limits: { maxFeedDurationSecs: 5.0 } }), 42)
 })
 
 // =============================================================================
@@ -122,17 +122,17 @@ test('small operations within limit', async () => {
 
 test('time limit', async () => {
   const error = await t.throwsAsync(
-    () => run('while True:\n    pass\n', { limits: { maxDurationSecs: 0.1 } }),
+    () => run('while True:\n    pass\n', { limits: { maxFeedDurationSecs: 0.1 } }),
     isRuntimeError,
   )
   t.is(error.exception.typeName, 'TimeoutError')
   // The reported elapsed time varies from run to run; the limit is fixed.
-  t.regex(error.display('msg'), /^time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
+  t.regex(error.display('msg'), /^feed time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
 })
 
 test('feed duration limit restarts each feed', async () => {
-  // Unlike maxDurationSecs the budget restarts, so the session survives one
-  // over-long feed.
+  // The budget restarts at each feed, so the session survives one over-long
+  // feed.
   await using session = await pool().checkout({ limits: { maxFeedDurationSecs: 0.1 } })
   t.is(await session.feedRun('1 + 1'), 2)
   const error = await t.throwsAsync(() => session.feedRun('while True:\n    pass\n'), isRuntimeError)

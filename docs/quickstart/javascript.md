@@ -21,7 +21,7 @@ For browsers, or anywhere subprocesses are impossible, the same package exposes 
 import { Monty } from '@pydantic/monty'
 
 await using pool = await Monty.create()
-await using session = await pool.checkout({ limits: { maxMemory: 10_000_000, maxDurationSecs: 1 } })
+await using session = await pool.checkout({ limits: { maxMemory: 10_000_000, maxFeedDurationSecs: 1 } })
 
 const result = await session.feedRun('double(x) + y', {
   inputs: { x: 5, y: 1 },
@@ -214,7 +214,7 @@ import { Monty } from '@pydantic/monty'
 
 await using pool = await Monty.create()
 await using session = await pool.checkout({
-  limits: { maxMemory: 10_000_000, maxDurationSecs: 1, maxRecursionDepth: 100 },
+  limits: { maxMemory: 10_000_000, maxFeedDurationSecs: 1, maxRecursionDepth: 100 },
   typeCheck: true,
   typeCheckStubs: 'def fetch_data() -> str: ...',
 })
@@ -222,8 +222,8 @@ await using session = await pool.checkout({
 console.log(await session.feedRun('fetch_data()', { externalLookup: { fetch_data: () => 'data' } })) // data
 ```
 
-Omitted `maxMemory` / `maxDurationSecs` means unlimited.
-`maxFeedDurationSecs` and `maxTurnDurationSecs` bound the same execution clock as `maxDurationSecs` over one feed
+Omitted `maxMemory` / `maxFeedDurationSecs` means unlimited.
+`maxFeedDurationSecs` and `maxTurnDurationSecs` bound one execution clock over one feed
 (`feedRun` or `feedStart`) and one stretch of code between host round trips; each is unlimited when omitted.
 `maxRecursionDepth` and `maxSuspensions` default to 1000 and cannot be disabled.
 `gcInterval` defaults to every 100,000 allocations.
@@ -272,8 +272,7 @@ await using pool = await Monty.create({
   maxProcesses: 8, // cap on live workers; defaults to the CPU count
   checkoutTimeout: 5, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline; kills the worker
-  durationLimitGrace: 1, // grace before the maxDurationSecs backstop fires; null disables
-  feedLimitGrace: 1, // the same, for maxFeedDurationSecs
+  feedLimitGrace: 1, // grace before the maxFeedDurationSecs backstop fires; null disables
   turnLimitGrace: 1, // the same, for maxTurnDurationSecs
   maxCheckoutsPerWorker: 100, // recycle a worker after N sessions
 })

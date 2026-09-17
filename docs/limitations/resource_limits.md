@@ -7,8 +7,8 @@ these exceptions. `RecursionError` is catchable, as in CPython.
 
 ## Compilation
 
-`max_duration` starts when the VM executes, so parsing, preparation, and
-bytecode compilation do not consume it. In workers, allocations retained by
+The duration limits start when the VM executes, so parsing, preparation, and
+bytecode compilation do not consume them. In workers, allocations retained by
 compiled code do count toward `max_memory`; transient compilation allocations
 are released before execution reaches its first memory checkpoint.
 Compilation has separate structural caps for parser nesting, bytecode operand
@@ -193,21 +193,22 @@ indistinguishable from a stack overflow.
 
 ## Time
 
-- The host can set a `max_duration`, `max_feed_duration` or `max_turn_duration`
-    budget; if any is exceeded the VM stops with a
+- The host can set a `max_feed_duration` or `max_turn_duration` budget; if
+    either is exceeded the VM stops with a
     [`ResourceError`](../api/rust/monty-types.md#resourceerror) at its next checkpoint.
-- When one checkpoint blows more than one budget, the widest is reported:
-    session, then feed, then turn. The message names the scope —
-    `time limit exceeded`, `feed time limit exceeded`, `turn time limit exceeded`.
+    There is no cumulative per-session budget: both clocks restart, so nothing
+    inside the sandbox bounds what a session costs over its lifetime.
+- When one checkpoint blows both budgets, the feed one is reported. The message
+    names the scope — `feed time limit exceeded`, `turn time limit exceeded`.
 - Enforcement is polled, not preemptive: a single bytecode instruction may
     run a long native operation (a `bytes` substring scan, a sort, an iterator
     drain), and those poll the clock at a coarse granularity. A run can
-    therefore overshoot `max_duration` before stopping.
+    therefore overshoot its budget before stopping.
 - Checkpoints are amortized rather than per-instruction: the dispatch loop
     reads the clock every 256th instruction, and the native loops that poll for
     themselves (iterator advancement, sequence repeats, comparisons, `repr`)
     do so every 64th item. Both are unconditional overshoots of ordinary
-    `max_duration` enforcement, on top of the per-operation cases below.
+    time-limit enforcement, on top of the per-operation cases below.
 - A container narrower than that 64-item interval never reaches a poll at all.
     Structures that share sub-objects are walked once per path rather than once per
     object, so `repr` and `==` over one nested `n` levels deep do work exponential
@@ -226,7 +227,7 @@ indistinguishable from a stack overflow.
     probe, `find`, `count`, `split`, `partition`, `replace` and their
     variants) poll the clock every 64KiB, or every two lengths of the
     searched-for sequence if that is longer. Searching for a
-    sequence over 64KiB therefore overshoots `max_duration` in proportion to
+    sequence over 64KiB therefore overshoots its duration budget in proportion to
     its length.
 - The neighbouring `bytes` operations that scan without a sub-sequence are
     **not** polled and run to completion however large the input: `in` with an
@@ -239,7 +240,7 @@ indistinguishable from a stack overflow.
 - `base64.a85decode()` polls the clock every 64th byte that matches no
     Ascii85 digit and so reaches `ignorechars`. Each of those bytes is one
     `in` test against the container, so a large explicit `ignorechars`
-    overshoots `max_duration` in proportion to its length.
+    overshoots its duration budget in proportion to its length.
 - The budget covers cumulative **execution time**, not wall-clock time:
     the clock runs only while the interpreter executes bytecode, and is
     paused while execution is suspended waiting on the host (external
@@ -249,18 +250,14 @@ indistinguishable from a stack overflow.
     session resumes its budget where it left off rather than restarting
     from zero.
 - There is no in-sandbox way to observe the budget or remaining time.
-- `max_feed_duration` and `max_turn_duration` bound the same clock over a
-    narrower scope, and every point above applies to them unchanged — polled
-    enforcement, the same overshoots, the same unobservability. They differ
-    only in when the clock restarts: at each feed, and at each feed or
+- `max_feed_duration` and `max_turn_duration` bound one clock over two scopes,
+    differing only in when it restarts: at each feed, and at each feed or
     answered suspension respectively.
 - A feed that the host never resumes leaves its `max_feed_duration` clock
-    where it stopped. The next feed resets it, so the abandoned feed's time
-    does not carry into it — but it stays charged to `max_duration`, which
-    never resets.
+    where it stopped. The next feed resets it, so the abandoned feed's time is
+    charged to nothing.
 - `MontyRepl::call_function` counts as its own feed *and* its own turn, so a
-    host-driven call is never charged for the feeds before it. Only
-    `max_duration` spans the two.
+    host-driven call is never charged for the feeds before it.
 - A turn's clock restarts at the resume, not at the point the host answered,
     so it never includes the time the host spent deciding.
 - Continuations the VM resolves without the host — an `await` on an
@@ -268,9 +265,9 @@ indistinguishable from a stack overflow.
     them and do not restart the turn clock.
 - A name lookup the host answers restarts the turn clock, including one
     answered as `Undefined`: the round trip happened either way.
-- `max_feed_duration` is serialized into dumps/snapshots like `max_duration`;
-    `max_turn_duration`'s clock is not, because a dump is only ever taken
-    between turns.
+- `max_feed_duration` is serialized into dumps/snapshots, so a restored session
+    resumes the feed budget it was dumped mid-way through; `max_turn_duration`'s
+    clock is not, because a dump is only ever taken between turns.
 
 ## JSON
 

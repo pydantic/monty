@@ -1072,7 +1072,6 @@ mod tests {
         pb::ChildEvent {
             kind: Some(kind),
             total_execution_micros: 0,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: None,
             feed_execution_micros: 0,
@@ -1297,7 +1296,6 @@ mod tests {
             metrics.event(&pb::ChildEvent {
                 kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
                 total_execution_micros: total,
-                max_duration_micros: None,
                 max_suspensions: None,
                 restored_script_name: None,
                 feed_execution_micros: 0,
@@ -1389,7 +1387,6 @@ mod tests {
         metrics.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 10_000_000,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: Some("dumped.py".to_owned()),
             feed_execution_micros: 0,
@@ -1400,7 +1397,6 @@ mod tests {
         metrics.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
             total_execution_micros: 10_000_100,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: None,
             feed_execution_micros: 0,
@@ -1428,7 +1424,6 @@ mod tests {
                 object_id: None,
             })),
             total_execution_micros: 10_000_000,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: None,
             feed_execution_micros: 0,
@@ -1450,7 +1445,6 @@ mod tests {
         metrics.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
             total_execution_micros: 10_000_050,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: None,
             feed_execution_micros: 0,

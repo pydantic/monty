@@ -124,7 +124,7 @@ pub(super) fn next<'h>(iter: &mut HeapObjectRead<'h, ItertoolsIter>, vm: &mut VM
 
     let mut steps = 0usize;
     loop {
-        // A native loop discarding items: poll so `max_duration` still bites
+        // A native loop discarding items: poll so the time limits still bite
         // on a source whose key never changes (see `chain::next`).
         vm.heap.tracker.check_time_every(steps)?;
         steps += 1;

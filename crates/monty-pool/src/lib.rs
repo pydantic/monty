@@ -48,7 +48,7 @@ impl MontyTransport {
     }
 }
 
-/// Default grace on each of the three duration backstops: how long the parent
+/// Default grace on each of the two duration backstops: how long the parent
 /// waits past a sandbox time limit for the worker to raise `TimeoutError`
 /// itself before killing it.
 pub const DEFAULT_DURATION_LIMIT_GRACE: Duration = Duration::from_secs(1);
@@ -73,25 +73,21 @@ pub struct PoolConfig {
     /// that hangs in ways the sandbox limits cannot see. Synchronous host
     /// telemetry callbacks prevent the timer from being polled while they run.
     pub request_timeout: Option<Duration>,
-    /// Grace period for the automatic `max_duration` backstop.
+    /// Grace period for the automatic `ResourceLimits::max_feed_duration`
+    /// backstop.
     ///
-    /// When a session has a `ResourceLimits::max_duration` budget, the worker
-    /// reports its cumulative execution time on every turn-ending event (the
-    /// sandbox clock is the single source of truth: it runs only while the
-    /// interpreter executes, never during suspensions waiting on the host or
-    /// between feeds), and the parent bounds each execution turn by the
-    /// remaining budget plus this grace.
+    /// When a session has a feed budget, the worker reports the running feed's
+    /// execution time on every turn-ending event (the sandbox clock is the
+    /// single source of truth: it runs only while the interpreter executes,
+    /// never during suspensions waiting on the host or between feeds), and the
+    /// parent bounds each turn by what that budget has left plus this grace.
     ///
     /// The grace is the window in which the sandbox may raise `TimeoutError`
     /// itself and keep the session alive; a worker that misses it is killed and
     /// the call fails with [`PoolError::Timeout`], so too short a grace costs
     /// workers that would have recovered.
-    pub duration_limit_grace: Option<Duration>,
-    /// [`duration_limit_grace`](Self::duration_limit_grace) for the
-    /// `ResourceLimits::max_feed_duration` backstop: each turn is bounded by
-    /// what the running feed has left, plus this.
     pub feed_limit_grace: Option<Duration>,
-    /// [`duration_limit_grace`](Self::duration_limit_grace) for the
+    /// [`feed_limit_grace`](Self::feed_limit_grace) for the
     /// `ResourceLimits::max_turn_duration` backstop: each turn is bounded by
     /// that whole limit plus this, the turn clock starting at zero.
     pub turn_limit_grace: Option<Duration>,
@@ -131,7 +127,6 @@ impl PoolConfig {
             transport,
             checkout_timeout: None,
             request_timeout: None,
-            duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             feed_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             turn_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             max_checkouts_per_worker: None,

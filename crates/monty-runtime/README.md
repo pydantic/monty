@@ -40,7 +40,7 @@ monty --help
   mount a host directory into the sandbox (`ro`, `rw`, or `overlay`)
 - `--cwd /virtual/path` — the sandbox's working directory (default: the first
   mount's virtual path, else `/`); relative paths resolve against it
-- `--max-memory 10MB`, `--max-duration 0.5`, `--max-feed-duration`,
+- `--max-memory 10MB`, `--max-feed-duration 0.5`,
   `--max-turn-duration`, `--max-recursion-depth`, `--gc-interval`,
   `--max-suspensions` — sandbox resource limits
 - `--max-sleep 10` — longest wait a `time.sleep()` / `asyncio.sleep()` performs

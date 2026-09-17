@@ -130,7 +130,8 @@ impl Recorder {
                     length_limit_exceeded =
                         (script_name_cut | monty_version_cut | type_check_stubs_cut).then_some(true),
                     assert_message_annotations = c.assert_message_annotations,
-                    max_duration_micros = limits.and_then(|l| l.max_duration_micros),
+                    max_feed_duration_micros = limits.and_then(|l| l.max_feed_duration_micros),
+                    max_turn_duration_micros = limits.and_then(|l| l.max_turn_duration_micros),
                     max_memory_bytes = limits.and_then(|l| l.max_memory_bytes),
                     gc_interval = limits.and_then(|l| l.gc_interval),
                     max_recursion_depth = limits.and_then(|l| l.max_recursion_depth),
@@ -195,7 +196,7 @@ impl Recorder {
                     // that closes this span
                     output = Empty,
                     total_execution_micros = Empty,
-                    max_duration_micros = Empty,
+                    max_feed_duration_micros = Empty,
                 ));
                 self.feed = Some(OpenSpan::new(span, cut));
             }
@@ -243,7 +244,7 @@ impl Recorder {
                     // filled in by the `DumpResult` reply
                     state_bytes = Empty,
                     total_execution_micros = Empty,
-                    max_duration_micros = Empty,
+                    max_feed_duration_micros = Empty,
                 )));
             }
             // no span of its own: the session is normally already reset, and
@@ -266,7 +267,7 @@ impl Recorder {
         // the budget travels with the elapsed time so `Load`-restored sessions,
         // whose limits come from the dump, show what it is measured against
         let micros = event.total_execution_micros;
-        let max_duration = event.max_duration_micros;
+        let max_feed_duration = event.max_feed_duration_micros;
         // only a `Load` reply carries this: the session span already exists with
         // the `Configure` name, so the dump's name goes on the load span
         if let (Some(script_name), Some(load)) = (&event.restored_script_name, &self.turn) {
@@ -305,7 +306,7 @@ impl Recorder {
                     object_id = c.object_id.as_ref().map(MontyUuid::to_string),
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
-                    max_duration_micros = max_duration,
+                    max_feed_duration_micros = max_feed_duration,
                     // Filled by ResumeCall, an eager ResumeFutures, or AbortFeed.
                     return_value = Empty,
                     aborted_with = Empty,
@@ -315,7 +316,7 @@ impl Recorder {
                 self.pending = Some(pending);
             }
             Some(pb::child_event::Kind::OsCall(c)) => {
-                self.pending = Some(os_call_span(c, micros, max_duration, &self.context_span()));
+                self.pending = Some(os_call_span(c, micros, max_feed_duration, &self.context_span()));
             }
             Some(pb::child_event::Kind::NameLookup(n)) => {
                 let (name, cut) = truncate_str(&n.name);
@@ -324,7 +325,7 @@ impl Recorder {
                     "name lookup {name}",
                     name = name,
                     total_execution_micros = micros,
-                    max_duration_micros = max_duration,
+                    max_feed_duration_micros = max_feed_duration,
                     // filled in by the answering `ResumeNameLookup`, or an `AbortFeed`
                     value = Empty,
                     aborted_with = Empty,
@@ -340,7 +341,7 @@ impl Recorder {
                     pending_call_ids = pending_call_ids,
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
-                    max_duration_micros = max_duration,
+                    max_feed_duration_micros = max_feed_duration,
                     // filled in by an `AbortFeed`
                     aborted_with = Empty,
                 ));
@@ -348,11 +349,11 @@ impl Recorder {
             }
             Some(pb::child_event::Kind::Complete(c)) => {
                 let (value, cut) = attr_value(arena_nodes(c.values.as_ref()), NodeId(c.value));
-                self.record_complete(Some(value), cut, micros, max_duration);
+                self.record_complete(Some(value), cut, micros, max_feed_duration);
                 self.end_feed();
             }
             Some(pb::child_event::Kind::Error(e)) => {
-                record_error(e, micros, max_duration, &self.context_span());
+                record_error(e, micros, max_feed_duration, &self.context_span());
                 // an error reply to `Dump` leaves the feed suspended and
                 // resumable, so it closes only the dump span
                 if self.dump_turn {
@@ -369,7 +370,7 @@ impl Recorder {
                     diagnostics = diagnostics,
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
-                    max_duration_micros = max_duration,
+                    max_feed_duration_micros = max_feed_duration,
                 );
                 self.end_feed();
             }
@@ -378,8 +379,8 @@ impl Recorder {
                 if let Some(dump) = &self.turn {
                     dump.record("state_bytes", int_attr(d.state.len()));
                     dump.record("total_execution_micros", int_attr(micros));
-                    if let Some(max_duration) = max_duration {
-                        dump.record("max_duration_micros", int_attr(max_duration));
+                    if let Some(max_feed_duration) = max_feed_duration {
+                        dump.record("max_feed_duration_micros", int_attr(max_feed_duration));
                     }
                 }
                 self.turn = None;
@@ -394,7 +395,7 @@ impl Recorder {
                     "shutdown",
                     state_bytes = s.dump.as_ref().map(Vec::len),
                     total_execution_micros = micros,
-                    max_duration_micros = max_duration,
+                    max_feed_duration_micros = max_feed_duration,
                 );
             }
             // a bare acknowledgement ending a housekeeping turn; the turn
@@ -418,7 +419,7 @@ impl Recorder {
     ///
     /// A restored suspension has no feed span (its `Load` turn stands in for
     /// one), so its completion is recorded as an event instead.
-    fn record_complete(&mut self, value: Option<OtelValue>, cut: bool, micros: u64, max_duration: Option<u64>) {
+    fn record_complete(&mut self, value: Option<OtelValue>, cut: bool, micros: u64, max_feed_duration: Option<u64>) {
         // taking the span closes it here rather than in the `end_feed` the
         // caller runs next, which would close it a moment later anyway
         match self.feed.take() {
@@ -427,8 +428,9 @@ impl Recorder {
                     feed.record("output", &value, cut);
                 }
                 feed.span.record("total_execution_micros", int_attr(micros));
-                if let Some(max_duration) = max_duration {
-                    feed.span.record("max_duration_micros", int_attr(max_duration));
+                if let Some(max_feed_duration) = max_feed_duration {
+                    feed.span
+                        .record("max_feed_duration_micros", int_attr(max_feed_duration));
                 }
             }
             None => logfire::info!(
@@ -437,7 +439,7 @@ impl Recorder {
                 output = value,
                 length_limit_exceeded = cut.then_some(true),
                 total_execution_micros = micros,
-                max_duration_micros = max_duration,
+                max_feed_duration_micros = max_feed_duration,
             ),
         }
     }
@@ -641,7 +643,7 @@ fn render_call_ids(ids: &[u32]) -> (Option<String>, bool) {
 /// Each call shape gets its own macro invocation because the attribute set is
 /// baked into the span's `logfire.json_schema` at compile time — a union-shaped
 /// call would surface every unused argument as `null` in the UI.
-fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, parent: &Span) -> OpenSpan {
+fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64>, parent: &Span) -> OpenSpan {
     let call_id = os_call.call_id;
     // set by the arms whose arguments can be cut; recorded once below, so that
     // the answering `ResumeCall` can tell whether the flag is already there
@@ -656,7 +658,7 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, pa
                 $($($key).+ = $value,)*
                 call_id = call_id,
                 total_execution_micros = micros,
-                max_duration_micros = max_duration,
+                max_feed_duration_micros = max_feed_duration,
                 // filled in by the answering `ResumeCall`, or an `AbortFeed`
                 return_value = Empty,
                 aborted_with = Empty,
@@ -776,7 +778,7 @@ fn render_traceback(frames: &[pb::StackFrame]) -> (Option<String>, bool) {
 /// field of a structured payload as an `exc_data.*` attribute — including the
 /// offending input, the value being debugged. One macro invocation per payload
 /// shape, for the reason given in [`os_call_span`].
-fn record_error(error: &pb::Error, micros: u64, max_duration: Option<u64>, parent: &Span) {
+fn record_error(error: &pb::Error, micros: u64, max_feed_duration: Option<u64>, parent: &Span) {
     let exc = error.exception.as_ref();
     let (exc_type, exc_type_cut) = exc.map_or_else(
         || (MISSING.to_owned(), false),
@@ -799,7 +801,7 @@ fn record_error(error: &pb::Error, micros: u64, max_duration: Option<u64>, paren
                 $($($key).+ = $value,)*
                 length_limit_exceeded = ($cut).then_some(true),
                 total_execution_micros = micros,
-                max_duration_micros = max_duration,
+                max_feed_duration_micros = max_feed_duration,
             )
         };
     }
@@ -1030,7 +1032,6 @@ mod tests {
         pb::ChildEvent {
             kind: Some(kind),
             total_execution_micros: 42,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: None,
             feed_execution_micros: 0,
@@ -1167,7 +1168,6 @@ mod tests {
         recorder.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 42,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: Some("dumped.py".to_owned()),
             feed_execution_micros: 0,
@@ -1218,7 +1218,6 @@ mod tests {
         recorder.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 42,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: Some("restored.py".to_owned()),
             feed_execution_micros: 0,

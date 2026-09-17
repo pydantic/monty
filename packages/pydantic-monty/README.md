@@ -252,17 +252,16 @@ expose the same `feed_start` / `load_session` / `load_snapshot`, with awaitable
 Limits are enforced inside the worker; the pool's `request_timeout` is a
 host-side backstop that kills a hung worker outright. Installed telemetry
 invokes trusted Python SDK callbacks synchronously; enforcement is
-delayed while such a callback runs. `max_duration_secs`
-limits cumulative *execution* time — the clock runs only while the
-interpreter executes, never while suspended waiting on the host, and
-accumulates across feeds. `max_feed_duration_secs` and
-`max_turn_duration_secs` bound the same clock over a narrower scope, one
-`feed_run` and one host round trip, by restarting it at each feed and at each
-host answer. The worker reports its consumed time on every protocol turn, and
+delayed while such a callback runs. `max_feed_duration_secs` and
+`max_turn_duration_secs` limit *execution* time — the clock runs only while
+the interpreter executes, never while suspended waiting on the host — over one
+`feed_run` and one host round trip, restarting at each feed and at each host
+answer. Neither accumulates over a session's lifetime; bounding that is the
+host's job. The worker reports its consumed time on every protocol turn, and
 each budget is additionally backstopped by killing the worker a grace period
 after it expires, covering hangs the in-sandbox limit cannot catch (its check
 only runs at interpreter checkpoints). The graces are the pool's
-`duration_limit_grace`, `feed_limit_grace` and `turn_limit_grace` (1s each;
+`feed_limit_grace` and `turn_limit_grace` (1s each;
 `None` disables that backstop). `max_suspensions`
 limits the host round trips the pool services per checkout; exceeding it ends
 the feed with an uncatchable `RuntimeError`.
@@ -271,7 +270,7 @@ the feed with an uncatchable `RuntimeError`.
 from pydantic_monty import Monty, MontyRuntimeError
 
 with Monty(request_timeout=10) as pool:
-    with pool.checkout(limits={'max_duration_secs': 0.1}) as session:
+    with pool.checkout(limits={'max_feed_duration_secs': 0.1}) as session:
         try:
             session.feed_run('while True:\n    pass')
         except MontyRuntimeError as exc:

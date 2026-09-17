@@ -25,12 +25,14 @@ pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///
-/// Version 3 is not served: it carried values as recursive `MontyObject`
-/// trees, where this build carries one flat `Arena` per message. Version 4 is
-/// served: a parent that old cannot ask for `max_feed_duration` or
-/// `max_turn_duration`. It is the version 4 *child* that has to be refused —
-/// hence the bump above — since it would accept those limits and ignore them.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 4;
+/// Version 4 and below are not served. Version 3 carried values as recursive
+/// `MontyObject` trees, where this build carries one flat `Arena` per message.
+/// Version 4 both lacked `max_feed_duration`/`max_turn_duration` and had the
+/// per-session `max_duration` this build dropped: a version 4 parent would
+/// send a budget nothing enforces, and a version 4 child would accept the new
+/// budgets and ignore them. Neither side can be told apart from a working one,
+/// so both are refused.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 5;
 
 /// How long the child holds buffered `print()` output before emitting it as a
 /// `Print` event, when [`pb::Configure::print_flush_interval_ms`] says nothing.

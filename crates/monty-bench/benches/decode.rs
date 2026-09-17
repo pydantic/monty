@@ -41,7 +41,6 @@ fn decode_benchmark(c: &mut Criterion) {
 fn complete_frame(value: MontyObject) -> Vec<u8> {
     let event = pb::ChildEvent {
         total_execution_micros: 0,
-        max_duration_micros: None,
         max_suspensions: None,
         restored_script_name: None,
         feed_execution_micros: 0,

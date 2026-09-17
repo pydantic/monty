@@ -16,7 +16,6 @@ use crate::pb;
 impl From<&ResourceLimits> for pb::ResourceLimits {
     fn from(limits: &ResourceLimits) -> Self {
         Self {
-            max_duration_micros: micros_field(limits.max_duration),
             max_feed_duration_micros: micros_field(limits.max_feed_duration),
             max_turn_duration_micros: micros_field(limits.max_turn_duration),
             max_memory_bytes: limits.max_memory.map(|v| v as u64),
@@ -30,7 +29,6 @@ impl From<&ResourceLimits> for pb::ResourceLimits {
 impl From<pb::ResourceLimits> for ResourceLimits {
     fn from(limits: pb::ResourceLimits) -> Self {
         Self {
-            max_duration: limits.max_duration_micros.map(Duration::from_micros),
             max_feed_duration: limits.max_feed_duration_micros.map(Duration::from_micros),
             max_turn_duration: limits.max_turn_duration_micros.map(Duration::from_micros),
             max_memory: usize_field(limits.max_memory_bytes),

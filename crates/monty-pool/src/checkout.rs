@@ -397,17 +397,13 @@ pub struct Checkout {
 /// never loosens what this checkout was configured with.
 #[derive(Clone, Copy)]
 struct SessionBudget {
-    /// The session's `max_duration`, when configured.
-    duration_budget: Option<Duration>,
     /// The session's `max_feed_duration`, when configured.
     feed_budget: Option<Duration>,
     /// The session's `max_turn_duration`, when configured.
     turn_budget: Option<Duration>,
-    /// Monotonic worker-reported sandbox time, preventing a compromised worker
-    /// from rewinding the parent's view.
-    reported_execution: Duration,
-    /// Worker-reported sandbox time consumed by the feed in progress,
-    /// ratcheted like `reported_execution`. The legitimate drop to zero is
+    /// Worker-reported sandbox time consumed by the feed in progress, and
+    /// monotonic, so a compromised worker cannot rewind the parent's view of
+    /// how much of the feed budget is spent. The legitimate drop to zero is
     /// [`begin_feed`](Self::begin_feed), driven by the `Feed` request going
     /// out, so a worker reporting less than it did mid-feed cannot loosen its
     /// own feed backstop.
@@ -424,10 +420,8 @@ impl SessionBudget {
     fn from_config(repl: &ReplConfig) -> Self {
         let limits = repl.limits.as_ref();
         Self {
-            duration_budget: limits.and_then(|limits| limits.max_duration),
             feed_budget: limits.and_then(|limits| limits.max_feed_duration),
             turn_budget: limits.and_then(|limits| limits.max_turn_duration),
-            reported_execution: Duration::ZERO,
             reported_feed_execution: Duration::ZERO,
             suspension_limit: limits.map_or(DEFAULT_MAX_SUSPENSIONS as u64, |limits| limits.max_suspensions as u64),
             suspensions_seen: 0,
@@ -438,10 +432,8 @@ impl SessionBudget {
     /// suspension limit stays: it is the ceiling on the dump's.
     fn forget(&mut self) {
         *self = Self {
-            duration_budget: None,
             feed_budget: None,
             turn_budget: None,
-            reported_execution: Duration::ZERO,
             reported_feed_execution: Duration::ZERO,
             suspension_limit: self.suspension_limit,
             suspensions_seen: 0,
@@ -455,15 +447,9 @@ impl SessionBudget {
     /// ordinary reply echoes it; a `Load` reply carries the dump's). Suspension
     /// events increment the parent-owned count.
     fn update_from(&mut self, event: &pb::ChildEvent) {
-        self.reported_execution = self
-            .reported_execution
-            .max(Duration::from_micros(event.total_execution_micros));
         self.reported_feed_execution = self
             .reported_feed_execution
             .max(Duration::from_micros(event.feed_execution_micros));
-        if self.duration_budget.is_none() {
-            self.duration_budget = event.max_duration_micros.map(Duration::from_micros);
-        }
         if self.feed_budget.is_none() {
             self.feed_budget = event.max_feed_duration_micros.map(Duration::from_micros);
         }
@@ -489,17 +475,16 @@ impl SessionBudget {
         (is_suspension(event) && self.suspensions_seen > self.suspension_limit).then_some(self.suspension_limit)
     }
 
-    /// Returns the tightest of the three duration backstops: what each
-    /// configured budget has left, plus that budget's grace. The turn budget
-    /// has all of its limit left, since the child resets that clock on the
-    /// request being sent.
+    /// Returns the tighter of the two duration backstops: what each configured
+    /// budget has left, plus that budget's grace. The turn budget has all of
+    /// its limit left, since the child resets that clock on the request being
+    /// sent.
     ///
     /// The child normally raises `TimeoutError` inside the grace; this catches
     /// one that stops checking its clock. A `None` grace means no backstop —
     /// the host would rather wait than lose the worker.
     fn backstop_deadline(&self, graces: DurationGraces) -> Option<Duration> {
         [
-            remaining_deadline(self.duration_budget, self.reported_execution, graces.session),
             remaining_deadline(self.feed_budget, self.reported_feed_execution, graces.feed),
             remaining_deadline(self.turn_budget, Duration::ZERO, graces.turn),
         ]
@@ -509,22 +494,20 @@ impl SessionBudget {
     }
 }
 
-/// The grace period configured for each of the three duration backstops.
+/// The grace period configured for each of the two duration backstops.
 ///
 /// Bundled so [`SessionBudget::backstop_deadline`] takes one argument rather
-/// than three same-typed `Option<Duration>`s in an order nothing enforces.
+/// than two same-typed `Option<Duration>`s in an order nothing enforces.
 #[derive(Clone, Copy)]
 struct DurationGraces {
-    session: Option<Duration>,
     feed: Option<Duration>,
     turn: Option<Duration>,
 }
 
 impl DurationGraces {
-    /// Reads the three graces off a pool config.
+    /// Reads both graces off a pool config.
     fn from_config(config: &PoolConfig) -> Self {
         Self {
-            session: config.duration_limit_grace,
             feed: config.feed_limit_grace,
             turn: config.turn_limit_grace,
         }
@@ -1224,7 +1207,7 @@ impl Checkout {
     ///
     /// # Errors
     /// As [`Checkout::feed`]: a dead worker, a protocol violation, or a turn
-    /// that outlived `request_timeout` or the remaining `max_duration` budget.
+    /// that outlived `request_timeout` or the remaining feed/turn budget.
     pub async fn turn_raw(
         &mut self,
         request: &pb::ParentRequest,
@@ -1259,8 +1242,8 @@ impl Checkout {
             self.budget.begin_feed();
         }
         self.turn_in_flight = true;
-        // as `expect_turn`: `request_timeout` alone would drop the `max_duration`
-        // backstop, leaving a wedged child bounded by a timeout that may be unset
+        // as `expect_turn`: `request_timeout` alone would drop the duration
+        // backstops, leaving a wedged child bounded by a timeout that may be unset
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
         self.armed_deadline = deadline;
         let outcome = match deadline {

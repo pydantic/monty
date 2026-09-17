@@ -65,15 +65,11 @@ pub(crate) struct Cli {
     #[arg(long)]
     cwd: Option<String>,
 
-    /// Maximum execution time in seconds (e.g. `0.5` for 500ms).
-    #[arg(long)]
-    max_duration: Option<f64>,
-
-    /// Maximum execution time for a single feed, in seconds.
+    /// Maximum execution time for a single feed, in seconds (e.g. `0.5` for
+    /// 500ms).
     ///
     /// Only the REPL feeds more than once — `monty` with no file, or
-    /// `--interactive`; elsewhere this bounds the one run, like
-    /// `--max-duration`.
+    /// `--interactive`; elsewhere this bounds the one run.
     #[arg(long)]
     max_feed_duration: Option<f64>,
 
@@ -148,11 +144,10 @@ impl Cli {
     /// Whether any resource-limit flag was *supplied* (regardless of whether its
     /// value is valid). Used for the `subprocess` conflict check: we must not go
     /// through `resource_limits()` there, because its parse errors (e.g. a
-    /// `--max-duration` that fails `std::time::Duration::try_from_secs_f64`) would be
+    /// `--max-feed-duration` that fails `std::time::Duration::try_from_secs_f64`) would be
     /// swallowed and let an invalid flag slip past the conflict guard.
     fn any_resource_limit_flag(&self) -> bool {
-        self.max_duration.is_some()
-            || self.max_feed_duration.is_some()
+        self.max_feed_duration.is_some()
             || self.max_turn_duration.is_some()
             || self.max_memory.is_some()
             || self.gc_interval.is_some()
@@ -168,9 +163,6 @@ impl Cli {
     #[cfg(feature = "standalone")]
     fn resource_limits(&self) -> Result<monty_types::ResourceLimits, String> {
         let mut limits = monty_types::ResourceLimits::default();
-        if let Some(secs) = self.max_duration {
-            limits = limits.max_duration(duration_flag(secs, "--max-duration")?);
-        }
         if let Some(secs) = self.max_feed_duration {
             limits = limits.max_feed_duration(duration_flag(secs, "--max-feed-duration")?);
         }

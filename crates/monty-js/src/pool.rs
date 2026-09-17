@@ -102,9 +102,6 @@ pub struct NativePoolOptions {
     pub checkout_timeout_ms: Option<f64>,
     /// Parent-side hard deadline per protocol turn (ms).
     pub request_timeout_ms: Option<f64>,
-    /// Grace for the automatic `maxDurationSecs` backstop (ms). Absent:
-    /// backstop disabled.
-    pub duration_limit_grace_ms: Option<f64>,
     /// Grace for the automatic `maxFeedDurationSecs` backstop (ms). Absent:
     /// backstop disabled.
     pub feed_limit_grace_ms: Option<f64>,
@@ -223,10 +220,6 @@ impl NativePool {
         config.request_timeout = options
             .request_timeout_ms
             .map(|ms| duration_from_ms("requestTimeout", ms))
-            .transpose()?;
-        config.duration_limit_grace = options
-            .duration_limit_grace_ms
-            .map(|ms| duration_from_ms("durationLimitGrace", ms))
             .transpose()?;
         config.feed_limit_grace = options
             .feed_limit_grace_ms

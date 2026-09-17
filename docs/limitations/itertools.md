@@ -86,8 +86,8 @@ objects except `tee`, which is a plain function — so `isinstance(x, count)`,
 - **`groupby` never releases its source.** This matches CPython, but note that
     the [resource limits](resource_limits.md) apply to the skip between groups:
     a source whose key never changes (`groupby(repeat(1))`) makes the second
-    `next()` scan forever, and is stopped by `max_duration` rather than running
-    to completion.
+    `next()` scan forever, and is stopped by a duration limit rather than
+    running to completion.
 - **The combinatoric iterators collect their input at construction.** CPython
     does the same (its `pool` is a tuple built by `PySequence_Tuple`), so
     `combinations`, `combinations_with_replacement`, `permutations` and
@@ -157,18 +157,18 @@ runs until the host itself runs out of memory. This is the same exposure as a
 The adaptors that discard items without yielding — `dropwhile` and
 `filterfalse` before their first accepted item, `compress` past a falsy run,
 `islice` skipping to `start`, `chain` crossing an exhausted source — poll
-`max_duration` themselves while looping, so a discarding pass over an infinite
-source raises `TimeoutError` instead of spinning. The poll is amortized (once
+the duration limits themselves while looping, so a discarding pass over an
+infinite source raises `TimeoutError` instead of spinning. The poll is amortized (once
 per 64 items), so the limit can be overshot by up to that much work. CPython
 has no duration limit at all and would loop forever.
 
 `batched(iterable, n)` fills a whole batch inside one `next()`, so a large `n`
-over a long source is the same kind of non-yielding loop and polls
-`max_duration` the same way. It also preflights one batch against `max_memory`
+over a long source is the same kind of non-yielding loop and polls the
+duration limits the same way. It also preflights one batch against `max_memory`
 from the source's size hint, capped at `n` — an exact-hint source
 (`batched(range(10**9), 10**9)`) therefore raises `MemoryError` up front rather
 than while filling. A source with no size hint gets no preflight, so the fill
-loop polls `max_memory` as well as `max_duration` on the same amortized
+loop polls `max_memory` as well as the duration limits on the same amortized
 cadence — `batched(count(), 10**9)` raises `MemoryError` while filling.
 
 `cycle(iterable)` must buffer every item it has seen so far in order to replay

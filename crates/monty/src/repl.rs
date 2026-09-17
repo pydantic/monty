@@ -659,8 +659,8 @@ impl ReplProgress {
     /// Returns the session's resource tracker, whatever the progress state.
     ///
     /// Lets hosts read resource accounting — e.g. cumulative execution time
-    /// for `max_duration` budgeting — at any suspension point without
-    /// consuming the progress.
+    /// to report as telemetry — at any suspension point without consuming the
+    /// progress.
     pub fn tracker(&self) -> &ResourceTracker {
         match self {
             Self::FunctionCall(call) => call.snapshot.repl.tracker(),

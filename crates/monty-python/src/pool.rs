@@ -123,7 +123,6 @@ impl PyMonty {
         checkout_timeout = None,
         request_timeout = None,
         max_checkouts_per_worker = None,
-        duration_limit_grace = 1.0,
         feed_limit_grace = 1.0,
         turn_limit_grace = 1.0,
     ))]
@@ -136,7 +135,6 @@ impl PyMonty {
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
         max_checkouts_per_worker: Option<u32>,
-        duration_limit_grace: Option<f64>,
         feed_limit_grace: Option<f64>,
         turn_limit_grace: Option<f64>,
     ) -> PyResult<Self> {
@@ -150,7 +148,6 @@ impl PyMonty {
                 request_timeout,
                 max_checkouts_per_worker,
                 GraceArgs {
-                    session: duration_limit_grace,
                     feed: feed_limit_grace,
                     turn: turn_limit_grace,
                 },
@@ -511,7 +508,6 @@ impl PyAsyncMonty {
         checkout_timeout = None,
         request_timeout = None,
         max_checkouts_per_worker = None,
-        duration_limit_grace = 1.0,
         feed_limit_grace = 1.0,
         turn_limit_grace = 1.0,
     ))]
@@ -524,7 +520,6 @@ impl PyAsyncMonty {
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
         max_checkouts_per_worker: Option<u32>,
-        duration_limit_grace: Option<f64>,
         feed_limit_grace: Option<f64>,
         turn_limit_grace: Option<f64>,
     ) -> PyResult<Self> {
@@ -538,7 +533,6 @@ impl PyAsyncMonty {
                 request_timeout,
                 max_checkouts_per_worker,
                 GraceArgs {
-                    session: duration_limit_grace,
                     feed: feed_limit_grace,
                     turn: turn_limit_grace,
                 },
@@ -661,7 +655,6 @@ impl PyAsyncMontyWebsocket {
         checkout_timeout = None,
         request_timeout = 10.0,
         connect_headers = None,
-        duration_limit_grace = 1.0,
         feed_limit_grace = 1.0,
         turn_limit_grace = 1.0,
     ))]
@@ -673,7 +666,6 @@ impl PyAsyncMontyWebsocket {
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
         connect_headers: Option<Py<PyAny>>,
-        duration_limit_grace: Option<f64>,
         feed_limit_grace: Option<f64>,
         turn_limit_grace: Option<f64>,
     ) -> PyResult<Self> {
@@ -685,7 +677,6 @@ impl PyAsyncMontyWebsocket {
                 checkout_timeout,
                 request_timeout,
                 GraceArgs {
-                    session: duration_limit_grace,
                     feed: feed_limit_grace,
                     turn: turn_limit_grace,
                 },
@@ -1192,21 +1183,19 @@ const _: () = assert!(
     "the pool's default duration grace changed: update the `1.0` literals in the constructor signatures"
 );
 
-/// The three duration-backstop graces as a pool constructor takes them, in
+/// Both duration-backstop graces as a pool constructor takes them, in
 /// seconds. `None` means that limit is not backstopped at all, rather than
 /// "unspecified" — hence the constructors' real-number defaults.
 struct GraceArgs {
-    session: Option<f64>,
     feed: Option<f64>,
     turn: Option<f64>,
 }
 
 impl GraceArgs {
-    /// Writes the three graces onto `config`, rejecting a value that is not a
+    /// Writes both graces onto `config`, rejecting a value that is not a
     /// valid duration.
     fn apply(self, config: &mut PoolConfig) -> PyResult<()> {
         for (secs, name, slot) in [
-            (self.session, "duration_limit_grace", &mut config.duration_limit_grace),
             (self.feed, "feed_limit_grace", &mut config.feed_limit_grace),
             (self.turn, "turn_limit_grace", &mut config.turn_limit_grace),
         ] {

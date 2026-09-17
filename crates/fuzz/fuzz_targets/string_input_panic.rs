@@ -18,7 +18,7 @@ fn fuzz_limits() -> ResourceTracker {
     ResourceTracker::new(
         ResourceLimits::default()
             .max_memory(1024 * 1024) // 1 MB
-            .max_duration(Duration::from_millis(100)),
+            .max_feed_duration(Duration::from_millis(100)),
     )
 }
 

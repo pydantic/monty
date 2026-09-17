@@ -304,7 +304,6 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
     pb::Configure {
         script_name: request.script_name,
         limits: request.limits.map(|limits| pb::ResourceLimits {
-            max_duration_micros: limits.max_duration_micros,
             max_feed_duration_micros: limits.max_feed_duration_micros,
             max_turn_duration_micros: limits.max_turn_duration_micros,
             max_memory_bytes: limits.max_memory_bytes,

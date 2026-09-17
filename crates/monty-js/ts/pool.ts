@@ -28,29 +28,23 @@ export interface MontyOptions {
    * Hard per-turn deadline in seconds: a worker that does not answer a
    * protocol request in time is killed and the session fails with
    * `MontyCrashedError` (`timedOut: true`). Off by default — prefer the
-   * in-sandbox `maxDurationSecs` limit; this is the backstop for code that
+   * in-sandbox `maxFeedDurationSecs` limit; this is the backstop for code that
    * wedges the interpreter itself.
    */
   requestTimeout?: number
   /**
-   * Grace period in seconds for the automatic `maxDurationSecs` backstop
-   * (default 1, `null` disables). For sessions with a `maxDurationSecs`
-   * limit, the worker reports cumulative execution time each turn (the
+   * Grace period in seconds for the automatic `maxFeedDurationSecs` backstop
+   * (default 1, `null` disables). For sessions with a `maxFeedDurationSecs`
+   * limit, the worker reports the running feed's execution time each turn (the
    * sandbox clock runs only while the interpreter executes, never while
    * suspended on the host) and the host kills the worker this long after the
    * budget expires — covering cases the in-sandbox limit cannot catch (its
    * check only runs at interpreter checkpoints). Surfaces as `MontyCrashedError`
    * (`timedOut: true`), losing the session. `requestTimeout` is independent.
    */
-  durationLimitGrace?: number | null
-  /**
-   * As `durationLimitGrace`, but for `maxFeedDurationSecs`: the host kills the
-   * worker this long after the running feed's budget expires (default 1,
-   * `null` disables).
-   */
   feedLimitGrace?: number | null
   /**
-   * As `durationLimitGrace`, but for `maxTurnDurationSecs`: the host kills the
+   * As `feedLimitGrace`, but for `maxTurnDurationSecs`: the host kills the
    * worker this long after the current turn's budget expires (default 1,
    * `null` disables).
    */
@@ -110,14 +104,12 @@ export interface CheckoutOptions {
  * The pool counts `maxSuspensions` per checkout and aborts an over-budget
  * feed with an uncatchable `RuntimeError`.
  *
- * The three duration limits share one clock, which runs only while sandboxed
+ * Both duration limits share one clock, which runs only while sandboxed
  * code executes, never while suspended on the host; they differ in when it
- * restarts: never, at each feed, at each host round trip. Exceeding any
- * raises `TimeoutError` in the sandbox.
+ * restarts: at each feed, at each host round trip. Exceeding either raises
+ * `TimeoutError` in the sandbox.
  */
 export interface ResourceLimits {
-  /** Maximum execution time for the whole session. */
-  maxDurationSecs?: number
   /** Maximum execution time for a single feed (`feedRun` or `feedStart`). */
   maxFeedDurationSecs?: number
   /** Maximum execution time between host round trips. */
@@ -156,7 +148,6 @@ export class Monty {
       ...(options.checkoutTimeout !== undefined ? { checkoutTimeoutMs: options.checkoutTimeout * 1000 } : {}),
       ...(options.requestTimeout !== undefined ? { requestTimeoutMs: options.requestTimeout * 1000 } : {}),
       // `null` disables a backstop; omitted means the 1s default
-      ...graceMs('durationLimitGraceMs', options.durationLimitGrace),
       ...graceMs('feedLimitGraceMs', options.feedLimitGrace),
       ...graceMs('turnLimitGraceMs', options.turnLimitGrace),
       ...(options.maxCheckoutsPerWorker !== undefined ? { maxCheckoutsPerWorker: options.maxCheckoutsPerWorker } : {}),

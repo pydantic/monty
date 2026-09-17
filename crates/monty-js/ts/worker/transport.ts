@@ -47,7 +47,6 @@ function flushIntervalMs(interval: number): number {
 
 /** Resource limits mirrored from the napi pool; the transport enforces `maxSuspensions`. */
 export interface ResourceLimits {
-  maxDurationSecs?: number
   maxFeedDurationSecs?: number
   maxTurnDurationSecs?: number
   maxMemory?: number
@@ -417,7 +416,6 @@ function componentTypeCheckFormat(format: TypeCheckFormat): ComponentTypeCheckFo
 /** Converts JavaScript-facing limits to canonical WIT integer fields. */
 function encodeLimits(limits: ResourceLimits): ComponentResourceLimits {
   return {
-    ...micros('maxDurationMicros', 'maxDurationSecs', limits.maxDurationSecs),
     ...micros('maxFeedDurationMicros', 'maxFeedDurationSecs', limits.maxFeedDurationSecs),
     ...micros('maxTurnDurationMicros', 'maxTurnDurationSecs', limits.maxTurnDurationSecs),
     ...(limits.maxMemory === undefined ? {} : { maxMemoryBytes: BigInt(limits.maxMemory) }),

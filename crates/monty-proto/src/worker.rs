@@ -942,7 +942,6 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
 fn stamp_budget(event: &mut pb::ChildEvent, tracker: &ResourceTracker) {
     event.total_execution_micros = u64::try_from(tracker.elapsed().as_micros()).unwrap_or(u64::MAX);
     event.feed_execution_micros = u64::try_from(tracker.feed_elapsed().as_micros()).unwrap_or(u64::MAX);
-    event.max_duration_micros = micros_field(tracker.max_duration());
     event.max_feed_duration_micros = micros_field(tracker.max_feed_duration());
     event.max_turn_duration_micros = micros_field(tracker.max_turn_duration());
     event.max_suspensions = Some(tracker.max_suspensions() as u64);

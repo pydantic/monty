@@ -18,8 +18,6 @@ use napi_derive::napi;
 #[napi(object, js_name = "ResourceLimits")]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JsResourceLimits {
-    /// Maximum execution time for the whole session, in seconds.
-    pub max_duration_secs: Option<f64>,
     /// Maximum execution time for a single feed, in seconds.
     pub max_feed_duration_secs: Option<f64>,
     /// Maximum execution time for a single host turn, in seconds.
@@ -53,9 +51,6 @@ pub fn extract_limits(js_limits: JsResourceLimits) -> Result<ResourceLimits> {
         limits = limits.max_recursion_depth(max_recursion_depth);
     }
 
-    if let Some(secs) = js_limits.max_duration_secs {
-        limits = limits.max_duration(js_number_to_duration(secs)?);
-    }
     if let Some(secs) = js_limits.max_feed_duration_secs {
         limits = limits.max_feed_duration(js_number_to_duration(secs)?);
     }
