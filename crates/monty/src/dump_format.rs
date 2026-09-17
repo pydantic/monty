@@ -23,11 +23,14 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 
 /// Version of the dump's postcard schema.
 ///
-/// Bump this whenever a serialized discriminant can shift, so older dumps are
+/// Bump this for every release where a serialized discriminant can shift, so older dumps are
 /// rejected instead of decoding as their neighbour. That covers the
 /// interpreter's own types *and* everything reachable from [`Dump`] — notably
 /// [`TypeCheckingConfig`](monty_types::TypeCheckingConfig) in `monty-types`.
-pub const DUMP_VERSION: u16 = 12;
+///
+/// Before bumping, check there's already been a bump since the last release - multiple bumps
+/// between releases is unnecessary and can lead to confusion.
+pub const DUMP_VERSION: u16 = 11;
 
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();

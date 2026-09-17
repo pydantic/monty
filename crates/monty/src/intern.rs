@@ -1635,7 +1635,8 @@ pub enum StaticStrings {
     /// `__class_getitem__`, the classmethod behind `list[int]`.
     #[strum(serialize = "__class_getitem__")]
     ClassGetitem,
-    // ===================    // Batch-four itertools module strings: the combinatoric iterators,
+    // ==========================
+    // Batch-four itertools module strings: the combinatoric iterators,
     // `groupby` and `chain.from_iterable`. Appended for the same reason as
     // every block above.
     /// `itertools.combinations()` function.
