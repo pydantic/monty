@@ -1,0 +1,51 @@
+crates/monty-python/tests/test_async.py
+  s_9d51507fa6603c::t_0a843cad3a23df 1198,1202,1204
+crates/monty-python/src/snapshot.rs
+  s_9d51507fa6603c::t_cd5a8c7b69daaf 53,822-824,855,866-867,870-876,879
+  s_9d51507fa6603c::t_b4beb5cc5c49c6 835-836,838,845-849,852
+  s_9d51507fa6603c::t_35fd10c131b8f1 878
+crates/monty-types/src/os.rs
+  s_9d51507fa6603c::t_b4beb5cc5c49c6 140-142,147-148
+crates/monty-python/src/pool.rs
+  s_9d51507fa6603c::t_b4beb5cc5c49c6 1584-1588,1591-1592,1655-1656,1660,1685-1693,1695
+  s_9d51507fa6603c::t_35fd10c131b8f1 1694
+  s_9d51507fa6603c::t_cd5a8c7b69daaf 65
+  s_9d51507fa6603c::t_4f86f0b520876e 1589
+crates/monty-python/src/async_dispatch.rs
+  s_9d51507fa6603c::t_35fd10c131b8f1 37-38,41-43,45-46,48-51,67,88,125-126
+  s_9d51507fa6603c::t_b4beb5cc5c49c6 6,10,15-16
+  s_9d51507fa6603c::t_5be9e19fd0d7c5 39-40,44,47,54-66,68-74,76-87,89,92-93,119-120,123
+crates/monty-wasm-runtime/src/lib.rs
+  s_9d51507fa6603c::t_b4beb5cc5c49c6 16,212
+crates/monty-js/__test__/async.spec.ts
+  s_9d51507fa6603c::t_740b209baa8c4b 10
+crates/monty-js/ts/session.ts
+  s_9d51507fa6603c::t_db6e05bb3e1a41 33-43
+  s_9d51507fa6603c::t_3b90942f069cd5 568-570,610-612,680,682-683,696-710
+  s_9d51507fa6603c::t_da7b538685df27 679
+crates/monty-js/ts/worker/transport.ts
+  s_9d51507fa6603c::t_db6e05bb3e1a41 8
+crates/monty-pool/src/checkout.rs
+  s_9d51507fa6603c::t_aa8dc293a84ff8 250-251
+  s_9d51507fa6603c::t_b4beb5cc5c49c6 1373
+crates/monty/src/run_progress.rs
+  s_9d51507fa6603c::t_b4beb5cc5c49c6 1028
+crates/monty-js/ts/native.ts
+  s_9d51507fa6603c::t_3b075f7148ba70 70,75-76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1e7120560f9cab46a32110550d331a94b9c57538",
+  "prompts": {},
+  "sessions": {
+    "s_9d51507fa6603c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c472e27-66a3-419f-98da-c107d9084ab7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
