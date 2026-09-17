@@ -1013,9 +1013,36 @@ fn merge_ids(
     }
 }
 
+/// Bytes charged per reference to a node. A host binding turns each reference
+/// into a pointer-sized container entry, often through a temporary vector, so
+/// the 4-byte [`NodeId`] alone would let a list of repeated references
+/// materialise at several times the budget.
+const REFERENCE_COST: usize = 2 * size_of::<usize>();
+
+/// What one vector slot costs the decode budget.
+trait DecodeCost {
+    const COST: usize;
+}
+
+impl DecodeCost for MontyNode {
+    const COST: usize = size_of::<Self>();
+}
+
+impl DecodeCost for String {
+    const COST: usize = size_of::<Self>();
+}
+
+impl DecodeCost for NodeId {
+    const COST: usize = REFERENCE_COST;
+}
+
+impl DecodeCost for (NodeId, NodeId) {
+    const COST: usize = 2 * REFERENCE_COST;
+}
+
 /// Appends `item`, charging the decode budget for the slots the vector grows
 /// into (doubling, as `Vec` does) before it allocates them.
-fn push_charged<T>(vec: &mut Vec<T>, item: T) -> Result<(), DecodeError> {
+fn push_charged<T: DecodeCost>(vec: &mut Vec<T>, item: T) -> Result<(), DecodeError> {
     if vec.len() == vec.capacity() {
         let new_capacity = vec.capacity().saturating_mul(2).max(MIN_VEC_CAPACITY);
         reserve_charged(vec, new_capacity - vec.len())?;
@@ -1025,10 +1052,10 @@ fn push_charged<T>(vec: &mut Vec<T>, item: T) -> Result<(), DecodeError> {
 }
 
 /// Reserves room for `additional` more items, charging the slots the vector gains.
-fn reserve_charged<T>(vec: &mut Vec<T>, additional: usize) -> Result<(), DecodeError> {
+fn reserve_charged<T: DecodeCost>(vec: &mut Vec<T>, additional: usize) -> Result<(), DecodeError> {
     let spare = vec.capacity() - vec.len();
     if additional > spare {
-        charge_decode((additional - spare).saturating_mul(size_of::<T>()))?;
+        charge_decode((additional - spare).saturating_mul(T::COST))?;
         vec.reserve_exact(additional);
     }
     Ok(())

@@ -72,10 +72,10 @@ fn named_tuple_node(names: usize) -> Vec<u8> {
     [vec![0x12, byte(kind.len())], kind].concat()
 }
 
-/// An arena that fills the budget to within one node's slot: `full` `None`
-/// entries, the last replaced by `last` when given.
+/// An arena that fills the budget to within two node slots, room for 8
+/// references: `full` `None` entries, the last replaced by `last` when given.
 fn nearly_full_arena(last: Option<Vec<u8>>) -> Vec<u8> {
-    let full = DEFAULT_MAX_DECODE_BYTES / size_of::<MontyNode>();
+    let full = DEFAULT_MAX_DECODE_BYTES / size_of::<MontyNode>() - 1;
     let mut bytes = vec![0x08];
     encode_varint(u64::try_from(full).unwrap(), &mut bytes);
     bytes.extend(NONE_NODE.repeat(full - usize::from(last.is_some())));
@@ -145,15 +145,18 @@ fn keyword_pairs_are_charged() {
 }
 
 /// A container's child ids are charged while its node decodes, before it is
-/// pushed, so one huge list cannot be built past the budget.
+/// pushed, so one huge list cannot be built past the budget. Each id costs two
+/// pointers, not its 4 bytes: 16 ids are 64 bytes of `NodeId` but do not fit.
 #[test]
 fn container_ids_are_charged() {
     let nodes = decode(&nearly_full_arena(Some(list_node(8)))).expect("a short list still fits");
     assert_eq!(nodes.last(), Some(&MontyNode::List(vec![NodeId(0); 8])));
-    assert_eq!(
-        decode(&nearly_full_arena(Some(list_node(64)))).unwrap_err(),
-        OVER_BUDGET
-    );
+    for ids in [16, 64] {
+        assert_eq!(
+            decode(&nearly_full_arena(Some(list_node(ids)))).unwrap_err(),
+            OVER_BUDGET
+        );
+    }
 }
 
 /// A namedtuple's field names cost a `String` slot each, charged as they arrive.

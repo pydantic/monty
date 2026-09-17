@@ -36,7 +36,8 @@ pub const MAX_FRAME_LEN: u32 = 256 * 1024 * 1024;
 /// The budget bounds bytes *resident* at once. `WireArena` charges every vector
 /// before it grows (the arena's slots from the sender's `node_count` hint,
 /// capped by the message size, then doubling; each container's child ids; a
-/// call's argument ids) and each leaf's payload once parsed. A leaf is at most
+/// call's argument ids) and each leaf's payload once parsed. A child id is
+/// charged as two pointers, what a host binding spends materialising it. A leaf is at most
 /// its own wire bytes, so the only uncharged transient is one leaf of at most
 /// one frame's size. A sub-object referenced twice is one node, so sharing does
 /// not amplify. Host *peak* is therefore ~1× the budget plus the ≤256 MiB frame
