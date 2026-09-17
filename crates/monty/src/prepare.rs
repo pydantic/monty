@@ -1710,6 +1710,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
             signature,
             body: prepared_body,
             namespace_size,
+            free_var_names: free_var_slots
+                .iter()
+                .map(|slot| inner_locals.names()[slot.index()])
+                .collect(),
             free_var_enclosing_slots,
             free_var_slots,
             cell_var_slots,
@@ -1860,6 +1864,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
             signature: Signature::default(),
             body: prepared_body,
             namespace_size,
+            free_var_names: free_var_slots
+                .iter()
+                .map(|slot| inner_locals.names()[slot.index()])
+                .collect(),
             free_var_enclosing_slots,
             free_var_slots,
             cell_var_slots,
@@ -2020,6 +2028,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
             signature,
             body: prepared_body,
             namespace_size,
+            free_var_names: free_var_slots
+                .iter()
+                .map(|slot| inner_locals.names()[slot.index()])
+                .collect(),
             free_var_enclosing_slots,
             free_var_slots,
             cell_var_slots,

@@ -20,11 +20,12 @@ The snippet can call host functions and raise into the caller; top-level `await`
 ## Namespace divergences
 
 - **`__builtins__` is never inserted into a `globals` dict.** `exec('x = 1', ns)` leaves `ns == {'x': 1}`, where
-    CPython adds a `'__builtins__'` entry, and a snippet that reads `__builtins__` raises `NameError`.
+    CPython adds a `'__builtins__'` entry; reading it in Monty raises `NameError` unless it was explicitly supplied or assigned.
 - **Module dunders under a `globals` dict raise `NameError`** unless the dict defines them.
     CPython resolves them through the `builtins` module, so `exec('print(__name__)', {})` prints `builtins`.
-    Without a `globals` dict the snippet reads the [module-level dunders](language.md#module-level-dunder-variables) as
-    compiled code does.
+    Without a `globals` dict the snippet uses Monty's read-only [module-level dunders](language.md#module-level-dunder-variables),
+    so assigning to them, including through a `global` declaration, raises `NotImplementedError`.
+    This restriction does not apply to explicit globals dictionaries.
 - **A host-served name first read inside a snippet is cached as a module global**, as for any other read of an undefined
     global; see [name lookups](../host-functions.md).
     A snippet run under a `globals` dict never asks the host: only the dict and the builtins are consulted, which is what

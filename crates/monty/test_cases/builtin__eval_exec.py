@@ -224,6 +224,69 @@ exec('r = locals()', g2, l2)
 assert l2['r'] is l2
 assert eval('locals()', {'p': 1})['p'] == 1
 
+
+# === Captures passed through to nested closures are still function locals ===
+def passthrough_locals():
+    first, second = 41, 1
+
+    def middle():
+        assert sorted(locals()) == ['first', 'second']
+
+        def inner():
+            return first + second
+
+        assert eval('first + second') == 42
+        seen = []
+        exec('seen.append(first + second)')
+        assert seen == [42]
+        snapshot = locals()
+        snapshot['first'] = 0
+        return inner()
+
+    return middle()
+
+
+assert passthrough_locals() == 42
+
+
+def passthrough_lambda():
+    value = 7
+    middle = lambda: (locals()['value'], lambda: value)
+    return middle()
+
+
+captured, inner = passthrough_lambda()
+assert captured == 7
+assert inner() == 7
+
+
+def nonlocal_locals():
+    value = 3
+
+    def inner():
+        nonlocal value
+        return locals()['value']
+
+    return inner()
+
+
+assert nonlocal_locals() == 3
+
+
+def unbound_passthrough():
+    def middle():
+        def inner():
+            return value
+
+        return sorted(locals())
+
+    names = middle()
+    value = 42
+    return names
+
+
+assert unbound_passthrough() == ['inner']
+
 # === Compilation while a builtin borrows an interned receiver ===
 compile_source = '\n'.join(
     [

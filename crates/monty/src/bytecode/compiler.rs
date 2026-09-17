@@ -610,6 +610,10 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 compiler.code.register_local_name(cell_slot.as_u16(), *name);
             }
         }
+        // A captured cell is a local even if this body only passes it to another closure.
+        for (slot, name) in func_def.free_var_slots.iter().zip(&func_def.free_var_names) {
+            compiler.code.register_local_name(slot.as_u16(), *name);
+        }
         compiler.compile_block(&func_def.body)?;
 
         // Implicit return None if no explicit return
@@ -1543,11 +1547,11 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 }
             }
             NameScope::Global => {
-                self.check_reserved_dunder_store(target)?;
                 if self.flags.globals_by_name {
                     self.code
                         .emit_name_op(Opcode::StoreName, slot, target.name_id, NAME_GLOBAL_ONLY)
                 } else {
+                    self.check_reserved_dunder_store(target)?;
                     self.code.emit_u16(Opcode::StoreGlobal, slot)
                 }
             }
@@ -1581,8 +1585,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Monty exposes [`RESERVED_MODULE_DUNDERS`] with fixed values for CPython
     /// compatibility but, unlike CPython, has no module namespace to write into,
     /// so rebinding one is unsupported and surfaces as `NotImplementedError`.
-    /// Only callers that bind the global namespace (module-`Local` and `Global`
-    /// scopes) invoke this — function locals sharing these names are fine.
+    /// Only stores to slot-backed module globals invoke this; explicit globals
+    /// dicts and function locals may bind these names.
     fn check_reserved_dunder_store(&self, target: &Identifier) -> Result<(), CompileError> {
         let name = self.interns.get_str(target.name_id);
         if RESERVED_MODULE_DUNDERS.contains(&name) {

@@ -825,6 +825,9 @@ pub struct PreparedFunctionDef {
     /// preparation and so does not fall in the contiguous param/cell/free
     /// region the namespace layout otherwise follows.
     pub free_var_slots: Vec<NamespaceId>,
+    /// Names parallel to `free_var_slots`, including captures never read by this body.
+    /// The compiler records them so `locals()` can report pass-through cells.
+    pub free_var_names: Vec<StringId>,
     /// This function's own namespace slots for cell variables (locals captured
     /// by nested functions). A fresh cell is created for each at call time and
     /// stored at `cell_var_slots[i]`. Parallel to [`Self::cell_param_indices`].

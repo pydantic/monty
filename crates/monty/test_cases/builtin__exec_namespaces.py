@@ -10,6 +10,28 @@ exec('def g():\n    global k\n    k = 5', ns)
 ns['g']()
 assert ns['k'] == 5
 
+# === global dunders are writable in explicit globals dictionaries ===
+for name in ('__name__', '__doc__', '__package__', '__spec__', '__file__', '__builtins__'):
+    namespace = {}
+    exec(f'global {name}\n{name} = "assigned"', namespace)
+    assert namespace[name] == 'assigned'
+
+dunder_globals, dunder_locals = {}, {}
+exec(
+    'global __name__\n__name__ = "snippet"\ndef rename():\n    global __name__\n    __name__ = "function"',
+    dunder_globals,
+    dunder_locals,
+)
+assert dunder_globals['__name__'] == 'snippet'
+assert '__name__' not in dunder_locals, 'global dunder binds in the globals dict'
+dunder_locals['rename']()
+assert dunder_globals['__name__'] == 'function'
+exec('exec(\'global __name__\\n__name__ = "nested"\')', dunder_globals)
+assert dunder_globals['__name__'] == 'nested'
+exec('class Setter:\n    def rename(self):\n        global __name__\n        __name__ = "method"', dunder_globals)
+dunder_globals['Setter']().rename()
+assert dunder_globals['__name__'] == 'method'
+
 # === imports land in the dict ===
 exec('import math\ndef area(r):\n    return math.pi * r * r', ns)
 assert round(ns['area'](2), 3) == 12.566
