@@ -770,7 +770,7 @@ await {gather}
                                     Some("second failure".to_owned()),
                                 ))
                             } else {
-                                ExtFunctionResult::Return(MontyObject::List(vec![MontyObject::Int(42)]))
+                                ExtFunctionResult::Return(MontyObject::list([MontyObject::int(42)]))
                             },
                         ),
                     ],
@@ -826,13 +826,12 @@ results = await asyncio.gather(child(0), child(1))
         let log = order
             .into_iter()
             .flat_map(|i| [format!("error {i}"), format!("finally {i}")])
-            .map(MontyObject::String)
-            .collect();
+            .map(MontyObject::string);
         assert_eq!(
             result,
-            MontyObject::List(vec![
-                MontyObject::List(vec![MontyObject::Int(0), MontyObject::Int(1)]),
-                MontyObject::List(log),
+            MontyObject::list([
+                MontyObject::list([MontyObject::int(0), MontyObject::int(1)]),
+                MontyObject::list(log),
             ])
         );
     }
@@ -874,7 +873,7 @@ log
     assert_eq!(calls[0].1, "cleanup_call");
     let result = state
         .resume(
-            vec![(calls[0].0, ExtFunctionResult::Return(MontyObject::None))],
+            vec![(calls[0].0, ExtFunctionResult::Return(MontyObject::none()))],
             PrintWriter::Stdout,
         )
         .unwrap()
@@ -882,9 +881,9 @@ log
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::List(
+        MontyObject::list(
             ["cleanup started", "cleanup finished", "rejected"]
-                .map(|s| MontyObject::String(s.to_owned()))
+                .map(|s| MontyObject::string(s.to_owned()))
                 .to_vec()
         )
     );
@@ -953,7 +952,7 @@ sorted(log)
             .resume(
                 vec![(
                     sibling_tail,
-                    ExtFunctionResult::Return(MontyObject::String("finished".to_owned())),
+                    ExtFunctionResult::Return(MontyObject::string("finished".to_owned())),
                 )],
                 PrintWriter::Stdout,
             )
@@ -963,7 +962,7 @@ sorted(log)
         assert_eq!(state.pending_call_ids(), &[main_tail]);
         let result = state
             .resume(
-                vec![(main_tail, ExtFunctionResult::Return(MontyObject::None))],
+                vec![(main_tail, ExtFunctionResult::Return(MontyObject::none()))],
                 PrintWriter::Stdout,
             )
             .unwrap()
@@ -971,9 +970,9 @@ sorted(log)
             .unwrap();
         assert_eq!(
             result,
-            MontyObject::List(
+            MontyObject::list(
                 ["finished", "first failure", "second failure"]
-                    .map(|s| MontyObject::String(s.to_owned()))
+                    .map(|s| MontyObject::string(s.to_owned()))
                     .to_vec()
             )
         );
