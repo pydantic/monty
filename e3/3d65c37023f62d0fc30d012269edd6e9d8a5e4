@@ -1,0 +1,70 @@
+crates/monty/test_cases/itertools__combinatoric.py
+  s_a3c32c8d91ab8c::t_b2121be2208fed 1-174,183-328,361-463,177,182,336-337,342,344-349,353,360
+  s_a3c32c8d91ab8c::t_c071c3fdd80f62 464
+  s_a3c32c8d91ab8c::t_d3e7e44d14a41c 175-176,178-181,329-335,338-341,343,350-352
+  s_a3c32c8d91ab8c::t_c77b3d6d6607e7 354-359
+crates/monty/test_cases/itertools__groupby.py
+  s_a3c32c8d91ab8c::t_645040503298ff 1-29,34-80,101-199,202,204-233,252-299
+  s_a3c32c8d91ab8c::t_d1c32f9147fd73 30-33
+  s_a3c32c8d91ab8c::t_c67c1d4890f316 81-84,86,91-100
+  s_a3c32c8d91ab8c::t_f83098ff702843 234-251
+  s_a3c32c8d91ab8c::t_2a03c264ae6713 85,87-90,200-201,203
+docs/limitations/itertools.md
+  s_a3c32c8d91ab8c::t_1d8c4402a5d36e 48,82-88,90-91,94-106
+  s_a3c32c8d91ab8c::t_4fc0f987dfcf08 107-109
+  s_a3c32c8d91ab8c::t_4b4fb99848ff52 110-118,120-129
+crates/monty/src/types/itertools/groupby.rs
+  s_a3c32c8d91ab8c::t_1877680403085f 1-37,40-79,85-140,143-144,150-162,164-205,207-275
+  s_a3c32c8d91ab8c::t_f83098ff702843 38-39,141-142
+  s_a3c32c8d91ab8c::t_cb166143914c4d 80-84
+  s_a3c32c8d91ab8c::t_f93268b2600f97 145-149,163
+crates/monty-typeshed/vendor/typeshed/stdlib/itertools.pyi
+  ai_agent 21,130,134-135,142-143,147,149,153,155
+crates/monty-runtime/tests/subprocess.rs
+  s_a3c32c8d91ab8c::t_067d7719d82fb6 943,950,954
+  s_a3c32c8d91ab8c::t_2376850857f22e 945-949,951-953
+  s_a3c32c8d91ab8c::t_65c5dfdeaab1c3 1159-1173
+crates/monty/src/exception_private.rs
+  s_a3c32c8d91ab8c::t_d7f4d2b0f150ea 1021-1038
+  s_a3c32c8d91ab8c::t_9a0a571932c030 1039-1055
+crates/monty/src/modules/itertools.rs
+  s_a3c32c8d91ab8c::t_1db6f2c4d07417 13,18,21,23,55-56,76-77,79,121,126,138-139,576-585,590-593,598,641-682,684,686-698,702,705-773,777,779,781-784,787-794,799,803,805,830-869,802,819
+  s_a3c32c8d91ab8c::t_2eccf8db707937 683,685,778,780
+  s_a3c32c8d91ab8c::t_11b941c595da82 774-776
+  s_a3c32c8d91ab8c::t_9a0a571932c030 699-701,703-704,785,795-798,800-801,808-809,811,815-818,822-827
+  s_a3c32c8d91ab8c::t_4f53e7c9b5d533 786,810,820-821,828-829
+crates/monty/test_cases/refcount__itertools_combinatoric.py
+  s_a3c32c8d91ab8c::t_81014bc9a578cd 1-14,20-22,24-40,43-45,48,50-52,55,57-61,65,67-96,98-102
+  s_a3c32c8d91ab8c::t_8c5978ce71bc61 23
+  s_a3c32c8d91ab8c::t_9db77d37e3a9f6 41-42,46-47,49,62-63
+  s_a3c32c8d91ab8c::t_464198f1804f80 64,66
+  s_a3c32c8d91ab8c::t_254f173170b549 97
+  s_a3c32c8d91ab8c::t_2a03c264ae6713 15-19
+crates/monty/tests/main.rs
+  s_a3c32c8d91ab8c::t_7b59c2ca222159 313-315,322
+  s_a3c32c8d91ab8c::t_fcfb86bcb7f9f2 501-542
+crates/monty-type-checking/tests/good_types.py
+  s_a3c32c8d91ab8c::t_8c4fc99462edfa 4,630-632,639,644,647
+  s_a3c32c8d91ab8c::t_1ff6170fec8cb6 633-635,637-638,640
+  s_a3c32c8d91ab8c::t_cb3350441c1660 636
+  s_a3c32c8d91ab8c::t_29128c5acdb12b 642-643,645-646
+crates/monty/src/types/itertools/product.rs
+  s_a3c32c8d91ab8c::t_f833ccee8baae5 1-34,42-95,97-100,102-112,114
+  s_a3c32c8d91ab8c::t_cb166143914c4d 96,101,113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e33d65c37023f62d0fc30d012269edd6e9d8a5e4",
+  "prompts": {},
+  "sessions": {
+    "s_a3c32c8d91ab8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a942b6a0-ff12-4ada-bfcb-9fe0c572528b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
