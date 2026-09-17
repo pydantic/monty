@@ -25,7 +25,8 @@ fn decode_benchmark(c: &mut Criterion) {
         .map(|size| ("str", size, str_frame(size)))
         .into_iter()
         .chain([64 * KIB, 4 * MIB, 64 * MIB].map(|size| ("rows", size, rows_frame(size))))
-        .chain([64 * KIB, 4 * MIB, 64 * MIB].map(|size| ("dag", size, dag_frame(size))));
+        // a dag level amplifies ~15x on decode, so 64 MiB would exceed `DEFAULT_MAX_DECODE_BYTES`
+        .chain([64 * KIB, 4 * MIB, 32 * MIB].map(|size| ("dag", size, dag_frame(size))));
     for (shape, size, frame) in payloads {
         group.throughput(Throughput::Bytes(frame.len() as u64));
         group.bench_with_input(BenchmarkId::new(shape, size_label(size)), &frame, |bench, frame| {
