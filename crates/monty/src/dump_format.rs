@@ -32,6 +32,11 @@ pub const DUMP_VERSION: u16 = 11;
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
 
+/// Initial payload capacity for [`dump`]. A fresh idle session dumps to ~130
+/// bytes and one suspended on a host call to ~480, so this never over-allocates
+/// meaningfully and skips the first few `Vec` doublings.
+const MIN_PAYLOAD_CAPACITY: usize = 200;
+
 /// Serializes a live session and its metadata into a versioned dump, readable
 /// by [`Dump::load`].
 ///
@@ -53,7 +58,7 @@ pub fn dump(
         state: SessionRef<'a>,
     }
 
-    let mut bytes = Vec::with_capacity(HEADER_LEN);
+    let mut bytes = Vec::with_capacity(HEADER_LEN + MIN_PAYLOAD_CAPACITY);
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&DUMP_VERSION.to_le_bytes());
     // the payload is written after the header in place: no second buffer to copy it into
