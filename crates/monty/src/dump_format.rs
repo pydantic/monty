@@ -10,6 +10,7 @@
 use std::{error::Error, fmt, mem::size_of};
 
 use monty_types::TypeCheckState;
+use postcard::ser_flavors::Flavor;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -52,16 +53,41 @@ pub fn dump(
         state: SessionRef<'a>,
     }
 
-    let payload = postcard::to_allocvec(&DumpRef {
+    let mut bytes = Vec::with_capacity(HEADER_LEN);
+    bytes.extend_from_slice(MAGIC);
+    bytes.extend_from_slice(&DUMP_VERSION.to_le_bytes());
+    // the payload is written after the header in place: no second buffer to copy it into
+    let dump = DumpRef {
         script_name,
         type_check,
         state,
-    })?;
-    let mut bytes = Vec::with_capacity(HEADER_LEN + payload.len());
-    bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&DUMP_VERSION.to_le_bytes());
-    bytes.extend_from_slice(&payload);
-    Ok(bytes)
+    };
+    postcard::serialize_with_flavor(&dump, PrefixedVec(bytes))
+}
+
+/// Postcard output flavor appending to a `Vec` that already holds the dump
+/// header. `postcard::to_extend` does the same through `Extend`, which
+/// benchmarks ~10% slower than `Vec::push`/`extend_from_slice`.
+struct PrefixedVec(Vec<u8>);
+
+impl Flavor for PrefixedVec {
+    type Output = Vec<u8>;
+
+    #[inline]
+    fn try_extend(&mut self, data: &[u8]) -> postcard::Result<()> {
+        self.0.extend_from_slice(data);
+        Ok(())
+    }
+
+    #[inline]
+    fn try_push(&mut self, data: u8) -> postcard::Result<()> {
+        self.0.push(data);
+        Ok(())
+    }
+
+    fn finalize(self) -> postcard::Result<Self::Output> {
+        Ok(self.0)
+    }
 }
 
 /// A complete REPL session snapshot: the interpreter state plus the
