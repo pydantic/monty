@@ -87,6 +87,10 @@ fn generate_repeated_tests(pool: &DescriptorPool, path: &Path) {
                     };
                     ("LengthDelimited", payload)
                 }
+                Kind::Enum(_) => panic!(
+                    "{}: prost's repeated-enum accessors require infallible push; extend budgeted_prost first",
+                    field.full_name()
+                ),
                 Kind::String | Kind::Bytes => ("LengthDelimited", &[][..]),
                 Kind::Float | Kind::Fixed32 | Kind::Sfixed32 => ("ThirtyTwoBit", &[0; 4][..]),
                 Kind::Double | Kind::Fixed64 | Kind::Sfixed64 => ("SixtyFourBit", &[0; 8][..]),

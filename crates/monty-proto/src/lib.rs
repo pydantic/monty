@@ -2,6 +2,7 @@
 
 use std::{ops::RangeInclusive, time::Duration};
 
+mod budget_vec;
 #[doc(hidden)]
 pub mod budgeted_prost;
 mod convert;
@@ -74,6 +75,7 @@ pub fn check_protocol_version(version: u32) -> Result<(), String> {
     }
 }
 
+pub use budget_vec::BudgetVec;
 pub use convert::{MAX_VALUE_DEPTH, ProtoConvertError, exceeds_max_value_depth, future_results_from_proto};
 #[cfg(feature = "test-util")]
 #[doc(hidden)]

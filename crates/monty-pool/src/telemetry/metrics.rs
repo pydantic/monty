@@ -1078,7 +1078,7 @@ mod tests {
     fn feed() -> pb::ParentRequest {
         request(pb::parent_request::Kind::Feed(pb::Feed {
             code: "double(2)".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             skip_type_check: false,
             cwd: "/".to_owned(),
         }))
@@ -1087,8 +1087,8 @@ mod tests {
     fn call_event(function_name: &str) -> pb::ChildEvent {
         event(pb::child_event::Kind::FunctionCall(WireFunctionCall {
             function_name: function_name.to_owned(),
-            args: vec![],
-            kwargs: vec![],
+            args: vec![].into(),
+            kwargs: vec![].into(),
             call_id: 1,
             object_id: None,
             allow_eager_await: false,
@@ -1172,7 +1172,7 @@ mod tests {
             pb::ext_function_result::Kind::Error(pb::RaisedException {
                 exc_type: "AttributeError".to_owned(),
                 message: None,
-                traceback: vec![],
+                traceback: vec![].into(),
                 data: None,
             }),
             pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(1).into()),
@@ -1217,7 +1217,7 @@ mod tests {
         let mut metrics = TurnMetrics::new(Metrics::for_adapter(capture.clone()));
         metrics.begin_turn(&feed());
         metrics.event(&event(pb::child_event::Kind::Print(pb::Print {
-            segments: alternating,
+            segments: alternating.into(),
         })));
 
         let recorded = capture.0.lock().unwrap_or_else(PoisonError::into_inner).clone();
@@ -1241,7 +1241,8 @@ mod tests {
             segments: vec![pb::PrintSegment {
                 stream: pb::PrintStream::Stdout as i32,
                 text: "hello\n".to_owned(),
-            }],
+            }]
+            .into(),
         })));
 
         let recorded = capture.0.lock().unwrap_or_else(PoisonError::into_inner).clone();
@@ -1308,7 +1309,7 @@ mod tests {
             exception: Some(pb::RaisedException {
                 exc_type: "MyCustomError".to_owned(),
                 message: None,
-                traceback: vec![],
+                traceback: vec![].into(),
                 data: None,
             }),
         })));
@@ -1348,7 +1349,9 @@ mod tests {
 
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&request(pb::parent_request::Kind::InstallDependencies(
-            pb::InstallDependencies { requirements: vec![] },
+            pb::InstallDependencies {
+                requirements: vec![].into(),
+            },
         )));
         metrics.event(&event(pb::child_event::Kind::Shutdown(pb::ShutdownDump { dump: None })));
         assert_eq!(
@@ -1367,7 +1370,9 @@ mod tests {
     #[test]
     fn a_load_rebases_the_execution_clock() {
         let (mut metrics, capture) = recorder();
-        metrics.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![] })));
+        metrics.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![].into(),
+        })));
         metrics.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 10_000_000,
@@ -1397,7 +1402,9 @@ mod tests {
     #[test]
     fn a_restored_suspension_closes_the_load_turn() {
         let (mut metrics, capture) = recorder();
-        metrics.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![] })));
+        metrics.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![].into(),
+        })));
         metrics.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::NameLookup(pb::NameLookup {
                 name: "value".to_owned(),
@@ -1442,14 +1449,14 @@ mod tests {
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&request(pb::parent_request::Kind::InstallDependencies(
             pb::InstallDependencies {
-                requirements: vec!["pydantic".to_owned()],
+                requirements: vec!["pydantic".to_owned()].into(),
             },
         )));
         metrics.event(&event(pb::child_event::Kind::Error(pb::Error {
             exception: Some(pb::RaisedException {
                 exc_type: "ValueError".to_owned(),
                 message: None,
-                traceback: vec![],
+                traceback: vec![].into(),
                 data: None,
             }),
         })));
@@ -1537,7 +1544,7 @@ mod tests {
         metrics.begin_turn(&feed());
         metrics.begin_turn(&request(pb::parent_request::Kind::Dump(pb::Dump {})));
         metrics.event(&event(pb::child_event::Kind::DumpResult(pb::DumpResult {
-            state: vec![0; 32],
+            state: vec![0; 32].into(),
         })));
 
         let snapshots = capture.histograms("monty.snapshot.bytes");

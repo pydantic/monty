@@ -30,8 +30,9 @@ use monty_types::{
 };
 
 use super::{
-    DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError, WireFunctionCall,
-    check_protocol_version, exceeds_max_frame_len, exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
+    BudgetVec, DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError,
+    WireFunctionCall, check_protocol_version, exceeds_max_frame_len, exceeds_max_value_depth,
+    future_results_from_proto, pb, write_frame,
 };
 use crate::wire::uuid_to_pb;
 
@@ -312,8 +313,8 @@ impl Child {
         };
         match (progress.as_mut(), &mut event.kind) {
             (ReplProgress::FunctionCall(call), Some(pb::child_event::Kind::FunctionCall(announced))) => {
-                call.args = mem::take(&mut announced.args);
-                call.kwargs = mem::take(&mut announced.kwargs);
+                call.args = mem::take(&mut announced.args).into_inner();
+                call.kwargs = mem::take(&mut announced.kwargs).into_inner();
             }
             (ReplProgress::OsCall(call), Some(pb::child_event::Kind::OsCall(announced))) => {
                 if let Some(announced) = announced.call.take() {
@@ -705,7 +706,9 @@ impl Child {
             SessionState::Configured(_) => unreachable!("ensure_repl materialized the repl or errored"),
         };
         match dump(&self.script_name, self.type_check.as_ref(), session) {
-            Ok(state) => event(pb::child_event::Kind::DumpResult(pb::DumpResult { state })),
+            Ok(state) => event(pb::child_event::Kind::DumpResult(pb::DumpResult {
+                state: state.into(),
+            })),
             Err(err) => protocol_violation(&format!("dump failed: {err}")),
         }
     }
@@ -928,7 +931,7 @@ pub fn protocol_violation(message: &str) -> pb::ChildEvent {
         exception: Some(pb::RaisedException {
             exc_type: ExcType::RuntimeError.to_string(),
             message: Some(format!("protocol violation: {message}")),
-            traceback: vec![],
+            traceback: BudgetVec::new(),
             data: None,
         }),
     }))
@@ -956,7 +959,7 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
         exception: Some(pb::RaisedException {
             exc_type: exc_type.to_string(),
             message: Some(message.to_owned()),
-            traceback: vec![],
+            traceback: BudgetVec::new(),
             data: None,
         }),
     }))
@@ -997,8 +1000,8 @@ fn oversize_suspension_error_message(event: &pb::ChildEvent) -> Option<String> {
 fn suspension_event_function_call(call: &mut monty::ReplFunctionCall) -> pb::ChildEvent {
     event(pb::child_event::Kind::FunctionCall(WireFunctionCall {
         function_name: call.function_name.clone(),
-        args: mem::take(&mut call.args),
-        kwargs: mem::take(&mut call.kwargs),
+        args: mem::take(&mut call.args).into(),
+        kwargs: mem::take(&mut call.kwargs).into(),
         call_id: call.call_id,
         object_id: call.object_id,
         allow_eager_await: call.allow_eager_await,
@@ -1066,14 +1069,16 @@ fn suspension_event(progress: &mut ReplProgress) -> pb::ChildEvent {
             object_id: lookup.object_id().as_ref().map(uuid_to_pb),
         })),
         ReplProgress::ResolveFutures(state) => event(pb::child_event::Kind::ResolveFutures(pb::ResolveFutures {
-            pending_call_ids: state.pending_call_ids().to_vec(),
+            pending_call_ids: state.pending_call_ids().to_vec().into(),
         })),
         ReplProgress::Complete { .. } => unreachable!("Complete is handled before suspension_event"),
     }
 }
 
 /// Converts wire named inputs into `(name, value)` pairs for `feed_start`.
-fn named_inputs(inputs: Vec<pb::NamedValue>) -> Result<Vec<(String, MontyObject)>, Box<pb::ChildEvent>> {
+fn named_inputs(
+    inputs: impl IntoIterator<Item = pb::NamedValue>,
+) -> Result<Vec<(String, MontyObject)>, Box<pb::ChildEvent>> {
     inputs
         .into_iter()
         .map(|input| {
@@ -1200,7 +1205,9 @@ impl<'a> ProtoPrint<'a> {
 
     /// Sends `segments` as one `Print` event.
     fn send(&mut self, segments: Vec<pb::PrintSegment>) -> Result<(), MontyException> {
-        let event = event(pb::child_event::Kind::Print(pb::Print { segments }));
+        let event = event(pb::child_event::Kind::Print(pb::Print {
+            segments: segments.into(),
+        }));
         self.sink.send(&event).map_err(|err| {
             MontyException::new(
                 ExcType::RuntimeError,

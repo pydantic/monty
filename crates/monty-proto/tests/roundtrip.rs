@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, decode_frame, exceeds_max_value_depth, pb};
+use monty_proto::{
+    BudgetVec, MAX_VALUE_DEPTH, ProtoConvertError, WireObject, decode_frame, exceeds_max_value_depth, pb,
+};
 use monty_types::{
     CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
     MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
@@ -438,11 +440,11 @@ fn unicode_exception(encoding: String, object: Vec<u8>, start: u64, end: u64, re
     pb::RaisedException {
         exc_type: "UnicodeDecodeError".to_owned(),
         message: Some("boom".to_owned()),
-        traceback: vec![],
+        traceback: BudgetVec::new(),
         data: Some(pb::ExcData {
             kind: Some(pb::exc_data::Kind::Unicode(pb::UnicodeErrorData {
                 encoding,
-                object: Some(pb::unicode_error_data::Object::ObjectBytes(object)),
+                object: Some(pb::unicode_error_data::Object::ObjectBytes(object.into())),
                 start,
                 end,
                 reason,
@@ -519,7 +521,7 @@ fn json_exception(msg: String, doc: Option<String>, pos: u64, lineno: u64, colno
     pb::RaisedException {
         exc_type: "json.JSONDecodeError".to_owned(),
         message: Some("boom".to_owned()),
-        traceback: vec![],
+        traceback: BudgetVec::new(),
         data: Some(pb::ExcData {
             kind: Some(pb::exc_data::Kind::Json(pb::JsonErrorData {
                 msg,
@@ -645,7 +647,7 @@ fn name_lookup_results_convert() {
         kind: Some(pb::resume_name_lookup::Kind::Error(pb::RaisedException {
             exc_type: "NotARealError".to_owned(),
             message: None,
-            traceback: vec![],
+            traceback: BudgetVec::new(),
             data: None,
         })),
     };
@@ -741,7 +743,8 @@ fn decodes_in_frame(value: &MontyObject) -> bool {
             inputs: vec![pb::NamedValue {
                 name: "v".to_owned(),
                 value: Some(WireObject::new(value.clone())),
-            }],
+            }]
+            .into(),
             skip_type_check: false,
             cwd: "/work".to_owned(),
         })),
@@ -928,7 +931,7 @@ fn os_call_conversion_rejects_invalid_payloads() {
 fn shutdown_event_round_trips() {
     let event = pb::ChildEvent {
         kind: Some(pb::child_event::Kind::Shutdown(pb::ShutdownDump {
-            dump: Some(vec![1, 2, 3]),
+            dump: Some(vec![1, 2, 3].into()),
         })),
         ..Default::default()
     };

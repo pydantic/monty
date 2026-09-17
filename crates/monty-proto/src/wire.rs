@@ -47,7 +47,7 @@ use prost::{
     encoding::{DecodeContext, WireType, encode_key, encode_varint, encoded_len_varint, key_len, skip_field},
 };
 
-use crate::{budgeted_prost::encoding, convert::ProtoConvertError, decode_budget, pb};
+use crate::{BudgetVec, budgeted_prost::encoding, convert::ProtoConvertError, decode_budget, pb};
 
 /// The wire form of a [`MontyObject`]: what the `monty.v1.MontyObject` proto
 /// message decodes into and encodes from.
@@ -120,9 +120,9 @@ pub struct WireFunctionCall {
     /// Name of the external function the sandbox is calling.
     pub function_name: String,
     /// Positional arguments, decoded straight from repeated `MontyObject`.
-    pub args: Vec<MontyObject>,
+    pub args: BudgetVec<MontyObject>,
     /// Keyword arguments, preserving wire order.
-    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    pub kwargs: BudgetVec<(MontyObject, MontyObject)>,
     /// Child-assigned call id used by the matching resume request.
     pub call_id: u32,
     /// Uuid of the routed receiver (a host-backed instance, or a class type
@@ -672,9 +672,9 @@ fn decode_field(
         }
         tag::STR => MontyObject::String(merge_string(wire_type, buf, ctx)?),
         tag::BYTES => {
-            let mut v = Vec::new();
+            let mut v = BudgetVec::new();
             encoding::bytes::merge(wire_type, &mut v, buf, ctx)?;
-            MontyObject::Bytes(v)
+            MontyObject::Bytes(v.into_inner())
         }
         tag::LIST => MontyObject::List(merge_value_list(wire_type, buf, ctx)?),
         tag::TUPLE => MontyObject::Tuple(merge_value_list(wire_type, buf, ctx)?),
@@ -682,8 +682,8 @@ fn decode_field(
             let nt: NamedTupleBody = merge_message(wire_type, buf, ctx)?;
             MontyObject::NamedTuple {
                 type_name: nt.type_name,
-                field_names: nt.field_names,
-                values: nt.values,
+                field_names: nt.field_names.into_inner(),
+                values: nt.values.into_inner(),
             }
         }
         tag::DICT => MontyObject::Dict(merge_dict(wire_type, buf, ctx)?),
@@ -765,7 +765,7 @@ fn decode_field(
             MontyObject::ClassInstance(decode_budget::boxed(MontyClassInstance {
                 class_type: *class_type,
                 instance_id: pb_uuid_to_monty(&instance_id, "ClassInstance.instance_id")?,
-                attrs: DictPairs::from(attrs.0),
+                attrs: DictPairs::from(attrs.0.into_inner()),
             })?)
         }
         tag::FUNCTION => {
@@ -822,13 +822,15 @@ fn merge_value_list(
     buf: &mut impl Buf,
     ctx: DecodeContext,
 ) -> Result<Vec<MontyObject>, DecodeError> {
-    Ok(merge_message::<ObjectList>(wire_type, buf, ctx)?.0)
+    Ok(merge_message::<ObjectList>(wire_type, buf, ctx)?.0.into_inner())
 }
 
 /// Decodes a `Dict` straight into [`DictPairs`] via [`PairList`], skipping
 /// the `Vec<pb::Pair>` wrapper.
 fn merge_dict(wire_type: WireType, buf: &mut impl Buf, ctx: DecodeContext) -> Result<DictPairs, DecodeError> {
-    Ok(DictPairs::from(merge_message::<PairList>(wire_type, buf, ctx)?.0))
+    Ok(DictPairs::from(
+        merge_message::<PairList>(wire_type, buf, ctx)?.0.into_inner(),
+    ))
 }
 
 /// Decodes one repeated `MontyObject` entry into an already-owned vector.
@@ -836,12 +838,11 @@ fn merge_object_item(
     wire_type: WireType,
     buf: &mut impl Buf,
     ctx: DecodeContext,
-    items: &mut Vec<MontyObject>,
+    items: &mut BudgetVec<MontyObject>,
 ) -> Result<(), DecodeError> {
-    decode_budget::reserve_slot(items)?;
+    items.try_reserve_slot()?;
     let item: WireObject = merge_message(wire_type, buf, ctx)?;
-    items.push(item.into_object().map_err(to_decode_err)?);
-    Ok(())
+    items.try_push(item.into_object().map_err(to_decode_err)?)
 }
 
 /// Decodes one repeated `Pair` entry into an already-owned vector.
@@ -849,12 +850,11 @@ fn merge_pair_item(
     wire_type: WireType,
     buf: &mut impl Buf,
     ctx: DecodeContext,
-    pairs: &mut Vec<(MontyObject, MontyObject)>,
+    pairs: &mut BudgetVec<(MontyObject, MontyObject)>,
 ) -> Result<(), DecodeError> {
-    decode_budget::reserve_slot(pairs)?;
+    pairs.try_reserve_slot()?;
     let pair: pb::Pair = merge_message(wire_type, buf, ctx)?;
-    pairs.push(pair_to_kv(pair)?);
-    Ok(())
+    pairs.try_push(pair_to_kv(pair)?)
 }
 
 /// Unwraps one decoded `Pair` into a `(key, value)`, rejecting an absent key or
@@ -878,7 +878,7 @@ fn pair_to_kv(pair: pb::Pair) -> Result<(MontyObject, MontyObject), DecodeError>
 /// transient. Never encoded (values encode via [`encode_repeated_object`]), so
 /// the encode methods are unreachable.
 #[derive(Default)]
-struct ObjectList(Vec<MontyObject>);
+struct ObjectList(BudgetVec<MontyObject>);
 
 impl Message for ObjectList {
     fn merge_field(
@@ -913,7 +913,7 @@ impl Message for ObjectList {
 /// directly into `(key, value)` tuples — the dict analogue of [`ObjectList`],
 /// avoiding the `Vec<pb::Pair>` wrapper. Decode-only; encode is unreachable.
 #[derive(Default)]
-struct PairList(Vec<(MontyObject, MontyObject)>);
+struct PairList(BudgetVec<(MontyObject, MontyObject)>);
 
 impl Message for PairList {
     fn merge_field(
@@ -1001,8 +1001,8 @@ impl Message for TypeBody {
 #[derive(Default)]
 struct NamedTupleBody {
     type_name: String,
-    field_names: Vec<String>,
-    values: Vec<MontyObject>,
+    field_names: BudgetVec<String>,
+    values: BudgetVec<MontyObject>,
 }
 
 impl Message for NamedTupleBody {
@@ -1118,7 +1118,7 @@ fn to_decode_err(err: impl Display) -> DecodeError {
 /// Encodes a [`MontyUuid`] as the wire `Uuid` message (16 raw bytes).
 pub(crate) fn uuid_to_pb(uuid: &MontyUuid) -> pb::Uuid {
     pb::Uuid {
-        data: uuid.as_bytes().to_vec(),
+        data: uuid.as_bytes().to_vec().into(),
     }
 }
 
@@ -1210,7 +1210,10 @@ fn type_body_to_monty(ty: TypeBody) -> Result<MontyType, DecodeError> {
         pb::TypeOrigin::Sandbox | pb::TypeOrigin::Host => {
             let id = ty.id.ok_or_else(|| invalid("a class type must carry an id"))?;
             // `PairList` already validated each pair and budgeted its backing storage.
-            let attrs = ty.attrs.map(|pairs| DictPairs::from(pairs.0)).unwrap_or_default();
+            let attrs = ty
+                .attrs
+                .map(|pairs| DictPairs::from(pairs.0.into_inner()))
+                .unwrap_or_default();
             Ok(MontyType::Instance(decode_budget::boxed(MontyClassType {
                 name: ty.name,
                 id: pb_uuid_to_monty(&id, "Type.id")?,
@@ -1227,7 +1230,7 @@ fn bigint_to_proto(bi: &BigInt) -> pb::BigInt {
     let (sign, magnitude) = bi.to_bytes_be();
     pb::BigInt {
         negative: sign == Sign::Minus,
-        magnitude,
+        magnitude: magnitude.into(),
     }
 }
 

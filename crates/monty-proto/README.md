@@ -44,6 +44,10 @@ for the schema and the protocol rules documented alongside it.
   `extension-module` feature — how libpython is linked stays the top crate's
   decision), so pure-Rust consumers pay nothing for it.
 
+Repeated fields and byte buffers in protocol messages use `BudgetVec<T>`.
+Construct them from standard vectors with `.into()` or collect an iterator directly; use `.into_inner()` to recover a standard vector without copying.
+Host construction and cloning are unbudgeted; fallible `try_push` charges any growth to the active decode budget.
+
 ## Values are special-cased for performance
 
 The `monty.v1.MontyObject` message is mapped via prost `extern_path` onto

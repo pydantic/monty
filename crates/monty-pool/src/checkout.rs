@@ -598,7 +598,7 @@ impl Checkout {
         self.begin_load();
         self.restored_script_name = None;
         self.feed_mounts = feed_mounts;
-        let request = request(pb::parent_request::Kind::Load(pb::Load { state }));
+        let request = request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
         let outcome = self
             .request_turn(&request, self.pool.config.request_timeout, on_print)
             .await;
@@ -894,7 +894,9 @@ impl Checkout {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let request = request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results }));
+        let request = request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+            results: results.into(),
+        }));
         // `pending` left set — see the comment in [`Self::resume`]
         self.expect_turn(&request, on_print).await
     }
@@ -929,7 +931,7 @@ impl Checkout {
             validate_requirement(requirement).map_err(invalid_requirement)?;
         }
         let request = request(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
-            requirements,
+            requirements: requirements.into(),
         }));
         let mut no_print = on_print_sync(|_, _| {});
         let deadline = self.pool.config.request_timeout;
@@ -1351,8 +1353,8 @@ impl Checkout {
                     return self.convert_turn(|| {
                         Ok(TurnEvent::FunctionCall {
                             function_name: call.function_name,
-                            args: call.args,
-                            kwargs: call.kwargs,
+                            args: call.args.into_inner(),
+                            kwargs: call.kwargs.into_inner(),
                             call_id: call.call_id,
                             object_id: call.object_id,
                             allow_eager_await: call.allow_eager_await,
@@ -1413,7 +1415,7 @@ impl Checkout {
                 Some(pb::child_event::Kind::ResolveFutures(futures)) => {
                     self.pending = Some(Pending::Futures);
                     return Ok(ControlEvent::Turn(TurnEvent::ResolveFutures {
-                        pending_call_ids: futures.pending_call_ids,
+                        pending_call_ids: futures.pending_call_ids.into_inner(),
                     }));
                 }
                 Some(pb::child_event::Kind::Complete(complete)) => {
@@ -1450,7 +1452,9 @@ impl Checkout {
                     return Err(PoolError::Typing(typing.diagnostics));
                 }
                 Some(pb::child_event::Kind::Ok(_)) => return Ok(ControlEvent::Ok),
-                Some(pb::child_event::Kind::DumpResult(dump)) => return Ok(ControlEvent::Dump(dump.state)),
+                Some(pb::child_event::Kind::DumpResult(dump)) => {
+                    return Ok(ControlEvent::Dump(dump.state.into_inner()));
+                }
                 Some(pb::child_event::Kind::FatalError(fatal)) => {
                     return Err(self.fatal_error(&fatal.message).await);
                 }
@@ -1471,7 +1475,9 @@ impl Checkout {
                     // host-side dump signing lands it must pass the same
                     // verification there as any other dump.
                     self.discard_worker();
-                    return Err(PoolError::Shutdown { dump: shutdown.dump });
+                    return Err(PoolError::Shutdown {
+                        dump: shutdown.dump.map(Into::into),
+                    });
                 }
                 None => {
                     return Err(self.protocol_violation("unexpected event"));

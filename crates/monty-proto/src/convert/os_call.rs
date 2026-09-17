@@ -127,7 +127,7 @@ fn text_write(args: PathStringDataArgs) -> os_call::TextWrite {
 fn bytes_write(args: PathBytesDataArgs) -> os_call::BytesWrite {
     os_call::BytesWrite {
         path: args.path.into_string(),
-        data: args.data,
+        data: args.data.into(),
     }
 }
 
@@ -143,6 +143,6 @@ fn text_args(wire: os_call::TextWrite) -> PathStringDataArgs {
 fn bytes_args(wire: os_call::BytesWrite) -> PathBytesDataArgs {
     PathBytesDataArgs {
         path: MontyPath::new(wire.path),
-        data: wire.data,
+        data: wire.data.into_inner(),
     }
 }

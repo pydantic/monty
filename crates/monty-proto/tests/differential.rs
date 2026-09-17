@@ -479,8 +479,8 @@ fn hand_call_payloads_match_generated_encoding() {
         let oracle_object_id = object_id.map(|uuid| oracle_uuid(&uuid));
         let hand_call = WireFunctionCall {
             function_name: "external".to_owned(),
-            args: args.clone(),
-            kwargs: kwargs.clone(),
+            args: args.clone().into(),
+            kwargs: kwargs.clone().into(),
             call_id: 42,
             object_id,
             allow_eager_await,

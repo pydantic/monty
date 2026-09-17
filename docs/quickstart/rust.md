@@ -137,6 +137,8 @@ Custom protobuf transports should decode protocol messages through
 [`decode_frame`](../api/rust/monty-proto.md#decode_frame) or [`FrameReader`](../api/rust/monty-proto.md#framereader).
 Both manage the per-frame allocation budget automatically, including cleanup on errors or unwinding.
 Raw `prost::Message::decode` calls fail if they attempt an allocation without a frame budget.
+Protocol repeated fields and byte buffers use [`BudgetVec`](../api/rust/monty-proto.md#budgetvec); convert standard vectors with `.into()` and recover them with `.into_inner()` without copying.
+Host construction and cloning do not use the decode budget.
 See [wire limits](../limitations/pool-architecture.md) for the budget's scope.
 
 [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) spawns local `monty subprocess` children over framed stdio.

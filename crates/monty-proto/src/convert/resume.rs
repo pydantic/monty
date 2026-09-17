@@ -59,7 +59,7 @@ impl TryFrom<pb::ResumeNameLookup> for NameLookupResult {
 /// Converts wire future results into `(call_id, result)` pairs for
 /// `ResolveFutures::resume`.
 pub fn future_results_from_proto(
-    results: Vec<pb::FutureResult>,
+    results: impl IntoIterator<Item = pb::FutureResult>,
 ) -> Result<Vec<(u32, ExtFunctionResult)>, ProtoConvertError> {
     results
         .into_iter()

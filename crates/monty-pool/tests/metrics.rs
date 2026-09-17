@@ -445,7 +445,7 @@ async fn raw_turns_are_instrumented_like_typed_ones() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "print('hi')\n6 * 7".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             skip_type_check: false,
             cwd: "/".to_owned(),
         })),

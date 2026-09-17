@@ -9,7 +9,7 @@
 use std::{cell::RefCell, io};
 
 use monty_proto::{
-    DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, exceeds_max_frame_len, pb,
+    BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, exceeds_max_frame_len, pb,
     worker::{Child, EventSink, HandleOutcome, protocol_violation},
 };
 use monty_types::{ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid, OsFunctionCall};
@@ -299,7 +299,7 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
             exception: Some(raised_exception_from_component(error)),
         }),
         Request::Dump => pb::parent_request::Kind::Dump(pb::Dump {}),
-        Request::Load(state) => pb::parent_request::Kind::Load(pb::Load { state }),
+        Request::Load(state) => pb::parent_request::Kind::Load(pb::Load { state: state.into() }),
         Request::Reset => pb::parent_request::Kind::Reset(pb::Reset {}),
     };
     Ok(pb::ParentRequest {
@@ -371,7 +371,7 @@ fn raised_exception_from_component(error: RaisedError) -> pb::RaisedException {
     pb::RaisedException {
         exc_type: error.exc_type,
         message: Some(error.message),
-        traceback: vec![],
+        traceback: BudgetVec::new(),
         data: None,
     }
 }
@@ -407,7 +407,9 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
                 .and_then(|uuid| MontyUuid::try_from_slice(&uuid.data))
                 .map(|uuid| uuid.to_string()),
         }),
-        Some(pb::child_event::Kind::ResolveFutures(futures)) => Event::ResolveFutures(futures.pending_call_ids),
+        Some(pb::child_event::Kind::ResolveFutures(futures)) => {
+            Event::ResolveFutures(futures.pending_call_ids.into_inner())
+        }
         Some(pb::child_event::Kind::Complete(complete)) => complete
             .value
             .and_then(|value| value.0)
@@ -418,10 +420,10 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
             .map(exception_from_proto)
             .map_or_else(|| invalid_event("Error event carried no exception"), Event::Error),
         Some(pb::child_event::Kind::TypingError(error)) => Event::TypingError(error.diagnostics),
-        Some(pb::child_event::Kind::DumpResult(result)) => Event::DumpResult(result.state),
+        Some(pb::child_event::Kind::DumpResult(result)) => Event::DumpResult(result.state.into_inner()),
         Some(pb::child_event::Kind::Ok(_)) => Event::Ok,
         Some(pb::child_event::Kind::FatalError(error)) => Event::FatalError(error.message),
-        Some(pb::child_event::Kind::Shutdown(shutdown)) => Event::Shutdown(shutdown.dump),
+        Some(pb::child_event::Kind::Shutdown(shutdown)) => Event::Shutdown(shutdown.dump.map(Into::into)),
         None => invalid_event("ChildEvent carried no kind"),
     }
 }

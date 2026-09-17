@@ -51,28 +51,6 @@ pub(crate) fn charge(bytes: usize) -> Result<(), DecodeError> {
     })
 }
 
-/// Reserves a vector's next slot, paying for the full replacement allocation.
-/// Existing capacity is not new memory; frame decoding always starts from default.
-pub(crate) fn reserve_slot<T>(values: &mut Vec<T>) -> Result<(), DecodeError> {
-    if values.len() == values.capacity() {
-        let capacity = values.capacity().checked_mul(2).ok_or_else(exhausted)?.max(4);
-        reserve(values, capacity)?;
-    }
-    Ok(())
-}
-
-/// Reserves at least `capacity` slots without implicit amortized growth.
-/// Charging the full capacity also covers allocators that move on reallocation.
-pub(crate) fn reserve<T>(values: &mut Vec<T>, capacity: usize) -> Result<(), DecodeError> {
-    if capacity > values.capacity() {
-        charge(capacity.checked_mul(size_of::<T>()).ok_or_else(exhausted)?)?;
-        values
-            .try_reserve_exact(capacity - values.len())
-            .map_err(|_| exhausted())?;
-    }
-    Ok(())
-}
-
 /// Allocates a boxed payload; its inline fields need no separate charge.
 pub(crate) fn boxed<T>(value: T) -> Result<Box<T>, DecodeError> {
     charge(size_of::<T>())?;
@@ -86,6 +64,6 @@ pub(crate) fn error(message: &'static str) -> DecodeError {
 }
 
 /// A stable error shared by arithmetic overflow, exhaustion and allocation failure.
-fn exhausted() -> DecodeError {
+pub(crate) fn exhausted() -> DecodeError {
     error("frame exceeds decode memory budget")
 }

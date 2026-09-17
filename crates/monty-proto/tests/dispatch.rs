@@ -1,13 +1,12 @@
 //! In-process tests of the buffered per-turn entry point [`dispatch_frame`].
 //!
-//! This is the exact path a wasm Web Worker drives — framed request in, framed
-//! events out — minus the FFI memory marshalling, so it round-trips the whole
-//! `Child` state machine over the message-based transport without any wasm
-//! toolchain.
+//! Exercises the `Child` state machine over buffered protobuf frames without
+//! spawning a subprocess. The current WASM component instead uses semantic WIT
+//! requests and calls `Child::handle` directly.
 
 use monty::{DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
 use monty_proto::{
-    FrameReader, PROTOCOL_VERSION, WireFunctionCall, WireObject, pb,
+    BudgetVec, FrameReader, PROTOCOL_VERSION, WireFunctionCall, WireObject, pb,
     worker::{Child, HandleOutcome, dispatch_frame},
     write_frame,
 };
@@ -27,7 +26,8 @@ fn start_external_call(child: &mut Child, code: &str) -> WireFunctionCall {
                 }
                 .into(),
             ),
-        }],
+        }]
+        .into(),
         skip_type_check: false,
         cwd: "/".to_owned(),
     }));
@@ -58,7 +58,8 @@ fn allow_eager_await_uses_one_reply_per_call() {
             results: vec![future_reply(
                 call.call_id,
                 pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(n).into()),
-            )],
+            )]
+            .into(),
         }));
         let (bytes, outcome) = dispatch_frame(&mut child, &request);
         assert_eq!(outcome, HandleOutcome::Continue);
@@ -101,13 +102,15 @@ fn allow_eager_await_rejects_malformed_replies() {
             result: None,
         }],
     ] {
-        let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results }));
+        let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+            results: results.into(),
+        }));
         let (bytes, outcome) = dispatch_frame(&mut child, &request);
         assert_eq!(outcome, HandleOutcome::Continue);
         assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Error(_)));
     }
     let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
-        results: vec![future_reply(call.call_id, value)],
+        results: vec![future_reply(call.call_id, value)].into(),
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::Int(42));
@@ -128,7 +131,7 @@ fn allow_eager_await_preserves_legacy_replies() {
     assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::ResolveFutures(_)));
     let value = pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(42).into());
     let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
-        results: vec![future_reply(call.call_id, value.clone())],
+        results: vec![future_reply(call.call_id, value.clone())].into(),
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::Int(42));
@@ -137,7 +140,7 @@ fn allow_eager_await_preserves_legacy_replies() {
     let call = start_external_call(&mut child, "f()");
     assert!(!call.allow_eager_await);
     let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
-        results: vec![future_reply(call.call_id, value.clone())],
+        results: vec![future_reply(call.call_id, value.clone())].into(),
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Error(_)));
@@ -216,7 +219,7 @@ fn create_repl_with_flush_interval(child: &mut Child, print_flush_interval_ms: O
 fn feed(child: &mut Child, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind) {
     let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: code.to_owned(),
-        inputs: vec![],
+        inputs: BudgetVec::new(),
         skip_type_check: false,
         cwd: "/".to_owned(),
     }));
@@ -362,7 +365,8 @@ fn inputs_are_injected() {
         inputs: vec![pb::NamedValue {
             name: "n".to_owned(),
             value: Some(WireObject::new(MontyObject::Int(41))),
-        }],
+        }]
+        .into(),
         skip_type_check: false,
         cwd: "/".to_owned(),
     }));
@@ -410,7 +414,7 @@ fn load_rejects_old_dump_version() {
 
     let mut child = Child::default();
     create_repl(&mut child);
-    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state }));
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     let (_, event) = split_turn(&bytes);
@@ -447,7 +451,7 @@ fn load_rejects_dump_with_over_deep_suspension_args() {
 
     let mut child = Child::default();
     create_repl(&mut child);
-    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state }));
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     let (_, event) = split_turn(&bytes);
@@ -490,7 +494,7 @@ fn abort_feed_ends_a_suspended_feed_uncatchably() {
         exception: Some(pb::RaisedException {
             exc_type: "RuntimeError".to_owned(),
             message: Some("suspension limit 3 exceeded".to_owned()),
-            traceback: vec![],
+            traceback: BudgetVec::new(),
             data: None,
         }),
     }));
@@ -520,7 +524,7 @@ fn abort_feed_without_a_suspension_is_a_protocol_violation() {
         exception: Some(pb::RaisedException {
             exc_type: "RuntimeError".to_owned(),
             message: None,
-            traceback: vec![],
+            traceback: BudgetVec::new(),
             data: None,
         }),
     }));
@@ -559,7 +563,7 @@ fn turn_events_carry_the_suspension_budget() {
     assert_eq!(outcome, HandleOutcome::Continue);
     let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: "1 + 1".to_owned(),
-        inputs: vec![],
+        inputs: BudgetVec::new(),
         skip_type_check: false,
         cwd: "/".to_owned(),
     }));

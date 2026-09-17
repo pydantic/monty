@@ -6,7 +6,7 @@ use std::{io::Cursor, panic::catch_unwind, thread};
 use allocation_counter::measure;
 use insta::{allow_duplicates, assert_snapshot};
 use monty_proto::{
-    DEFAULT_MAX_DECODE_BYTES, FrameReader, WireFunctionCall, WireObject, budgeted_prost::encoding,
+    BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameReader, WireFunctionCall, WireObject, budgeted_prost::encoding,
     decode_budget_remaining, decode_frame, pb, with_decode_budget,
 };
 use monty_types::{DictPairs, MontyClassInstance, MontyClassType, MontyObject, MontyType, MontyUuid};
@@ -25,7 +25,7 @@ fn check_repeated<M: Message + Default, T>(
     tag: u32,
     wire: WireType,
     payload: &[u8],
-    items: impl Fn(&M) -> &Vec<T>,
+    items: impl Fn(&M) -> &BudgetVec<T>,
 ) {
     for count in [0, 1, 4, 5, 16, 65] {
         let bytes = repeated_field(tag, wire, payload, count);
@@ -114,7 +114,7 @@ fn generated_wrapper_attacks_are_bounded() {
 #[test]
 fn growth_is_rejected_before_allocating() {
     let mut print = pb::Print {
-        segments: vec![pb::PrintSegment::default(); 1024],
+        segments: vec![pb::PrintSegment::default(); 1024].into(),
     };
     let bytes = repeated_field(3, WireType::LengthDelimited, &[0x12, 1, b'x'], 1);
     let capacity = print.segments.capacity();
@@ -129,6 +129,50 @@ fn growth_is_rejected_before_allocating() {
     assert_snapshot!(error.unwrap(), @"failed to decode Protobuf message: Print.segments: frame exceeds decode memory budget");
 }
 
+/// Host/domain conversions preserve the same allocation without charging it again.
+#[test]
+fn budget_vectors_transfer_existing_storage_without_copying() {
+    let original = vec![1u32, 2, 3, 4];
+    let pointer = original.as_ptr();
+    let capacity = original.capacity();
+    let mut restored = None;
+    let allocations = measure(|| {
+        with_decode_budget(0, || {
+            let mut values = BudgetVec::from(original);
+            values.truncate(1);
+            values.try_push(5).unwrap();
+            restored = Some(values.into_inner());
+            assert_eq!(decode_budget_remaining(), Some(0));
+        });
+    });
+    let restored = restored.unwrap();
+    assert_eq!(restored, vec![1, 5]);
+    assert_eq!(restored.as_ptr(), pointer);
+    assert_eq!(restored.capacity(), capacity);
+    assert_eq!(allocations.bytes_total, 0);
+}
+
+/// Fallible insertion preserves the vector on failure and never refunds cleared storage.
+#[test]
+fn budget_vectors_reject_growth_without_losing_elements() {
+    with_decode_budget(12 * size_of::<u64>(), || {
+        let mut values = BudgetVec::new();
+        for value in 0u64..8 {
+            values.try_push(value).unwrap();
+        }
+        let pointer = values.as_ptr();
+        assert_eq!(decode_budget_remaining(), Some(0));
+        assert_snapshot!(values.try_push(8).unwrap_err(), @"failed to decode Protobuf message: frame exceeds decode memory budget");
+        assert_eq!(values.as_slice(), &[0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(values.as_ptr(), pointer);
+        assert_eq!(values.capacity(), 8);
+        values.clear();
+        values.try_push(9).unwrap();
+        assert_eq!(values.as_ptr(), pointer);
+        assert_eq!(decode_budget_remaining(), Some(0));
+    });
+}
+
 /// Buffers not all present in today's schema still need a guarded adapter.
 #[derive(Clone, PartialEq, Message)]
 #[prost(prost_path = "monty_proto::budgeted_prost")]
@@ -136,11 +180,11 @@ struct Buffers {
     #[prost(string, tag = "1")]
     text: String,
     #[prost(bytes = "vec", tag = "2")]
-    data: Vec<u8>,
+    data: BudgetVec<u8>,
     #[prost(string, repeated, tag = "3")]
-    texts: Vec<String>,
+    texts: BudgetVec<String>,
     #[prost(bytes = "vec", repeated, tag = "4")]
-    chunks: Vec<Vec<u8>>,
+    chunks: BudgetVec<BudgetVec<u8>>,
 }
 
 /// Strings/bytes share one owned allocation, even with fragmented input buffers.
@@ -148,9 +192,9 @@ struct Buffers {
 fn buffer_payloads_and_repeated_slots_are_charged_once() {
     let expected = Buffers {
         text: "abc".to_owned(),
-        data: vec![1, 2, 3, 4, 5],
-        texts: vec!["hello".to_owned(), "world".to_owned()],
-        chunks: vec![vec![1; 7], vec![]],
+        data: vec![1, 2, 3, 4, 5].into(),
+        texts: vec!["hello".to_owned(), "world".to_owned()].into(),
+        chunks: vec![vec![1; 7].into(), BudgetVec::new()].into(),
     };
     let wire = expected.encode_to_vec();
     let (actual, charged) = measured_decode::<Buffers>(&wire);
@@ -217,7 +261,7 @@ fn packed_and_unpacked_scalars_are_budgeted() {
                     encoding::$module::encode_repeated(1, &expected, &mut wire);
                 }
                 let decode = || {
-                    let mut values = Vec::new();
+                    let mut values = BudgetVec::new();
                     let mut buf = wire.as_slice();
                     while buf.has_remaining() {
                         let (_, wire_type) = encoding::decode_key(&mut buf)?;
@@ -249,7 +293,7 @@ fn packed_and_unpacked_scalars_are_budgeted() {
     check!(double, 1.5f64);
 
     with_decode_budget(0, || {
-        let mut values = Vec::new();
+        let mut values = BudgetVec::new();
         encoding::uint32::merge_repeated(
             WireType::LengthDelimited,
             &mut values,
@@ -320,7 +364,7 @@ fn bigint_conversion_is_preflighted() {
             let expected = BigInt::from_bytes_be(Sign::Plus, &magnitude);
             let payload = pb::BigInt {
                 negative: false,
-                magnitude,
+                magnitude: magnitude.into(),
             }
             .encode_to_vec();
             let wire = repeated_field(6, WireType::LengthDelimited, &payload, 1);
