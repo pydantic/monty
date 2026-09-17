@@ -1,0 +1,32 @@
+crates/monty-bench/benches/decode.rs
+  s_ba45d486b765c4::t_9ddb671c1db15a 10
+  s_ba45d486b765c4::t_9704652f816229 40,46
+  s_ba45d486b765c4::t_0361a2a65a2a89 53,59-60
+crates/monty-js/__test__/value_identity.spec.ts
+  s_ba45d486b765c4::t_97432e08219c8c 1-111,113,116-142
+  s_ba45d486b765c4::t_6311ae950db88f 112,114-115
+crates/monty-python/tests/test_value_identity.py
+  s_ba45d486b765c4::t_6fefc79ed7c7e6 1-9,11-25,28-29,35,38-128,130,133-159
+  s_ba45d486b765c4::t_6311ae950db88f 10,26-27,30-34,36-37,129,131-132
+crates/monty-runtime/tests/subprocess.rs
+  s_ba45d486b765c4::t_e857b2edb66c6a 16-19,115,118-119,123,145-156,168,265-273,294,346,348,396-402,455-457,482,494,547,569,585,604,805,1026,1052,1056
+  s_ba45d486b765c4::t_9f82fffef19738 243-250,252,1092,1107-1108,1126-1127,1145-1146,1158-1159
+  s_ba45d486b765c4::t_696ab1bb48fd80 1085,1653,1798
+  s_ba45d486b765c4::t_9ddb671c1db15a 1938
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8a2fc89147846284d623a632bc2b03982d43bbd5",
+  "prompts": {},
+  "sessions": {
+    "s_ba45d486b765c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc4f662a-117f-497e-8e5b-187279549b8e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
