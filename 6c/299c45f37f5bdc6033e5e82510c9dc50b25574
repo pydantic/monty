@@ -1,0 +1,19 @@
+crates/monty-runtime/tests/subprocess.rs
+  s_10577290207329::t_d6b84827304289 884
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6c299c45f37f5bdc6033e5e82510c9dc50b25574",
+  "prompts": {},
+  "sessions": {
+    "s_10577290207329": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1261ccc8-72a0-427e-a761-c61ce77f710d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

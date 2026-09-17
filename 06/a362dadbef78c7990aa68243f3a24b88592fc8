@@ -1,0 +1,9 @@
+crates/monty/src/dump_format.rs
+  ai_agent 29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "06a362dadbef78c7990aa68243f3a24b88592fc8",
+  "prompts": {}
+}
