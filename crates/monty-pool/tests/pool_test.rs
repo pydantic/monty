@@ -2456,7 +2456,7 @@ async fn max_feed_duration_bounds_each_feed_without_killing_the_worker() {
             .feed("1 + 1", vec![], vec![], false, &mut no_print)
             .await
             .unwrap();
-        assert_eq!(expect_complete(event), MontyObject::Int(2));
+        assert_eq!(expect_complete(event), MontyObject::int(2));
     }
     let err = session
         .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
@@ -2471,7 +2471,7 @@ async fn max_feed_duration_bounds_each_feed_without_killing_the_worker() {
         .feed("2 + 2", vec![], vec![], false, &mut no_print)
         .await
         .unwrap();
-    assert_eq!(expect_complete(event), MontyObject::Int(4));
+    assert_eq!(expect_complete(event), MontyObject::int(4));
     session.finish().await.unwrap();
     assert_eq!(pool.idle_workers(), 1);
 }
@@ -2522,7 +2522,7 @@ async fn huge_feed_and_turn_budgets_do_not_overflow_the_backstop() {
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
         .unwrap();
-    assert_eq!(expect_complete(event), MontyObject::Int(2));
+    assert_eq!(expect_complete(event), MontyObject::int(2));
 }
 
 /// A worker that reports less feed time than it already reported cannot rewind
@@ -2573,6 +2573,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "x".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
         })),
@@ -2581,6 +2582,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
     let resume = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
             kind: Some(pb::resume_name_lookup::Kind::Undefined(pb::Unit {})),
+            values: None,
         })),
         ..pb::ParentRequest::default()
     };
@@ -2642,6 +2644,7 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "x".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
         })),

@@ -1722,7 +1722,7 @@ fn max_feed_duration_restarts_each_feed() {
         assert_eq!(
             repl.feed_run("sum(range(1_000))", vec![], PrintWriter::Stdout)
                 .expect("the next feed gets the whole budget back"),
-            MontyObject::Int(499_500)
+            MontyObject::int(499_500)
         );
     }
 }
@@ -1776,8 +1776,8 @@ fn suspension_time_does_not_count_toward_max_feed_duration() {
 
     thread::sleep(Duration::from_millis(300));
 
-    let progress = call.resume(MontyObject::None, PrintWriter::Stdout).unwrap();
-    assert_eq!(progress.into_complete(), Some(MontyObject::Int(4950)));
+    let progress = call.resume(MontyObject::none(), PrintWriter::Stdout).unwrap();
+    assert_eq!(progress.into_complete(), Some(MontyObject::int(4950)));
 }
 
 /// The turn clock restarts at each resume, so work split across host round
@@ -1811,7 +1811,7 @@ while True:
     .expect("the first iteration suspends");
     while call.tracker().elapsed() < budget * 3 {
         call = call
-            .resume(MontyObject::None, PrintWriter::Stdout)
+            .resume(MontyObject::none(), PrintWriter::Stdout)
             .expect("the turn budget must not accumulate across resumes")
             .into_function_call()
             .expect("every iteration suspends");
@@ -1854,5 +1854,5 @@ fn call_function_starts_a_fresh_feed_budget() {
     let value = repl
         .call_function("work", vec![], PrintWriter::Stdout)
         .expect("the call gets its own budget");
-    assert_eq!(value, MontyObject::Int(49_995_000));
+    assert_eq!(value, MontyObject::int(49_995_000));
 }
