@@ -1,0 +1,40 @@
+crates/monty-js/README.md
+  s_b0f8ac10b9485a::t_932ffa4e148c51 588-599
+crates/monty-js/ts/classInstance.ts
+  s_b0f8ac10b9485a::t_2ca8ea96066478 393-396,492-495,498,501-600,603,605-610,619-626,629-630,632,635-647,666,673-676,678-679,681-684,695-703,712,717-721,724,737-738,740-785,788-792,795,799-800,804-805,809-812,814,825,827-838,840-860,863-866,868-869,871-875
+  s_b0f8ac10b9485a::t_61893312a7eaaa 687-694,705-706
+crates/monty/README.md
+  s_b0f8ac10b9485a::t_59a844025a35f4 121
+crates/monty-python/src/snapshot.rs
+  s_b0f8ac10b9485a::t_7c9bd5081ac871 576,578
+  s_b0f8ac10b9485a::t_c385c6b9a8f76d 43,349,351,549-551,555-575,577,579-580,638,643,764,769
+crates/monty-python/tests/test_value_identity.py
+  s_b0f8ac10b9485a::t_7c9bd5081ac871 182,184
+  s_b0f8ac10b9485a::t_d86e5c40b82baf 17,174-181,183
+crates/monty-types/src/object.rs
+  s_b0f8ac10b9485a::t_616bdeb7451a38 1119-1120,1122-1142,1146-1148,1150-1153,1156
+crates/monty-js/__test__/value_identity.spec.ts
+  s_b0f8ac10b9485a::t_61893312a7eaaa 12,96-113
+crates/monty-js/src/convert.rs
+  s_b0f8ac10b9485a::t_0450473dd9d48e 810-815,817-818,820,844-857
+crates/monty-types/tests/graph.rs
+  s_b0f8ac10b9485a::t_d6e74b6e192496 348-360
+docs/limitations/builtins.md
+  s_b0f8ac10b9485a::t_59a844025a35f4 177
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ea383796df80014e9c330227134cc9528259f52a",
+  "prompts": {},
+  "sessions": {
+    "s_b0f8ac10b9485a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c7a03dc7-b1c4-413c-b8b3-61537212e316",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
