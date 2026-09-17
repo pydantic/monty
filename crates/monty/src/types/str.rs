@@ -71,6 +71,9 @@ impl Str {
     /// - `str()` with no args returns an empty string (even with `encoding=`)
     /// - `str(x)` converts x to its string representation using `py_str`
     /// - `str(b, encoding, errors)` decodes a bytes object via the codec registry
+    ///
+    /// `str(int)` takes a fast path that formats via `itoa` straight into the
+    /// heap, skipping the `py_str` → `py_repr` dispatch.
     pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let StrInitArgs {
             object,
@@ -83,6 +86,7 @@ impl Str {
         if encoding.is_none() && errors.is_none() {
             return match object {
                 None => Ok(Value::InternString(StringId::EMPTY)),
+                Some(Value::Int(i)) => Ok(allocate_string(itoa::Buffer::new().format(*i), vm.heap)),
                 Some(v) => v.py_str(vm),
             };
         }
