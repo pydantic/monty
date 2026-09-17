@@ -82,21 +82,18 @@ pub struct PoolConfig {
     /// between feeds), and the parent bounds each execution turn by the
     /// remaining budget plus this grace.
     ///
-    /// The grace is what the sandbox gets to raise `TimeoutError` itself and
-    /// keep the session alive. A worker that misses it is killed and the call
-    /// fails with [`PoolError::Timeout`], losing the session — so a grace too
-    /// short turns recoverable timeouts into lost workers.
+    /// The grace is the window in which the sandbox may raise `TimeoutError`
+    /// itself and keep the session alive; a worker that misses it is killed and
+    /// the call fails with [`PoolError::Timeout`], so too short a grace costs
+    /// workers that would have recovered.
     pub duration_limit_grace: Option<Duration>,
-    /// Grace period for the `ResourceLimits::max_feed_duration` backstop,
-    /// bounding each turn by what the running feed has left plus this. See
-    /// [`duration_limit_grace`](Self::duration_limit_grace), which works the
-    /// same way one scope out.
+    /// [`duration_limit_grace`](Self::duration_limit_grace) for the
+    /// `ResourceLimits::max_feed_duration` backstop: each turn is bounded by
+    /// what the running feed has left, plus this.
     pub feed_limit_grace: Option<Duration>,
-    /// Grace period for the `ResourceLimits::max_turn_duration` backstop,
-    /// bounding each turn by that limit plus this — no remaining-budget
-    /// arithmetic, since the turn clock starts at zero. See
-    /// [`duration_limit_grace`](Self::duration_limit_grace), which works the
-    /// same way two scopes out.
+    /// [`duration_limit_grace`](Self::duration_limit_grace) for the
+    /// `ResourceLimits::max_turn_duration` backstop: each turn is bounded by
+    /// that whole limit plus this, the turn clock starting at zero.
     pub turn_limit_grace: Option<Duration>,
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child.

@@ -406,11 +406,10 @@ struct SessionBudget {
     /// Monotonic worker-reported sandbox time, preventing a compromised worker
     /// from rewinding the parent's view.
     reported_execution: Duration,
-    /// Worker-reported sandbox time consumed by the feed in progress. Unlike
-    /// `reported_execution` this is *not* ratcheted — it legitimately drops to
-    /// zero at each feed — so a compromised worker can rewind it. That only
-    /// loosens its own feed backstop, which `request_timeout` and the session
-    /// backstop still bound.
+    /// Worker-reported sandbox time consumed by the feed in progress. Not
+    /// ratcheted like `reported_execution` — it legitimately drops to zero at
+    /// each feed — so a worker can rewind it, loosening only its own feed
+    /// backstop; `request_timeout` and the session backstop still bound it.
     reported_feed_execution: Duration,
     /// The session's `max_suspensions` in force (the configured one, else
     /// [`DEFAULT_MAX_SUSPENSIONS`]).
@@ -487,17 +486,14 @@ impl SessionBudget {
         (is_suspension(event) && self.suspensions_seen > self.suspension_limit).then_some(self.suspension_limit)
     }
 
-    /// Returns the tightest of the three duration backstops: for each
-    /// configured budget, what it has left plus that budget's grace.
-    ///
-    /// The child normally raises `TimeoutError` well inside the grace; this
-    /// catches one that stops checking its clock. A budget whose grace is
-    /// `None` is not backstopped at all — the host has said it would rather
-    /// wait than lose the worker.
-    ///
-    /// The turn budget needs no remaining-time arithmetic: a turn's clock is
-    /// zero when the parent arms this, since the child resets it on the very
+    /// Returns the tightest of the three duration backstops: what each
+    /// configured budget has left, plus that budget's grace. The turn budget
+    /// has all of its limit left, since the child resets that clock on the
     /// request being sent.
+    ///
+    /// The child normally raises `TimeoutError` inside the grace; this catches
+    /// one that stops checking its clock. A `None` grace means no backstop —
+    /// the host would rather wait than lose the worker.
     fn backstop_deadline(&self, graces: DurationGraces) -> Option<Duration> {
         [
             remaining_deadline(self.duration_budget, self.reported_execution, graces.session),

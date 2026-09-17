@@ -109,11 +109,11 @@ The three duration limits all count **execution time**, not wall clock:
 
 They read the same clock and differ only in when it restarts:
 
-| Key                      | Restarts            | Bounds                                                   |
-| ------------------------ | ------------------- | -------------------------------------------------------- |
-| `max_duration_secs`      | never               | the whole session, across every `feed_run`               |
-| `max_feed_duration_secs` | at each feed        | one `feed_run`, including every host round trip it makes |
-| `max_turn_duration_secs` | at each host answer | the stretch of code between two host round trips         |
+| Key                      | Restarts            | Bounds                                            |
+| ------------------------ | ------------------- | ------------------------------------------------- |
+| `max_duration_secs`      | never               | the whole session, across every `feed_run`        |
+| `max_feed_duration_secs` | at each feed        | one feed, spanning every host round trip it makes |
+| `max_turn_duration_secs` | at each host answer | the stretch of code between two host round trips  |
 
 So a turn's time is also charged to its feed and to the session, and whichever budget is tightest fires first.
 When one check blows more than one, the widest is reported, because a new feed cannot recover from it.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 
 import pytest
 from conftest import RunMonty
@@ -290,11 +291,18 @@ def test_turn_duration_limit(pool: Monty):
         assert session.feed_run('2 + 2') == snapshot(4)
 
 
-@pytest.mark.parametrize('grace', ['duration_limit_grace', 'feed_limit_grace', 'turn_limit_grace'])
-def test_backstop_grace_can_be_disabled(grace: str):
+@pytest.mark.parametrize(
+    'disable_one_grace',
+    [
+        pytest.param(lambda: Monty(duration_limit_grace=None), id='duration_limit_grace'),
+        pytest.param(lambda: Monty(feed_limit_grace=None), id='feed_limit_grace'),
+        pytest.param(lambda: Monty(turn_limit_grace=None), id='turn_limit_grace'),
+    ],
+)
+def test_backstop_grace_can_be_disabled(disable_one_grace: Callable[[], Monty]):
     """`None` turns a backstop off, leaving the in-sandbox limit to end the feed
     on its own — which it still does, with the session intact."""
-    with Monty(**{grace: None}) as pool:
+    with disable_one_grace() as pool:
         with pool.checkout(limits={'max_feed_duration_secs': 0.1}) as session:
             with pytest.raises(MontyRuntimeError) as exc_info:
                 session.feed_run('while True:\n    pass')
@@ -305,4 +313,6 @@ def test_backstop_grace_can_be_disabled(grace: str):
 def test_negative_grace_is_rejected():
     with pytest.raises(ValueError) as exc_info:
         Monty(turn_limit_grace=-1.0)
-    assert exc_info.value.args[0] == snapshot("invalid turn_limit_grace: cannot convert float seconds to Duration: value is negative")
+    assert exc_info.value.args[0] == snapshot(
+        'invalid turn_limit_grace: cannot convert float seconds to Duration: value is negative'
+    )

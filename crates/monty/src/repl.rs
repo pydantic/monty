@@ -415,8 +415,7 @@ impl MontyRepl {
 
         let original_globals_len = self.globals.len();
         self.ensure_globals_size(executor.namespace_size());
-        // A host-driven call is its own unit of work, not part of whichever
-        // feed ran last, so it opens a fresh feed as well as a fresh turn.
+        // A host-driven call is its own unit of work, so it opens a fresh feed.
         self.heap.tracker.on_feed_start();
         let result = HeapReader::with(&mut self.heap, &mut (&executor, print), |reader, (executor, print)| {
             let vm = &mut VM::new(

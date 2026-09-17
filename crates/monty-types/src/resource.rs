@@ -69,8 +69,7 @@ pub const LARGE_RESULT_THRESHOLD: usize = 100_000;
 /// surfaces as a catchable `RecursionError`, matching CPython.
 #[derive(Debug, Clone)]
 pub enum ResourceError {
-    /// One of the three execution-time budgets was exceeded; `scope` says
-    /// which, since they differ only in when their clock was last reset.
+    /// One of the three execution-time budgets was exceeded; `scope` says which.
     Time {
         scope: TimeLimitScope,
         limit: Duration,
@@ -85,10 +84,9 @@ pub enum ResourceError {
 /// Which of the three nested execution-time budgets a [`ResourceError::Time`]
 /// refers to.
 ///
-/// The three share one clock — it runs only while the interpreter executes
-/// bytecode — and differ solely in when they are reset: never (session), at
-/// each feed, and at each host turn. So a turn's time is also charged to its
-/// feed and to the session, and `Session >= Feed >= Turn` always holds.
+/// All three read the same clock and differ only in when they are reset, so a
+/// turn's time is charged to its feed and to the session as well:
+/// `Session >= Feed >= Turn` always holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeLimitScope {
     /// [`ResourceLimits::max_duration`] — never reset, survives dump/load.
@@ -102,7 +100,7 @@ pub enum TimeLimitScope {
 
 impl TimeLimitScope {
     /// The word naming this scope in an error message, empty for the session
-    /// budget so its long-standing message text is unchanged.
+    /// budget so its existing message text is unchanged.
     fn prefix(self) -> &'static str {
         match self {
             Self::Session => "",
@@ -143,17 +141,13 @@ impl Error for ResourceError {}
 pub struct ResourceLimits {
     /// Maximum cumulative execution time for the whole session.
     pub max_duration: Option<Duration>,
-    /// Maximum execution time for a single feed, reset when one starts.
-    ///
-    /// Bounds one `feed_run` (including every host round trip it makes)
-    /// without bounding how long the session may live overall.
+    /// Maximum execution time for a single feed (`feed_start`, `feed_run` or
+    /// `call_function`), summed over the turns it takes and excluding time
+    /// suspended on the host. Bounds one snippet, not the session.
     pub max_feed_duration: Option<Duration>,
     /// Maximum execution time for a single host turn, reset at each feed and
-    /// each resume.
-    ///
-    /// Bounds the stretch of sandbox code between two host round trips — the
-    /// tightest of the three, and the one a host wanting a predictable
-    /// response time per call reaches for.
+    /// each resume. Bounds the stretch of sandbox code between two host round
+    /// trips, so a host can bound its own response time per call.
     pub max_turn_duration: Option<Duration>,
     /// Maximum allocator-backed memory in bytes.
     ///
@@ -254,23 +248,20 @@ impl ResourceLimits {
 ///
 /// Uses `Cell` for mutable timing and recursion state behind shared references.
 ///
-/// The three duration limits all measure *execution time*: the clock runs
-/// only while the VM is executing bytecode (between the outermost
-/// `on_execution_start`/`on_execution_stop` pair) and is paused while
-/// execution is suspended waiting on the host — external function calls,
-/// OS callbacks — and between REPL feeds. They differ only in scope, which
-/// is set by when their accumulator is reset: `max_duration` never resets,
-/// `max_feed_duration` resets at [`on_feed_start`](Self::on_feed_start), and
-/// `max_turn_duration` resets at [`on_turn_start`](Self::on_turn_start). The
-/// session and feed totals are serialized, so a deserialized session resumes
-/// its budgets where it left off rather than restarting from zero.
+/// The three duration limits share one *execution time* clock: it runs only
+/// between the outermost `on_execution_start`/`on_execution_stop` pair, so it
+/// is paused while suspended on the host and between REPL feeds. They differ
+/// only in when their accumulator resets — never, at
+/// [`on_feed_start`](Self::on_feed_start), at [`on_turn_start`](Self::on_turn_start)
+/// — and the session and feed totals are serialized, so a loaded session
+/// resumes its budgets rather than restarting from zero.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResourceTracker {
     limits: ResourceLimits,
     /// Execution time accumulated by completed `on_execution_start`/`stop`
-    /// windows. Serialized so time budgets survive dump/load. The serde
-    /// default helps self-describing formats; postcard snapshots are
-    /// positional, so older snapshot layouts still fail closed at decode.
+    /// windows, serialized so time budgets survive dump/load. The serde default
+    /// is for self-describing formats; a postcard dump of an older layout is
+    /// rejected by `DUMP_VERSION` instead.
     #[serde(default)]
     total_execution_time: Cell<Duration>,
     /// Execution time accumulated since the last [`on_feed_start`](Self::on_feed_start).
@@ -434,16 +425,14 @@ impl ResourceTracker {
     }
 
     /// Sets the per-feed execution limit as a fresh budget from now, resetting
-    /// the feed (and so the turn) clock. The phase-by-phase sibling of
-    /// [`set_max_duration`](Self::set_max_duration).
+    /// the feed (and so the turn) clock.
     pub fn set_max_feed_duration(&mut self, duration: Duration) {
         self.limits.max_feed_duration = Some(duration);
         self.on_feed_start();
     }
 
     /// Sets the per-turn execution limit as a fresh budget from now, resetting
-    /// the turn clock. The phase-by-phase sibling of
-    /// [`set_max_duration`](Self::set_max_duration).
+    /// the turn clock.
     pub fn set_max_turn_duration(&mut self, duration: Duration) {
         self.limits.max_turn_duration = Some(duration);
         self.on_turn_start();
@@ -488,9 +477,8 @@ impl ResourceTracker {
     ///
     /// Each clock is monotonic within its scope, so once a budget is exceeded
     /// every later call in that scope fails too. Budgets are tested widest
-    /// first (session, then feed, then turn): when more than one has been
-    /// blown by the same check, the widest is the more consequential news —
-    /// it is the one the caller cannot recover from by starting a new feed.
+    /// first (session, then feed, then turn), since a wider budget is the one
+    /// a new feed cannot recover from.
     #[inline]
     pub fn check_time(&self) -> Result<(), ResourceError> {
         if !self.has_time_limit() {
@@ -696,13 +684,11 @@ impl ResourceTracker {
         self.on_turn_start();
     }
 
-    /// Called when the host hands control back to the interpreter, resetting
-    /// the `max_turn_duration` budget.
+    /// Called when the host hands control back to the interpreter — at a feed
+    /// or a resume — resetting the `max_turn_duration` budget.
     ///
-    /// A turn is one host round trip: it opens at a feed or a resume and
-    /// closes when the interpreter next suspends or finishes. Continuations
-    /// the VM resolves without the host (an internally answered name lookup,
-    /// a task switch) stay inside the turn that started them.
+    /// Continuations the VM resolves without the host (an already-settled
+    /// future, a task switch) stay inside the turn that started them.
     pub fn on_turn_start(&self) {
         self.turn_execution_time.set(Duration::ZERO);
     }

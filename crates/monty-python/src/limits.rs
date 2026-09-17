@@ -47,8 +47,8 @@ pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty_types::Resourc
     Ok(limits)
 }
 
-/// Reads one `*_duration_secs` value as a `Duration`, rejecting the negatives
-/// and NaNs `try_from_secs_f64` refuses.
+/// Reads one `*_duration_secs` value as a `Duration`, rejecting negative, NaN
+/// and out-of-range values.
 fn extract_duration(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
     Duration::try_from_secs_f64(value.extract()?).map_err(|err| PyValueError::new_err(err.to_string()))
 }

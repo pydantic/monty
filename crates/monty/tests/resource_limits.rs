@@ -1761,8 +1761,6 @@ fn suspension_time_does_not_count_toward_max_feed_duration() {
 /// trips stays inside a per-turn budget that its total would blow.
 #[test]
 fn max_turn_duration_restarts_each_resume() {
-    // Three stretches of work, each well under the per-turn budget but adding
-    // up to more than it.
     let code = "
 total = sum(range(200_000))
 interrupt()
@@ -1800,19 +1798,21 @@ fn max_turn_duration_is_enforced_alone() {
 }
 
 /// `call_function` is its own unit of work: it opens a fresh feed, so a
-/// session that has already fed a lot still gets the full per-feed budget.
+/// session that has already spent one still gets the full per-feed budget.
+///
+/// The spent feed overruns rather than being timed to eat part of the budget,
+/// so the test does not depend on wall-clock timing.
 #[test]
 fn call_function_starts_a_fresh_feed_budget() {
-    let mut repl = feed_limited_repl(Duration::from_millis(500));
+    let mut repl = feed_limited_repl(Duration::from_millis(50));
     repl.feed_run(
         "def work():\n    return sum(range(10_000))",
         vec![],
         PrintWriter::Stdout,
     )
     .unwrap();
-    // Burn most of a feed budget, then check the call is not charged for it.
-    repl.feed_run("sum(range(300_000))", vec![], PrintWriter::Stdout)
-        .unwrap();
+    repl.feed_run("while True:\n    pass", vec![], PrintWriter::Stdout)
+        .expect_err("the runaway feed must exhaust its budget");
     let value = repl
         .call_function("work", vec![], PrintWriter::Stdout)
         .expect("the call gets its own budget");

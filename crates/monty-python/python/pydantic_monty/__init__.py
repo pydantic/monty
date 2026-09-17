@@ -127,27 +127,22 @@ class ResourceLimits(TypedDict, total=False):
     `max_suspensions` cannot be disabled, and omitting either leaves its
     1000 default in place.
 
-    The three duration limits measure the same clock — it runs only while
-    sandboxed code executes, never while a call is suspended waiting on the
-    host — and differ only in when it restarts: never, at each feed, and at
-    each host round trip. Exceeding any of them raises `TimeoutError` in the
-    sandbox; the session stays usable.
+    The three duration limits share one clock, which runs only while sandboxed
+    code executes, never while suspended waiting on the host; they differ in
+    when it restarts: never, at each feed, at each host round trip. Exceeding
+    any raises `TimeoutError` in the sandbox; the session stays usable.
     """
 
     max_duration_secs: float | None
     """Maximum execution time for the whole session, in seconds."""
 
     max_feed_duration_secs: float | None
-    """Maximum execution time for a single `feed_run`, in seconds.
-
-    The clock restarts at each feed, so this bounds one snippet without
-    bounding how long the session may live."""
+    """Maximum execution time for a single feed (`feed_run` or `feed_start`), in seconds."""
 
     max_turn_duration_secs: float | None
     """Maximum execution time between host round trips, in seconds.
 
-    The clock restarts at each feed and each answered external call, so a
-    snippet that calls out to the host may run longer than this in total."""
+    A snippet that calls out to the host may run longer than this in total."""
 
     max_memory: int | None
     """Maximum heap memory in bytes."""

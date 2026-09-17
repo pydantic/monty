@@ -223,8 +223,8 @@ console.log(await session.feedRun('fetch_data()', { externalLookup: { fetch_data
 ```
 
 Omitted `maxMemory` / `maxDurationSecs` means unlimited.
-`maxFeedDurationSecs` and `maxTurnDurationSecs` bound the same execution clock as `maxDurationSecs` over one `feedRun`
-and one stretch of code between host round trips; each is unlimited when omitted.
+`maxFeedDurationSecs` and `maxTurnDurationSecs` bound the same execution clock as `maxDurationSecs` over one feed
+(`feedRun` or `feedStart`) and one stretch of code between host round trips; each is unlimited when omitted.
 `maxRecursionDepth` and `maxSuspensions` default to 1000 and cannot be disabled.
 `gcInterval` defaults to every 100,000 allocations.
 The pool enforces `maxSuspensions`: the first suspension over the budget ends the feed with an uncatchable

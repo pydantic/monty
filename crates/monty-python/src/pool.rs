@@ -1184,21 +1184,17 @@ fn parse_websocket_config(
     Ok(config)
 }
 
-// Each pool constructor defaults its three graces to a literal `1.0` second,
-// because pyo3 renders a non-literal `signature` default as `...` in the
-// generated signature (and stubtest then flags the stub). The literal is
-// `monty-pool`'s own default, and this pins the two together.
+// The pool constructors default their graces to a literal `1.0` second because
+// pyo3 renders a non-literal `signature` default as `...`, which stubtest then
+// flags. This pins that literal to `monty-pool`'s own default.
 const _: () = assert!(
     DEFAULT_DURATION_LIMIT_GRACE.as_secs() == 1 && DEFAULT_DURATION_LIMIT_GRACE.subsec_nanos() == 0,
     "the pool's default duration grace changed: update the `1.0` literals in the constructor signatures"
 );
 
 /// The three duration-backstop graces as a pool constructor takes them, in
-/// seconds, with `None` meaning that limit is not backstopped.
-///
-/// `None` keeps its ordinary Python meaning here — "no grace at all" — rather
-/// than doubling as "unspecified", which is why the constructors default these
-/// to a real number instead.
+/// seconds. `None` means that limit is not backstopped at all, rather than
+/// "unspecified" — hence the constructors' real-number defaults.
 struct GraceArgs {
     session: Option<f64>,
     feed: Option<f64>,

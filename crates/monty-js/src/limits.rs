@@ -83,8 +83,9 @@ impl TryFrom<JsResourceLimits> for ResourceLimits {
     }
 }
 
-/// Converts a JavaScript `number` of seconds into a `Duration`, rejecting the
-/// negatives, NaNs and overflows `try_from_secs_f64` refuses.
+/// Converts a JavaScript `number` of seconds into a `Duration`.
+///
+/// Returns `Err` for non-finite, negative, or out-of-range inputs.
 fn js_number_to_duration(secs: f64) -> Result<Duration> {
     Duration::try_from_secs_f64(secs).map_err(|err| Error::new(Status::InvalidArg, err.to_string()))
 }
