@@ -116,7 +116,7 @@ len(calls)
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
-    assert_eq!(result, MontyObject::Int(0));
+    assert_eq!(result, MontyObject::int(0));
 }
 
 #[test]
@@ -132,7 +132,7 @@ len(xs)
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
-    assert_eq!(result, MontyObject::Int(2));
+    assert_eq!(result, MontyObject::int(2));
 }
 
 #[test]
@@ -150,7 +150,7 @@ len(calls)
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
-    assert_eq!(result, MontyObject::Int(1));
+    assert_eq!(result, MontyObject::int(1));
 }
 
 #[test]
@@ -164,7 +164,7 @@ r
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
-    assert_eq!(result, MontyObject::String("assert 1 == 2".into()));
+    assert_eq!(result, MontyObject::string("assert 1 == 2"));
 }
 
 #[test]
@@ -273,7 +273,7 @@ r[:10] + '|' + r[-9:] + '|' + str(len(r))
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).expect("AssertionError should be caught");
     // 7 ("assert ") + 121 (120-char repr + `…`) + 6 (" == []") = 134 chars.
-    assert_eq!(result, MontyObject::String("assert ['x|xx… == []|134".into()));
+    assert_eq!(result, MontyObject::string("assert ['x|xx… == []|134"));
 }
 
 #[test]
@@ -341,9 +341,9 @@ fn zero_limit_means_off_not_a_zero_length_repr() {
 }
 
 #[test]
-fn forged_snapshot_cannot_smuggle_in_a_zero_limit() {
-    // Dumps are untrusted. The `MaxBytes(1)` case pins the encoding (variant
-    // index 1, then the u32) so the rejection can't pass for another reason.
+fn deserialization_preserves_nonzero_limit_representation() {
+    // `NonZeroU32` must remain nonzero even in invalid serialized state.
+    // Pin the encoding (variant index 1, then the u32) with `MaxBytes(1)`.
     let valid: AssertMessageAnnotations = postcard::from_bytes(&[1u8, 1u8]).expect("MaxBytes(1) should decode");
     assert_eq!(valid, AssertMessageAnnotations::from_max_bytes(1));
     postcard::from_bytes::<AssertMessageAnnotations>(&[1u8, 0u8]).expect_err("MaxBytes(0) must not decode");

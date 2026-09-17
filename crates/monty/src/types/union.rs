@@ -380,7 +380,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
     /// (always `()`); nothing is delegated, so any other name is an
     /// `AttributeError` on the union.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        match attr.static_string() {
+        match attr.static_string(vm.interns) {
             Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(self.get(vm.heap).args(vm.heap)))),
             Some(StaticStrings::DunderOrigin) => {
                 Ok(Some(CallResult::Value(Value::Builtin(Builtins::Type(Type::Union)))))

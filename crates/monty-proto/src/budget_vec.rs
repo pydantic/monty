@@ -76,7 +76,7 @@ impl<T> BudgetVec<T> {
     }
 
     /// Charges the full replacement allocation to cover reallocation overlap.
-    fn try_reserve_capacity(&mut self, capacity: usize) -> Result<(), DecodeError> {
+    pub(crate) fn try_reserve_capacity(&mut self, capacity: usize) -> Result<(), DecodeError> {
         if capacity > self.0.capacity() {
             charge(capacity.checked_mul(size_of::<T>()).ok_or_else(exhausted)?)?;
             self.0

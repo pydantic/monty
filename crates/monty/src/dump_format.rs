@@ -26,7 +26,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// rejected instead of decoding as their neighbour. That covers the
 /// interpreter's own types *and* everything reachable from [`Dump`] — notably
 /// [`TypeCheckingConfig`](monty_types::TypeCheckingConfig) in `monty-types`.
-pub const DUMP_VERSION: u16 = 9;
+pub const DUMP_VERSION: u16 = 11;
 
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
@@ -82,6 +82,14 @@ pub struct Dump {
 
 impl Dump {
     /// Restores a session dumped by [`dump`].
+    ///
+    /// # Snapshot trust
+    /// The caller must establish that the bytes are unmodified output from a trusted,
+    /// compatible Monty producer. Invalid snapshots have no correctness or availability
+    /// guarantees: loading or using them may panic, abort, hang, or produce wrong results,
+    /// but must not cause undefined behaviour in the host process.
+    /// Successful decoding does not authenticate or fully validate a snapshot.
+    /// The same contract applies to direct serde deserialization.
     ///
     /// # Errors
     /// Returns [`DumpError`] for a dump this build cannot read — most usefully
@@ -178,10 +186,7 @@ mod tests {
     use strum::VariantNames;
 
     use super::DUMP_VERSION;
-    use crate::{
-        bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint,
-        intern::static_strings_fingerprint, types::Type,
-    };
+    use crate::{bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, types::Type};
 
     /// If a component changes incompatibly, bump `DUMP_VERSION` before updating its
     /// expected fingerprint. Compatible changes only require a fingerprint update.
@@ -192,15 +197,9 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0x0d57_34dd_be07_19ac,
+            0xc121_c3a3_9312_15ad,
             "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(opcode_fingerprint())
-        );
-        assert_eq!(
-            static_strings_fingerprint(),
-            0x3ee2_697e_439b_44b2,
-            "static strings changed for dump version {DUMP_VERSION}, actual: {}",
-            grouped_hex(static_strings_fingerprint())
         );
         assert_eq!(
             comparison_operators_fingerprint(),
@@ -213,7 +212,6 @@ mod tests {
         // every postcard discriminant. Asserted rather than assumed, so a strum
         // upgrade that changed it says so instead of quietly narrowing the guard.
         assert!(Type::VARIANTS.contains(&"instance"));
-        assert!(MontyType::VARIANTS.contains(&"instance"));
         assert!(MontyType::VARIANTS.contains(&"exception"));
 
         assert_eq!(
@@ -224,7 +222,7 @@ mod tests {
         );
         assert_eq!(
             variant_order_fingerprint(MontyType::VARIANTS),
-            0xbde0_3964_2ba2_2ce1,
+            0x0e43_247e_0759_a195,
             "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_order_fingerprint(MontyType::VARIANTS))
         );
@@ -255,9 +253,9 @@ mod tests {
     /// failing the version check. Appending leaves this unchanged for every
     /// existing variant; inserting or reordering does not.
     ///
-    /// The list covers the `#[strum(disabled)]` variants too — `Type::Instance`,
-    /// `MontyType::{Instance, Exception}` — which carry discriminants like any
-    /// other despite having no name to round-trip through `EnumString`.
+    /// The list covers the `#[strum(disabled)]` variants too — `Type::Instance`
+    /// and `MontyType::Exception` — which carry discriminants like any other
+    /// despite having no name to round-trip through `EnumString`.
     fn variant_order_fingerprint(variants: &[&str]) -> u64 {
         const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
         const PRIME: u64 = 0x0100_0000_01b3;

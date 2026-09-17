@@ -40,12 +40,17 @@ it is included in a dump.
 ## Behavioural notes
 
 - **`Random` instances do not convert to host values.** Returning a `Random` instance, `random.Random` or `type(rng)`
-    to the host produces `MontyObject::Repr` in Rust and a string in Python.
+    to the host produces `MontyNode::Repr` in Rust and a string in Python.
     Return the generated values or `rng.getstate()` instead.
 - **No `SystemRandom`**, and `random.Random` cannot be subclassed (Monty has no class inheritance, see
     [classes.md](classes.md)).
     `random.Random.VERSION` on the class raises `AttributeError`; on an instance it is `3`.
     Instances have no `gauss_next` attribute.
+- **Copying an unseeded generator gives two independent streams.** `copy.copy(rng)` and `copy.deepcopy(rng)` rebuild
+    a generator at the same point in the same sequence, but one that has never been seeded has no state to carry, so
+    each copy takes its own entropy from the host on its first draw.
+    CPython seeds at construction, so its copies agree.
+    See [copy.md](copy.md).
 - **Instance methods must be called directly**, as on other native objects such as `re.Pattern`.
     `rng.random()` works, but `draw = rng.random` and `getattr(rng, 'random')` raise `AttributeError`.
     Module functions can be stored and passed as callbacks: `draw = random.random` works.

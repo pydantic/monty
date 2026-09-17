@@ -21,7 +21,7 @@ use crate::{
         Node, Operator, SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
-    intern::{InternerBuilder, StringId},
+    intern::{Interns, StringId},
     source_map::{SourceMap, StackFrameExt},
     stringize::stringize_annotation,
     types::long_int::INT_MAX_STR_DIGITS,
@@ -173,11 +173,11 @@ pub struct ExceptHandler<N> {
 #[derive(Debug)]
 pub struct ParseResult {
     pub nodes: Vec<ParseNode>,
-    pub interner: InternerBuilder,
+    pub interner: Interns,
 }
 
 pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseError> {
-    let mut interner = InternerBuilder::new(code);
+    let mut interner = Interns::new(code);
     let nodes = parse_with_interner(code, filename, &mut interner)?;
     Ok(ParseResult { nodes, interner })
 }
@@ -202,7 +202,7 @@ fn code_range(filename: StringId, range: TextRange) -> CodeRange {
 pub(crate) fn parse_with_interner(
     code: &str,
     filename: &str,
-    interner: &mut InternerBuilder,
+    interner: &mut Interns,
 ) -> Result<Vec<ParseNode>, ParseError> {
     // Interned up front so a syntax error can be located without a `Parser`,
     // leaving the parser to be built once, fully populated, after parsing.
@@ -229,7 +229,7 @@ pub struct Parser<'a> {
     /// Interned filename ID, used for all CodeRanges created by this parser.
     filename_id: StringId,
     /// String interner for names (variables, functions, etc).
-    interner: &'a mut InternerBuilder,
+    interner: &'a mut Interns,
     /// Remaining nesting depth budget for recursive structures.
     /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
     /// When it reaches zero, we return a "Source is too deeply nested" syntax error.
@@ -248,7 +248,7 @@ impl<'a> Parser<'a> {
     fn new(
         code: &'a str,
         filename_id: StringId,
-        interner: &'a mut InternerBuilder,
+        interner: &'a mut Interns,
         class_keyword_offsets: Vec<TextSize>,
     ) -> Self {
         Self {

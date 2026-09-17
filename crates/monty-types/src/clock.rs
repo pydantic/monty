@@ -56,7 +56,7 @@ impl HostClock {
             OsFunctionCall::DateToday => {
                 let (utc, local_offset_seconds) = self.instant()?;
                 let local = shift(utc, local_offset_seconds)?;
-                Some(MontyObject::Date(MontyDate {
+                Some(MontyObject::date(MontyDate {
                     year: local.year(),
                     month: u8::try_from(local.month()).ok()?,
                     day: u8::try_from(local.day()).ok()?,
@@ -68,7 +68,7 @@ impl HostClock {
                 let (utc, local_offset_seconds) = self.instant()?;
                 let offset_seconds = tz.as_ref().map_or(local_offset_seconds, |tz| tz.offset_seconds);
                 let local = shift(utc, offset_seconds)?;
-                Some(MontyObject::DateTime(MontyDateTime {
+                Some(MontyObject::datetime(MontyDateTime {
                     year: local.year(),
                     month: u8::try_from(local.month()).ok()?,
                     day: u8::try_from(local.day()).ok()?,

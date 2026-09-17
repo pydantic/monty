@@ -118,7 +118,7 @@ impl MountTable {
                 // Both make CPython's predicates answer `False` rather than
                 // raise — `pathlib` swallows `OSError` and `ValueError` alike.
                 MountCallOutcome::Handled(if call.is_existence_check() {
-                    Ok(MontyObject::Bool(false))
+                    Ok(MontyObject::bool(false))
                 } else {
                     Err(e)
                 })

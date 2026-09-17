@@ -23,8 +23,9 @@ use monty::{MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, HostClock, MontyException, MontyObject,
-    NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig, validate_cwd,
+    CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, HostClock, MontyException,
+    MontyObject, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig,
+    validate_cwd,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
@@ -432,7 +433,7 @@ fn execute_repl_snippet(
     if mount_table.is_some() {
         match execute_repl_with_mounts(r, snippet, mount_table, suspensions) {
             Ok((returned_repl, output)) => {
-                if output != MontyObject::None {
+                if output != MontyObject::none() {
                     println!("{output}");
                 }
                 *repl = Some(returned_repl);
@@ -447,7 +448,7 @@ fn execute_repl_snippet(
         let mut r = r;
         match r.feed_run(snippet, vec![], PrintWriter::Stdout) {
             Ok(output) => {
-                if output != MontyObject::None {
+                if output != MontyObject::none() {
                     println!("{output}");
                 }
             }
@@ -563,10 +564,7 @@ fn run_until_complete(
             }
             RunProgress::NameLookup(lookup) => {
                 let result = if lookup.name == "add_ints" {
-                    NameLookupResult::Value(MontyObject::Function {
-                        name: "add_ints".to_string(),
-                        docstring: None,
-                    })
+                    NameLookupResult::from(MontyObject::function("add_ints".to_string(), None))
                 } else {
                     NameLookupResult::Undefined
                 };
@@ -655,19 +653,28 @@ fn handle_os_call(call: OsFunctionCall, mount_table: &mut Option<MountTable>) ->
 ///
 /// Returns a runtime-like error string for unknown function names, wrong arity,
 /// or incorrect argument types.
-fn resolve_external_call(function_name: &str, args: &[MontyObject]) -> Result<MontyObject, String> {
+fn resolve_external_call(function_name: &str, args: &CallArgs) -> Result<MontyObject, String> {
+    let rendered = || args.args().map(|arg| arg.py_repr()).collect::<Vec<_>>().join(", ");
     if function_name != "add_ints" {
-        return Err(format!("unknown external function: {function_name}({args:?})"));
+        return Err(format!("unknown external function: {function_name}({})", rendered()));
     }
 
-    if args.len() != 2 {
-        return Err(format!("add_ints requires exactly 2 arguments, got {}", args.len()));
+    if args.arg_ids.len() != 2 {
+        return Err(format!(
+            "add_ints requires exactly 2 arguments, got {}",
+            args.arg_ids.len()
+        ));
     }
 
-    if let (MontyObject::Int(a), MontyObject::Int(b)) = (&args[0], &args[1]) {
-        Ok(MontyObject::Int(a + b))
-    } else {
-        Err(format!("add_ints requires integer arguments, got {args:?}"))
+    match (
+        args.arg(0).and_then(|a| a.as_int()),
+        args.arg(1).and_then(|b| b.as_int()),
+    ) {
+        (Some(a), Some(b)) => a
+            .checked_add(b)
+            .map(MontyObject::int)
+            .ok_or_else(|| format!("add_ints result is out of i64 range, got {}", rendered())),
+        _ => Err(format!("add_ints requires integer arguments, got {}", rendered())),
     }
 }
 

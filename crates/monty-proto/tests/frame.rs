@@ -1,7 +1,7 @@
 use std::io::{self, Read};
 
 use monty_proto::{
-    BudgetVec, FrameError, FrameReader, pb,
+    FrameError, FrameReader, pb,
     pb::{child_event::Kind as EventKind, parent_request::Kind as RequestKind},
     write_frame,
 };
@@ -21,7 +21,8 @@ fn feed() -> pb::ParentRequest {
     pb::ParentRequest {
         kind: Some(RequestKind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: BudgetVec::new(),
+            inputs: vec![].into(),
+            values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
         })),

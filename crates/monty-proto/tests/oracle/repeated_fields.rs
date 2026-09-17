@@ -4,32 +4,39 @@
 #[test]
 fn every_schema_repeated_field_is_budgeted() {
     check_repeated(
-        "monty.v1.ObjectList.items",
-        1,
+        "monty.v1.Arena.nodes",
+        2,
         WireType::LengthDelimited,
         &[18, 0],
-        |message: &pb::ObjectList| &message.items,
+        |message: &WireArena| &message.0,
     );
     check_repeated(
-        "monty.v1.Dict.pairs",
+        "monty.v1.Indexes.items",
+        1,
+        WireType::Varint,
+        &[0],
+        |message: &pb::Indexes| &message.items,
+    );
+    check_repeated(
+        "monty.v1.NodePairs.pairs",
         1,
         WireType::LengthDelimited,
-        &[10, 2, 18, 0, 18, 2, 18, 0],
-        |message: &pb::Dict| &message.pairs,
+        &[],
+        |message: &pb::NodePairs| &message.pairs,
     );
     check_repeated(
-        "monty.v1.NamedTuple.field_names",
+        "monty.v1.NamedTupleNode.field_names",
         2,
         WireType::LengthDelimited,
         &[],
-        |message: &pb::NamedTuple| &message.field_names,
+        |message: &pb::NamedTupleNode| &message.field_names,
     );
     check_repeated(
-        "monty.v1.NamedTuple.values",
+        "monty.v1.NamedTupleNode.values",
         3,
-        WireType::LengthDelimited,
-        &[18, 0],
-        |message: &pb::NamedTuple| &message.values,
+        WireType::Varint,
+        &[0],
+        |message: &pb::NamedTupleNode| &message.values,
     );
     check_repeated(
         "monty.v1.RaisedException.traceback",
@@ -61,7 +68,7 @@ fn every_schema_repeated_field_is_budgeted() {
     );
     check_repeated(
         "monty.v1.Print.segments",
-        3,
+        1,
         WireType::LengthDelimited,
         &[],
         |message: &pb::Print| &message.segments,
@@ -69,15 +76,15 @@ fn every_schema_repeated_field_is_budgeted() {
     check_repeated(
         "monty.v1.FunctionCall.args",
         2,
-        WireType::LengthDelimited,
-        &[18, 0],
+        WireType::Varint,
+        &[0],
         |message: &WireFunctionCall| &message.args,
     );
     check_repeated(
         "monty.v1.FunctionCall.kwargs",
         3,
         WireType::LengthDelimited,
-        &[10, 2, 18, 0, 18, 2, 18, 0],
+        &[],
         |message: &WireFunctionCall| &message.kwargs,
     );
     check_repeated(

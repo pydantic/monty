@@ -373,6 +373,63 @@ impl ResourceTracker {
         }
     }
 
+    /// Preflights the reallocation that pushing one more element onto a dense
+    /// buffer causes; a push that fits the existing capacity costs nothing.
+    ///
+    /// A `Vec` charges its whole doubling in one allocation, so a push
+    /// straddling the soft limit can land past the allocator's fixed
+    /// hard-limit headroom, killing the worker with no checkpoint in between
+    /// at which to raise `MemoryError`. Only for the one-push shape: a bulk
+    /// reservation needs [`ResourceTracker::check_allocation`] sized for the
+    /// whole result, since preflighting less than the final buffer — one
+    /// operand of a merge, say — leaves the same window open.
+    #[inline]
+    pub fn check_growth(&self, len: usize, capacity: usize, elem_size: usize) -> Result<(), ResourceError> {
+        self.check_pending_allocation(Self::growth_bytes(len, capacity, elem_size))
+    }
+
+    /// The bytes [`check_growth`](Self::check_growth) would preflight, or zero
+    /// if the push allocates nothing.
+    ///
+    /// Split out for containers that grow two buffers on one insertion, such
+    /// as a dict's entry vector and index table: checking each increment alone
+    /// passes both while their sum clears the headroom, so the caller sums
+    /// them and passes the total to
+    /// [`check_pending_allocation`](Self::check_pending_allocation).
+    #[inline]
+    #[must_use]
+    pub fn growth_bytes(len: usize, capacity: usize, elem_size: usize) -> usize {
+        if len < capacity {
+            0
+        } else {
+            // A buffer growing from nothing jumps straight to
+            // `RawVec::MIN_NON_ZERO_CAP`, which is also what stops the
+            // increment coming out as zero.
+            let min_non_zero_capacity = match elem_size {
+                1 => 8,
+                2..=1024 => 4,
+                _ => 1,
+            };
+            let new_capacity = capacity
+                .saturating_mul(2)
+                .max(len.saturating_add(1))
+                .max(min_non_zero_capacity);
+            new_capacity.saturating_sub(capacity).saturating_mul(elem_size)
+        }
+    }
+
+    /// [`check_allocation`](Self::check_allocation) for preflights whose
+    /// increment may be zero: a push that allocates nothing must not pay for
+    /// the usage probe.
+    #[inline]
+    pub fn check_pending_allocation(&self, additional: usize) -> Result<(), ResourceError> {
+        if additional == 0 {
+            Ok(())
+        } else {
+            self.check_allocation(additional)
+        }
+    }
+
     /// Called before pushing a new call frame to check recursion depth.
     ///
     /// Returns `Ok(())` if within recursion limit, or `Err(ResourceError::Recursion)`

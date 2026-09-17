@@ -82,7 +82,7 @@ impl Str {
         defer_drop!(errors, vm);
         if encoding.is_none() && errors.is_none() {
             return match object {
-                None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
+                None => Ok(Value::InternString(StringId::EMPTY)),
                 Some(v) => v.py_str(vm),
             };
         }
@@ -92,7 +92,7 @@ impl Str {
         str_ctor_arg_check(errors.as_ref(), "errors", vm)?;
         let Some(object) = object else {
             // A missing object wins over the decoding args: `str(encoding='utf-8')` is ''.
-            return Ok(Value::InternString(StaticStrings::EmptyString.into()));
+            return Ok(Value::InternString(StringId::EMPTY));
         };
         let bytes: &[u8] = match object {
             Value::InternBytes(bytes_id) => vm.interns.get_bytes(*bytes_id),
@@ -161,29 +161,13 @@ fn ctor_str_arg<'a>(arg: Option<&'a Value>, default: &'a str, vm: &'a VM<'_>) ->
     }
 }
 
-/// Allocates a string, using interned versions when possible.
-///
-/// Optimizations:
-/// - Empty strings return the pre-interned `StaticStrings::EmptyString`
-/// - Single ASCII characters return pre-interned ASCII strings
-/// - Other strings are allocated on the heap
-///
-/// This avoids heap allocation for common cases like results from `strip()`,
-/// `split()`, string iteration, etc. Prefer this over manual `Str` construction
-/// so callsites consistently benefit from interning. When the caller can prove
-/// the string is longer than one byte, [`allocate_string_no_interning`] avoids
-/// the length branch.
-///
-/// The dual bound `AsRef<str> + Into<Box<str>>` lets the function peek the
-/// length via the borrow before committing to a conversion. Callers with an
-/// owned `String`/`Box<str>` move the value in (consumed only on the heap
-/// path), and borrowed `&str` callers avoid an upfront `to_owned()` —
-/// allocation happens only when the string actually needs heap storage.
-///
+/// Allocates a string, reusing reserved IDs for empty strings and ASCII characters.
+/// Other strings are heap-allocated without consulting the executor interner.
+/// Owned buffers move into heap storage; borrowed text is copied only when needed.
 pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Value {
     let bytes = s.as_ref().as_bytes();
     match bytes.len() {
-        0 => Value::InternString(StaticStrings::EmptyString.into()),
+        0 => Value::InternString(StringId::EMPTY),
         1 => Value::InternString(StringId::from_ascii(bytes[0])),
         _ => allocate_string_no_interning(s, heap),
     }
@@ -370,7 +354,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string() else {
+        let Some(method) = attr.static_string(vm.interns) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
         };
@@ -393,7 +377,7 @@ impl HeapItem for Str {
 /// Converts the `StringId` to `StaticStrings` and delegates to `call_str_method_impl`.
 pub fn call_str_method(s: &str, method_id: StringId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     let args_guard = DropGuard::new(args, vm.heap);
-    let Some(method) = StaticStrings::from_string_id(method_id) else {
+    let Some(method) = vm.interns.static_string(method_id) else {
         return Err(ExcType::attribute_error(Type::Str, vm.interns.get_str(method_id)));
     };
     let args = args_guard.into_inner();

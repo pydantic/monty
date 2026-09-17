@@ -6,9 +6,9 @@
 //! generated code can never drift:
 //!
 //! - `src/generated/monty.v1.rs` — the protocol messages, with the
-//!   `monty.v1.MontyObject` message mapped via `extern_path` onto the
-//!   hand-written [`WireObject`](../wire.rs) so values encode/decode straight
-//!   to `monty_types::MontyObject` with no mirror struct.
+//!   `monty.v1.Arena` message mapped via `extern_path` onto the hand-written
+//!   [`WireArena`](../wire.rs) so values encode/decode straight to
+//!   `monty_types::MontyGraph` with no mirror struct.
 //! - `tests/oracle/monty.v1.rs` — the same schema *without* the mapping: a
 //!   fully prost-generated mirror used only by `tests/differential.rs` to
 //!   prove the hand-written implementation is byte-compatible with prost.
@@ -44,12 +44,12 @@ fn main() {
     let descriptors = protox::compile([&proto_file], [&proto_dir]).expect("failed to compile monty.proto");
     let pool = DescriptorPool::from_file_descriptor_set(descriptors.clone()).expect("invalid schema");
 
-    // protocol messages: MontyObject is the hand-written WireObject
+    // protocol messages: Arena is the hand-written WireArena
     let out_dir = manifest_dir.join("src/generated");
     prost_build::Config::new()
         .out_dir(&out_dir)
         .prost_path("crate::budgeted_prost")
-        .extern_path(".monty.v1.MontyObject", "crate::WireObject")
+        .extern_path(".monty.v1.Arena", "crate::WireArena")
         .extern_path(".monty.v1.FunctionCall", "crate::WireFunctionCall")
         .compile_fds(descriptors.clone())
         .expect("failed to generate Rust code from monty.proto");
@@ -80,9 +80,8 @@ fn generate_repeated_tests(pool: &DescriptorPool, path: &Path) {
             let (wire_type, payload) = match field.kind() {
                 Kind::Message(element) => {
                     let payload: &[u8] = match element.full_name() {
-                        // These extern-mapped values require a populated kind/key/value.
-                        "monty.v1.MontyObject" => &[0x12, 0],
-                        "monty.v1.Pair" => &[0x0a, 2, 0x12, 0, 0x12, 2, 0x12, 0],
+                        // Arena nodes require a populated kind.
+                        "monty.v1.MontyNode" => &[0x12, 0],
                         _ => &[],
                     };
                     ("LengthDelimited", payload)
@@ -102,7 +101,7 @@ fn generate_repeated_tests(pool: &DescriptorPool, path: &Path) {
                 field.full_name(),
                 field.number(),
                 message_rust_path(&message),
-                field.name().to_snake_case(),
+                if message.full_name() == "monty.v1.Arena" { "0".to_owned() } else { field.name().to_snake_case() },
             )
             .expect("write to string");
         }
@@ -114,7 +113,7 @@ fn generate_repeated_tests(pool: &DescriptorPool, path: &Path) {
 /// Resolves prost's nested modules and the protocol's extern-mapped messages.
 fn message_rust_path(message: &MessageDescriptor) -> String {
     match message.full_name() {
-        "monty.v1.MontyObject" => "WireObject".to_owned(),
+        "monty.v1.Arena" => "WireArena".to_owned(),
         "monty.v1.FunctionCall" => "WireFunctionCall".to_owned(),
         _ => {
             let mut parents = Vec::new();

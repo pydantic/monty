@@ -9,11 +9,10 @@
 //! Custom serde serializes only the pattern string and flags, recompiling the regex
 //! on deserialization. This supports Monty's snapshot/restore feature.
 
-use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, str};
+use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str};
 
 use fancy_regex::{CompileError, Error as RegexError, Regex, RegexBuilder};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
-use smallvec::SmallVec;
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -29,7 +28,7 @@ use crate::{
         str::{allocate_string, string_repr_fmt},
         tuple::TupleVec,
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// A compiled regular expression pattern.
@@ -234,42 +233,49 @@ impl RePattern {
     /// - No capture groups: returns a list of matched strings
     /// - One capture group: returns a list of the group's matched strings
     /// - Multiple capture groups: returns a list of tuples of matched strings
+    ///
+    /// The scan collects borrowed `&str` slices and a second pass allocates them,
+    /// so only the scan can fail: a scan abandoned half way through a list of heap
+    /// values could not release them, since `dec_ref` needs `&mut Heap` while the
+    /// match iterator borrows the compiled pattern out of it.
     pub fn findall(&self, text: &str, heap: &Heap) -> RunResult<Value> {
         let cap_count = self.compiled.captures_len();
-        let mut results = Vec::new();
 
         match cap_count {
             // No capture groups — return list of full match strings
             0 | 1 => {
+                let mut matches = Vec::new();
                 for m in self.compiled.find_iter(text) {
-                    let val = m.map_err(ExcType::re_pattern_error)?.as_str();
-                    results.push(allocate_string(val, heap));
+                    check_slice_growth(&matches, heap)?;
+                    matches.push(m.map_err(ExcType::re_pattern_error)?.as_str());
                 }
+                allocate_str_list(&matches, heap)
             }
             // One capture group — return list of the group's strings
             2 => {
+                let mut matches = Vec::new();
                 for caps in self.compiled.captures_iter(text) {
+                    check_slice_growth(&matches, heap)?;
                     let caps = caps.map_err(ExcType::re_pattern_error)?;
-                    let val = caps.get(1).map_or("", |m| m.as_str());
-                    results.push(allocate_string(val, heap));
+                    matches.push(caps.get(1).map_or("", |m| m.as_str()));
                 }
+                allocate_str_list(&matches, heap)
             }
-            // Multiple capture groups — return list of tuples
+            // Multiple capture groups — return list of tuples, collected flat
+            // and cut back into rows of `groups` once the scan has succeeded.
             _ => {
+                let groups = cap_count - 1;
+                let mut flat = Vec::new();
                 for caps in self.compiled.captures_iter(text) {
                     let caps = caps.map_err(ExcType::re_pattern_error)?;
-                    let mut elements: TupleVec = SmallVec::with_capacity(cap_count - 1);
                     for cap in caps.iter().skip(1) {
-                        let val = cap.map_or("", |m| m.as_str());
-                        elements.push(allocate_string(val, heap));
+                        check_slice_growth(&flat, heap)?;
+                        flat.push(cap.map_or("", |m| m.as_str()));
                     }
-                    results.push(allocate_tuple(elements, heap));
                 }
+                allocate_tuple_list(&flat, groups, heap)
             }
         }
-
-        let list = List::new(results);
-        Ok(Value::Ref(heap.allocate(HeapData::List(list))))
     }
 
     /// `pattern.sub(repl, string, count=0)` — substitute matches with a replacement.
@@ -312,31 +318,18 @@ impl RePattern {
     /// element; if it is negative, no splits occur at all (CPython's split loop
     /// runs zero times), returning the whole subject as a single element.
     pub fn split(&self, text: &str, maxsplit: i64, heap: &Heap) -> RunResult<Value> {
-        let pieces: Vec<&str> = match maxsplit.cmp(&0) {
+        let pieces = match maxsplit.cmp(&0) {
             Ordering::Less => vec![text],
-            Ordering::Equal => self
-                .compiled
-                .split(text)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(ExcType::re_pattern_error)?,
+            Ordering::Equal => collect_slices(self.compiled.split(text), heap)?,
             Ordering::Greater => {
                 // `maxsplit + 1` pieces = at most `maxsplit` splits; saturate
                 // for absurdly large limits (splitn caps at the piece count).
                 let limit = usize::try_from(maxsplit).unwrap_or(usize::MAX).saturating_add(1);
-                self.compiled
-                    .splitn(text, limit)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(ExcType::re_pattern_error)?
+                collect_slices(self.compiled.splitn(text, limit), heap)?
             }
         };
 
-        let mut results = Vec::with_capacity(pieces.len());
-        for piece in pieces {
-            results.push(allocate_string(piece, heap));
-        }
-
-        let list = List::new(results);
-        Ok(Value::Ref(heap.allocate(HeapData::List(list))))
+        allocate_str_list(&pieces, heap)
     }
 
     /// `pattern.finditer(string)` — return all matches as a list.
@@ -350,6 +343,7 @@ impl RePattern {
 
         let mut results = Vec::new();
         for caps in self.compiled.captures_iter(text) {
+            check_results_growth(&results, heap)?;
             let caps = caps.map_err(ExcType::re_pattern_error)?;
             results.push(self.build_match(&caps, subject, all_ascii, heap));
         }
@@ -357,6 +351,64 @@ impl RePattern {
         let list = List::new(results);
         Ok(Value::Ref(heap.allocate(HeapData::List(list))))
     }
+}
+
+/// Preflights the growth one more match result would cause.
+///
+/// A match list grows as long as the subject allows with no instruction
+/// checkpoint in between, so without this the buffer's doubling can clear the
+/// allocator's hard-limit headroom and kill the worker.
+fn check_results_growth(results: &Vec<Value>, heap: &Heap) -> RunResult<()> {
+    Ok(heap
+        .tracker
+        .check_growth(results.len(), results.capacity(), VALUE_SIZE)?)
+}
+
+/// [`check_results_growth`] for a buffer of borrowed match slices.
+fn check_slice_growth(slices: &Vec<&str>, heap: &Heap) -> RunResult<()> {
+    Ok(heap
+        .tracker
+        .check_growth(slices.len(), slices.capacity(), mem::size_of::<&str>())?)
+}
+
+/// Collects the pieces an iterator yields, preflighting the buffer as it grows.
+///
+/// A split's piece buffer is bounded only by the subject and is filled before the
+/// result list exists, so the check on that list comes too late.
+fn collect_slices<'t>(
+    pieces: impl Iterator<Item = Result<&'t str, RegexError>>,
+    heap: &Heap,
+) -> RunResult<Vec<&'t str>> {
+    let mut collected = Vec::new();
+    for piece in pieces {
+        check_slice_growth(&collected, heap)?;
+        collected.push(piece.map_err(ExcType::re_pattern_error)?);
+    }
+    Ok(collected)
+}
+
+/// Allocates one heap string per slice and returns them as a list.
+///
+/// Fallible only before the first allocation, so no half-built list of heap
+/// values can be stranded by a refused one.
+fn allocate_str_list(slices: &[&str], heap: &Heap) -> RunResult<Value> {
+    heap.tracker.check_allocation(slices.len().saturating_mul(VALUE_SIZE))?;
+    let results = slices.iter().map(|s| allocate_string(*s, heap)).collect();
+    Ok(Value::Ref(heap.allocate(HeapData::List(List::new(results)))))
+}
+
+/// [`allocate_str_list`] for rows of `groups` slices, one tuple per row.
+fn allocate_tuple_list(flat: &[&str], groups: usize, heap: &Heap) -> RunResult<Value> {
+    let rows = flat.len() / groups;
+    heap.tracker.check_allocation(rows.saturating_mul(VALUE_SIZE))?;
+    let results = flat
+        .chunks_exact(groups)
+        .map(|row| {
+            let elements: TupleVec = row.iter().map(|s| allocate_string(*s, heap)).collect();
+            allocate_tuple(elements, heap)
+        })
+        .collect();
+    Ok(Value::Ref(heap.allocate(HeapData::List(List::new(results)))))
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
@@ -404,7 +456,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        match attr.static_string() {
+        match attr.static_string(vm.interns) {
             Some(StaticStrings::PatternAttr) => {
                 let v = allocate_string(self.get(vm.heap).pattern.as_str(), vm.heap);
                 Ok(Some(CallResult::Value(v)))
@@ -415,7 +467,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let result = match attr.static_string() {
+        let result = match attr.static_string(vm.interns) {
             Some(StaticStrings::Search) => {
                 let arg = args.get_one_arg("Pattern.search", vm.heap)?;
                 defer_drop!(arg, vm);

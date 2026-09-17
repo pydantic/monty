@@ -380,6 +380,16 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         Ok(None)
     }
 
+    /// One-sided implementation of Python `divmod()` (`__divmod__`).
+    fn py_divmod_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python `divmod()` (`__rdivmod__`).
+    fn py_rdivmod_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
     /// One-sided implementation of Python power (`__pow__`).
     fn py_pow_impl(&self, _other: &Value, _modulus: Option<&Value>, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
@@ -466,6 +476,33 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// Python in-place bitwise OR (`__ior__`), with [`py_iadd_impl`](Self::py_iadd_impl)'s contract.
     fn py_ior_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<bool> {
         Ok(false)
+    }
+
+    /// Calls this value itself (`obj(...)`), the counterpart of
+    /// [`py_call_attr`](Self::py_call_attr) for the callable rather than one of
+    /// its methods.
+    ///
+    /// The same `CallResult` contract applies: a synchronous result is
+    /// `Value`, running a Python function is `FramePushed` (the VM's loop takes
+    /// over from there), and anything needing the host is the matching
+    /// suspension.
+    ///
+    /// Overriding this is what makes a type callable.
+    /// [`HeapData::is_callable`](crate::heap::HeapData::is_callable) is a
+    /// deliberate subset of the overrides, so a new one need not be added
+    /// there — but everything listed there must override this.
+    ///
+    /// A callable that dispatches onward holds its `HeapRead`, and so an active
+    /// reader count, for the whole nested call. That is sound only because every
+    /// caller of `VM::call_function` owns a reference to the callable meanwhile,
+    /// so it cannot be freed underneath. Such a callable must still not hold a
+    /// `get`/`get_mut` borrow across the dispatch, since the callee can reach
+    /// this same object again.
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        // As in `py_call_attr`, the arguments are owned by this call and must
+        // be released before reporting that the value cannot take them.
+        args.drop_with(vm);
+        Err(ExcType::type_error_not_callable_object(&self.py_type_name(vm)))
     }
 
     /// Calls an attribute method on this value (e.g., `list.append()`), returning a

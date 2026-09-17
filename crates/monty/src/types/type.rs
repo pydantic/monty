@@ -21,7 +21,9 @@ use crate::{
         long_int::{INT_MAX_STR_DIGITS, bigint_to_f64_checked},
         path,
         str::StringRepr,
-        time, timedelta,
+        time,
+        timedelta::{self, DAY_MICROSECONDS, MAX_TIMEDELTA_DAYS, MIN_TIMEDELTA_DAYS},
+        timezone::{self, MAX_TIMEZONE_CONSTANT_SECONDS},
     },
     value::{EitherStr, Value},
 };
@@ -114,8 +116,8 @@ pub enum Type {
     /// `VM::instantiate_class`). It must NEVER be stored long-lived,
     /// serialized into snapshots/const pools, placed in `Builtins::Type` (the
     /// `type()` builtin returns the class object itself for instances), or
-    /// converted to `MontyObject` without resolving the name first (the public
-    /// boundary enum `MontyType` carries the resolved name as a `String`).
+    /// converted to `MontyType`, which has no class variant (a sandbox class
+    /// crosses the boundary as its own `ClassType` arena node).
     #[strum(disabled)]
     Instance(HeapId),
     /// Exception types render/parse via `ExcType`'s own strum name
@@ -559,50 +561,51 @@ impl Type {
         args: ArgValues,
         vm: &mut VM<'_>,
     ) -> RunResult<CallResult> {
-        match (self, method_id) {
+        match (self, vm.interns.static_string(method_id)) {
             // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
-            (Self::Dict, m) if m == StaticStrings::Fromkeys => {
+            (Self::Dict, Some(StaticStrings::Fromkeys)) => {
                 dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value)
             }
             // `defaultdict.fromkeys(...)` builds `cls()`, i.e. a defaultdict with no
             // factory — matching CPython's inherited `dict.fromkeys` classmethod.
-            (Self::DefaultDict, m) if m == StaticStrings::Fromkeys => {
+            (Self::DefaultDict, Some(StaticStrings::Fromkeys)) => {
                 dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value)
             }
             // `chain.from_iterable(iterable)`, CPython's one classmethod here.
-            (Self::ItertoolsChain, m) if m == StaticStrings::FromIterable => {
+            (Self::ItertoolsChain, Some(StaticStrings::FromIterable)) => {
                 itertools::call(vm, ItertoolsFunctions::ChainFromIterable, args).map(CallResult::Value)
             }
             // Counter deliberately disables the inherited classmethod.
-            (Self::Counter, m) if m == StaticStrings::Fromkeys => {
+            (Self::Counter, Some(StaticStrings::Fromkeys)) => {
                 args.drop_with(vm);
                 Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
             }
-            (Self::Bytes, m) if m == StaticStrings::Fromhex => bytes_fromhex(args, vm).map(CallResult::Value),
-            (Self::Date, m) if m == StaticStrings::Today => date::class_today(vm.heap, args),
-            (Self::Path, m) if m == StaticStrings::Cwd => path::class_cwd(vm, args).map(CallResult::Value),
-            (Self::Date, m) if m == StaticStrings::Fromisoformat => {
+            (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
+            (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm.heap, args),
+            (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
+            (Self::Date, Some(StaticStrings::Fromisoformat)) => {
                 date::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
             }
-            (Self::DateTime, m) if m == StaticStrings::Now => datetime::class_now(vm, args),
-            (Self::DateTime, m) if m == StaticStrings::Strptime => {
+            (Self::DateTime, Some(StaticStrings::Now)) => datetime::class_now(vm, args),
+            (Self::DateTime, Some(StaticStrings::Strptime)) => {
                 datetime::class_strptime(vm.heap, args, vm.interns).map(CallResult::Value)
             }
-            (Self::DateTime, m) if m == StaticStrings::Fromisoformat => {
+            (Self::DateTime, Some(StaticStrings::Fromisoformat)) => {
                 datetime::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
             }
             // `object.__setattr__(obj, name, value)` called directly, which is
             // how it is nearly always reached; `object.__setattr__` as a value
             // is handled by `Value::py_getattr`.
-            (Self::Object, m) if vm.interns.get_str(m) == "__setattr__" => {
+            (Self::Object, _) if vm.interns.get_str(method_id) == "__setattr__" => {
                 builtin_object_setattr(vm, args).map(CallResult::Value)
             }
-            (Self::Time, m) if m == StaticStrings::Fromisoformat => {
+            (Self::DateTime, Some(StaticStrings::Combine)) => datetime::class_combine(vm, args).map(CallResult::Value),
+            (Self::Time, Some(StaticStrings::Fromisoformat)) => {
                 time::class_fromisoformat(vm, args).map(CallResult::Value)
             }
             // `list.__class_getitem__(int)` is `list[int]`; the error names the
             // bare type as CPython does (`deque.__class_getitem__()`).
-            (ty, m) if ty.has_class_getitem() && m == StaticStrings::ClassGetitem => {
+            (ty, Some(StaticStrings::ClassGetitem)) if ty.has_class_getitem() => {
                 let name = format!("{}.__class_getitem__", ty.dunder_name(vm.heap, vm.interns));
                 let key = args.get_one_arg(&name, vm.heap)?;
                 Ok(CallResult::Value(GenericAlias::subscript(ty, key, vm)))
@@ -624,6 +627,42 @@ impl Type {
                 }
             },
         }
+    }
+
+    /// Resolves a class-level constant on a builtin type object (`time.max`,
+    /// `timezone.utc`, ...), returning `None` so the caller can fall through to
+    /// its own `AttributeError`.
+    ///
+    /// Every lookup allocates a fresh object, so `date.min is date.min` is
+    /// `False` where CPython caches (see limitations/datetime.md).
+    pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+        // One microsecond short of `MAX_TIMEDELTA_DAYS + 1` days, which
+        // normalizes to CPython's `timedelta(days=999999999, seconds=86399,
+        // microseconds=999999)`.
+        const MAX_TIMEDELTA_MICROS: i128 = ((MAX_TIMEDELTA_DAYS as i128) + 1) * DAY_MICROSECONDS - 1;
+        const MIN_TIMEDELTA_MICROS: i128 = (MIN_TIMEDELTA_DAYS as i128) * DAY_MICROSECONDS;
+
+        Some(match (self, attr.static_string(vm.interns)?) {
+            (Self::Date, StaticStrings::Min) => date::allocate_ymd(1, 1, 1, vm.heap),
+            (Self::Date, StaticStrings::Max) => date::allocate_ymd(9999, 12, 31, vm.heap),
+            (Self::Date, StaticStrings::Resolution) => timedelta::allocate_micros(DAY_MICROSECONDS, vm.heap),
+            (Self::DateTime, StaticStrings::Min) => datetime::allocate_naive(1, 1, 1, 0, 0, 0, 0, vm.heap),
+            (Self::DateTime, StaticStrings::Max) => {
+                datetime::allocate_naive(9999, 12, 31, 23, 59, 59, 999_999, vm.heap)
+            }
+            (Self::Time, StaticStrings::Min) => time::allocate_naive(0, 0, 0, 0, vm.heap),
+            (Self::Time, StaticStrings::Max) => time::allocate_naive(23, 59, 59, 999_999, vm.heap),
+            (Self::TimeDelta, StaticStrings::Min) => timedelta::allocate_micros(MIN_TIMEDELTA_MICROS, vm.heap),
+            (Self::TimeDelta, StaticStrings::Max) => timedelta::allocate_micros(MAX_TIMEDELTA_MICROS, vm.heap),
+            // The three microsecond-resolution classes share one constant.
+            (Self::DateTime | Self::Time | Self::TimeDelta, StaticStrings::Resolution) => {
+                timedelta::allocate_micros(1, vm.heap)
+            }
+            (Self::TimeZone, StaticStrings::Utc) => vm.heap.get_timezone_utc(),
+            (Self::TimeZone, StaticStrings::Min) => timezone::allocate_offset(-MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
+            (Self::TimeZone, StaticStrings::Max) => timezone::allocate_offset(MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
+            _ => return None,
+        })
     }
 
     /// Calls this type as a constructor (e.g., `list(x)`, `int(x)`).

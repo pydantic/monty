@@ -115,11 +115,8 @@ impl RandomFunctions {
 }
 
 /// Creates the `random` module on the heap.
-///
-/// # Panics
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Random);
+    let mut module = Module::new(StaticStrings::Random, vm.interns);
     for (name, function) in RANDOM_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Random(*function)), vm);
     }

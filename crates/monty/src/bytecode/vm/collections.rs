@@ -51,14 +51,25 @@ impl VM<'_> {
     }
 
     /// Builds a set from the top n stack values.
+    ///
+    /// An insertion can raise — the item may be unhashable, or a colliding
+    /// `__eq__` may raise — so both the items still on the way in and the
+    /// half-built set ride in guards until the set reaches the heap.
     pub(super) fn build_set(&mut self, count: usize) -> Result<(), RunError> {
-        let items = self.pop_n(count);
-        let mut set = Set::new();
-        for item in items {
-            set.add(item, self)?;
+        let this = self;
+        let items = this.pop_n(count).into_iter();
+        defer_drop_mut!(items, this);
+        let mut set_guard = DropGuard::new(Set::new(), this);
+        loop {
+            let (set, this) = set_guard.as_parts_mut();
+            let Some(item) = items.next() else {
+                break;
+            };
+            set.add(item, this)?;
         }
-        let heap_id = self.heap.allocate(HeapData::Set(set));
-        self.push(Value::Ref(heap_id));
+        let (set, this) = set_guard.into_parts();
+        let heap_id = this.heap.allocate(HeapData::Set(set));
+        this.push(Value::Ref(heap_id));
         Ok(())
     }
 
@@ -401,8 +412,7 @@ impl VM<'_> {
             value.drop_with(self);
             return Err(RunError::internal("ListAppend: expected list on heap"));
         };
-        list.append(self, value);
-        Ok(())
+        list.append(self, value)
     }
 
     /// Adds TOS to set for comprehension.

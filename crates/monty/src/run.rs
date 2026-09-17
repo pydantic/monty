@@ -16,9 +16,8 @@ use ruff_python_stdlib::identifiers::is_identifier;
 use crate::{
     bytecode::{Code, CodeBuilder, Compiler, FrameExit, Opcode, VM},
     exception_private::{ExcTypeExt, RunError, RunResult},
-    function::Function,
     heap::{DropWithContext, Heap, HeapReader},
-    intern::{InternerBuilder, Interns, StringId},
+    intern::{Interns, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     object_bridge::MontyObjectExt,
@@ -39,6 +38,8 @@ use crate::{
 /// - **Iterative execution**: Use [`start`](Self::start) to start execution which will pause at external function calls and
 ///   can be resumed later
 ///
+/// Deserialization requires trusted, unmodified state; see [`crate::Dump::load`].
+///
 /// # Example
 /// ```
 /// use monty::MontyRun;
@@ -51,12 +52,12 @@ use crate::{
 ///     CompileOptions::default(),
 /// )
 /// .unwrap();
-/// let result = runner.run_no_limits(vec![MontyObject::Int(41)]).unwrap();
-/// assert_eq!(result, MontyObject::Int(42));
+/// let result = runner.run_no_limits(vec![MontyObject::int(41)]).unwrap();
+/// assert_eq!(result, MontyObject::int(42));
 /// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MontyRun {
-    /// The underlying executor containing parsed AST and interns.
+    /// The underlying executor containing compiled bytecode and interns.
     executor: Executor,
 }
 
@@ -110,7 +111,7 @@ impl MontyRun {
     /// let code = "from datetime import date\ndate.today().year".to_owned();
     /// let clock = HostClock::Fixed { unix_seconds: 1_700_000_000, microsecond: 0, local_offset_seconds: 0 };
     /// let runner = MontyRun::new(code, "today.py", vec![], CompileOptions::default()).unwrap().with_host_clock(clock);
-    /// assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::Int(2023));
+    /// assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::int(2023));
     /// ```
     #[must_use]
     pub fn with_host_clock(mut self, clock: HostClock) -> Self {
@@ -188,7 +189,7 @@ impl MontyRun {
     /// # Errors
     /// Returns [`MontyException`] if:
     /// - The number of inputs doesn't match the expected count
-    /// - An input value is invalid (e.g., [`MontyObject::Repr`])
+    /// - An input value is invalid (e.g. a [`MontyNode::Repr`](monty_types::MontyNode::Repr) node)
     /// - A runtime error occurs during execution
     ///
     /// # Panics
@@ -364,26 +365,19 @@ impl Executor {
     ) -> Result<Self, MontyException> {
         check_identifier(&input_names)?;
         let parse_result = parse(&code, script_name).map_err(|e| e.into_python_exc(script_name, &code))?;
-        let prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
+        let mut prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
 
         // Compile the module to bytecode, which also compiles all nested functions.
         // The compiler enforces the bytecode-format namespace-size limit and reports
         // it as a `SyntaxError` rather than panicking on the `u16` cast.
         let namespace_size = prepared.globals.len();
-        let mut functions = Vec::new();
-        let module_code = Compiler::compile_module(
-            &prepared.nodes,
-            &prepared.interner,
-            &prepared.globals,
-            &mut functions,
-            options,
-        )
-        .map_err(|e| e.into_python_exc(script_name, &code))?;
+        let module_code = Compiler::compile_module(&prepared.nodes, &mut prepared.interner, &prepared.globals, options)
+            .map_err(|e| e.into_python_exc(script_name, &code))?;
 
         Ok(Self {
             globals: prepared.globals,
             module_code: Arc::new(module_code),
-            interns: Interns::new(prepared.interner, functions),
+            interns: prepared.interner,
             code: Arc::from(code),
             input_slots: Vec::new(),
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
@@ -448,20 +442,7 @@ impl Executor {
         check_identifier(input_names)?;
 
         let globals_len = globals.len();
-        let (mut interner, mut functions) = mem::take(interns).into_builder();
-        let compiled = compile_repl_snippet(
-            &code,
-            script_name,
-            globals,
-            &mut interner,
-            &mut functions,
-            input_names,
-            options,
-        );
-        // Whether or not compilation succeeded, the extended tables are the
-        // session's tables from here on (`compile_module` has already rolled
-        // back `functions` on failure).
-        *interns = Interns::new(interner, functions);
+        let compiled = compile_repl_snippet(&code, script_name, globals, interns, input_names, options);
         if compiled.is_err() {
             globals.truncate(globals_len);
         }
@@ -470,7 +451,7 @@ impl Executor {
         Ok(Self {
             globals: mem::take(globals),
             module_code: Arc::new(module_code),
-            interns: mem::take(interns),
+            interns: interns.take(),
             code,
             input_slots,
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
@@ -540,7 +521,7 @@ impl Executor {
         Ok(Self {
             globals: existing_globals,
             module_code: Arc::new(builder.build(0)),
-            interns: mem::take(interns),
+            interns: interns.take(),
             code: Arc::from(code),
             input_slots: vec![args_slot],
             assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
@@ -759,7 +740,7 @@ impl Executor {
 
             // Convert return value while VM is still alive (needs access to interns).
             // Non-REPL: single source, so every frame resolves to `executor.code`.
-            let py_object = frame_exit_to_object(frame_exit_result, &mut vm)
+            let value = frame_exit_to_object(frame_exit_result, &mut vm)
                 .map_err(|e| e.into_python_exception(&executor.interns, |_| Some(&*executor.code)))?;
 
             // Drop globals with proper ref counting
@@ -768,7 +749,7 @@ impl Executor {
             let allocations_since_gc = vm.heap.get_allocations_since_gc();
 
             Ok(RefCountOutput {
-                py_object,
+                value,
                 counts,
                 unreachable,
                 heap_count,
@@ -786,7 +767,7 @@ impl Executor {
         (0..self.namespace_size()).map(|_| Value::Undefined).collect()
     }
 
-    /// Converts `MontyObject` inputs to `Value`s and writes them into the VM's globals.
+    /// Converts `MontyObject` inputs to heap `Value`s and writes them into the VM's globals.
     ///
     /// This runs with the VM alive so that `to_value` has access to the full VM context.
     /// On error partway through, the VM's `Drop` impl will drain globals and
@@ -816,7 +797,7 @@ pub(crate) fn default_clock() -> HostClock {
     HostClock::System
 }
 
-/// Converts module/frame exit results into plain `MontyObject` outputs.
+/// Converts module/frame exit results into exported `MontyObject` outputs.
 ///
 /// Used by non-iterative execution paths: lookups are answered as no host
 /// would (see [`answer_unserved_lookups`]) and the remaining suspendable
@@ -826,7 +807,7 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
     // so one `drop_with` releases whatever the exit owns, fields added later
     // included.
     let exit = match answer_unserved_lookups(frame_exit_result, vm)? {
-        FrameExit::Return(return_value) => return Ok(MontyObject::new(return_value, vm)),
+        FrameExit::Return(return_value) => return Ok(MontyObject::export(return_value, vm)),
         exit => exit,
     };
     let error: RunError = match &exit {
@@ -862,7 +843,7 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
 #[cfg(feature = "ref-count-return")]
 #[derive(Debug)]
 pub struct RefCountOutput {
-    pub py_object: MontyObject,
+    pub value: MontyObject,
     pub counts: ahash::AHashMap<String, usize>,
     /// Live heap entries reachable from no named variable, described as
     /// `"<type> (id N)"`. Non-empty means the run leaked: a missed `drop_with`
@@ -889,8 +870,7 @@ fn compile_repl_snippet(
     code: &str,
     script_name: &str,
     globals: &mut NameMap,
-    interner: &mut InternerBuilder,
-    functions: &mut Vec<Function>,
+    interner: &mut Interns,
     input_names: &[String],
     options: CompileOptions,
 ) -> Result<(Code, Vec<NamespaceId>), MontyException> {
@@ -913,7 +893,7 @@ fn compile_repl_snippet(
     let nodes = parse_with_interner(code, script_name, interner).map_err(|e| e.into_python_exc(script_name, code))?;
     let nodes =
         prepare_with_existing_names(nodes, interner, globals).map_err(|e| e.into_python_exc(script_name, code))?;
-    let module_code = Compiler::compile_module(&nodes, interner, globals, functions, options)
+    let module_code = Compiler::compile_module(&nodes, interner, globals, options)
         .map_err(|e| e.into_python_exc(script_name, code))?;
     Ok((module_code, input_slots))
 }

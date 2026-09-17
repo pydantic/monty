@@ -57,7 +57,15 @@ without one is unlimited.
     limit so exception and traceback machinery can run. Crossing that ceiling
     between checkpoints exits the subprocess with its dedicated OOM status, or
     traps wasm. The pool replaces the worker and the session is lost. Large
-    result operations are pre-checked to avoid this path when their size is known.
+    result operations are pre-checked to avoid this path when their size is known,
+    as is buffer growth a program drives one element at a time — `append`,
+    `insert`, `add` or `d[k] = v` on a list, deque, set or dict, a parsed JSON
+    array — and the argument buffers behind `f(*args)` and the pieces `re.split`
+    collects.
+    `re.findall` is covered only for a pattern with at most one capture group.
+    A wider `findall` builds a tuple per match, and `re.finditer` a match object,
+    and those accumulate between the checks on the result list itself, so a
+    large enough subject still crosses the ceiling and kills the worker.
 - **Work outside Python execution is hard-limit-only.** Request framing, input
     decoding, loading snapshots, and type checking do not reach an interpreter
     checkpoint. A sufficiently large allocation there can cross the hard ceiling
@@ -145,6 +153,17 @@ indistinguishable from a stack overflow.
     limit, so Monty raises `RecursionError` before a native stack overflow would
     abort the process. See the `__repr__`/`__str__` entry in [classes.md](classes.md) for
     the main user-visible divergence this causes.
+- Operations that walk a nested container in Rust — `==`, `<`, `repr()`,
+    `hash()`, `isinstance()`, `json.dumps()`, `copy.deepcopy()` — charge one
+    recursion level per level of nesting, but each level costs real native stack
+    (roughly 0.5-1.1 KiB, depending on the operation and the container). They are
+    not capped separately the way native re-entry above is, so on a worker with a
+    small stack a structure nested close to the 1000-frame limit can exhaust it
+    before `RecursionError` is raised. A wasm worker (1 MiB) reaches that point at
+    roughly 950 levels of nesting for the most expensive operations; the sandbox
+    is not breached, but the worker dies and the pool replaces it rather than the
+    session raising. Lowering `max_recursion_depth` moves the point at which the
+    limit fires ahead of the stack.
 
 ## Suspensions
 

@@ -1112,6 +1112,14 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("the first argument must be callable")
     }
 
+    /// Creates the TypeError `collections.defaultdict()` raises for a
+    /// `default_factory` that is neither callable nor `None` — raised both when
+    /// constructing one and when `deepcopy` rebuilds the factory.
+    #[must_use]
+    fn defaultdict_factory_not_callable() -> RunError {
+        Self::type_error("first argument must be callable or None")
+    }
+
     /// Creates a TypeError for the right operand of `in` / `not in` supporting
     /// neither `__contains__` nor iteration.
     ///
@@ -1727,15 +1735,6 @@ pub(crate) trait ExcTypeExt: Sized {
             "pow() 2nd argument cannot be negative when 3rd argument specified",
         )
         .into()
-    }
-
-    /// Creates a ZeroDivisionError for divmod by zero (both integer and float).
-    ///
-    /// Matches CPython's format: `ZeroDivisionError: division by zero`
-    /// Note: CPython uses the same message for both integer and float divmod.
-    #[must_use]
-    fn divmod_by_zero() -> RunError {
-        SimpleException::new_msg(ExcType::ZeroDivisionError, "division by zero").into()
     }
 
     /// Creates a TypeError for str.join() when an item is not a string.
@@ -2399,7 +2398,7 @@ impl<'h> HeapRead<'h, SimpleException> {
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
         // Fast path: interned strings can be matched by ID
         let is_args = attr
-            .static_string()
+            .static_string(vm.interns)
             .map_or_else(|| attr.as_str(vm.interns) == "args", |ss| ss == StaticStrings::Args);
 
         if is_args {

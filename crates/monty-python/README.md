@@ -80,6 +80,14 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
+## Restoring snapshots
+
+`session.load_session()` and `session.load_snapshot()` require unmodified snapshots from a trusted, compatible Monty producer.
+The caller must establish provenance and integrity before loading; Monty does not authenticate snapshots.
+Invalid snapshots have no correctness or availability guarantees.
+Successful loading does not establish validity.
+See the [snapshot security documentation](https://pydantic.dev/docs/monty/concepts/security/#deserializing-snapshots).
+
 ## Working directory
 
 Pass `cwd='/data'` to `session.feed_run()` or `session.feed_start()` to set the sandbox's virtual working directory.

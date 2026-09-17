@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from conftest import RunMonty
@@ -134,33 +134,55 @@ def test_input_cycle(monty_run: RunMonty):
     x.append(x)
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run('x', inputs={'x': x})
-    assert str(exc_info.value) == snapshot('RuntimeError: Max input depth exceeded')
+    assert str(exc_info.value) == snapshot('ValueError: Circular reference detected')
+
+
+def nesting(value: object) -> int:
+    """How many single-item lists wrap the innermost value."""
+    depth = 0
+    while isinstance(value, list):
+        (value,) = cast('list[object]', value)
+        depth += 1
+    return depth
 
 
 def test_input_deep(monty_run: RunMonty):
+    # values cross as a flat node arena, so nesting depth is not bounded
     x: list[Any] = [1]
     for _ in range(300):
         x = [x]
-    with pytest.raises(MontyRuntimeError) as exc_info:
-        monty_run('x', inputs={'x': x})
-    assert str(exc_info.value) == snapshot('RuntimeError: Max input depth exceeded')
+    assert nesting(monty_run('x', inputs={'x': x})) == 301
 
 
 def test_output_deep(monty_run: RunMonty):
     # Sandbox code that iteratively builds a deeply nested list bypasses the
-    # Python-level recursion limit (the `for` loop never pushes a call frame).
-    # Result values deeper than the wire protocol's nesting bound are rejected
-    # by the worker with a clean, session-preserving error.
+    # Python-level recursion limit (the `for` loop never pushes a call frame);
+    # the result crosses as a flat arena and decodes without recursion.
     code = """
 x = [1]
 for _ in range(300):
     x = [x]
 x
 """
-    with pytest.raises(MontyRuntimeError) as exc_info:
-        monty_run(code)
-    assert str(exc_info.value) == snapshot('RuntimeError: Max output depth exceeded')
+    assert nesting(monty_run(code)) == 301
 
 
 def test_empty_inputs(monty_run: RunMonty):
     assert monty_run('1 + 1', inputs={}) == snapshot(2)
+
+
+def test_output_past_the_export_guard_degrades_to_a_repr(monty_run: RunMonty):
+    # export recurses once per nesting level under the sandbox's recursion
+    # limit; past it the rest of the value is a `<deeply nested>` string
+    code = """
+x = [1]
+for _ in range(2000):
+    x = [x]
+x
+"""
+    result = monty_run(code)
+    assert nesting(result) == 1000
+    innermost: Any = result
+    for _ in range(1000):
+        innermost = innermost[0]
+    assert innermost == snapshot('<deeply nested>')

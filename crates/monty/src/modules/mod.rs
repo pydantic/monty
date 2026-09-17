@@ -5,20 +5,19 @@
 
 use std::fmt::{self, Write};
 
-use strum::FromRepr;
-
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::RunResult,
     heap::HeapId,
-    intern::{StaticStrings, StringId},
+    intern::StaticStrings,
 };
 
 pub(crate) mod asyncio;
 pub(crate) mod base64;
 pub(crate) mod binascii;
 pub(crate) mod collections;
+pub(crate) mod copy;
 pub(crate) mod dataclasses;
 pub(crate) mod datetime;
 pub(crate) mod functools;
@@ -36,8 +35,7 @@ pub(crate) mod typing;
 pub(crate) mod unicodedata;
 
 /// Built-in modules that can be imported.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StandardLib {
     /// The `sys` module providing system-specific parameters and functions.
     Sys,
@@ -77,21 +75,19 @@ pub(crate) enum StandardLib {
     /// The `random` module: CPython's Mersenne Twister generator and the
     /// distributions built on it.
     Random,
+    /// The `copy` module providing `copy()` and `deepcopy()`.
+    Copy,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
-    /// Gated variants go last because theirs are the only ids allowed to move:
-    /// ungated ids are baked into dumps as the `LoadModule` operand, while a
-    /// `test-hooks` dump never leaves the build that wrote it. Append new
-    /// modules ahead of this block; appending after ties their id to the feature.
     #[cfg(feature = "test-hooks")]
     Gc,
 }
 
 impl StandardLib {
-    /// Get the module from a string ID.
-    pub fn from_string_id(string_id: StringId) -> Option<Self> {
-        match StaticStrings::from_string_id(string_id)? {
+    /// Resolves a module name without depending on enum discriminant order.
+    pub fn from_static(name: StaticStrings) -> Option<Self> {
+        match name {
             StaticStrings::Sys => Some(Self::Sys),
             StaticStrings::Typing => Some(Self::Typing),
             StaticStrings::Asyncio => Some(Self::Asyncio),
@@ -109,6 +105,7 @@ impl StandardLib {
             StaticStrings::Base64 => Some(Self::Base64),
             StaticStrings::Binascii => Some(Self::Binascii),
             StaticStrings::Random => Some(Self::Random),
+            StaticStrings::Copy => Some(Self::Copy),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -117,9 +114,6 @@ impl StandardLib {
 
     /// Creates a new instance of this module on the heap.
     ///
-    /// # Panics
-    ///
-    /// Panics if the required strings have not been pre-interned during prepare phase.
     pub fn create(self, vm: &mut VM<'_>) -> HeapId {
         match self {
             Self::Sys => sys::create_module(vm),
@@ -139,6 +133,7 @@ impl StandardLib {
             Self::Base64 => base64::create_module(vm),
             Self::Binascii => binascii::create_module(vm),
             Self::Random => random::create_module(vm),
+            Self::Copy => copy::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -167,6 +162,7 @@ pub(crate) enum ModuleFunctions {
     Base64(base64::Base64Functions),
     Binascii(binascii::BinasciiFunctions),
     Random(random::RandomFunctions),
+    Copy(copy::CopyFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -196,6 +192,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Base64(func) => write!(f, "{func}"),
             Self::Binascii(func) => write!(f, "{func}"),
             Self::Random(func) => write!(f, "{func}"),
+            Self::Copy(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -224,6 +221,7 @@ impl ModuleFunctions {
             Self::Base64(functions) => base64::call(vm, functions, args).map(CallResult::Value),
             Self::Binascii(functions) => binascii::call(vm, functions, args).map(CallResult::Value),
             Self::Random(functions) => random::call(vm, functions, args),
+            Self::Copy(functions) => copy::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

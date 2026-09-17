@@ -28,7 +28,7 @@ use crate::{
     heap::{HeapData, HeapId},
     intern::StaticStrings,
     types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
-    value::{Marker, Value},
+    value::{EitherStr, Marker, Value},
 };
 
 /// `sys.hexversion` for the version Monty reports: `3.14.0` final, encoded as
@@ -91,42 +91,86 @@ pub(crate) enum SysFunctions {
 }
 
 /// Creates the `sys` module and allocates it on the heap.
-///
-/// # Panics
-///
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Sys);
+    let mut module = Module::new(StaticStrings::Sys, vm.interns);
 
     // Interpreter identity. `platform` is "monty" rather than the host OS, which
     // the sandbox never reveals.
-    module.set_attr(StaticStrings::Platform, StaticStrings::Monty.into(), vm);
-    module.set_attr(StaticStrings::Version, StaticStrings::MontyVersionString.into(), vm);
+    module.set_attr(
+        StaticStrings::Platform,
+        Value::InternString(vm.interns.intern_static(StaticStrings::Monty)),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::Version,
+        Value::InternString(vm.interns.intern_static(StaticStrings::MontyVersionString)),
+        vm,
+    );
     module.set_attr(StaticStrings::VersionInfo, version_info(vm), vm);
     module.set_attr(StaticStrings::Hexversion, Value::Int(MONTY_HEXVERSION), vm);
     module.set_attr(StaticStrings::ApiVersion, Value::Int(CPYTHON_API_VERSION), vm);
-    module.set_attr(StaticStrings::Copyright, StaticStrings::MontyCopyright.into(), vm);
+    module.set_attr(
+        StaticStrings::Copyright,
+        Value::InternString(vm.interns.intern_static(StaticStrings::MontyCopyright)),
+        vm,
+    );
     module.set_attr(StaticStrings::BuiltinModuleNames, builtin_module_names(vm), vm);
     module.set_attr(StaticStrings::Argv, argv(vm), vm);
 
     // Numeric and text limits of the value representations Monty actually uses.
     module.set_attr(StaticStrings::Maxsize, Value::Int(MAXSIZE), vm);
     module.set_attr(StaticStrings::Maxunicode, Value::Int(MAXUNICODE), vm);
-    module.set_attr(StaticStrings::Byteorder, StaticStrings::Little.into(), vm);
+    module.set_attr(
+        StaticStrings::Byteorder,
+        Value::InternString(vm.interns.intern_static(StaticStrings::Little)),
+        vm,
+    );
     module.set_attr(StaticStrings::FloatInfo, float_info(vm), vm);
-    module.set_attr(StaticStrings::FloatReprStyle, StaticStrings::Short.into(), vm);
+    module.set_attr(
+        StaticStrings::FloatReprStyle,
+        Value::InternString(vm.interns.intern_static(StaticStrings::Short)),
+        vm,
+    );
 
     // The sandbox has no install tree, no bytecode cache and no ABI. CPython
     // documents the empty string for a path it cannot determine, so these report
     // "unknown" instead of raising; `prefix == base_prefix` also answers the
     // usual "am I in a virtualenv?" test correctly.
-    module.set_attr(StaticStrings::Executable, StaticStrings::EmptyString.into(), vm);
-    module.set_attr(StaticStrings::Prefix, StaticStrings::EmptyString.into(), vm);
-    module.set_attr(StaticStrings::ExecPrefix, StaticStrings::EmptyString.into(), vm);
-    module.set_attr(StaticStrings::BasePrefix, StaticStrings::EmptyString.into(), vm);
-    module.set_attr(StaticStrings::BaseExecPrefix, StaticStrings::EmptyString.into(), vm);
-    module.set_attr(StaticStrings::Platlibdir, StaticStrings::Lib.into(), vm);
-    module.set_attr(StaticStrings::Abiflags, StaticStrings::EmptyString.into(), vm);
+    module.set_attr(
+        StaticStrings::Executable,
+        Value::InternString(vm.interns.intern_static(StaticStrings::EmptyString)),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::Prefix,
+        Value::InternString(vm.interns.intern_static(StaticStrings::EmptyString)),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::ExecPrefix,
+        Value::InternString(vm.interns.intern_static(StaticStrings::EmptyString)),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::BasePrefix,
+        Value::InternString(vm.interns.intern_static(StaticStrings::EmptyString)),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::BaseExecPrefix,
+        Value::InternString(vm.interns.intern_static(StaticStrings::EmptyString)),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::Platlibdir,
+        Value::InternString(vm.interns.intern_static(StaticStrings::Lib)),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::Abiflags,
+        Value::InternString(vm.interns.intern_static(StaticStrings::EmptyString)),
+        vm,
+    );
     module.set_attr(StaticStrings::DontWriteBytecode, Value::Bool(true), vm);
     module.set_attr(StaticStrings::PycachePrefix, Value::None, vm);
     module.set_attr(StaticStrings::Flags, flags(vm), vm);
@@ -150,19 +194,19 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 /// Builds `sys.version_info`: `(major=3, minor=14, micro=0, releaselevel='final', serial=0)`.
 fn version_info(vm: &VM<'_>) -> Value {
     let named_tuple = NamedTuple::new(
-        StaticStrings::SysVersionInfo,
+        EitherStr::Interned(vm.interns.intern_static(StaticStrings::SysVersionInfo)),
         vec![
-            StaticStrings::Major.into(),
-            StaticStrings::Minor.into(),
-            StaticStrings::Micro.into(),
-            StaticStrings::Releaselevel.into(),
-            StaticStrings::Serial.into(),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Major)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Minor)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Micro)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Releaselevel)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Serial)),
         ],
         vec![
             Value::Int(3),
             Value::Int(14),
             Value::Int(0),
-            Value::InternString(StaticStrings::Final.into()),
+            Value::InternString(vm.interns.intern_static(StaticStrings::Final)),
             Value::Int(0),
         ],
     );
@@ -190,19 +234,19 @@ fn argv(vm: &VM<'_>) -> Value {
 /// can be in — nothing in the sandbox can change the rounding direction.
 fn float_info(vm: &VM<'_>) -> Value {
     let named_tuple = NamedTuple::new(
-        StaticStrings::SysFloatInfo,
+        EitherStr::Interned(vm.interns.intern_static(StaticStrings::SysFloatInfo)),
         vec![
-            StaticStrings::Max.into(),
-            StaticStrings::MaxExp.into(),
-            StaticStrings::Max10Exp.into(),
-            StaticStrings::Min.into(),
-            StaticStrings::MinExp.into(),
-            StaticStrings::Min10Exp.into(),
-            StaticStrings::Dig.into(),
-            StaticStrings::MantDig.into(),
-            StaticStrings::Epsilon.into(),
-            StaticStrings::Radix.into(),
-            StaticStrings::Rounds.into(),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Max)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::MaxExp)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Max10Exp)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Min)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::MinExp)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Min10Exp)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Dig)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::MantDig)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Epsilon)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Radix)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Rounds)),
         ],
         vec![
             Value::Float(f64::MAX),
@@ -231,26 +275,26 @@ fn float_info(vm: &VM<'_>) -> Value {
 /// change it.
 fn flags(vm: &VM<'_>) -> Value {
     let named_tuple = NamedTuple::new(
-        StaticStrings::SysFlags,
+        EitherStr::Interned(vm.interns.intern_static(StaticStrings::SysFlags)),
         vec![
-            StaticStrings::Debug.into(),
-            StaticStrings::Inspect.into(),
-            StaticStrings::Interactive.into(),
-            StaticStrings::Optimize.into(),
-            StaticStrings::DontWriteBytecode.into(),
-            StaticStrings::NoUserSite.into(),
-            StaticStrings::NoSite.into(),
-            StaticStrings::IgnoreEnvironment.into(),
-            StaticStrings::Verbose.into(),
-            StaticStrings::BytesWarning.into(),
-            StaticStrings::Quiet.into(),
-            StaticStrings::HashRandomization.into(),
-            StaticStrings::Isolated.into(),
-            StaticStrings::DevMode.into(),
-            StaticStrings::Utf8Mode.into(),
-            StaticStrings::WarnDefaultEncoding.into(),
-            StaticStrings::SafePath.into(),
-            StaticStrings::IntMaxStrDigits.into(),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Debug)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Inspect)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Interactive)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Optimize)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::DontWriteBytecode)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::NoUserSite)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::NoSite)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::IgnoreEnvironment)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Verbose)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::BytesWarning)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Quiet)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::HashRandomization)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Isolated)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::DevMode)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Utf8Mode)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::WarnDefaultEncoding)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::SafePath)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::IntMaxStrDigits)),
         ],
         vec![
             Value::Int(0),      // debug
@@ -285,7 +329,7 @@ fn int_max_str_digits() -> Value {
 fn builtin_module_names(vm: &VM<'_>) -> Value {
     let names: SmallVec<_> = BUILTIN_MODULE_NAMES
         .iter()
-        .map(|name| Value::InternString((*name).into()))
+        .map(|name| Value::InternString(vm.interns.intern_static(*name)))
         .collect();
     allocate_tuple(names, vm.heap)
 }

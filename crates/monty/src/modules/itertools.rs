@@ -74,11 +74,8 @@ const ITERTOOLS_TYPES: &[(StaticStrings, Type)] = &[
 ];
 
 /// Creates the `itertools` module on the heap.
-///
-/// # Panics
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Itertools);
+    let mut module = Module::new(StaticStrings::Itertools, vm.interns);
 
     for (name, type_) in ITERTOOLS_TYPES {
         module.set_attr(*name, Value::Builtin(Builtins::Type(*type_)), vm);
