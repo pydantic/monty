@@ -78,7 +78,9 @@ macro_rules! heap_payloads {
             /// A method bound to an instance.
             BoundMethod(inline $crate::types::BoundMethod),
             /// One `dataclasses.Field` held by a class's `__dataclass_fields__` dictionary.
-            DataclassField(inline $crate::modules::dataclasses::DataclassField),
+            /// Boxed: a name, an annotation and a default or factory are already
+            /// wider than the 32-bit ceiling, and `Field` has attributes left to gain.
+            DataclassField(boxed $crate::modules::dataclasses::DataclassField),
             /// A `list_iterator` object.
             ListIterator(inline $crate::types::list::ListIterator),
             /// A `_collections._deque_iterator` object.
@@ -172,9 +174,17 @@ macro_rules! define_heap_data {
 
 heap_payloads!(define_heap_data);
 
-// `HeapData` is copied on every allocate and free. `Dict`, the largest hot
-// variant, sets the payload ceiling; larger variants should remain boxed.
-const _: () = assert!(mem::size_of::<HeapData>() <= 80);
+/// The widest `HeapData` may be, per target.
+///
+/// `Dict` sets it on 64-bit hosts. On 32-bit (the wasm worker) `Dict` halves
+/// while `Value`-built payloads do not, so the itertools family sets it instead
+/// — see the budget those adaptors are held to in `types::itertools`.
+const MAX_HEAP_DATA_SIZE: usize = if cfg!(target_pointer_width = "64") { 80 } else { 56 };
+
+// `HeapData` is copied on every allocate and free, and every byte past the
+// ceiling widens every slot of every heap page. Box the variant that trips
+// this, not the enum: growing the budget here charges the hot variants too.
+const _: () = assert!(mem::size_of::<HeapData>() <= MAX_HEAP_DATA_SIZE);
 
 impl HeapData {
     /// Returns whether this heap data type can participate in reference cycles.
