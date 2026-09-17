@@ -4,16 +4,18 @@
 `source` when called and run it in the namespace CPython would: the module globals for a call at module scope, a
 snapshot of the function's locals (PEP 667) plus the module globals inside a function, or the dicts passed as
 arguments.
-Functions defined by a snippet under a `globals` dict resolve their globals through that dict at every call, so
-`ns = {}; exec(code, ns); ns['f']()` works as in CPython.
-The snippet can call host functions and raise into the caller; top-level `await` is rejected.
+Functions defined by a snippet under a `globals` dict resolve their globals through that dict at every call:
+`ns = {'x': 1}; exec('def f(): return x', ns); ns['x'] = 2; ns['f']()` returns `2`.
+The snippet can call host functions and raise into the caller; top-level `await`, including in class bodies, is rejected.
 
 ## Arguments
 
 - `source` must be a `str` or UTF-8 `bytes`.
-    There are no code objects and no `compile()`, so a code object cannot be passed; `closure=` raises `TypeError`.
-- `globals` must be a `dict`.
-- `locals` must be a `dict`; CPython accepts any mapping.
+    There are no code objects and no `compile()`, so a code object cannot be passed.
+    `closure` must be `None` (the default); non-`None` values raise `TypeError`.
+- `globals` defaults to `None`, using the caller's globals; non-`None` values must be a `dict`.
+- `locals` defaults to `None`, using `globals` when an explicit globals dict is passed, or the caller's locals otherwise.
+    Non-`None` values must be a `dict`; CPython accepts any mapping.
 
 ## Namespace divergences
 

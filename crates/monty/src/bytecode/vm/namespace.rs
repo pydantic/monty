@@ -137,11 +137,11 @@ impl VM<'_> {
                 }
                 Some(FrameNamespace::Function { globals }) => {
                     let dict = *globals;
-                    self.heap.inc_ref(dict);
                     let locals = match locals {
                         Some(dict) => Some(dict),
                         None => Some(self.snapshot_locals()?),
                     };
+                    self.heap.inc_ref(dict);
                     (FrameGlobals::Dict(dict), locals)
                 }
                 None => {

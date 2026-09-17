@@ -6,11 +6,13 @@ assert eval('\n3 * 3') == 9
 assert eval(b'x * 2') == 20
 assert eval('[i * 2 for i in range(3)]') == [0, 2, 4]
 assert eval('eval("x")') == 10
+assert eval('x + 1', None, None) == 11
 
 # === exec binds module globals ===
 exec('y = x * 2')
 assert y == 20
 assert exec('pass') is None
+assert exec('pass', None, None, closure=None) is None
 assert exec('') is None
 exec(b'z = 1')
 assert z == 1
@@ -138,6 +140,11 @@ try:
 except SyntaxError as e:
     assert str(e) == "'await' outside function (<string>, line 1)"
 try:
+    exec('async def value():\n    return 42\nclass C:\n    x = await value()')
+    assert False, 'expected SyntaxError'
+except SyntaxError as e:
+    assert str(e) == "'await' outside function (<string>, line 4)"
+try:
     eval(b'\xff')
     assert False, 'expected SyntaxError'
 except SyntaxError as e:
@@ -158,6 +165,18 @@ for source, line in [('\n)', 2), ('\n\n  )', 3), ('  \n\n*', 3)]:
         assert False, 'expected SyntaxError'
     except SyntaxError as e:
         assert str(e).endswith(f'(<string>, line {line})')
+
+
+# === async functions and methods inside snippets still accept await ===
+async_namespace = {}
+exec(
+    'async def value():\n    return 42\n'
+    'async def f():\n    return await value()\n'
+    'class C:\n    async def method(self):\n        return await value()',
+    async_namespace,
+)
+assert type(async_namespace['f']).__name__ == 'function'
+assert type(async_namespace['C'].method).__name__ == 'function'
 
 
 # === recursion through eval is bounded ===

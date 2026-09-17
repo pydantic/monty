@@ -290,16 +290,11 @@ pub struct Compiler<'a, 'i> {
     /// cell-backed, together with its absolute frame-stack offset.
     comp_slots: Vec<Option<CompSlot>>,
 
-    /// Settings inherited by nested function and class-body compilers.
+    /// Settings for this scope and its nested compilers.
     flags: ScopeFlags,
-
-    /// Whether `await` is a `SyntaxError` here: true only for the top level of
-    /// an `eval()` / `exec()` snippet, which CPython compiles without
-    /// top-level-await support. Not inherited by nested compilers.
-    forbid_await: bool,
 }
 
-/// Compiler settings that every nested scope inherits from its parent.
+/// Compiler settings inherited by nested scopes, with await restrictions reset for functions.
 #[derive(Debug, Clone, Copy)]
 struct ScopeFlags {
     /// Whether to compile pytest-style assert failure annotations.
@@ -308,6 +303,9 @@ struct ScopeFlags {
     /// `NAME_GLOBAL_ONLY`) because the running frame's globals are an explicit
     /// `exec()` / `eval()` dict.
     globals_by_name: bool,
+    /// Rejects `await` at snippet top level and in its class bodies.
+    /// Nested function bodies reset this restriction.
+    forbid_await: bool,
 }
 
 /// Jump targets needed to compile `break` and `continue`.
@@ -537,7 +535,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
             frame_locals,
             comp_slots: Vec::new(),
             flags,
-            forbid_await: false,
         }
     }
 
@@ -583,9 +580,9 @@ impl<'a, 'i> Compiler<'a, 'i> {
         let flags = ScopeFlags {
             assert_message_annotations: options.assert_message_annotations.enabled(),
             globals_by_name: snippet.unwrap_or(false),
+            forbid_await: snippet.is_some(),
         };
         let mut compiler = Compiler::new(interns, arenas, true, 0, flags);
-        compiler.forbid_await = snippet.is_some();
 
         // All globals are "local names" in the module
         compiler.code.register_local_names(globals.names());
@@ -615,6 +612,10 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // Function frames have `locals_count = num_locals` at runtime, so
         // comp-var load/store opcodes use `num_locals + offset` to skip past
         // the locals region into the operand-stack region.
+        let flags = ScopeFlags {
+            forbid_await: false,
+            ..flags
+        };
         let mut compiler = Compiler::new(interns, arenas, false, num_locals, flags);
         // Parameters, and the cells captured parameters live in, are named up
         // front: a body that never mentions one still reports it from `locals()`.
@@ -1393,7 +1394,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             }
 
             Expr::Await(value) => {
-                if self.forbid_await {
+                if self.flags.forbid_await {
                     return Err(CompileError::new("'await' outside function", expr_loc.position));
                 }
                 // Await expressions: compile the inner expression, then emit Await

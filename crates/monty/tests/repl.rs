@@ -1941,6 +1941,30 @@ fn repl_eval_suspends_at_external_call() {
     assert_eq!(feed_run_print(&mut repl, "double(21)").unwrap(), MontyObject::int(42));
 }
 
+/// A refused locals snapshot must not retain the function's globals namespace.
+#[cfg(feature = "ref-count-return")]
+#[test]
+fn repl_failed_exec_locals_snapshot_releases_globals() {
+    for builtin in ["eval", "exec"] {
+        let (mut repl, _) = init_repl("import gc");
+        let baseline = repl.heap_entry_count();
+        feed_run_print(
+            &mut repl,
+            &format!("ns = {{}}\nexec('def f(x):\\n    return {builtin}(\"0\")', ns)"),
+        )
+        .unwrap();
+
+        // Refuse the snapshot dict's first growth, independently of allocator usage.
+        *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(0));
+        let error = feed_run_print(&mut repl, "ns['f'](1)").unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::MemoryError);
+        *repl.tracker_mut() = ResourceTracker::default();
+
+        feed_run_print(&mut repl, "ns = None\ngc.collect()").unwrap();
+        assert_eq!(repl.heap_entry_count(), baseline);
+    }
+}
+
 /// Equal displayed filenames retain distinct source locations after loading a session.
 #[test]
 fn repl_snippet_sources_survive_round_trip() {
