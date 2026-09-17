@@ -1057,7 +1057,7 @@ impl Checkout {
     /// with another suspension would otherwise be aborted again forever, and
     /// a suspension whose payload the typed path would reject is a protocol
     /// violation, not a feed to abort.
-    async fn abort_if_over_budget(&mut self, event: &pb::ChildEvent) -> Result<bool, PoolError> {
+    async fn abort_if_over_budget(&mut self, event: &mut pb::ChildEvent) -> Result<bool, PoolError> {
         let is_print = matches!(event.kind, Some(pb::child_event::Kind::Print(_)));
         if !is_print && mem::take(&mut self.abort_in_flight) && !is_abort_reply(event) {
             return Err(self.protocol_violation("worker answered AbortFeed with something other than an Error"));
@@ -1072,8 +1072,10 @@ impl Checkout {
         let Some(limit) = self.budget.over_suspension_limit(event) else {
             return Ok(false);
         };
-        if let Some(pb::child_event::Kind::OsCall(call)) = &event.kind
-            && let Err(err) = os_call_from_proto(call.clone())
+        // an aborted event is dropped by the caller, so validation consumes the
+        // call rather than cloning a worker-sized arena
+        if let Some(pb::child_event::Kind::OsCall(call)) = &mut event.kind
+            && let Err(err) = os_call_from_proto(mem::take(call))
         {
             return Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
         }
@@ -1206,14 +1208,14 @@ impl Checkout {
     ) -> Result<pb::ChildEvent, PoolError> {
         self.send_request(request).await?;
         loop {
-            let event = match self.worker.as_mut().expect("checked by send_request").recv().await {
+            let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
                 Ok(event) => event,
                 Err(FrameError::Decode(err)) => {
                     return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
-            if self.abort_if_over_budget(&event).await? {
+            if self.abort_if_over_budget(&mut event).await? {
                 continue;
             }
             // strict alternation: zero or more `Print`s, then exactly one
@@ -1282,7 +1284,7 @@ impl Checkout {
     async fn turn_io(&mut self, request: &pb::ParentRequest, on_print: OnPrint<'_>) -> Result<ControlEvent, PoolError> {
         self.send_request(request).await?;
         loop {
-            let event = match self.worker.as_mut().expect("checked by send_request").recv().await {
+            let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
                 Ok(event) => event,
                 // a decode failure means the frame arrived intact but its
                 // payload was garbage (including values that fail semantic
@@ -1295,7 +1297,7 @@ impl Checkout {
             };
             // a suspension past `max_suspensions` is aborted here and never
             // reaches the caller; the abort's reply is the next event
-            if self.abort_if_over_budget(&event).await? {
+            if self.abort_if_over_budget(&mut event).await? {
                 continue;
             }
             // Only a `Load` reply carries this; it lets `restore` report the
