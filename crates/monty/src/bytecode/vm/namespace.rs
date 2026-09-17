@@ -222,16 +222,12 @@ impl VM<'_> {
         // Owned by the guard until every entry is in, so a failed insert frees it.
         let mut dict_guard = DropGuard::new(Value::Ref(dict_id), self);
         let (_, this) = dict_guard.as_parts_mut();
-        let bound: Vec<(StringId, Value)> = this
-            .global_names
-            .names()
-            .iter()
-            .zip(&this.globals)
-            .filter(|(_, value)| !matches!(value, Value::Undefined))
-            .map(|(name_id, value)| (*name_id, value.clone_with_heap(this.heap)))
-            .collect();
-        for (name_id, value) in bound {
-            this.namespace_set(dict_id, name_id, value)?;
+        for slot in 0..this.global_names.len() {
+            if !matches!(this.globals[slot], Value::Undefined) {
+                let name_id = this.global_names.names()[slot];
+                let value = this.globals[slot].clone_with_heap(this.heap);
+                this.namespace_set(dict_id, name_id, value)?;
+            }
         }
         let (dict, _) = dict_guard.into_parts();
         Ok(dict.into_ref_id().expect("snapshot dict is a heap reference"))
@@ -312,15 +308,12 @@ impl VM<'_> {
         let mut dict_guard = DropGuard::new(Value::Ref(dict_id), self);
         let (_, this) = dict_guard.as_parts_mut();
         let base = this.current_frame.stack_base();
-        let count = usize::from(this.current_frame.locals_count);
-        // Resolved up front so the loops below are free to borrow `this` mutably.
         let code = this.frame_code(&this.current_frame);
-        let names: Vec<Option<StringId>> = (0..count)
-            .map(|slot| {
-                code.local_name(u16::try_from(slot).expect("locals fit in u16"))
-                    .filter(|name_id| *name_id != StringId::default())
-            })
-            .collect();
+        let names = (0..this.current_frame.locals_count).filter_map(|slot| {
+            code.local_name(slot)
+                .filter(|name_id| *name_id != StringId::default())
+                .map(|name_id| (usize::from(slot), name_id))
+        });
         // Cell slots go last so a captured parameter's live cell value replaces
         // the stale copy left in its parameter slot under the same name.
         let cell_slots: AHashSet<usize> = this
@@ -333,16 +326,13 @@ impl VM<'_> {
                     .iter()
                     .chain(&func.free_var_slots)
                     .map(|slot| slot.index())
-                    .collect::<Vec<_>>()
             })
             .collect();
-        for slot in (0..count).filter(|slot| !cell_slots.contains(slot)) {
-            let Some(name_id) = names[slot] else { continue };
+        for (slot, name_id) in names.clone().filter(|(slot, _)| !cell_slots.contains(slot)) {
             let value = this.stack[base + slot].clone_with_heap(this.heap);
             this.snapshot_entry(dict_id, name_id, value)?;
         }
-        for slot in (0..count).filter(|slot| cell_slots.contains(slot)) {
-            let Some(name_id) = names[slot] else { continue };
+        for (slot, name_id) in names.filter(|(slot, _)| cell_slots.contains(slot)) {
             let value = match &this.stack[base + slot] {
                 Value::Ref(cell_id) => match this.heap.get(*cell_id) {
                     HeapData::Cell(cell) => cell.0.clone_with_heap(this.heap),

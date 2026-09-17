@@ -141,13 +141,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
     }
 
     /// The real class name (`'Point'`), not the `Type::HostClass` placeholder.
-    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'static, str> {
-        Cow::Owned(
-            host_class_type(vm.heap, self.get(vm.heap).class_id())
-                .name_either()
-                .to_cow(vm.interns)
-                .into_owned(),
-        )
+    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
+        host_class_type(vm.heap, self.get(vm.heap).class_id())
+            .name_either()
+            .to_cow(vm.interns)
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -260,10 +257,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
                 defer_drop!(callable, vm);
                 vm.call_function(callable, args)
             } else {
-                // Attribute doesn't exist — use the class name (e.g., "Point") not "HostClass"
-                let err = ExcType::attribute_error(self.get(vm.heap).name(vm.heap, vm.interns), method_name);
                 args.drop_with(vm);
-                Err(err)
+                // Attribute doesn't exist — use the class name (e.g., "Point") not "HostClass"
+                Err(ExcType::attribute_error(
+                    self.get(vm.heap).name(vm.heap, vm.interns),
+                    method_name,
+                ))
             }
         }
     }
@@ -569,9 +568,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
             defer_drop!(callable, vm);
             vm.call_function(callable, args)
         } else {
-            let err = ExcType::attribute_error_type(self.get(vm.heap).name(vm.interns), attr_str);
             args.drop_with(vm);
-            Err(err)
+            Err(ExcType::attribute_error_type(
+                self.get(vm.heap).name(vm.interns),
+                attr_str,
+            ))
         }
     }
 }

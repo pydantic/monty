@@ -311,9 +311,9 @@ impl Type {
     /// class names are cloned into `Cow::Owned`), so it can be captured
     /// before heap-mutating cleanup (`drop_with`) at error sites and
     /// formatted after.
-    pub(crate) fn name(self, heap: &Heap, interns: &Interns) -> Cow<'static, str> {
+    pub(crate) fn name<'i>(self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
         match self {
-            Self::Instance(class_id) => Cow::Owned(class_name(class_id, heap, interns).into_owned()),
+            Self::Instance(class_id) => class_name(class_id, heap, interns),
             Self::Exception(exc_type) => Cow::Borrowed(exc_type.into()),
             other => Cow::Borrowed(other.into()),
         }
@@ -325,7 +325,7 @@ impl Type {
     /// reprs and error messages qualify where `__name__` does not. Sandbox
     /// class names ([`Instance`](Self::Instance)) are identifiers, so
     /// stripping is a no-op for them.
-    pub(crate) fn dunder_name(self, heap: &Heap, interns: &Interns) -> Cow<'static, str> {
+    pub(crate) fn dunder_name<'i>(self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
         match self.name(heap, interns) {
             Cow::Borrowed(name) => Cow::Borrowed(name.rsplit_once('.').map_or(name, |(_, bare)| bare)),
             owned @ Cow::Owned(_) => owned,
@@ -338,7 +338,7 @@ impl Type {
     /// `arg == Py_None ? "None" : Py_TYPE(arg)->tp_name`, and since `NoneType`
     /// is a singleton, branching on the type is equivalent to branching on the
     /// value. Use for the "not Y" half of arg-type error messages only.
-    pub(crate) fn cpython_arg_name(self, heap: &Heap, interns: &Interns) -> Cow<'static, str> {
+    pub(crate) fn cpython_arg_name<'i>(self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
         match self {
             Self::NoneType => Cow::Borrowed("None"),
             other => other.name(heap, interns),
@@ -722,6 +722,7 @@ impl Type {
             // Primitive types - inline implementation
             Self::Int => int_init(vm, args),
             Self::Float => {
+                let interns = vm.interns;
                 let Some(v) = args.get_zero_one_arg("float", vm.heap)? else {
                     return Ok(Value::Float(0.0));
                 };
@@ -731,9 +732,9 @@ impl Type {
                     Value::Int(i) => Ok(Value::Float(*i as f64)),
                     Value::Bool(b) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
                     Value::InternString(string_id) => {
-                        Ok(Value::Float(parse_f64_from_str(vm.interns.get_str(*string_id))?))
+                        Ok(Value::Float(parse_f64_from_str(interns.get_str(*string_id))?))
                     }
-                    Value::InternLongInt(id) => Ok(Value::Float(bigint_to_f64_checked(vm.interns.get_long_int(*id))?)),
+                    Value::InternLongInt(id) => Ok(Value::Float(bigint_to_f64_checked(interns.get_long_int(*id))?)),
                     Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
                         HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
                         HeapData::LongInt(value) => Ok(Value::Float(value.to_f64_checked()?)),
@@ -832,9 +833,10 @@ fn int_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         None => int_convert(x, vm),
         Some(base) => {
             let base = int_base(base, vm)?;
+            let interns = vm.interns;
             match x {
-                Value::InternString(string_id) => parse_int_from_str(vm.interns.get_str(*string_id), base, vm.heap),
-                Value::InternBytes(bytes_id) => parse_int_from_bytes(vm.interns.get_bytes(*bytes_id), base, vm.heap),
+                Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), base, vm.heap),
+                Value::InternBytes(bytes_id) => parse_int_from_bytes(interns.get_bytes(*bytes_id), base, vm.heap),
                 Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
                     HeapData::Str(s) => parse_int_from_str(s.as_str(), base, vm.heap),
                     HeapData::Bytes(b) => parse_int_from_bytes(b.as_slice(), base, vm.heap),
@@ -848,12 +850,13 @@ fn int_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `int(x)` with no base: numeric coercion plus base-10 str/bytes parsing.
 fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    let interns = vm.interns;
     match x {
         Value::Int(i) => Ok(Value::Int(*i)),
         Value::Float(f) => LongInt::value_from_f64(*f, vm.heap),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
-        Value::InternString(string_id) => parse_int_from_str(vm.interns.get_str(*string_id), 10, vm.heap),
-        Value::InternBytes(bytes_id) => parse_int_from_bytes(vm.interns.get_bytes(*bytes_id), 10, vm.heap),
+        Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), 10, vm.heap),
+        Value::InternBytes(bytes_id) => parse_int_from_bytes(interns.get_bytes(*bytes_id), 10, vm.heap),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => parse_int_from_str(s.as_str(), 10, vm.heap),
             HeapData::Bytes(b) => parse_int_from_bytes(b.as_slice(), 10, vm.heap),

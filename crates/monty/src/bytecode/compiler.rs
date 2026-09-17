@@ -541,14 +541,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
         }
     }
 
-    /// Compiles module-level code (a sequence of statements) to the module `Code`.
-    ///
-    /// Every function compiled along the way is appended to `interns`, and its
-    /// `FunctionId` is its index there — so a REPL passes its session table to
-    /// keep earlier ids stable. On failure the function table and the constant
-    /// arena are restored to their original lengths, so a rejected snippet can't
-    /// consume `FunctionId`s or arena space. The module implicitly returns the
-    /// value of the last expression, or None if empty.
+    /// Compiles module-level statements, returning the last expression or None.
+    /// The caller must discard the private intern and arena extensions on failure.
     pub fn compile_module(
         nodes: &[PreparedNode],
         interns: &mut CompileInterns<'_>,
@@ -556,24 +550,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
         globals: &NameMap,
         options: CompileOptions,
     ) -> Result<Code, CompileError> {
-        let functions_len = interns.functions_len();
-        let constants_len = arenas.constants.len();
-        let bytecode_len = arenas.bytecode.len();
-        let result = Self::compile_module_inner(nodes, interns, arenas, globals, options, None);
-        if result.is_err() {
-            interns.truncate_functions(functions_len);
-            arenas.constants.truncate(constants_len);
-            arenas.bytecode.truncate(bytecode_len);
-        }
-        result
+        Self::compile_module_inner(nodes, interns, arenas, globals, options, None)
     }
 
-    /// Compiles an `eval()` / `exec()` snippet prepared by
-    /// [`prepare_snippet`](crate::prepare::prepare_snippet): module-style code
-    /// whose `await`s are rejected and whose global references compile by name
-    /// when `globals_by_name` (an explicit globals dict). Rolls back the
-    /// function table and constant arena on failure like
-    /// [`compile_module`](Self::compile_module).
+    /// Compiles a prepared `eval()` / `exec()` snippet, rejecting top-level await.
+    /// `globals_by_name` selects name lookups for an explicit globals dict.
+    /// The caller must discard the private intern and arena extensions on failure.
     pub(crate) fn compile_snippet(
         nodes: &[PreparedNode],
         interns: &mut CompileInterns<'_>,
@@ -582,21 +564,10 @@ impl<'a, 'i> Compiler<'a, 'i> {
         options: CompileOptions,
         globals_by_name: bool,
     ) -> Result<Code, CompileError> {
-        let functions_len = interns.functions_len();
-        let constants_len = arenas.constants.len();
-        let bytecode_len = arenas.bytecode.len();
-        let result = Self::compile_module_inner(nodes, interns, arenas, globals, options, Some(globals_by_name));
-        if result.is_err() {
-            interns.truncate_functions(functions_len);
-            arenas.constants.truncate(constants_len);
-            arenas.bytecode.truncate(bytecode_len);
-        }
-        result
+        Self::compile_module_inner(nodes, interns, arenas, globals, options, Some(globals_by_name))
     }
 
-    /// [`compile_module`](Self::compile_module) without the rollback of the
-    /// function table; `snippet` is `Some(globals_by_name)` for an
-    /// `eval()` / `exec()` snippet.
+    /// Shared module compiler; `snippet` is `Some(globals_by_name)` for eval/exec.
     fn compile_module_inner(
         nodes: &[PreparedNode],
         interns: &mut CompileInterns<'_>,

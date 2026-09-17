@@ -145,14 +145,6 @@ impl<'i> CompileInterns<'i> {
     pub(crate) fn functions_len(&self) -> usize {
         self.base.functions.len() + self.functions.len()
     }
-
-    /// Discards functions from a failed nested compile, never committed functions.
-    pub(crate) fn truncate_functions(&mut self, len: usize) {
-        self.functions.truncate(
-            len.checked_sub(self.base.functions.len())
-                .expect("committed function rollback"),
-        );
-    }
 }
 
 impl Drop for CompileInterns<'_> {

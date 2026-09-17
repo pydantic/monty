@@ -155,19 +155,16 @@ fn compile_and_push(
 
     let options = vm.env.options;
     let mut arenas = vm.arenas.extension();
-    let code = match names {
-        SnippetNames::NameOverDict => {
-            let mut scratch = NameMap::new();
-            let nodes = prepare_snippet(nodes, &overlay, &mut scratch, names).map_err(|e| e.into_run_error(source))?;
-            Compiler::compile_snippet(&nodes, &mut overlay, &mut arenas, &scratch, options, true)
-        }
-        SnippetNames::Slots | SnippetNames::NameOverSlots => {
-            let nodes =
-                prepare_snippet(nodes, &overlay, vm.global_names, names).map_err(|e| e.into_run_error(source))?;
-            Compiler::compile_snippet(&nodes, &mut overlay, &mut arenas, vm.global_names, options, false)
-        }
-    }
-    .map_err(|e| e.into_run_error(source))?;
+    let globals_by_name = names == SnippetNames::NameOverDict;
+    let mut scratch = NameMap::new();
+    let globals = if globals_by_name {
+        &mut scratch
+    } else {
+        &mut *vm.global_names
+    };
+    let nodes = prepare_snippet(nodes, &overlay, globals, names).map_err(|e| e.into_run_error(source))?;
+    let code = Compiler::compile_snippet(&nodes, &mut overlay, &mut arenas, globals, options, globals_by_name)
+        .map_err(|e| e.into_run_error(source))?;
 
     let position = CodeRange {
         filename: filename_id,

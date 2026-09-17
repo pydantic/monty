@@ -925,25 +925,23 @@ impl VM<'_> {
         let func = self.interns.get_function(func_id);
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
+        let code = &func.code;
 
         let callable = self.stack.remove(callable_index);
         debug_assert_exact_callable(&callable, func_id);
         self.stack
             .resize_with(callable_index + namespace_size, || Value::Undefined);
 
-        // Re-borrow rather than hold `func` across the stack edits above: the
-        // frame copies out the code's arena bases and keeps no handle.
         let exc_stack_base = self.exception_stack.len();
-        let frame = CallFrame::new_function(
-            &self.interns.get_function(func_id).code,
+        self.push_frame(CallFrame::new_function(
+            code,
             callable_index,
             locals_count,
             exc_stack_base,
             func_id,
             call_offset,
             None,
-        );
-        self.push_frame(frame)?;
+        ))?;
 
         Ok(CallResult::FramePushed)
     }
@@ -1177,12 +1175,9 @@ impl VM<'_> {
             None if matches!(args, ArgValues::Empty) => Ok(CallResult::Value(Value::Ref(instance_id))),
             None => {
                 args.drop_with(self);
-                let err = ExcType::type_error(format!(
-                    "{}() takes no arguments",
-                    class_name(class_id, self.heap, self.interns)
-                ));
+                let name = class_name(class_id, self.heap, self.interns);
                 Value::Ref(instance_id).drop_with(self);
-                Err(err)
+                Err(ExcType::type_error(format!("{name}() takes no arguments")))
             }
             Some(init_func) => {
                 let this = self;

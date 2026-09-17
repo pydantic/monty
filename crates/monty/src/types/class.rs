@@ -243,9 +243,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
             defer_drop!(member, vm);
             vm.call_function(member, args)
         } else {
-            let err = ExcType::attribute_error_type(self.get(vm.heap).name.as_str(vm.interns), attr_str);
             args.drop_with(vm);
-            Err(err)
+            Err(ExcType::attribute_error_type(
+                self.get(vm.heap).name.as_str(vm.interns),
+                attr_str,
+            ))
         }
     }
 }

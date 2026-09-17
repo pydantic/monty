@@ -2403,7 +2403,7 @@ impl<'h> VM<'h> {
     /// Frames carry arena offsets rather than a handle to their `Code`, so the
     /// cold paths that need its tables — tracebacks, exception lookup, local
     /// names — resolve it here.
-    fn frame_code(&self, frame: &CallFrame) -> &Code {
+    fn frame_code(&self, frame: &CallFrame) -> &'h Code {
         match frame.function_id {
             Some(func_id) => &self.interns.get_function(func_id).code,
             None => self.module_code,

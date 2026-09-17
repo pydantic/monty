@@ -297,9 +297,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         }
 
         // 4. No such attribute.
-        let err = ExcType::attribute_error(class_name(class_id, vm.heap, vm.interns), attr_str);
         args.drop_with(vm);
-        Err(err)
+        Err(ExcType::attribute_error(
+            class_name(class_id, vm.heap, vm.interns),
+            attr_str,
+        ))
     }
 
     fn py_is_iterable(&self, vm: &VM<'h>) -> bool {
