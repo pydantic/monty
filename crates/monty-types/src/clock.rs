@@ -82,9 +82,11 @@ impl HostClock {
                 }))
             }
             // `time.time()` is the raw epoch offset, so the local zone does
-            // not apply to it.
+            // not apply to it. The range check keeps a clock all-or-nothing:
+            // an instant `datetime.now()` refuses is refused here too.
             OsFunctionCall::Time => {
                 let (utc, _) = self.instant()?;
+                shift(utc, 0)?;
                 let epoch = utc.and_utc();
                 let seconds = epoch.timestamp() as f64 + f64::from(epoch.timestamp_subsec_micros()) / 1_000_000.0;
                 Some(MontyObject::float(seconds))

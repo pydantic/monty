@@ -3,17 +3,20 @@
 //! Eligible coroutines are awaited at their call suspension. Other coroutines
 //! are spawned as tokio tasks and resolved in batches when the sandbox blocks.
 
-use std::future::Future;
+use std::{future::Future, time::Duration};
 
 use monty_pool::ResumeValue;
 use monty_proto::python::InstanceStore;
-use monty_types::{CallArgs, ExtFunctionResult, MontyObject, MontyUuid};
+use monty_types::{CallArgs, ExtFunctionResult, MontyObject, MontyUuid, OsFunctionCall};
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
 use pyo3_async_runtimes::{into_future_with_locals, tokio::get_current_locals};
 use tokio::task::{JoinError, JoinSet};
 
-use crate::external::{
-    CallResult, ExternalLookup, dispatch_object_call_or_coroutine, py_err_to_ext_result, py_obj_to_ext_result,
+use crate::{
+    external::{
+        CallResult, ExternalLookup, dispatch_object_call_or_coroutine, py_err_to_ext_result, py_obj_to_ext_result,
+    },
+    get_not_handled,
 };
 
 /// Dispatches a function call to a host-routed method (when `object_id` is
@@ -80,12 +83,19 @@ pub(crate) fn coroutine_future(
 /// Like [`coroutine_future`] for a coroutine answering `asyncio.sleep`, whose
 /// value the sandbox ignores: it settles to `None` however the coroutine
 /// returns, so a value with no wire form cannot fail it. An exception still
-/// reaches the `await`.
+/// reaches the `await`, and so does a `NOT_HANDLED` refusal, as the same
+/// error a declining synchronous handler produces.
 pub(crate) fn sleep_future(coro: Py<PyAny>) -> PyResult<impl Future<Output = ExtFunctionResult> + Send + use<>> {
     let future = python_future(coro)?;
     Ok(async move {
         match future.await {
-            Ok(_) => ExtFunctionResult::Return(MontyObject::none()),
+            Ok(value) => Python::attach(|py| match get_not_handled(py) {
+                Ok(not_handled) if value.is(not_handled) => {
+                    ExtFunctionResult::Error(OsFunctionCall::AsyncSleep(Duration::ZERO).on_no_handler())
+                }
+                Ok(_) => ExtFunctionResult::Return(MontyObject::none()),
+                Err(err) => py_err_to_ext_result(py, &err),
+            }),
             Err(err) => Python::attach(|py| py_err_to_ext_result(py, &err)),
         }
     })

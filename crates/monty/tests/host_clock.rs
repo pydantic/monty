@@ -150,6 +150,11 @@ fn unrepresentable_fixed_instant_reads_as_denied() {
         run("from datetime import date\ndate.today()", far_future).unwrap_err(),
         "NotImplementedError: OS function 'date.today' not implemented with standard execution"
     );
+    // `time.time()` has no year range of its own, but a clock answers every call or none
+    assert_eq!(
+        run("import time\ntime.time()", far_future).unwrap_err(),
+        "NotImplementedError: OS function 'time.time' not implemented with standard execution"
+    );
 }
 
 #[test]

@@ -16,6 +16,7 @@ import pytest
 from inline_snapshot import snapshot
 
 from pydantic_monty import (
+    NOT_HANDLED,
     AsyncMonty,
     AsyncMontySession,
     MemoryFile,
@@ -1147,6 +1148,27 @@ asyncio.run(main())
     assert calls == snapshot([('asyncio.sleep', (0.05,)), ('asyncio.sleep', (0.05,))])
     # the second sleep started before the first finished, so they overlapped
     assert started[1] < finished[0]
+
+
+@pytest.mark.parametrize(
+    'code',
+    [
+        pytest.param('import asyncio\nasyncio.run(asyncio.sleep(0.01))', id='eager'),
+        pytest.param(
+            'import asyncio\nasync def main():\n    await asyncio.gather(asyncio.sleep(0.01), asyncio.sleep(0.01))\nasyncio.run(main())',
+            id='future',
+        ),
+    ],
+)
+async def test_async_os_callback_can_refuse_asyncio_sleep(asession: AsyncMontySession, code: str):
+    """A coroutine that resolves to `NOT_HANDLED` refuses the sleep, as a synchronous handler would."""
+
+    async def os_handler(**_: Any) -> Any:
+        return NOT_HANDLED
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        await asession.feed_run(code, os=os_handler)
+    assert str(exc_info.value) == snapshot("RuntimeError: 'asyncio.sleep' is not supported in this environment")
 
 
 async def test_os_access_sleeps_concurrently_under_async_monty(asession: AsyncMontySession):

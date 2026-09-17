@@ -319,7 +319,8 @@ properties that real CPython does not provide, per the caveat above.
     `request_timeout` every iteration, exactly like a loop of external calls.
     `max_duration` still bounds such a feed's worker execution, but nothing
     bounds its wall clock.
-- **`os=` fallback** is called with keyword arguments (`name`, `args`, `kwargs`, `is_async`). On the
+- **`os=` fallback** is called with keyword arguments (`name`, `args`, `kwargs`, `is_async`) in Python;
+    the JavaScript client calls it positionally as `os(functionName, args, kwargs)`, with no `is_async`. On the
     automatic path (`feed_run`, `resume_auto`) mounts get first refusal, so
     mount-covered filesystem calls never reach the callback. Under `feed_start`
     the callback is consulted only by `resume_auto()`; it is never invoked

@@ -20,8 +20,10 @@ forms), `time_ns`, `struct_time`, `localtime`, `gmtime`, `mktime`, `strftime`,
 `date.today()` and `datetime.now()` do. A host that answers neither leaves them
 raising:
 
-- Through the pool (`pydantic_monty`, `@pydantic/monty`, `monty-pool`) they
-    reach the `os=` handler. With no handler, `RuntimeError: 'time.time' is not supported in this environment`.
+- Through the bindings (`pydantic_monty`, `@pydantic/monty`) they reach the
+    `os=` handler. With no handler, `RuntimeError: 'time.time' is not supported in this environment`.
+    A Rust `monty-pool` caller has no `os=` handler: each call arrives as a
+    `TurnEvent::OsCall` to answer with `resume`.
 - Under standard (non-suspending) execution — `MontyRun::run`, and so the
     `monty` CLI running a file without mounts — `time.time()` is answered from
     the runner's `HostClock` (the machine's clock by default, `HostClock::Denied`
