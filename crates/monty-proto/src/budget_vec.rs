@@ -11,7 +11,7 @@ use std::{
 
 use prost::{DecodeError, bytes::Buf};
 
-use crate::decode_budget::{charge, exhausted};
+use crate::decode_budget::{charge, error, exhausted};
 
 /// A protocol vector whose decoding growth is charged before allocation.
 /// Conversion to and from a standard vector transfers ownership without copying.
@@ -56,6 +56,16 @@ impl<T> BudgetVec<T> {
         Ok(())
     }
 
+    /// Appends within already-reserved capacity, rejecting insertion rather than growing.
+    pub(crate) fn try_push_reserved(&mut self, value: T) -> Result<(), DecodeError> {
+        if self.0.len() < self.0.capacity() {
+            self.0.push(value);
+            Ok(())
+        } else {
+            Err(error("decode buffer has no reserved capacity"))
+        }
+    }
+
     /// Reserves the next slot before decoding a potentially expensive payload.
     pub(crate) fn try_reserve_slot(&mut self) -> Result<(), DecodeError> {
         if self.0.len() == self.0.capacity() {
@@ -77,8 +87,19 @@ impl<T> BudgetVec<T> {
 
     /// Charges the full replacement allocation to cover reallocation overlap.
     pub(crate) fn try_reserve_capacity(&mut self, capacity: usize) -> Result<(), DecodeError> {
+        self.try_reserve_capacity_with_overhead(capacity, 0)
+    }
+
+    /// Reserves storage with an additional per-slot allowance, charging both in one preflight.
+    /// The allowance applies to the full replacement capacity and cannot reduce the storage charge.
+    pub(crate) fn try_reserve_capacity_with_overhead(
+        &mut self,
+        capacity: usize,
+        overhead: usize,
+    ) -> Result<(), DecodeError> {
         if capacity > self.0.capacity() {
-            charge(capacity.checked_mul(size_of::<T>()).ok_or_else(exhausted)?)?;
+            let cost = size_of::<T>().checked_add(overhead).ok_or_else(exhausted)?;
+            charge(capacity.checked_mul(cost).ok_or_else(exhausted)?)?;
             self.0
                 .try_reserve_exact(capacity - self.0.len())
                 .map_err(|_| exhausted())?;

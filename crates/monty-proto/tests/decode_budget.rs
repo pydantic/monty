@@ -7,7 +7,11 @@ use allocation_counter::measure;
 use insta::{allow_duplicates, assert_snapshot};
 use monty_proto::{
     BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameReader, WireArena, WireFunctionCall, WireIndexes, WireNamedTuple,
-    WireNodePairs, budgeted_prost::encoding, decode_budget_remaining, decode_frame, pb, with_decode_budget,
+    WireNodePairs,
+    budgeted_prost::encoding,
+    decode_budget_remaining, decode_frame, pb,
+    test_util::{push_reserved, reserve_with_overhead},
+    with_decode_budget,
 };
 use monty_types::{ClassTypeNode, MontyNode, MontyUuid, NodeId};
 use num_bigint::{BigInt, Sign};
@@ -183,6 +187,135 @@ fn budget_vectors_reject_growth_without_losing_elements() {
         assert_eq!(values.as_ptr(), pointer);
         assert_eq!(decode_budget_remaining(), Some(0));
     });
+}
+
+/// Storage and host-reference allowances cover full replacements, not reuse of paid capacity.
+#[test]
+fn budget_vectors_reserve_storage_and_overhead_together() {
+    let overhead = 2 * size_of::<usize>() - size_of::<u32>();
+    let cost = size_of::<u32>() + overhead;
+    with_decode_budget(12 * cost, || {
+        let mut values = BudgetVec::<u32>::new();
+        let allocations = measure(|| {
+            reserve_with_overhead(&mut values, 4, overhead).unwrap();
+            assert_eq!(decode_budget_remaining(), Some(8 * cost));
+            for value in 0..4 {
+                push_reserved(&mut values, value).unwrap();
+            }
+            reserve_with_overhead(&mut values, 8, overhead).unwrap();
+        });
+        assert_eq!(values.as_slice(), &[0, 1, 2, 3]);
+        assert_eq!(values.capacity(), 8);
+        assert_eq!(allocations.bytes_total, (12 * size_of::<u32>()) as u64);
+        assert_eq!(decode_budget_remaining(), Some(0));
+
+        let pointer = values.as_ptr();
+        let allocations = measure(|| {
+            values.clear();
+            reserve_with_overhead(&mut values, 8, overhead).unwrap();
+            for value in 0..8 {
+                push_reserved(&mut values, value).unwrap();
+            }
+        });
+        assert_eq!(values.as_slice(), &[0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(values.as_ptr(), pointer);
+        assert_eq!(allocations.bytes_total, 0);
+        assert_eq!(decode_budget_remaining(), Some(0));
+    });
+}
+
+/// A rejected combined charge or overflow neither spends the allowance nor touches the buffer.
+#[test]
+fn budget_vectors_reject_combined_reservations_atomically() {
+    let overhead = 2 * size_of::<usize>() - size_of::<u32>();
+    for (capacity, overhead, budget) in [
+        (1024, overhead, 1024 * (size_of::<u32>() + overhead) - 1),
+        (2, usize::MAX, DEFAULT_MAX_DECODE_BYTES),
+        (usize::MAX, 0, DEFAULT_MAX_DECODE_BYTES),
+        (usize::MAX / size_of::<u32>(), overhead, DEFAULT_MAX_DECODE_BYTES),
+    ] {
+        let mut values = BudgetVec::from(vec![42u32]);
+        let pointer = values.as_ptr();
+        let mut error = None;
+        let allocations = measure(|| {
+            with_decode_budget(budget, || {
+                error = Some(reserve_with_overhead(&mut values, capacity, overhead).unwrap_err());
+                assert_eq!(decode_budget_remaining(), Some(budget));
+            });
+        });
+        assert_eq!(values.as_slice(), &[42]);
+        assert_eq!(values.capacity(), 1);
+        assert_eq!(values.as_ptr(), pointer);
+        // Bounded error storage is allowed; a replacement buffer is not.
+        assert!(allocations.bytes_total < 1024, "{allocations:?}");
+        allow_duplicates! {
+            assert_snapshot!(error.unwrap(), @"failed to decode Protobuf message: frame exceeds decode memory budget");
+        }
+    }
+}
+
+/// Reserved insertion must not fall back to allocating, even with ample budget available.
+#[test]
+fn reserved_insertion_rejects_full_buffers() {
+    for mut values in [BudgetVec::new(), vec![7u64; 1024].into()] {
+        let pointer = values.as_ptr();
+        let len = values.len();
+        let mut error = None;
+        let allocations = measure(|| {
+            with_decode_budget(DEFAULT_MAX_DECODE_BYTES, || {
+                error = Some(push_reserved(&mut values, 99).unwrap_err());
+                assert_eq!(decode_budget_remaining(), Some(DEFAULT_MAX_DECODE_BYTES));
+            });
+        });
+        assert_eq!(values.len(), len);
+        assert_eq!(values.capacity(), len);
+        assert_eq!(values.as_ptr(), pointer);
+        assert!(values.iter().all(|value| *value == 7));
+        assert!(allocations.bytes_total < 1024, "{allocations:?}");
+        allow_duplicates! {
+            assert_snapshot!(error.unwrap(), @"failed to decode Protobuf message: decode buffer has no reserved capacity");
+        }
+    }
+}
+
+/// Mixed packed/unpacked runs retain their reference allowance across growth and capacity reuse.
+#[test]
+fn packed_references_use_precharged_capacity() {
+    let mut wire = repeated_field(1, WireType::Varint, &[0], 1);
+    wire.extend(repeated_field(
+        1,
+        WireType::LengthDelimited,
+        &[0, 127, 128, 1, 128, 128, 1],
+        1,
+    ));
+    wire.extend(repeated_field(1, WireType::LengthDelimited, &[0, 0], 1));
+    wire.extend(repeated_field(1, WireType::LengthDelimited, &[], 1));
+    wire.extend(repeated_field(1, WireType::Varint, &[0], 1));
+    let (decoded, charged) = measured_decode::<WireIndexes>(&wire);
+    assert_eq!(
+        decoded.0.as_slice(),
+        &[
+            NodeId(0),
+            NodeId(0),
+            NodeId(127),
+            NodeId(128),
+            NodeId(16384),
+            NodeId(0),
+            NodeId(0),
+            NodeId(0)
+        ]
+    );
+    assert_eq!(decoded.0.capacity(), 8);
+    assert_eq!(charged, 12 * 2 * size_of::<usize>());
+    for split in 0..=wire.len() {
+        with_decode_budget(charged, || {
+            assert_eq!(
+                WireIndexes::decode(wire[..split].chain(&wire[split..])).unwrap(),
+                decoded
+            );
+            assert_eq!(decode_budget_remaining(), Some(0));
+        });
+    }
 }
 
 /// Buffers not all present in today's schema still need a guarded adapter.

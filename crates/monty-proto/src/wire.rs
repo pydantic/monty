@@ -884,7 +884,7 @@ fn merge_ids(
         let end = buf.remaining() - len;
         while buf.remaining() > end {
             encoding::uint32::merge(WireType::Varint, &mut id, buf, ctx.clone())?;
-            ids.try_push(NodeId(id))?;
+            ids.try_push_reserved(NodeId(id))?;
         }
         if buf.remaining() == end {
             Ok(())
@@ -926,18 +926,13 @@ fn push_charged<T: DecodeCost>(vec: &mut BudgetVec<T>, item: T) -> Result<(), De
             .max(MIN_VEC_CAPACITY);
         reserve_charged(vec, new_capacity - vec.len())?;
     }
-    vec.try_push(item)
+    vec.try_push_reserved(item)
 }
 
 /// Charges a full replacement buffer, including the host-reference allowance.
 fn reserve_charged<T: DecodeCost>(vec: &mut BudgetVec<T>, additional: usize) -> Result<(), DecodeError> {
     let capacity = vec.len().checked_add(additional).ok_or_else(decode_budget::exhausted)?;
-    if capacity > vec.capacity() {
-        let extra = T::COST - size_of::<T>();
-        decode_budget::charge(capacity.checked_mul(extra).ok_or_else(decode_budget::exhausted)?)?;
-        vec.try_reserve_capacity(capacity)?;
-    }
-    Ok(())
+    vec.try_reserve_capacity_with_overhead(capacity, T::COST - size_of::<T>())
 }
 
 /// Maps a semantic validation failure onto prost's decode error so it

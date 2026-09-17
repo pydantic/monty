@@ -14,6 +14,9 @@ mod generated;
 #[cfg(feature = "python")]
 pub mod python;
 mod requirement;
+#[cfg(feature = "test-util")]
+#[doc(hidden)]
+pub mod test_util;
 mod wire;
 #[cfg(feature = "worker")]
 pub mod worker;
