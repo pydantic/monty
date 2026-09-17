@@ -197,25 +197,16 @@ prefer a flags/operand encoding on one opcode (e.g. `Assert`/`FormatValue`) over
 of near-identical opcodes, unless the instruction is hot enough that decoding the
 discriminating operand would cost measurable dispatch time.
 
-### Code lives in session arenas, not per-`Code` buffers
+### Code owns its instruction and constant buffers
 
-A `Code` owns metadata but no instruction or constant buffers. Every compiled body's instructions and constants are
-appended to the two session-wide arenas in `CodeArenas`
-(`crates/monty/src/bytecode/code.rs`), and `Code` records only its
-`bytecode_base` / `constants_base`. A run moves the whole struct out of
-`Interns` (`take_arenas`, returned by `VM::drop`), so the dispatch loop reaches
-the instruction stream and `LoadConst` reaches a constant with one load from a
-`Vec` held inline in the VM.
+Each `Code` (`crates/monty/src/bytecode/code.rs`) owns its bytecode, constants and metadata.
+A `CallFrame` borrows the `Code` and caches its bytecode slice so instruction fetches avoid an extra dereference.
+Its `usize` instruction pointer, source locations and exception handlers all use body-relative offsets.
 
-`CallFrame` therefore holds no handle to its `Code` — only `ip` (an absolute
-arena offset), `code_base` and `constants_base` — which keeps it at 56 bytes,
-copied four times per call. Cold paths that need the location table, exception
-table or local names resolve the `Code` through `VM::frame_code`, and convert
-`ip` back to a body-relative offset with `CallFrame::code_offset`. Jump operands
-stay body-relative `i16`s, so absolute `ip` needs no jump changes.
-
-Do not reintroduce per-`Code` instruction buffers or a frame-held code handle: these add
-allocations per compiled body and increase frame size.
+Committed functions have stable addresses and their code is immutable, so runtime compilation can publish new
+functions without invalidating active frames.
+Module code is borrowed from the running `Program`; `eval()` / `exec()` bodies are stored as functions in `Interns`.
+Snapshots store function IDs and offsets, rebuilding code borrows on restore.
 
 ### Compilation overlays and stable intern entries
 
@@ -225,10 +216,11 @@ Committed strings, literals and functions have stable addresses in append-only s
 New IDs start at the committed table lengths, so bytecode uses final IDs without relocation.
 An active overlay blocks runtime interning and other compilations from consuming those IDs.
 
-Compilation also uses a private `CodeArenas::extension()` with final offsets into the session arenas.
+Compiled function bodies remain owned by the overlay until publication.
 Only an admitted snippet publishes its intern entries and code; dropping a rejected overlay frees its products.
-For `eval()` / `exec()`, frame admission must succeed before publication, and no Python code runs between admission
-and commit.
+For `eval()` / `exec()`, reserve the frame's recursion level before publication, then construct its frame from the
+committed code.
+No fallible operation or Python execution may intervene between admission and installing the frame.
 Preparation's provisional global slots are restored on rejection.
 Never roll back a snippet after execution starts: its definitions may already be reachable from globals.
 

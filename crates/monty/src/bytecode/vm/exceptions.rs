@@ -291,17 +291,14 @@ impl VM<'_> {
         loop {
             let (exc_value, this) = exc_guard.as_parts();
             let frame = this.current_frame();
-            let code = this.frame_code(frame);
-            // The tables record body-relative offsets; `instruction_ip` is an
-            // absolute index into the session bytecode arena.
-            let ip = frame.code_offset(this.instruction_ip);
+            let code = frame.code;
+            let ip = u32::try_from(this.instruction_ip).unwrap_or(u32::MAX);
 
             // Search exception table for a handler covering this IP
             if let Some(entry) = code.find_exception_handler(ip) {
                 // Unwind operands to the compiler-recorded region depth,
-                // including any in-flight comprehension values, and jump back
-                // to the absolute arena position of the handler.
-                let handler_offset = frame.code_base() + entry.handler();
+                // including any in-flight comprehension values.
+                let handler_offset = entry.handler() as usize;
                 let target_stack_depth =
                     frame.stack_base() + frame.locals_count as usize + entry.stack_depth() as usize;
                 let target_exc_stack_depth = frame.exception_stack_base() + entry.exception_stack_count() as usize;

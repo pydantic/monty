@@ -4,7 +4,7 @@
 //! forward jumps with patching, and tracking source locations for tracebacks.
 
 use super::{
-    code::{Code, CodeArenas, ExceptionEntry, HandlerKind, LocationEntry},
+    code::{Code, ExceptionEntry, HandlerKind, LocationEntry},
     compiler::CompileError,
     op::{Opcode, Operand},
 };
@@ -17,8 +17,6 @@ use crate::{intern::StringId, parse::CodeRange, value::Value};
 ///
 /// The builder maintains an internal "dead code" state; during dead code emission
 /// no bytes are written and no work is done.
-///
-/// # Usage
 #[derive(Debug, Default)]
 pub struct CodeBuilder {
     /// The bytecode being built.
@@ -438,37 +436,18 @@ impl CodeBuilder {
         self.current_stack_depth.is_none()
     }
 
-    /// Builds the final `Code`, moving this body's bytecode and constants into
-    /// the session `arenas`.
-    ///
-    /// Both accumulate in the builder first and land in their arena as one
-    /// contiguous block, so jump offsets stay body-relative `i16`s and
-    /// `LoadConst` operands stay `u16` indices from the recorded base.
-    pub fn build(self, arenas: &mut CodeArenas) -> Result<Code, CompileError> {
-        let constants_base = u32::try_from(arenas.constants_offset + arenas.constants.len())
-            .map_err(|_| self.arena_full("constants"))?;
-        let bytecode_base = u32::try_from(arenas.bytecode_offset + arenas.bytecode.len())
-            .map_err(|_| self.arena_full("instructions"))?;
-        let bytecode_len = u32::try_from(self.bytecode.len()).map_err(|_| self.arena_full("instructions"))?;
-        // Frames hold absolute `u32` IPs, so the body's end must fit as well.
-        bytecode_base
-            .checked_add(bytecode_len)
-            .ok_or_else(|| self.arena_full("instructions"))?;
-
-        // Convert local_names from Vec<Option<StringId>> to Vec<StringId>,
-        // using StringId::default() for slots with no recorded name
-        let local_names: Vec<StringId> = self.local_names.into_iter().map(Option::unwrap_or_default).collect();
-        arenas.constants.extend(self.constants);
-        arenas.bytecode.extend(self.bytecode);
-
-        Ok(Code::new(
-            bytecode_base,
-            bytecode_len,
-            constants_base,
+    /// Finishes a compiled body, transferring its buffers and metadata to `Code`.
+    #[must_use]
+    pub fn build(self) -> Code {
+        // Unnamed slots use the sentinel understood by local-name lookup.
+        let local_names = self.local_names.into_iter().map(Option::unwrap_or_default).collect();
+        Code::new(
+            self.bytecode,
+            self.constants,
             self.location_table,
             self.exception_table,
             local_names,
-        ))
+        )
     }
 
     /// Records the current location in the location table if set.
@@ -632,18 +611,6 @@ impl CodeBuilder {
     fn kw_count_too_large(&self) -> CompileError {
         CompileError::new(
             format!("call has too many keyword arguments; maximum is {} per call", u8::MAX),
-            self.current_location.unwrap_or_default(),
-        )
-    }
-
-    /// Builds the `CompileError` for a session arena grown past the `u32` base
-    /// recorded in each `Code`. Unreachable in practice: a session hits its
-    /// memory limit long before either arena reaches 4 GiB.
-    #[cold]
-    #[inline(never)]
-    fn arena_full(&self, what: &str) -> CompileError {
-        CompileError::new(
-            format!("session has too many {what}; maximum is {}", u32::MAX),
             self.current_location.unwrap_or_default(),
         )
     }
@@ -823,9 +790,8 @@ mod tests {
         builder.emit(Opcode::LoadNone).unwrap();
         builder.emit(Opcode::Pop).unwrap();
 
-        let mut arenas = CodeArenas::default();
-        let code = builder.build(&mut arenas).unwrap();
-        assert_eq!(code.bytecode(&arenas), &[Opcode::LoadNone as u8, Opcode::Pop as u8]);
+        let code = builder.build();
+        assert_eq!(code.bytecode(), &[Opcode::LoadNone as u8, Opcode::Pop as u8]);
     }
 
     #[test]
@@ -834,9 +800,8 @@ mod tests {
         builder.new_code_region(0);
         builder.emit_u8(Opcode::LoadLocal, 42).unwrap();
 
-        let mut arenas = CodeArenas::default();
-        let code = builder.build(&mut arenas).unwrap();
-        assert_eq!(code.bytecode(&arenas), &[Opcode::LoadLocal as u8, 42]);
+        let code = builder.build();
+        assert_eq!(code.bytecode(), &[Opcode::LoadLocal as u8, 42]);
     }
 
     #[test]
@@ -845,9 +810,8 @@ mod tests {
         builder.new_code_region(0);
         builder.emit_u16(Opcode::LoadConst, 0x1234).unwrap();
 
-        let mut arenas = CodeArenas::default();
-        let code = builder.build(&mut arenas).unwrap();
-        assert_eq!(code.bytecode(&arenas), &[Opcode::LoadConst as u8, 0x34, 0x12]);
+        let code = builder.build();
+        assert_eq!(code.bytecode(), &[Opcode::LoadConst as u8, 0x34, 0x12]);
     }
 
     #[test]
@@ -862,10 +826,9 @@ mod tests {
         builder.emit(Opcode::LoadNone).unwrap(); // Return value
         builder.emit(Opcode::ReturnValue).unwrap();
 
-        let mut arenas = CodeArenas::default();
-        let code = builder.build(&mut arenas).unwrap();
+        let code = builder.build();
         assert_eq!(
-            code.bytecode(&arenas),
+            code.bytecode(),
             &[
                 Opcode::Jump as u8,
                 2i16.to_le_bytes()[0],
@@ -887,13 +850,12 @@ mod tests {
         builder.emit(Opcode::Pop).unwrap(); // offset 1, 1 byte
         builder.emit_jump_to(Opcode::Jump, loop_start).unwrap(); // offset 2, target 0
 
-        let mut arenas = CodeArenas::default();
-        let code = builder.build(&mut arenas).unwrap();
+        let code = builder.build();
         // Jump at offset 2, target at offset 0
         // Offset = 0 - (2 + 3) = -5
         let expected_offset = (-5i16).to_le_bytes();
         assert_eq!(
-            code.bytecode(&arenas),
+            code.bytecode(),
             &[
                 Opcode::LoadNone as u8,
                 Opcode::Pop as u8,
@@ -915,10 +877,9 @@ mod tests {
         builder.emit_load_local(4).unwrap();
         builder.emit_load_local(256).unwrap();
 
-        let mut arenas = CodeArenas::default();
-        let code = builder.build(&mut arenas).unwrap();
+        let code = builder.build();
         assert_eq!(
-            code.bytecode(&arenas),
+            code.bytecode(),
             &[
                 Opcode::LoadLocal0 as u8,
                 Opcode::LoadLocal1 as u8,

@@ -11,10 +11,10 @@ use ahash::AHashSet;
 
 use super::{CallFrame, VM};
 use crate::{
-    bytecode::{Code, FrameExit, NAME_CALLABLE, NAME_GLOBAL_ONLY},
+    bytecode::{FrameExit, NAME_CALLABLE, NAME_GLOBAL_ONLY},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
-    intern::{FunctionId, StringId},
+    intern::{CompileInterns, FunctionId, StringId},
     prepare::SnippetNames,
     types::Dict,
     value::Value,
@@ -162,29 +162,34 @@ impl VM<'_> {
         Ok((names, Box::new(FrameNamespace::Snippet { globals, locals })))
     }
 
-    /// Pushes the frame that runs a compiled `eval()` / `exec()` snippet.
-    ///
-    /// The snippet is a `<module>`-named function with no locals; the frame
-    /// takes ownership of `namespace`, and releases it if the push is refused
-    /// by the recursion limit.
+    /// Admits a snippet before publishing its compilation and installing its frame.
+    /// A recursion-limit rejection discards both the overlay and the owned namespace.
     pub(crate) fn push_snippet_frame(
         &mut self,
         func_id: FunctionId,
-        code: &Code,
+        overlay: CompileInterns<'_>,
         namespace: Box<FrameNamespace>,
     ) -> RunResult<()> {
-        let call_offset = self.current_offset();
-        let stack_base = self.stack.len();
-        let exc_stack_base = self.exception_stack.len();
-        self.push_frame(CallFrame::new_function(
+        let mut namespace_guard = DropGuard::new(namespace, self);
+        let (_, vm) = namespace_guard.as_parts_mut();
+        debug_assert!(!vm.current_frame.is_parked, "snippet needs an executing caller");
+        vm.incr_recursion()?;
+        // Publication makes the code borrowable for the run. Nothing fallible or
+        // re-entrant may intervene between admission and installing the frame.
+        overlay.commit();
+        let (namespace, vm) = namespace_guard.into_parts();
+        let code = &vm.interns.get_function(func_id).code;
+        let frame = CallFrame::new_function(
             code,
-            stack_base,
+            vm.stack.len(),
             0,
-            exc_stack_base,
+            vm.exception_stack.len(),
             func_id,
-            call_offset,
+            vm.current_offset(),
             Some(namespace),
-        ))
+        );
+        vm.push_admitted_frame(frame);
+        Ok(())
     }
 
     /// The dict `locals()` returns in the current frame.
@@ -308,7 +313,7 @@ impl VM<'_> {
         let mut dict_guard = DropGuard::new(Value::Ref(dict_id), self);
         let (_, this) = dict_guard.as_parts_mut();
         let base = this.current_frame.stack_base();
-        let code = this.frame_code(&this.current_frame);
+        let code = this.current_frame.code;
         let names = (0..this.current_frame.locals_count).filter_map(|slot| {
             code.local_name(slot)
                 .filter(|name_id| *name_id != StringId::default())

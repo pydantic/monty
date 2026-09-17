@@ -546,6 +546,60 @@ fn run_progress_complete_round_trip() {
     assert_eq!(loaded.into_complete().unwrap(), MontyObject::int(3));
 }
 
+/// Live snippet frames keep their code and constants across table growth and suspension.
+#[test]
+fn run_progress_round_trip_with_runtime_compilation() {
+    let mut source = String::new();
+    for i in 0..300 {
+        writeln!(
+            source,
+            "def generated_{i}():\n    return ({i}, 'literal_{i}', b'literal_{i}')"
+        )
+        .unwrap();
+    }
+    let runner = MontyRun::new(
+        r"
+ns = {'source': source, 'ext': ext}
+exec('''
+def growing():
+    exec(source, {})
+    marker = ext(41)
+    exec(source, {})
+    try:
+        eval('1 / 0')
+    except ZeroDivisionError:
+        return marker + 1000
+result = growing()
+''', ns)
+ns['result']
+"
+        .to_owned(),
+        "test.py",
+        vec!["source".to_owned(), "ext".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(
+            vec![
+                MontyObject::string(source),
+                MontyObject::function("ext".to_owned(), None),
+            ],
+            ResourceTracker::default(),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded = round_trip_progress(&progress);
+    for progress in [progress, loaded] {
+        let call = progress.into_function_call().expect("expected function call");
+        assert_eq!(call.function_name, "ext");
+        let result = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
+        assert_eq!(result.into_complete().unwrap(), MontyObject::int(1041));
+    }
+}
+
+/// A suspended snippet retains its source locations when restored.
 #[test]
 fn run_progress_round_trip_inside_exec() {
     let runner = MontyRun::new(

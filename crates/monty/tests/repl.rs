@@ -606,6 +606,57 @@ fn repl_rejected_compilation_keeps_no_products() {
     assert_eq!(feed_run_print(&mut repl, "accepted()").unwrap(), MontyObject::int(42));
 }
 
+/// Frame admission must reject runtime compilation before publishing any code or names.
+#[test]
+fn repl_rejected_snippet_admission_keeps_no_products() {
+    for (builtin, source) in [
+        (
+            "exec",
+            "def pending():\n    return ('uncommitted', b'uncommitted')\nglobal newly_bound\nnewly_bound = pending",
+        ),
+        (
+            "eval",
+            "lambda: ('uncommitted', b'uncommitted', 123456789012345678901234567890)",
+        ),
+    ] {
+        for namespace in ["", ", ns"] {
+            let (mut repl, _) = init_repl(&format!(
+                "ns = {{}}\nsource = {source:?}\ndef attempt():\n    try:\n        {builtin}(source{namespace})\n    except RecursionError as exc:\n        return str(exc)"
+            ));
+            *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(1));
+
+            // Warm the host-call wrapper's argument slot before comparing tables.
+            let result = repl.call_function("attempt", vec![], PrintWriter::Stdout).unwrap();
+            assert_eq!(
+                result,
+                MontyObject::string("maximum recursion depth exceeded".to_owned())
+            );
+            let mut expected = to_value(&repl).unwrap();
+            for snippet in 2..5 {
+                assert_eq!(
+                    repl.call_function("attempt", vec![], PrintWriter::Stdout).unwrap(),
+                    result
+                );
+                // Each host call interns its filename, but none of the rejected snippet's entries.
+                expected["interns"]["strings"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(format!("<python-input-{snippet}>").into());
+                let after = to_value(&repl).unwrap();
+                assert_eq!(after["interns"], expected["interns"]);
+                assert_eq!(after["global_names"], expected["global_names"]);
+            }
+
+            *repl.tracker_mut() = ResourceTracker::default();
+            let mut repl = round_trip_repl(&repl);
+            assert_eq!(
+                repl.call_function("attempt", vec![], PrintWriter::Stdout).unwrap(),
+                MontyObject::none()
+            );
+        }
+    }
+}
+
 /// A snippet rejected at compile time, after prepare has allocated its
 /// global slots and the compiler has emitted its functions, must not consume
 /// those `u16` ids. One successful snippet takes the session to within a few

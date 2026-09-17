@@ -20,7 +20,6 @@ mod vm;
 
 pub(crate) use builder::CodeBuilder;
 pub use code::Code;
-pub(crate) use code::CodeArenas;
 pub use compiler::Compiler;
 #[cfg(test)]
 pub(crate) use op::opcode_fingerprint;

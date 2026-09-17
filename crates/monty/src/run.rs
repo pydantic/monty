@@ -224,13 +224,9 @@ impl MontyRun {
     }
 }
 
-/// Lower level interface to parse code and run it to completion.
-///
-/// This is an internal type used by [`MontyRun`]. It stores the compiled bytecode and source code
-/// for error reporting. Also used by `run_progress` and `repl` modules.
-///
-/// Split in two so a VM can borrow the halves differently: [`SessionTables`]
-/// mutably (runtime compilation appends to them) and [`Program`] immutably.
+/// Compiled program and session tables used by `MontyRun`, `run_progress` and `repl`.
+/// The VM borrows the program and committed intern entries immutably, but the
+/// global-name map mutably so runtime compilation can add module slots.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Executor {
     /// Compiler tables the run may extend.
@@ -251,8 +247,8 @@ pub(crate) struct SessionTables {
     pub(crate) interns: Interns,
 }
 
-/// The fixed part of an executor, borrowed immutably by the VM alongside a
-/// mutable [`SessionTables`]: the module code, source, and per-run environment.
+/// The module code, source and environment, borrowed immutably during execution.
+/// Separate from [`SessionTables`] so global names can grow without moving the module's code.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Program {
     /// Compiled bytecode for the module, shared with the module frame.
@@ -498,12 +494,8 @@ impl Executor {
             .emit(Opcode::ReturnValue)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
-        let mut arenas = interns.extend_arenas();
-        let module_code = builder
-            .build(&mut arenas)
-            .map_err(|e| e.into_python_exc(script_name, &code))?;
+        let module_code = builder.build();
         overlay.commit();
-        interns.commit_arenas(arenas);
         let tables = SessionTables {
             global_names: existing_globals,
             interns: interns.take(),
@@ -902,11 +894,9 @@ fn compile_repl_snippet(
         parse_with_interner(code, script_name, &mut overlay).map_err(|e| e.into_python_exc(script_name, code))?;
     let nodes =
         prepare_with_existing_names(nodes, &overlay, globals).map_err(|e| e.into_python_exc(script_name, code))?;
-    let mut arenas = interns.extend_arenas();
-    let module_code = Compiler::compile_module(&nodes, &mut overlay, &mut arenas, globals, options)
+    let module_code = Compiler::compile_module(&nodes, &mut overlay, globals, options)
         .map_err(|e| e.into_python_exc(script_name, code))?;
     overlay.commit();
-    interns.commit_arenas(arenas);
     Ok((module_code, input_slots))
 }
 

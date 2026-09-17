@@ -35,7 +35,6 @@ use storage::Entries;
 use strum::{EnumString, FromRepr, IntoStaticStr};
 
 use crate::{
-    bytecode::CodeArenas,
     function::Function,
     hash::{HashValue, RESERVED_STRING_HASHES, WithHash, hash_python_str},
 };
@@ -1977,7 +1976,6 @@ pub(crate) struct Interns {
     /// Boxes keep a mostly empty storage page from reserving hundreds of function bodies.
     functions: Entries<Box<Function>>,
     eval_sources: Entries<Arc<str>>,
-    arenas: RefCell<CodeArenas>,
     #[serde(skip)]
     string_id_by_name: RefCell<AHashMap<String, StringId>>,
     #[serde(skip)]
@@ -2001,7 +1999,6 @@ struct InternsWire {
     long_ints: Entries<WithHash<BigInt>>,
     functions: Entries<Box<Function>>,
     eval_sources: Entries<Arc<str>>,
-    arenas: RefCell<CodeArenas>,
 }
 
 impl TryFrom<InternsWire> for Interns {
@@ -2029,7 +2026,6 @@ impl TryFrom<InternsWire> for Interns {
             long_ints: wire.long_ints,
             functions: wire.functions,
             eval_sources: wire.eval_sources,
-            arenas: wire.arenas,
             string_id_by_name: RefCell::new(string_id_by_name),
             static_string_ids: RefCell::new(static_string_ids),
             compiling: Cell::new(false),
@@ -2055,7 +2051,6 @@ impl Interns {
             long_ints: Entries::default(),
             functions: Entries::default(),
             eval_sources: Entries::default(),
-            arenas: RefCell::default(),
             string_id_by_name: RefCell::default(),
             static_string_ids: RefCell::default(),
             compiling: Cell::new(false),
@@ -2124,26 +2119,6 @@ impl Interns {
             .checked_sub(SOURCE_ID_BASE)
             .and_then(|index| self.eval_sources.get(index))
             .map(AsRef::as_ref)
-    }
-
-    /// Creates private code storage for a host-driven compilation.
-    pub(crate) fn extend_arenas(&self) -> CodeArenas {
-        self.arenas.borrow().extension()
-    }
-
-    /// Publishes a host-driven compilation's code.
-    pub(crate) fn commit_arenas(&self, extension: CodeArenas) {
-        self.arenas.borrow_mut().commit(extension);
-    }
-
-    /// Moves flat code storage into the running VM; paired with `restore_arenas`.
-    pub(crate) fn take_arenas(&self) -> CodeArenas {
-        self.arenas.take()
-    }
-
-    /// Restores code storage when an executor finishes or suspends.
-    pub(crate) fn restore_arenas(&self, arenas: CodeArenas) {
-        *self.arenas.borrow_mut() = arenas;
     }
 
     /// Returns the same hash as an equal heap string.

@@ -154,7 +154,6 @@ fn compile_and_push(
     .map_err(|e| e.into_run_error(source))?;
 
     let options = vm.env.options;
-    let mut arenas = vm.arenas.extension();
     let globals_by_name = names == SnippetNames::NameOverDict;
     let mut scratch = NameMap::new();
     let globals = if globals_by_name {
@@ -163,7 +162,7 @@ fn compile_and_push(
         &mut *vm.global_names
     };
     let nodes = prepare_snippet(nodes, &overlay, globals, names).map_err(|e| e.into_run_error(source))?;
-    let code = Compiler::compile_snippet(&nodes, &mut overlay, &mut arenas, globals, options, globals_by_name)
+    let code = Compiler::compile_snippet(&nodes, &mut overlay, globals, options, globals_by_name)
         .map_err(|e| e.into_run_error(source))?;
 
     let position = CodeRange {
@@ -191,12 +190,9 @@ fn compile_and_push(
         )
     })?;
 
-    let (namespace, vm) = namespace_guard.into_parts();
-    // Frame construction copies offsets, not references. No Python runs before commit.
-    vm.push_snippet_frame(func_id, &function.code, namespace)?;
     overlay.push_function(function);
-    overlay.commit();
-    vm.arenas.commit(arenas);
+    let (namespace, vm) = namespace_guard.into_parts();
+    vm.push_snippet_frame(func_id, overlay, namespace)?;
     vm.globals.resize_with(vm.global_names.len(), || Value::Undefined);
     Ok(CallResult::FramePushed)
 }

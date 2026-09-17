@@ -15,7 +15,7 @@ use monty_types::{MontyException, StackFrame};
 use super::{
     RESERVED_MODULE_DUNDERS,
     builder::{CodeBuilder, JumpLabel, JumpTarget, Offset},
-    code::{Code, CodeArenas, HandlerKind},
+    code::{Code, HandlerKind},
     op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode, assert_flags},
 };
 use crate::{
@@ -254,10 +254,6 @@ pub struct Compiler<'a, 'i> {
 
     /// Private strings, literals and functions, published only after compilation succeeds.
     interns: &'a mut CompileInterns<'i>,
-
-    /// Private code buffers with final session offsets. Jump offsets stay body-relative
-    /// and `LoadConst` operands stay `u16`s from the code object's recorded base.
-    arenas: &'a mut CodeArenas,
 
     /// Enclosing control blocks whose cleanup is emitted by non-local exits.
     /// This mirrors CPython's compiler `fblockinfo` stack and keeps each
@@ -516,19 +512,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Creates a compiler for a module or function.
     /// `frame_locals` is zero at module scope or the function namespace size;
     /// comprehension slots follow it on the operand stack.
-    fn new(
-        interns: &'a mut CompileInterns<'i>,
-        arenas: &'a mut CodeArenas,
-        is_module_scope: bool,
-        frame_locals: u16,
-        flags: ScopeFlags,
-    ) -> Self {
+    fn new(interns: &'a mut CompileInterns<'i>, is_module_scope: bool, frame_locals: u16, flags: ScopeFlags) -> Self {
         let mut code = CodeBuilder::new();
         code.new_code_region(0);
         Self {
             code,
             interns,
-            arenas,
             fblocks: Vec::new(),
             finally_copies: 0,
             is_module_scope,
@@ -539,36 +528,33 @@ impl<'a, 'i> Compiler<'a, 'i> {
     }
 
     /// Compiles module-level statements, returning the last expression or None.
-    /// The caller must discard the private intern and arena extensions on failure.
+    /// The caller must discard the private intern overlay on failure.
     pub fn compile_module(
         nodes: &[PreparedNode],
         interns: &mut CompileInterns<'_>,
-        arenas: &mut CodeArenas,
         globals: &NameMap,
         options: CompileOptions,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, arenas, globals, options, None)
+        Self::compile_module_inner(nodes, interns, globals, options, None)
     }
 
     /// Compiles a prepared `eval()` / `exec()` snippet, rejecting top-level await.
     /// `globals_by_name` selects name lookups for an explicit globals dict.
-    /// The caller must discard the private intern and arena extensions on failure.
+    /// The caller must discard the private intern overlay on failure.
     pub(crate) fn compile_snippet(
         nodes: &[PreparedNode],
         interns: &mut CompileInterns<'_>,
-        arenas: &mut CodeArenas,
         globals: &NameMap,
         options: CompileOptions,
         globals_by_name: bool,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, arenas, globals, options, Some(globals_by_name))
+        Self::compile_module_inner(nodes, interns, globals, options, Some(globals_by_name))
     }
 
     /// Shared module compiler; `snippet` is `Some(globals_by_name)` for eval/exec.
     fn compile_module_inner(
         nodes: &[PreparedNode],
         interns: &mut CompileInterns<'_>,
-        arenas: &mut CodeArenas,
         globals: &NameMap,
         options: CompileOptions,
         snippet: Option<bool>,
@@ -582,7 +568,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             globals_by_name: snippet.unwrap_or(false),
             forbid_await: snippet.is_some(),
         };
-        let mut compiler = Compiler::new(interns, arenas, true, 0, flags);
+        let mut compiler = Compiler::new(interns, true, 0, flags);
 
         // All globals are "local names" in the module
         compiler.code.register_local_names(globals.names());
@@ -593,8 +579,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        let Compiler { code, arenas, .. } = compiler;
-        code.build(arenas)
+        Ok(compiler.code.build())
     }
 
     /// Compiles a function body to bytecode, appending any nested functions to `interns`.
@@ -605,7 +590,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
     fn compile_function_body(
         func_def: &PreparedFunctionDef,
         interns: &mut CompileInterns<'_>,
-        arenas: &mut CodeArenas,
         num_locals: u16,
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
@@ -616,7 +600,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             forbid_await: false,
             ..flags
         };
-        let mut compiler = Compiler::new(interns, arenas, false, num_locals, flags);
+        let mut compiler = Compiler::new(interns, false, num_locals, flags);
         // Parameters, and the cells captured parameters live in, are named up
         // front: a body that never mentions one still reports it from `locals()`.
         let param_names: Vec<StringId> = func_def.signature.param_names().collect();
@@ -632,8 +616,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        let Compiler { code, arenas, .. } = compiler;
-        code.build(arenas)
+        Ok(compiler.code.build())
     }
 
     /// Compiles statements, retaining `finally` bodies for inline cleanup.
@@ -870,8 +853,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// variables are captured, the pushed cells are consumed by `MakeClosure`.
     fn emit_make_function(&mut self, func_def: &PreparedFunctionDef, what: &'static str) -> Result<(), CompileError> {
         let flags = self.flags;
-        self.emit_make_callable(func_def, what, |interns, arenas, namespace_size| {
-            Self::compile_function_body(func_def, interns, arenas, namespace_size, flags)
+        self.emit_make_callable(func_def, what, |interns, namespace_size| {
+            Self::compile_function_body(func_def, interns, namespace_size, flags)
         })
     }
 
@@ -892,7 +875,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         &mut self,
         func_def: &PreparedFunctionDef,
         what: &'static str,
-        compile_body: impl FnOnce(&mut CompileInterns<'_>, &mut CodeArenas, u16) -> Result<Code, CompileError>,
+        compile_body: impl FnOnce(&mut CompileInterns<'_>, u16) -> Result<Code, CompileError>,
     ) -> Result<(), CompileError> {
         let func_pos = func_def.name.position;
 
@@ -903,7 +886,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
         // 1. Compile the body recursively.
         let namespace_size = check_namespace_size_u16(func_def.namespace_size, what)?;
-        let body_code = compile_body(self.interns, self.arenas, namespace_size)?;
+        let body_code = compile_body(self.interns, namespace_size)?;
 
         // 2. Create the compiled Function and add it to the table
         // `Function` retains the legacy numeric source metadata for serialized-code
@@ -1021,14 +1004,13 @@ impl<'a, 'i> Compiler<'a, 'i> {
         position: CodeRange,
     ) -> Result<(), CompileError> {
         let flags = self.flags;
-        self.emit_make_callable(body, "class body", |interns, arenas, namespace_size| {
+        self.emit_make_callable(body, "class body", |interns, namespace_size| {
             Self::compile_class_body(
                 &body.body,
                 members,
                 class_name,
                 position,
                 interns,
-                arenas,
                 namespace_size,
                 flags,
             )
@@ -1047,21 +1029,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
     /// emits `LoadLocal`; it would transparently emit `LoadCell` if that ever
     /// changed, so no assumption is hard-coded here.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "class assembly needs its name, members and source location"
-    )]
     fn compile_class_body(
         body: &[PreparedNode],
         members: &[Identifier],
         class_name: &Identifier,
         position: CodeRange,
         interns: &mut CompileInterns<'_>,
-        arenas: &mut CodeArenas,
         num_locals: u16,
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
-        let mut compiler = Compiler::new(interns, arenas, false, num_locals, flags);
+        let mut compiler = Compiler::new(interns, false, num_locals, flags);
         compiler.compile_block(body)?;
 
         // Assembly errors (e.g. resource limits while building the dict)
@@ -1088,8 +1065,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        let Compiler { code, arenas, .. } = compiler;
-        code.build(arenas)
+        Ok(compiler.code.build())
     }
 
     /// Compiles an import, resolving the module only when execution reaches it.

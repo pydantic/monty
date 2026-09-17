@@ -31,7 +31,7 @@ use crate::{
     asyncio::{CallId, TaskId},
     builtins::Builtins,
     bytecode::{
-        code::{Code, CodeArenas, LocationEntry},
+        code::{Code, LocationEntry},
         op::{Opcode, decode_assert_flags},
     },
     defer_drop_mut,
@@ -349,26 +349,16 @@ impl<C: ContainsHeap> DropWithContext<C> for FrameExit {
 ///
 /// Each frame represents one level in the call stack and owns its own
 /// instruction pointer. This design avoids sync bugs on call/return.
-/// Every call moves a frame four times (push and pop each replace and
-/// copy), so the layout is pinned at 56 bytes by the assertion below: the
-/// frame carries arena offsets rather than handles to its `Code`.
 #[derive(Debug)]
-pub struct CallFrame {
-    /// Instruction pointer, as an absolute offset into the session bytecode
-    /// arena rather than into this frame's own code. Switching frames is then
-    /// only a matter of setting `ip`: the dispatch loop reads one arena that
-    /// never moves, and the frame holds no handle to its `Code` at all.
-    ip: u32,
+pub struct CallFrame<'code> {
+    /// Compiled body, stable even when runtime compilation publishes more functions.
+    code: &'code Code,
 
-    /// Where this frame's code starts in that arena — the `ip` it began at.
-    /// Subtracted from `ip` to recover the body-relative offset the location
-    /// and exception tables are keyed by.
-    code_base: u32,
+    /// Hoisted instruction slice, avoiding a `Code` dereference on every fetch.
+    bytecode: &'code [u8],
 
-    /// Where this frame's constants start in the session constant arena,
-    /// copied from its `Code` so `LoadConst` adds its operand to a value
-    /// already in the frame instead of dereferencing the `Code`.
-    constants_base: u32,
+    /// Instruction pointer within this frame's bytecode.
+    ip: usize,
 
     /// Base index into the VM stack for this frame's locals region.
     ///
@@ -418,17 +408,6 @@ pub struct CallFrame {
     is_initializer: bool,
 }
 
-const _: () = assert!(mem::size_of::<CallFrame>() <= 56);
-
-/// Narrows a serialized instruction pointer to the frame's `u32` field.
-///
-/// Bytecode length is capped at `u32::MAX` by the builder, so failure means a
-/// corrupt snapshot rather than a legitimately large frame.
-#[inline]
-pub(super) fn frame_ip(ip: usize) -> u32 {
-    u32::try_from(ip).expect("frame instruction pointer exceeds u32")
-}
-
 /// Narrows a VM stack index to the frame's `u32` field.
 ///
 /// The operand and exception stacks are bounded by the recursion limit and
@@ -438,16 +417,16 @@ pub(super) fn stack_index(index: usize) -> u32 {
     u32::try_from(index).expect("VM stack index exceeds u32")
 }
 
-impl CallFrame {
+impl<'code> CallFrame<'code> {
     /// Creates a new call frame for module-level code.
     ///
     /// Module frames have `locals_count = 0` because module-level variables
     /// are stored in the VM's `globals` vec, not in the stack.
-    pub fn new_module(code: &Code, exception_stack_base: usize) -> Self {
+    pub fn new_module(code: &'code Code, exception_stack_base: usize) -> Self {
         Self {
-            ip: code.bytecode_base(),
-            code_base: code.bytecode_base(),
-            constants_base: code.constants_base(),
+            code,
+            bytecode: code.bytecode(),
+            ip: 0,
             stack_base: 0,
             locals_count: 0,
             exception_stack_base: stack_index(exception_stack_base),
@@ -461,18 +440,17 @@ impl CallFrame {
     }
 
     /// Creates a non-executing frame for a VM with no active Python task.
-    fn new_parked(code: &Code) -> Self {
+    fn new_parked(code: &'code Code) -> Self {
         let mut frame = Self::new_module(code, 0);
         frame.is_parked = true;
         frame
     }
 
-    /// Turns this finished frame into the parked frame left between tasks,
-    /// reusing its allocations; the namespace must already be released.
-    fn park(&mut self, module_code: &Code) {
-        self.code_base = module_code.bytecode_base();
-        self.constants_base = module_code.constants_base();
-        self.ip = self.code_base;
+    /// Parks this finished frame between tasks; its namespace must already be released.
+    fn park(&mut self, module_code: &'code Code) {
+        self.code = module_code;
+        self.bytecode = module_code.bytecode();
+        self.ip = 0;
         self.stack_base = 0;
         self.locals_count = 0;
         self.exception_stack_base = 0;
@@ -493,7 +471,7 @@ impl CallFrame {
     /// its exit, so they share the same address space as ordinary operand
     /// values (no separate per-frame region).
     pub fn new_function(
-        code: &Code,
+        code: &'code Code,
         stack_base: usize,
         locals_count: u16,
         exception_stack_base: usize,
@@ -502,9 +480,9 @@ impl CallFrame {
         namespace: Option<Box<FrameNamespace>>,
     ) -> Self {
         Self {
-            ip: code.bytecode_base(),
-            code_base: code.bytecode_base(),
-            constants_base: code.constants_base(),
+            code,
+            bytecode: code.bytecode(),
+            ip: 0,
             stack_base: stack_index(stack_base),
             locals_count,
             exception_stack_base: stack_index(exception_stack_base),
@@ -518,35 +496,7 @@ impl CallFrame {
     }
 }
 
-impl CallFrame {
-    /// Start of this frame's code in the session bytecode arena.
-    #[inline]
-    pub(super) fn code_base(&self) -> u32 {
-        self.code_base
-    }
-
-    /// This frame's IP as an offset within its own code, as the location and
-    /// exception tables record offsets.
-    #[inline]
-    pub(super) fn body_offset(&self) -> usize {
-        (self.ip - self.code_base) as usize
-    }
-
-    /// Converts an absolute arena IP to an offset within this frame's own code,
-    /// as the location and exception tables record offsets.
-    #[inline]
-    fn code_offset(&self, arena_ip: usize) -> u32 {
-        u32::try_from(arena_ip)
-            .unwrap_or(u32::MAX)
-            .saturating_sub(self.code_base)
-    }
-
-    /// Absolute arena index of this frame's constant `index`.
-    #[inline]
-    fn constant_index(&self, index: u16) -> usize {
-        self.constants_base as usize + index as usize
-    }
-
+impl CallFrame<'_> {
     /// Start of this frame's locals region on the VM stack.
     #[inline]
     pub(super) fn stack_base(&self) -> usize {
@@ -600,7 +550,7 @@ pub struct SerializedFrame {
     namespace: Option<Box<FrameNamespace>>,
 }
 
-impl CallFrame {
+impl CallFrame<'_> {
     /// Converts this frame to a serializable representation, moving the
     /// namespace's owned references across so the live frame releases nothing.
     fn serialize(&mut self) -> SerializedFrame {
@@ -611,7 +561,7 @@ impl CallFrame {
         );
         SerializedFrame {
             function_id: self.function_id,
-            ip: self.body_offset(),
+            ip: self.ip,
             stack_base: self.stack_base(),
             locals_count: self.locals_count,
             exception_stack_base: self.exception_stack_base(),
@@ -745,22 +695,16 @@ pub struct VM<'h> {
     pub(crate) globals: Vec<Value>,
 
     /// Frame currently executing, or a placeholder while no task is active.
-    current_frame: CallFrame,
+    current_frame: CallFrame<'h>,
 
     /// Caller frames suspended below `current_frame`.
-    suspended_frames: Vec<CallFrame>,
+    suspended_frames: Vec<CallFrame<'h>>,
 
     /// Heap for reference-counted objects.
     pub(crate) heap: &'h mut HeapReader<'h>,
 
     /// Stable committed entries, which remain borrowable across runtime compilation.
     pub(crate) interns: &'h Interns,
-
-    /// The session code arenas, moved in for the run so the dispatch loop
-    /// reaches the instruction stream and `LoadConst` reaches a constant with
-    /// one load from this struct, rather than chasing a pointer into the intern
-    /// table or a frame's `Code`. Returned to `interns` by `Drop`.
-    pub(crate) arenas: CodeArenas,
 
     /// Module-level global names, slot by slot; extended alongside
     /// [`globals`](Self::globals) when runtime-compiled code binds a new name.
@@ -891,7 +835,6 @@ impl<'h> VM<'h> {
             current_frame: CallFrame::new_module(&program.module_code, 0),
             suspended_frames: Vec::with_capacity(16),
             heap,
-            arenas: interns.take_arenas(),
             interns,
             global_names,
             print_writer,
@@ -927,7 +870,7 @@ impl<'h> VM<'h> {
     ) -> Self {
         let SessionTables { global_names, interns } = tables;
         // Reconstruct call frames from serialized form
-        let frames: Vec<CallFrame> = snapshot
+        let frames: Vec<CallFrame<'_>> = snapshot
             .frames
             .into_iter()
             .map(|sf| {
@@ -936,9 +879,9 @@ impl<'h> VM<'h> {
                     None => &program.module_code,
                 };
                 CallFrame {
-                    ip: code.bytecode_base() + frame_ip(sf.ip),
-                    code_base: code.bytecode_base(),
-                    constants_base: code.constants_base(),
+                    code,
+                    bytecode: code.bytecode(),
+                    ip: sf.ip,
                     stack_base: stack_index(sf.stack_base),
                     locals_count: sf.locals_count,
                     exception_stack_base: stack_index(sf.exception_stack_base),
@@ -966,7 +909,6 @@ impl<'h> VM<'h> {
             current_frame,
             suspended_frames: frames,
             heap,
-            arenas: interns.take_arenas(),
             interns,
             global_names,
             print_writer,
@@ -1236,12 +1178,11 @@ impl<'h> VM<'h> {
             }
 
             // Track instruction IP for exception table lookup
-            self.instruction_ip = self.current_frame.ip as usize;
+            self.instruction_ip = self.current_frame.ip;
 
             // Fetch the opcode and advance the authoritative frame IP.
-            debug_assert!(self.frame_ip_in_code(), "instruction IP left the running frame's code");
             let opcode = {
-                let byte = self.arenas.bytecode[self.current_frame.ip as usize];
+                let byte = self.current_frame.bytecode[self.current_frame.ip];
                 self.current_frame.ip += 1;
                 Opcode::from_repr(byte).expect("invalid opcode in bytecode")
             };
@@ -2173,40 +2114,30 @@ impl<'h> VM<'h> {
 
     /// Returns the frame currently executing, or the parked placeholder.
     #[inline]
-    pub(crate) fn current_frame(&self) -> &CallFrame {
+    pub(crate) fn current_frame(&self) -> &CallFrame<'h> {
         &self.current_frame
     }
 
     /// Returns mutable access to the current frame.
     #[inline]
-    pub(super) fn current_frame_mut(&mut self) -> &mut CallFrame {
+    pub(super) fn current_frame_mut(&mut self) -> &mut CallFrame<'h> {
         &mut self.current_frame
     }
 
-    /// Pushes the given frame onto the call stack.
-    ///
-    /// Returns an error if the recursion depth limit is exceeded by pushing this frame.
-    /// The running frame's constant at `index`, read straight from the session
-    /// arena — one indexed load, with no `Code` dereference on the way.
+    /// Returns a constant from the running frame's compiled body.
     #[inline]
     fn constant(&self, index: u16) -> &Value {
-        &self.arenas.constants[self.current_frame.constant_index(index)]
+        self.current_frame.code.constant(index)
     }
 
-    /// Fetches `N` bytes from the bytecode arena at the running frame's IP,
-    /// advancing it by `N`.
-    ///
-    /// Lives on the executor rather than the frame because the instruction
-    /// stream is session-wide: the frame contributes only its `ip`. Performs a
-    /// single bounds check covering all `N` bytes, so each fetched operand —
-    /// even multi-byte combinations like `u16 + u8 + u8` — costs exactly one.
+    /// Fetches `N` operand bytes with a single bounds check and advances the frame IP.
     #[inline]
     fn fetch_array<const N: usize>(&mut self) -> [u8; N] {
-        let ip = self.current_frame.ip as usize;
-        let Some(bytes) = self.arenas.bytecode.get(ip..).and_then(<[u8]>::first_chunk::<N>) else {
+        let frame = &mut self.current_frame;
+        let Some(bytes) = frame.bytecode.get(frame.ip..).and_then(<[u8]>::first_chunk::<N>) else {
             unreachable!("instruction IP is out of bounds of the bytecode")
         };
-        self.current_frame.ip += u32::try_from(N).expect("operand width fits in u32");
+        frame.ip += N;
         *bytes
     }
 
@@ -2283,16 +2214,22 @@ impl<'h> VM<'h> {
         )
     }
 
-    pub(super) fn push_frame(&mut self, mut frame: CallFrame) -> RunResult<()> {
+    /// Pushes a frame, releasing its state if the recursion limit rejects it.
+    pub(super) fn push_frame(&mut self, mut frame: CallFrame<'h>) -> RunResult<()> {
         if !self.current_frame.is_parked
             && let Err(e) = self.incr_recursion()
         {
             self.cleanup_frame_state(&mut frame);
             return Err(e.into());
         }
+        self.push_admitted_frame(frame);
+        Ok(())
+    }
+
+    /// Installs a frame whose recursion level has already been reserved.
+    fn push_admitted_frame(&mut self, frame: CallFrame<'h>) {
         let caller = mem::replace(&mut self.current_frame, frame);
         self.suspended_frames.push(caller);
-        Ok(())
     }
 
     /// Pops the current frame from the call stack.
@@ -2308,7 +2245,7 @@ impl<'h> VM<'h> {
         self.cleanup_frame_state(&mut frame);
         // Sync instruction_ip to the restored caller so exception table lookups
         // target the correct frame after returning from a nested run() call.
-        self.instruction_ip = self.current_frame.ip as usize;
+        self.instruction_ip = self.current_frame.ip;
         if !self.current_frame.is_parked {
             self.decr_recursion();
         }
@@ -2317,7 +2254,7 @@ impl<'h> VM<'h> {
 
     /// Releases what a finished frame owns: its stack region and namespace.
     #[inline]
-    fn cleanup_frame_state(&mut self, frame: &mut CallFrame) {
+    fn cleanup_frame_state(&mut self, frame: &mut CallFrame<'_>) {
         // Clean up frame's stack region (locals + operand stack, which now
         // includes any in-flight comprehension variables — the operand-stack
         // drain naturally covers them).
@@ -2396,34 +2333,11 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// The `Code` a frame is running: its function's, or the module's.
-    ///
-    /// Frames carry arena offsets rather than a handle to their `Code`, so the
-    /// cold paths that need its tables — tracebacks, exception lookup, local
-    /// names — resolve it here.
-    fn frame_code(&self, frame: &CallFrame) -> &'h Code {
-        match frame.function_id {
-            Some(func_id) => &self.interns.get_function(func_id).code,
-            None => self.module_code,
-        }
-    }
-
-    /// Whether the running frame's `ip` is still inside its own code.
-    ///
-    /// The bytecode arena is shared, so a bad jump would read a neighbouring
-    /// body's bytes rather than trip the arena bounds check; the dispatch loop
-    /// asserts this in debug builds only, as it costs a `Code` lookup.
-    fn frame_ip_in_code(&self) -> bool {
-        let frame = &self.current_frame;
-        let end = frame.code_base + self.frame_code(frame).bytecode_len();
-        (frame.code_base..end).contains(&frame.ip)
-    }
-
     /// Returns the source position for the instruction currently executing.
     pub(super) fn current_position(&self) -> CodeRange {
-        let offset = self.current_frame.code_offset(self.instruction_ip);
-        self.frame_code(&self.current_frame)
-            .location_for_offset(offset as usize)
+        self.current_frame
+            .code
+            .location_for_offset(self.instruction_ip)
             .map(LocationEntry::range)
             .unwrap_or_default()
     }
@@ -2438,7 +2352,7 @@ impl<'h> VM<'h> {
         if self.current_frame.is_parked {
             None
         } else {
-            Some(self.current_frame.code_offset(self.instruction_ip))
+            u32::try_from(self.instruction_ip).ok()
         }
     }
 
@@ -2446,7 +2360,8 @@ impl<'h> VM<'h> {
     /// [`CodeRange`] against the current frame's code, during traceback unwind
     /// once the failing frame has been popped so the current frame is the caller.
     pub(super) fn resolve_offset(&self, offset: u32) -> CodeRange {
-        self.frame_code(&self.current_frame)
+        self.current_frame
+            .code
             .location_for_offset(offset as usize)
             .map(LocationEntry::range)
             .unwrap_or_default()
@@ -2464,7 +2379,7 @@ impl<'h> VM<'h> {
     fn load_local(&mut self, slot: u16) -> RunResult<()> {
         let index = self.current_frame.stack_base() + slot as usize;
         if matches!(self.stack[index], Value::Undefined) {
-            let name = self.frame_code(&self.current_frame).local_name(slot);
+            let name = self.current_frame.code.local_name(slot);
             Err(self.unbound_local_error(slot, name))
         } else {
             let value = self.stack[index].clone_with_heap(self.heap);
@@ -2677,7 +2592,7 @@ impl<'h> VM<'h> {
         // nested functions) is an ordinary UnboundLocalError, like any local.
         if matches!(value, Value::Undefined) {
             value.drop_with(self);
-            let name = self.frame_code(&self.current_frame).local_name(slot);
+            let name = self.current_frame.code.local_name(slot);
             Err(if self.is_free_var_slot(slot) {
                 self.free_var_error(name)
             } else {
@@ -2781,6 +2696,5 @@ impl Drop for VM<'_> {
         self.scheduler.cleanup(self.heap);
         self.globals.drain(..).drop_with(self.heap);
         self.json_string_cache.drop_all(self.heap);
-        self.interns.restore_arenas(mem::take(&mut self.arenas));
     }
 }

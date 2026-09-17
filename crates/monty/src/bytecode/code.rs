@@ -6,82 +6,17 @@
 
 use crate::{intern::StringId, parse::CodeRange, value::Value};
 
-/// The session's flat code storage, shared by every compiled [`Code`].
-///
-/// Both streams are session-wide so a running frame reaches them through one
-/// `Vec` held inline in the VM rather than dereferencing its `Code`: the frame
-/// carries only the bases. A run borrows the whole struct
-/// (`Interns::take_arenas`), and `eval()` / `exec()` append to the live one.
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct CodeArenas {
-    /// Every code object's instructions, concatenated. A frame's `ip` indexes
-    /// this directly, so switching frames costs nothing but setting `ip`.
-    pub(crate) bytecode: Vec<u8>,
-    /// Every code object's constants, concatenated. `LoadConst` adds its `u16`
-    /// operand to the running frame's base.
-    pub(crate) constants: Vec<Value>,
-    /// Final offsets assigned to a private compilation before it is committed.
-    #[serde(skip)]
-    pub(crate) bytecode_offset: usize,
-    #[serde(skip)]
-    pub(crate) constants_offset: usize,
-}
-
-impl CodeArenas {
-    /// Builds an unpublished suffix with final offsets into the committed arenas.
-    pub(crate) fn extension(&self) -> Self {
-        Self {
-            bytecode_offset: self.bytecode.len(),
-            constants_offset: self.constants.len(),
-            ..Self::default()
-        }
-    }
-
-    /// Appends an admitted compilation without relocating instructions or constants.
-    pub(crate) fn commit(&mut self, extension: Self) {
-        assert_eq!(self.bytecode.len(), extension.bytecode_offset);
-        assert_eq!(self.constants.len(), extension.constants_offset);
-        self.bytecode.extend(extension.bytecode);
-        self.constants.extend(extension.constants);
-    }
-}
-
-impl Clone for CodeArenas {
-    /// [`Value`] is deliberately not `Clone`; constants are always immediates,
-    /// so copying one needs no refcount.
-    fn clone(&self) -> Self {
-        Self {
-            bytecode: self.bytecode.clone(),
-            constants: self.constants.iter().map(Value::copy_immediate).collect(),
-            bytecode_offset: self.bytecode_offset,
-            constants_offset: self.constants_offset,
-        }
-    }
-}
-
 /// Compiled bytecode for a function or module.
 ///
 /// This is the output of the bytecode compiler and the input to the VM.
 /// Each function has its own Code object; module-level code also gets one.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Code {
-    /// Where this code object's instructions start in
-    /// [`CodeArenas::bytecode`]. A frame's `ip` starts here and stays an
-    /// absolute arena offset, so the dispatch loop never consults the `Code`.
-    ///
-    /// Opcodes are 1 byte each, followed by their operands (0-3 bytes depending
-    /// on the instruction); the variable-width encoding gives better cache
-    /// locality than fixed-width alternatives.
-    bytecode_base: u32,
+    /// Variable-width instructions, addressed by body-relative offsets.
+    bytecode: Vec<u8>,
 
-    /// Length of this code object's block in [`CodeArenas::bytecode`], for the
-    /// offset arithmetic that turns an absolute `ip` back into the table-relative
-    /// offset the location and exception tables are keyed by.
-    bytecode_len: u32,
-
-    /// Where this code object's constants start in [`CodeArenas::constants`].
-    /// `LoadConst` adds its `u16` operand to the running frame's copy of this.
-    constants_base: u32,
+    /// Immediate constants indexed by `LoadConst`; heap literals live in `Interns`.
+    constants: Vec<Value>,
 
     /// Source location table for tracebacks.
     ///
@@ -107,7 +42,7 @@ impl Code {
     /// Creates an empty code object for tests that only need VM context.
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
-        Self::new(0, 0, 0, Vec::new(), Vec::new(), Vec::new())
+        Self::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
     }
 
     /// Creates a new Code object with all components.
@@ -115,47 +50,32 @@ impl Code {
     /// This is typically called by `CodeBuilder::build()` after compilation.
     #[must_use]
     pub fn new(
-        bytecode_base: u32,
-        bytecode_len: u32,
-        constants_base: u32,
+        bytecode: Vec<u8>,
+        constants: Vec<Value>,
         location_table: Vec<LocationEntry>,
         exception_table: Vec<ExceptionEntry>,
         local_names: Vec<StringId>,
     ) -> Self {
         Self {
-            bytecode_base,
-            bytecode_len,
-            constants_base,
+            bytecode,
+            constants,
             location_table,
             exception_table,
             local_names,
         }
     }
 
-    /// This code object's slice of the session bytecode arena.
-    #[cfg(test)]
-    pub(crate) fn bytecode<'a>(&self, arenas: &'a CodeArenas) -> &'a [u8] {
-        let base = self.bytecode_base as usize;
-        &arenas.bytecode[base..base + self.bytecode_len as usize]
+    /// Returns the raw bytecode bytes.
+    #[must_use]
+    pub fn bytecode(&self) -> &[u8] {
+        &self.bytecode
     }
 
-    /// Start of this code object's instructions in the session bytecode arena;
-    /// also the initial `ip` of any frame running it.
+    /// Returns the constant referenced by a `LoadConst` operand.
+    /// Panics for an index not produced by this code's compiler.
     #[must_use]
-    pub fn bytecode_base(&self) -> u32 {
-        self.bytecode_base
-    }
-
-    /// Length of this code object's instructions in the session bytecode arena.
-    #[must_use]
-    pub fn bytecode_len(&self) -> u32 {
-        self.bytecode_len
-    }
-
-    /// Start of this code object's block in the session-wide constant arena.
-    #[must_use]
-    pub fn constants_base(&self) -> u32 {
-        self.constants_base
+    pub fn constant(&self, index: u16) -> &Value {
+        &self.constants[usize::from(index)]
     }
 
     /// Returns the local variable name for a given slot index.
@@ -196,6 +116,19 @@ impl Code {
     #[must_use]
     pub fn find_exception_handler(&self, offset: u32) -> Option<&ExceptionEntry> {
         self.exception_table.iter().find(|entry| entry.contains(offset))
+    }
+}
+
+impl Clone for Code {
+    /// Constants are immediates, so copying compiled code needs no heap references.
+    fn clone(&self) -> Self {
+        Self {
+            bytecode: self.bytecode.clone(),
+            constants: self.constants.iter().map(Value::copy_immediate).collect(),
+            location_table: self.location_table.clone(),
+            exception_table: self.exception_table.clone(),
+            local_names: self.local_names.clone(),
+        }
     }
 }
 

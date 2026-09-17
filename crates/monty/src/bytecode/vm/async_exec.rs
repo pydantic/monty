@@ -11,7 +11,7 @@ use std::{mem, task::Poll};
 use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
-use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM, frame_ip, function_namespace, stack_index};
+use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM, function_namespace, stack_index};
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
@@ -34,7 +34,7 @@ use crate::{
 impl<'h> VM<'h> {
     /// Allows eager host resolution only for an immediate await with no competing work.
     pub(crate) fn allow_eager_await(&self) -> bool {
-        let next = self.arenas.bytecode.get(self.current_frame().ip as usize);
+        let next = self.current_frame.bytecode.get(self.current_frame.ip);
         next == Some(&(Opcode::Await as u8)) && self.scheduler.can_await_eagerly()
     }
 
@@ -507,7 +507,7 @@ impl<'h> VM<'h> {
             .drain(..)
             .map(|f| SerializedTaskFrame {
                 function_id: f.function_id,
-                ip: f.body_offset(),
+                ip: f.ip,
                 stack_base: f.stack_base(),
                 locals_count: f.locals_count,
                 exception_stack_base: f.exception_stack_base(),
@@ -520,7 +520,7 @@ impl<'h> VM<'h> {
         let current = &mut self.current_frame;
         frames.push(SerializedTaskFrame {
             function_id: current.function_id,
-            ip: current.body_offset(),
+            ip: current.ip,
             stack_base: current.stack_base(),
             locals_count: current.locals_count,
             exception_stack_base: current.exception_stack_base(),
@@ -586,9 +586,9 @@ impl<'h> VM<'h> {
                         None => self.module_code,
                     };
                     CallFrame {
-                        ip: code.bytecode_base() + frame_ip(sf.ip),
-                        code_base: code.bytecode_base(),
-                        constants_base: code.constants_base(),
+                        code,
+                        bytecode: code.bytecode(),
+                        ip: sf.ip,
                         stack_base: stack_index(sf.stack_base),
                         locals_count: sf.locals_count,
                         exception_stack_base: stack_index(sf.exception_stack_base),
