@@ -1351,6 +1351,9 @@ pub enum MontyType {
     ItertoolsTee,
     #[strum(serialize = "itertools._tee_dataobject")]
     ItertoolsTeeDataObject,
+    /// The wrapper `functools.lru_cache` / `functools.cache` returns.
+    #[strum(serialize = "functools._lru_cache_wrapper")]
+    LruCacheWrapper,
 }
 
 impl fmt::Display for MontyType {

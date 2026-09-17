@@ -63,6 +63,7 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::ItertoolsCount,
             MontyType::ItertoolsRepeat,
             MontyType::Partial,
+            MontyType::LruCacheWrapper,
             MontyType::GenericAlias,
             MontyType::Union,
             MontyType::ItertoolsPairwise,
@@ -187,6 +188,7 @@ pub(super) fn type_object_to_py(py: Python<'_>, t: &MontyType) -> PyResult<Py<Py
         MontyType::ItertoolsCount => cached!("itertools", "count"),
         MontyType::ItertoolsRepeat => cached!("itertools", "repeat"),
         MontyType::Partial => cached!("functools", "partial"),
+        MontyType::LruCacheWrapper => cached!("functools", "_lru_cache_wrapper"),
         MontyType::GenericAlias => cached!("types", "GenericAlias"),
         // `types.UnionType` is the type of `int | None` on every supported host;
         // on 3.14+ it is the same object as `typing.Union`.

@@ -504,10 +504,10 @@ impl<'h> VM<'h> {
                 locals_count: f.locals_count,
                 exception_stack_base: f.exception_stack_base,
                 call_offset: f.call_offset,
-                is_initializer: f.is_initializer,
+                return_effects: f.return_effects,
             })
             .collect();
-        let current = &self.current_frame;
+        let current = &mut self.current_frame;
         frames.push(SerializedTaskFrame {
             function_id: current.function_id,
             ip: current.ip,
@@ -515,7 +515,7 @@ impl<'h> VM<'h> {
             locals_count: current.locals_count,
             exception_stack_base: current.exception_stack_base,
             call_offset: current.call_offset,
-            is_initializer: current.is_initializer,
+            return_effects: current.return_effects,
         });
 
         // Count this task's recursion depth contribution and subtract it from
@@ -587,7 +587,7 @@ impl<'h> VM<'h> {
                         call_offset: sf.call_offset,
                         should_return: false,
                         is_parked: false,
-                        is_initializer: sf.is_initializer,
+                        return_effects: sf.return_effects,
                     }
                 })
                 .collect();

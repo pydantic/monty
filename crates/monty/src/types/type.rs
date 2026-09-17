@@ -275,6 +275,11 @@ pub enum Type {
     /// reads `<class 'random.Random'>`.
     #[strum(serialize = "random.Random")]
     Random,
+    /// The wrapper `functools.lru_cache` / `functools.cache` returns. Private
+    /// in CPython too: the name is reachable through `type(f)`, never as a
+    /// `functools` attribute.
+    #[strum(serialize = "functools._lru_cache_wrapper")]
+    LruCacheWrapper,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)

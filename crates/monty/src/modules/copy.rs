@@ -158,6 +158,9 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
         // A second generator at the same point in the same sequence, which is
         // what CPython's `__getstate__`/`__setstate__` pair produces.
         HeapReadOutput::Random(random) => Ok(random.allocate_like(vm)),
+        // CPython's `_lru_cache_wrapper` defines `__copy__` and `__deepcopy__`
+        // returning itself, so both copies keep sharing the one cache.
+        HeapReadOutput::LruCache(_) => Ok(value.clone_with_heap(vm.heap)),
         // Leaves and immutable containers Monty can never mutate, so a copy
         // that shared them is indistinguishable from one that rebuilt them.
         HeapReadOutput::Str(_)
@@ -291,6 +294,9 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
         HeapReadOutput::BoundMethod(bound) => bound.py_deep_copy(source, memo, vm),
         HeapReadOutput::Partial(partial) => partial.py_deep_copy(source, memo, vm),
         HeapReadOutput::Random(random) => random.py_deep_copy(source, memo, vm),
+        // CPython's `_lru_cache_wrapper` defines `__copy__` and `__deepcopy__`
+        // returning itself, so both copies keep sharing the one cache.
+        HeapReadOutput::LruCache(_) => Ok(source.clone_with_heap(vm.heap)),
         // Leaves and immutable containers Monty can never mutate, so a copy
         // that shared them is indistinguishable from one that rebuilt them.
         HeapReadOutput::Str(_)

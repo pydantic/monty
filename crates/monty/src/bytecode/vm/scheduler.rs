@@ -10,6 +10,7 @@ use std::{collections::VecDeque, mem};
 use ahash::AHashMap;
 use smallvec::{SmallVec, smallvec};
 
+use super::ReturnEffects;
 use crate::{
     asyncio::{Awaiter, CallId, TaskId},
     exception_private::RunResult,
@@ -63,6 +64,9 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
     fn drop_with(mut self, heap: &mut C) {
         self.stack.drain(..).drop_with(heap);
         self.exception_stack.drain(..).drop_with(heap);
+        // The stack drain above covers any parked return-effect operands, so
+        // abandoning the task's frames stores nothing and releases nothing.
+        self.frames.clear();
         self.state.drop_with(heap);
         if let Some(coro_id) = self.coroutine_id.take() {
             heap.heap_mut().dec_ref(coro_id);
@@ -77,7 +81,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
 ///
 /// Similar to `SerializedFrame` but used within the scheduler for task context.
 /// Cannot store `&Code` references - uses `FunctionId` to look up code on resume.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SerializedTaskFrame {
     /// Which function's code this frame executes (None = module-level).
     pub function_id: Option<FunctionId>,
@@ -93,9 +97,9 @@ pub(crate) struct SerializedTaskFrame {
     /// Caller's bytecode offset at the call site (for tracebacks). See
     /// `CallFrame.call_offset`.
     pub call_offset: Option<u32>,
-    /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
+    /// Work owed to this frame's return value (see `CallFrame.return_effects`).
     #[serde(default)]
-    pub is_initializer: bool,
+    pub return_effects: ReturnEffects,
 }
 
 impl Task {
