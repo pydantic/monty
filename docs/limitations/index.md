@@ -36,6 +36,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `async` / `await`, and `asyncio.run` / `asyncio.gather`
 - `import x`, `import x.y`, `from x import y, z as w`
 - Starred unpacking everywhere CPython allows it
+- Runtime generic aliases (`list[int]`) and `|` unions (`int | None`), see [typing.md](typing.md)
 
 **Rejected at parse time**, with `NotImplementedError` before any code runs:
 
@@ -72,6 +73,7 @@ The following modules are present:
 | `base64`      | [base64.md](base64.md)           |
 | `binascii`    | [base64.md](base64.md)           |
 | `collections` | [collections.md](collections.md) |
+| `copy`        | [copy.md](copy.md)               |
 | `dataclasses` | [dataclasses.md](dataclasses.md) |
 | `datetime`    | [datetime.md](datetime.md)       |
 | `functools`   | [functools.md](functools.md)     |
@@ -80,16 +82,18 @@ The following modules are present:
 | `math`        | [math.md](math.md)               |
 | `os`          | [os.md](os.md)                   |
 | `pathlib`     | [pathlib.md](pathlib.md)         |
+| `random`      | [random.md](random.md)           |
 | `re`          | [re.md](re.md)                   |
 | `sys`         | [sys.md](sys.md)                 |
 | `typing`      | [typing.md](typing.md)           |
 | `unicodedata` | [unicodedata.md](unicodedata.md) |
 
-Each covers only part of its CPython surface — often a small part.
+Each covers only part of its CPython surface — often a small part. `itertools`
+is the exception: every name it exports is implemented.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 
-Notably absent: `enum`, `contextlib`, `random`, `time`, `io`, `copy`, `string`, `struct`, `operator`,
+Notably absent: `enum`, `contextlib`, `time`, `io`, `string`, `struct`, `operator`,
 `inspect`, `logging`, `traceback`, `hashlib`, `uuid`, `urllib`.
 Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.

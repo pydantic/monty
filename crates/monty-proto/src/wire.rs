@@ -1,20 +1,26 @@
-//! Hand-written [`prost::Message`] implementation for [`MontyObject`].
+//! Hand-written [`prost::Message`] implementations for the value arena.
 //!
 //! Values are the hot payload of the protocol — every external function call
 //! ships its arguments, result, and final value across the process boundary.
-//! Generated prost code would force a mirror struct tree (`pb::MontyObject`)
-//! plus a deep conversion in each direction: a full clone of every string and
-//! container on encode, and a second tree rebuild on decode. Instead, the
-//! codegen maps the `monty.v1.MontyObject` schema message to [`WireObject`]
-//! via `extern_path` (see `src/bin/generate.rs`), and this module implements
-//! the wire format directly on top of [`MontyObject`]:
+//! Generated prost code would force a mirror arena (`pb::Arena` of
+//! `pb::MontyNode`s) plus a conversion in each direction: a clone of every
+//! string and container on encode, and a second arena on decode. Instead, the
+//! codegen maps the `monty.v1.Arena` schema message to [`WireArena`] via
+//! `extern_path` (see `src/bin/generate.rs`), and this module encodes and
+//! decodes [`MontyNode`]s directly:
 //!
-//! - **encode** walks a borrowed [`MontyObject`] and writes bytes — no
-//!   intermediate tree, no clones;
-//! - **decode** builds the [`MontyObject`] straight from the wire, running
+//! - **encode** walks the borrowed nodes and writes bytes — no intermediate
+//!   arena, no clones;
+//! - **decode** builds the `Vec<MontyNode>` straight from the wire, running
 //!   the semantic validation (date ranges, timedelta normalization, enum
 //!   names) *during* the parse, so untrusted bytes never exist in memory as
-//!   an unvalidated value.
+//!   an unvalidated value, then checks the arena's index invariants once.
+//!
+//! The arena is flat, so decoding never recurses and nesting depth is not
+//! bounded by prost's recursion limit. Every vector is charged against the
+//! decode budget before it grows (the arena's slots, a container's child ids,
+//! a call's argument ids) and each leaf's payload once parsed, so the only
+//! uncharged transient is one leaf of at most the frame's size.
 //!
 //! Byte-for-byte compatibility with prost's generated encoding is enforced by
 //! the differential tests in `tests/differential.rs`, which compare this
@@ -29,11 +35,12 @@
 //! both `encoded_len` and `encode_raw`; those arms are rare in real payloads
 //! and the strings are tiny.
 
-use std::{cell::Cell, fmt::Display, ops::RangeInclusive};
+use std::{cell::Cell, fmt::Display, mem::size_of, ops::RangeInclusive};
 
 use monty_types::{
-    DictPairs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyClassInstance, MontyClassType, MontyDate,
-    MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
+    BuiltinsFunctions, CallArgs, ClassTypeNode, GraphError, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
+    MontyDate, MontyDateTime, MontyFileHandle, MontyGraph, MontyNode, MontyTime, MontyTimeDelta, MontyTimeZone,
+    MontyType, MontyUuid, NodeId,
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -44,44 +51,58 @@ use prost::{
 
 use crate::{convert::ProtoConvertError, frame::DEFAULT_MAX_DECODE_BYTES, pb};
 
-/// The wire form of a [`MontyObject`]: what the `monty.v1.MontyObject` proto
-/// message decodes into and encodes from.
+/// The wire form of a [`MontyGraph`]: what the `monty.v1.Arena` proto message
+/// decodes into and encodes from.
 ///
-/// `None` represents an absent `kind` oneof (an empty message on the wire) —
-/// receivers reject it via [`Self::into_object`], exactly like prost's
-/// `Option<Kind>`. Senders always build it from a real value via `From`.
+/// Decoding only collects nodes; [`Self::into_graph`] checks the arena
+/// invariants (every child index lower than its holder, class instances
+/// pointing at class nodes) once the whole message has arrived, since prost
+/// has no end-of-message hook. Senders build it from a validated graph via `From`.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct WireObject(pub Option<MontyObject>);
+pub struct WireArena(pub Vec<MontyNode>);
 
-impl WireObject {
-    /// Wraps a value for sending. Equivalent to `From`, named for call sites
+impl WireArena {
+    /// Wraps a graph for sending. Equivalent to `From`, named for call sites
     /// where `.into()` would be unclear.
     #[must_use]
-    pub fn new(obj: MontyObject) -> Self {
-        Self(Some(obj))
+    pub fn new(graph: MontyGraph) -> Self {
+        Self(graph.into_nodes())
     }
 
-    /// Unwraps the decoded value, rejecting an absent `kind` oneof.
-    pub fn into_object(self) -> Result<MontyObject, ProtoConvertError> {
-        self.0.ok_or(ProtoConvertError::MissingField("MontyObject.kind"))
-    }
-}
-
-impl From<MontyObject> for WireObject {
-    fn from(obj: MontyObject) -> Self {
-        Self(Some(obj))
+    /// Validates the decoded nodes into a graph.
+    pub fn into_graph(self) -> Result<MontyGraph, ProtoConvertError> {
+        MontyGraph::from_nodes(self.0).map_err(|err| graph_error(&err))
     }
 }
 
-impl Message for WireObject {
+impl From<MontyGraph> for WireArena {
+    fn from(graph: MontyGraph) -> Self {
+        Self::new(graph)
+    }
+}
+
+/// Smallest reservation the decoder makes when a vector starts growing.
+const MIN_VEC_CAPACITY: usize = 4;
+
+/// Fewest wire bytes one node occupies (entry key, length, kind key, empty
+/// `Unit` payload); caps how many nodes a `node_count` hint may reserve.
+const MIN_NODE_WIRE_BYTES: usize = 4;
+
+impl Message for WireArena {
     fn encode_raw(&self, buf: &mut impl BufMut) {
-        if let Some(obj) = &self.0 {
-            encode_object(obj, buf);
+        encode_uint32(1, arena_len_u32(self.0.len()), buf);
+        for node in &self.0 {
+            encoding::message::encode(2, &NodeRef(node), buf);
         }
     }
 
     fn encoded_len(&self) -> usize {
-        self.0.as_ref().map_or(0, object_len)
+        uint32_len(1, arena_len_u32(self.0.len()))
+            + self
+                .0
+                .iter()
+                .map(|node| encoding::message::encoded_len(2, &NodeRef(node)))
+                .sum::<usize>()
     }
 
     fn merge_field(
@@ -91,61 +112,125 @@ impl Message for WireObject {
         buf: &mut impl Buf,
         ctx: DecodeContext,
     ) -> Result<(), DecodeError> {
-        if let Some(obj) = decode_field(tag, wire_type, buf, ctx)? {
-            self.0 = Some(obj);
+        match tag {
+            1 => {
+                let mut hint = 0u32;
+                encoding::uint32::merge(wire_type, &mut hint, buf, ctx)?;
+                // capped by the bytes left in the message and charged before
+                // reserving, so a false hint cannot exceed this frame's budget
+                if self.0.capacity() == 0 {
+                    let reserve = (hint as usize).min(buf.remaining() / MIN_NODE_WIRE_BYTES);
+                    reserve_charged(&mut self.0, reserve)?;
+                }
+                Ok(())
+            }
+            2 => {
+                // the node's payload was charged as it decoded; this charges its slot
+                let node = merge_message::<NodeBody>(wire_type, buf, ctx)?
+                    .0
+                    .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("MontyNode.kind")))?;
+                push_charged(&mut self.0, node)
+            }
+            _ => skip_field(wire_type, tag, buf, ctx),
         }
-        Ok(())
     }
 
+    /// Releases the nodes rather than keeping their capacity, so a reused
+    /// arena never holds slots the next frame's budget did not charge.
     fn clear(&mut self) {
-        self.0 = None;
+        self.0 = Vec::new();
     }
 }
 
-/// Wire form of `monty.v1.FunctionCall` that decodes arguments directly into
-/// `MontyObject`s.
+/// Wire form of `monty.v1.FunctionCall`: the call's argument arena plus the
+/// ids of its positional and keyword arguments.
 ///
-/// Generated prost code would first build `Vec<WireObject>` / `Vec<Pair>` and
-/// the parent would then collect those into the public `TurnEvent` vectors.
-/// This type is installed with `prost_build::extern_path`, so generated
-/// `ChildEvent` decoding still handles the envelope while this payload avoids
-/// the duplicate allocation for large argument lists.
+/// Installed with `prost_build::extern_path`, so generated `ChildEvent`
+/// decoding still handles the envelope while this payload keeps the argument
+/// vectors as bare ids and decodes the arena straight into `MontyNode`s.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WireFunctionCall {
     /// Name of the external function the sandbox is calling.
     pub function_name: String,
-    /// Positional arguments, decoded straight from repeated `MontyObject`.
-    pub args: Vec<MontyObject>,
-    /// Keyword arguments, preserving wire order.
-    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    /// The arena `args` and `kwargs` index.
+    pub values: WireArena,
+    /// Positional arguments, in order.
+    pub args: Vec<NodeId>,
+    /// Keyword arguments as `(key, value)` ids, preserving wire order.
+    pub kwargs: Vec<(NodeId, NodeId)>,
     /// Child-assigned call id used by the matching resume request.
     pub call_id: u32,
     /// Uuid of the routed receiver (a host-backed instance, or a class type
     /// for `__call__`/classmethod calls); `None` for plain external function
     /// calls. The receiver is never included in `args`.
     pub object_id: Option<MontyUuid>,
+    /// The worker accepts an eagerly settled coroutine via `ResumeFutures`.
+    pub allow_eager_await: bool,
+}
+
+impl WireFunctionCall {
+    /// Splits `args` into its arena and the id vectors the wire carries.
+    #[must_use]
+    pub fn new(
+        function_name: String,
+        args: CallArgs,
+        call_id: u32,
+        object_id: Option<MontyUuid>,
+        allow_eager_await: bool,
+    ) -> Self {
+        Self {
+            function_name,
+            values: WireArena::new(args.graph),
+            args: args.arg_ids,
+            kwargs: args.kwarg_ids,
+            call_id,
+            object_id,
+            allow_eager_await,
+        }
+    }
+
+    /// Validates the decoded arena and argument ids into [`CallArgs`].
+    pub fn into_call_args(self) -> Result<CallArgs, ProtoConvertError> {
+        let call = CallArgs {
+            graph: self.values.into_graph()?,
+            arg_ids: self.args,
+            kwarg_ids: self.kwargs,
+        };
+        call.check_roots().map_err(|err| graph_error(&err))?;
+        Ok(call)
+    }
 }
 
 impl Message for WireFunctionCall {
     fn encode_raw(&self, buf: &mut impl BufMut) {
         encode_str(1, &self.function_name, buf);
-        encode_repeated_object(2, &self.args, buf);
-        encode_repeated_pair(3, &self.kwargs, buf);
+        encode_packed_ids(2, &self.args, buf);
+        encode_node_pairs(3, &self.kwargs, buf);
         encode_uint32(4, self.call_id, buf);
         if let Some(id) = &self.object_id {
             encoding::message::encode(5, &uuid_to_pb(id), buf);
         }
+        if self.allow_eager_await {
+            encoding::bool::encode(6, &true, buf);
+        }
+        encoding::message::encode(7, &self.values, buf);
     }
 
     fn encoded_len(&self) -> usize {
         str_len(1, &self.function_name)
-            + repeated_object_len(2, &self.args)
-            + repeated_pair_len(3, &self.kwargs)
+            + packed_ids_len(2, &self.args)
+            + node_pairs_len(3, &self.kwargs)
             + uint32_len(4, self.call_id)
             + self
                 .object_id
                 .as_ref()
                 .map_or(0, |id| encoding::message::encoded_len(5, &uuid_to_pb(id)))
+            + if self.allow_eager_await {
+                encoding::bool::encoded_len(6, &true)
+            } else {
+                0
+            }
+            + encoding::message::encoded_len(7, &self.values)
     }
 
     fn merge_field(
@@ -157,8 +242,11 @@ impl Message for WireFunctionCall {
     ) -> Result<(), DecodeError> {
         match tag {
             1 => encoding::string::merge(wire_type, &mut self.function_name, buf, ctx),
-            2 => merge_object_item(wire_type, buf, ctx, &mut self.args),
-            3 => merge_pair_item(wire_type, buf, ctx, &mut self.kwargs),
+            2 => merge_ids(wire_type, buf, ctx, &mut self.args),
+            3 => {
+                let pair: pb::NodePair = merge_message(wire_type, buf, ctx)?;
+                push_charged(&mut self.kwargs, (NodeId(pair.key), NodeId(pair.value)))
+            }
             4 => encoding::uint32::merge(wire_type, &mut self.call_id, buf, ctx),
             5 => {
                 let mut uuid = pb::Uuid::default();
@@ -166,20 +254,32 @@ impl Message for WireFunctionCall {
                 self.object_id = Some(pb_uuid_to_monty(&uuid, "FunctionCall.object_id")?);
                 Ok(())
             }
+            6 => encoding::bool::merge(wire_type, &mut self.allow_eager_await, buf, ctx),
+            7 => encoding::message::merge(wire_type, &mut self.values, buf, ctx),
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
 
     fn clear(&mut self) {
         self.function_name.clear();
-        self.args.clear();
-        self.kwargs.clear();
+        self.values.clear();
+        self.args = Vec::new();
+        self.kwargs = Vec::new();
         self.call_id = 0;
         self.object_id = None;
+        self.allow_eager_await = false;
     }
 }
 
-/// Field numbers of the `MontyObject.kind` oneof — must match
+/// Maps an arena invariant failure onto the conversion error hosts see.
+pub(crate) fn graph_error(err: &GraphError) -> ProtoConvertError {
+    ProtoConvertError::InvalidValue {
+        field: "Arena",
+        reason: err.to_string(),
+    }
+}
+
+/// Field numbers of the `MontyNode.kind` oneof — must match
 /// `proto/monty/v1/monty.proto` exactly (the differential oracle test catches drift).
 mod tag {
     pub const ELLIPSIS: u32 = 1;
@@ -219,32 +319,60 @@ mod tag {
 // Encoding
 // ============================================================================
 
-/// Writes `obj` as one `MontyObject.kind` oneof field. Oneof fields always
+/// A borrowed node as one `MontyNode` message, so the arena can encode each
+/// entry through prost's length-delimited helpers without cloning.
+#[derive(Debug)]
+struct NodeRef<'a>(&'a MontyNode);
+
+impl Message for NodeRef<'_> {
+    fn encode_raw(&self, buf: &mut impl BufMut) {
+        encode_node(self.0, buf);
+    }
+
+    fn encoded_len(&self) -> usize {
+        node_len(self.0)
+    }
+
+    fn merge_field(
+        &mut self,
+        _tag: u32,
+        _wire_type: WireType,
+        _buf: &mut impl Buf,
+        _ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        unreachable!("NodeRef is encode-only")
+    }
+
+    fn clear(&mut self) {
+        unreachable!("NodeRef is encode-only")
+    }
+}
+
+/// The `uint32 node_count` hint; an arena cannot outgrow `u32` ids.
+fn arena_len_u32(len: usize) -> u32 {
+    u32::try_from(len).expect("arena exceeds u32::MAX nodes")
+}
+
+/// Writes `node` as one `MontyNode.kind` oneof field. Oneof fields always
 /// encode, even when the payload is a protobuf default (matching prost).
 ///
 /// Each sub-message arm writes `encode_message_key(tag, <body len>, ...)` then
-/// the body; the matching `*_len` and [`object_len`] arms must compute the same
+/// the body; the matching `*_len` and [`node_len`] arms must compute the same
 /// length, or the frame corrupts (guarded by `tests/differential.rs`).
-fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
-    match obj {
-        MontyObject::Ellipsis => encoding::message::encode(tag::ELLIPSIS, &pb::Unit {}, buf),
-        MontyObject::NotImplemented => encoding::message::encode(tag::NOT_IMPLEMENTED, &pb::Unit {}, buf),
-        MontyObject::None => encoding::message::encode(tag::NONE, &pb::Unit {}, buf),
-        MontyObject::Bool(b) => encoding::bool::encode(tag::BOOLEAN, b, buf),
-        MontyObject::Int(i) => encoding::sint64::encode(tag::INT, i, buf),
-        MontyObject::BigInt(bi) => encoding::message::encode(tag::BIGINT, &bigint_to_proto(bi), buf),
-        MontyObject::Float(f) => encoding::double::encode(tag::FLOAT, f, buf),
-        MontyObject::String(s) => encoding::string::encode(tag::STR, s, buf),
-        MontyObject::Bytes(b) => encoding::bytes::encode(tag::BYTES, b, buf),
-        MontyObject::List(items) => {
-            encode_message_key(tag::LIST, value_list_len(items), buf);
-            encode_repeated_object(1, items, buf);
-        }
-        MontyObject::Tuple(items) => {
-            encode_message_key(tag::TUPLE, value_list_len(items), buf);
-            encode_repeated_object(1, items, buf);
-        }
-        MontyObject::NamedTuple {
+fn encode_node(node: &MontyNode, buf: &mut impl BufMut) {
+    match node {
+        MontyNode::Ellipsis => encoding::message::encode(tag::ELLIPSIS, &pb::Unit {}, buf),
+        MontyNode::NotImplemented => encoding::message::encode(tag::NOT_IMPLEMENTED, &pb::Unit {}, buf),
+        MontyNode::None => encoding::message::encode(tag::NONE, &pb::Unit {}, buf),
+        MontyNode::Bool(b) => encoding::bool::encode(tag::BOOLEAN, b, buf),
+        MontyNode::Int(i) => encoding::sint64::encode(tag::INT, i, buf),
+        MontyNode::BigInt(bi) => encoding::message::encode(tag::BIGINT, &bigint_to_proto(bi), buf),
+        MontyNode::Float(f) => encoding::double::encode(tag::FLOAT, f, buf),
+        MontyNode::String(s) => encoding::string::encode(tag::STR, s, buf),
+        MontyNode::Bytes(b) => encoding::bytes::encode(tag::BYTES, b, buf),
+        MontyNode::List(ids) => encode_indexes(tag::LIST, ids, buf),
+        MontyNode::Tuple(ids) => encode_indexes(tag::TUPLE, ids, buf),
+        MontyNode::NamedTuple {
             type_name,
             field_names,
             values,
@@ -252,68 +380,63 @@ fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
             encode_message_key(tag::NAMED_TUPLE, named_tuple_len(type_name, field_names, values), buf);
             encode_str(1, type_name, buf);
             encode_repeated_str(2, field_names, buf);
-            encode_repeated_object(3, values, buf);
+            encode_packed_ids(3, values, buf);
         }
-        MontyObject::Dict(pairs) => {
-            encode_message_key(tag::DICT, dict_len(pairs), buf);
-            encode_dict(pairs, buf);
+        MontyNode::Dict(pairs) => {
+            encode_message_key(tag::DICT, node_pairs_len(1, pairs), buf);
+            encode_node_pairs(1, pairs, buf);
         }
-        MontyObject::Set(items) => {
-            encode_message_key(tag::SET, value_list_len(items), buf);
-            encode_repeated_object(1, items, buf);
-        }
-        MontyObject::FrozenSet(items) => {
-            encode_message_key(tag::FROZEN_SET, value_list_len(items), buf);
-            encode_repeated_object(1, items, buf);
-        }
-        MontyObject::Date(d) => encoding::message::encode(tag::DATE, &date_to_proto(d), buf),
-        MontyObject::DateTime(dt) => {
+        MontyNode::Set(ids) => encode_indexes(tag::SET, ids, buf),
+        MontyNode::FrozenSet(ids) => encode_indexes(tag::FROZEN_SET, ids, buf),
+        MontyNode::Date(d) => encoding::message::encode(tag::DATE, &date_to_proto(d), buf),
+        MontyNode::DateTime(dt) => {
             encode_message_key(tag::DATETIME, datetime_len(dt), buf);
             encode_datetime(dt, buf);
         }
-        MontyObject::Time(t) => {
+        MontyNode::Time(t) => {
             encode_message_key(tag::TIME, time_len(t), buf);
             encode_time(t, buf);
         }
-        MontyObject::TimeDelta(td) => encoding::message::encode(tag::TIMEDELTA, &timedelta_to_proto(td), buf),
-        MontyObject::TimeZone(tz) => {
+        MontyNode::TimeDelta(td) => encoding::message::encode(tag::TIMEDELTA, &timedelta_to_proto(td), buf),
+        MontyNode::TimeZone(tz) => {
             encode_message_key(tag::TIMEZONE, timezone_len(tz), buf);
             encode_int32(1, tz.offset_seconds, buf);
             encode_opt_str(2, tz.name.as_deref(), buf);
         }
-        MontyObject::Exception { exc_type, arg } => {
+        MontyNode::Exception { exc_type, arg } => {
             let name = exc_type.to_string();
             encode_message_key(tag::EXCEPTION, str_len(1, &name) + opt_str_len(2, arg.as_deref()), buf);
             encode_str(1, &name, buf);
             encode_opt_str(2, arg.as_deref(), buf);
         }
-        MontyObject::Type(t) => encoding::message::encode(tag::TYPE, &monty_type_to_pb(t), buf),
-        MontyObject::BuiltinFunction(bf) => encoding::string::encode(tag::BUILTIN_FUNCTION, &bf.to_string(), buf),
-        MontyObject::Path(p) => encoding::string::encode(tag::PATH, p, buf),
-        MontyObject::FileHandle(fh) => {
+        MontyNode::Type(t) => encoding::message::encode(tag::TYPE, &builtin_type_to_pb(t), buf),
+        MontyNode::ClassType(class) => {
+            encode_message_key(tag::TYPE, class_type_len(class), buf);
+            encode_class_type(class, buf);
+        }
+        MontyNode::ClassInstance {
+            class_type,
+            instance_id,
+            attrs,
+        } => {
+            let id = uuid_to_pb(instance_id);
+            encode_message_key(tag::CLASS_INSTANCE, class_instance_len(*class_type, &id, attrs), buf);
+            encode_uint32(1, class_type.0, buf);
+            // instance_id and attrs are message fields, so they encode even
+            // when empty (message presence, matching prost)
+            encoding::message::encode(2, &id, buf);
+            encode_message_key(3, node_pairs_len(1, attrs), buf);
+            encode_node_pairs(1, attrs, buf);
+        }
+        MontyNode::BuiltinFunction(bf) => encoding::string::encode(tag::BUILTIN_FUNCTION, &bf.to_string(), buf),
+        MontyNode::Path(p) => encoding::string::encode(tag::PATH, p, buf),
+        MontyNode::FileHandle(fh) => {
             encode_message_key(tag::FILE_HANDLE, file_handle_len(fh), buf);
             encode_str(1, &fh.path, buf);
             encode_str(2, fh.mode.as_str(), buf);
             encode_uint64(3, fh.position, buf);
         }
-        MontyObject::ClassInstance(instance) => {
-            let MontyClassInstance {
-                class_type,
-                instance_id,
-                attrs,
-            } = instance.as_ref();
-            let ty = class_type_to_pb(class_type);
-            let id = uuid_to_pb(instance_id);
-            encode_message_key(tag::CLASS_INSTANCE, class_instance_len(&ty, &id, attrs), buf);
-            // type and instance_id are non-optional message fields that
-            // senders always populate, so they encode even when default
-            // (message presence); likewise attrs when empty.
-            encoding::message::encode(1, &ty, buf);
-            encoding::message::encode(2, &id, buf);
-            encode_message_key(3, dict_len(attrs), buf);
-            encode_dict(attrs, buf);
-        }
-        MontyObject::Function { name, docstring } => {
+        MontyNode::Function { name, docstring } => {
             encode_message_key(
                 tag::FUNCTION,
                 str_len(1, name) + opt_str_len(2, docstring.as_deref()),
@@ -322,67 +445,61 @@ fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
             encode_str(1, name, buf);
             encode_opt_str(2, docstring.as_deref(), buf);
         }
-        MontyObject::Repr(r) => encoding::string::encode(tag::REPR, r, buf),
-        MontyObject::Cycle(identity, placeholder) => {
-            let identity = *identity as u64;
-            encode_message_key(tag::CYCLE, uint64_len(1, identity) + str_len(2, placeholder), buf);
-            encode_uint64(1, identity, buf);
-            encode_str(2, placeholder, buf);
-        }
+        MontyNode::Repr(r) => encoding::string::encode(tag::REPR, r, buf),
+        MontyNode::Cycle(placeholder) => encoding::string::encode(tag::CYCLE, placeholder, buf),
     }
 }
 
-/// Length of `obj` as one `MontyObject.kind` oneof field (key + payload).
-/// Mirrors [`encode_object`] arm for arm.
-fn object_len(obj: &MontyObject) -> usize {
-    match obj {
-        MontyObject::Ellipsis => encoding::message::encoded_len(tag::ELLIPSIS, &pb::Unit {}),
-        MontyObject::NotImplemented => encoding::message::encoded_len(tag::NOT_IMPLEMENTED, &pb::Unit {}),
-        MontyObject::None => encoding::message::encoded_len(tag::NONE, &pb::Unit {}),
-        MontyObject::Bool(b) => encoding::bool::encoded_len(tag::BOOLEAN, b),
-        MontyObject::Int(i) => encoding::sint64::encoded_len(tag::INT, i),
-        MontyObject::BigInt(bi) => encoding::message::encoded_len(tag::BIGINT, &bigint_to_proto(bi)),
-        MontyObject::Float(f) => encoding::double::encoded_len(tag::FLOAT, f),
-        MontyObject::String(s) => encoding::string::encoded_len(tag::STR, s),
-        MontyObject::Bytes(b) => encoding::bytes::encoded_len(tag::BYTES, b),
-        MontyObject::List(items) => submessage_len(tag::LIST, value_list_len(items)),
-        MontyObject::Tuple(items) => submessage_len(tag::TUPLE, value_list_len(items)),
-        MontyObject::NamedTuple {
+/// Length of `node` as one `MontyNode.kind` oneof field (key + payload).
+/// Mirrors [`encode_node`] arm for arm.
+fn node_len(node: &MontyNode) -> usize {
+    match node {
+        MontyNode::Ellipsis => encoding::message::encoded_len(tag::ELLIPSIS, &pb::Unit {}),
+        MontyNode::NotImplemented => encoding::message::encoded_len(tag::NOT_IMPLEMENTED, &pb::Unit {}),
+        MontyNode::None => encoding::message::encoded_len(tag::NONE, &pb::Unit {}),
+        MontyNode::Bool(b) => encoding::bool::encoded_len(tag::BOOLEAN, b),
+        MontyNode::Int(i) => encoding::sint64::encoded_len(tag::INT, i),
+        MontyNode::BigInt(bi) => encoding::message::encoded_len(tag::BIGINT, &bigint_to_proto(bi)),
+        MontyNode::Float(f) => encoding::double::encoded_len(tag::FLOAT, f),
+        MontyNode::String(s) => encoding::string::encoded_len(tag::STR, s),
+        MontyNode::Bytes(b) => encoding::bytes::encoded_len(tag::BYTES, b),
+        MontyNode::List(ids) => submessage_len(tag::LIST, packed_ids_len(1, ids)),
+        MontyNode::Tuple(ids) => submessage_len(tag::TUPLE, packed_ids_len(1, ids)),
+        MontyNode::NamedTuple {
             type_name,
             field_names,
             values,
         } => submessage_len(tag::NAMED_TUPLE, named_tuple_len(type_name, field_names, values)),
-        MontyObject::Dict(pairs) => submessage_len(tag::DICT, dict_len(pairs)),
-        MontyObject::Set(items) => submessage_len(tag::SET, value_list_len(items)),
-        MontyObject::FrozenSet(items) => submessage_len(tag::FROZEN_SET, value_list_len(items)),
-        MontyObject::Date(d) => encoding::message::encoded_len(tag::DATE, &date_to_proto(d)),
-        MontyObject::DateTime(dt) => submessage_len(tag::DATETIME, datetime_len(dt)),
-        MontyObject::Time(t) => submessage_len(tag::TIME, time_len(t)),
-        MontyObject::TimeDelta(td) => encoding::message::encoded_len(tag::TIMEDELTA, &timedelta_to_proto(td)),
-        MontyObject::TimeZone(tz) => submessage_len(tag::TIMEZONE, timezone_len(tz)),
-        MontyObject::Exception { exc_type, arg } => {
+        MontyNode::Dict(pairs) => submessage_len(tag::DICT, node_pairs_len(1, pairs)),
+        MontyNode::Set(ids) => submessage_len(tag::SET, packed_ids_len(1, ids)),
+        MontyNode::FrozenSet(ids) => submessage_len(tag::FROZEN_SET, packed_ids_len(1, ids)),
+        MontyNode::Date(d) => encoding::message::encoded_len(tag::DATE, &date_to_proto(d)),
+        MontyNode::DateTime(dt) => submessage_len(tag::DATETIME, datetime_len(dt)),
+        MontyNode::Time(t) => submessage_len(tag::TIME, time_len(t)),
+        MontyNode::TimeDelta(td) => encoding::message::encoded_len(tag::TIMEDELTA, &timedelta_to_proto(td)),
+        MontyNode::TimeZone(tz) => submessage_len(tag::TIMEZONE, timezone_len(tz)),
+        MontyNode::Exception { exc_type, arg } => {
             let name = exc_type.to_string();
             submessage_len(tag::EXCEPTION, str_len(1, &name) + opt_str_len(2, arg.as_deref()))
         }
-        MontyObject::Type(t) => encoding::message::encoded_len(tag::TYPE, &monty_type_to_pb(t)),
-        MontyObject::BuiltinFunction(bf) => encoding::string::encoded_len(tag::BUILTIN_FUNCTION, &bf.to_string()),
-        MontyObject::Path(p) => encoding::string::encoded_len(tag::PATH, p),
-        MontyObject::FileHandle(fh) => submessage_len(tag::FILE_HANDLE, file_handle_len(fh)),
-        MontyObject::ClassInstance(instance) => submessage_len(
+        MontyNode::Type(t) => encoding::message::encoded_len(tag::TYPE, &builtin_type_to_pb(t)),
+        MontyNode::ClassType(class) => submessage_len(tag::TYPE, class_type_len(class)),
+        MontyNode::ClassInstance {
+            class_type,
+            instance_id,
+            attrs,
+        } => submessage_len(
             tag::CLASS_INSTANCE,
-            class_instance_len(
-                &class_type_to_pb(&instance.class_type),
-                &uuid_to_pb(&instance.instance_id),
-                &instance.attrs,
-            ),
+            class_instance_len(*class_type, &uuid_to_pb(instance_id), attrs),
         ),
-        MontyObject::Function { name, docstring } => {
+        MontyNode::BuiltinFunction(bf) => encoding::string::encoded_len(tag::BUILTIN_FUNCTION, &bf.to_string()),
+        MontyNode::Path(p) => encoding::string::encoded_len(tag::PATH, p),
+        MontyNode::FileHandle(fh) => submessage_len(tag::FILE_HANDLE, file_handle_len(fh)),
+        MontyNode::Function { name, docstring } => {
             submessage_len(tag::FUNCTION, str_len(1, name) + opt_str_len(2, docstring.as_deref()))
         }
-        MontyObject::Repr(r) => encoding::string::encoded_len(tag::REPR, r),
-        MontyObject::Cycle(identity, placeholder) => {
-            submessage_len(tag::CYCLE, uint64_len(1, *identity as u64) + str_len(2, placeholder))
-        }
+        MontyNode::Repr(r) => encoding::string::encoded_len(tag::REPR, r),
+        MontyNode::Cycle(placeholder) => encoding::string::encoded_len(tag::CYCLE, placeholder),
     }
 }
 
@@ -397,66 +514,107 @@ fn submessage_len(tag: u32, body_len: usize) -> usize {
     key_len(tag) + encoded_len_varint(body_len as u64) + body_len
 }
 
-/// `ObjectList` body: `repeated MontyObject items = 1`.
-fn value_list_len(items: &[MontyObject]) -> usize {
-    repeated_object_len(1, items)
+/// An `Indexes` message (`repeated uint32 items = 1`) as one oneof arm.
+fn encode_indexes(tag: u32, ids: &[NodeId], buf: &mut impl BufMut) {
+    encode_message_key(tag, packed_ids_len(1, ids), buf);
+    encode_packed_ids(1, ids, buf);
 }
 
-/// `repeated MontyObject` field: each element is one length-delimited entry.
-fn encode_repeated_object(tag: u32, items: &[MontyObject], buf: &mut impl BufMut) {
-    for obj in items {
-        encode_message_key(tag, object_len(obj), buf);
-        encode_object(obj, buf);
+/// Packed `repeated uint32` field of node ids, as prost encodes it: one
+/// length-delimited entry holding every varint, skipped entirely when empty.
+fn encode_packed_ids(tag: u32, ids: &[NodeId], buf: &mut impl BufMut) {
+    if !ids.is_empty() {
+        encode_message_key(tag, packed_body_len(ids), buf);
+        for id in ids {
+            encode_varint(u64::from(id.0), buf);
+        }
     }
 }
 
-fn repeated_object_len(tag: u32, items: &[MontyObject]) -> usize {
-    items.iter().map(|obj| submessage_len(tag, object_len(obj))).sum()
+fn packed_ids_len(tag: u32, ids: &[NodeId]) -> usize {
+    if ids.is_empty() {
+        0
+    } else {
+        submessage_len(tag, packed_body_len(ids))
+    }
 }
 
-/// `NamedTuple` body: `string type_name = 1; repeated string
-/// field_names = 2; repeated MontyObject values = 3`.
-fn named_tuple_len(type_name: &str, field_names: &[String], values: &[MontyObject]) -> usize {
-    str_len(1, type_name) + repeated_str_len(2, field_names) + repeated_object_len(3, values)
+/// Bytes of the varints inside a packed id field.
+fn packed_body_len(ids: &[NodeId]) -> usize {
+    ids.iter().map(|id| encoded_len_varint(u64::from(id.0))).sum()
 }
 
-/// `Dict` body: `repeated Pair pairs = 1` where `Pair` is
-/// `MontyObject key = 1; MontyObject value = 2` (both always present).
-fn dict_len(pairs: &DictPairs) -> usize {
-    pairs
-        .into_iter()
-        .map(|(key, value)| submessage_len(1, pair_len(key, value)))
-        .sum()
-}
-
-fn encode_dict(pairs: &DictPairs, buf: &mut impl BufMut) {
-    encode_repeated_pair(1, pairs, buf);
-}
-
-/// `repeated Pair` field: each entry is a length-delimited key/value message.
-fn encode_repeated_pair<'a>(
-    tag: u32,
-    pairs: impl IntoIterator<Item = &'a (MontyObject, MontyObject)>,
-    buf: &mut impl BufMut,
-) {
+/// `repeated NodePair` field: each entry is a length-delimited
+/// `uint32 key = 1; uint32 value = 2` message with implicit presence.
+fn encode_node_pairs(tag: u32, pairs: &[(NodeId, NodeId)], buf: &mut impl BufMut) {
     for (key, value) in pairs {
-        encode_message_key(tag, pair_len(key, value), buf);
-        encode_message_key(1, object_len(key), buf);
-        encode_object(key, buf);
-        encode_message_key(2, object_len(value), buf);
-        encode_object(value, buf);
+        encode_message_key(tag, node_pair_len(*key, *value), buf);
+        encode_uint32(1, key.0, buf);
+        encode_uint32(2, value.0, buf);
     }
 }
 
-fn repeated_pair_len<'a>(tag: u32, pairs: impl IntoIterator<Item = &'a (MontyObject, MontyObject)>) -> usize {
+fn node_pairs_len(tag: u32, pairs: &[(NodeId, NodeId)]) -> usize {
     pairs
-        .into_iter()
-        .map(|(key, value)| submessage_len(tag, pair_len(key, value)))
+        .iter()
+        .map(|(key, value)| submessage_len(tag, node_pair_len(*key, *value)))
         .sum()
 }
 
-fn pair_len(key: &MontyObject, value: &MontyObject) -> usize {
-    submessage_len(1, object_len(key)) + submessage_len(2, object_len(value))
+fn node_pair_len(key: NodeId, value: NodeId) -> usize {
+    uint32_len(1, key.0) + uint32_len(2, value.0)
+}
+
+/// `NamedTupleNode` body: `string type_name = 1; repeated string
+/// field_names = 2; repeated uint32 values = 3`.
+fn named_tuple_len(type_name: &str, field_names: &[String], values: &[NodeId]) -> usize {
+    str_len(1, type_name) + repeated_str_len(2, field_names) + packed_ids_len(3, values)
+}
+
+/// `Type` body for a class node: `string name = 1; Uuid id = 2; TypeOrigin
+/// origin = 3; bool is_dataclass = 4; NodePairs attrs = 5`, attrs only when
+/// non-empty (matching the generated encoder's absent field).
+fn class_type_len(class: &ClassTypeNode) -> usize {
+    str_len(1, &class.name)
+        + encoding::message::encoded_len(2, &uuid_to_pb(&class.id))
+        + int32_len(3, class_origin(class) as i32)
+        + if class.is_dataclass {
+            encoding::bool::encoded_len(4, &true)
+        } else {
+            0
+        }
+        + if class.attrs.is_empty() {
+            0
+        } else {
+            submessage_len(5, node_pairs_len(1, &class.attrs))
+        }
+}
+
+fn encode_class_type(class: &ClassTypeNode, buf: &mut impl BufMut) {
+    encode_str(1, &class.name, buf);
+    encoding::message::encode(2, &uuid_to_pb(&class.id), buf);
+    encode_int32(3, class_origin(class) as i32, buf);
+    if class.is_dataclass {
+        encoding::bool::encode(4, &true, buf);
+    }
+    if !class.attrs.is_empty() {
+        encode_message_key(5, node_pairs_len(1, &class.attrs), buf);
+        encode_node_pairs(1, &class.attrs, buf);
+    }
+}
+
+fn class_origin(class: &ClassTypeNode) -> pb::TypeOrigin {
+    if class.host_defined {
+        pb::TypeOrigin::Host
+    } else {
+        pb::TypeOrigin::Sandbox
+    }
+}
+
+/// `ClassInstanceNode` body: `uint32 class_type = 1; Uuid instance_id = 2;
+/// NodePairs attrs = 3`.
+fn class_instance_len(class_type: NodeId, id: &pb::Uuid, attrs: &[(NodeId, NodeId)]) -> usize {
+    uint32_len(1, class_type.0) + encoding::message::encoded_len(2, id) + submessage_len(3, node_pairs_len(1, attrs))
 }
 
 /// `DateTime` body: scalar fields 1–7 (implicit presence, skipped at
@@ -520,11 +678,6 @@ fn timezone_len(tz: &MontyTimeZone) -> usize {
 /// uint64 position = 3`.
 fn file_handle_len(fh: &MontyFileHandle) -> usize {
     str_len(1, &fh.path) + str_len(2, fh.mode.as_str()) + uint64_len(3, fh.position)
-}
-
-/// `ClassInstance` body: `Type type = 1; Uuid instance_id = 2; Dict attrs = 3`.
-fn class_instance_len(ty: &pb::Type, id: &pb::Uuid, attrs: &DictPairs) -> usize {
-    encoding::message::encoded_len(1, ty) + encoding::message::encoded_len(2, id) + submessage_len(3, dict_len(attrs))
 }
 
 // --- proto3 field helpers, mirroring prost's generated default-skipping ---
@@ -615,89 +768,153 @@ fn uint64_len(tag: u32, value: u64) -> usize {
 // Decoding
 // ============================================================================
 
-/// Decodes one `MontyObject.kind` field, validating as it parses. `None`
+/// Decode-only `prost::Message` for one `MontyNode`: its `kind` oneof, decoded
+/// and validated by [`decode_field`]. Never encoded (nodes encode via
+/// [`NodeRef`]), so the encode methods are unreachable.
+#[derive(Default)]
+struct NodeBody(Option<MontyNode>);
+
+impl Message for NodeBody {
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        if let Some(node) = decode_field(tag, wire_type, buf, ctx)? {
+            self.0 = Some(node);
+        }
+        Ok(())
+    }
+
+    fn encode_raw(&self, _buf: &mut impl BufMut) {
+        unreachable!("NodeBody is decode-only")
+    }
+
+    fn encoded_len(&self) -> usize {
+        unreachable!("NodeBody is decode-only")
+    }
+
+    fn clear(&mut self) {
+        self.0 = None;
+    }
+}
+
+/// Decodes one `MontyNode.kind` field, validating as it parses. `None`
 /// means the tag was unknown and skipped (forward compatibility, matching
-/// prost's generated decoder).
+/// prost's generated decoder). Child ids are range-checked by
+/// [`WireArena::into_graph`] once every node has arrived. Containers charge
+/// their id and name vectors as they fill; leaves are charged once built.
 fn decode_field(
     tag: u32,
     wire_type: WireType,
     buf: &mut impl Buf,
     ctx: DecodeContext,
-) -> Result<Option<MontyObject>, DecodeError> {
-    let obj = match tag {
-        tag::ELLIPSIS => {
-            merge_message::<pb::Unit>(wire_type, buf, ctx)?;
-            MontyObject::Ellipsis
-        }
-        tag::NOT_IMPLEMENTED => {
-            merge_message::<pb::Unit>(wire_type, buf, ctx)?;
-            MontyObject::NotImplemented
-        }
-        tag::NONE => {
-            merge_message::<pb::Unit>(wire_type, buf, ctx)?;
-            MontyObject::None
-        }
-        tag::BOOLEAN => {
-            let mut v = false;
-            encoding::bool::merge(wire_type, &mut v, buf, ctx)?;
-            MontyObject::Bool(v)
-        }
-        tag::INT => {
-            let mut v = 0i64;
-            encoding::sint64::merge(wire_type, &mut v, buf, ctx)?;
-            MontyObject::Int(v)
-        }
-        tag::BIGINT => MontyObject::BigInt(bigint_from_proto(&merge_message(wire_type, buf, ctx)?)),
-        tag::FLOAT => {
-            let mut v = 0f64;
-            encoding::double::merge(wire_type, &mut v, buf, ctx)?;
-            MontyObject::Float(v)
-        }
-        tag::STR => MontyObject::String(merge_string(wire_type, buf, ctx)?),
-        tag::BYTES => {
-            let mut v = Vec::new();
-            encoding::bytes::merge(wire_type, &mut v, buf, ctx)?;
-            MontyObject::Bytes(v)
-        }
-        tag::LIST => MontyObject::List(merge_value_list(wire_type, buf, ctx)?),
-        tag::TUPLE => MontyObject::Tuple(merge_value_list(wire_type, buf, ctx)?),
+) -> Result<Option<MontyNode>, DecodeError> {
+    let node = match tag {
+        tag::LIST => MontyNode::List(merge_message::<IndexesBody>(wire_type, buf, ctx)?.0),
+        tag::TUPLE => MontyNode::Tuple(merge_message::<IndexesBody>(wire_type, buf, ctx)?.0),
+        tag::SET => MontyNode::Set(merge_message::<IndexesBody>(wire_type, buf, ctx)?.0),
+        tag::FROZEN_SET => MontyNode::FrozenSet(merge_message::<IndexesBody>(wire_type, buf, ctx)?.0),
         tag::NAMED_TUPLE => {
             let nt: NamedTupleBody = merge_message(wire_type, buf, ctx)?;
-            MontyObject::NamedTuple {
+            MontyNode::NamedTuple {
                 type_name: nt.type_name,
                 field_names: nt.field_names,
                 values: nt.values,
             }
         }
-        tag::DICT => MontyObject::Dict(merge_dict(wire_type, buf, ctx)?),
-        tag::SET => MontyObject::Set(merge_value_list(wire_type, buf, ctx)?),
-        tag::FROZEN_SET => MontyObject::FrozenSet(merge_value_list(wire_type, buf, ctx)?),
+        tag::DICT => MontyNode::Dict(merge_message::<NodePairsBody>(wire_type, buf, ctx)?.0),
+        tag::TYPE => type_to_node(merge_message(wire_type, buf, ctx)?)?,
+        tag::CLASS_INSTANCE => {
+            let ci: ClassInstanceBody = merge_message(wire_type, buf, ctx)?;
+            let instance_id = ci
+                .instance_id
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstanceNode.instance_id")))?;
+            let attrs = ci
+                .attrs
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstanceNode.attrs")))?;
+            MontyNode::ClassInstance {
+                class_type: NodeId(ci.class_type),
+                instance_id: pb_uuid_to_monty(&instance_id, "ClassInstanceNode.instance_id")?,
+                attrs: attrs.0,
+            }
+        }
+        _ => return decode_leaf(tag, wire_type, buf, ctx),
+    };
+    Ok(Some(node))
+}
+
+/// Decodes one leaf kind, charging its payload once built: a leaf owns at
+/// most its own wire bytes, so nothing amplifies before the charge.
+fn decode_leaf(
+    tag: u32,
+    wire_type: WireType,
+    buf: &mut impl Buf,
+    ctx: DecodeContext,
+) -> Result<Option<MontyNode>, DecodeError> {
+    let node = match tag {
+        tag::ELLIPSIS => {
+            merge_message::<pb::Unit>(wire_type, buf, ctx)?;
+            MontyNode::Ellipsis
+        }
+        tag::NOT_IMPLEMENTED => {
+            merge_message::<pb::Unit>(wire_type, buf, ctx)?;
+            MontyNode::NotImplemented
+        }
+        tag::NONE => {
+            merge_message::<pb::Unit>(wire_type, buf, ctx)?;
+            MontyNode::None
+        }
+        tag::BOOLEAN => {
+            let mut v = false;
+            encoding::bool::merge(wire_type, &mut v, buf, ctx)?;
+            MontyNode::Bool(v)
+        }
+        tag::INT => {
+            let mut v = 0i64;
+            encoding::sint64::merge(wire_type, &mut v, buf, ctx)?;
+            MontyNode::Int(v)
+        }
+        tag::BIGINT => MontyNode::BigInt(bigint_from_proto(&merge_message(wire_type, buf, ctx)?)),
+        tag::FLOAT => {
+            let mut v = 0f64;
+            encoding::double::merge(wire_type, &mut v, buf, ctx)?;
+            MontyNode::Float(v)
+        }
+        tag::STR => MontyNode::String(merge_string(wire_type, buf, ctx)?),
+        tag::BYTES => {
+            let mut v = Vec::new();
+            encoding::bytes::merge(wire_type, &mut v, buf, ctx)?;
+            MontyNode::Bytes(v)
+        }
         tag::DATE => {
             let d: pb::Date = merge_message(wire_type, buf, ctx)?;
-            MontyObject::Date(date_from_proto(&d).map_err(to_decode_err)?)
+            MontyNode::Date(date_from_proto(&d).map_err(to_decode_err)?)
         }
         tag::DATETIME => {
             let dt: pb::DateTime = merge_message(wire_type, buf, ctx)?;
-            MontyObject::DateTime(datetime_from_proto(dt).map_err(to_decode_err)?)
+            MontyNode::DateTime(datetime_from_proto(dt).map_err(to_decode_err)?)
         }
         tag::TIME => {
             let t: pb::Time = merge_message(wire_type, buf, ctx)?;
-            MontyObject::Time(time_from_proto(t).map_err(to_decode_err)?)
+            MontyNode::Time(time_from_proto(t).map_err(to_decode_err)?)
         }
         tag::TIMEDELTA => {
             let td: pb::TimeDelta = merge_message(wire_type, buf, ctx)?;
-            MontyObject::TimeDelta(timedelta_from_proto(&td).map_err(to_decode_err)?)
+            MontyNode::TimeDelta(timedelta_from_proto(&td).map_err(to_decode_err)?)
         }
         tag::TIMEZONE => {
             let tz: pb::TimeZone = merge_message(wire_type, buf, ctx)?;
-            MontyObject::TimeZone(MontyTimeZone {
+            MontyNode::TimeZone(MontyTimeZone {
                 offset_seconds: timezone_offset(tz.offset_seconds, "TimeZone.offset_seconds").map_err(to_decode_err)?,
                 name: tz.name,
             })
         }
         tag::EXCEPTION => {
             let exc: pb::Exception = merge_message(wire_type, buf, ctx)?;
-            MontyObject::Exception {
+            MontyNode::Exception {
                 exc_type: exc
                     .exc_type
                     .parse()
@@ -705,19 +922,17 @@ fn decode_field(
                 arg: exc.arg,
             }
         }
-        tag::TYPE => {
-            let ty: TypeBody = merge_message(wire_type, buf, ctx)?;
-            MontyObject::Type(type_body_to_monty(ty)?)
-        }
         tag::BUILTIN_FUNCTION => {
             let name = merge_string(wire_type, buf, ctx)?;
-            MontyObject::builtin_function_from_name(&name)
-                .ok_or_else(|| to_decode_err(ProtoConvertError::UnknownBuiltinFunction(name)))?
+            MontyNode::BuiltinFunction(
+                name.parse::<BuiltinsFunctions>()
+                    .map_err(|_| to_decode_err(ProtoConvertError::UnknownBuiltinFunction(name)))?,
+            )
         }
-        tag::PATH => MontyObject::Path(merge_string(wire_type, buf, ctx)?),
+        tag::PATH => MontyNode::Path(merge_string(wire_type, buf, ctx)?),
         tag::FILE_HANDLE => {
             let fh: pb::FileHandle = merge_message(wire_type, buf, ctx)?;
-            MontyObject::FileHandle(MontyFileHandle {
+            MontyNode::FileHandle(MontyFileHandle {
                 mode: fh
                     .mode
                     .parse()
@@ -726,63 +941,27 @@ fn decode_field(
                 position: fh.position,
             })
         }
-        tag::CLASS_INSTANCE => {
-            let ci: ClassInstanceBody = merge_message(wire_type, buf, ctx)?;
-            let ty = ci
-                .class_type
-                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstance.type")))?;
-            // An instance's class is never a builtin, so its Type must decode
-            // to a class type (origin SANDBOX or HOST).
-            let MontyType::Instance(class_type) = type_body_to_monty(ty)? else {
-                return Err(to_decode_err(ProtoConvertError::InvalidValue {
-                    field: "ClassInstance.type",
-                    reason: "must be a class type, not a builtin".to_owned(),
-                }));
-            };
-            let instance_id = ci
-                .instance_id
-                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstance.instance_id")))?;
-            let attrs = ci
-                .attrs
-                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ClassInstance.attrs")))?;
-            MontyObject::ClassInstance(Box::new(MontyClassInstance {
-                class_type: *class_type,
-                instance_id: pb_uuid_to_monty(&instance_id, "ClassInstance.instance_id")?,
-                attrs: DictPairs::from(attrs.0),
-            }))
-        }
         tag::FUNCTION => {
             let func: pb::Function = merge_message(wire_type, buf, ctx)?;
-            MontyObject::Function {
+            MontyNode::Function {
                 name: func.name,
                 docstring: func.docstring,
             }
         }
-        tag::REPR => MontyObject::Repr(merge_string(wire_type, buf, ctx)?),
-        tag::CYCLE => {
-            let c: pb::Cycle = merge_message(wire_type, buf, ctx)?;
-            let identity = usize::try_from(c.identity).map_err(|_| {
-                to_decode_err(ProtoConvertError::InvalidValue {
-                    field: "Cycle.identity",
-                    reason: format!("{} does not fit in usize", c.identity),
-                })
-            })?;
-            MontyObject::Cycle(identity, c.placeholder)
-        }
+        tag::REPR => MontyNode::Repr(merge_string(wire_type, buf, ctx)?),
+        tag::CYCLE => MontyNode::Cycle(merge_string(wire_type, buf, ctx)?),
         _ => {
             skip_field(wire_type, tag, buf, ctx)?;
             return Ok(None);
         }
     };
-    // Charge against the frame budget — every value flows through here, so this
-    // is the bound that stops a cheap frame OOMing the host on decode.
-    charge_decode(obj.host_size())?;
-    Ok(Some(obj))
+    charge_decode(node.decoded_size().saturating_sub(size_of::<MontyNode>()))?;
+    Ok(Some(node))
 }
 
 /// Decodes one length-delimited sub-message into a fresh `M` (the generated
-/// leaf and container types). `message::merge` enforces prost's recursion
-/// limit, which bounds value nesting exactly as before.
+/// leaf and container types). The arena is flat, so `message::merge`'s
+/// recursion limit only ever sees a fixed two or three levels here.
 fn merge_message<M: Message + Default>(
     wire_type: WireType,
     buf: &mut impl Buf,
@@ -800,71 +979,106 @@ fn merge_string(wire_type: WireType, buf: &mut impl Buf, ctx: DecodeContext) -> 
     Ok(s)
 }
 
-/// Decodes an `ObjectList` (list/tuple/set/frozenset payload) straight into
-/// `Vec<MontyObject>` via [`ObjectList`], skipping the `Vec<WireObject>` wrapper
-/// the generated `pb::ObjectList` would force and the extra unwrap pass over it.
-fn merge_value_list(
+/// Decodes one `repeated uint32` field of node ids (packed or not) straight
+/// into `ids`. A packed run of `n` bytes holds at most `n` ids, so that many
+/// slots are charged and reserved before any is read; no temporary vector.
+fn merge_ids(
     wire_type: WireType,
     buf: &mut impl Buf,
     ctx: DecodeContext,
-) -> Result<Vec<MontyObject>, DecodeError> {
-    Ok(merge_message::<ObjectList>(wire_type, buf, ctx)?.0)
-}
-
-/// Decodes a `Dict` straight into [`DictPairs`] via [`PairList`], skipping
-/// the `Vec<pb::Pair>` wrapper.
-fn merge_dict(wire_type: WireType, buf: &mut impl Buf, ctx: DecodeContext) -> Result<DictPairs, DecodeError> {
-    Ok(DictPairs::from(merge_message::<PairList>(wire_type, buf, ctx)?.0))
-}
-
-/// Decodes one repeated `MontyObject` entry into an already-owned vector.
-fn merge_object_item(
-    wire_type: WireType,
-    buf: &mut impl Buf,
-    ctx: DecodeContext,
-    items: &mut Vec<MontyObject>,
+    ids: &mut Vec<NodeId>,
 ) -> Result<(), DecodeError> {
-    let item: WireObject = merge_message(wire_type, buf, ctx)?;
-    items.push(item.into_object().map_err(to_decode_err)?);
+    let mut id = 0u32;
+    if wire_type == WireType::LengthDelimited {
+        // the same length checks as prost's packed `merge_loop`
+        let len = encoding::decode_varint(buf)?;
+        let len = usize::try_from(len)
+            .ok()
+            .filter(|len| *len <= buf.remaining())
+            .ok_or_else(|| to_decode_err("buffer underflow"))?;
+        reserve_charged(ids, len)?;
+        let end = buf.remaining() - len;
+        while buf.remaining() > end {
+            encoding::uint32::merge(WireType::Varint, &mut id, buf, ctx.clone())?;
+            ids.push(NodeId(id));
+        }
+        if buf.remaining() == end {
+            Ok(())
+        } else {
+            Err(to_decode_err("delimited length exceeded"))
+        }
+    } else {
+        encoding::uint32::merge(wire_type, &mut id, buf, ctx)?;
+        push_charged(ids, NodeId(id))
+    }
+}
+
+/// Bytes charged per reference to a node. A host binding turns each reference
+/// into a pointer-sized container entry, often through a temporary vector, so
+/// the 4-byte [`NodeId`] alone would let a list of repeated references
+/// materialise at several times the budget.
+const REFERENCE_COST: usize = 2 * size_of::<usize>();
+
+/// What one vector slot costs the decode budget.
+trait DecodeCost {
+    const COST: usize;
+}
+
+impl DecodeCost for MontyNode {
+    const COST: usize = size_of::<Self>();
+}
+
+impl DecodeCost for String {
+    const COST: usize = size_of::<Self>();
+}
+
+impl DecodeCost for NodeId {
+    const COST: usize = REFERENCE_COST;
+}
+
+impl DecodeCost for (NodeId, NodeId) {
+    const COST: usize = 2 * REFERENCE_COST;
+}
+
+/// Appends `item`, charging the decode budget for the slots the vector grows
+/// into (doubling, as `Vec` does) before it allocates them.
+fn push_charged<T: DecodeCost>(vec: &mut Vec<T>, item: T) -> Result<(), DecodeError> {
+    if vec.len() == vec.capacity() {
+        let new_capacity = vec.capacity().saturating_mul(2).max(MIN_VEC_CAPACITY);
+        reserve_charged(vec, new_capacity - vec.len())?;
+    }
+    vec.push(item);
     Ok(())
 }
 
-/// Decodes one repeated `Pair` entry into an already-owned vector.
-fn merge_pair_item(
-    wire_type: WireType,
-    buf: &mut impl Buf,
-    ctx: DecodeContext,
-    pairs: &mut Vec<(MontyObject, MontyObject)>,
-) -> Result<(), DecodeError> {
-    let pair: pb::Pair = merge_message(wire_type, buf, ctx)?;
-    pairs.push(pair_to_kv(pair)?);
+/// Reserves room for `additional` more items, charging the slots the vector gains.
+fn reserve_charged<T: DecodeCost>(vec: &mut Vec<T>, additional: usize) -> Result<(), DecodeError> {
+    let spare = vec.capacity() - vec.len();
+    if additional > spare {
+        charge_decode((additional - spare).saturating_mul(T::COST))?;
+        vec.reserve_exact(additional);
+    }
     Ok(())
 }
 
-/// Unwraps one decoded `Pair` into a `(key, value)`, rejecting an absent key or
-/// value. Used by [`PairList`].
-fn pair_to_kv(pair: pb::Pair) -> Result<(MontyObject, MontyObject), DecodeError> {
-    let key = pair
-        .key
-        .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("Pair.key")))?;
-    let value = pair
-        .value
-        .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("Pair.value")))?;
-    Ok((
-        key.into_object().map_err(to_decode_err)?,
-        value.into_object().map_err(to_decode_err)?,
-    ))
+/// Decodes one string field, charging its bytes once prost has read them (a
+/// string owns no more than its wire bytes, so nothing amplifies first).
+fn merge_string_charged(
+    wire_type: WireType,
+    buf: &mut impl Buf,
+    ctx: DecodeContext,
+    value: &mut String,
+) -> Result<(), DecodeError> {
+    encoding::string::merge(wire_type, value, buf, ctx)?;
+    charge_decode(value.len())
 }
 
-/// Decode-only `prost::Message` materializing a `repeated MontyObject` field
-/// straight into `Vec<MontyObject>`, skipping the `Vec<WireObject>` buffer (and
-/// unwrap pass) `pb::ObjectList` would force; only a per-element `WireObject` is
-/// transient. Never encoded (values encode via [`encode_repeated_object`]), so
-/// the encode methods are unreachable.
+/// Decode-only `Indexes` (list, tuple, set and frozenset payloads): the ids
+/// decode straight into the node's vector, charged as they arrive.
 #[derive(Default)]
-struct ObjectList(Vec<MontyObject>);
+struct IndexesBody(Vec<NodeId>);
 
-impl Message for ObjectList {
+impl Message for IndexesBody {
     fn merge_field(
         &mut self,
         tag: u32,
@@ -872,121 +1086,67 @@ impl Message for ObjectList {
         buf: &mut impl Buf,
         ctx: DecodeContext,
     ) -> Result<(), DecodeError> {
-        // `ObjectList.items` is field 1; any other tag is unknown → skip.
-        if tag == 1 {
-            merge_object_item(wire_type, buf, ctx, &mut self.0)
-        } else {
-            skip_field(wire_type, tag, buf, ctx)
-        }
-    }
-
-    fn encode_raw(&self, _buf: &mut impl BufMut) {
-        unreachable!("ObjectList is decode-only")
-    }
-
-    fn encoded_len(&self) -> usize {
-        unreachable!("ObjectList is decode-only")
-    }
-
-    fn clear(&mut self) {
-        self.0.clear();
-    }
-}
-
-/// Decode-only `prost::Message` that materializes a `repeated Pair` field
-/// directly into `(key, value)` tuples — the dict analogue of [`ObjectList`],
-/// avoiding the `Vec<pb::Pair>` wrapper. Decode-only; encode is unreachable.
-#[derive(Default)]
-struct PairList(Vec<(MontyObject, MontyObject)>);
-
-impl Message for PairList {
-    fn merge_field(
-        &mut self,
-        tag: u32,
-        wire_type: WireType,
-        buf: &mut impl Buf,
-        ctx: DecodeContext,
-    ) -> Result<(), DecodeError> {
-        // `Dict.pairs` is field 1; any other tag is unknown → skip.
-        if tag == 1 {
-            merge_pair_item(wire_type, buf, ctx, &mut self.0)
-        } else {
-            skip_field(wire_type, tag, buf, ctx)
-        }
-    }
-
-    fn encode_raw(&self, _buf: &mut impl BufMut) {
-        unreachable!("PairList is decode-only")
-    }
-
-    fn encoded_len(&self) -> usize {
-        unreachable!("PairList is decode-only")
-    }
-
-    fn clear(&mut self) {
-        self.0.clear();
-    }
-}
-
-/// Decode-only `prost::Message` for a wire `Type`, materializing `attrs`
-/// straight into a [`PairList`] (each value charged as it decodes) instead of
-/// the `Vec<pb::Pair>` the generated `pb::Type` would force. Decode-only;
-/// types encode via [`monty_type_to_pb`].
-#[derive(Default)]
-struct TypeBody {
-    name: String,
-    id: Option<pb::Uuid>,
-    origin: i32,
-    is_dataclass: bool,
-    attrs: Option<PairList>,
-}
-
-impl Message for TypeBody {
-    fn merge_field(
-        &mut self,
-        tag: u32,
-        wire_type: WireType,
-        buf: &mut impl Buf,
-        ctx: DecodeContext,
-    ) -> Result<(), DecodeError> {
-        // Field numbers from `Type` in monty.proto; unknown → skip.
         match tag {
-            1 => encoding::string::merge(wire_type, &mut self.name, buf, ctx),
-            2 => encoding::message::merge(wire_type, self.id.get_or_insert_with(pb::Uuid::default), buf, ctx),
-            3 => encoding::int32::merge(wire_type, &mut self.origin, buf, ctx),
-            4 => encoding::bool::merge(wire_type, &mut self.is_dataclass, buf, ctx),
-            5 => encoding::message::merge(wire_type, self.attrs.get_or_insert_with(PairList::default), buf, ctx),
+            1 => merge_ids(wire_type, buf, ctx, &mut self.0),
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
 
     fn encode_raw(&self, _buf: &mut impl BufMut) {
-        unreachable!("TypeBody is decode-only")
+        unreachable!("IndexesBody is decode-only")
     }
 
     fn encoded_len(&self) -> usize {
-        unreachable!("TypeBody is decode-only")
+        unreachable!("IndexesBody is decode-only")
     }
 
     fn clear(&mut self) {
-        self.name.clear();
-        self.id = None;
-        self.origin = 0;
-        self.is_dataclass = false;
-        self.attrs = None;
+        self.0 = Vec::new();
     }
 }
 
-/// Decode-only `prost::Message` for `NamedTuple`, materializing the
-/// `repeated MontyObject values` field straight into `Vec<MontyObject>` (the
-/// [`ObjectList`] trick inlined alongside the other two fields) instead of the
-/// `Vec<WireObject>` the generated `pb::NamedTuple` would build and then
-/// unwrap. Decode-only; named tuples encode via [`encode_object`]'s arm.
+/// Decode-only `NodePairs` (dict and attribute payloads), each pair charged
+/// as it is pushed.
+#[derive(Default)]
+struct NodePairsBody(Vec<(NodeId, NodeId)>);
+
+impl Message for NodePairsBody {
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        match tag {
+            1 => {
+                let pair: pb::NodePair = merge_message(wire_type, buf, ctx)?;
+                push_charged(&mut self.0, (NodeId(pair.key), NodeId(pair.value)))
+            }
+            _ => skip_field(wire_type, tag, buf, ctx),
+        }
+    }
+
+    fn encode_raw(&self, _buf: &mut impl BufMut) {
+        unreachable!("NodePairsBody is decode-only")
+    }
+
+    fn encoded_len(&self) -> usize {
+        unreachable!("NodePairsBody is decode-only")
+    }
+
+    fn clear(&mut self) {
+        self.0 = Vec::new();
+    }
+}
+
+/// Decode-only `NamedTupleNode`: names and value ids charged as they arrive
+/// (a field name costs its `String` slot plus its bytes).
 #[derive(Default)]
 struct NamedTupleBody {
     type_name: String,
     field_names: Vec<String>,
-    values: Vec<MontyObject>,
+    values: Vec<NodeId>,
 }
 
 impl Message for NamedTupleBody {
@@ -997,11 +1157,14 @@ impl Message for NamedTupleBody {
         buf: &mut impl Buf,
         ctx: DecodeContext,
     ) -> Result<(), DecodeError> {
-        // Field numbers from `NamedTuple` in monty.proto; unknown → skip.
         match tag {
-            1 => encoding::string::merge(wire_type, &mut self.type_name, buf, ctx),
-            2 => encoding::string::merge_repeated(wire_type, &mut self.field_names, buf, ctx),
-            3 => merge_object_item(wire_type, buf, ctx, &mut self.values),
+            1 => merge_string_charged(wire_type, buf, ctx, &mut self.type_name),
+            2 => {
+                let mut name = String::new();
+                merge_string_charged(wire_type, buf, ctx, &mut name)?;
+                push_charged(&mut self.field_names, name)
+            }
+            3 => merge_ids(wire_type, buf, ctx, &mut self.values),
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
@@ -1016,21 +1179,59 @@ impl Message for NamedTupleBody {
 
     fn clear(&mut self) {
         self.type_name.clear();
-        self.field_names.clear();
-        self.values.clear();
+        self.field_names = Vec::new();
+        self.values = Vec::new();
     }
 }
 
-/// Decode-only `prost::Message` for `ClassInstance`, decoding the `attrs`
-/// field (a `Dict`) straight into [`DictPairs`] via [`PairList`] rather
-/// than the `Vec<pb::Pair>` wrapper the generated `pb::ClassInstance` would
-/// build and then unwrap. The message fields stay `Option` so an absent one
-/// is rejected by the caller (presence, not a default). Decode-only.
+/// Decode-only `Type`: the fields [`type_to_node`] validates, with the name
+/// and attrs charged as they arrive.
+#[derive(Default)]
+struct TypeBody {
+    name: String,
+    id: Option<pb::Uuid>,
+    origin: i32,
+    is_dataclass: bool,
+    attrs: Option<NodePairsBody>,
+}
+
+impl Message for TypeBody {
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        match tag {
+            1 => merge_string_charged(wire_type, buf, ctx, &mut self.name),
+            2 => encoding::message::merge(wire_type, self.id.get_or_insert_default(), buf, ctx),
+            3 => encoding::int32::merge(wire_type, &mut self.origin, buf, ctx),
+            4 => encoding::bool::merge(wire_type, &mut self.is_dataclass, buf, ctx),
+            5 => encoding::message::merge(wire_type, self.attrs.get_or_insert_default(), buf, ctx),
+            _ => skip_field(wire_type, tag, buf, ctx),
+        }
+    }
+
+    fn encode_raw(&self, _buf: &mut impl BufMut) {
+        unreachable!("TypeBody is decode-only")
+    }
+
+    fn encoded_len(&self) -> usize {
+        unreachable!("TypeBody is decode-only")
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Decode-only `ClassInstanceNode`, its attrs charged as they arrive.
 #[derive(Default)]
 struct ClassInstanceBody {
-    class_type: Option<TypeBody>,
+    class_type: u32,
     instance_id: Option<pb::Uuid>,
-    attrs: Option<PairList>,
+    attrs: Option<NodePairsBody>,
 }
 
 impl Message for ClassInstanceBody {
@@ -1041,23 +1242,10 @@ impl Message for ClassInstanceBody {
         buf: &mut impl Buf,
         ctx: DecodeContext,
     ) -> Result<(), DecodeError> {
-        // Field numbers from `ClassInstance` in monty.proto; unknown → skip.
-        // `get_or_insert_with` mirrors prost's message-field merge: repeated
-        // occurrences accumulate into the same message.
         match tag {
-            1 => encoding::message::merge(
-                wire_type,
-                self.class_type.get_or_insert_with(TypeBody::default),
-                buf,
-                ctx,
-            ),
-            2 => encoding::message::merge(
-                wire_type,
-                self.instance_id.get_or_insert_with(pb::Uuid::default),
-                buf,
-                ctx,
-            ),
-            3 => encoding::message::merge(wire_type, self.attrs.get_or_insert_with(PairList::default), buf, ctx),
+            1 => encoding::uint32::merge(wire_type, &mut self.class_type, buf, ctx),
+            2 => encoding::message::merge(wire_type, self.instance_id.get_or_insert_default(), buf, ctx),
+            3 => encoding::message::merge(wire_type, self.attrs.get_or_insert_default(), buf, ctx),
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
@@ -1071,9 +1259,7 @@ impl Message for ClassInstanceBody {
     }
 
     fn clear(&mut self) {
-        self.class_type = None;
-        self.instance_id = None;
-        self.attrs = None;
+        *self = Self::default();
     }
 }
 
@@ -1109,57 +1295,21 @@ fn pb_uuid_to_monty(uuid: &pb::Uuid, field: &'static str) -> Result<MontyUuid, D
     })
 }
 
-/// Encodes a [`MontyType`] as the wire `Type` message: builtins carry only
-/// their Display name (origin BUILTIN, no id), class types their full
-/// [`MontyClassType`].
-fn monty_type_to_pb(t: &MontyType) -> pb::Type {
-    match t {
-        MontyType::Instance(class_type) => class_type_to_pb(class_type),
-        other => pb::Type {
-            name: other.to_string(),
-            origin: pb::TypeOrigin::Builtin as i32,
-            ..pb::Type::default()
-        },
-    }
-}
-
-/// The class-type half of [`monty_type_to_pb`].
-fn class_type_to_pb(class_type: &MontyClassType) -> pb::Type {
-    let origin = if class_type.host_defined {
-        pb::TypeOrigin::Host
-    } else {
-        pb::TypeOrigin::Sandbox
-    };
-    // Eager class attrs clone into the generated message. Hosts may send them
-    // with every instance crossing (the sandbox's single type object refreshes
-    // from them); the worker sends them only when a class object crosses out.
-    let attrs = if class_type.attrs.is_empty() {
-        None
-    } else {
-        let pairs = class_type
-            .attrs
-            .iter()
-            .map(|(key, value)| pb::Pair {
-                key: Some(WireObject::new(key.clone())),
-                value: Some(WireObject::new(value.clone())),
-            })
-            .collect();
-        Some(pb::Dict { pairs })
-    };
+/// Encodes a builtin [`MontyType`] as the wire `Type` message: only its
+/// Display name (origin BUILTIN, no id). Class types are [`ClassTypeNode`]s
+/// and encode via [`encode_class_type`].
+fn builtin_type_to_pb(t: &MontyType) -> pb::Type {
     pb::Type {
-        name: class_type.name.clone(),
-        id: Some(uuid_to_pb(&class_type.id)),
-        origin: origin as i32,
-        is_dataclass: class_type.is_dataclass,
-        attrs,
+        name: t.to_string(),
+        origin: pb::TypeOrigin::Builtin as i32,
+        ..pb::Type::default()
     }
 }
 
-/// Validates a decoded wire `Type` and converts it to a [`MontyType`].
-///
-/// Enforces the id-presence invariants per origin (BUILTIN must not carry an
-/// id or attrs; SANDBOX/HOST must carry an id).
-fn type_body_to_monty(ty: TypeBody) -> Result<MontyType, DecodeError> {
+/// Validates a decoded wire `Type` into a builtin type leaf or a class node
+/// (its box charged here; the name and attrs were charged as they decoded).
+/// BUILTIN must not carry an id or attrs; SANDBOX/HOST must carry an id.
+fn type_to_node(ty: TypeBody) -> Result<MontyNode, DecodeError> {
     let origin = pb::TypeOrigin::try_from(ty.origin).map_err(|_| {
         to_decode_err(ProtoConvertError::InvalidValue {
             field: "Type.origin",
@@ -1181,20 +1331,19 @@ fn type_body_to_monty(ty: TypeBody) -> Result<MontyType, DecodeError> {
                 Err(invalid("a builtin type must not carry attrs"))
             } else {
                 MontyType::from_type_name(&ty.name)
+                    .map(MontyNode::Type)
                     .ok_or_else(|| to_decode_err(ProtoConvertError::UnknownType(ty.name)))
             }
         }
         pb::TypeOrigin::Sandbox | pb::TypeOrigin::Host => {
             let id = ty.id.ok_or_else(|| invalid("a class type must carry an id"))?;
-            // `PairList` already validated each pair (key and value present)
-            // and charged their values against the budget while decoding.
-            let attrs = ty.attrs.map(|pairs| DictPairs::from(pairs.0)).unwrap_or_default();
-            Ok(MontyType::Instance(Box::new(MontyClassType {
+            charge_decode(size_of::<ClassTypeNode>())?;
+            Ok(MontyNode::ClassType(Box::new(ClassTypeNode {
                 name: ty.name,
                 id: pb_uuid_to_monty(&id, "Type.id")?,
                 host_defined: origin == pb::TypeOrigin::Host,
                 is_dataclass: ty.is_dataclass,
-                attrs,
+                attrs: ty.attrs.map(|attrs| attrs.0).unwrap_or_default(),
             })))
         }
     }
@@ -1391,7 +1540,7 @@ thread_local! {
     ///
     /// Thread-local because the budget must be *ambient*: a frame is decoded by
     /// prost's generated `Message::decode`, which calls our
-    /// [`WireObject::merge_field`] — and that fixed signature has no slot to
+    /// [`WireArena::merge_field`] — and that fixed signature has no slot to
     /// thread a budget through. Per *thread* rather than a global atomic because
     /// concurrent workers decode on separate threads. The limit is a hard
     /// constant ([`DEFAULT_MAX_DECODE_BYTES`]): the resting value, and what
@@ -1404,7 +1553,7 @@ thread_local! {
 /// [`crate::FrameReader::read`] calls this before decoding each frame, which is
 /// what makes the budget *per frame* rather than cumulative — a (possibly
 /// compromised) child can't drain it across many frames, and a single ≤256 MiB
-/// frame still can't amplify cheap elements into GiB of host `MontyObject`s.
+/// frame still can't amplify cheap nodes into GiB of host `MontyNode`s.
 ///
 /// Callers that decode a message *without* going through [`crate::FrameReader`]
 /// (e.g. a transport that does its own framing, like a WebSocket) MUST call
@@ -1415,10 +1564,9 @@ pub fn reset_decode_budget() {
 }
 
 /// Charges `bytes` of decoded host memory against the current frame's budget,
-/// erroring once a frame would exceed it. Called once per [`MontyObject`] from
-/// [`decode_field`] — the choke point every value routes through — so it bounds
-/// total host memory incrementally, rejecting an over-budget frame before its
-/// value tree is fully built.
+/// erroring once a frame would exceed it. Every vector the decoders grow is
+/// charged before it allocates, so an over-budget frame is rejected before it
+/// is fully built.
 fn charge_decode(bytes: usize) -> Result<(), DecodeError> {
     DECODE_BUDGET.with(|budget| match budget.get().checked_sub(bytes) {
         Some(remaining) => {

@@ -7,57 +7,17 @@ fn run_expr(code: &str) -> MontyObject {
     ex.run_no_limits(vec![]).unwrap()
 }
 
-/// Helper to run Python code that is expected to raise an exception.
-/// Returns the exception message string.
-fn run_expect_error(code: &str) -> String {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let err = ex.run_no_limits(vec![]).unwrap_err();
-    err.to_string()
-}
-
 // ==========================
-// Overflow tests (i64-specific)
+// comb near the i64 limit
 // ==========================
 
-/// `math.factorial(21)` overflows i64 (21! = 51090942171709440000 > i64::MAX).
-/// Monty raises OverflowError since it doesn't have big integer support.
-#[test]
-fn factorial_i64_overflow() {
-    let msg = run_expect_error("import math\nmath.factorial(21)");
-    assert!(
-        msg.contains("OverflowError"),
-        "Expected OverflowError for factorial(21), got: {msg}"
-    );
-}
-
-/// `math.comb(66, 33)` fits in i64 (7219428434016265740) thanks to GCD reduction
-/// that avoids intermediate overflow. Verify it computes the correct value.
+/// `math.comb(66, 33)` is the largest central binomial that fits an `i64`
+/// (7219428434016265740); the result must demote back to a machine int.
 #[test]
 fn comb_large_but_fits_i64() {
     let result = run_expr("import math\nmath.comb(66, 33)");
     let v: i64 = (&result).try_into().unwrap();
     assert_eq!(v, 7_219_428_434_016_265_740);
-}
-
-/// `math.comb(68, 34)` overflows i64 even with GCD reduction
-/// (68C34 = 28048800420600 * ... > i64::MAX).
-#[test]
-fn comb_i64_overflow() {
-    let msg = run_expect_error("import math\nmath.comb(68, 34)");
-    assert!(
-        msg.contains("OverflowError"),
-        "Expected OverflowError for comb(68, 34), got: {msg}"
-    );
-}
-
-/// `math.perm(21, 21)` overflows i64 (same as 21! which exceeds i64::MAX).
-#[test]
-fn perm_i64_overflow() {
-    let msg = run_expect_error("import math\nmath.perm(21, 21)");
-    assert!(
-        msg.contains("OverflowError"),
-        "Expected OverflowError for perm(21, 21), got: {msg}"
-    );
 }
 
 // ==========================

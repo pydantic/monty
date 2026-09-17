@@ -165,15 +165,25 @@ properties that real CPython does not provide, per the caveat above.
 
 ## Values crossing the process boundary
 
-- Process/WebSocket transports encode values as protobuf
-    (`proto/monty/v1/monty.proto`). The browser component instead uses semantic
-    flat node arenas because WIT cannot express recursive types. Every
-    [`MontyObject`](../api/rust/monty-types.md#montyobject) variant round-trips through either representation, with the
-    same nesting bound: roughly 48 nested list-like containers, 32 nested dicts,
-    or 24 nested class instances. Deeper values fail the turn rather than
-    crossing the boundary.
-- [`Cycle`](../api/rust/monty-proto.md#cycle) markers (self-referential containers) can be *received* from a
-    worker but are rejected as inputs.
+- Every message carries its values as one flat, post-order node arena
+    ([`MontyGraph`](../api/rust/monty-types.md#montygraph)): containers hold the indexes of their children, and the
+    message names its roots by index.
+    The process/WebSocket transports encode it as protobuf (`proto/monty/v1/monty.proto`); the browser component
+    passes the same shape through WIT.
+- **The wire imposes no nesting limit, but the exporter counts against the interpreter's recursion limit**
+    (`max_recursion_depth`, 1000 by default, shared with the call stack).
+    A sandbox value nested deeper than that crosses truncated: the part below the limit is replaced by a `Repr` node
+    whose text is `<deeply nested>`, which Python and JS hosts receive as that string.
+    The turn completes and the session stays usable.
+- A sub-object referenced more than once, inside one value or across the arguments, keyword arguments or inputs of
+    one message, crosses once and arrives as **one host object**: `[x, x]` gives the same list twice, and `f(x, x)`
+    passes a host function the same object twice, as in CPython.
+    Each separate feed or call gets its own copy.
+- A self-referential container arrives with a [`Cycle`](../api/rust/monty-types.md#montynode) node at the point of
+    the cycle, carrying its placeholder (`[...]`, `{...}`, `(...)`, `...`).
+    Python and JS hosts receive that node as the placeholder string, Rust hosts as the node itself.
+    A worker can send one, but rejects one as an input.
+    A cyclic host value cannot be sent at all: Python raises `ValueError: Circular reference detected`, JS `TypeError`.
 - A sandbox value with no `MontyObject` equivalent — a class, a class
     instance, a function, a compiled `re` pattern — is **silently degraded to
     its repr string** on the way out, rather than failing. A host function
@@ -196,20 +206,18 @@ properties that real CPython does not provide, per the caveat above.
 - On protobuf transports, independently of the wire-byte limit, a frame is
     rejected if the values it decodes into would exceed a **per-frame host-memory budget**, a hard,
     non-configurable limit of 1 GiB of *resident* decoded bytes. The wire cap
-    bounds bytes, but the cheapest elements (e.g. `None` in a list, ~4 wire bytes)
-    materialize into 88-byte `MontyObject`s, a ~22× blow-up that a ≤256 MiB frame
-    could turn into multiple GiB on the host. The budget is charged incrementally
-    during decode and trips before the full value is built, so a parent reading
-    such a frame discards the worker with a protocol error rather than risking an
-    out-of-memory abort. A value large enough to hit it (tens of millions of
-    elements) cannot cross the boundary even though it is under the wire-byte
-    limit. Every payload, containers and function/OS-call args & kwargs alike,
-    decodes straight into its final type with no intermediate copy, so the
-    worst-case host *peak* is ~1× the budget plus the ≤256 MiB frame buffer, and
-    the bound applies per concurrent worker. The browser component applies the
-    same expanded-value budget across all WIT value arenas in a request before
-    constructing their `MontyObject`s, and before lifting a semantic event into
-    JavaScript.
+    bounds bytes, but the cheapest nodes (`None`, ~4 wire bytes) decode into 72-byte arena nodes, an ~18× blow-up
+    that a ≤256 MiB frame could turn into multiple GiB on the host.
+    The decoder charges the arena's node count up front (capped by the bytes actually present) and each node's
+    payload as it decodes, so a frame that would exceed the budget fails before the full arena is built, and the
+    parent reading it discards the worker with a protocol error rather than risking an out-of-memory abort.
+    A value large enough to hit it (tens of millions of nodes) cannot cross the boundary even though it is under the
+    wire-byte limit.
+    A shared sub-object is one node however many times it is referenced, so sharing does not amplify on decode.
+    The worst-case host *peak* is ~1× the budget plus the ≤256 MiB frame buffer, and the bound applies per concurrent
+    worker.
+    The browser component applies the same decoded-value budget to a request's WIT arena before constructing it, and
+    before lifting a semantic event into JavaScript.
 - Semantic validation of protobuf values (date ranges, timedelta normalization,
     exception/type/builtin names) happens *while decoding* the frame; the browser
     component applies the same checks while converting its WIT value arena. A frame
@@ -223,8 +231,8 @@ properties that real CPython does not provide, per the caveat above.
 
 - **A host-function return value the wire cannot carry fails *inside* the
     sandbox, not host-side.** An unrepresentable type becomes a catchable
-    `TypeError: Cannot convert X to Monty value`; one nested past the wire depth
-    bound becomes a catchable `RuntimeError: Max input depth exceeded`. Either
+    `TypeError: Cannot convert X to Monty value`; a cyclic value becomes a catchable
+    `ValueError: Circular reference detected` (`TypeError` from the JS client). Either
     reaches the host as [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] only when the sandbox does not catch
     it. The same holds for an `os=` callback's return value, and for the JS
     client. [`MontyConversionError`][pydantic_monty.MontyConversionError] covers only values the host supplies up
@@ -335,7 +343,7 @@ properties that real CPython does not provide, per the caveat above.
     unrepresentable *type* surfaces as a dedicated [`MontyError`][pydantic_monty.MontyError] subclass (in
     `pydantic_monty`, `MontyConversionError`; its `exception()` reconstructs a
     native `TypeError`), **never** as a masquerading `NameError`; other converter
-    failures, such as exceeding the max input nesting depth, keep their own type
+    failures, such as a cyclic value (`ValueError`), keep their own type
     (`MontyRuntimeError`). The two
     workers diverge on *re-reading* a lazily-resolved **value**: the Monty sandbox
     worker caches it in the namespace slot, so a second reference in the same feed
@@ -371,11 +379,21 @@ properties that real CPython does not provide, per the caveat above.
     `session.load_session` / `session.load_snapshot` (Rust [`Checkout::restore`](../api/rust/monty-pool.md#checkout)).
     A version mismatch is reported as such, naming both versions, so a stale
     snapshot is distinguishable from a corrupt one.
+    Callers must establish that snapshots are unmodified output from a trusted producer before loading.
+    Invalid snapshots need not be rejected cleanly: they have no correctness or availability guarantees;
+    see [snapshot security](../security.md#deserializing-snapshots).
 - **`feed_start` snapshots are live cursors, not owned state.** The execution
     state lives in the worker, so only one suspension is live per session, each
     snapshot may be resumed at most once (a second resume raises
     `RuntimeError`), and feeding while suspended raises. This differs from the
     pre-subprocess in-process API, where a snapshot owned freely-copyable state.
+- **Coroutine calls do not always produce a future snapshot.** When a call is immediately awaited and no other
+    sandbox task is runnable or external future is pending, `allow_eager_await` is true (`allowEagerAwait` in JavaScript).
+    Async `resume_auto()` / `resumeAuto()` then awaits the host coroutine and returns the next call or completion
+    directly, without an intermediate future snapshot.
+    Telemetry records eager results on the original function-call span, with the same `value` or `error` metric outcome
+    as synchronous calls.
+    Other coroutine calls retain the pending-future sequence, and manual callers may use that sequence in either case.
 - **Restoring a dump is a session method, split by dump kind.** The old
     module-level `load_snapshot` / `load_repl_snapshot` are replaced by two
     fresh-session-only methods: `session.load_session(state)` restores a dump

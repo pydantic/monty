@@ -14,15 +14,14 @@ use crate::{
     value::Value,
 };
 
-/// Result of handling an exception until execution can resume, it escapes, or
-/// it needs to be propagated in a waiting task.
+/// Whether exception handling finished or must continue in a newly activated task.
 enum ExceptionHandlingResult {
     /// Execution can resume without propagating an error to the caller.
     Caught,
     /// The error should be returned to the VM caller.
     Unhandled(RunError),
-    /// The error should be handled in the waiting task.
-    PropagateToWaiter(RunError),
+    /// The newly activated task has an exception to handle before running bytecode.
+    NextTask(RunError),
 }
 
 impl VM<'_> {
@@ -30,7 +29,7 @@ impl VM<'_> {
     fn current_frame_name(&self) -> StringId {
         match self.current_frame().function_id {
             Some(func_id) => self.interns.get_function(func_id).name.name_id,
-            None => StaticStrings::Module.into(),
+            None => self.interns.intern_static(StaticStrings::Module),
         }
     }
 
@@ -254,12 +253,12 @@ impl VM<'_> {
             match self.handle_exception_step(error, raised.take()) {
                 ExceptionHandlingResult::Caught => return None,
                 ExceptionHandlingResult::Unhandled(error) => return Some(error),
-                ExceptionHandlingResult::PropagateToWaiter(waiter_error) => error = waiter_error,
+                ExceptionHandlingResult::NextTask(next_error) => error = next_error,
             }
         }
     }
 
-    /// Handles one propagation step, yielding when the error moves to a waiter.
+    /// Handles one task's exception, returning to the caller's loop if another task must raise.
     fn handle_exception_step(&mut self, mut error: RunError, raised: Option<Value>) -> ExceptionHandlingResult {
         // Ensure exception has initial frame info
         error = self.attach_frame_to_error(error);
@@ -351,7 +350,7 @@ impl VM<'_> {
                             // Switched to next task - continue execution
                             ExceptionHandlingResult::Caught
                         }
-                        Err(waiter_error) => ExceptionHandlingResult::PropagateToWaiter(waiter_error),
+                        Err(next_error) => ExceptionHandlingResult::NextTask(next_error),
                     };
                 }
 
@@ -493,7 +492,7 @@ impl VM<'_> {
 /// Streams an assert operand's repr into the configured byte-capped writer.
 /// Reaching the cap stops formatting the remainder and appends `…`.
 fn assert_operand_repr(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
-    let mut writer = TruncatingWriter::new(vm.assert_repr_max_bytes as usize);
+    let mut writer = TruncatingWriter::new(vm.env.assert_repr_max_bytes as usize);
     let mut heap_ids = LazyHeapSet::default();
     match value.py_repr_fmt(&mut writer, vm, &mut heap_ids) {
         Ok(()) => Ok(writer.into_string()),

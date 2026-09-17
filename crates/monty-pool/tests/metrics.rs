@@ -13,18 +13,18 @@ use std::{
     future::ready,
     path::{Path, PathBuf},
     process::Command,
-    sync::{Arc, Mutex, Once},
+    sync::{Arc, Mutex, Once, PoisonError},
     time::Duration,
 };
 
 use logfire::{Logfire, config::MetricsOptions};
 use monty_pool::{
-    Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
+    Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
     telemetry::{Metrics, TelemetryAdapter, configure_telemetry_adapter},
     telemetry_adapter,
 };
 use monty_proto::pb;
-use monty_types::PrintStream;
+use monty_types::{ExcType, MontyException, MontyObject, PrintStream};
 use opentelemetry::{
     KeyValue,
     trace::{SpanId, TraceId},
@@ -87,6 +87,18 @@ impl TelemetryAdapter for BatchCapture {
     }
 }
 
+/// Every provider these tests hand to a pool, held for the life of the process.
+///
+/// The pool installs the provider's subscriber with `set_local_logfire` on
+/// every turn, which registers it with tracing-core. tracing-core upgrades that
+/// weak registration inside its dispatcher read lock whenever callsite interest
+/// is rebuilt and drops the temporary handle there; if that were the last
+/// reference, the OpenTelemetry meter provider's destructor would log through
+/// a callsite that takes the same lock again, and with another test's turn
+/// queued for the write lock the whole test binary deadlocks. One extra
+/// reference keeps the drop out of that loop.
+static INSTALLED: Mutex<Vec<Logfire>> = Mutex::new(Vec::new());
+
 impl Capture {
     /// Builds a local provider and its Monty metrics handle.
     fn new() -> (Metrics, Arc<Self>) {
@@ -99,6 +111,10 @@ impl Capture {
             ))
             .finish()
             .unwrap();
+        INSTALLED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(logfire.clone());
         let metrics = Metrics::for_logfire(logfire.clone());
         (metrics, Arc::new(Self { logfire, exporter }))
     }
@@ -430,7 +446,9 @@ async fn raw_turns_are_instrumented_like_typed_ones() {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "print('hi')\n6 * 7".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -447,6 +465,71 @@ async fn raw_turns_are_instrumented_like_typed_ones() {
         capture.last("monty.print.bytes", "stream", "stdout").value,
         Value::U64(3)
     );
+}
+
+/// Eager replies have sync-style outcomes; deferred replies retain a distinct resolution sample.
+#[tokio::test]
+async fn eager_coroutine_metrics_match_sync_outcomes() {
+    for eager in [true, false] {
+        let (pool, capture) = pool_with_metrics(PoolConfig::subprocess(monty_binary())).await;
+        let mut checkout = pool.checkout(&ReplConfig::default()).await.unwrap();
+        for result in [
+            ResumeValue::Return(MontyObject::int(42)),
+            ResumeValue::Error(MontyException::new(ExcType::ValueError, Some("failed".to_owned()))),
+        ] {
+            let event = checkout
+                .feed(
+                    "try:\n    await f()\nexcept ValueError:\n    pass",
+                    vec![],
+                    vec![],
+                    false,
+                    &mut no_print,
+                )
+                .await
+                .unwrap();
+            let TurnEvent::FunctionCall {
+                call_id,
+                allow_eager_await: true,
+                ..
+            } = event
+            else {
+                panic!("expected eligible call, got {event:?}");
+            };
+            if !eager {
+                let event = checkout.resume(ResumeValue::Future, &mut no_print).await.unwrap();
+                assert!(matches!(event, TurnEvent::ResolveFutures { .. }));
+            }
+            let event = checkout
+                .resume_futures(vec![(call_id, result)], &mut no_print)
+                .await
+                .unwrap();
+            assert!(matches!(event, TurnEvent::Complete(_)));
+        }
+        checkout.finish().await.unwrap();
+        let samples = capture.named("monty.ext.call.duration");
+        assert_eq!(samples.len(), 2);
+        if eager {
+            assert!(
+                samples
+                    .iter()
+                    .all(|sample| sample.attributes["kind"] == "function" && sample.count == 1)
+            );
+            capture.last("monty.ext.call.duration", "outcome", "value");
+            capture.last("monty.ext.call.duration", "outcome", "error");
+        } else {
+            assert!(samples.iter().all(|sample| sample.count == 2));
+            assert_eq!(
+                capture.last("monty.ext.call.duration", "outcome", "future").attributes["kind"],
+                "function"
+            );
+            assert_eq!(
+                capture
+                    .last("monty.ext.call.duration", "outcome", "resolved")
+                    .attributes["kind"],
+                "futures"
+            );
+        }
+    }
 }
 
 /// A discard-everything print callback, coercible to `OnPrint` at each callsite.

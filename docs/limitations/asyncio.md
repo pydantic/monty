@@ -1,8 +1,7 @@
 # `asyncio` module and `async` / `await`
 
 `async def` functions can suspend on `await`, and the host drives long-running
-external calls. There is no event loop inside the sandbox; the host is the
-loop.
+external calls. The sandbox schedules its own tasks; host event loops execute external coroutines.
 
 ## Module surface
 
@@ -52,13 +51,13 @@ time (see [language.md](language.md)).
 Concurrency is cooperative and host-driven. `gather` suspends Monty whenever
 every branch is blocked on an external call, hands the pending calls to the
 host, and resumes when the host returns results. There is no preemption, no
-threads, and no in-sandbox scheduler.
+threads and no exposed event loop.
 
 ### Siblings left running by a failed `gather` only advance while something else suspends
 
 When one child of a `gather` raises, the siblings keep running as they do in CPython.
-They resume only when a host result arrives or when another task awaits, because Monty has no event loop of its own
-to turn.
+They resume only when a host result arrives or when another task awaits: Monty's scheduler runs ready tasks only at
+those suspension points and has no idle loop that would otherwise turn.
 Code that catches the error and then returns without awaiting again leaves them parked where they were:
 
 ```python test="skip"

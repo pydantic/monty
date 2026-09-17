@@ -84,11 +84,8 @@ const BINASCII_FUNCTIONS: &[(StaticStrings, BinasciiFunctions)] = &[
 ];
 
 /// Creates the `binascii` module on the heap.
-///
-/// # Panics
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Binascii);
+    let mut module = Module::new(StaticStrings::Binascii, vm.interns);
 
     module.set_attr(
         StaticStrings::ErrorClass,

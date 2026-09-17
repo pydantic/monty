@@ -176,10 +176,15 @@ uncaught, it reaches you as [`MontyRuntimeError`][pydantic_monty.MontyRuntimeErr
 The same is true of an `os=` callback's return value.
 `MontyConversionError` is for host values you hand over up front, in `inputs` or `external_lookup`.
 
-Values are also bounded in shape and size.
-Nesting is capped (roughly 48 nested lists, 32 nested dicts, 24 nested class instances), and a wire frame — the value plus
-its envelope — is capped at 256 MiB.
-Exceeding either fails the call; it does not crash the worker.
+A wire frame, the value plus its envelope, is capped at 256 MiB; exceeding it fails the call without crashing the
+worker.
+The wire imposes no nesting limit, but a sandbox value nested deeper than the interpreter's recursion limit arrives
+truncated; see
+[values crossing the process boundary](limitations/pool-architecture.md#values-crossing-the-process-boundary).
+An object referenced twice (`f(x, x)`, or a returned `[x, x]`) reaches the other side as one object twice, as it would
+in CPython.
+A cyclic value cannot cross: returning one from a host function raises `Circular reference detected` in the sandbox,
+a `ValueError` from Python and a `TypeError` from JavaScript.
 
 ## Raising into the sandbox
 

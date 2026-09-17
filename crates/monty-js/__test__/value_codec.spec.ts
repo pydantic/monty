@@ -49,3 +49,15 @@ test('the component codec rejects a timezone name with no offset', () => {
     message: 'MontyDateTime timezoneName requires offsetSeconds',
   })
 })
+
+test('the component codec encodes the holes of a sparse array as None', () => {
+  const sparse = new Array<unknown>(3)
+  sparse[0] = 1
+  sparse[2] = 2
+  t.deepEqual(encodeValue(sparse).nodes, [
+    { tag: 'integer', val: 1n },
+    { tag: 'none' },
+    { tag: 'integer', val: 2n },
+    { tag: 'list-value', val: Uint32Array.from([0, 1, 2]) },
+  ])
+})

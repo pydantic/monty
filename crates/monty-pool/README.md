@@ -52,7 +52,7 @@ async fn main() -> Result<(), PoolError> {
     session.feed("x = 21", vec![], vec![], false, &mut on_print).await?;
     let event = session.feed("x * 2", vec![], vec![], false, &mut on_print).await?;
     match event {
-        TurnEvent::Complete(value) => println!("result: {value:?}"), // Int(42)
+        TurnEvent::Complete(value) => println!("result: {value}"), // 42
         // other events are suspensions (external function calls, OS calls,
         // name lookups, futures) answered with `resume` / `resume_name_lookup`
         // / `resume_futures` to continue the turn
@@ -69,8 +69,12 @@ async fn main() -> Result<(), PoolError> {
 snippet, and `print_flush_interval` — how long the worker may batch `print()` output before
 sending it, so a burst of prints costs one event rather than one each (`Duration::ZERO`
 restores line buffering, one event per completed line); `Checkout::feed` accepts inputs (host values exposed as sandbox globals) and
-per-feed filesystem mounts (`MountSpec`). Sessions can be snapshotted with `Checkout::dump`
+per-feed filesystem mounts (`MountSpec`) and, through `Checkout::feed_with_cwd`, a switch of the
+sandbox's working directory (the first feed's first mount by default; it then persists across feeds). Sessions can be snapshotted with `Checkout::dump`
 and restored later — including on a different worker or machine — with `Checkout::restore`.
+The caller must establish that restored bytes are unmodified output from a trusted, compatible Monty producer.
+Neither the pool nor the interpreter authenticates snapshots; successful loading does not establish validity.
+Invalid snapshots have no correctness or availability guarantees.
 
 ## Protections over in-process execution
 

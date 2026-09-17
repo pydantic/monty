@@ -11,7 +11,14 @@
 
 import type { NativeSession } from '../native-addon.js'
 import { bindPrintCallback, runWithCallbackContext } from './callbackContext.js'
-import { AttrNotExposed, attributeErrorMessage, InstanceStore, prepare, restore } from './classInstance.js'
+import {
+  AttrNotExposed,
+  attributeErrorMessage,
+  InstanceStore,
+  prepare,
+  restore,
+  type WalkMemo,
+} from './classInstance.js'
 import {
   MontyCrashedError,
   MontyError,
@@ -79,6 +86,15 @@ export interface FeedOptions {
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
   mount?: MountDir | MountDir[]
+  /**
+   * Switches the sandbox's working directory before this feed, an absolute
+   * virtual path. The directory persists across the session's feeds,
+   * including any `os.chdir()`, so leaving it unset keeps the current one;
+   * the session's first feed defaults to its first mount's virtual path, or
+   * `/` without mounts. `os.getcwd()` reports it and relative paths resolve
+   * against it before reaching a mount or the `os` handler.
+   */
+  cwd?: string
   /** Handler for OS calls not covered by mounts. */
   os?: OsCallback
   /** Skip type checking for this feed even when the session enables it. */
@@ -105,6 +121,9 @@ export interface FeedStartOptions {
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
   mount?: MountDir | MountDir[]
+  /** Switches the sandbox's working directory before the feed, as in
+   *  [`FeedOptions.cwd`]; a dump taken mid-feed carries it. */
+  cwd?: string
   /** Handler for OS calls not covered by mounts. Consulted only by
    *  `resumeAuto()` — `feedStart` always surfaces OS calls as snapshots. */
   os?: OsCallback
@@ -189,7 +208,7 @@ export class MontySession {
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      options.skipTypeCheck ?? false,
+      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
       onPrint,
     )) as NativeTurn
     for (;;) {
@@ -258,7 +277,7 @@ export class MontySession {
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      options.skipTypeCheck ?? false,
+      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
       driver.onPrint,
     )) as NativeTurn
     return driver.advance(turn)
@@ -272,6 +291,11 @@ export class MontySession {
    * Valid only on a fresh session, before any feed or load (it replaces the
    * whole session); throws otherwise. The dump restores its own resource limits
    * and type-check state. Throws if the dump is actually a suspended snapshot.
+   *
+   * Only load unmodified bytes from a trusted, compatible Monty producer.
+   * The caller must establish provenance and integrity; Monty does not authenticate
+   * snapshots. Invalid snapshots have no correctness or availability guarantees.
+   * Successful loading does not establish validity.
    */
   async loadSession(state: Uint8Array): Promise<void> {
     this.claimFresh()
@@ -296,7 +320,8 @@ export class MontySession {
   /**
    * Restores a dumped **suspended** snapshot — bytes from `feedStart` +
    * `snapshot.dump()` — and resolves to the snapshot to resume. Use
-   * [`loadSession`] for a dump taken between feeds.
+   * [`loadSession`] for a dump taken between feeds. Its snapshot trust requirements
+   * also apply here.
    *
    * Valid only on a fresh session, before any feed or load; throws otherwise.
    * Re-supply the same `mount`s the paused feed used (their host paths are not
@@ -533,13 +558,16 @@ class TurnAnswerer {
     const fn = entry as ExternalFunction
     let returned: unknown
     try {
-      const args = restoreValues(call.args, this.instances)
-      returned = fn(...(buildCallArgs(args, restoreKwargPairs(call.kwargs, this.instances)) as never[]))
+      const [args, kwargs] = restoreCallArgs(call, this.instances)
+      returned = fn(...(buildCallArgs(args, kwargs) as never[]))
     } catch (err) {
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
     }
     if (isThenable(returned)) {
+      if (call.allowEagerAwait) {
+        return this.answerEagerCoroutine(call.callId, returned, onPrint)
+      }
       this.registerFuture(call.callId, Promise.resolve(returned))
       return this.native.resumeFuture(onPrint)
     }
@@ -574,9 +602,8 @@ class TurnAnswerer {
     }
     let returned: unknown
     try {
-      const args = restoreValues(call.args, this.instances)
-      const kwargs = kwargsToRecord(restoreKwargPairs(call.kwargs, this.instances))
-      returned = wrapper.callMethod(call.functionName, args, kwargs)
+      const [args, kwargs] = restoreCallArgs(call, this.instances)
+      returned = wrapper.callMethod(call.functionName, args, kwargsToRecord(kwargs))
     } catch (err) {
       if (err instanceof AttrNotExposed) {
         return this.native.resumeError('AttributeError', err.message, onPrint)
@@ -585,6 +612,9 @@ class TurnAnswerer {
       return this.native.resumeError(excType, message, onPrint)
     }
     if (isThenable(returned)) {
+      if (call.allowEagerAwait) {
+        return this.answerEagerCoroutine(call.callId, returned, onPrint)
+      }
       this.registerFuture(call.callId, Promise.resolve(returned))
       return this.native.resumeFuture(onPrint)
     }
@@ -652,8 +682,8 @@ class TurnAnswerer {
     }
     let returned: unknown
     try {
-      const args = restoreValues(call.args, this.instances)
-      returned = this.os(call.functionName, args, kwargsToRecord(restoreKwargPairs(call.kwargs, this.instances)))
+      const [args, kwargs] = restoreCallArgs(call, this.instances)
+      returned = this.os(call.functionName, args, kwargsToRecord(kwargs))
       if (isThenable(returned)) {
         returned = await returned
       }
@@ -665,6 +695,22 @@ class TurnAnswerer {
       return await this.native.resumeNotHandled(onPrint)
     }
     return await this.resumeWithValue(returned, onPrint)
+  }
+
+  /** Settles an eligible coroutine at its call suspension, including conversion errors. */
+  private async answerEagerCoroutine(
+    callId: number,
+    promise: PromiseLike<unknown>,
+    onPrint: PrintCallback,
+  ): Promise<object> {
+    let result: NativeFutureResult
+    try {
+      result = { callId, ok: true, value: prepare(await promise, this.instances) }
+    } catch (err) {
+      const { excType, message } = jsErrorParts(err)
+      result = { callId, ok: false, excType, message }
+    }
+    return await this.native.resolveFutures([result], onPrint)
   }
 
   /** Tracks a promise so `resolveFutures` can later deliver its outcome. */
@@ -927,6 +973,8 @@ export class FunctionSnapshot extends SingleUse {
   readonly kwargs: Record<string, unknown>
   readonly callId: number
   readonly isOsFunction: boolean
+  /** `resumeAuto` may await a coroutine directly at this suspension. */
+  readonly allowEagerAwait: boolean
   /** Set for host-routed calls: the receiver's store uuid — a class
    *  instance, or a class type (a classmethod, or `__call__` construction).
    *  The receiver is not in `args`; `null` for plain external calls. */
@@ -940,10 +988,12 @@ export class FunctionSnapshot extends SingleUse {
   ) {
     super()
     this.functionName = turn.functionName
-    this.args = restoreValues(turn.args, driver.instances)
-    this.kwargs = kwargsToRecord(restoreKwargPairs(turn.kwargs, driver.instances))
+    const [args, kwargs] = restoreCallArgs(turn, driver.instances)
+    this.args = args
+    this.kwargs = kwargsToRecord(kwargs)
     this.callId = turn.callId
     this.isOsFunction = isOsFunction
+    this.allowEagerAwait = turn.kind === 'functionCall' && (turn.allowEagerAwait ?? false)
     this.objectId = 'objectId' in turn ? (turn.objectId ?? null) : null
   }
 
@@ -957,8 +1007,8 @@ export class FunctionSnapshot extends SingleUse {
    * Answers this call automatically from the `externalLookup` / `os` captured
    * at `feedStart` / `loadSnapshot`, then resolves to the next snapshot (or
    * `MontyComplete`). A name absent from `externalLookup` makes the sandbox
-   * raise `NameError`; a promise-returning external is registered as a future
-   * (settled later by [`FutureSnapshot.resumeAuto`]). Resumes at most once.
+   * raise `NameError`. Eligible promises are awaited directly; others settle
+   * later through [`FutureSnapshot.resumeAuto`]. Resumes at most once.
    */
   resumeAuto(): Promise<Snapshot> {
     this.claim()
@@ -1114,7 +1164,8 @@ function buildCallArgs(args: unknown[], kwargs: [unknown, unknown][]): unknown[]
   return [...args, kwargsToRecord(kwargs)]
 }
 
-/** Prepares each input value for the wire (feed's `inputs` record). */
+/** Prepares each input value for the wire (feed's `inputs` record) with one
+ *  memo, so an object passed under two names is one sandbox object. */
 function prepareInputs(
   inputs: Record<string, unknown> | undefined,
   store: InstanceStore,
@@ -1125,22 +1176,25 @@ function prepareInputs(
   // null prototype so an exotic input name (e.g. `__proto__`) stays a plain
   // property of the rebuilt record
   const prepared: Record<string, unknown> = Object.create(null)
+  const memo: WalkMemo = new Map()
   let changed = false
   for (const [name, value] of Object.entries(inputs)) {
-    prepared[name] = prepare(value, store)
+    prepared[name] = prepare(value, store, memo)
     changed ||= prepared[name] !== value
   }
   return changed ? prepared : inputs
 }
 
-/** Restores each element of a sandbox-produced args array. */
-function restoreValues(values: unknown[], store: InstanceStore): unknown[] {
-  return values.map((value) => restore(value, store))
-}
-
-/** Restores the values of sandbox-produced `[key, value]` kwarg pairs. */
-function restoreKwargPairs(pairs: [unknown, unknown][], store: InstanceStore): [unknown, unknown][] {
-  return pairs.map(([key, value]): [unknown, unknown] => [key, restore(value, store)])
+/** Restores a call's args and the values of its `[key, value]` kwarg pairs
+ *  with one memo, so an object the sandbox passed twice is one host object. */
+function restoreCallArgs(
+  call: { args: unknown[]; kwargs: [unknown, unknown][] },
+  store: InstanceStore,
+): [unknown[], [unknown, unknown][]] {
+  const memo: WalkMemo = new Map()
+  const args = call.args.map((value) => restore(value, store, memo))
+  const kwargs = call.kwargs.map(([key, value]): [unknown, unknown] => [key, restore(value, store, memo)])
+  return [args, kwargs]
 }
 
 /**

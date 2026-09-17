@@ -86,7 +86,7 @@ fn mount_root_stays_pinned_across_rebuilds() {
     // The rebuild still serves the directory that was validated, and the file
     // the redirect aimed at is simply not in it.
     let inside = read_text(&mut rebuilt, "/child/inside.txt").unwrap();
-    assert_eq!(inside, MontyObject::String("in-mount".to_owned()));
+    assert_eq!(inside, MontyObject::string("in-mount".to_owned()));
     match read_text(&mut rebuilt, "/child/secret.txt") {
         Err(MountError::Io(err, _)) => assert_eq!(err.kind(), ErrorKind::NotFound),
         other => panic!("expected the redirected read to miss, got {other:?}"),
@@ -99,7 +99,7 @@ fn mount_root_stays_pinned_across_rebuilds() {
         .mount("/child", &child_host_path, MountMode::ReadOnly, None)
         .unwrap();
     let leaked = read_text(&mut from_path, "/child/secret.txt").unwrap();
-    assert_eq!(leaked, MontyObject::String("HOST SECRET".to_owned()));
+    assert_eq!(leaked, MontyObject::string("HOST SECRET".to_owned()));
 }
 
 /// Once either side of a rename is covered, the table owns the call: the
@@ -163,7 +163,7 @@ fn overlong_path_rejected_even_when_it_normalizes_short() {
 
         // The path it collapses to is served normally, so only length is at issue.
         let read = read_text(&mut mt, "/mnt/a/../hello.txt").unwrap();
-        assert_eq!(read, MontyObject::String("hello".to_owned()));
+        assert_eq!(read, MontyObject::string("hello".to_owned()));
     }
 }
 
@@ -250,7 +250,7 @@ fn overlong_path_predicates_answer_false() {
             let name = call.name();
             assert_eq!(
                 handled(&mut mt, call).unwrap(),
-                MontyObject::Bool(false),
+                MontyObject::bool(false),
                 "{name} on an overlong path must answer False, as CPython does"
             );
         }

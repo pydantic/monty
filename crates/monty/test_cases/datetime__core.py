@@ -379,6 +379,38 @@ assert datetime.datetime(2024, 1, 15, 10, 30, 0, 123456).isoformat() == '2024-01
 utc_iso = datetime.datetime(2024, 1, 15, 10, 30, tzinfo=datetime.timezone.utc)
 assert utc_iso.isoformat() == '2024-01-15T10:30:00+00:00'
 
+# `sep` is any single character, `timespec` the clock precision; both are
+# positional-or-keyword and the offset is appended whatever the precision.
+_iso = datetime.datetime(2020, 1, 2, 3, 4, 5, 678901, tzinfo=datetime.timezone(datetime.timedelta(hours=1)))
+assert _iso.isoformat(' ') == '2020-01-02 03:04:05.678901+01:00'
+assert _iso.isoformat('\u65e5') == '2020-01-02\u65e503:04:05.678901+01:00'
+assert _iso.isoformat('T', 'hours') == '2020-01-02T03+01:00'
+assert _iso.isoformat('T', 'milliseconds') == '2020-01-02T03:04:05.678+01:00'
+assert _iso.isoformat(sep='_', timespec='minutes') == '2020-01-02_03:04+01:00'
+assert datetime.datetime(2020, 1, 2, 3, 4, 5).isoformat(' ', 'milliseconds') == '2020-01-02 03:04:05.000'
+
+try:
+    _iso.isoformat('T', 'bogus')
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'Unknown timespec value'
+
+for _args, _kwargs, _msg in [
+    ((5,), {}, 'isoformat() argument 1 must be a unicode character, not int'),
+    ((None,), {}, 'isoformat() argument 1 must be a unicode character, not None'),
+    (('TT',), {}, 'isoformat() argument 1 must be a unicode character, not a string of length 2'),
+    (('T', 5), {}, 'isoformat() argument 2 must be str, not int'),
+    (('T', 'minutes', 'x'), {}, 'isoformat() takes at most 2 arguments (3 given)'),
+    # a duplicate counts towards the total rather than reporting the conflict
+    (('T',), {'timespec': 'minutes', 'sep': 'x'}, 'isoformat() takes at most 2 arguments (3 given)'),
+    ((), {'bogus': 1}, "isoformat() got an unexpected keyword argument 'bogus'"),
+]:
+    try:
+        _iso.isoformat(*_args, **_kwargs)
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == _msg
+
 # NOTE: strftime and f-string/format formatting tests live in datetime__format.py.
 
 # === replace ===
@@ -1289,3 +1321,203 @@ gc_seed.append(gc_seed)
 _ = []  # triggers GC
 
 assert str(dt_keepalive.tzinfo) == 'UTC+05:00'
+
+
+# === timedelta divided by timedelta ===
+_a, _b = datetime.timedelta(hours=3), datetime.timedelta(hours=2)
+assert _a / _b == 1.5
+assert _a // _b == 1
+assert _a % _b == datetime.timedelta(hours=1)
+assert divmod(_a, _b) == (1, datetime.timedelta(hours=1))
+assert datetime.timedelta(seconds=1) / datetime.timedelta(microseconds=1) == 1000000.0
+assert datetime.timedelta(hours=2) / datetime.timedelta(hours=2) == 1.0
+assert datetime.timedelta(0) / _b == 0.0
+assert datetime.timedelta(0) // _b == 0
+# floor semantics carry through to negatives, as they do for ints
+assert datetime.timedelta(hours=-3) // _b == -2
+assert datetime.timedelta(hours=-3) % _b == datetime.timedelta(hours=1)
+assert divmod(datetime.timedelta(hours=-3), _b) == (-2, datetime.timedelta(hours=1))
+# a negative divisor floors too, and the remainder takes its sign
+_neg = datetime.timedelta(hours=-2)
+assert _a // _neg == -2
+assert _a % _neg == datetime.timedelta(hours=-1)
+assert divmod(_a, _neg) == (-2, datetime.timedelta(hours=-1))
+assert datetime.timedelta(hours=-3) // _neg == 1
+assert datetime.timedelta(hours=-3) % _neg == datetime.timedelta(hours=-1)
+assert datetime.timedelta(hours=1) // datetime.timedelta(hours=-1) == -1
+assert datetime.timedelta(hours=1) % datetime.timedelta(hours=-1) == datetime.timedelta(0)
+# counting every microsecond in the range overflows i64, so the quotient is a big int
+assert datetime.timedelta.max // datetime.timedelta.resolution == 86399999999999999999
+assert datetime.timedelta.min // datetime.timedelta.resolution == -86399999913600000000
+assert datetime.timedelta.max % datetime.timedelta.resolution == datetime.timedelta(0)
+# dividing by an int still yields a timedelta, floored the same way
+assert _a / 2 == datetime.timedelta(hours=1, minutes=30)
+assert _a // 2 == datetime.timedelta(hours=1, minutes=30)
+assert datetime.timedelta(microseconds=3) // -2 == datetime.timedelta(microseconds=-2)
+assert datetime.timedelta(microseconds=-3) // 2 == datetime.timedelta(microseconds=-2)
+assert datetime.timedelta(microseconds=-3) // -2 == datetime.timedelta(microseconds=1)
+
+_zero = datetime.timedelta(0)
+try:
+    _a / _zero
+    assert False, 'expected ZeroDivisionError'
+except ZeroDivisionError as e:
+    assert str(e) == 'division by zero'
+
+try:
+    _a // _zero
+    assert False, 'expected ZeroDivisionError'
+except ZeroDivisionError as e:
+    assert str(e) == 'division by zero'
+
+try:
+    _a % _zero
+    assert False, 'expected ZeroDivisionError'
+except ZeroDivisionError as e:
+    assert str(e) == 'division by zero'
+
+try:
+    divmod(_a, _zero)
+    assert False, 'expected ZeroDivisionError'
+except ZeroDivisionError as e:
+    assert str(e) == 'division by zero'
+
+# === utcoffset / tzname / dst on datetime ===
+# Only fixed offsets exist, so `dst()` is always None, and a naive datetime
+# answers None to all three.
+_tz_p1 = datetime.timezone(datetime.timedelta(hours=1), 'P1')
+_dt_naive = datetime.datetime(2024, 6, 15, 12, 30)
+_dt_aware = datetime.datetime(2024, 6, 15, 12, 30, tzinfo=_tz_p1)
+
+assert _dt_naive.utcoffset() is None
+assert _dt_naive.tzname() is None
+assert _dt_naive.dst() is None
+assert _dt_aware.utcoffset() == datetime.timedelta(hours=1)
+assert _dt_aware.tzname() == 'P1'
+assert _dt_aware.dst() is None
+assert datetime.datetime(2024, 6, 15, tzinfo=utc).utcoffset() == datetime.timedelta(0)
+assert datetime.datetime(2024, 6, 15, tzinfo=utc).tzname() == 'UTC'
+assert datetime.datetime(2024, 6, 15, tzinfo=datetime.timezone(datetime.timedelta(minutes=-90))).tzname() == 'UTC-01:30'
+
+try:
+    _dt_aware.utcoffset(1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'datetime.utcoffset() takes no arguments (1 given)'
+
+try:
+    _dt_aware.tzname(1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'datetime.tzname() takes no arguments (1 given)'
+
+try:
+    _dt_aware.dst(1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'datetime.dst() takes no arguments (1 given)'
+
+# === utcoffset / tzname / dst on timezone ===
+# The `dt` argument is ignored (a fixed offset is the same at every instant)
+# but must still be a datetime or None.
+assert _tz_p1.utcoffset(None) == datetime.timedelta(hours=1)
+assert _tz_p1.utcoffset(_dt_naive) == datetime.timedelta(hours=1)
+assert _tz_p1.tzname(None) == 'P1'
+assert _tz_p1.dst(None) is None
+assert utc.utcoffset(None) == datetime.timedelta(0)
+assert utc.tzname(None) == 'UTC'
+assert datetime.timezone(datetime.timedelta(minutes=-90)).tzname(None) == 'UTC-01:30'
+
+try:
+    _tz_p1.utcoffset()
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'timezone.utcoffset() takes exactly one argument (0 given)'
+
+try:
+    _tz_p1.tzname()
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'timezone.tzname() takes exactly one argument (0 given)'
+
+try:
+    _tz_p1.dst()
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'timezone.dst() takes exactly one argument (0 given)'
+
+try:
+    _tz_p1.utcoffset(5)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'utcoffset(dt) argument must be a datetime instance or None, not int'
+
+try:
+    _tz_p1.tzname(5)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'tzname(dt) argument must be a datetime instance or None, not int'
+
+try:
+    _tz_p1.dst(5)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'dst(dt) argument must be a datetime instance or None, not int'
+
+# === datetime.combine ===
+_d = datetime.date(2024, 6, 15)
+_t = datetime.time(10, 30, 45, 123456)
+assert datetime.datetime.combine(_d, _t) == datetime.datetime(2024, 6, 15, 10, 30, 45, 123456)
+assert datetime.datetime.combine(_d, _t).tzinfo is None
+assert datetime.datetime.combine(date=_d, time=_t) == datetime.datetime(2024, 6, 15, 10, 30, 45, 123456)
+# the time's tzinfo carries over, object identity included
+assert datetime.datetime.combine(_d, datetime.time(1, 2, tzinfo=_tz_p1)).tzinfo is _tz_p1
+# ...unless a third argument overrides it, `None` included
+assert datetime.datetime.combine(_d, datetime.time(1, 2, tzinfo=_tz_p1), utc).tzinfo is utc
+assert datetime.datetime.combine(_d, datetime.time(1, 2, tzinfo=_tz_p1), None).tzinfo is None
+assert datetime.datetime.combine(_d, _t, tzinfo=utc).tzinfo is utc
+# a datetime is accepted as the date argument; only its date part is used
+assert datetime.datetime.combine(datetime.datetime(2020, 5, 6, 7, 8), datetime.time(1, 2)) == datetime.datetime(
+    2020, 5, 6, 1, 2
+)
+
+for _args, _msg in [
+    ((_d,), "combine() missing required argument 'time' (pos 2)"),
+    ((_d, _t, utc, 1), 'combine() takes at most 3 arguments (4 given)'),
+    (('x', _t), 'combine() argument 1 must be datetime.date, not str'),
+    ((_d, 'x'), 'combine() argument 2 must be datetime.time, not str'),
+    # (a `date` as argument 2 is excluded: Monty names it `date` where CPython
+    # says `datetime.date` — see limitations/datetime.md)
+    ((_d, _t, 5), "tzinfo argument must be None or of a tzinfo subclass, not type 'int'"),
+]:
+    try:
+        datetime.datetime.combine(*_args)
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == _msg
+
+# === class constants ===
+assert datetime.date.min == datetime.date(1, 1, 1)
+assert datetime.date.max == datetime.date(9999, 12, 31)
+assert datetime.date.resolution == datetime.timedelta(days=1)
+assert datetime.datetime.min == datetime.datetime(1, 1, 1, 0, 0)
+assert datetime.datetime.max == datetime.datetime(9999, 12, 31, 23, 59, 59, 999999)
+assert datetime.datetime.resolution == datetime.timedelta(microseconds=1)
+assert datetime.timedelta.min == datetime.timedelta(days=-999999999)
+assert datetime.timedelta.max == datetime.timedelta(days=999999999, seconds=86399, microseconds=999999)
+assert datetime.timedelta.resolution == datetime.timedelta(microseconds=1)
+assert datetime.timezone.min == datetime.timezone(datetime.timedelta(hours=-23, minutes=-59))
+assert datetime.timezone.max == datetime.timezone(datetime.timedelta(hours=23, minutes=59))
+assert datetime.timezone.utc == datetime.timezone(datetime.timedelta(0))
+
+assert datetime.date.min < datetime.date.max
+assert datetime.datetime.min < datetime.datetime.max
+assert datetime.timedelta.min < datetime.timedelta.max
+assert repr(datetime.date.max) == 'datetime.date(9999, 12, 31)'
+assert repr(datetime.datetime.max) == 'datetime.datetime(9999, 12, 31, 23, 59, 59, 999999)'
+assert repr(datetime.timedelta.min) == 'datetime.timedelta(days=-999999999)'
+assert str(datetime.timezone.min) == 'UTC-23:59'
+
+# `timezone.utc` is a singleton on both interpreters; the other class constants
+# are allocated per access here but cached in CPython (see limitations).
+assert datetime.timezone.utc is datetime.timezone.utc

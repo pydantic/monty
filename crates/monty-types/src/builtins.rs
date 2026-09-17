@@ -1,5 +1,5 @@
 //! [`BuiltinsFunctions`] — the name-level identity of every interpreter-native
-//! Python builtin, carried by [`MontyObject::BuiltinFunction`](crate::object::MontyObject).
+//! Python builtin, carried by [`MontyNode::BuiltinFunction`](crate::MontyNode::BuiltinFunction).
 
 use strum::{Display, EnumString, FromRepr, IntoStaticStr, VariantNames};
 /// Enumerates every interpreter-native Python builtin function.

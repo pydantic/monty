@@ -6,19 +6,17 @@ use std::{mem, slice, vec::IntoIter};
 
 pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
 pub(crate) use bind_python::Signature;
-#[cfg(feature = "test-hooks")]
-pub(crate) use bind_python::SignatureMetadataFault;
 pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg, is_long_int};
 pub(crate) use monty_macros::FromArgs;
-use monty_types::MontyObject;
+use monty_types::{CallArgs, MontyNode};
 
 use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::{ExprLoc, Identifier},
     heap::{ContainsHeap, DropWithContext, Heap},
-    intern::StringId,
-    object_bridge::MontyObjectExt,
+    intern::{Interns, StringId},
+    object_bridge::{CallArgsExt, GraphExporter},
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
     value::Value,
@@ -225,20 +223,28 @@ impl ArgValues {
         ExcType::type_error_no_kwargs(method_name)
     }
 
-    /// Converts the arguments into a Vec of MontyObjects.
-    ///
-    /// This is used when passing arguments to external functions.
-    pub fn into_py_objects(self, vm: &mut VM<'_>) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
+    /// Exports the arguments into one arena for delivery to an external
+    /// function, so an object passed twice crosses once.
+    pub fn into_call_args(self, vm: &mut VM<'_>) -> CallArgs {
+        let mut exporter = GraphExporter::new();
+        let mut call = CallArgs::new();
         match self {
-            Self::Empty => (vec![], vec![]),
-            Self::One(a) => (vec![MontyObject::new(a, vm)], vec![]),
-            Self::Two(a1, a2) => (vec![MontyObject::new(a1, vm), MontyObject::new(a2, vm)], vec![]),
-            Self::Kwargs(kwargs) => (vec![], kwargs.into_py_objects(vm)),
-            Self::ArgsKargs { args, kwargs } => (
-                args.into_iter().map(|v| MontyObject::new(v, vm)).collect(),
-                kwargs.into_py_objects(vm),
-            ),
+            Self::Empty => {}
+            Self::One(a) => call.export_arg(&mut exporter, a, vm),
+            Self::Two(a1, a2) => {
+                call.export_arg(&mut exporter, a1, vm);
+                call.export_arg(&mut exporter, a2, vm);
+            }
+            Self::Kwargs(kwargs) => kwargs.export_into(&mut call, &mut exporter, vm),
+            Self::ArgsKargs { args, kwargs } => {
+                for arg in args {
+                    call.export_arg(&mut exporter, arg, vm);
+                }
+                kwargs.export_into(&mut call, &mut exporter, vm);
+            }
         }
+        call.graph = exporter.finish(vm);
+        call
     }
 
     /// Returns the number of positional arguments.
@@ -383,28 +389,46 @@ impl KwargsValues {
         self.len() == 0
     }
 
-    /// Converts the arguments into a Vec of MontyObjects.
-    ///
-    /// This is used when passing arguments to external functions.
-    fn into_py_objects(self, vm: &mut VM<'_>) -> Vec<(MontyObject, MontyObject)> {
+    /// The first keyword's name, for callables that accept none and report
+    /// CPython's `got an unexpected keyword argument`. A non-string key (only
+    /// possible via `**` unpacking) is CPython's `keywords must be strings`.
+    pub fn first_key(&self, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
+        let key = match self {
+            Self::Empty => return Ok(None),
+            Self::Inline(kvs) => return Ok(kvs.first().map(|(id, _)| interns.get_str(*id).to_owned())),
+            Self::Pairs(kvs) => kvs.first().map(|(key, _)| key),
+            Self::Dict(dict) => dict.iter().next().map(|(key, _)| key),
+        };
+        match key {
+            None => Ok(None),
+            Some(key) => key
+                .as_either_str(heap)
+                .map(|key| Some(key.as_str(interns).to_owned()))
+                .ok_or_else(ExcType::type_error_kwargs_nonstring_key),
+        }
+    }
+
+    /// Exports the keyword arguments into `call`'s arena, for external functions.
+    fn export_into(self, call: &mut CallArgs, exporter: &mut GraphExporter, vm: &mut VM<'_>) {
         match self {
-            Self::Empty => vec![],
-            Self::Inline(kvs) => kvs
-                .into_iter()
-                .map(|(k, v)| {
-                    let key = MontyObject::String(vm.interns.get_str(k).to_owned());
-                    let value = MontyObject::new(v, vm);
-                    (key, value)
-                })
-                .collect(),
-            Self::Pairs(kvs) => kvs
-                .into_iter()
-                .map(|(k, v)| (MontyObject::new(k, vm), MontyObject::new(v, vm)))
-                .collect(),
-            Self::Dict(dict) => dict
-                .into_iter()
-                .map(|(k, v)| (MontyObject::new(k, vm), MontyObject::new(v, vm)))
-                .collect(),
+            Self::Empty => {}
+            Self::Inline(kvs) => {
+                for (k, v) in kvs {
+                    let key = exporter.push_node(MontyNode::String(vm.interns.get_str(k).to_owned()));
+                    let value = exporter.push_owned(v, vm);
+                    call.kwarg_ids.push((key, value));
+                }
+            }
+            Self::Pairs(kvs) => {
+                for (k, v) in kvs {
+                    call.export_kwarg(exporter, k, v, vm);
+                }
+            }
+            Self::Dict(dict) => {
+                for (k, v) in dict {
+                    call.export_kwarg(exporter, k, v, vm);
+                }
+            }
         }
     }
 }

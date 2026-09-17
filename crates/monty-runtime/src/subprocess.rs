@@ -13,7 +13,7 @@
 //!
 //! In this mode stdout carries only protocol frames; diagnostics go to stderr.
 
-use std::{io, panic, process::ExitCode};
+use std::{io, panic, process::ExitCode, thread};
 
 use monty_proto::{
     FrameError, FrameReader, pb,
@@ -26,8 +26,28 @@ use monty_types::memory_limit_with_headroom;
 /// an event too large to frame left the response unsendable.
 const EX_PROTOCOL: u8 = 76;
 
-/// Runs the subprocess child loop until EOF, `Shutdown`, or a fatal error.
+/// Native stack for the worker thread. The interpreter's container `repr` and
+/// `==` and the value exporter recurse once per nesting level, up to the
+/// 1000-frame recursion limit: that fits the 8 MiB main thread of Linux and
+/// macOS but not Windows' 1 MiB. A fixed size gives every OS the same budget;
+/// the memory is reserved, not committed.
+const WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
+
+/// Runs [`serve`] on a thread with [`WORKER_STACK_SIZE`] of stack and returns
+/// its exit code. A panic there has already written its `FatalError` frame in
+/// the panic hook, so it exits with 101 like an unwound main thread.
 pub(crate) fn run() -> ExitCode {
+    thread::Builder::new()
+        .name("monty-worker".to_owned())
+        .stack_size(WORKER_STACK_SIZE)
+        .spawn(serve)
+        .expect("failed to spawn the worker thread")
+        .join()
+        .unwrap_or(ExitCode::from(101))
+}
+
+/// The child loop: one request in, its events out, until EOF, `Shutdown` or a fatal error.
+fn serve() -> ExitCode {
     install_panic_hook();
     let mut reader = FrameReader::new(io::stdin().lock());
     let mut child = Child::default();

@@ -13,9 +13,11 @@ use std::{
 
 use monty_proto::{
     FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireFunctionCall,
-    WireObject, exceeds_max_frame_len, pb, write_frame,
+    exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
 };
-use monty_types::{MontyDate, MontyDateTime, MontyObject};
+use monty_types::{
+    CallArgs, ExtFunctionResult, MontyDate, MontyDateTime, MontyNode, MontyObject, NameLookupResult, NamedValues,
+};
 
 /// How long a death-expecting helper waits for the child to exit. Generous:
 /// the regression it guards is "the child never dies", so the only cost of a
@@ -110,14 +112,17 @@ impl ChildProc {
 
     /// Feeds a snippet and returns `(prints, turn-ending event)`.
     fn feed(&mut self, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind) {
-        self.feed_with(code, vec![])
+        self.feed_with(code, NamedValues::new())
     }
 
-    fn feed_with(&mut self, code: &str, inputs: Vec<pb::NamedValue>) -> (Vec<pb::Print>, pb::child_event::Kind) {
+    fn feed_with(&mut self, code: &str, inputs: NamedValues) -> (Vec<pb::Print>, pb::child_event::Kind) {
+        let (inputs, values) = named_values_to_proto(inputs);
         self.send(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
             inputs,
+            values: Some(values),
             skip_type_check: false,
+            cwd: "/".to_owned(),
         }));
         self.recv_turn()
     }
@@ -137,6 +142,18 @@ impl ChildProc {
         self.send(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id,
             result: Some(pb::ExtFunctionResult { kind: Some(result) }),
+            values: None,
+        }));
+        self.recv_turn()
+    }
+
+    /// Answers a suspended call with a returned value.
+    fn resume_return(&mut self, call_id: u32, value: MontyObject) -> (Vec<pb::Print>, pb::child_event::Kind) {
+        let (result, values) = ext_result_to_proto(ExtFunctionResult::Return(value));
+        self.send(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id,
+            result: Some(result),
+            values,
         }));
         self.recv_turn()
     }
@@ -148,7 +165,9 @@ impl ChildProc {
         self.send(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         }));
         self.expect_death();
     }
@@ -219,14 +238,11 @@ impl Drop for ChildProc {
     }
 }
 
+/// The value of a `Complete` event.
 #[track_caller]
 fn expect_complete(event: pb::child_event::Kind) -> MontyObject {
     match event {
-        pb::child_event::Kind::Complete(complete) => complete
-            .value
-            .expect("complete has no value")
-            .into_object()
-            .expect("invalid complete value"),
+        pb::child_event::Kind::Complete(complete) => MontyObject::try_from(complete).expect("invalid complete value"),
         other => panic!("expected Complete, got {other:?}"),
     }
 }
@@ -239,12 +255,15 @@ fn expect_error(event: pb::child_event::Kind) -> pb::RaisedException {
     }
 }
 
-fn int_value(i: i64) -> WireObject {
-    WireObject::new(MontyObject::Int(i))
-}
-
-fn str_value(s: &str) -> WireObject {
-    WireObject::new(MontyObject::String(s.to_owned()))
+/// The positional arguments of an announced call, each copied out of the call's arena.
+#[track_caller]
+fn call_args(call: &WireFunctionCall) -> Vec<MontyObject> {
+    call.clone()
+        .into_call_args()
+        .expect("valid call arguments")
+        .args()
+        .map(|arg| arg.to_owned())
+        .collect()
 }
 
 // =============================================================================
@@ -255,9 +274,9 @@ fn str_value(s: &str) -> WireObject {
 fn session_state_persists_across_feeds() {
     let mut child = ChildProc::spawn();
     child.create_repl();
-    assert_eq!(child.feed_complete("x = 1 + 2\nx"), MontyObject::Int(3));
+    assert_eq!(child.feed_complete("x = 1 + 2\nx"), MontyObject::int(3));
     // `x` defined by the first feed is visible to the second
-    assert_eq!(child.feed_complete("x * 2"), MontyObject::Int(6));
+    assert_eq!(child.feed_complete("x * 2"), MontyObject::int(6));
     child.shutdown();
 }
 
@@ -265,12 +284,9 @@ fn session_state_persists_across_feeds() {
 fn inputs_are_injected() {
     let mut child = ChildProc::spawn();
     child.create_repl();
-    let inputs = vec![pb::NamedValue {
-        name: "a".to_owned(),
-        value: Some(int_value(20)),
-    }];
+    let inputs = NamedValues::from(vec![("a".to_owned(), MontyObject::int(20))]);
     let (_, event) = child.feed_with("a + 1", inputs);
-    assert_eq!(expect_complete(event), MontyObject::Int(21));
+    assert_eq!(expect_complete(event), MontyObject::int(21));
     child.shutdown();
 }
 
@@ -292,14 +308,14 @@ fn print_output_is_streamed_in_order() {
 fn runtime_error_preserves_session() {
     let mut child = ChildProc::spawn();
     child.create_repl();
-    assert_eq!(child.feed_complete("kept = 41"), MontyObject::None);
+    assert_eq!(child.feed_complete("kept = 41"), MontyObject::none());
     let (_, event) = child.feed("1 / 0");
     let error = expect_error(event);
     assert_eq!(error.exc_type, "ZeroDivisionError");
     assert_eq!(error.message.as_deref(), Some("division by zero"));
     assert!(!error.traceback.is_empty(), "traceback frames must cross the wire");
     // the session survives the error, including earlier globals
-    assert_eq!(child.feed_complete("kept + 1"), MontyObject::Int(42));
+    assert_eq!(child.feed_complete("kept + 1"), MontyObject::int(42));
     child.shutdown();
 }
 
@@ -320,10 +336,10 @@ fn external_function_round_trip() {
     };
     assert_eq!(call.function_name, "add");
     assert_eq!(call.object_id, None);
-    assert_eq!(call.args, vec![MontyObject::Int(1), MontyObject::Int(2)]);
+    assert_eq!(call_args(&call), vec![MontyObject::int(1), MontyObject::int(2)]);
 
-    let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::ReturnValue(int_value(3)));
-    assert_eq!(expect_complete(event), MontyObject::Int(3));
+    let (_, event) = child.resume_return(call.call_id, MontyObject::int(3));
+    assert_eq!(expect_complete(event), MontyObject::int(3));
     child.shutdown();
 }
 
@@ -356,7 +372,7 @@ fn abort_feed_round_trip() {
             .and_then(|frame| frame.start.map(|loc| loc.line)),
         Some(3)
     );
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -370,13 +386,13 @@ fn abort_feed_round_trip() {
 #[test]
 fn near_limit_suspension_is_refused_cleanly() {
     let announcement = |arg_len: usize| pb::ChildEvent {
-        kind: Some(pb::child_event::Kind::FunctionCall(WireFunctionCall {
-            function_name: "f".to_owned(),
-            args: vec![MontyObject::String("x".repeat(arg_len))],
-            kwargs: vec![],
-            call_id: 1,
-            object_id: None,
-        })),
+        kind: Some(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+            "f".to_owned(),
+            CallArgs::from(vec![MontyObject::string("x".repeat(arg_len))]),
+            1,
+            None,
+            false,
+        ))),
         ..Default::default()
     };
     // Size the argument so the unstamped announcement is exactly
@@ -415,7 +431,7 @@ fn near_limit_suspension_is_refused_cleanly() {
         "unexpected message: {:?}",
         error.message
     );
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -429,11 +445,11 @@ fn name_lookup_round_trip() {
         panic!("expected NameLookup, got {event:?}");
     };
     assert_eq!(lookup.name, "answer");
-    child.send(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
-        kind: Some(pb::resume_name_lookup::Kind::Value(int_value(41))),
-    }));
+    child.send(pb::parent_request::Kind::ResumeNameLookup(
+        NameLookupResult::from(MontyObject::int(41)).into(),
+    ));
     let (_, event) = child.recv_turn();
-    assert_eq!(expect_complete(event), MontyObject::Int(42));
+    assert_eq!(expect_complete(event), MontyObject::int(42));
     child.shutdown();
 }
 
@@ -456,17 +472,19 @@ fn name_lookup_error_raises_in_sandbox() {
         data: None,
     };
     child.send(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+        values: None,
         kind: Some(pb::resume_name_lookup::Kind::Error(exc.clone())),
     }));
     let (_, event) = child.recv_turn();
     assert_eq!(
         expect_complete(event),
-        MontyObject::String("secret is off limits".to_owned())
+        MontyObject::string("secret is off limits".to_owned())
     );
 
     let (_, event) = child.feed("secret");
     assert!(matches!(event, pb::child_event::Kind::NameLookup(_)));
     child.send(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+        values: None,
         kind: Some(pb::resume_name_lookup::Kind::Error(exc)),
     }));
     let (_, event) = child.recv_turn();
@@ -477,7 +495,7 @@ fn name_lookup_error_raises_in_sandbox() {
         !error.traceback.is_empty(),
         "the sandbox frame must be on the traceback"
     );
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -519,11 +537,8 @@ fn clock_calls_bubble_to_parent() {
         panic!("expected OsCall, got {event:?}");
     };
     assert_eq!(call.call, Some(pb::os_call::Call::DateToday(pb::Unit {})));
-    let (_, event) = child.resume_call(
-        call.call_id,
-        pb::ext_function_result::Kind::ReturnValue(WireObject::new(MontyObject::Date(today.clone()))),
-    );
-    assert_eq!(expect_complete(event), MontyObject::Date(today));
+    let (_, event) = child.resume_return(call.call_id, MontyObject::date(today.clone()));
+    assert_eq!(expect_complete(event), MontyObject::date(today));
 
     let now = MontyDateTime {
         year: 2024,
@@ -544,11 +559,8 @@ fn clock_calls_bubble_to_parent() {
         call.call,
         Some(pb::os_call::Call::DateTimeNow(pb::os_call::DateTimeNow { tz: None }))
     );
-    let (_, event) = child.resume_call(
-        call.call_id,
-        pb::ext_function_result::Kind::ReturnValue(WireObject::new(MontyObject::DateTime(now.clone()))),
-    );
-    assert_eq!(expect_complete(event), MontyObject::DateTime(now));
+    let (_, event) = child.resume_return(call.call_id, MontyObject::datetime(now.clone()));
+    assert_eq!(expect_complete(event), MontyObject::datetime(now));
 
     child.shutdown();
 }
@@ -563,11 +575,8 @@ fn os_call_bubbles_to_parent_without_mounts() {
     };
     assert_eq!(call.call, Some(pb::os_call::Call::ReadText("/data.txt".to_owned())));
 
-    let (_, event) = child.resume_call(
-        call.call_id,
-        pb::ext_function_result::Kind::ReturnValue(str_value("hello")),
-    );
-    assert_eq!(expect_complete(event), MontyObject::String("hello".to_owned()));
+    let (_, event) = child.resume_return(call.call_id, MontyObject::string("hello".to_owned()));
+    assert_eq!(expect_complete(event), MontyObject::string("hello".to_owned()));
     child.shutdown();
 }
 
@@ -585,8 +594,8 @@ fn suspended_call_keeps_its_arguments_for_a_dump() {
         panic!("expected FunctionCall, got {event:?}");
     };
     assert_eq!(
-        call.args,
-        vec![MontyObject::String("hello".to_owned()), MontyObject::Int(1)]
+        call_args(&call),
+        vec![MontyObject::string("hello".to_owned()), MontyObject::int(1)]
     );
 
     child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
@@ -698,7 +707,7 @@ fn child_enforces_time_limit() {
         panic!("expected Ok for Reset");
     };
     child.create_repl();
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -708,7 +717,7 @@ fn child_enforces_time_limit() {
 fn small_memory_limit_leaves_normal_work_alone() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(64 * 1024));
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -720,7 +729,7 @@ fn exceeding_the_soft_memory_limit_preserves_the_worker() {
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
     let (_, event) = child.feed("[str(i) for i in range(131_072)]");
     assert_eq!(expect_error(event).exc_type, "MemoryError");
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -733,7 +742,7 @@ fn async_accumulation_reaches_the_soft_limit() {
     let code = "import asyncio\nasync def f():\n    return await asyncio.gather(f())\nasyncio.run(f())";
     let (_, event) = child.feed(code);
     assert_eq!(expect_error(event).exc_type, "MemoryError");
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -744,7 +753,7 @@ fn formatting_without_padding_does_not_charge_fill() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(1024 * 1024));
     let code = "s = 'x' * 400_000\nlen(f'{s:é<400000}')";
-    assert_eq!(child.feed_complete(code), MontyObject::Int(400_000));
+    assert_eq!(child.feed_complete(code), MontyObject::int(400_000));
     child.shutdown();
 }
 
@@ -754,8 +763,8 @@ fn formatting_generic_value_without_padding_does_not_charge_fill() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(1024 * 1024));
     let code = "s = 'x' * 400_000\nclass Value:\n    def __str__(self):\n        return s\nvalue = Value()\nlen(f'{value:é<400000}')";
-    assert_eq!(child.feed_complete(code), MontyObject::Int(400_000));
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete(code), MontyObject::int(400_000));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -771,7 +780,7 @@ fn impossible_format_capacity_preserves_the_worker() {
         let (_, event) = child.feed(&code);
         assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
     }
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -786,16 +795,13 @@ fn large_unnested_format_spec_preserves_the_worker() {
     for junk_len in [5_000_000, 10_000_000] {
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(16 * 1024 * 1024));
-        let inputs = vec![pb::NamedValue {
-            name: "template".to_owned(),
-            value: Some(str_value(&template)),
-        }];
+        let inputs = NamedValues::from(vec![("template".to_owned(), MontyObject::string(template.clone()))]);
         // The smaller filler reaches tracked error rendering without room for
         // another spec copy. The larger one requires a preflighted receiver copy.
         let code = format!("junk = 'j' * {junk_len}\ntemplate.format(0)");
         let (_, event) = child.feed_with(&code, inputs);
         assert_eq!(expect_error(event).exc_type, "MemoryError", "junk_len {junk_len}");
-        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
         child.shutdown();
     }
 }
@@ -807,7 +813,7 @@ fn numeric_formatting_peak_memory_preserves_the_worker() {
         child.create_repl_with(configure_with_max_memory(10_000_000));
         let (_, event) = child.feed(code);
         assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
-        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
         child.shutdown();
     }
 }
@@ -825,7 +831,7 @@ fn building_a_deep_gather_nest_reaches_the_soft_limit() {
     let code = "import asyncio\nasync def leaf():\n    return 1\ndef build():\n    g = leaf()\n    for _ in range(50_000):\n        g = asyncio.gather(g)\n    return g\nbuild()";
     let (_, event) = child.feed(code);
     assert_eq!(expect_error(event).exc_type, "MemoryError");
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -846,7 +852,7 @@ fn committing_a_deep_gather_nest_reaches_the_soft_limit() {
         let build = format!(
             "import asyncio\nasync def leaf():\n    return 1\ng = leaf()\nfor _ in range({depth}):\n    g = asyncio.gather(g)\n1"
         );
-        assert_eq!(child.feed_complete(&build), MontyObject::Int(1), "depth {depth}");
+        assert_eq!(child.feed_complete(&build), MontyObject::int(1), "depth {depth}");
 
         let (_, event) = child.feed("await g");
         assert_eq!(expect_error(event).exc_type, "MemoryError", "depth {depth}");
@@ -854,11 +860,34 @@ fn committing_a_deep_gather_nest_reaches_the_soft_limit() {
         // could not do if the worker had died on the hard ceiling instead.
         assert_eq!(
             child.feed_complete("g = None\n1 + 1"),
-            MontyObject::Int(2),
+            MontyObject::int(2),
             "depth {depth}"
         );
         child.shutdown();
     }
+}
+
+/// A container built just under the limit and then deep-copied is the shape
+/// that jumps the allocator's headroom in one uninterrupted span: nothing
+/// between entering `deepcopy` and returning re-reads the budget except the
+/// fill loop itself. Sized so the source fits and the copy does not, which
+/// before the destination preflight killed the worker outright
+/// (`allocation of 2621440 bytes exceeds the memory limit`) instead of raising.
+#[test]
+fn deep_copy_of_a_near_limit_dict_raises_rather_than_dying() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    let (_, event) = child.feed("import copy\nd = {i: i for i in range(100_000)}");
+    assert!(
+        !matches!(event, pb::child_event::Kind::Error(_)),
+        "the source must fit for this to test the copy, got {event:?}"
+    );
+    let (_, event) = child.feed("copy.deepcopy(d)");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    // The session survives, which is the whole point: a hard-limit exit would
+    // have taken the worker with it.
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
 }
 
 /// Known large results are rejected against allocator usage before they can
@@ -874,53 +903,89 @@ fn committing_a_deep_gather_nest_reaches_the_soft_limit() {
 fn large_allocations_are_rejected_before_the_hard_limit() {
     // each case with the allocator usage it should be refused at
     let cases = [
-        ("'x' * 10_000_000", 10_031_137),
+        ("'x' * 10_000_000", 10_042_090),
         // Each formatter builder must fail softly before the worker reaches its hard ceiling.
-        ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_231_000),
-        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_431_791),
-        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_230_835),
+        ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_242_532),
+        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_442_564),
+        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_242_569),
         // `%` formatting: padding, float digits, integer zero-extension and output growth.
-        ("'%*d' % (2_000_000, 1)", 2_031_460),
-        ("'%.*f' % (1_000_000, 1.0)", 1_160_498),
-        ("'%.*d' % (2_000_000, 1)", 2_031_466),
-        ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_631_924),
-        ("b'%*d' % (2_000_000, 1)", 2_031_588),
-        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_632_055),
-        ("b'x' * 10_000_000", 10_031_269),
-        ("[None] * 1_000_000", 16_031_391),
-        ("2 ** 10_000_000", 10_031_230),
-        ("1 << 10_000_000", 1_281_231),
-        ("('a' * 1000).replace('a', 'b' * 2000)", 2_034_769),
+        ("'%*d' % (2_000_000, 1)", 2_042_250),
+        ("'%.*f' % (1_000_000, 1.0)", 1_171_289),
+        ("'%.*d' % (2_000_000, 1)", 2_042_254),
+        ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_642_715),
+        ("b'%*d' % (2_000_000, 1)", 2_042_376),
+        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_642_842),
+        ("b'x' * 10_000_000", 10_042_228),
+        ("[None] * 1_000_000", 16_042_252),
+        ("2 ** 10_000_000", 10_042_089),
+        ("1 << 10_000_000", 1_292_090),
+        // `int / int` scales one operand before dividing; both shift directions are
+        // preflighted.
+        ("x = 1 << 3_000_000\nx / (x - 1)", 1_542_723),
+        ("x = 1 << 3_000_000\nx / (x >> 100)", 1_542_706),
+        // `math.factorial`, `comb` and `perm` preflight their product's size.
+        ("import math\nmath.factorial(2_000_000)", 10_547_267),
+        // A binomial is bounded by `2**n`, so `comb` needs a larger `n` to trip the check.
+        ("import math\nmath.comb(9_000_000, 4_500_000)", 2_297_281),
+        ("import math\nmath.perm(4_000_000, 2_000_000)", 11_047_281),
+        // `math.lcm` of two large coprime ints is a product, preflighted like `*`.
+        ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_297_628),
+        ("('a' * 1000).replace('a', 'b' * 2000)", 2_045_640),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.
-        ("x = [None] * 40_000\nx += x", 1_951_835),
-        ("t = (None,) * 40_000\nt + t", 1_311_835),
-        ("x = [None] * 40_000\nx.copy()", 1_311_585),
+        ("x = [None] * 40_000\nx += x", 1_962_720),
+        ("t = (None,) * 40_000\nt + t", 1_322_720),
+        ("x = [None] * 40_000\nx.copy()", 1_322_466),
+        // `dict | dict` snapshots the left pairs and builds the merged dict
+        // while that snapshot is live, so both are preflighted together.
+        ("d = dict.fromkeys(range(12_000))\nd | {}", 1_805_591),
+        // The right operand is snapshotted inside the same call, so that copy is
+        // preflighted too. Only the copy: see the overlap test below.
+        ("d = dict.fromkeys(range(12_000))\n{} | d", 1_229_591),
         // A partial re-clones its bound arguments on every call, so that clone
         // is preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [None] * 40_000\np()",
-            1_314_563,
+            1_325_348,
         ),
         // Reading `p.args` / `p.keywords` rebuilds them in full, so both are
         // preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [0] * 40_000\np.args",
-            1_314_563,
+            1_325_348,
         ),
         (
             "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0] * 30_000\np.keywords",
-            1_071_419,
+            1_054_536,
         ),
         // `deque.extend` preflights exact-hint iterators up front.
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
-            16_031_971,
+            16_042_844,
+        ),
+        // `randbytes` charges its word buffer and the byte buffer it fills.
+        ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_247_332),
+        // A `range` population can be as long as `i64::MAX` while costing nothing,
+        // so `sample` must saturate its size arithmetic and refuse the pick buffer.
+        (
+            "import random\nrandom.seed(0)\nrandom.sample(range(2**63 - 1), 2**63 - 1)",
+            u64::MAX,
         ),
         // `itertools.batched` preflights one batch, capped at `n`.
         (
             "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",
-            16_032_590,
+            16_044_917,
+        ),
+        // The two combinatoric iterators whose width is not bounded by their
+        // pool preflight that width: `r` repeats of a one-item pool, and
+        // `repeat` copies of the argument list.
+        (
+            "import itertools\nnext(itertools.combinations_with_replacement('a', 1_000_000))",
+            24_044_732,
+        ),
+        (
+            "import itertools\nnext(itertools.product('ab', repeat=1_000_000))",
+            24_044_794,
         ),
     ];
 
@@ -932,9 +997,85 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         assert_eq!(error.exc_type, "MemoryError", "{code}");
         let message = error.message.expect("MemoryError should have a message");
         assert_reported_usage(&message, expected, code);
-        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
         child.shutdown();
     }
+}
+
+/// A merge charges the pairs it copies out, but not room for every one of them
+/// in the target: `a | b` over keys `a` already holds grows the result by
+/// nothing, so charging per source pair refused merges that comfortably fit.
+/// This limit sits between the two, so it only passes if the growth is left out.
+#[test]
+fn overlapping_dict_merges_are_not_charged_for_absent_growth() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(23 * 1024 * 1024));
+    child.feed_complete("a = dict.fromkeys(range(100_000))\nb = dict.fromkeys(range(100_000))");
+    assert_eq!(child.feed_complete("x = a | b\nlen(x)"), MontyObject::int(100_000));
+    child.shutdown();
+}
+
+/// `set(s)` and `frozenset(s)` copy a set's storage wholesale, so the whole
+/// copy runs between two execution checkpoints and has to be charged first.
+/// The source is sized as a fraction of the limit: uncharged, one that fits
+/// under the soft limit jumps the hard ceiling and the worker is killed where
+/// a catchable `MemoryError` belongs.
+#[test]
+fn copying_a_large_set_fails_softly() {
+    for expr in ["set(s)", "frozenset(s)"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
+        // the source fits; its copy is what crosses the limit
+        child.feed_complete("s = set(range(400_000))");
+
+        let (_, event) = child.feed(expr);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{expr}");
+
+        // the session survives, i.e. the copy never reached the hard ceiling
+        assert_eq!(child.feed_complete("len(s)"), MontyObject::int(400_000), "{expr}");
+        child.shutdown();
+    }
+}
+
+/// A set keeps the index table it grew to when its elements go, so copying one
+/// must index the copy afresh rather than reproduce that table: twenty copies
+/// of an emptied set hold nothing and must cost nothing.
+#[test]
+fn copying_an_emptied_set_costs_nothing() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
+    // grown, then emptied: the entries are gone, the table that indexed them is not
+    child.feed_complete("s = set(range(200_000))\ns.clear()");
+
+    assert_eq!(
+        child.feed_complete("copies = [set(s) for _ in range(20)]\nlen(copies)"),
+        MontyObject::int(20)
+    );
+    assert_eq!(child.feed_complete("len(copies[0])"), MontyObject::int(0));
+    child.shutdown();
+}
+
+/// `set(s)` owns the argument it is handed, so a copy the limit refuses has to
+/// release it on the way out. Retained, it pins the source for the rest of the
+/// session: rebinding the name would free nothing.
+#[test]
+fn refused_set_copy_releases_its_source() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
+    child.feed_complete("s = set(range(400_000))");
+
+    // the source fits, its copy does not
+    let (_, event) = child.feed("set(s)");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+
+    // so the name still holds the only reference, and rebinding it makes room again
+    child.feed_complete("s = None");
+    assert_eq!(
+        child.feed_complete("len(set(range(400_000)))"),
+        MontyObject::int(400_000)
+    );
+    child.shutdown();
 }
 
 /// `inf` and `nan` print as they are, so a huge float precision costs nothing
@@ -945,8 +1086,28 @@ fn non_finite_float_precision_is_not_charged() {
     child.create_repl_with(configure_with_max_memory(64 * 1024));
     assert_eq!(
         child.feed_complete("'%.2000000000f' % float('inf')"),
-        MontyObject::String("inf".to_owned())
+        MontyObject::string("inf".to_owned())
     );
+}
+
+/// `Path.iterdir()` repeats the receiver in every joined entry, so the joins
+/// are preflighted in one shot before any is built.
+#[test]
+fn iterdir_joins_are_preflighted() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "from pathlib import Path\nlist(Path('/' + 'd' * 100_000).iterdir())";
+    let (_, event) = child.feed(code);
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    let entries = MontyObject::list(vec![MontyObject::string("x".to_owned()); 20]);
+    let (_, event) = child.resume_return(call.call_id, entries);
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError");
+    let message = error.message.expect("MemoryError should have a message");
+    assert_reported_usage(&message, 2_245_291, code);
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -967,16 +1128,15 @@ fn large_host_call_arguments_survive_being_announced() {
     let pb::child_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
-    assert_eq!(call.args.len(), 1);
-    assert_eq!(call.args[0], MontyObject::String("A".repeat(ARG)));
+    assert_eq!(call_args(&call), vec![MontyObject::string("A".repeat(ARG))]);
 
     // the session is still usable afterwards, i.e. nothing overshot into a
     // soft-limit `MemoryError` on the next checkpoint either
-    let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::ReturnValue(int_value(7)));
-    assert_eq!(expect_complete(event), MontyObject::Int(7));
+    let (_, event) = child.resume_return(call.call_id, MontyObject::int(7));
+    assert_eq!(expect_complete(event), MontyObject::int(7));
     assert_eq!(
         child.feed_complete("len(s)"),
-        MontyObject::Int(i64::try_from(ARG).unwrap())
+        MontyObject::int(i64::try_from(ARG).unwrap())
     );
     child.shutdown();
 }
@@ -1001,7 +1161,165 @@ fn a_returnable_value_can_also_be_passed_to_a_host_function() {
     let pb::child_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
-    assert_eq!(string_len(&call.args[0]), ARG);
+    assert_eq!(string_len(&call_args(&call)[0]), ARG);
+    child.shutdown();
+}
+
+// =============================================================================
+// Value arenas
+// =============================================================================
+
+/// 36 lists that a tree export expands to 753,663 nodes; the arena is one
+/// node per list plus the `0`, so it completes under a small memory limit
+/// and leaves the session usable.
+#[test]
+fn exporting_a_shared_graph_is_linear_in_heap_objects() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(4 * 1024 * 1024));
+    let code = "x = [0]\nfor _ in range(20):\n    x = [x]\nfor _ in range(15):\n    x = [x, x]\nx";
+    let (_, event) = child.feed(code);
+    let value = expect_complete(event);
+    assert_eq!(value.graph.len(), 37);
+    // the session survives: nothing overshot into a soft-limit `MemoryError`
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// A small shared graph is one node per object, and expands to the tree a
+/// host expects.
+#[test]
+fn exporting_a_small_shared_graph_round_trips() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let (_, event) = child.feed("x = [0]\nx = [x, x]\nx = [x, x]\nx");
+    let value = expect_complete(event);
+    // `0`, `[0]`, `[[0], [0]]` and the outer list: sharing costs nothing
+    assert_eq!(value.graph.len(), 4);
+    let leaf = MontyObject::list([MontyObject::int(0)]);
+    let pair = MontyObject::list([leaf.clone(), leaf]);
+    assert_eq!(value, MontyObject::list([pair.clone(), pair]));
+    child.shutdown();
+}
+
+/// Export recurses once per nesting level, so a value this deep overflows a
+/// 1 MiB stack (Windows' main-thread default) in a debug build; the worker
+/// thread's fixed stack size covers it on every OS.
+#[test]
+fn exporting_a_deeply_nested_value_does_not_overflow_the_stack() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let (_, event) = child.feed("x = [1]\nfor _ in range(300):\n    x = [x]\nx");
+    let value = expect_complete(event);
+    // one node per list plus the leaf
+    assert_eq!(value.graph.len(), 302);
+    let expected = (0..301).fold(MontyObject::int(1), |inner, _| MontyObject::list([inner]));
+    assert_eq!(value, expected);
+    child.shutdown();
+}
+
+/// Export runs under the interpreter's recursion guard: past 1000 levels the
+/// rest of the value becomes a `<deeply nested>` repr, and the session stays
+/// usable.
+#[test]
+fn exporting_past_the_recursion_guard_degrades_to_a_repr() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let (_, event) = child.feed("x = [1]\nfor _ in range(2000):\n    x = [x]\nx");
+    let value = expect_complete(event);
+    // post-order: the innermost node comes first; the guard trips at the
+    // 1000th level, so 1000 lists wrap the repr
+    assert_eq!(value.graph.nodes()[0], MontyNode::Repr("<deeply nested>".to_owned()));
+    assert_eq!(value.graph.len(), 1001);
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// Many references to one object are many ids and one node: the arena costs
+/// four bytes a reference, so a list of 200,000 references to one list
+/// crosses under an 8 MiB limit and leaves the session usable.
+#[test]
+fn many_references_to_one_object_cost_one_node() {
+    const REFS: usize = 200_000;
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    let (_, event) = child.feed(&format!("x = [1]\n[x] * {REFS}"));
+    let value = expect_complete(event);
+    // `1`, `[1]` and the outer list
+    assert_eq!(value.graph.len(), 3);
+    let MontyNode::List(ids) = value.root_node() else {
+        panic!("expected a list, got {value:?}");
+    };
+    assert_eq!(ids.len(), REFS);
+    assert!(ids.iter().all(|id| *id == ids[0]));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// A cycle is one `Cycle` leaf per back-reference, so 10,000 self-referential
+/// lists are 20,001 nodes: linear, with nothing re-exported.
+#[test]
+fn cycles_export_one_placeholder_each() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    let (_, event) = child.feed("xs = [[] for _ in range(10_000)]\nfor x in xs:\n    x.append(x)\nxs");
+    let value = expect_complete(event);
+    assert_eq!(value.graph.len(), 20_001);
+    let cycles = value
+        .graph
+        .nodes()
+        .iter()
+        .filter(|node| matches!(node, MontyNode::Cycle(_)))
+        .count();
+    assert_eq!(cycles, 10_000);
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// Export is not checkpointed against the soft limit. A value that fits the
+/// heap but whose arena (72 bytes a node against 16 for a heap value) crosses
+/// the hard ceiling exits the worker with the OOM code, which the parent
+/// classifies as a crash.
+#[test]
+fn an_export_that_outgrows_the_hard_limit_exits_with_the_oom_code() {
+    let mut child = ChildProc::spawn_stderr_piped();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    // 100,000 ints: 2 MB in the heap, 7.2 MB as nodes plus the frame, past
+    // the 4 MiB headroom; `len(...)` of the same list completes
+    child.feed_expecting_death("list(range(100_000))");
+    let (status, stderr) = child.reap_with_stderr();
+    assert_eq!(status.code(), Some(monty_types::OOM_EXIT_CODE), "got {status:?}");
+    assert!(stderr.contains("exceeds the memory limit"), "{stderr}");
+}
+
+/// A call's arguments share one arena: an object passed twice (positionally
+/// and by keyword) is one node, so the host receives one object.
+#[test]
+fn call_arguments_share_one_arena() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let (_, event) = child.feed("x = [1, 2]\nf(x, x, y=x)");
+    let pb::child_event::Kind::FunctionCall(call) = event else {
+        panic!("expected FunctionCall, got {event:?}");
+    };
+    assert_eq!(call.args.len(), 2);
+    assert_eq!(call.args[0], call.args[1]);
+    assert_eq!(call.kwargs.len(), 1);
+    assert_eq!(call.kwargs[0].1, call.args[0]);
+    // `1`, `2`, the list and the keyword name
+    assert_eq!(call.values.0.len(), 4);
+    child.shutdown();
+}
+
+/// Inputs naming the same node arrive as one sandbox object.
+#[test]
+fn shared_inputs_are_one_sandbox_object() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let mut inputs = NamedValues::new();
+    let id = inputs.push("a", MontyObject::list([MontyObject::int(1)]));
+    inputs.names.push(("b".to_owned(), id));
+    let (_, event) = child.feed_with("a is b and a == [1]", inputs);
+    assert_eq!(expect_complete(event), MontyObject::bool(true));
     child.shutdown();
 }
 
@@ -1009,10 +1327,11 @@ fn a_returnable_value_can_also_be_passed_to_a_host_function() {
 /// printing a multi-megabyte string on failure helps nobody.
 #[track_caller]
 fn string_len(value: &MontyObject) -> usize {
-    match value {
-        MontyObject::String(s) => s.len(),
-        other => panic!("expected a string, got {other:?}"),
-    }
+    value
+        .as_ref()
+        .as_str()
+        .unwrap_or_else(|| panic!("expected a string, got {value:?}"))
+        .len()
 }
 
 /// The fix must not have quietly stopped enforcing: an argument that genuinely
@@ -1024,7 +1343,7 @@ fn host_call_arguments_over_the_limit_still_fail_gracefully() {
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
     let (_, event) = child.feed("foobar('A' * (16 * 1024 * 1024))");
     assert_eq!(expect_error(event).exc_type, "MemoryError");
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -1044,12 +1363,12 @@ fn reading_partial_args_cannot_kill_the_worker() {
                  def f(*a):\n    return 0\n\
                  p = functools.partial(f, *range(1_000_000))\n\
                  junk = [0] * 2_800_000";
-    assert_eq!(child.feed_complete(build), MontyObject::None);
+    assert_eq!(child.feed_complete(build), MontyObject::none());
 
     let (_, event) = child.feed("p.args");
     let error = expect_error(event);
     assert_eq!(error.exc_type, "MemoryError");
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -1076,7 +1395,7 @@ fn batched_without_a_size_hint_is_refused_before_the_hard_limit() {
         (SOFT_LIMIT..HARD_CEILING).contains(&used),
         "{code}: reported {used} bytes, expected a refusal between {SOFT_LIMIT} and {HARD_CEILING}"
     );
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -1088,7 +1407,186 @@ fn small_batched_n_is_not_preflighted() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(1024 * 1024));
     let code = "import itertools\nlen(next(itertools.batched(range(500_000), 8)))";
-    assert_eq!(child.feed_complete(code), MontyObject::Int(8));
+    assert_eq!(child.feed_complete(code), MontyObject::int(8));
+    child.shutdown();
+}
+
+/// A `tee` group costs a heap entry and a buffer slot per consumer, all built
+/// inside one builtin call, so the whole group is charged before any of it
+/// exists. Charging only the positions and the result tuple under-counted it
+/// by about four times, and an `n` in that window killed the worker rather
+/// than raising.
+#[test]
+fn tee_group_is_charged_before_it_is_built() {
+    for n in ["20_000", "200_000"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(1024 * 1024));
+        let code = format!("import itertools\nlen(itertools.tee([1], {n}))");
+        let (_, event) = child.feed(&code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+        // The session survives, which is what charging early buys.
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+        child.shutdown();
+    }
+}
+
+/// Containers grown one element at a time must raise `MemoryError` and leave
+/// the session usable, whatever the limit.
+///
+/// A `Vec` doubling charges its whole increment in one allocation, so a push
+/// straddling the soft limit used to land past the hard ceiling with no
+/// checkpoint in between. The limits here catch both halves: at 24 MB (the
+/// limit reported in #700) the doubling cleared the headroom, killing the
+/// worker; at 6 MB it fits, so the worker survived but the session was left
+/// over its limit with the next statement failing too.
+#[test]
+fn incremental_container_growth_stays_graceful() {
+    let cases = [
+        "[x for x in range(10_000_000)]",
+        "l = []\nfor x in range(10_000_000):\n    l.append(x)",
+        "l = []\nfor x in range(10_000_000):\n    l.insert(len(l), x)",
+        "s = set()\nfor x in range(10_000_000):\n    s.add(x)",
+        "d = {}\nfor x in range(10_000_000):\n    d[x] = x",
+        "from collections import deque\nd = deque()\nfor x in range(10_000_000):\n    d.append(x)",
+        "from collections import deque\nd = deque()\nfor x in range(10_000_000):\n    d.appendleft(x)",
+    ];
+
+    for limit_mb in [6, 12, 24] {
+        for code in cases {
+            let mut child = ChildProc::spawn();
+            child.create_repl_with(configure_with_max_memory(limit_mb * 1024 * 1024));
+            let (_, event) = child.feed(code);
+            let error = expect_error(event);
+            assert_eq!(error.exc_type, "MemoryError", "{limit_mb}MB: {code}");
+            // The session outliving the error is the whole point: a worker
+            // that hit the hard limit would be gone by now.
+            assert_eq!(
+                child.feed_complete("1 + 1"),
+                MontyObject::int(2),
+                "{limit_mb}MB: {code}"
+            );
+            child.shutdown();
+        }
+    }
+}
+
+/// Buffers of interpreter values that native code fills in one call must raise
+/// `MemoryError` rather than kill the worker.
+///
+/// Each result here is a constant multiple of an already-tracked input, which
+/// used to be reason enough to skip the preflight. It is not: the increment
+/// still clears the allocator's fixed headroom in one allocation, and every
+/// case below killed the worker at the limit named.
+#[test]
+fn native_value_buffers_stay_graceful() {
+    let cases = [
+        // The `*args` clone, then the `SmallVec` the varargs are packed into.
+        ("def f(*a):\n    return len(a)\nt = tuple(range(700_000))\nf(*t)", 48),
+        // The same clone reached through an attribute call rather than a plain one.
+        (
+            "class C:\n    def m(self, *a):\n        return len(a)\nc = C()\nt = tuple(range(700_000))\nc.m(*t)",
+            48,
+        ),
+        // `findall`'s no-capture and one-capture arms build their result lists
+        // differently.
+        ("import re\nlen(re.findall('a', 'a' * 2_000_000))", 24),
+        ("import re\nlen(re.findall('(a)', 'a' * 2_000_000))", 24),
+        ("import json\nlen(json.loads('[' + '0,' * 1_500_000 + '0]'))", 24),
+        // Elements costing more on the heap than in the source: `[],` is three
+        // bytes of JSON but a whole heap entry, so one doubling clears the headroom.
+        ("import json\nlen(json.loads('[' + '[],' * 700_000 + '[]]'))", 24),
+        ("import json\nlen(json.loads('[' + '{},' * 700_000 + '{}]'))", 24),
+        (
+            "import json\nlen(json.loads('[' + '\"aaaaaaaa\",' * 900_000 + '\"a\"]'))",
+            24,
+        ),
+    ];
+
+    for (code, limit_mb) in cases {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(limit_mb * 1024 * 1024));
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+        child.shutdown();
+    }
+}
+
+/// A consumer that is dropped stops holding the read-ahead back: the blocks it
+/// would have read are freed as the surviving consumer moves past them, so a
+/// long source costs a block at a time rather than all of it.
+#[test]
+fn a_dropped_tee_consumer_does_not_pin_the_read_ahead() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    // Buffering all 2M items would need ~32 MB against a 1 MiB limit.
+    let code = "import itertools\na, b = itertools.tee(range(2_000_000))\na = None\nsum(b)";
+    assert_eq!(child.feed_complete(code), MontyObject::int(1_999_999_000_000));
+    child.shutdown();
+}
+
+/// A group small enough to fit is untouched by that charge.
+#[test]
+fn small_tee_group_is_not_preflighted() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "import itertools\nlen(list(itertools.tee(range(1000), 8)[0]))";
+    assert_eq!(child.feed_complete(code), MontyObject::int(1000));
+    child.shutdown();
+}
+
+/// An empty pool empties the whole product, so `itertools.product` allocates no
+/// index vector however large `repeat` is — the `repeat`-sized preflight must
+/// not refuse a call that costs nothing.
+#[test]
+fn empty_product_pool_is_not_preflighted() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "import itertools\nlen(list(itertools.product([1], [], repeat=1_000_000)))";
+    assert_eq!(child.feed_complete(code), MontyObject::int(0));
+    child.shutdown();
+}
+
+/// Importing under memory pressure must raise `MemoryError` like any other
+/// statement, not kill the worker.
+///
+/// `import` rebuilds a module namespace on every execution, and module
+/// construction has no error channel — `StandardLib::create` and
+/// `VM::load_module` are infallible, so a refusal inside `Module::set_attr`
+/// could only panic. That is why those inserts skip the growth check.
+#[test]
+fn importing_under_memory_pressure_stays_graceful() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(6 * 1024 * 1024));
+    // Grows past the limit in small steps, re-importing each time so an import
+    // lands in the window after usage crosses it but before the next checkpoint.
+    let code = "def f():\n    xs = []\n    for _ in range(1_000_000):\n        xs.append('x' * 1000)\n        import functools\nf()";
+    let (_, event) = child.feed(code);
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    // The session outliving the error is the whole point: a panicking
+    // `set_attr` would have taken the worker with it.
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// The growth preflights must leave ordinary work alone.
+///
+/// Everything here fits the limit several times over, so a check that charged
+/// a growth the buffer never performs — or ran on every push rather than at a
+/// capacity boundary — would turn a working program into a `MemoryError`. The
+/// refusal tests above only assert that a refusal happens, so they cannot
+/// catch that.
+#[test]
+fn container_growth_preflight_leaves_ordinary_work_alone() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(32 * 1024 * 1024));
+    let code = "from collections import deque\nl = []\nd = {}\ns = set()\nq = deque()\nfor x in range(50_000):\n    l.append(x)\n    l.insert(len(l), x)\n    d[x] = x\n    s.add(x)\n    q.append(x)\n    q.appendleft(x)\nlen(l) + len(d) + len(s) + len(q)";
+    assert_eq!(child.feed_complete(code), MontyObject::int(300_000));
+    // The JSON array loop polls memory per element as well as checking its
+    // buffer, so ordinary parsing has two ways to be refused, not one.
+    let json_code = "import json\nlen(json.loads('[' + '0,' * 50_000 + '0]'))";
+    assert_eq!(child.feed_complete(json_code), MontyObject::int(50_001));
     child.shutdown();
 }
 
@@ -1100,8 +1598,70 @@ fn bounded_deque_extend_is_not_preflighted() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(1024 * 1024));
     let code = "from collections import deque\nd = deque(maxlen=8)\nd.extend(range(500_000))\nlen(d)";
-    assert_eq!(child.feed_complete(code), MontyObject::Int(8));
+    assert_eq!(child.feed_complete(code), MontyObject::int(8));
     child.shutdown();
+}
+
+/// A deque that has reached `maxlen` is not exempt from the growth preflight.
+///
+/// `append` and `appendleft` push before they evict, so a deque whose ring is
+/// exactly full still reallocates on that push — once, by its whole length.
+/// Unchecked, that one allocation cleared the hard-limit headroom and killed
+/// the worker.
+#[test]
+fn full_bounded_deque_growth_stays_graceful() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(12 * 1024 * 1024));
+    // 2^19 items fill the ring exactly, so the append after them doubles it.
+    let code = "from collections import deque\nd = deque(maxlen=524_288)\nd.extend(range(524_288))\nd.append(0)";
+    let (_, event) = child.feed(code);
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    // The session outliving the error is the whole point.
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// `re.split` must preflight the pieces it collects, not only the list it
+/// builds from them.
+///
+/// The pieces are 16 bytes each, bounded only by the subject, and the whole
+/// `Vec` was collected before the first check ran — splitting a 1.5 MB subject
+/// on a comma killed the worker.
+#[test]
+fn oversized_split_stays_graceful() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    let (_, event) = child.feed("import re\nlen(re.split(',', ',' * 1_500_000))");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// A refused `findall` must leave nothing of its partial result behind.
+///
+/// Its scan collects borrowed slices rather than heap values, so a refusal has
+/// nothing to strand — which matters because it could not release them anyway:
+/// that needs `&mut Heap`, and the compiled pattern is borrowed out of the heap
+/// while the match iterator lives. The allocation afterwards fits only if the
+/// session got its memory back.
+#[test]
+fn refused_findall_leaves_no_partial_result() {
+    for pattern in ["'ab'", "'(a)(b)'"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        assert_eq!(
+            child.feed_complete("import re\ns = 'ab' * 1_000_000\nlen(s)"),
+            MontyObject::int(2_000_000)
+        );
+        let (_, event) = child.feed(&format!("len(re.findall({pattern}, s))"));
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{pattern}");
+        assert_eq!(
+            child.feed_complete("len([0] * 500_000)"),
+            MontyObject::int(500_000),
+            "{pattern}"
+        );
+        child.shutdown();
+    }
 }
 
 /// Assert a `memory limit exceeded` message reports roughly `expected` bytes
@@ -1178,7 +1738,7 @@ fn exceeding_the_memory_limit_exits_with_the_oom_code() {
 fn loading_a_dump_applies_its_own_memory_limit() {
     let mut source = ChildProc::spawn();
     source.create_repl_with(configure_with_max_memory(64 * 1024));
-    assert_eq!(source.feed_complete("x = 1"), MontyObject::None);
+    assert_eq!(source.feed_complete("x = 1"), MontyObject::none());
     source.send(pb::parent_request::Kind::Dump(pb::Dump {}));
     let pb::child_event::Kind::DumpResult(dump) = source.recv() else {
         panic!("expected DumpResult");
@@ -1232,7 +1792,7 @@ fn install_dependencies_is_rejected_but_session_survives() {
         Some("dependency installation is only supported by the CPython worker")
     );
     // The session is intact: subsequent feeds still work.
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -1265,8 +1825,8 @@ fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
     );
 
     // a committed snippet becomes visible to later type checks
-    assert_eq!(child.feed_complete("y = 1"), MontyObject::None);
-    assert_eq!(child.feed_complete("y + 1"), MontyObject::Int(2));
+    assert_eq!(child.feed_complete("y = 1"), MontyObject::none());
+    assert_eq!(child.feed_complete("y + 1"), MontyObject::int(2));
 
     // ... and the rejected snippet was never committed
     let (_, event) = child.feed("x");
@@ -1330,7 +1890,7 @@ fn reset_scrubs_type_check_state_from_the_next_session() {
             protocol_version: PROTOCOL_VERSION,
             ..Default::default()
         });
-        assert_eq!(child.feed_complete("LEAKY = 'hunter2'"), MontyObject::None);
+        assert_eq!(child.feed_complete("LEAKY = 'hunter2'"), MontyObject::none());
 
         child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
         let pb::child_event::Kind::Ok(_) = child.recv() else {
@@ -1362,7 +1922,7 @@ fn reset_scrubs_type_check_state_from_the_next_session() {
             "b.py:1:6: error[unresolved-import] Cannot resolve imported module `repl_type_stubs`\n",
         );
         // the scrub keeps SRC_ROOT itself intact — fresh checks still work
-        assert_eq!(child.feed_complete("x: int = 1\nx"), MontyObject::Int(1));
+        assert_eq!(child.feed_complete("x: int = 1\nx"), MontyObject::int(1));
 
         // back to unconfigured for the next case
         child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
@@ -1386,7 +1946,7 @@ fn type_check_format_survives_dump_and_load() {
         protocol_version: PROTOCOL_VERSION,
         ..Default::default()
     });
-    assert_eq!(child.feed_complete("y = 1"), MontyObject::None);
+    assert_eq!(child.feed_complete("y = 1"), MontyObject::none());
     child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
     let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
         panic!("expected DumpResult");
@@ -1417,7 +1977,7 @@ fn type_check_format_survives_dump_and_load() {
 fn dump_then_load_into_fresh_child_resumes() {
     let mut child = ChildProc::spawn();
     child.create_repl();
-    assert_eq!(child.feed_complete("base = 40"), MontyObject::None);
+    assert_eq!(child.feed_complete("base = 40"), MontyObject::none());
 
     // suspend at an external function call
     let (_, event) = child.feed("ext()");
@@ -1444,13 +2004,10 @@ fn dump_then_load_into_fresh_child_resumes() {
     assert_eq!(restored.function_name, "ext");
     assert_eq!(restored.call_id, call.call_id);
 
-    let (_, event) = fresh.resume_call(
-        restored.call_id,
-        pb::ext_function_result::Kind::ReturnValue(int_value(2)),
-    );
-    assert_eq!(expect_complete(event), MontyObject::Int(2));
+    let (_, event) = fresh.resume_return(restored.call_id, MontyObject::int(2));
+    assert_eq!(expect_complete(event), MontyObject::int(2));
     // session globals survived the round trip through the dump
-    assert_eq!(fresh.feed_complete("base + 2"), MontyObject::Int(42));
+    assert_eq!(fresh.feed_complete("base + 2"), MontyObject::int(42));
     fresh.shutdown();
 }
 
@@ -1468,7 +2025,7 @@ fn type_check_state_survives_dump_and_load() {
         ..Default::default()
     });
     // a committed snippet that later feeds must see through the dump
-    assert_eq!(child.feed_complete("y = 1"), MontyObject::None);
+    assert_eq!(child.feed_complete("y = 1"), MontyObject::none());
     child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
     let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
         panic!("expected DumpResult");
@@ -1486,7 +2043,7 @@ fn type_check_state_survives_dump_and_load() {
         panic!("expected TypingError after Load, got {event:?}");
     };
     // ... and so did the stubs committed before it
-    assert_eq!(fresh.feed_complete("y + 1"), MontyObject::Int(2));
+    assert_eq!(fresh.feed_complete("y + 1"), MontyObject::int(2));
     fresh.shutdown();
 }
 
@@ -1592,10 +2149,7 @@ fn protocol_violations_keep_the_child_alive() {
     let pb::child_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
-    let (_, event) = child.resume_call(
-        call.call_id + 1,
-        pb::ext_function_result::Kind::ReturnValue(int_value(0)),
-    );
+    let (_, event) = child.resume_return(call.call_id + 1, MontyObject::int(0));
     let error = expect_error(event);
     assert!(error.message.unwrap().starts_with("protocol violation"));
 
@@ -1735,7 +2289,9 @@ fn killed_child_is_detected_as_eof() {
     child.send(pb::parent_request::Kind::Feed(pb::Feed {
         code: "while True:\n    pass".to_owned(),
         inputs: vec![],
+        values: None,
         skip_type_check: false,
+        cwd: "/".to_owned(),
     }));
     thread::sleep(Duration::from_millis(200));
     child.child.kill().expect("kill");
@@ -1753,7 +2309,7 @@ fn killed_child_is_detected_as_eof() {
 fn reset_returns_child_to_idle_for_reuse() {
     let mut child = ChildProc::spawn();
     child.create_repl();
-    assert_eq!(child.feed_complete("x = 1"), MontyObject::None);
+    assert_eq!(child.feed_complete("x = 1"), MontyObject::none());
     child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
     let pb::child_event::Kind::Ok(_) = child.recv() else {
         panic!("expected Ok for Reset");

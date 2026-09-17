@@ -104,7 +104,7 @@ gc.collect()
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
     let freed = run.run_no_limits(vec![]).expect("should run");
-    let MontyObject::Int(freed) = freed else {
+    let Some(freed) = freed.as_ref().as_int() else {
         panic!("gc.collect() should return an int, got {freed:?}");
     };
     assert!(
@@ -137,7 +137,7 @@ gc.collect()
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
     let freed = run.run_no_limits(vec![]).expect("should run");
-    let MontyObject::Int(freed) = freed else {
+    let Some(freed) = freed.as_ref().as_int() else {
         panic!("gc.collect() should return an int, got {freed:?}");
     };
     assert!(
@@ -163,21 +163,21 @@ fn host_value(code: &str) -> MontyObject {
 fn deque_crosses_host_boundary_as_a_list() {
     assert_eq!(
         host_value("from collections import deque\ndeque([1, 2, 3])"),
-        MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2), MontyObject::Int(3)])
+        MontyObject::list([MontyObject::int(1), MontyObject::int(2), MontyObject::int(3)])
     );
 
     // `maxlen` does not survive the crossing — the host sees only the items.
     assert_eq!(
         host_value("from collections import deque\ndeque([1, 2], maxlen=5)"),
-        MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2)])
+        MontyObject::list([MontyObject::int(1), MontyObject::int(2)])
     );
 
     // Nested values keep their own types rather than being flattened to text.
     assert_eq!(
         host_value("from collections import deque\n[deque([b'x']), 2]"),
-        MontyObject::List(vec![
-            MontyObject::List(vec![MontyObject::Bytes(b"x".to_vec())]),
-            MontyObject::Int(2)
+        MontyObject::list([
+            MontyObject::list([MontyObject::bytes(b"x".to_vec())]),
+            MontyObject::int(2)
         ])
     );
 }

@@ -6,7 +6,50 @@ import { test } from 'vitest'
 
 import { t } from './assertions.js'
 import { skipIfBrowser } from './env.js'
-import { Monty } from '@pydantic/monty/wasm'
+import { Monty, MontyFileHandle } from '@pydantic/monty/wasm'
+import { checkOsPathValidation, checkRelativePathResults } from './os_paths.js'
+
+test('WASM filesystem results preserve relative paths', async (ctx) => {
+  skipIfBrowser(ctx)
+  await using pool = await Monty.create()
+  await using session = await pool.checkout()
+  await checkRelativePathResults((code, options) => session.feedRun(code, options), MontyFileHandle)
+})
+
+test('WASM rejects NUL paths before callbacks and reports clean no-handler paths', async (ctx) => {
+  skipIfBrowser(ctx)
+  await using pool = await Monty.create()
+  await using session = await pool.checkout()
+  await checkOsPathValidation((code, options) => session.feedRun(code, options))
+})
+
+test('OS callback paths are normalized over the wasm transport', async (ctx) => {
+  skipIfBrowser(ctx)
+  await using pool = await Monty.create()
+  await using session = await pool.checkout()
+  const calls: unknown[] = []
+  await session.feedRun(
+    `import os
+from pathlib import Path
+Path('sub/../file.txt').exists()
+Path('/other//sub/../file.txt').exists()
+os.listdir()
+os.rename('./sub/../src', '../dst')`,
+    {
+      cwd: '/data',
+      os: (name, args) => {
+        calls.push([name, args])
+        return name === 'Path.iterdir' ? [] : true
+      },
+    },
+  )
+  t.deepEqual(calls, [
+    ['Path.exists', ['/data/file.txt']],
+    ['Path.exists', ['/other/file.txt']],
+    ['Path.iterdir', ['/data']],
+    ['Path.rename', ['/data/src', '/dst']],
+  ])
+})
 
 test('a time decodes over the wasm transport', async (ctx) => {
   skipIfBrowser(ctx)
@@ -65,4 +108,20 @@ test('a time round-trips through the wasm transport', async (ctx) => {
   }
   t.deepEqual(await session.feedRun('x', { inputs: { x: utc } }), utc)
   t.is(await session.feedRun('x.isoformat()', { inputs: { x: utc } }), '12:00:00+00:00')
+})
+
+test('shared and cyclic values keep their shape over the wasm transport', async (ctx) => {
+  skipIfBrowser(ctx)
+  await using pool = await Monty.create()
+  await using session = await pool.checkout({})
+
+  // a sub-object the sandbox references twice arrives as one host object
+  const shared = (await session.feedRun('x = [1]\n[x, x]')) as unknown[]
+  t.deepEqual(shared, [[1], [1]])
+  t.is(shared[0], shared[1])
+  // a host object passed twice is one sandbox object
+  const y = [1]
+  t.is(await session.feedRun('a is b', { inputs: { a: y, b: y } }), true)
+  // a cycle arrives as its placeholder
+  t.deepEqual(await session.feedRun('x = []\nx.append(x)\nx'), ['[...]'])
 })

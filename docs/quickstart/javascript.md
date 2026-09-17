@@ -255,6 +255,8 @@ console.log(text) // hello
 
 `mode` is `'read-only'`, `'read-write'` or `'overlay'` (the default).
 `using` closes the mount's directory handle at the end of scope, which Windows needs before the directory can be removed.
+The sandbox's working directory is the first mount's virtual path, so `open('new.txt')` would reach the same file; the
+`cwd` feed option picks another.
 See [filesystem access](../filesystem.md).
 
 ## Configuring the pool
@@ -282,8 +284,12 @@ package, then `PATH`, and in a checkout of the Monty repository finally a cargo-
 completion.
 `snapshot.resume(...)` returns the next snapshot or a `MontyComplete`; `snapshot.resumeAuto()` answers it from the
 captured `externalLookup` / `os`.
+A promise-returning external is awaited directly by `resumeAuto()` when the snapshot's `allowEagerAwait` is true, and
+otherwise concurrently, surfacing as an intermediate `FutureSnapshot`, exactly as under `feedRun`.
 `snapshot.dump()` serializes a paused worker and `session.loadSnapshot(blob)` restores it; `session.dump()` and
 `session.loadSession(blob)` do the same for an idle session between feeds.
+Only restore unmodified snapshots from a trusted, compatible producer; the caller must establish provenance and integrity.
+See [snapshot security](../security.md#deserializing-snapshots) before accepting bytes through an untrusted channel.
 
 See [snapshots](../snapshots.md) for the model, which is identical to Python's.
 
@@ -299,7 +305,11 @@ import { Monty } from '@pydantic/monty/wasm'
 await using pool = await Monty.create()
 ```
 
+`Monty.create()` is `createWorkerPool(await loadModule())`, and both halves are exported: `loadModule()` fetches and
+compiles the wasm modules, and `createWorkerPool(modules)` starts the workers, so an app can load the wasm ahead of time.
 A bundler resolving the `browser` condition on the main entry point gets this build automatically.
+[`examples/antigravity`](https://github.com/pydantic/monty/tree/main/examples/antigravity) is a worked browser example,
+built with Vite.
 
 Differences from the native path:
 

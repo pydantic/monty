@@ -86,6 +86,10 @@ jobs:
       - name: Check vendored typeshed stubs are in sync
         run: make check-typeshed
 
+      # the str character-property tables are generated from the pinned CPython
+      - name: Check generated str Unicode tables are in sync
+        run: make check-unicode-type
+
       # rustdoc JSON is nightly-only and format-unstable, so the API reference
       # is generated with the exact nightly matching monty-apidoc's pinned
       # `rustdoc-types` (see crates/monty-apidoc/src/main.rs)
@@ -344,6 +348,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          # `pyo3-ffi` bakes in the ABI of the interpreter it was built against, and
+          # free-threaded builds lay `PyObject` out differently. Without the version in
+          # the key every entry in this matrix shares one cache, breaking 3.14t
+          key: ${{ matrix.python-version }}
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
 
@@ -1328,7 +1336,7 @@ jobs:
           path: crates/monty-js/package-tarballs
 
       - name: Install packed package
-        run: npm install ../package-tarballs/monty-main.tgz --omit=optional --force --no-save --no-package-lock
+        run: npm install ../package-tarballs/monty-main.tgz ../package-tarballs/monty-linux-x64-gnu.tgz --force --no-save --no-package-lock
         working-directory: crates/monty-js/smoke-test
 
       - name: Exercise the packed browser package

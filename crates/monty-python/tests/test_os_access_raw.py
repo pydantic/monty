@@ -7,6 +7,7 @@ interact with through the `os=` callback surface.
 
 import datetime
 from pathlib import PurePosixPath
+from unittest.mock import Mock
 
 import pytest
 from conftest import RunMonty
@@ -234,6 +235,21 @@ def test_abstract_os_date_today(monty_run: RunMonty):
     result = monty_run('from datetime import date; date.today()', os=fs)
 
     assert (type(result).__name__, repr(result)) == snapshot(('date', 'datetime.date(2024, 1, 15)'))
+
+
+def test_abstract_os_urandom_default(monty_run: RunMonty, monkeypatch: pytest.MonkeyPatch):
+    """AbstractOS.urandom() answers from the host's os.urandom by default."""
+    fs = TestOS()
+
+    result = monty_run('import os, random\n(len(os.urandom(8)), 0.0 <= random.random() < 1.0)', os=fs)
+
+    assert result == snapshot((8, True))
+
+    entropy = Mock(side_effect=AssertionError('oversized host allocation'))
+    monkeypatch.setattr('pydantic_monty.os_access.os.urandom', entropy)
+    with pytest.raises(MemoryError, match='^os.urandom\\(\\) size exceeds max_urandom_bytes \\(1048576\\)$'):
+        fs.urandom(2**40)
+    entropy.assert_not_called()
 
 
 def test_abstract_os_datetime_now_with_timezone(monty_run: RunMonty):

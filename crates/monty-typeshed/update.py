@@ -136,6 +136,10 @@ COPY_FILES = [
     # ==============================
     'math.pyi',
     'datetime.pyi',
+    # Monty implements every `itertools` callable
+    'itertools.pyi',
+    # narrowed to Monty's surface by custom/random.pyi
+    'random.pyi',
 ]
 # content for typeshed's `VERSIONS` file
 VERSIONS = """\
@@ -152,6 +156,7 @@ base64: 3.0-
 binascii: 3.0-
 builtins: 3.0-
 collections: 3.0-
+copy: 3.0-
 dataclasses: 3.7-
 datetime: 3.0-
 functools: 3.0-
@@ -161,6 +166,7 @@ math: 3.0-
 os: 3.0-
 pathlib: 3.4-
 pathlib.types: 3.14-
+random: 3.0-
 re: 3.0-
 sys: 3.0-
 typing: 3.5-

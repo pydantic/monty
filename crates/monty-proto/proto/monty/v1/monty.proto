@@ -31,12 +31,26 @@ message Unit {}
 // Values
 // ============================================================================
 
-// A Python value crossing the sandbox boundary. Mirrors monty's `MontyObject`
-// enum variant-for-variant.
+// Python values cross the boundary as one node arena per message: containers
+// hold the indexes of their children, so a sub-object referenced twice is one
+// node, and the carrying message names its roots by index. Nodes are in
+// post-order (every child index is lower than its holder's), so receivers
+// build values in one forward pass; a reference back to an enclosing
+// container is a `cycle` leaf. Mirrors monty's `MontyGraph`.
+message Arena {
+  // The sender's node count, so a receiver can reserve the arena once. A
+  // hint only: receivers cap it by the message size and charge it against
+  // their decode budget before allocating.
+  uint32 node_count = 1;
+  repeated MontyNode nodes = 2;
+}
+
+// One node of an `Arena`. Leaf arms carry the value; container arms carry
+// the indexes of their children.
 //
 // `repr` and `cycle` are OUTPUT-ONLY: the child may emit them (e.g. inside a
-// `Complete` value) but rejects them as inputs, exactly like `MontyObject`.
-message MontyObject {
+// `Complete` value) but rejects them as inputs.
+message MontyNode {
   oneof kind {
     Unit ellipsis = 1;
     Unit none = 2;
@@ -53,12 +67,12 @@ message MontyObject {
     // IMPLEMENTED: monty has no uuid module, so neither end produces or
     // accepts this arm (it decodes like any unknown kind — rejected).
     Uuid uuid = 10;
-    ObjectList list = 11;
-    ObjectList tuple = 12;
-    NamedTuple named_tuple = 13;
-    Dict dict = 14;
-    ObjectList set = 15;
-    ObjectList frozen_set = 16;
+    Indexes list = 11;
+    Indexes tuple = 12;
+    NamedTupleNode named_tuple = 13;
+    NodePairs dict = 14;
+    Indexes set = 15;
+    Indexes frozen_set = 16;
     Date date = 17;
     Time time = 18;
     DateTime datetime = 19;
@@ -67,9 +81,10 @@ message MontyObject {
     // A simple exception VALUE (no traceback) — e.g. an exception stored in a
     // variable. Errors that terminate execution use `RaisedException` instead.
     Exception exception = 22;
-    // A Python type object — builtin, sandbox class, or host class.
+    // A Python type object — builtin, sandbox class, or host class. A class
+    // is a node of its own, shared by every instance of it in the arena.
     Type type = 23;
-    ClassInstance class_instance = 24;
+    ClassInstanceNode class_instance = 24;
     Function function = 25;
     // A builtin function, named by its Python name, e.g. "len", "print".
     string builtin_function = 26;
@@ -78,25 +93,27 @@ message MontyObject {
     FileHandle file_handle = 28;
     // OUTPUT-ONLY fallback: repr() of a value with no other representation.
     string repr = 29;
-    // OUTPUT-ONLY marker breaking reference cycles in container output.
-    Cycle cycle = 30;
+    // OUTPUT-ONLY: a reference back to a container enclosing this node, as
+    // the placeholder its repr shows ("[...]", "(...)", "{...}" or "...").
+    string cycle = 30;
   }
 }
 
-message ObjectList {
-  repeated MontyObject items = 1;
+// Indexes of a container's children (list, tuple, set, frozenset items).
+message Indexes {
+  repeated uint32 items = 1;
 }
 
-// One key/value entry. Used for dicts and kwargs: proto maps cannot have
-// message keys and do not preserve order, while Python dicts allow arbitrary
-// hashable keys and are insertion-ordered.
-message Pair {
-  MontyObject key = 1;
-  MontyObject value = 2;
+// One key/value entry as node indexes. Used for dicts, attrs and kwargs:
+// proto maps cannot have message keys and do not preserve order, while
+// Python dicts allow arbitrary hashable keys and are insertion-ordered.
+message NodePair {
+  uint32 key = 1;
+  uint32 value = 2;
 }
 
-message Dict {
-  repeated Pair pairs = 1;
+message NodePairs {
+  repeated NodePair pairs = 1;
 }
 
 // Arbitrary-precision integer as sign + big-endian magnitude. Exact and O(n);
@@ -106,12 +123,13 @@ message BigInt {
   bytes magnitude = 2;
 }
 
-message NamedTuple {
+message NamedTupleNode {
   // Type name used in repr, e.g. "os.stat_result".
   string type_name = 1;
   // Attribute names, one per value.
   repeated string field_names = 2;
-  repeated MontyObject values = 3;
+  // Indexes of the values, one per field name.
+  repeated uint32 values = 3;
 }
 
 message Date {
@@ -221,24 +239,25 @@ message Type {
   // Whether `dataclasses.is_dataclass` is true for the class.
   bool is_dataclass = 4;
   // Class attributes sent eagerly with the type object (class constants, per
-  // the sending wrapper's policy), as a class value or as the `type` field of
-  // a ClassInstance. The sandbox keeps one type object per class id: a
-  // non-empty set replaces its attrs, an empty set leaves them unchanged. The
-  // worker sends an empty set for the `type` field of an instance.
-  Dict attrs = 5;
+  // the sending wrapper's policy), as `(name, value)` node indexes. The
+  // sandbox keeps one type object per class id: a non-empty set replaces its
+  // attrs, an empty set leaves them unchanged. The worker never sends attrs
+  // for a sandbox class.
+  NodePairs attrs = 5;
 }
 
 // A class instance crossing the sandbox boundary. Host-backed instances route
 // method calls and lazy attribute lookups back to the real object by uuid
 // (`FunctionCall.object_id` / `NameLookup.object_id`); sandbox-defined
 // instances carry a worker-generated uuid instead.
-message ClassInstance {
-  // The instance's class; origin SANDBOX or HOST (never BUILTIN).
-  Type type = 1;
+message ClassInstanceNode {
+  // Index of the instance's class: a `type` node with origin SANDBOX or HOST
+  // (never BUILTIN), shared by every instance of the class in the arena.
+  uint32 class_type = 1;
   // Identity of the instance, generated by whichever side defined it.
   Uuid instance_id = 2;
-  // Eagerly-sent attributes, in order.
-  Dict attrs = 3;
+  // Eagerly-sent attributes as `(name, value)` node indexes, in order.
+  NodePairs attrs = 3;
 }
 
 // An external (host-provided) function value, usually supplied by the parent
@@ -246,15 +265,6 @@ message ClassInstance {
 message Function {
   string name = 1;
   optional string docstring = 2;
-}
-
-message Cycle {
-  // Opaque identity token for the object the cycle refers back to: two
-  // cycle markers in the same result are the same object iff their tokens
-  // match. Meaningless outside the result that produced it.
-  uint64 identity = 1;
-  // Type-specific placeholder shown in reprs, e.g. "[...]".
-  string placeholder = 2;
 }
 
 // ============================================================================
@@ -366,8 +376,9 @@ message ResourceLimits {
 // resolve, against its suspended call).
 message ExtFunctionResult {
   oneof kind {
-    // The call returned this value.
-    MontyObject return_value = 1;
+    // The call returned this value: an index into the carrying message's
+    // `values` arena.
+    uint32 return_value = 1;
     // The call raised this exception.
     RaisedException error = 2;
     // The call is asynchronous: register an external future for `call_id`
@@ -388,9 +399,10 @@ message FutureResult {
   ExtFunctionResult result = 2;
 }
 
-message NamedValue {
+// A named input: `value` indexes the carrying message's `values` arena.
+message NamedRef {
   string name = 1;
-  MontyObject value = 2;
+  uint32 value = 2;
 }
 
 // ============================================================================
@@ -495,9 +507,16 @@ enum TypeCheckFormat {
 // `Error`, `TypingError`, or a suspension event.
 message Feed {
   string code = 1;
-  repeated NamedValue inputs = 2;
+  // Inputs, each an index into `values`; one arena, so an object passed
+  // under two names is one sandbox object.
+  repeated NamedRef inputs = 2;
+  Arena values = 3;
   // Skip type checking for this feed even when the session enables it.
-  bool skip_type_check = 3;
+  bool skip_type_check = 4;
+  // Absolute virtual working directory to switch the session to before the
+  // feed, resolved by the parent (an explicit choice, or the first mount on
+  // the session's first feed). Empty keeps the session's current directory.
+  string cwd = 5;
 }
 
 // Ends a pending suspension by raising `exception` uncatchably at its site.
@@ -512,27 +531,35 @@ message AbortFeed {
 message ResumeCall {
   uint32 call_id = 1;
   ExtFunctionResult result = 2;
+  // The arena `result.return_value` indexes.
+  Arena values = 3;
 }
 
 // Answers a `NameLookup` suspension.
 message ResumeNameLookup {
+  // The arena `value` indexes.
+  Arena values = 1;
   oneof kind {
-    // The name resolves to this value.
-    MontyObject value = 1;
+    // The name resolves to this value: an index into `values`.
+    uint32 value = 2;
     // The name is undefined — the child raises NameError (AttributeError for
     // a lazy attribute lookup).
-    Unit undefined = 2;
+    Unit undefined = 3;
     // Resolving the name raised on the parent — the child raises this
     // exception where the lookup suspended, bypassing hasattr()/getattr()
     // defaults.
-    RaisedException error = 3;
+    RaisedException error = 4;
   }
 }
 
 // Answers a `ResolveFutures` suspension with results for some or all pending
 // call ids.
 message ResumeFutures {
+  // Also answers an eager FunctionCall with exactly one result matching its
+  // call_id. The worker creates a settled awaitable before continuing.
   repeated FutureResult results = 1;
+  // The arena every `return_value` indexes.
+  Arena values = 2;
 }
 
 // Requests an opaque serialized snapshot of the current session state
@@ -613,13 +640,13 @@ message ChildEvent {
 
   // Echoes the parent-enforced budget so a host restoring an opaque dump can
   // recover it.
-  optional uint64 max_suspensions = 23;
+  optional uint64 max_suspensions = 22;
 
   // The session's script name, surfaced on a `Load` reply so a parent that
   // restored a session (whose script name, like the limits above, travels
   // inside the opaque dump bytes) learns it without parsing the dump. Set only
   // on a successful `Load` reply; unset on all other events.
-  optional string restored_script_name = 22;
+  optional string restored_script_name = 23;
 }
 
 enum PrintStream {
@@ -640,11 +667,7 @@ message PrintSegment {
 // the order the sandbox produced them — so output alternating between the
 // streams batches into one event without losing that order.
 message Print {
-  // 1 and 2 were the single stream and text this event carried before it
-  // could hold more than one run.
-  reserved 1, 2;
-  reserved "stream", "text";
-  repeated PrintSegment segments = 3;
+  repeated PrintSegment segments = 1;
 }
 
 // Suspension: the sandbox called an external function, or — when `object_id`
@@ -655,11 +678,20 @@ message Print {
 // allowed. Answer with `ResumeCall`.
 message FunctionCall {
   string function_name = 1;
-  repeated MontyObject args = 2;
-  repeated Pair kwargs = 3;
+  // Positional arguments, as indexes into `values`.
+  repeated uint32 args = 2;
+  // Keyword arguments as `(key, value)` indexes into `values`, in order.
+  repeated NodePair kwargs = 3;
   uint32 call_id = 4;
   // The uuid of the receiver; absent for plain external function calls.
   Uuid object_id = 5;
+  // The host may await a coroutine and answer with ResumeFutures for this
+  // call_id. Synchronous results use ResumeCall; returning a pending
+  // future remains valid. Absent/false requires the ordinary call reply.
+  bool allow_eager_await = 6;
+  // The arena `args` and `kwargs` index: one per call, so an object passed
+  // twice crosses once.
+  Arena values = 7;
 }
 
 // Suspension: the sandbox performed an OS operation, surfaced for the parent
@@ -706,7 +738,12 @@ message OsCall {
     Unit date_today = 23; // date.today()
     // datetime.now(tz) — the timezone argument (absent for a naive result).
     DateTimeNow date_time_now = 24;
+    // os.urandom(size), also how `random` seeds an unseeded generator.
+    Urandom urandom = 25;
   }
+
+  // The arena any value-typed argument (`Getenv.default`) indexes.
+  Arena values = 26;
 
   message TextWrite {
     string path = 1;
@@ -730,10 +767,11 @@ message OsCall {
     string src = 1;
     string dst = 2;
   }
-  // os.getenv(key, default) — `default` may be any Python value.
+  // os.getenv(key, default) — `default` may be any Python value: an index
+  // into the enclosing `OsCall.values`.
   message Getenv {
     string key = 1;
-    MontyObject default = 2;
+    uint32 default = 2;
   }
   // datetime.now(tz) — the VM validates the argument to None-or-timezone
   // before suspending, so the wire carries a typed TimeZone rather than an
@@ -741,6 +779,11 @@ message OsCall {
   message DateTimeNow {
     // Fixed-offset timezone for an aware result; absent for a naive one.
     optional TimeZone tz = 1;
+  }
+  // os.urandom(size) — the byte count the sandbox validated; unsigned so
+  // a negative count cannot be expressed on the wire.
+  message Urandom {
+    uint64 size = 1;
   }
 }
 
@@ -765,7 +808,9 @@ message ResolveFutures {
 // Turn end: the snippet completed with this value. The session is ready for
 // the next `Feed`.
 message Complete {
-  MontyObject value = 1;
+  // Index of the result in `values`.
+  uint32 value = 1;
+  Arena values = 2;
 }
 
 // Turn end: the snippet (or request) failed with a Python exception. The

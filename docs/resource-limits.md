@@ -81,6 +81,14 @@ threshold, including integer multiplication, division and `divmod`, left shift, 
 an iterator into a container, and f-string, `str.format()` or `%` formatting with a dynamic width or precision.
 So `'x' * 10**12` fails immediately rather than after consuming the machine's memory.
 
+Containers a program grows one element at a time are pre-checked as well, at the point the buffer would reallocate
+rather than on every push: `list.append` and `list.insert`, `deque.append` and `deque.appendleft`, `set.add`, and
+assigning a new dict key.
+So are the value buffers a single call fills: the argument pack behind `f(*args)`, the array `json.loads` parses, the
+pieces `re.split` collects, and the list `re.findall` builds for a pattern with at most one capture group.
+A wider `findall`, and `re.finditer`, allocate an object per match and are not covered — see
+[the limitations note](limitations/resource_limits.md).
+
 A few integer operations carry their own caps regardless of `max_memory`:
 
 - `base ** exp` with an exponent above `u32::MAX` raises `OverflowError`, except for bases 0, 1 and -1.
@@ -156,6 +164,9 @@ caps the dump's, so a worker cannot report a looser one.
 - **Mount memory.** Each [mount](filesystem.md) has its own `memory_usage_limit`, defaulting to 100 MB, shared between
     retained overlay data and transient results.
 - **`json.loads` nesting**, capped at 200 levels independently of the recursion limit.
+- **Host entropy.** Python's `AbstractOS.urandom()` raises `MemoryError` before allocating when a request exceeds
+    `max_urandom_bytes`, 1 MiB by default (`OSAccess(max_urandom_bytes=...)`).
+    A custom entropy callback allocates in the host process, so it must apply its own cap.
 - **The host instance store.** Every [`ClassInstance`][pydantic_monty.ClassInstance]/[`ClassType`][pydantic_monty.ClassType] wrapper sent into a session (nested wrappers,
     `init=True` constructions and `convert_value` wraps included) is retained in the host process until the session
     ends; re-sending a wrapper with the same id reuses its entry, distinct wrappers accumulate; see

@@ -34,6 +34,10 @@ at all; `monty-proto` links it only with its `worker` feature, which the workers
 The [Rust API](../api/rust/monty.md) pages document `monty`, `monty-pool`, `monty-types`, `monty-fs`, `monty-proto` and
 `monty-type-checking`.
 
+Custom OS handlers can use `monty_types::normalize_virtual_path` after validating the received path.
+It shares the mounts' lexical POSIX normalization; see [filesystem callbacks](../filesystem.md#working-directory)
+for validation order and access checks.
+
 ## Two ways to run Monty
 
 - **[`monty-pool`](../api/rust/monty-pool.md)** runs the interpreter only in `monty` worker subprocesses.
@@ -82,7 +86,9 @@ async fn main() -> Result<(), PoolError> {
 ```
 
 [`Checkout::feed`](../api/rust/monty-pool.md#checkout) takes the code, inputs (host values bound as sandbox globals), per-feed filesystem mounts
-([`MountSpec`](../api/rust/monty-pool.md#mountspec)), a `skip_type_check` flag and a print sink.
+([`MountSpec`](../api/rust/monty-pool.md#mountspec)), a `skip_type_check` flag and a print sink;
+[`Checkout::feed_with_cwd`](../api/rust/monty-pool.md#checkout) also sets the sandbox's
+[working directory](../filesystem.md#working-directory), which otherwise defaults to the first mount.
 It returns a [`TurnEvent`](../api/rust/monty-pool.md#turnevent):
 
 | `TurnEvent`                                                             | Meaning                                                                                                                                                                | Answer with                                                                      |
@@ -98,6 +104,8 @@ trusted back into the pool.
 
 [`ReplConfig`](../api/rust/monty-pool.md#replconfig) carries the per-session sandbox [`ResourceLimits`](../api/rust/monty-types.md#resourcelimits) and type-checking options.
 [`Checkout::dump`](../api/rust/monty-pool.md#checkout) and [`Checkout::restore`](../api/rust/monty-pool.md#checkout) snapshot and restore a session, including onto a different worker or machine.
+Restore only unmodified snapshots whose provenance and integrity the caller has established;
+see [snapshot security](../security.md#deserializing-snapshots).
 
 ### What the pool adds over in-process execution
 
@@ -154,8 +162,8 @@ fib(x)
 "#;
 
 let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
-let result = runner.run(vec![MontyObject::Int(10)], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
-assert_eq!(result, MontyObject::Int(55));
+let result = runner.run(vec![MontyObject::int(10)], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
+assert_eq!(result, MontyObject::int(55));
 ```
 
 Errors come back as [`MontyException`](../api/rust/monty-types.md#montyexception), with a traceback matching what CPython would produce.
@@ -193,7 +201,7 @@ use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 let code = "from datetime import date\ndate.today().year";
 let runner = MontyRun::new(code.to_owned(), "today.py", vec![], CompileOptions::default()).unwrap();
 let year = runner.run(vec![], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
-assert!(matches!(year, MontyObject::Int(y) if y >= 2026));
+assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
 ```
 
 `with_host_clock` changes that: `HostClock::Denied` takes the clock away, for embedders who would rather sandboxed code
@@ -201,6 +209,9 @@ could not read their wall time at all, and `HostClock::Fixed` freezes an instant
 
 `start` ignores this: there the call pauses and the host answers it, like any other OS call, and the same is true of
 every pool session (see [the clock](../security.md#the-clock)).
+Entropy has no in-process fallback.
+Under `run`, an unseeded `random` draw or `os.urandom()` raises `NotImplementedError`.
+Under `start` it pauses on an `os.urandom` call for the host to answer (see [random](../limitations/random.md)).
 
 ### Host functions and pausing
 
@@ -215,22 +226,24 @@ let code = "data = get_data(3)\ndata * 2";
 let runner = MontyRun::new(code.to_owned(), "main.py", vec!["get_data".to_owned()], CompileOptions::default()).unwrap();
 
 // pass the external function in as an input
-let get_data = MontyObject::Function { name: "get_data".to_owned(), docstring: None };
+let get_data = MontyObject::function("get_data".to_owned(), None);
 let progress = runner.start(vec![get_data], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
 
 // execution pauses at the `get_data(3)` call
 let RunProgress::FunctionCall(call) = progress else { panic!("expected a function call") };
 assert_eq!(call.function_name, "get_data");
-assert_eq!(call.args, vec![MontyObject::Int(3)]);
+assert_eq!(call.args.arg(0).unwrap(), MontyObject::int(3));
 
 // the host computes the result and resumes
-let progress = call.resume(MontyObject::Int(21), PrintWriter::Stdout).unwrap();
+let progress = call.resume(MontyObject::int(21), PrintWriter::Stdout).unwrap();
 let RunProgress::Complete(result) = progress else { panic!("expected completion") };
-assert_eq!(result, MontyObject::Int(42));
+assert_eq!(result, MontyObject::int(42));
 ```
 
 Async host functions work the same way: [`FunctionCall::resume_pending`](../api/rust/monty.md#functioncall) continues with a pending future the sandboxed
 code can `await`, and when every task is blocked the run yields [`RunProgress::ResolveFutures`](../api/rust/monty.md#runprogress) for the host to settle.
+When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the
+result can pass it to [`FunctionCall::resume_eager`](../api/rust/monty.md#functioncall) and skip the `ResolveFutures` round trip.
 
 [`FunctionCall`](../api/rust/monty.md#functioncall), [`OsCall`](../api/rust/monty.md#oscall), [`NameLookup`](../api/rust/monty.md#namelookup) and [`ResolveFutures`](../api/rust/monty.md#resolvefutures) expose `abort`, which raises a host-supplied
 [`MontyException`](../api/rust/monty-types.md#montyexception) uncatchably at the suspension point and unwinds the run with a traceback.
@@ -241,7 +254,10 @@ A host driving the interpreter directly must count suspensions and call `abort` 
 
 The free function `monty::dump` serializes a session — idle between feeds ([`SessionRef::Idle`](../api/rust/monty.md#sessionref)) or suspended mid-run
 ([`SessionRef::Suspended`](../api/rust/monty.md#sessionref)) — together with its script name and type-check state.
-[`Dump::load`](../api/rust/monty.md#dump) restores it, in the same process or a different one:
+[`Dump::load`](../api/rust/monty.md#dump) restores it, in the same process or a different one.
+Both this method and direct serde deserialization require unmodified bytes from a trusted, compatible Monty producer.
+The caller must establish provenance and integrity; invalid snapshots have no correctness or availability guarantees.
+See [snapshot security](../security.md#deserializing-snapshots).
 
 ```rust
 use monty::{Dump, MontyRepl, Session, SessionRef, dump};
@@ -256,7 +272,7 @@ let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
 // later, restore and keep going
 let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else { panic!() };
 let result = restored.feed_run("x + 2", vec![], PrintWriter::Stdout).unwrap();
-assert_eq!(result, MontyObject::Int(42));
+assert_eq!(result, MontyObject::int(42));
 ```
 
 ### Other pieces
@@ -268,4 +284,4 @@ assert_eq!(result, MontyObject::Int(42));
 - [`RunProgress::OsCall`](../api/rust/monty.md#runprogress) and [`RunProgress::NameLookup`](../api/rust/monty.md#runprogress) — the filesystem/`os` operations and undefined-name reads the host
     intercepts.
 - [`FunctionCall::object_id`](../api/rust/monty.md#functioncall) and [`NameLookup::object_id`](../api/rust/monty.md#namelookup) — set for method calls and lazy attribute lookups routed to a
-    host object sent as [`MontyObject::ClassInstance`](../api/rust/monty-types.md#montyobject) or [`MontyObject::Type`](../api/rust/monty-types.md#montyobject); the receiver is not in `args`.
+    host object sent as a [`MontyNode::ClassInstance`](../api/rust/monty-types.md#montynode) or [`MontyNode::ClassType`](../api/rust/monty-types.md#montynode) node; the receiver is not in `args`.
