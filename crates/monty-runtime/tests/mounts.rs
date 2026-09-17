@@ -87,7 +87,8 @@ fn max_sleep_caps_a_long_sleep() {
     ]);
 
     assert!(success, "unexpected stderr: {stderr}");
-    assert!(start.elapsed().as_secs() < 30, "the sleep was not capped");
+    // well under the 10s default, so an ignored `--max-sleep` fails too
+    assert!(start.elapsed().as_secs() < 5, "the sleep was not capped");
 }
 
 #[test]

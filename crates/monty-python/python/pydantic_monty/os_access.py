@@ -645,8 +645,13 @@ class AbstractOS(ABC):
         return self.sleep(delay)
 
     def _capped(self, seconds: float) -> float:
-        """`seconds` cut down to `max_sleep`, when there is one."""
-        return seconds if self.max_sleep is None else min(seconds, self.max_sleep)
+        """`seconds` cut down to `max_sleep`, when there is one.
+
+        Fails closed: a NaN cap is returned rather than the request (`min()` would keep
+        the request), so the sleep raises instead of running uncapped.
+        """
+        cap = self.max_sleep
+        return seconds if cap is None or seconds <= cap else cap
 
 
 @functools.cache
@@ -941,7 +946,9 @@ class OSAccess(AbstractOS):
             AssertionError: If root_dir is not an absolute path.
             ValueError: If a file path conflicts with another file (e.g., trying
                 to create a file inside another file's path), or `max_urandom_bytes` is negative.
-            TypeError: If `max_urandom_bytes` is not an int (a float `nan` would disable the cap).
+                Also if `max_sleep` is negative or `nan`, either of which would disable the cap.
+            TypeError: If `max_urandom_bytes` is not an int (a float `nan` would disable the cap),
+                or `max_sleep` is not a number or `None`.
         """
         if not isinstance(max_urandom_bytes, int):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f'max_urandom_bytes must be an int, not {type(max_urandom_bytes).__name__}')
@@ -950,6 +957,12 @@ class OSAccess(AbstractOS):
         self.max_urandom_bytes = max_urandom_bytes
         self.files = list(files) if files else []
         self.environ = environ or {}
+        if max_sleep is not None:
+            if isinstance(max_sleep, bool) or not isinstance(max_sleep, (int, float)):  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise TypeError(f'max_sleep must be a number or None, not {type(max_sleep).__name__}')
+            # `not >=` rather than `<` so `nan`, which compares false both ways, is rejected
+            if not max_sleep >= 0:
+                raise ValueError('max_sleep must be non-negative')
         self.max_sleep = max_sleep
         # Initialize tree with root directory - / is always present
         self._tree = {'/': {}}
