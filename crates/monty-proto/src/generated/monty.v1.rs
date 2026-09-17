@@ -801,21 +801,24 @@ pub struct Print {
 /// `ExtFunctionResult.not_handled`: the child raises the call's own default
 /// (PermissionError naming the path for filesystem calls, RuntimeError for
 /// the rest — monty's `OsFunctionCall::on_no_handler`).
+///
+/// Tags 2-49 are reserved for `call` arms and the other message-level fields
+/// start at 50, as in `ChildEvent`, so a new call never has to jump the numbering.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OsCall {
     #[prost(uint32, tag = "1")]
     pub call_id: u32,
     /// The arena any value-typed argument (`Getenv.default`) indexes.
-    #[prost(message, optional, tag = "26")]
+    #[prost(message, optional, tag = "50")]
     pub values: ::core::option::Option<crate::WireArena>,
     /// As on `FunctionCall`: the parent may await a coroutine and answer with
     /// `ResumeFutures` for `call_id`. Only ever set on `async_sleep`, the one
     /// call a future may answer at all.
-    #[prost(bool, tag = "30")]
+    #[prost(bool, tag = "51")]
     pub allow_eager_await: bool,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -984,13 +987,13 @@ pub mod os_call {
         #[prost(message, tag = "25")]
         Urandom(Urandom),
         /// time.time()
-        #[prost(message, tag = "27")]
+        #[prost(message, tag = "26")]
         Time(super::Unit),
         /// time.sleep(seconds)
-        #[prost(message, tag = "28")]
+        #[prost(message, tag = "27")]
         Sleep(Sleep),
         /// asyncio.sleep(delay)
-        #[prost(message, tag = "29")]
+        #[prost(message, tag = "28")]
         AsyncSleep(AsyncSleep),
     }
 }

@@ -705,6 +705,9 @@ message FunctionCall {
 // `ExtFunctionResult.not_handled`: the child raises the call's own default
 // (PermissionError naming the path for filesystem calls, RuntimeError for
 // the rest — monty's `OsFunctionCall::on_no_handler`).
+//
+// Tags 2-49 are reserved for `call` arms and the other message-level fields
+// start at 50, as in `ChildEvent`, so a new call never has to jump the numbering.
 message OsCall {
   uint32 call_id = 1;
 
@@ -740,17 +743,17 @@ message OsCall {
     DateTimeNow date_time_now = 24;
     // os.urandom(size), also how `random` seeds an unseeded generator.
     Urandom urandom = 25;
-    Unit time = 27; // time.time()
-    Sleep sleep = 28; // time.sleep(seconds)
-    AsyncSleep async_sleep = 29; // asyncio.sleep(delay)
+    Unit time = 26; // time.time()
+    Sleep sleep = 27; // time.sleep(seconds)
+    AsyncSleep async_sleep = 28; // asyncio.sleep(delay)
   }
 
   // The arena any value-typed argument (`Getenv.default`) indexes.
-  Arena values = 26;
+  Arena values = 50;
   // As on `FunctionCall`: the parent may await a coroutine and answer with
   // `ResumeFutures` for `call_id`. Only ever set on `async_sleep`, the one
   // call a future may answer at all.
-  bool allow_eager_await = 30;
+  bool allow_eager_await = 51;
 
   message TextWrite {
     string path = 1;

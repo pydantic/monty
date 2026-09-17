@@ -159,8 +159,8 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             })),
             os_call::Call::Urandom(u) => Self::Urandom(UrandomArgs { size: u.size }),
             os_call::Call::Time(_) => Self::Time,
-            os_call::Call::Sleep(s) => Self::Sleep(delay(s.seconds, "Sleep.seconds")?),
-            os_call::Call::AsyncSleep(s) => Self::AsyncSleep(delay(s.delay, "AsyncSleep.delay")?),
+            os_call::Call::Sleep(s) => Self::Sleep(field_sleep_duration(s.seconds, "Sleep.seconds")?),
+            os_call::Call::AsyncSleep(s) => Self::AsyncSleep(field_sleep_duration(s.delay, "AsyncSleep.delay")?),
         })
     }
 }
@@ -170,7 +170,7 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
 /// A child may be compromised, so a NaN, negative or unrepresentable delay is
 /// refused here rather than reaching a host that would convert it — and panic
 /// doing so.
-fn delay(seconds: f64, field: &'static str) -> Result<Duration, ProtoConvertError> {
+fn field_sleep_duration(seconds: f64, field: &'static str) -> Result<Duration, ProtoConvertError> {
     sleep_duration(seconds).map_err(|_| ProtoConvertError::InvalidValue {
         field,
         reason: format!("sleep length {seconds} is not a finite, non-negative number of seconds"),

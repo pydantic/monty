@@ -195,7 +195,7 @@ impl OsFunctionCall {
             // Unit & single-value non-FS variants.
             Self::GetEnviron | Self::DateToday | Self::Time => CallArgs::new(),
             Self::DateTimeNow(tz) => single_arg(tz.map_or(MontyNode::None, MontyNode::TimeZone)),
-            Self::Sleep(delay) | Self::AsyncSleep(delay) => single_arg(seconds_node(delay)),
+            Self::Sleep(delay) | Self::AsyncSleep(delay) => single_arg(MontyNode::Float(delay.as_secs_f64())),
         }
     }
 
@@ -504,11 +504,6 @@ pub fn sleep_duration_saturating(seconds: f64) -> Result<Duration, SleepError> {
         Err(SleepError::TooLarge) => Ok(Duration::from_secs_f64(MAX_SLEEP_SECONDS)),
         Err(err @ SleepError::NotANumber) => Err(err),
     }
-}
-
-/// Projects a sleep length back to the `float` seconds a host callback sees.
-fn seconds_node(delay: Duration) -> MontyNode {
-    MontyNode::Float(delay.as_secs_f64())
 }
 
 // =============================================================================
