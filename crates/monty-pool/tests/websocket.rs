@@ -525,7 +525,6 @@ async fn eager_bit_on_a_non_future_os_call_is_dropped() {
         matches!(
             event,
             TurnEvent::OsCall {
-                accepts_future: false,
                 allow_eager_await: false,
                 ..
             }

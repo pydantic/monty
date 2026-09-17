@@ -5,7 +5,7 @@
 // converts only between public JavaScript values and the component's flat value
 // arena; protobuf is now entirely internal to Rust.
 
-import { type NativeFutureResult, type NativeTurn, type NotMountedTurn, osCallAcceptsFuture } from '../native.js'
+import type { NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
 import {
   type AssertMessageAnnotations,
   type TypeCheckFormat,
@@ -391,7 +391,6 @@ export class WorkerTransport {
           args: Array.from(event.val.args, get),
           kwargs: event.val.kwargs.map(({ key, value }) => [get(key), get(value)]),
           callId: event.val.callId,
-          acceptsFuture: osCallAcceptsFuture(event.val.functionName),
           allowEagerAwait: event.val.allowEagerAwait,
         }
       }

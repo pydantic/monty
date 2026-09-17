@@ -1025,7 +1025,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             // `resume` is guaranteed. Every other destination drops it.
             vm.pending_effect = effect;
             // Only a call a future may answer can be answered eagerly.
-            let allow_eager_await = function_call.accepts_future() && vm.allow_eager_await();
+            let allow_eager_await = OsFunctionCall::accepts_future(function_call.name()) && vm.allow_eager_await();
             ConvertedExit::OsCall {
                 function_call,
                 call_id: call_id.raw(),

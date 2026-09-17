@@ -137,14 +137,15 @@ pub enum OsFunctionCall {
 }
 
 impl OsFunctionCall {
-    /// Whether a host may answer this call with `ExtFunctionResult::Future`
-    /// and resolve it later, letting the sandbox's other tasks run meanwhile.
+    /// Whether a host may answer the call with this [`name`](Self::name) with
+    /// `ExtFunctionResult::Future` and resolve it later, letting the sandbox's
+    /// other tasks run meanwhile.
     ///
     /// Only `asyncio.sleep` qualifies: every other call is a value the
     /// calling code is waiting on, so the host must answer it in place.
     #[must_use]
-    pub fn accepts_future(&self) -> bool {
-        matches!(self, Self::AsyncSleep(_))
+    pub fn accepts_future(name: &str) -> bool {
+        name == "asyncio.sleep"
     }
 
     /// Stable string name for this OS function — surfaces in

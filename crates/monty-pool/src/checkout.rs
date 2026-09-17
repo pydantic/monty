@@ -246,12 +246,9 @@ pub enum TurnEvent {
         /// One arena holding every positional and keyword argument.
         args: CallArgs,
         call_id: u32,
-        /// Whether [`ResumeValue::Future`] is a valid answer (`asyncio.sleep`
-        /// only); see `OsFunctionCall::accepts_future`.
-        accepts_future: bool,
         /// As on [`FunctionCall`](Self::FunctionCall): the caller may await
-        /// the wait and answer with [`Checkout::resume_futures`]. Implies
-        /// `accepts_future`.
+        /// the wait and answer with [`Checkout::resume_futures`]. Only set on
+        /// a call `OsFunctionCall::accepts_future` allows a future for.
         allow_eager_await: bool,
     },
     /// The sandbox read an undefined name, or — when `object_id` is set — a
@@ -1371,10 +1368,9 @@ impl Checkout {
                     // Retain the raw typed call for mount validation; `to_args`
                     // normalizes only the clone presented to callbacks.
                     let function_name = function_call.name().to_owned();
-                    let accepts_future = function_call.accepts_future();
                     // The child is untrusted: an eager bit on a call no future
                     // may answer is dropped rather than exposed.
-                    let allow_eager_await = eager_bit && accepts_future;
+                    let allow_eager_await = eager_bit && OsFunctionCall::accepts_future(function_call.name());
                     let args = function_call.clone().to_args();
                     self.pending = Some(Pending::Call {
                         call_id,
@@ -1386,7 +1382,6 @@ impl Checkout {
                         function_name,
                         args,
                         call_id,
-                        accepts_future,
                         allow_eager_await,
                     }));
                 }

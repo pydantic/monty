@@ -62,10 +62,7 @@ use tokio::{
 };
 
 use crate::{
-    async_dispatch::{
-        Dispatched, coroutine_future, dispatch_function_call, sleep_future, spawn_coroutine_task, spawn_sleep_task,
-        wait_for_futures,
-    },
+    async_dispatch::{CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, wait_for_futures},
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
@@ -1570,7 +1567,6 @@ async fn drive_async_inner(
                 function_name,
                 args,
                 call_id,
-                accepts_future,
                 allow_eager_await,
             } => {
                 let mounted = run_turn_async(
@@ -1585,35 +1581,15 @@ async fn drive_async_inner(
                 }
                 let dispatched = Python::attach(|py| {
                     let _guard = callback_context.enter(py, &native)?;
-                    Ok::<_, PyErr>(dispatch_os_parts(
-                        py,
-                        &function_name,
-                        &args,
-                        os.as_ref(),
-                        &instances,
-                        true,
-                    ))
+                    match dispatch_os_parts(py, &function_name, &args, os.as_ref(), &instances, true) {
+                        OsDispatch::Answer(value) => Ok(Dispatched::Done(value)),
+                        OsDispatch::Coroutine(coro) => {
+                            let mode = CoroutineMode::for_os_call(&function_name, allow_eager_await);
+                            dispatch_coroutine(coro, call_id, mode, &mut join_set, &instances)
+                        }
+                    }
                 })?;
-                match dispatched {
-                    OsDispatch::Answer(value) => TurnAnswer::Call(value),
-                    // `asyncio.sleep` with nothing else to run: settle the wait
-                    // in place and skip the `ResolveFutures` round trip.
-                    OsDispatch::Coroutine(coro) if allow_eager_await => {
-                        let future = sleep_future(coro)?;
-                        TurnAnswer::Eager(call_id, ext_to_resume(future.await)?)
-                    }
-                    // `asyncio.sleep` runs alongside the sandbox's other tasks.
-                    OsDispatch::Coroutine(coro) if accepts_future => {
-                        spawn_sleep_task(&mut join_set, call_id, coro)?;
-                        TurnAnswer::Call(ResumeValue::Future)
-                    }
-                    // Any other call is a value the sandbox is waiting on: the
-                    // wait happens here and holds up only this session.
-                    OsDispatch::Coroutine(coro) => {
-                        let future = coroutine_future(coro, &instances)?;
-                        TurnAnswer::Call(ext_to_resume(future.await)?)
-                    }
-                }
+                dispatched_answer(dispatched, call_id).await?
             }
             event => match async_turn_answer(
                 event,
@@ -1675,19 +1651,13 @@ async fn async_turn_answer(
                 let _guard = callback_context.enter(py, native)?;
                 match dispatch_function_call(&function_name, object_id, &args, external_lookup, instances) {
                     CallResult::Sync(result) => Ok(Dispatched::Done(ext_to_resume(result)?)),
-                    CallResult::Coroutine(coro) if allow_eager_await => {
-                        coroutine_future(coro, instances).map(Dispatched::Eager)
-                    }
                     CallResult::Coroutine(coro) => {
-                        spawn_coroutine_task(join_set, call_id, coro, instances)?;
-                        Ok(Dispatched::Done(ResumeValue::Future))
+                        let mode = CoroutineMode::for_function_call(allow_eager_await);
+                        dispatch_coroutine(coro, call_id, mode, join_set, instances)
                     }
                 }
             })?;
-            match dispatched {
-                Dispatched::Done(value) => Ok(TurnAnswer::Call(value)),
-                Dispatched::Eager(future) => Ok(TurnAnswer::Eager(call_id, ext_to_resume(future.await)?)),
-            }
+            dispatched_answer(dispatched, call_id).await
         }
         TurnEvent::NameLookup {
             name,
@@ -1710,6 +1680,19 @@ async fn async_turn_answer(
             unreachable!("Complete, ResolveFutures and OsCall are handled by the drive loop")
         }
     }
+}
+
+/// Awaits any coroutine a dispatch handed back, outside the callback context
+/// and the GIL, and pairs the value with the resume call that delivers it.
+async fn dispatched_answer(
+    dispatched: Dispatched<impl Future<Output = ExtFunctionResult>>,
+    call_id: u32,
+) -> PyResult<TurnAnswer> {
+    Ok(match dispatched {
+        Dispatched::Done(value) => TurnAnswer::Call(value),
+        Dispatched::Eager(future) => TurnAnswer::Eager(call_id, ext_to_resume(future.await)?),
+        Dispatched::AsValue(future) => TurnAnswer::Call(ext_to_resume(future.await)?),
+    })
 }
 
 /// The caller's answer to a suspension, paired with which resume call

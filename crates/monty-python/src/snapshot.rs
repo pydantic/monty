@@ -50,10 +50,7 @@ use tokio::{sync::Mutex, task::JoinSet};
 mod tests;
 
 use crate::{
-    async_dispatch::{
-        Dispatched, coroutine_future, dispatch_function_call, sleep_future, spawn_coroutine_task, spawn_sleep_task,
-        wait_for_futures,
-    },
+    async_dispatch::{CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, wait_for_futures},
     callback_context::CallbackContext,
     exceptions::MontyError,
     external::{CallResult, ExternalLookup, resolve_object_attr, wire_call_arguments},
@@ -272,7 +269,6 @@ pub(crate) fn build_snapshot(
                 args,
                 call_id,
                 is_os_function: false,
-                accepts_future: false,
                 object_id,
                 allow_eager_await,
             };
@@ -282,7 +278,6 @@ pub(crate) fn build_snapshot(
             function_name,
             args,
             call_id,
-            accepts_future,
             allow_eager_await,
         } => {
             let call = FunctionCallData {
@@ -290,7 +285,6 @@ pub(crate) fn build_snapshot(
                 args,
                 call_id,
                 is_os_function: true,
-                accepts_future,
                 object_id: None,
                 allow_eager_await,
             };
@@ -543,9 +537,6 @@ struct FunctionCallData {
     args: CallArgs,
     call_id: u32,
     is_os_function: bool,
-    /// An OS call the worker lets an async host answer with a future
-    /// (`asyncio.sleep`); see `OsFunctionCall::accepts_future`.
-    accepts_future: bool,
     /// Uuid of the routed receiver — an instance or class type; `None` for
     /// plain external functions and OS calls.
     object_id: Option<MontyUuid>,
@@ -828,7 +819,9 @@ impl PyAsyncFunctionSnapshot {
             let mut eager = false;
             // Dispatch inside the future: a coroutine's `into_future` needs the
             // asyncio task-locals that `future_into_py`'s scope establishes.
-            let answer: PyResult<ResumeValue> = if call.is_os_function {
+            // Dispatch (and convert any coroutine) under the callback context;
+            // only a handed-back await runs outside it.
+            let dispatched = if call.is_os_function {
                 // mounts get first refusal, then the captured `os=`
                 let mounted = run_turn_async(
                     &ctx.checkout,
@@ -839,45 +832,27 @@ impl PyAsyncFunctionSnapshot {
                 if let Some(event) = mounted {
                     return Python::attach(|py| build_snapshot(py, ctx, event, true));
                 }
-                let dispatched = Python::attach(|py| {
+                let mut join_set = ctx.pending_futures.lock().await;
+                Python::attach(|py| {
                     let _guard = context.enter(py, &native)?;
-                    Ok::<_, PyErr>(dispatch_os_parts(
+                    match dispatch_os_parts(
                         py,
                         &call.function_name,
                         &call.args,
                         ctx.os.as_ref(),
                         &ctx.instances,
                         true,
-                    ))
-                });
-                match dispatched {
-                    Ok(OsDispatch::Answer(value)) => Ok(value),
-                    // `asyncio.sleep` with nothing else to run: settled in
-                    // place, answered like an eager coroutine.
-                    Ok(OsDispatch::Coroutine(coro)) if call.allow_eager_await => match sleep_future(coro) {
-                        Ok(future) => {
-                            eager = true;
-                            Ok(ext_result_to_resume(future.await))
+                    ) {
+                        OsDispatch::Answer(value) => Ok(Dispatched::Done(value)),
+                        OsDispatch::Coroutine(coro) => {
+                            let mode = CoroutineMode::for_os_call(&call.function_name, call.allow_eager_await);
+                            dispatch_coroutine(coro, call.call_id, mode, &mut join_set, &ctx.instances)
                         }
-                        Err(err) => Err(err),
-                    },
-                    // `asyncio.sleep` runs alongside the sandbox's other
-                    // tasks; any other call is awaited in place.
-                    Ok(OsDispatch::Coroutine(coro)) if call.accepts_future => {
-                        let mut join_set = ctx.pending_futures.lock().await;
-                        spawn_sleep_task(&mut join_set, call.call_id, coro).map(|()| ResumeValue::Future)
                     }
-                    Ok(OsDispatch::Coroutine(coro)) => match coroutine_future(coro, &ctx.instances) {
-                        Ok(future) => Ok(ext_result_to_resume(future.await)),
-                        Err(err) => Err(err),
-                    },
-                    Err(err) => Err(err),
-                }
+                })
             } else {
                 let mut join_set = ctx.pending_futures.lock().await;
-                // Dispatch (and convert any coroutine) under the callback context;
-                // only the eager await itself runs outside it.
-                let dispatched = Python::attach(|py| {
+                Python::attach(|py| {
                     let _guard = context.enter(py, &native)?;
                     match dispatch_function_call(
                         &call.function_name,
@@ -887,23 +862,21 @@ impl PyAsyncFunctionSnapshot {
                         &ctx.instances,
                     ) {
                         CallResult::Sync(result) => Ok(Dispatched::Done(ext_result_to_resume(result))),
-                        CallResult::Coroutine(coro) if call.allow_eager_await => {
-                            coroutine_future(coro, &ctx.instances).map(Dispatched::Eager)
-                        }
                         CallResult::Coroutine(coro) => {
-                            spawn_coroutine_task(&mut join_set, call.call_id, coro, &ctx.instances)
-                                .map(|()| Dispatched::Done(ResumeValue::Future))
+                            let mode = CoroutineMode::for_function_call(call.allow_eager_await);
+                            dispatch_coroutine(coro, call.call_id, mode, &mut join_set, &ctx.instances)
                         }
                     }
-                });
-                match dispatched {
-                    Ok(Dispatched::Done(value)) => Ok(value),
-                    Ok(Dispatched::Eager(future)) => {
-                        eager = true;
-                        Ok(ext_result_to_resume(future.await))
-                    }
-                    Err(err) => Err(err),
+                })
+            };
+            let answer = match dispatched {
+                Ok(Dispatched::Done(value)) => Ok(value),
+                Ok(Dispatched::Eager(future)) => {
+                    eager = true;
+                    Ok(ext_result_to_resume(future.await))
                 }
+                Ok(Dispatched::AsValue(future)) => Ok(ext_result_to_resume(future.await)),
+                Err(err) => Err(err),
             };
             let value = match answer {
                 Ok(value) => value,

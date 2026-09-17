@@ -13,7 +13,9 @@ use monty_proto::{
     os_call_from_proto, pb,
     worker::{Child, EventSink, HandleOutcome, protocol_violation},
 };
-use monty_types::{CallArgs, ExcType, MONTY_VERSION, MontyException, MontyNode, MontyUuid, memory_limit_with_headroom};
+use monty_types::{
+    CallArgs, ExcType, MONTY_VERSION, MontyException, MontyNode, MontyUuid, OsFunctionCall, memory_limit_with_headroom,
+};
 
 #[expect(
     clippy::same_length_and_capacity,
@@ -210,7 +212,7 @@ impl PreparedOsEvent {
         Ok(Self {
             function_name: call.name().to_owned(),
             // The eager bit is only meaningful on a call a future may answer.
-            allow_eager_await: eager_bit && call.accepts_future(),
+            allow_eager_await: eager_bit && OsFunctionCall::accepts_future(call.name()),
             args: call.to_args(),
             call_id,
         })

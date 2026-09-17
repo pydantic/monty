@@ -7,7 +7,7 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
-import { MontyRuntimeError, NOT_HANDLED } from '@pydantic/monty'
+import { MontyRuntimeError } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run } = setupPool()
@@ -372,14 +372,6 @@ test('an async os callback answering time.sleep is awaited before the sandbox re
     },
   })
   t.is(result, 'None')
-})
-
-test('an async os callback settling to NOT_HANDLED refuses asyncio.sleep', async () => {
-  const error = await t.throwsAsync(
-    () => run('import asyncio\nasyncio.run(asyncio.sleep(0))', { os: async () => NOT_HANDLED }),
-    { instanceOf: MontyRuntimeError },
-  )
-  t.is(error.message, "RuntimeError: 'asyncio.sleep' is not supported in this environment")
 })
 
 test('sleeping without an os callback is refused', async () => {
