@@ -497,3 +497,30 @@ seen";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     assert_eq!(ex.run_no_limits(vec![]).unwrap(), MontyObject::int(1));
 }
+
+/// Exporting a `functools.partial` runs the `__repr__` of its bound instance,
+/// which can free an already-exported object; a later allocation reusing its
+/// heap slot must export as itself, not as the freed object's node.
+#[test]
+fn export_pins_memoized_objects_across_a_user_repr() {
+    let code = "import functools
+
+class Holder:
+    pass
+
+class Mutator:
+    def __repr__(self):
+        inner.clear()
+        holder.x = [9]
+        return 'm'
+
+inner = [[1, 2, 3]]
+holder = Holder()
+p = functools.partial(len, Mutator())
+[inner, p, holder]";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(
+        ex.run_no_limits(vec![]).unwrap().py_repr(),
+        "[[[1, 2, 3]], Repr('functools.partial(<built-in function len>, m)'), Holder(x=[9])]"
+    );
+}

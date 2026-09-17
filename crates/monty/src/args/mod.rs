@@ -243,7 +243,7 @@ impl ArgValues {
                 kwargs.export_into(&mut call, &mut exporter, vm);
             }
         }
-        call.values = exporter.finish();
+        call.values = exporter.finish(vm);
         call
     }
 

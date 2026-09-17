@@ -60,7 +60,7 @@ impl MontyObjectExt for MontyObject {
         let mut exporter = GraphExporter::new();
         let root = exporter.push_owned(value, vm);
         Self {
-            graph: exporter.finish(),
+            graph: exporter.finish(vm),
             root,
         }
     }
@@ -116,10 +116,16 @@ impl MontyGraphExt for MontyGraph {
 /// `done` memoizes finished heap objects; `in_progress` holds the ones on the
 /// current descent, so a reference back to one of them becomes a
 /// [`MontyNode::Cycle`] leaf rather than infinite recursion.
+///
+/// `pinned` owns a reference to every memoized object: a user `__repr__` run
+/// by [`repr_or_error`] can free an exported object mid-message, and the heap
+/// reuses freed slots, so an unpinned memo could hand a new object the node
+/// of the old one. The pins are released by [`finish`](Self::finish).
 pub(crate) struct GraphExporter {
     graph: MontyGraph,
     done: AHashMap<HeapId, NodeId>,
     in_progress: AHashSet<HeapId>,
+    pinned: Vec<Value>,
 }
 
 impl GraphExporter {
@@ -128,6 +134,7 @@ impl GraphExporter {
             graph: MontyGraph::new(),
             done: AHashMap::new(),
             in_progress: AHashSet::new(),
+            pinned: Vec::new(),
         }
     }
 
@@ -143,9 +150,17 @@ impl GraphExporter {
         self.graph.push(node)
     }
 
-    /// The finished arena.
-    pub(crate) fn finish(self) -> MontyGraph {
+    /// The finished arena, releasing the pins on the memoized objects.
+    pub(crate) fn finish(self, vm: &mut VM<'_>) -> MontyGraph {
+        self.pinned.drop_with(vm);
         self.graph
+    }
+
+    /// Records `id`'s node in the memo and pins the object until `finish`.
+    fn memoize(&mut self, id: HeapId, node_id: NodeId, vm: &VM<'_>) {
+        vm.heap.inc_ref(id);
+        self.pinned.push(Value::Ref(id));
+        self.done.insert(id, node_id);
     }
 
     /// Exports a borrowed value and returns its node.
@@ -155,7 +170,8 @@ impl GraphExporter {
     /// `vm.heap.read(id)` so the resulting `HeapRead` keeps the heap entry
     /// alive (through its reader count) without retaining a borrow on
     /// `vm.heap`. Recursing can run a user-defined `__repr__` (via
-    /// [`repr_or_error`] on nested instances), so mutable containers (list,
+    /// [`repr_or_error`] on a value with no node of its own, such as a
+    /// `functools.partial` bound to an instance), so mutable containers (list,
     /// dict, set, dataclass attrs) snapshot ALL children up front — the
     /// `inc_ref`s keep each child alive and the snapshot keeps iteration valid
     /// even if that `__repr__` mutates the container. Immutable containers
@@ -231,7 +247,7 @@ impl GraphExporter {
             }
         };
         self.in_progress.remove(&id);
-        self.done.insert(id, node_id);
+        self.memoize(id, node_id, vm);
         node_id
     }
 
@@ -513,7 +529,7 @@ impl GraphExporter {
             attrs: Vec::new(),
         }));
         let node_id = self.push_node(node);
-        self.done.insert(class_id, node_id);
+        self.memoize(class_id, node_id, vm);
         node_id
     }
 
@@ -548,7 +564,7 @@ impl GraphExporter {
             attrs,
         })));
         if !self.in_progress.contains(&type_id) {
-            self.done.insert(type_id, node_id);
+            self.memoize(type_id, node_id, vm);
         }
         node_id
     }
