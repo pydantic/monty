@@ -2,10 +2,11 @@
 //! callable's results.
 //!
 //! Calling one is dispatched by this type's [`PyTrait::py_call`] to
-//! [`call_lru_cache`], which either answers from the stored results or runs the wrapped callable as
-//! an ordinary frame, tagged with a [`CacheStore`] so its return value is
-//! stored on the way out. Nothing here calls Python, so a cached function may
-//! still suspend to the host mid-call.
+//! [`call_lru_cache`], which either answers from the stored results or runs the
+//! wrapped callable as an ordinary frame. On a miss the wrapper and the key are
+//! parked on the operand stack and the pushed frame records a cache store in
+//! its `ReturnEffects`, so the result is stored on the way out. Nothing here
+//! calls Python, so a cached function may still suspend to the host mid-call.
 
 use std::{
     fmt::Write,
@@ -22,8 +23,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead,
-        HeapReadOutput, heap_read_ref_as_field_mut,
+        BorrowedHeapReadMut, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput,
+        heap_read_ref_as_field_mut,
     },
     intern::StaticStrings,
     types::{
@@ -136,8 +137,8 @@ impl LruCache {
 
 /// Calls the cached function `cache_id` with `args`.
 ///
-/// A hit answers straight from the stored results. A miss calls the wrapped
-/// callable and tags the pushed frame with a [`CacheStore`], so the result is
+/// A hit answers straight from the stored results. A miss parks the wrapper and
+/// the key on the operand stack for the pushed frame to claim, so the result is
 /// stored when — and only when — the call returns normally; a call that raises
 /// leaves the cache untouched, as CPython's does.
 fn call_lru_cache(cache_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
@@ -169,7 +170,7 @@ fn call_lru_cache(cache_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResu
     if maxsize == Some(0) {
         cache.get_mut(vm.heap).misses += 1;
         let args = take_args(positional, keywords);
-        return call_wrapped(func, args, None, vm);
+        return vm.call_function(func, args);
     }
 
     let key = make_key(positional, keywords, typed, vm)?;
@@ -196,9 +197,12 @@ fn call_lru_cache(cache_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResu
         cache.get_mut(vm.heap).misses += 1;
         let (key, vm) = key_guard.into_parts();
         vm.heap.inc_ref(cache_id);
-        let store = CacheStore { cache: cache_id, key };
+        // The wrapper and the key are parked on the operand stack, which owns
+        // them from here: the return path applies the store, and any path that
+        // abandons the call drains them with the rest of the frame's operands.
+        vm.park_cache_store(Value::Ref(cache_id), key);
         let args = take_args(positional, keywords);
-        call_wrapped(func, args, Some(store), vm)
+        call_wrapped(func, args, vm)
     }
 }
 
@@ -264,58 +268,52 @@ fn take_args(positional: &mut Vec<Value>, keywords: &mut Vec<(Value, Value)>) ->
     }
 }
 
-/// Runs the wrapped callable, arranging for `store` to receive its result.
+/// Runs the wrapped callable, arranging for a parked store to receive its result.
 ///
 /// A call that pushes a frame — a plain function, or a class whose `__init__`
-/// runs as one — gets the store hung off it, and the return path stores what
-/// the caller receives (for a constructor the instance, not `__init__`'s
-/// `None`). Anything answering immediately (a builtin, an `async def` handing
-/// back its coroutine) is stored right here. A call that suspends to the host
-/// instead — only reachable when the *wrapped callable itself* is external —
-/// passes through uncached, since its result comes back through neither path.
-fn call_wrapped(func: &Value, args: ArgValues, store: Option<CacheStore>, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let result = match vm.call_function(func, args) {
-        Ok(result) => result,
-        Err(error) => {
-            store.drop_with(vm);
-            return Err(error);
-        }
-    };
-    let Some(store) = store else { return Ok(result) };
-    match result {
+/// runs as one — has the frame claim the parked store, and the return path
+/// stores what the caller receives (for a constructor the instance, not
+/// `__init__`'s `None`). Anything answering immediately (a builtin, an
+/// `async def` handing back its coroutine) is unparked and stored right here. A
+/// call that suspends to the host instead — only reachable when the *wrapped
+/// callable itself* is external — passes through uncached, since its result
+/// comes back through neither path.
+///
+/// The caller must already have parked the store's operands; an error before
+/// the call returns leaves them for the unwind to drain.
+fn call_wrapped(func: &Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    match vm.call_function(func, args)? {
         CallResult::FramePushed => {
-            vm.push_frame_cache_store(store);
+            vm.claim_cache_store();
             Ok(CallResult::FramePushed)
         }
         CallResult::Value(value) => {
-            store_result(store, &value, vm)?;
+            let (cache, key) = vm.unpark_cache_store();
+            store_result(cache, key, &value, vm)?;
             Ok(CallResult::Value(value))
         }
         other => {
-            store.drop_with(vm);
+            let (cache, key) = vm.unpark_cache_store();
+            cache.drop_with(vm);
+            key.drop_with(vm);
             Ok(other)
         }
     }
 }
 
-/// Stores `value` in each pending cache, in the order the wrappers were
-/// entered. Consumes every store; on the first failure the rest are released
-/// unstored, since the value never reaches their callers either.
-pub(crate) fn store_results(stores: CacheStores, value: &Value, vm: &mut VM<'_>) -> RunResult<()> {
-    let mut stores = stores.into_vec().into_iter();
-    let result = stores.try_for_each(|store| store_result(store, value, vm));
-    stores.drop_with(vm);
-    result
-}
-
-/// Stores `value` under the store's key, evicting the least recently used entry
-/// first if the cache is full. Consumes `store`, releasing both its references.
-fn store_result(store: CacheStore, value: &Value, vm: &mut VM<'_>) -> RunResult<()> {
-    let CacheStore { cache: cache_id, key } = store;
-    let result = store_into(cache_id, key, value, vm);
-    // The store's own reference goes last: releasing it while the read handle
-    // below is still alive would try to free an entry that has a live reader.
-    vm.heap.dec_ref(cache_id);
+/// Stores `value` under `key` in `cache`, evicting the least recently used
+/// entry first if the cache is full.
+///
+/// Consumes both operands, which the caller has just unparked from the operand
+/// stack. `cache` must be the wrapper the call was dispatched through.
+pub(crate) fn store_result(cache: Value, key: Value, value: &Value, vm: &mut VM<'_>) -> RunResult<()> {
+    let Value::Ref(cache_id) = &cache else {
+        panic!("a parked cache store only ever holds a reference to an LruCache")
+    };
+    let result = store_into(*cache_id, key, value, vm);
+    // The parked reference goes last: releasing it while the read handle
+    // inside is still alive would try to free an entry that has a live reader.
+    cache.drop_with(vm);
     result
 }
 
@@ -323,7 +321,7 @@ fn store_result(store: CacheStore, value: &Value, vm: &mut VM<'_>) -> RunResult<
 /// the caller drops the reference that kept the cache alive.
 fn store_into(cache_id: HeapId, key: Value, value: &Value, vm: &mut VM<'_>) -> RunResult<()> {
     let HeapReadOutput::LruCache(mut cache) = vm.heap.read(cache_id) else {
-        unreachable!("a CacheStore only ever names an LruCache")
+        unreachable!("a parked cache store only ever names an LruCache")
     };
     let mut key_guard = DropGuard::new(key, vm);
     let (key, vm) = key_guard.as_parts_mut();
@@ -406,58 +404,6 @@ fn evict_one<'h>(cache: &mut HeapObjectRead<'h, LruCache>, vm: &mut VM<'h>) {
     key.drop_with(vm);
     value.drop_with(vm);
     cache.get_mut(vm.heap).stamps.remove(index);
-}
-
-/// The pending cache stores hanging off one call frame.
-///
-/// Every frame carries this and all but a cached call leaves it empty, so the
-/// list is boxed: an ordinary frame pays one null pointer rather than a `Vec`'s
-/// three words, on a struct the VM preallocates by the dozen.
-// The box is the point: it keeps `CallFrame` small, which is what the lint's
-// "`Vec` is already on the heap" misses.
-#[expect(clippy::box_collection)]
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub(crate) struct CacheStores(Option<Box<Vec<CacheStore>>>);
-
-impl CacheStores {
-    /// Adds a store, allocating the list on first use.
-    pub(crate) fn push(&mut self, store: CacheStore) {
-        self.0.get_or_insert_with(Box::default).push(store);
-    }
-
-    /// The stores in the order they were added, for the return path to drain.
-    fn into_vec(self) -> Vec<CacheStore> {
-        self.0.map(|stores| *stores).unwrap_or_default()
-    }
-}
-
-impl<C: ContainsHeap> DropWithContext<C> for CacheStores {
-    fn drop_with(self, heap: &mut C) {
-        if let Some(stores) = self.0 {
-            stores.drop_with(heap);
-        }
-    }
-}
-
-/// The pending "store this frame's return value" note a cached call leaves on
-/// the frame it pushed.
-///
-/// Owns both halves: the wrapper (which the caller may drop mid-call) and the
-/// key. Released by whichever of the return path, the unwind path or frame
-/// teardown reaches the frame first, so it is dropped exactly once.
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct CacheStore {
-    /// The [`LruCache`] to store into.
-    pub cache: HeapId,
-    /// The key the call was looked up under.
-    pub key: Value,
-}
-
-impl<C: ContainsHeap> DropWithContext<C> for CacheStore {
-    fn drop_with(self, heap: &mut C) {
-        heap.heap_mut().dec_ref(self.cache);
-        self.key.drop_with(heap);
-    }
 }
 
 /// Builds the key for one call.

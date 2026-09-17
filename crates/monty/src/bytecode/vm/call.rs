@@ -1030,8 +1030,8 @@ impl VM<'_> {
     ///   instance directly.
     /// - **`__init__` is a plain sync function** (the normal case): pushes the
     ///   instance onto the operand stack as the pending result, runs
-    ///   `__init__(self, *args)` as a real (suspendable) frame, and marks that
-    ///   frame `is_initializer`. When the initializer frame returns, the
+    ///   `__init__(self, *args)` as a real (suspendable) frame, and records the
+    ///   instance effect on that frame. When the initializer frame returns, the
     ///   [`ReturnValue`](crate::bytecode::Opcode::ReturnValue) handler enforces the
     ///   `None` return and leaves the already-pushed instance as the result — so
     ///   `Foo(a)` evaluates to the new instance, not `__init__`'s return.
@@ -1044,7 +1044,7 @@ impl VM<'_> {
     ///   blindly marking the resulting frame would corrupt the operand stack.
     ///
     /// Because a plain-function `__init__` runs as a normal frame, it may suspend
-    /// on external/OS calls; the `is_initializer` flag is threaded through frame
+    /// on external/OS calls; the frame's `return_effects` are threaded through
     /// serialization so a suspended initializer resumes correctly.
     pub(crate) fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
         let instance_id = self
@@ -1104,7 +1104,7 @@ impl VM<'_> {
                             // Mark the just-pushed frame so its return value is
                             // discarded (after the `None` check in the ReturnValue
                             // handler) and the pending instance becomes the result.
-                            this.current_frame_mut().is_initializer = true;
+                            this.current_frame_mut().return_effects.set_instance();
                             Ok(CallResult::FramePushed)
                         }
                         other => {
