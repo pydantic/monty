@@ -7,8 +7,9 @@
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyNode, MontyObject, MontyType, OsFunctionCall,
-    PrintWriter, ResourceTracker, UrandomArgs,
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyType, OsFunctionCall, PrintWriter,
+    ResourceTracker, UrandomArgs,
+    unstable::{self, MontyNode},
 };
 
 /// Bytes of entropy an unseeded generator asks for: one MT19937 state vector.
@@ -34,7 +35,7 @@ fn random_instances_and_types_cross_as_repr() {
     let Some(values) = result.as_ref().items() else {
         panic!("expected a list");
     };
-    let MontyNode::Repr(instance) = values[0].node() else {
+    let MontyNode::Repr(instance) = unstable::node(values[0]) else {
         panic!("expected an instance repr");
     };
     assert!(instance.starts_with("<random.Random object at 0x"));

@@ -8,10 +8,10 @@ use monty_proto::{
 };
 use monty_types::{
     CodeLoc, CompileOptions, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs, MontyDate,
-    MontyDateTime, MontyException, MontyFileHandle, MontyGraph, MontyNode, MontyObject, MontyPath, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues, NodeId, OpenCallArgs,
-    OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame,
-    UnicodeErrorData, UrandomArgs,
+    MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone,
+    MontyType, MontyUuid, NameLookupResult, NamedValues, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
+    PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData, UrandomArgs,
+    unstable::{self, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
 use prost::Message;
@@ -31,7 +31,7 @@ fn assert_graph_round_trip(graph: &MontyGraph) {
 /// Asserts `obj` survives the wire as the arena its tree converts to.
 #[track_caller]
 fn assert_value_round_trip(obj: &MontyObject) {
-    assert_graph_round_trip(&obj.graph);
+    assert_graph_round_trip(unstable::graph_parts(obj).0);
 }
 
 #[test]
@@ -177,7 +177,7 @@ fn timezone_names_are_charged_to_the_decode_budget() {
                 name,
             }),
         ]
-        .map(|obj| obj.root_node().decoded_size())
+        .map(|obj| unstable::root_node(&obj).decoded_size())
     };
     let named = sizes(Some(name.clone()));
     let unnamed = sizes(None);
@@ -222,7 +222,7 @@ fn exception_and_type_values_round_trip() {
         MontyObject::builtin_function_from_name("object.__setattr__").expect("object.__setattr__ is a builtin");
     assert_value_round_trip(&dotted);
     assert_eq!(
-        serde_json::to_string(dotted.root_node()).expect("serializes"),
+        serde_json::to_string(unstable::root_node(&dotted)).expect("serializes"),
         r#"{"BuiltinFunction":"object.__setattr__"}"#
     );
 }
@@ -297,7 +297,9 @@ fn repr_and_cycle_round_trip() {
     .unwrap();
     let cyclic = run.run_no_limits(vec![]).unwrap();
     assert_value_round_trip(&cyclic);
-    assert!(matches!(cyclic.as_ref().items().as_deref(), Some([first]) if matches!(first.node(), MontyNode::Cycle(_))));
+    assert!(
+        matches!(cyclic.as_ref().items().as_deref(), Some([first]) if matches!(unstable::node(*first), MontyNode::Cycle(_)))
+    );
 }
 
 // NOTE: rejection of semantically invalid wire values (bad dates, unknown
@@ -615,7 +617,7 @@ fn name_lookup_results_convert() {
     ));
     // the root must index the arena the message carries
     let out_of_range = pb::ResumeNameLookup {
-        values: Some(WireArena::new(MontyObject::int(1).graph)),
+        values: Some(WireArena::new(unstable::into_graph_parts(MontyObject::int(1)).0)),
         kind: Some(pb::resume_name_lookup::Kind::Value(1)),
     };
     assert!(matches!(
@@ -670,7 +672,7 @@ fn deep_values_cross_the_wire() {
     }
     assert_graph_round_trip(&graph);
     let mut inputs = NamedValues::new();
-    inputs.push("v", MontyObject::new(graph, id).unwrap());
+    inputs.push("v", unstable::object_from_graph(graph, id).unwrap());
     let (refs, values) = named_values_to_proto(inputs.clone());
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
@@ -889,7 +891,7 @@ fn os_call_conversion_rejects_invalid_payloads() {
         os_call_from_proto(getenv(None)),
         Err(ProtoConvertError::MissingField("OsCall.values"))
     ));
-    let one_node = WireArena::new(MontyObject::none().graph);
+    let one_node = WireArena::new(unstable::into_graph_parts(MontyObject::none()).0);
     assert!(matches!(
         os_call_from_proto(getenv(Some(one_node))),
         Err(ProtoConvertError::InvalidValue { field: "Arena", .. })

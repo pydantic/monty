@@ -3,7 +3,10 @@
 
 use std::{collections::HashMap, vec::IntoIter};
 
-use monty_types::{ClassTypeNode, MontyDate, MontyException, MontyGraph, MontyNode, MontyObject, MontyUuid, NodeId};
+use monty_types::{
+    MontyDate, MontyException, MontyObject, MontyUuid,
+    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+};
 use num_bigint::BigInt;
 use pyo3::{
     exceptions::{PyBaseException, PyTypeError, PyValueError},
@@ -134,14 +137,13 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
         self.graph
     }
 
-    /// The arena as one value rooted at `root`, an id [`push`](Self::push) returned.
+    /// Finishes one value rooted at an id [`push`](Self::push) returned.
+    ///
+    /// # Panics
+    /// If `root` is not an index in this arena.
     #[must_use]
     pub fn finish_object(self, root: NodeId) -> MontyObject {
-        // `push` returned `root`, so it is in range
-        MontyObject {
-            graph: self.graph,
-            root,
-        }
+        unstable::object_from_graph(self.graph, root).expect("encoded root is valid")
     }
 
     /// Resolves one pending child: a leaf is pushed at once, a container

@@ -2,7 +2,10 @@
 //! events (`ResumeCall`, `ResumeNameLookup`, `ResumeFutures`). A returned
 //! value is an index into the arena the same message carries.
 
-use monty_types::{ExtFunctionResult, MontyException, MontyGraph, MontyObject, NameLookupResult, NodeId};
+use monty_types::{
+    ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
+    unstable::{self, MontyGraph, NodeId},
+};
 
 use crate::{
     convert::{ProtoConvertError, graph_or_empty, root_object},
@@ -15,10 +18,13 @@ use crate::{
 #[must_use]
 pub fn ext_result_to_proto(result: ExtFunctionResult) -> (pb::ExtFunctionResult, Option<WireArena>) {
     let (kind, values) = match result {
-        ExtFunctionResult::Return(value) => (
-            pb::ext_function_result::Kind::ReturnValue(value.root.0),
-            Some(WireArena::new(value.graph)),
-        ),
+        ExtFunctionResult::Return(value) => {
+            let (graph, root) = unstable::into_graph_parts(value);
+            (
+                pb::ext_function_result::Kind::ReturnValue(root.0),
+                Some(WireArena::new(graph)),
+            )
+        }
         ExtFunctionResult::Error(exc) => (pb::ext_function_result::Kind::Error((&exc).into()), None),
         ExtFunctionResult::Future(call_id) => (pb::ext_function_result::Kind::Future(call_id), None),
         ExtFunctionResult::NotFound(name) => (pb::ext_function_result::Kind::NotFound(name), None),
@@ -55,10 +61,10 @@ pub fn ext_result_from_proto(
 impl From<NameLookupResult> for pb::ResumeNameLookup {
     fn from(result: NameLookupResult) -> Self {
         let (kind, values) = match result {
-            NameLookupResult::Value(value) => (
-                pb::resume_name_lookup::Kind::Value(value.root.0),
-                Some(WireArena::new(value.graph)),
-            ),
+            NameLookupResult::Value(value) => {
+                let (graph, root) = unstable::into_graph_parts(value);
+                (pb::resume_name_lookup::Kind::Value(root.0), Some(WireArena::new(graph)))
+            }
             NameLookupResult::Undefined => (pb::resume_name_lookup::Kind::Undefined(pb::Unit {}), None),
             NameLookupResult::Error(exc) => (pb::resume_name_lookup::Kind::Error((&exc).into()), None),
         };
@@ -98,8 +104,9 @@ pub fn future_results_to_proto(results: Vec<(u32, ExtFunctionResult)>) -> pb::Re
         .map(|(call_id, result)| {
             let kind = match result {
                 ExtFunctionResult::Return(value) => {
-                    let offset = values.merge(value.graph);
-                    pb::ext_function_result::Kind::ReturnValue(value.root.0 + offset)
+                    let (graph, root) = unstable::into_graph_parts(value);
+                    let offset = values.merge(graph);
+                    pb::ext_function_result::Kind::ReturnValue(root.0 + offset)
                 }
                 ExtFunctionResult::Error(exc) => pb::ext_function_result::Kind::Error((&exc).into()),
                 ExtFunctionResult::Future(id) => pb::ext_function_result::Kind::Future(id),

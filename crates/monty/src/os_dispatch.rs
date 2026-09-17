@@ -23,8 +23,9 @@ use std::{borrow::Cow, mem};
 
 use ahash::AHashSet;
 use monty_types::{
-    ExcType, MkdirCallArgs, MontyNode, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
+    ExcType, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
     RenameCallArgs, ResourceTracker, normalize_virtual_path,
+    unstable::{self, MontyNode},
 };
 
 use crate::{
@@ -136,7 +137,7 @@ impl PreConversionEffect {
             Self::Chdir { path, spelled } => {
                 check_chdir_stat(&value, &spelled)?;
                 vm.env.cwd = Cow::Owned(normalize_virtual_path(&path).into_owned());
-                Ok(MontyObject::leaf(MontyNode::None))
+                Ok(MontyObject::none())
             }
         }
     }
@@ -238,14 +239,14 @@ pub(crate) fn check_chdir_stat(value: &MontyObject, spelled: &str) -> Result<(),
     const S_IFDIR: i64 = 0o040_000;
     // Located by name so a host's stat result is accepted whatever its field
     // order, and anything without an integer `st_mode` is refused.
-    let st_mode = match value.root_node() {
+    let st_mode = match unstable::root_node(value) {
         MontyNode::NamedTuple {
             field_names, values, ..
         } => field_names
             .iter()
             .position(|name| name == "st_mode")
             .and_then(|index| values.get(index))
-            .and_then(|mode| match value.graph.node(*mode) {
+            .and_then(|mode| match unstable::node(unstable::child(value.as_ref(), *mode)) {
                 MontyNode::Int(mode) => Some(*mode),
                 _ => None,
             }),
@@ -280,7 +281,7 @@ pub(crate) fn listdir_names(value: MontyObject) -> Result<MontyObject, RunError>
 
 /// Accepts an `os.urandom` reply only as `bytes` of the requested length.
 fn urandom_reply(value: MontyObject, size: usize) -> Result<MontyObject, RunError> {
-    match value.root_node() {
+    match unstable::root_node(&value) {
         MontyNode::Bytes(bytes) if bytes.len() == size => Ok(value),
         MontyNode::Bytes(bytes) => Err(urandom_reply_error(Ok(bytes.len()), size)),
         _ => Err(urandom_reply_error(Err(value.as_ref().type_name()), size)),
@@ -313,10 +314,7 @@ pub(crate) fn iterdir_paths(
 
 /// Reduces host paths to entry names, joining them onto the `Path.iterdir()`
 /// receiver when one is given (with the tracker its joins are charged to).
-fn directory_entries(
-    mut value: MontyObject,
-    receiver: Option<(&str, &ResourceTracker)>,
-) -> Result<MontyObject, RunError> {
+fn directory_entries(value: MontyObject, receiver: Option<(&str, &ResourceTracker)>) -> Result<MontyObject, RunError> {
     let invalid = |type_name: &str| -> RunError {
         let operation = if receiver.is_some() {
             "Path.iterdir"
@@ -329,10 +327,11 @@ fn directory_entries(
         )
         .into()
     };
-    let MontyNode::List(ids) = value.root_node() else {
+    let MontyNode::List(ids) = unstable::root_node(&value) else {
         return Err(invalid(value.as_ref().type_name()));
     };
     let ids = ids.clone();
+    let (mut graph, root) = unstable::into_graph_parts(value);
     let directory = match receiver {
         Some((path, tracker)) => {
             // Each joined path adds the receiver and a separator on top of the entry.
@@ -347,10 +346,10 @@ fn directory_entries(
         if !seen.insert(id) {
             continue;
         }
-        if !matches!(value.graph.node(id), MontyNode::Path(_) | MontyNode::String(_)) {
-            return Err(invalid(value.graph.type_name(id)));
+        if !matches!(graph.node(id), MontyNode::Path(_) | MontyNode::String(_)) {
+            return Err(invalid(graph.type_name(id)));
         }
-        let node = value.graph.node_mut(id);
+        let node = graph.node_mut(id);
         let (MontyNode::Path(entry) | MontyNode::String(entry)) = node else {
             unreachable!("checked above");
         };
@@ -363,7 +362,7 @@ fn directory_entries(
             MontyNode::String(mem::take(entry))
         };
     }
-    Ok(value)
+    Ok(unstable::object_from_graph(graph, root).expect("root unchanged"))
 }
 
 // =============================================================================

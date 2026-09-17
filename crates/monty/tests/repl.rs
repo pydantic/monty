@@ -11,8 +11,9 @@ use monty::{
     detect_repl_continuation_mode, dump,
 };
 use monty_types::{
-    CallArgs, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyNode, MontyObject, MontyUuid,
-    NameLookupResult, PrintWriter, ResourceLimits, ResourceTracker,
+    CallArgs, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult,
+    PrintWriter, ResourceLimits, ResourceTracker,
+    unstable::{self, MontyNode},
 };
 
 #[test]
@@ -472,7 +473,7 @@ fn repl_feed_start_restores_comprehension_slots_before_next_turn() {
     let progress = repl.feed_start("foo()", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "foo");
-    assert!(call.args.arg_ids.is_empty());
+    assert_eq!(call.args.args().len(), 0);
     let _repl = call.into_repl();
 }
 
@@ -487,7 +488,7 @@ fn repl_feed_start_restores_comprehension_slots_after_runtime_error() {
     let progress = err.repl.feed_start("foo()", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "foo");
-    assert!(call.args.arg_ids.is_empty());
+    assert_eq!(call.args.args().len(), 0);
     let _repl = call.into_repl();
 }
 
@@ -740,7 +741,7 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
         Some(MontyUuid::from_u128(42)),
         "should be a method call on instance 42"
     );
-    assert!(call.args.arg_ids.is_empty(), "receiver must not be included in args");
+    assert_eq!(call.args.args().len(), 0, "receiver must not be included in args");
 
     // Resume with a return value (sum of x + y = 3)
     let progress = call.resume(MontyObject::int(3), PrintWriter::Stdout).unwrap();
@@ -1152,7 +1153,7 @@ fn repl_sandbox_objects_round_trip_by_identity() {
     let (mut repl, _) = init_repl("class Foo:\n    def __init__(self):\n        self.x = 1\nfoo = Foo()");
     let instance = feed_run_print(&mut repl, "foo").unwrap();
     let (class_object, instance_id) = split_instance(&instance);
-    assert!(matches!(class_object.root_node(), MontyNode::ClassType(class) if !class.host_defined));
+    assert!(matches!(unstable::root_node(&class_object), MontyNode::ClassType(class) if !class.host_defined));
     // The class itself crosses out as repr text; its wire type (as carried by
     // the instance) is what a host can hand back.
 
@@ -1234,7 +1235,7 @@ fn repl_sandbox_object_resolution_edge_cases() {
 
     // An id of the wrong kind never resolves: with a host origin it becomes a
     // host-backed copy, with a sandbox origin it is rejected.
-    let MontyNode::ClassType(class) = class_object.root_node().clone() else {
+    let MontyNode::ClassType(class) = unstable::root_node(&class_object).clone() else {
         panic!("expected a class type object");
     };
     let class_as_instance = |host_defined: bool| {
@@ -1853,11 +1854,11 @@ fn split_instance(instance: &MontyObject) -> (MontyObject, MontyUuid) {
         class_type,
         instance_id,
         ..
-    } = instance.root_node()
+    } = unstable::root_node(instance)
     else {
         panic!("expected a ClassInstance, got {instance:?}");
     };
-    (instance.graph.value(*class_type).to_owned(), *instance_id)
+    (unstable::child(instance.as_ref(), *class_type).to_owned(), *instance_id)
 }
 
 /// The synthetic call site is `name(*args)`, so keyword arguments are refused

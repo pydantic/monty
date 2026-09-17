@@ -38,9 +38,9 @@
 use std::{cell::Cell, fmt::Display, mem::size_of, ops::RangeInclusive};
 
 use monty_types::{
-    BuiltinsFunctions, CallArgs, ClassTypeNode, GraphError, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
-    MontyDate, MontyDateTime, MontyFileHandle, MontyGraph, MontyNode, MontyTime, MontyTimeDelta, MontyTimeZone,
-    MontyType, MontyUuid, NodeId,
+    BuiltinsFunctions, CallArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyDate, MontyDateTime,
+    MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
+    unstable::{self, ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -178,11 +178,12 @@ impl WireFunctionCall {
         object_id: Option<MontyUuid>,
         allow_eager_await: bool,
     ) -> Self {
+        let (graph, args, kwargs) = unstable::into_call_args_parts(args);
         Self {
             function_name,
-            values: WireArena::new(args.graph),
-            args: args.arg_ids,
-            kwargs: args.kwarg_ids,
+            values: WireArena::new(graph),
+            args,
+            kwargs,
             call_id,
             object_id,
             allow_eager_await,
@@ -191,13 +192,8 @@ impl WireFunctionCall {
 
     /// Validates the decoded arena and argument ids into [`CallArgs`].
     pub fn into_call_args(self) -> Result<CallArgs, ProtoConvertError> {
-        let call = CallArgs {
-            graph: self.values.into_graph()?,
-            arg_ids: self.args,
-            kwarg_ids: self.kwargs,
-        };
-        call.check_roots().map_err(|err| graph_error(&err))?;
-        Ok(call)
+        unstable::call_args_from_parts(self.values.into_graph()?, self.args, self.kwargs)
+            .map_err(|err| graph_error(&err))
     }
 }
 

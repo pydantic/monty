@@ -123,7 +123,7 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
 - `MontyRepl` — a REPL-style interface: feed code snippet by snippet with state persisting between snippets.
 - `monty-fs` crate — mount real host directories into the sandbox at virtual paths (read-write, read-only, or copy-on-write in-memory overlay), with path resolution hardened against escapes.
 - `RunProgress::OsCall` — filesystem and other `os`-level operations the host can intercept or delegate.
-- `FunctionCall::object_id` and `NameLookup::object_id` — `Some(uuid)` when the suspension is a method call or lazy attribute lookup on a host object sent as a `MontyNode::ClassInstance` or `MontyNode::ClassType` node; the receiver is not in `args`.
+- `FunctionCall::object_id` and `NameLookup::object_id` — `Some(uuid)` when the suspension is a method call or lazy attribute lookup on a host object sent as an `unstable::MontyNode::ClassInstance` or `unstable::MontyNode::ClassType` node; the receiver is not in `args`.
 - `MontyRun::with_host_clock` / `MontyRepl::with_host_clock` — choose what `date.today()` and `datetime.now()` read on the non-suspending paths, which have no host to ask. `HostClock::System` (this machine's clock) unless changed; `Denied` takes it away, `Fixed` freezes an instant for reproducible runs.
 
 ## Monty crates

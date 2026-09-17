@@ -13,8 +13,9 @@ use std::{mem, ops::ControlFlow, sync::Arc};
 
 use ahash::AHashMap;
 use monty_types::{
-    CallArgs, ExcType, HostClock, MontyException, MontyGraph, MontyObject, MontyUuid, NamedValues, NodeId,
-    OsFunctionCall, PrintWriter, ResourceTracker,
+    CallArgs, ExcType, HostClock, MontyException, MontyObject, MontyUuid, NamedValues, OsFunctionCall, PrintWriter,
+    ResourceTracker,
+    unstable::{self, MontyGraph, NodeId},
 };
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
@@ -206,10 +207,7 @@ impl MontyRepl {
             });
         }
 
-        let NamedValues {
-            graph: input_values,
-            names,
-        } = inputs.into();
+        let (input_values, names) = unstable::into_named_values_parts(inputs.into());
         let (input_names, input_ids): (Vec<_>, Vec<_>) = names.into_iter().unzip();
 
         let input_script_name = this.next_input_script_name();
@@ -292,10 +290,7 @@ impl MontyRepl {
             return Ok(MontyObject::none());
         }
 
-        let NamedValues {
-            graph: input_values,
-            names,
-        } = inputs.into();
+        let (input_values, names) = unstable::into_named_values_parts(inputs.into());
         let (input_names, input_ids): (Vec<_>, Vec<_>) = names.into_iter().unzip();
 
         let input_script_name = self.next_input_script_name();
@@ -374,7 +369,7 @@ impl MontyRepl {
         let args: CallArgs = args.into();
         // The synthetic call site is `name(*args)`: keyword arguments have
         // no slot, so they are refused rather than silently dropped.
-        if !args.kwarg_ids.is_empty() {
+        if args.kwargs().len() != 0 {
             return Err(ExcType::type_error("call_function() takes positional arguments only")
                 .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
         }
@@ -398,7 +393,7 @@ impl MontyRepl {
             name,
             name_id,
             slot_idx,
-            args.arg_ids.len(),
+            args.args().len(),
             &input_script_name,
             self.global_names.clone(),
             &mut self.interns,
@@ -1337,13 +1332,12 @@ fn build_repl_progress(
 /// Converts host call arguments to internal `ArgValues` for function calls;
 /// `call_function` has already refused keyword arguments.
 fn convert_args(args: CallArgs, vm: &mut VM<'_>) -> Result<ArgValues, MontyException> {
-    let values = args
-        .graph
+    let (graph, arg_ids, _) = unstable::into_call_args_parts(args);
+    let values = graph
         .to_values(vm)
         .map_err(|e| MontyException::runtime_error(format!("invalid argument type: {e}")))?;
     defer_drop!(values, vm);
-    let mut positional: Vec<Value> = args
-        .arg_ids
+    let mut positional: Vec<Value> = arg_ids
         .iter()
         .map(|id| values[id.index()].clone_with_heap(vm.heap))
         .collect();

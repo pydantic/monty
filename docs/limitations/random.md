@@ -40,7 +40,7 @@ it is included in a dump.
 ## Behavioural notes
 
 - **`Random` instances do not convert to host values.** Returning a `Random` instance, `random.Random` or `type(rng)`
-    to the host produces `MontyNode::Repr` in Rust and a string in Python.
+    to the host produces `unstable::MontyNode::Repr` in Rust and a string in Python.
     Return the generated values or `rng.getstate()` instead.
 - **No `SystemRandom`**, and `random.Random` cannot be subclassed (Monty has no class inheritance, see
     [classes.md](classes.md)).

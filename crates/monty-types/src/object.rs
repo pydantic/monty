@@ -1,13 +1,15 @@
-//! Boundary values: [`MontyObject`] (an owned arena plus its root),
-//! [`ObjectRef`] (a borrowed root inside an arena), the message carriers
+//! Boundary values: [`MontyObject`] (an owned value),
+//! [`ObjectRef`] (a borrowed value), the message carriers
 //! [`CallArgs`] and [`NamedValues`], and the leaf payloads they hold:
 //! [`MontyType`], the datetime value types, [`MontyFileHandle`], and the
 //! errors reading or importing a value raises.
 //!
 //! Hosts build inputs with the [`MontyObject`] constructors (`MontyObject::int`,
-//! `MontyObject::list`, ...) and read results through [`ObjectRef`]: the root
-//! node, typed accessors, structural equality and the Python `repr()`. Nothing
-//! here expands sharing, so every operation is linear in the arena.
+//! `MontyObject::list`, ...) and read results through [`ObjectRef`]'s typed
+//! accessors, structural equality and Python `repr()`. Graph representation
+//! access requires opting into [`unstable`].
+
+pub mod unstable;
 
 use std::{
     borrow::Cow,
@@ -24,32 +26,32 @@ use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
 
 use crate::{
-    args::PushValue,
     builtins::BuiltinsFunctions,
     exceptions::ExcType,
     file_mode::FileMode,
     format::{FormatFloat, StringRepr, bytes_repr_fmt, format_offset_timedelta_repr, string_repr_fmt},
     graph::{ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
     resource::ResourceError,
+    unstable::PushValue,
     uuid::MontyUuid,
 };
 
-/// One owned value: an arena plus its root.
+/// One owned Python value at the host boundary.
 ///
 /// Carried by `Complete`, resume results, name lookups and `os.getenv`
 /// defaults, and the type hosts build inputs with. Equality is structural as
-/// Python values, whatever the layout of the arenas.
+/// Python values, independent of storage layout.
 #[derive(Debug, Clone, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MontyObject {
     /// The arena holding the value and everything it references.
-    pub graph: MontyGraph,
+    graph: MontyGraph,
     /// The value's node.
-    pub root: NodeId,
+    root: NodeId,
 }
 
 impl MontyObject {
     /// Pairs an arena with a root, checking the root is in range.
-    pub fn new(graph: MontyGraph, root: NodeId) -> Result<Self, GraphError> {
+    fn new(graph: MontyGraph, root: NodeId) -> Result<Self, GraphError> {
         graph.check_root(root)?;
         Ok(Self { graph, root })
     }
@@ -59,7 +61,7 @@ impl MontyObject {
     /// # Panics
     /// If `node` holds child ids.
     #[must_use]
-    pub fn leaf(node: MontyNode) -> Self {
+    fn leaf(node: MontyNode) -> Self {
         let mut graph = MontyGraph::with_capacity(1);
         let root = graph.push(node);
         Self { graph, root }
@@ -303,7 +305,7 @@ impl MontyObject {
         name.parse::<BuiltinsFunctions>().ok().map(Self::builtin_function)
     }
 
-    /// Borrows the root inside its arena.
+    /// Borrows the value for inspection without copying.
     #[must_use]
     pub fn as_ref(&self) -> ObjectRef<'_> {
         ObjectRef {
@@ -314,7 +316,7 @@ impl MontyObject {
 
     /// The root node.
     #[must_use]
-    pub fn root_node(&self) -> &MontyNode {
+    fn root_node(&self) -> &MontyNode {
         self.graph.node(self.root)
     }
 
@@ -358,12 +360,6 @@ impl PartialEq<ObjectRef<'_>> for MontyObject {
     }
 }
 
-impl From<MontyNode> for MontyObject {
-    fn from(node: MontyNode) -> Self {
-        Self::leaf(node)
-    }
-}
-
 impl fmt::Display for MontyObject {
     /// The Python `str()` of the value: text as is, everything else its `repr()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -403,21 +399,19 @@ impl TryFrom<&MontyObject> for bool {
     }
 }
 
-/// A borrowed value: one root inside an arena.
-///
-/// What a message's arguments and inputs expose without copying the arena.
+/// A borrowed Python value, for inspecting results, arguments and inputs without copying.
 #[derive(Debug, Clone, Copy)]
 pub struct ObjectRef<'a> {
     /// The arena.
-    pub graph: &'a MontyGraph,
+    graph: &'a MontyGraph,
     /// The value's node.
-    pub id: NodeId,
+    id: NodeId,
 }
 
 impl<'a> ObjectRef<'a> {
     /// The root node.
     #[must_use]
-    pub fn node(&self) -> &'a MontyNode {
+    fn node(&self) -> &'a MontyNode {
         self.graph.node(self.id)
     }
 
@@ -427,7 +421,7 @@ impl<'a> ObjectRef<'a> {
         self.graph.type_name(self.id)
     }
 
-    /// Copies the value into its own arena.
+    /// Copies into an owned value, preserving sharing within the value.
     #[must_use]
     pub fn to_owned(&self) -> MontyObject {
         let mut graph = MontyGraph::new();
@@ -437,7 +431,7 @@ impl<'a> ObjectRef<'a> {
 
     /// The child at `id` of the same arena.
     #[must_use]
-    pub fn child(&self, id: NodeId) -> Self {
+    fn child(&self, id: NodeId) -> Self {
         self.graph.value(id)
     }
 
@@ -945,19 +939,16 @@ fn queue_pairs(xs: &[(NodeId, NodeId)], ys: &[(NodeId, NodeId)], pending: &mut V
     }
 }
 
-/// The arguments of one function or OS call: one arena, and the ids of the
-/// positional arguments and `(key, value)` keyword pairs in it.
-///
-/// One arena per call means an object passed twice is sent once and the
-/// host receives it as one object, as in CPython.
+/// The positional and keyword arguments of one function or OS call.
+/// A sub-object shared within an exported call stays shared at the host boundary.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CallArgs {
     /// The arena holding every argument.
-    pub graph: MontyGraph,
+    graph: MontyGraph,
     /// Ids of the positional arguments, in order.
-    pub arg_ids: Vec<NodeId>,
+    arg_ids: Vec<NodeId>,
     /// Ids of the keyword arguments as `(key, value)` pairs, in order; keys are usually strings.
-    pub kwarg_ids: Vec<(NodeId, NodeId)>,
+    kwarg_ids: Vec<(NodeId, NodeId)>,
 }
 
 impl CallArgs {
@@ -968,17 +959,13 @@ impl CallArgs {
     }
 
     /// Appends a positional argument.
-    pub fn push_arg(&mut self, value: impl PushValue) -> NodeId {
-        let id = value.push_into(&mut self.graph);
-        self.arg_ids.push(id);
-        id
+    pub fn push_arg(&mut self, value: MontyObject) {
+        unstable::push_arg(self, value);
     }
 
     /// Appends a keyword argument with a string key.
-    pub fn push_kwarg(&mut self, name: &str, value: impl PushValue) {
-        let key = self.graph.push(MontyNode::String(name.to_owned()));
-        let value = value.push_into(&mut self.graph);
-        self.kwarg_ids.push((key, value));
+    pub fn push_kwarg(&mut self, name: &str, value: MontyObject) {
+        unstable::push_kwarg(self, name, value);
     }
 
     /// The `index`th positional argument.
@@ -988,12 +975,14 @@ impl CallArgs {
     }
 
     /// The positional arguments, in order.
-    pub fn args(&self) -> impl Iterator<Item = ObjectRef<'_>> {
+    #[must_use]
+    pub fn args(&self) -> impl ExactSizeIterator<Item = ObjectRef<'_>> {
         self.arg_ids.iter().map(|id| self.graph.value(*id))
     }
 
     /// The keyword arguments as `(key, value)` views, in order.
-    pub fn kwargs(&self) -> impl Iterator<Item = (ObjectRef<'_>, ObjectRef<'_>)> {
+    #[must_use]
+    pub fn kwargs(&self) -> impl ExactSizeIterator<Item = (ObjectRef<'_>, ObjectRef<'_>)> {
         self.kwarg_ids
             .iter()
             .map(|(key, value)| (self.graph.value(*key), self.graph.value(*value)))
@@ -1008,7 +997,7 @@ impl CallArgs {
     }
 
     /// Checks every argument id is inside the arena; run on decoded messages.
-    pub fn check_roots(&self) -> Result<(), GraphError> {
+    fn check_roots(&self) -> Result<(), GraphError> {
         self.arg_ids.iter().try_for_each(|id| self.graph.check_root(*id))?;
         self.kwarg_ids
             .iter()
@@ -1035,13 +1024,13 @@ impl From<(Vec<MontyObject>, Vec<(MontyObject, MontyObject)>)> for CallArgs {
     }
 }
 
-/// Named values sharing one arena: the inputs of a feed.
+/// The named inputs of one feed, preserving sharing between exported values.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NamedValues {
     /// The arena holding every value.
-    pub graph: MontyGraph,
+    graph: MontyGraph,
     /// `(name, id)` pairs, in order.
-    pub names: Vec<(String, NodeId)>,
+    names: Vec<(String, NodeId)>,
 }
 
 impl NamedValues {
@@ -1052,10 +1041,8 @@ impl NamedValues {
     }
 
     /// Appends a named value.
-    pub fn push(&mut self, name: impl Into<String>, value: impl PushValue) -> NodeId {
-        let id = value.push_into(&mut self.graph);
-        self.names.push((name.into(), id));
-        id
+    pub fn push(&mut self, name: impl Into<String>, value: MontyObject) {
+        unstable::push_named(self, name, value);
     }
 
     /// Number of named values.
@@ -1071,19 +1058,20 @@ impl NamedValues {
     }
 
     /// The `(name, value)` pairs, in order.
-    pub fn iter(&self) -> impl Iterator<Item = (&str, ObjectRef<'_>)> {
+    #[must_use]
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (&str, ObjectRef<'_>)> {
         self.names
             .iter()
             .map(|(name, id)| (name.as_str(), self.graph.value(*id)))
     }
 
     /// Checks every id is inside the arena; run on decoded messages.
-    pub fn check_roots(&self) -> Result<(), GraphError> {
+    fn check_roots(&self) -> Result<(), GraphError> {
         self.names.iter().try_for_each(|(_, id)| self.graph.check_root(*id))
     }
 }
 
-/// Concrete rather than generic over [`PushValue`] so an empty `vec![]` infers.
+/// Named values in order; concrete so an empty `vec![]` infers.
 impl From<Vec<(String, MontyObject)>> for NamedValues {
     fn from(pairs: Vec<(String, MontyObject)>) -> Self {
         let mut named = Self::new();
@@ -1174,7 +1162,7 @@ fn push_pairs(
 
 /// The Python type of a builtin at the host boundary: the public mirror of
 /// the runtime `Type` enum, minus class types, which cross as their own
-/// [`ClassType`](crate::MontyNode::ClassType) node. Serializable and
+/// [`class_type`](MontyObject::class_type) value. Serializable and
 /// displayable without heap access.
 #[derive(
     Debug,
@@ -1625,7 +1613,7 @@ impl Error for ConversionError {}
 /// Error returned when a value cannot be used as an input to code execution.
 ///
 /// This can occur when:
-/// - A node kind (like [`Repr`](crate::MontyNode::Repr)) is only valid as an output, not an input
+/// - A value (like [`MontyObject::repr`]) is only valid as an output, not an input
 /// - A resource limit is exceeded during conversion
 #[derive(Debug, Clone)]
 pub enum InvalidInputError {

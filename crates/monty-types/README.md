@@ -10,10 +10,18 @@ implementation**.
 - `MontyObject` / `MontyType` — Python values and their types at the host
   boundary, including the `datetime` family (`MontyDate`, `MontyDateTime`,
   `MontyTimeDelta`, `MontyTimeZone`) and `MontyFileHandle`.
-- `MontyGraph` / `MontyNode` — the flat post-order node graph values cross the boundary in; a sub-object shared
-  inside the sandbox is one node however many times it is referenced.
-  `MontyObject` is a graph plus its root node, `ObjectRef` borrows one value inside a graph (`as_int`, `as_str`,
-  `items`, `pairs`), and `CallArgs` / `NamedValues` hold the arguments or inputs of one message.
+- `ObjectRef` — a borrowed value, with typed accessors (`as_int`, `as_str`, `items`, `pairs`).
+  `MontyObject::as_ref()` borrows a value for inspection.
+- `CallArgs` / `NamedValues` — the arguments or inputs of one message.
+  Their builders accept `MontyObject` values; their iterators return borrowed values.
+  Both carriers and the `MontyObject` / `ObjectRef` types keep their fields private.
+- `unstable` — graph representation APIs for bindings and transport adapters, with no API compatibility guarantee.
+  They may change or disappear in any release; prefer value constructors and typed accessors when possible.
+  `MontyGraph`, `MontyNode`, `NodeId`, `ClassTypeNode`, `GraphError` and `PushValue` are exported only here.
+  `graph_parts` / `into_graph_parts` borrow or take an object's arena and root without copying;
+  `call_args_parts` / `into_call_args_parts` and `named_values_parts` / `into_named_values_parts` do the same for carriers.
+  Rebuild storage with `object_from_graph`, `call_args_from_parts` or `named_values_from_parts`, which check the roots.
+  The flat post-order graph preserves sharing: a shared sub-object is one node however many times it is referenced.
 - `MontyException` / `ExcType` — exceptions with tracebacks (`StackFrame`,
   `CodeLoc`) and structured payloads (`ExcData`).
 - `OsFunctionCall` — the typed OS-call payloads sandboxed code suspends with

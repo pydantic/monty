@@ -12,12 +12,13 @@
 use std::{borrow::Cow, fmt, ops::Deref};
 
 use crate::{
-    args::{PushValue, ToArgs},
+    args::ToArgs,
     exceptions::{ExcType, MontyException},
     file_mode::FileMode,
     format::StringRepr,
     graph::{MontyGraph, MontyNode, NodeId},
     object::{CallArgs, MontyObject, MontyTimeZone},
+    unstable::{self, PushValue},
     virtual_path::normalize_virtual_path,
 };
 // =============================================================================
@@ -342,7 +343,7 @@ impl fmt::Display for OsFunctionCall {
 /// A call with one positional argument.
 fn single_arg(value: impl PushValue) -> CallArgs {
     let mut call = CallArgs::new();
-    call.push_arg(value);
+    unstable::push_arg(&mut call, value);
     call
 }
 
@@ -419,7 +420,7 @@ pub struct UrandomArgs {
 /// Owned virtual (sandbox) path carried by OS-call args.
 ///
 /// Preserves the supplied string, including invalid components, for host validation.
-/// Derefs to `&str` for routing; [`PushValue`](crate::args::PushValue)
+/// Derefs to `&str` for routing; [`PushValue`](crate::unstable::PushValue)
 /// projects it back to a [`MontyNode::Path`] at the host boundary.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MontyPath(String);

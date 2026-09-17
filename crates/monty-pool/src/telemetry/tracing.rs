@@ -15,7 +15,10 @@ use std::fmt::{self, Write};
 
 use logfire::{Logfire, set_local_logfire};
 use monty_proto::{WireArena, WireFunctionCall, pb, pb::os_call::Call};
-use monty_types::{MontyNode, MontyUuid, NodeId, bytes_repr};
+use monty_types::{
+    MontyUuid, bytes_repr,
+    unstable::{MontyNode, NodeId},
+};
 use opentelemetry::Value as OtelValue;
 use tracing::{Span, field::Empty};
 use tracing_opentelemetry::OpenTelemetrySpanExt;

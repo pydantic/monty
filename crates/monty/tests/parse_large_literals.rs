@@ -5,7 +5,7 @@
 //! literals (hex, binary) and floats are unaffected.
 
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyNode};
+use monty_types::{CompileOptions, ExcType, MontyObject};
 
 #[test]
 fn large_decimal_literal_rejected() {
@@ -114,10 +114,7 @@ fn monty_object_repr_or_error_success() {
     let code = "range(0, 10, 2)".to_string();
     let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
     let result = run.run_no_limits(vec![]).expect("should run");
-    let MontyNode::Repr(s) = result.root_node() else {
-        panic!("expected a Repr node, got: {result:?}");
-    };
-    assert_eq!(s, "range(0, 10, 2)");
+    assert_eq!(result, MontyObject::repr("range(0, 10, 2)"));
 }
 
 #[test]
@@ -126,10 +123,7 @@ fn monty_object_repr_or_error_slice() {
     let code = "slice(1, 10, 2)".to_string();
     let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
     let result = run.run_no_limits(vec![]).expect("should run");
-    let MontyNode::Repr(s) = result.root_node() else {
-        panic!("expected a Repr node, got: {result:?}");
-    };
-    assert_eq!(s, "slice(1, 10, 2)");
+    assert_eq!(result, MontyObject::repr("slice(1, 10, 2)"));
 }
 
 #[test]
@@ -138,10 +132,7 @@ fn monty_object_repr_or_error_dict_keys() {
     let code = "{1: 'a', 2: 'b'}.keys()".to_string();
     let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
     let result = run.run_no_limits(vec![]).expect("should run");
-    let MontyNode::Repr(s) = result.root_node() else {
-        panic!("expected a Repr node, got: {result:?}");
-    };
-    assert_eq!(s, "dict_keys([1, 2])");
+    assert_eq!(result, MontyObject::repr("dict_keys([1, 2])"));
 }
 
 #[test]
@@ -152,11 +143,10 @@ fn monty_object_repr_or_error_with_huge_int() {
     let code = "d = {10**5000: 'v'}\nd.keys()".to_string();
     let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
     let result = run.run_no_limits(vec![]).expect("should run, not raise");
-    let MontyNode::Repr(s) = result.root_node() else {
-        panic!("expected a Repr node, got: {result:?}");
-    };
     assert_eq!(
-        s,
-        "<dict_keys object, error on repr(): ValueError('Exceeds the limit (4300 digits) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit')>"
+        result,
+        MontyObject::repr(
+            "<dict_keys object, error on repr(): ValueError('Exceeds the limit (4300 digits) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit')>"
+        )
     );
 }

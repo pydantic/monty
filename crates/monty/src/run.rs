@@ -189,7 +189,7 @@ impl MontyRun {
     /// # Errors
     /// Returns [`MontyException`] if:
     /// - The number of inputs doesn't match the expected count
-    /// - An input value is invalid (e.g. a [`MontyNode::Repr`](monty_types::MontyNode::Repr) node)
+    /// - An input value is invalid (e.g. a [`MontyObject::repr`] value)
     /// - A runtime error occurs during execution
     ///
     /// # Panics

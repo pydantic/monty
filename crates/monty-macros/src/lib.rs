@@ -37,7 +37,7 @@ pub fn derive_from_args(input: TokenStream) -> TokenStream {
 /// value arena plus positional and keyword ids). Reuses the
 /// `#[from_args(...)]` field attributes (`pos_only`, `kw_only`, `varargs`)
 /// so a struct that derives both stays consistent in both directions. Each
-/// field type must implement `monty_types::args::PushValue`.
+/// field type must implement `monty_types::unstable::PushValue`.
 #[proc_macro_derive(ToArgs, attributes(from_args))]
 pub fn derive_to_args(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);

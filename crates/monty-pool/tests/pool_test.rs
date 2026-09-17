@@ -32,8 +32,9 @@ use monty_pool::{
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
 use monty_types::{
-    CallArgs, ExcType, MontyException, MontyNode, MontyObject, NameLookupResult, PrintStream, ResourceLimits,
-    TypeCheckingConfig, TypeCheckingFormat,
+    CallArgs, ExcType, MontyException, MontyObject, NameLookupResult, PrintStream, ResourceLimits, TypeCheckingConfig,
+    TypeCheckingFormat,
+    unstable::{self, MontyNode},
 };
 use tokio::time::sleep;
 
@@ -322,7 +323,7 @@ async fn cyclic_return_value_decodes_and_keeps_the_worker_alive() {
     };
     assert_eq!(pairs.len(), 1);
     assert_eq!(pairs[0].0, MontyObject::string("self".to_owned()));
-    assert!(matches!(pairs[0].1.node(), MontyNode::Cycle(placeholder) if placeholder == "{...}"));
+    assert!(matches!(unstable::node(pairs[0].1), MontyNode::Cycle(placeholder) if placeholder == "{...}"));
     // the session must still be usable on the same worker
     let event = session
         .feed("1 + 1", vec![], vec![], false, &mut no_print)

@@ -3,7 +3,10 @@
 
 use std::collections::HashMap;
 
-use monty_types::{ClassTypeNode, MontyException, MontyGraph, MontyNode, MontyObject, NodeId};
+use monty_types::{
+    MontyException, MontyObject,
+    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+};
 use pyo3::{
     prelude::*,
     types::{PyBool, PyBytes, PyDate, PyDelta, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple},
@@ -22,7 +25,8 @@ use super::{
 /// `store` resolves to the ORIGINAL wrapped object (identity preserved);
 /// otherwise it becomes a read-only `MontyClassProxy`.
 pub fn monty_to_py(py: Python<'_>, value: &MontyObject, store: &InstanceStore) -> PyResult<Py<PyAny>> {
-    Ok(DecodedArena::new(py, &value.graph, store)?.get(py, value.root))
+    let (graph, root) = unstable::graph_parts(value);
+    Ok(DecodedArena::new(py, graph, store)?.get(py, root))
 }
 
 /// One message's arena as Python objects.

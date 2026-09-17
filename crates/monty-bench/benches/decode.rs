@@ -8,7 +8,10 @@ use codspeed_criterion_compat::{BenchmarkId, Criterion, Throughput, black_box, c
 #[cfg(not(codspeed))]
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use monty_proto::{decode_frame, encode_to_capped_vec, pb};
-use monty_types::{MontyGraph, MontyNode, MontyObject};
+use monty_types::{
+    MontyObject,
+    unstable::{self, MontyGraph, MontyNode},
+};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 
@@ -77,7 +80,7 @@ fn dag(levels: usize) -> MontyObject {
     for _ in 0..levels {
         root = graph.push(MontyNode::List(vec![root, root]));
     }
-    MontyObject::new(graph, root).expect("the last node pushed is the root")
+    unstable::object_from_graph(graph, root).expect("the last node pushed is the root")
 }
 
 /// A list of `n` dicts shaped like a SQL tool reply (short string keys,

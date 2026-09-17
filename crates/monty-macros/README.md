@@ -125,13 +125,13 @@ unit tests for every attribute-validation error.
 Inverse of `FromArgs`: projects a struct into the `CallArgs` a host callback takes (one `MontyGraph` plus the node
 ids of its positional and keyword arguments).
 Reuses the `#[from_args(...)]` field attributes so a struct that derives both stays consistent in both directions.
-Field types must implement `monty_types::args::PushValue`.
+Field types must implement `monty_types::unstable::PushValue`.
+Generated code uses the unstable builders to append fields directly to one arena without allocating an object per field.
 
 ## Not a standalone crate
 
-Generated code emits `crate::...` paths and only compiles inside `monty`.
-Cross-crate use would need `proc-macro-crate` plus switching to
-`::monty::...` paths.
+Generated code emits `crate::...` paths: `FromArgs` compiles inside `monty`, and `ToArgs` inside `monty-types`.
+Cross-crate use would need `proc-macro-crate` and paths to the appropriate crate.
 
 ## Monty crates
 

@@ -3,7 +3,7 @@
 //! present, and a frame that could not fit is rejected before it is built.
 
 use monty_proto::{DEFAULT_MAX_DECODE_BYTES, WireArena, WireFunctionCall, reset_decode_budget};
-use monty_types::{MontyNode, NodeId};
+use monty_types::unstable::{MontyNode, NodeId};
 use prost::{Message, encoding::encode_varint};
 
 /// One `MontyNode { none }` entry as `Arena.nodes` encodes it: entry key and

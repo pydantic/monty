@@ -166,7 +166,7 @@ properties that real CPython does not provide, per the caveat above.
 ## Values crossing the process boundary
 
 - Every message carries its values as one flat, post-order node arena
-    ([`MontyGraph`](../api/rust/monty-types.md#montygraph)): containers hold the indexes of their children, and the
+    ([`unstable::MontyGraph`](../api/rust/monty-types.md#montygraph)): containers hold the indexes of their children, and the
     message names its roots by index.
     The process/WebSocket transports encode it as protobuf (`proto/monty/v1/monty.proto`); the browser component
     passes the same shape through WIT.

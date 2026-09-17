@@ -8,7 +8,10 @@ pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bi
 pub(crate) use bind_python::Signature;
 pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg, is_long_int};
 pub(crate) use monty_macros::FromArgs;
-use monty_types::{CallArgs, MontyNode};
+use monty_types::{
+    CallArgs,
+    unstable::{self, MontyNode},
+};
 
 use crate::{
     bytecode::VM,
@@ -243,7 +246,7 @@ impl ArgValues {
                 kwargs.export_into(&mut call, &mut exporter, vm);
             }
         }
-        call.graph = exporter.finish(vm);
+        *unstable::call_args_parts_mut(&mut call).0 = exporter.finish(vm);
         call
     }
 
@@ -416,7 +419,7 @@ impl KwargsValues {
                 for (k, v) in kvs {
                     let key = exporter.push_node(MontyNode::String(vm.interns.get_str(k).to_owned()));
                     let value = exporter.push_owned(v, vm);
-                    call.kwarg_ids.push((key, value));
+                    unstable::call_args_parts_mut(call).2.push((key, value));
                 }
             }
             Self::Pairs(kvs) => {

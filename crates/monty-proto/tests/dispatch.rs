@@ -11,7 +11,7 @@ use monty_proto::{
     worker::{Child, HandleOutcome, dispatch_frame},
     write_frame,
 };
-use monty_types::{CompileOptions, MONTY_VERSION, MontyObject, NamedValues, PrintWriter, ResourceTracker};
+use monty_types::{CompileOptions, MONTY_VERSION, MontyObject, NamedValues, PrintWriter, ResourceTracker, unstable};
 
 /// Starts a feed with `f` already bound, leaving the worker at its first external call.
 fn start_external_call(child: &mut Child, code: &str) -> WireFunctionCall {
@@ -46,13 +46,13 @@ fn future_reply(call_id: u32, kind: pb::ext_function_result::Kind) -> pb::Future
 fn resume_futures(results: Vec<pb::FutureResult>, value: MontyObject) -> pb::ResumeFutures {
     pb::ResumeFutures {
         results,
-        values: Some(WireArena::new(value.graph)),
+        values: Some(WireArena::new(unstable::into_graph_parts(value).0)),
     }
 }
 
 /// A one-node arena holding `value` at index 0.
 fn arena(value: MontyObject) -> WireArena {
-    WireArena::new(value.graph)
+    WireArena::new(unstable::into_graph_parts(value).0)
 }
 
 /// Each eager reply advances directly to the next call or completion.

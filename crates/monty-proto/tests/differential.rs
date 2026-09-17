@@ -18,9 +18,9 @@
 use monty::{MontyRun, RunProgress};
 use monty_proto::{WireArena, WireFunctionCall, os_call_to_proto, pb};
 use monty_types::{
-    CallArgs, ClassTypeNode, CompileOptions, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle,
-    MontyGraph, MontyNode, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NodeId,
-    OsFunctionCall, PrintWriter, ResourceTracker,
+    CallArgs, CompileOptions, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
+    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker,
+    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -225,7 +225,10 @@ fn corpus() -> Vec<MontyObject> {
 /// Every corpus value as an arena, plus arenas only sharing can produce: a
 /// doubling ladder, a cycle leaf, and a class node shared by two instances.
 fn graphs() -> Vec<MontyGraph> {
-    let mut graphs: Vec<MontyGraph> = corpus().into_iter().map(|value| value.graph).collect();
+    let mut graphs: Vec<MontyGraph> = corpus()
+        .into_iter()
+        .map(|value| unstable::into_graph_parts(value).0)
+        .collect();
     let mut ladder = MontyGraph::new();
     let mut x = ladder.push(MontyNode::Int(0));
     for _ in 0..4 {
@@ -478,6 +481,7 @@ fn hand_call_payloads_match_generated_encoding() {
     ];
 
     let call = CallArgs::from((args, kwargs));
+    let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&call);
 
     // Both receiver states: a routed call (method / `__call__`) and a plain
     // external call (absent field).
@@ -487,12 +491,12 @@ fn hand_call_payloads_match_generated_encoding() {
         let hand_call = WireFunctionCall::new("external".to_owned(), call.clone(), 42, object_id, allow_eager_await);
         let generated_call = oracle::FunctionCall {
             function_name: "external".to_owned(),
-            args: call.arg_ids.iter().map(|id| id.0).collect(),
-            kwargs: oracle_pairs(&call.kwarg_ids).pairs,
+            args: arg_ids.iter().map(|id| id.0).collect(),
+            kwargs: oracle_pairs(kwarg_ids).pairs,
             call_id: 42,
             object_id: oracle_object_id,
             allow_eager_await,
-            values: Some(to_oracle(&call.graph)),
+            values: Some(to_oracle(graph)),
         };
         assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
         assert_eq!(
@@ -518,12 +522,13 @@ fn hand_call_payloads_match_generated_encoding() {
             default: default.clone(),
         }),
     );
+    let (graph, root) = unstable::graph_parts(&default);
     let generated_os = oracle::OsCall {
         call_id: 7,
-        values: Some(to_oracle(&default.graph)),
+        values: Some(to_oracle(graph)),
         call: Some(oracle::os_call::Call::Getenv(oracle::os_call::Getenv {
             key: "HOME".to_owned(),
-            default: default.root.0,
+            default: root.0,
         })),
     };
     assert_eq!(hand_os.encode_to_vec(), generated_os.encode_to_vec());
@@ -579,10 +584,11 @@ fn executed_cycle_value_is_byte_compatible() {
         panic!("expected completion");
     };
     // the cycle leaf, `a`, and the outer list: nothing is exported twice
-    assert_eq!(value.graph.len(), 3);
-    let hand = WireArena::new(value.graph.clone()).encode_to_vec();
-    assert_eq!(hand, to_oracle(&value.graph).encode_to_vec());
-    assert_eq!(decode_wire(&hand).expect("decode failed"), value.graph);
+    let (graph, _) = unstable::graph_parts(&value);
+    assert_eq!(graph.len(), 3);
+    let hand = WireArena::new(graph.clone()).encode_to_vec();
+    assert_eq!(hand, to_oracle(graph).encode_to_vec());
+    assert_eq!(&decode_wire(&hand).expect("decode failed"), graph);
 }
 
 // ============================================================================
@@ -1001,7 +1007,7 @@ fn out_of_range_temporal_values_are_rejected() {
 /// prost's generated decoder.
 #[test]
 fn unknown_fields_are_skipped() {
-    let graph = MontyObject::int(42).graph;
+    let (graph, _) = unstable::into_graph_parts(MontyObject::int(42));
     let mut bytes = WireArena::new(graph.clone()).encode_to_vec();
     // append an unknown varint field: key = 99 << 3 | 0 = 792 (varint
     // 0x98 0x06), value 7
@@ -1014,7 +1020,7 @@ fn unknown_fields_are_skipped() {
 /// carrying message's root ids then catch the missing nodes).
 #[test]
 fn corrupt_frames_fail_cleanly() {
-    let graph = MontyObject::list([MontyObject::int(1)]).graph;
+    let (graph, _) = unstable::into_graph_parts(MontyObject::list([MontyObject::int(1)]));
     let bytes = WireArena::new(graph.clone()).encode_to_vec();
     for cut in 1..bytes.len() {
         if let Ok(prefix) = decode_wire(&bytes[..cut]) {

@@ -13,7 +13,10 @@ use monty_proto::{
     os_call_from_proto, pb,
     worker::{Child, EventSink, HandleOutcome, protocol_violation},
 };
-use monty_types::{CallArgs, ExcType, MONTY_VERSION, MontyException, MontyNode, MontyUuid};
+use monty_types::{
+    CallArgs, ExcType, MONTY_VERSION, MontyException, MontyUuid,
+    unstable::{self, MontyNode},
+};
 
 #[expect(
     clippy::same_length_and_capacity,
@@ -213,16 +216,17 @@ impl PreparedOsEvent {
 
     /// Returns the host footprint of the call's arena.
     fn values_decoded_size(&self) -> usize {
-        self.args.graph.decoded_size()
+        unstable::call_args_parts(&self.args).0.decoded_size()
     }
 
     /// Moves the already-budgeted values into the semantic component arena.
     fn into_component(self) -> Event {
+        let (graph, args, kwargs) = unstable::into_call_args_parts(self.args);
         Event::OsCall(OsCallEvent {
             function_name: self.function_name,
-            values: value::into_component(self.args.graph.into_nodes()),
-            args: value::raw_ids(self.args.arg_ids),
-            kwargs: value::raw_pairs(self.args.kwarg_ids),
+            values: value::into_component(graph.into_nodes()),
+            args: value::raw_ids(args),
+            kwargs: value::raw_pairs(kwargs),
             call_id: self.call_id,
         })
     }

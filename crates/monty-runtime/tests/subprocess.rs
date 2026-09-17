@@ -16,7 +16,8 @@ use monty_proto::{
     exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
 };
 use monty_types::{
-    CallArgs, ExtFunctionResult, MontyDate, MontyDateTime, MontyNode, MontyObject, NameLookupResult, NamedValues,
+    CallArgs, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult, NamedValues,
+    unstable::{self, MontyNode},
 };
 
 /// How long a death-expecting helper waits for the child to exit. Generous:
@@ -1179,7 +1180,7 @@ fn exporting_a_shared_graph_is_linear_in_heap_objects() {
     let code = "x = [0]\nfor _ in range(20):\n    x = [x]\nfor _ in range(15):\n    x = [x, x]\nx";
     let (_, event) = child.feed(code);
     let value = expect_complete(event);
-    assert_eq!(value.graph.len(), 37);
+    assert_eq!(unstable::graph_parts(&value).0.len(), 37);
     // the session survives: nothing overshot into a soft-limit `MemoryError`
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
@@ -1194,7 +1195,7 @@ fn exporting_a_small_shared_graph_round_trips() {
     let (_, event) = child.feed("x = [0]\nx = [x, x]\nx = [x, x]\nx");
     let value = expect_complete(event);
     // `0`, `[0]`, `[[0], [0]]` and the outer list: sharing costs nothing
-    assert_eq!(value.graph.len(), 4);
+    assert_eq!(unstable::graph_parts(&value).0.len(), 4);
     let leaf = MontyObject::list([MontyObject::int(0)]);
     let pair = MontyObject::list([leaf.clone(), leaf]);
     assert_eq!(value, MontyObject::list([pair.clone(), pair]));
@@ -1211,7 +1212,7 @@ fn exporting_a_deeply_nested_value_does_not_overflow_the_stack() {
     let (_, event) = child.feed("x = [1]\nfor _ in range(300):\n    x = [x]\nx");
     let value = expect_complete(event);
     // one node per list plus the leaf
-    assert_eq!(value.graph.len(), 302);
+    assert_eq!(unstable::graph_parts(&value).0.len(), 302);
     let expected = (0..301).fold(MontyObject::int(1), |inner, _| MontyObject::list([inner]));
     assert_eq!(value, expected);
     child.shutdown();
@@ -1228,8 +1229,9 @@ fn exporting_past_the_recursion_guard_degrades_to_a_repr() {
     let value = expect_complete(event);
     // post-order: the innermost node comes first; the guard trips at the
     // 1000th level, so 1000 lists wrap the repr
-    assert_eq!(value.graph.nodes()[0], MontyNode::Repr("<deeply nested>".to_owned()));
-    assert_eq!(value.graph.len(), 1001);
+    let (graph, _) = unstable::graph_parts(&value);
+    assert_eq!(graph.nodes()[0], MontyNode::Repr("<deeply nested>".to_owned()));
+    assert_eq!(graph.len(), 1001);
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
@@ -1245,8 +1247,8 @@ fn many_references_to_one_object_cost_one_node() {
     let (_, event) = child.feed(&format!("x = [1]\n[x] * {REFS}"));
     let value = expect_complete(event);
     // `1`, `[1]` and the outer list
-    assert_eq!(value.graph.len(), 3);
-    let MontyNode::List(ids) = value.root_node() else {
+    assert_eq!(unstable::graph_parts(&value).0.len(), 3);
+    let MontyNode::List(ids) = unstable::root_node(&value) else {
         panic!("expected a list, got {value:?}");
     };
     assert_eq!(ids.len(), REFS);
@@ -1263,9 +1265,9 @@ fn cycles_export_one_placeholder_each() {
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
     let (_, event) = child.feed("xs = [[] for _ in range(10_000)]\nfor x in xs:\n    x.append(x)\nxs");
     let value = expect_complete(event);
-    assert_eq!(value.graph.len(), 20_001);
-    let cycles = value
-        .graph
+    let (graph, _) = unstable::graph_parts(&value);
+    assert_eq!(graph.len(), 20_001);
+    let cycles = graph
         .nodes()
         .iter()
         .filter(|node| matches!(node, MontyNode::Cycle(_)))
@@ -1316,8 +1318,10 @@ fn shared_inputs_are_one_sandbox_object() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let mut inputs = NamedValues::new();
-    let id = inputs.push("a", MontyObject::list([MontyObject::int(1)]));
-    inputs.names.push(("b".to_owned(), id));
+    let id = unstable::push_named(&mut inputs, "a", MontyObject::list([MontyObject::int(1)]));
+    let (graph, mut names) = unstable::into_named_values_parts(inputs);
+    names.push(("b".to_owned(), id));
+    let inputs = unstable::named_values_from_parts(graph, names).unwrap();
     let (_, event) = child.feed_with("a is b and a == [1]", inputs);
     assert_eq!(expect_complete(event), MontyObject::bool(true));
     child.shutdown();

@@ -23,7 +23,10 @@ use std::{
     io::{self, Write},
 };
 
-use monty_types::{MontyDateTime, MontyNode, MontyTime, NodeId, bytes_repr};
+use monty_types::{
+    MontyDateTime, MontyTime, bytes_repr,
+    unstable::{MontyNode, NodeId},
+};
 use num_traits::ToPrimitive;
 use serde::ser::{Error as _, Serialize, SerializeMap, Serializer};
 
@@ -433,15 +436,16 @@ fn write_utc_offset(iso: &mut String, offset: i32) {
 #[cfg(test)]
 mod tests {
     use monty_types::{
-        ExcType, MontyDate, MontyDateTime, MontyGraph, MontyNode, MontyObject, MontyTimeDelta, MontyType, MontyUuid,
-        NodeId,
+        ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyType, MontyUuid,
+        unstable::{self, MontyGraph, MontyNode, NodeId},
     };
 
     use super::{serialize_capped, serialize_dict_capped, serialize_named_capped, serialize_seq_capped};
 
     /// Encodes a value with a byte cap.
     fn capped(value: &MontyObject, limit: usize) -> (String, bool) {
-        serialize_capped(value.graph.nodes(), value.root, limit)
+        let (graph, root) = unstable::graph_parts(value);
+        serialize_capped(graph.nodes(), root, limit)
     }
 
     /// Shorthand: encode with a byte cap nothing here reaches.
@@ -502,10 +506,11 @@ mod tests {
             MontyObject::none(),
         )];
         let value = MontyObject::dict(pairs);
-        let MontyNode::Dict(pairs) = value.root_node() else {
+        let MontyNode::Dict(pairs) = unstable::root_node(&value) else {
             panic!("expected a dict node");
         };
-        let (json, cut) = serialize_dict_capped(value.graph.nodes(), pairs, 64);
+        let (graph, _) = unstable::graph_parts(&value);
+        let (json, cut) = serialize_dict_capped(graph.nodes(), pairs, 64);
         assert!(cut);
         assert!(json.len() <= 64);
     }

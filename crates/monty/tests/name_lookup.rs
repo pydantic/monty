@@ -582,8 +582,8 @@ fn resolve_function_with_non_interned_name() {
         .into_function_call()
         .expect("expected FunctionCall for 'not_foobar'");
     assert_eq!(call.function_name, "not_foobar");
-    assert!(call.args.arg_ids.is_empty());
-    assert!(call.args.kwarg_ids.is_empty());
+    assert_eq!(call.args.args().len(), 0);
+    assert_eq!(call.args.kwargs().len(), 0);
 
     // Resume with a return value
     let result = call.resume(MontyObject::int(42), PrintWriter::Stdout).unwrap();

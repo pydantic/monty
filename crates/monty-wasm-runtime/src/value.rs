@@ -11,8 +11,9 @@ use std::borrow::Cow;
 
 use monty_proto::DEFAULT_MAX_DECODE_BYTES;
 use monty_types::{
-    BuiltinsFunctions, ClassTypeNode as MontyClassTypeNode, FileMode, MontyDate, MontyDateTime, MontyFileHandle,
-    MontyGraph, MontyNode, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NodeId,
+    BuiltinsFunctions, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone,
+    MontyType, MontyUuid,
+    unstable::{ClassTypeNode as MontyClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 
 use crate::bindings::exports::pydantic::monty::worker::{

@@ -5,8 +5,8 @@
 use std::borrow::Cow;
 
 use monty_types::{
-    FileMode, MontyDateTime, MontyFileHandle, MontyNode, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
-    StringRepr,
+    FileMode, MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, StringRepr,
+    unstable::MontyNode,
 };
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
