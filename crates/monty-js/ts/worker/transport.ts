@@ -13,16 +13,19 @@ import {
   encodeTypeCheckFormat,
 } from '../options.js'
 import type {
+  Arena,
   CallResult,
   Event as ComponentEvent,
-  NameLookupResult,
+  NameLookupRequest,
   Request as ComponentRequest,
   ResourceLimits as ComponentResourceLimits,
   TypeCheckFormat as ComponentTypeCheckFormat,
-  Value as ComponentValue,
 } from './component/monty.component.js'
 import type { Dispatcher } from './host.js'
-import { decodeValue, encodeValue } from './value.js'
+import { ArenaEncoder, decodeArena } from './value.js'
+
+/** The arena of a request that carries no value. */
+const EMPTY_ARENA: Arena = { nodes: [] }
 
 type OnPrint = (stream: 'stdout' | 'stderr', text: string) => void
 
@@ -137,12 +140,17 @@ export class WorkerTransport {
     if (typeof cwd !== 'string') {
       return Promise.resolve(cwd)
     }
+    // one arena for every input, so an object passed under two names is one
+    // sandbox object
+    const encoder = new ArenaEncoder()
+    const named = Object.entries(inputs ?? {}).map(([name, value]) => ({ name, value: encoder.push(value) }))
     return this.turn(
       {
         tag: 'feed',
         val: {
           code,
-          inputs: Object.entries(inputs ?? {}).map(([name, value]) => ({ name, value: encodeValue(value) })),
+          inputs: named,
+          values: encoder.finish(),
           skipTypeCheck: options.skipTypeCheck,
           cwd,
         },
@@ -153,7 +161,8 @@ export class WorkerTransport {
 
   /** Resumes the current call with a host return value. */
   resumeReturn(value: unknown, onPrint: OnPrint): Promise<NativeTurn> {
-    return this.resumeCall(returnValue(value), onPrint)
+    const [outcome, values] = returnValue(value)
+    return this.resumeCall(outcome, onPrint, values)
   }
 
   /** Resumes the current call by raising a Python exception. */
@@ -187,13 +196,20 @@ export class WorkerTransport {
     value: { value: unknown } | null,
     onPrint: OnPrint,
   ): Promise<NativeTurn> {
-    const result: NameLookupResult =
-      functionName !== null
-        ? { tag: 'value', val: functionValue(functionName) }
-        : value !== null
-          ? { tag: 'value', val: encodeValue(value.value) }
-          : { tag: 'undefined' }
-    return this.turn({ tag: 'resume-name-lookup', val: result }, onPrint)
+    let request: NameLookupRequest
+    if (functionName !== null) {
+      request = {
+        outcome: { tag: 'value', val: 0 },
+        values: { nodes: [{ tag: 'function', val: { name: functionName } }] },
+      }
+    } else if (value !== null) {
+      const encoder = new ArenaEncoder()
+      const root = encoder.push(value.value)
+      request = { outcome: { tag: 'value', val: root }, values: encoder.finish() }
+    } else {
+      request = { outcome: { tag: 'undefined' }, values: EMPTY_ARENA }
+    }
+    return this.turn({ tag: 'resume-name-lookup', val: request }, onPrint)
   }
 
   /** Answers a lazy attribute lookup; a value the arena cannot encode raises `TypeError` in the sandbox. */
@@ -203,7 +219,8 @@ export class WorkerTransport {
 
   /** Answers a name lookup with an exception raised where it suspended. */
   resumeNameLookupError(excType: string, message: string, onPrint: OnPrint): Promise<NativeTurn> {
-    return this.turn({ tag: 'resume-name-lookup', val: { tag: 'error', val: { excType, message } } }, onPrint)
+    const request: NameLookupRequest = { outcome: { tag: 'error', val: { excType, message } }, values: EMPTY_ARENA }
+    return this.turn({ tag: 'resume-name-lookup', val: request }, onPrint)
   }
 
   /** Reports the sandbox worker's lack of dependency installation. */
@@ -221,20 +238,17 @@ export class WorkerTransport {
         }
   }
 
-  /** Delivers settled external futures to the suspended worker. */
+  /** Delivers settled external futures to the suspended worker, their
+   *  values sharing one arena. */
   resolveFutures(results: NativeFutureResult[], onPrint: OnPrint): Promise<NativeTurn> {
-    return this.turn(
-      {
-        tag: 'resume-futures',
-        val: results.map((result) => ({
-          callId: result.callId,
-          outcome: result.ok
-            ? { tag: 'return-value', val: encodeValue(result.value) }
-            : errorResult(result.excType ?? 'RuntimeError', result.message ?? ''),
-        })),
-      },
-      onPrint,
-    )
+    const encoder = new ArenaEncoder()
+    const settled = results.map((result) => ({
+      callId: result.callId,
+      outcome: result.ok
+        ? ({ tag: 'return-value', val: encoder.push(result.value) } as CallResult)
+        : errorResult(result.excType ?? 'RuntimeError', result.message ?? ''),
+    }))
+    return this.turn({ tag: 'resume-futures', val: { results: settled, values: encoder.finish() } }, onPrint)
   }
 
   /** Dumps the current session into opaque bytes. */
@@ -274,8 +288,8 @@ export class WorkerTransport {
   }
 
   /** Answers the current function or OS suspension. */
-  private resumeCall(outcome: CallResult, onPrint: OnPrint): Promise<NativeTurn> {
-    return this.turn({ tag: 'resume-call', val: { callId: this.pendingCallId, outcome } }, onPrint)
+  private resumeCall(outcome: CallResult, onPrint: OnPrint, values: Arena = EMPTY_ARENA): Promise<NativeTurn> {
+    return this.turn({ tag: 'resume-call', val: { callId: this.pendingCallId, outcome, values } }, onPrint)
   }
 
   /** Sends one request and converts its terminating event into a native turn. */
@@ -346,34 +360,39 @@ export class WorkerTransport {
   private toTurn(event: ComponentEvent): NativeTurn {
     switch (event.tag) {
       case 'complete':
-        return { kind: 'complete', value: decodeValue(event.val) }
+        return { kind: 'complete', value: decodeArena(event.val.values)(event.val.value) }
       case 'error':
         return { kind: 'error', exception: event.val }
       case 'typing-error':
         return { kind: 'typingError', diagnostics: event.val }
-      case 'function-call':
+      case 'function-call': {
         this.pendingCallId = event.val.callId
         this.pendingFunctionName = event.val.functionName
+        // one decode per call, so an object passed twice is one host object
+        const get = decodeArena(event.val.values)
         return {
           kind: 'functionCall',
           functionName: event.val.functionName,
-          args: event.val.args.map(decodeValue),
-          kwargs: event.val.kwargs.map(({ key, value }) => [decodeValue(key), decodeValue(value)]),
+          args: Array.from(event.val.args, get),
+          kwargs: event.val.kwargs.map(({ key, value }) => [get(key), get(value)]),
           callId: event.val.callId,
           // null (not undefined) for plain calls, matching the napi turn shape
           objectId: event.val.objectId ?? null,
           allowEagerAwait: event.val.allowEagerAwait,
         }
-      case 'os-call':
+      }
+      case 'os-call': {
         this.pendingCallId = event.val.callId
         this.pendingFunctionName = event.val.functionName
+        const get = decodeArena(event.val.values)
         return {
           kind: 'osCall',
           functionName: event.val.functionName,
-          args: event.val.args.map(decodeValue),
-          kwargs: event.val.kwargs.map(({ key, value }) => [decodeValue(key), decodeValue(value)]),
+          args: Array.from(event.val.args, get),
+          kwargs: event.val.kwargs.map(({ key, value }) => [get(key), get(value)]),
           callId: event.val.callId,
         }
+      }
       case 'name-lookup':
         return { kind: 'nameLookup', name: event.val.name, objectId: event.val.objectId ?? null }
       case 'resolve-futures':
@@ -415,12 +434,15 @@ function isSuspension(turn: NativeTurn): boolean {
   )
 }
 
-/** Converts a host return value, turning conversion failures into Python `TypeError`. */
-function returnValue(value: unknown): CallResult {
+/** Converts a host return value and its arena, turning conversion failures
+ *  into Python `TypeError`. */
+function returnValue(value: unknown): [CallResult, Arena] {
   try {
-    return { tag: 'return-value', val: encodeValue(value) }
+    const encoder = new ArenaEncoder()
+    const root = encoder.push(value)
+    return [{ tag: 'return-value', val: root }, encoder.finish()]
   } catch (error) {
-    return errorResult('TypeError', error instanceof Error ? error.message : String(error))
+    return [errorResult('TypeError', error instanceof Error ? error.message : String(error)), EMPTY_ARENA]
   }
 }
 
@@ -485,20 +507,20 @@ function errorResult(excType: string, message: string): CallResult {
 }
 
 /** Converts a lazy attribute's value, turning conversion failures into Python `TypeError`. */
-function lazyAttrValue(value: unknown): NameLookupResult {
+function lazyAttrValue(value: unknown): NameLookupRequest {
   try {
-    return { tag: 'value', val: encodeValue(value) }
+    const encoder = new ArenaEncoder()
+    const root = encoder.push(value)
+    return { outcome: { tag: 'value', val: root }, values: encoder.finish() }
   } catch (error) {
     return {
-      tag: 'error',
-      val: { excType: 'TypeError', message: error instanceof Error ? error.message : String(error) },
+      outcome: {
+        tag: 'error',
+        val: { excType: 'TypeError', message: error instanceof Error ? error.message : String(error) },
+      },
+      values: EMPTY_ARENA,
     }
   }
-}
-
-/** Builds the external function value used to answer a name lookup. */
-function functionValue(name: string): ComponentValue {
-  return { root: 0, nodes: [{ tag: 'function', val: { name } }] }
 }
 
 /** Creates the standard worker-crash turn. */

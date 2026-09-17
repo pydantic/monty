@@ -237,7 +237,7 @@ fn getenv(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         key_value.drop_with(vm.heap);
         Ok(CallResult::OsCall(OsFunctionCall::Getenv(GetenvArgs {
             key: key.into_string(vm.interns),
-            default: MontyObject::new(default_value.unwrap_or(Value::None), vm),
+            default: MontyObject::export(default_value.unwrap_or(Value::None), vm),
         })))
     } else {
         let type_name = key_value.py_type_name_heap(vm.heap, vm.interns);

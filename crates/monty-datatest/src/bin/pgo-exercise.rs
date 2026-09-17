@@ -83,7 +83,7 @@ async fn run_code(
             TurnEvent::Complete(_) => break Ok(()),
             TurnEvent::FunctionCall { .. } => {
                 session
-                    .resume(ResumeValue::Return(MontyObject::None), &mut *on_print)
+                    .resume(ResumeValue::Return(MontyObject::none()), &mut *on_print)
                     .await?
             }
             TurnEvent::OsCall { .. } => match session.resume_from_mounts(&mut *on_print).await? {
@@ -98,7 +98,7 @@ async fn run_code(
             TurnEvent::ResolveFutures { pending_call_ids } => {
                 let results = pending_call_ids
                     .into_iter()
-                    .map(|call_id| (call_id, ResumeValue::Return(MontyObject::None)))
+                    .map(|call_id| (call_id, ResumeValue::Return(MontyObject::none())))
                     .collect();
                 session.resume_futures(results, &mut *on_print).await?
             }
@@ -111,20 +111,20 @@ fn name_lookup_value(name: String) -> Option<MontyObject> {
     match name.as_str() {
         "add_ints" | "concat_strings" | "return_value" | "get_list" | "raise_error" | "make_point"
         | "make_mutable_point" | "make_user" | "make_empty" | "async_call" | "async_fail" => {
-            Some(MontyObject::Function { name, docstring: None })
+            Some(MontyObject::function(name, None))
         }
-        "CONST_INT" => Some(MontyObject::Int(42)),
-        "CONST_STR" => Some(MontyObject::String("hello".to_owned())),
+        "CONST_INT" => Some(MontyObject::int(42)),
+        "CONST_STR" => Some(MontyObject::string("hello".to_owned())),
         #[expect(clippy::approx_constant, reason = "3.14 is the test fixture value")]
-        "CONST_FLOAT" => Some(MontyObject::Float(3.14)),
-        "CONST_BOOL" => Some(MontyObject::Bool(true)),
-        "CONST_LIST" => Some(MontyObject::List(vec![
-            MontyObject::Int(1),
-            MontyObject::Int(2),
-            MontyObject::Int(3),
+        "CONST_FLOAT" => Some(MontyObject::float(3.14)),
+        "CONST_BOOL" => Some(MontyObject::bool(true)),
+        "CONST_LIST" => Some(MontyObject::list([
+            MontyObject::int(1),
+            MontyObject::int(2),
+            MontyObject::int(3),
         ])),
-        "CONST_NONE" => Some(MontyObject::None),
-        "root" => Some(MontyObject::Path("/mnt".to_owned())),
+        "CONST_NONE" => Some(MontyObject::none()),
+        "root" => Some(MontyObject::path("/mnt".to_owned())),
         _ => None,
     }
 }

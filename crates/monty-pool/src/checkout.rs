@@ -15,10 +15,14 @@ use std::{
 };
 
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
-use monty_proto::{FrameError, PROTOCOL_VERSION, exceeds_max_value_depth, pb, validate_requirement};
+use monty_proto::{
+    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, named_values_to_proto,
+    os_call_from_proto, pb, validate_requirement,
+};
 use monty_types::{
-    AssertMessageAnnotations, DEFAULT_MAX_SUSPENSIONS, ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid,
-    NameLookupResult, OsFunctionCall, PrintStream, ResourceLimits, TypeCheckingConfig, validate_cwd,
+    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION,
+    MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, PrintStream, ResourceLimits,
+    TypeCheckingConfig, validate_cwd,
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
@@ -224,8 +228,8 @@ pub enum TurnEvent {
     /// spelled `__call__`); the receiver is NOT included in `args`.
     FunctionCall {
         function_name: String,
-        args: Vec<MontyObject>,
-        kwargs: Vec<(MontyObject, MontyObject)>,
+        /// One arena holding every positional and keyword argument.
+        args: CallArgs,
         call_id: u32,
         object_id: Option<MontyUuid>,
         /// Coroutine results may be awaited and returned via [`Checkout::resume_futures`].
@@ -239,8 +243,8 @@ pub enum TurnEvent {
     /// no-handler default.
     OsCall {
         function_name: String,
-        args: Vec<MontyObject>,
-        kwargs: Vec<(MontyObject, MontyObject)>,
+        /// One arena holding every positional and keyword argument.
+        args: CallArgs,
         call_id: u32,
     },
     /// The sandbox read an undefined name, or — when `object_id` is set — a
@@ -583,6 +587,11 @@ impl Checkout {
     /// Returns the re-announced suspension (`Some` — a suspended dump) or `None`
     /// (an idle dump), paired with the worker's adopted script name (the dump's,
     /// not the `Configure` one), which the parent surfaces in restored snapshots.
+    ///
+    /// # Snapshot trust
+    /// The caller must verify the dump's provenance and integrity before restoring it.
+    /// Invalid snapshots have no correctness or availability guarantees.
+    /// Successful loading is not authentication or validation.
     pub async fn restore(
         &mut self,
         state: Vec<u8>,
@@ -631,7 +640,7 @@ impl Checkout {
     pub async fn feed(
         &mut self,
         code: impl Into<String>,
-        inputs: Vec<(String, MontyObject)>,
+        inputs: impl Into<NamedValues>,
         mounts: Vec<MountSpec>,
         skip_type_check: bool,
         on_print: OnPrint<'_>,
@@ -652,7 +661,7 @@ impl Checkout {
     pub async fn feed_with_cwd(
         &mut self,
         code: impl Into<String>,
-        inputs: Vec<(String, MontyObject)>,
+        inputs: impl Into<NamedValues>,
         mounts: Vec<MountSpec>,
         cwd: Option<&str>,
         skip_type_check: bool,
@@ -664,7 +673,6 @@ impl Checkout {
                 "feed called while a suspension is awaiting an answer".into(),
             ));
         }
-        ensure_sendable(inputs.iter().map(|(_, value)| value))?;
         let cwd = match cwd {
             Some(cwd) => checked_cwd(cwd)?,
             // An empty wire cwd keeps the worker's current directory.
@@ -674,15 +682,11 @@ impl Checkout {
                 .map_or_else(|| "/".to_owned(), |mount| mount.virtual_path().to_owned()),
         };
         self.feed_mounts = Self::build_feed_mounts(mounts);
+        let (inputs, values) = named_values_to_proto(inputs.into());
         let request = request(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.into(),
-            inputs: inputs
-                .into_iter()
-                .map(|(name, value)| pb::NamedValue {
-                    name,
-                    value: Some(value.into()),
-                })
-                .collect(),
+            inputs,
+            values: Some(values),
             skip_type_check,
             cwd,
         }));
@@ -715,19 +719,22 @@ impl Checkout {
                 "NotHandled is only valid answering an OS call".into(),
             ));
         }
-        if let ResumeValue::Return(obj) = &value {
-            ensure_sendable([obj])?;
-        }
-        let result = match value {
-            ResumeValue::Return(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
-            ResumeValue::Error(exc) => pb::ext_function_result::Kind::Error((&exc).into()),
-            ResumeValue::Future => pb::ext_function_result::Kind::Future(call_id),
-            ResumeValue::NotFound => pb::ext_function_result::Kind::NotFound(function_name),
-            ResumeValue::NotHandled => pb::ext_function_result::Kind::NotHandled(pb::Unit {}),
+        let (result, values) = match value {
+            ResumeValue::Return(value) => ext_result_to_proto(ExtFunctionResult::Return(value)),
+            ResumeValue::Error(exc) => ext_result_to_proto(ExtFunctionResult::Error(exc)),
+            ResumeValue::Future => ext_result_to_proto(ExtFunctionResult::Future(call_id)),
+            ResumeValue::NotFound => ext_result_to_proto(ExtFunctionResult::NotFound(function_name)),
+            ResumeValue::NotHandled => (
+                pb::ExtFunctionResult {
+                    kind: Some(pb::ext_function_result::Kind::NotHandled(pb::Unit {})),
+                },
+                None,
+            ),
         };
         let request = request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id,
-            result: Some(pb::ExtFunctionResult { kind: Some(result) }),
+            result: Some(result),
+            values,
         }));
         // `pending` is deliberately NOT cleared here: an oversize answer is
         // rejected by `Worker::send` before any bytes reach the child, and
@@ -833,17 +840,7 @@ impl Checkout {
         if !matches!(self.pending, Some(Pending::NameLookup)) {
             return Err(PoolError::Protocol("no suspended name lookup to resume".into()));
         }
-        let kind = match result.into() {
-            NameLookupResult::Value(obj) => {
-                ensure_sendable([&obj])?;
-                pb::resume_name_lookup::Kind::Value(obj.into())
-            }
-            NameLookupResult::Undefined => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
-            NameLookupResult::Error(exc) => pb::resume_name_lookup::Kind::Error((&exc).into()),
-        };
-        let request = request(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
-            kind: Some(kind),
-        }));
+        let request = request(pb::parent_request::Kind::ResumeNameLookup(result.into().into()));
         // `pending` left set — see the comment in [`Self::resume`]
         self.expect_turn(&request, on_print).await
     }
@@ -876,25 +873,21 @@ impl Checkout {
         let results = results
             .into_iter()
             .map(|(call_id, value)| {
-                if let ResumeValue::Return(obj) = &value {
-                    ensure_sendable([obj])?;
-                }
-                let kind = match value {
-                    ResumeValue::Return(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
-                    ResumeValue::Error(exc) => pb::ext_function_result::Kind::Error((&exc).into()),
+                let result = match value {
+                    ResumeValue::Return(value) => ExtFunctionResult::Return(value),
+                    ResumeValue::Error(exc) => ExtFunctionResult::Error(exc),
                     ResumeValue::Future | ResumeValue::NotFound | ResumeValue::NotHandled => {
                         return Err(PoolError::Protocol(
                             format!("future {call_id} must resolve to Return or Error").into(),
                         ));
                     }
                 };
-                Ok(pb::FutureResult {
-                    call_id,
-                    result: Some(pb::ExtFunctionResult { kind: Some(kind) }),
-                })
+                Ok((call_id, result))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let request = request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results }));
+        let request = request(pb::parent_request::Kind::ResumeFutures(future_results_to_proto(
+            results,
+        )));
         // `pending` left set — see the comment in [`Self::resume`]
         self.expect_turn(&request, on_print).await
     }
@@ -1064,7 +1057,7 @@ impl Checkout {
     /// with another suspension would otherwise be aborted again forever, and
     /// a suspension whose payload the typed path would reject is a protocol
     /// violation, not a feed to abort.
-    async fn abort_if_over_budget(&mut self, event: &pb::ChildEvent) -> Result<bool, PoolError> {
+    async fn abort_if_over_budget(&mut self, event: &mut pb::ChildEvent) -> Result<bool, PoolError> {
         let is_print = matches!(event.kind, Some(pb::child_event::Kind::Print(_)));
         if !is_print && mem::take(&mut self.abort_in_flight) && !is_abort_reply(event) {
             return Err(self.protocol_violation("worker answered AbortFeed with something other than an Error"));
@@ -1079,15 +1072,12 @@ impl Checkout {
         let Some(limit) = self.budget.over_suspension_limit(event) else {
             return Ok(false);
         };
-        if let Some(pb::child_event::Kind::OsCall(call)) = &event.kind {
-            match &call.call {
-                None => return Err(self.protocol_violation("OsCall event with no call")),
-                Some(kind) => {
-                    if let Err(err) = OsFunctionCall::try_from(kind.clone()) {
-                        return Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
-                    }
-                }
-            }
+        // an aborted event is dropped by the caller, so validation consumes the
+        // call rather than cloning a worker-sized arena
+        if let Some(pb::child_event::Kind::OsCall(call)) = &mut event.kind
+            && let Err(err) = os_call_from_proto(mem::take(call))
+        {
+            return Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
         }
         let abort = request(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
             exception: Some((&suspension_limit_exceeded(limit)).into()),
@@ -1218,14 +1208,14 @@ impl Checkout {
     ) -> Result<pb::ChildEvent, PoolError> {
         self.send_request(request).await?;
         loop {
-            let event = match self.worker.as_mut().expect("checked by send_request").recv().await {
+            let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
                 Ok(event) => event,
                 Err(FrameError::Decode(err)) => {
                     return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
-            if self.abort_if_over_budget(&event).await? {
+            if self.abort_if_over_budget(&mut event).await? {
                 continue;
             }
             // strict alternation: zero or more `Print`s, then exactly one
@@ -1294,7 +1284,7 @@ impl Checkout {
     async fn turn_io(&mut self, request: &pb::ParentRequest, on_print: OnPrint<'_>) -> Result<ControlEvent, PoolError> {
         self.send_request(request).await?;
         loop {
-            let event = match self.worker.as_mut().expect("checked by send_request").recv().await {
+            let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
                 Ok(event) => event,
                 // a decode failure means the frame arrived intact but its
                 // payload was garbage (including values that fail semantic
@@ -1307,7 +1297,7 @@ impl Checkout {
             };
             // a suspension past `max_suspensions` is aborted here and never
             // reaches the caller; the abort's reply is the next event
-            if self.abort_if_over_budget(&event).await? {
+            if self.abort_if_over_budget(&mut event).await? {
                 continue;
             }
             // Only a `Load` reply carries this; it lets `restore` report the
@@ -1350,35 +1340,30 @@ impl Checkout {
                     });
                     return self.convert_turn(|| {
                         Ok(TurnEvent::FunctionCall {
-                            function_name: call.function_name,
-                            args: call.args,
-                            kwargs: call.kwargs,
+                            function_name: call.function_name.clone(),
                             call_id: call.call_id,
                             object_id: call.object_id,
                             allow_eager_await: call.allow_eager_await,
+                            args: call.into_call_args()?,
                         })
                     });
                 }
                 Some(pb::child_event::Kind::OsCall(call)) => {
-                    let call_id = call.call_id;
                     // Every announcement (fresh or re-announced after
                     // `restore`) decodes into a typed `OsFunctionCall`; a
                     // payload the child could never legitimately produce is a
                     // protocol violation.
-                    let function_call = match call.call {
-                        None => return Err(self.protocol_violation("OsCall event with no call")),
-                        Some(kind) => match OsFunctionCall::try_from(kind) {
-                            Ok(function_call) => function_call,
-                            Err(err) => {
-                                return Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
-                            }
-                        },
+                    let (call_id, function_call) = match os_call_from_proto(call) {
+                        Ok(call) => call,
+                        Err(err) => {
+                            return Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
+                        }
                     };
                     // The caller can answer any OS call or use `resume_from_mounts`.
                     // Retain the raw typed call for mount validation; `to_args`
                     // normalizes only the clone presented to callbacks.
                     let function_name = function_call.name().to_owned();
-                    let (args, kwargs) = function_call.clone().to_args();
+                    let args = function_call.clone().to_args();
                     self.pending = Some(Pending::Call {
                         call_id,
                         function_name: function_name.clone(),
@@ -1388,7 +1373,6 @@ impl Checkout {
                     return Ok(ControlEvent::Turn(TurnEvent::OsCall {
                         function_name,
                         args,
-                        kwargs,
                         call_id,
                     }));
                 }
@@ -1421,12 +1405,7 @@ impl Checkout {
                     // the feed is over — drop its mounts so overlay writes
                     // cannot leak into the next feed
                     self.feed_mounts = None;
-                    return self.convert_turn(|| {
-                        let value = complete
-                            .value
-                            .ok_or(monty_proto::ProtoConvertError::MissingField("Complete.value"))?;
-                        Ok(TurnEvent::Complete(value.into_object()?))
-                    });
+                    return self.convert_turn(|| Ok(TurnEvent::Complete(MontyObject::try_from(complete)?)));
                 }
                 Some(pb::child_event::Kind::Error(error)) => {
                     // an error reply to `Dump` (e.g. an oversize dump) does not
@@ -1739,20 +1718,6 @@ pub(crate) fn request(kind: pb::parent_request::Kind) -> pb::ParentRequest {
     pb::ParentRequest {
         kind: Some(kind),
         trace_parent: None,
-    }
-}
-
-/// Rejects values too deeply nested for the wire (see
-/// `monty_proto::MAX_VALUE_DEPTH`) with a session-preserving runtime error —
-/// sending them would produce a frame the worker cannot decode.
-fn ensure_sendable<'a>(values: impl IntoIterator<Item = &'a MontyObject>) -> Result<(), PoolError> {
-    if values.into_iter().any(exceeds_max_value_depth) {
-        Err(PoolError::Runtime(MontyException::new(
-            ExcType::RuntimeError,
-            Some("Max input depth exceeded".to_owned()),
-        )))
-    } else {
-        Ok(())
     }
 }
 

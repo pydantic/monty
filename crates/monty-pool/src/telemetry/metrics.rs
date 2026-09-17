@@ -849,8 +849,8 @@ mod tests {
     };
 
     use logfire::{Logfire, config::MetricsOptions};
-    use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
-    use monty_types::MontyObject;
+    use monty_proto::{WireFunctionCall, ext_result_to_proto, pb, pb::os_call::Call};
+    use monty_types::{CallArgs, ExtFunctionResult, MontyObject, NameLookupResult};
     use opentelemetry::{
         KeyValue,
         trace::{SpanId, TraceId},
@@ -1079,26 +1079,37 @@ mod tests {
         request(pb::parent_request::Kind::Feed(pb::Feed {
             code: "double(2)".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
         }))
     }
 
     fn call_event(function_name: &str) -> pb::ChildEvent {
-        event(pb::child_event::Kind::FunctionCall(WireFunctionCall {
-            function_name: function_name.to_owned(),
-            args: vec![],
-            kwargs: vec![],
-            call_id: 1,
-            object_id: None,
-            allow_eager_await: false,
-        }))
+        event(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+            function_name.to_owned(),
+            CallArgs::new(),
+            1,
+            None,
+            false,
+        )))
     }
 
     fn resume_call(kind: pb::ext_function_result::Kind) -> pb::ParentRequest {
         request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
             result: Some(pb::ExtFunctionResult { kind: Some(kind) }),
+            values: None,
+        }))
+    }
+
+    /// A `ResumeCall` returning `value`, with the arena it indexes.
+    fn resume_return(value: MontyObject) -> pb::ParentRequest {
+        let (result, values) = ext_result_to_proto(ExtFunctionResult::Return(value));
+        request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id: 1,
+            result: Some(result),
+            values,
         }))
     }
 
@@ -1130,12 +1141,10 @@ mod tests {
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&feed());
         metrics.event(&call_event("double"));
-        metrics.begin_turn(&resume_call(pb::ext_function_result::Kind::ReturnValue(
-            MontyObject::Int(4).into(),
-        )));
-        metrics.event(&event(pb::child_event::Kind::Complete(pb::Complete {
-            value: Some(MontyObject::Int(4).into()),
-        })));
+        metrics.begin_turn(&resume_return(MontyObject::int(4)));
+        metrics.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
+            MontyObject::int(4),
+        ))));
 
         assert_eq!(
             capture.attributes("monty.run.suspensions"),
@@ -1175,7 +1184,7 @@ mod tests {
                 traceback: vec![],
                 data: None,
             }),
-            pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(1).into()),
+            pb::ext_function_result::Kind::ReturnValue(0),
         ];
         metrics.begin_turn(&feed());
         for (index, kind) in outcomes.into_iter().enumerate() {
@@ -1256,11 +1265,10 @@ mod tests {
         metrics.begin_turn(&feed());
         metrics.event(&event(pb::child_event::Kind::OsCall(pb::OsCall {
             call_id: 1,
+            values: None,
             call: Some(Call::ReadText("/mnt/f.txt".to_owned())),
         })));
-        metrics.begin_turn(&resume_call(pb::ext_function_result::Kind::ReturnValue(
-            MontyObject::String("hello".to_owned()).into(),
-        )));
+        metrics.begin_turn(&resume_return(MontyObject::string("hello".to_owned())));
 
         assert_eq!(
             capture.attributes("monty.ext.call.duration"),
@@ -1280,7 +1288,7 @@ mod tests {
         for total in [100, 250] {
             metrics.begin_turn(&feed());
             metrics.event(&pb::ChildEvent {
-                kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: None })),
+                kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
                 total_execution_micros: total,
                 max_duration_micros: None,
                 max_suspensions: None,
@@ -1377,7 +1385,7 @@ mod tests {
         });
         metrics.begin_turn(&feed());
         metrics.event(&pb::ChildEvent {
-            kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: None })),
+            kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
             total_execution_micros: 10_000_100,
             max_duration_micros: None,
             max_suspensions: None,
@@ -1418,12 +1426,10 @@ mod tests {
         );
 
         metrics.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
-            pb::ResumeNameLookup {
-                kind: Some(pb::resume_name_lookup::Kind::Value(MontyObject::Int(1).into())),
-            },
+            NameLookupResult::from(MontyObject::int(1)).into(),
         )));
         metrics.event(&pb::ChildEvent {
-            kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: None })),
+            kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
             total_execution_micros: 10_000_050,
             max_duration_micros: None,
             max_suspensions: None,
@@ -1505,9 +1511,7 @@ mod tests {
         metrics.begin_turn(&feed());
         metrics.event(&call_event("double"));
         assert_eq!(capture.i64_sum("monty.pool.workers.suspended"), 1);
-        metrics.begin_turn(&resume_call(pb::ext_function_result::Kind::ReturnValue(
-            MontyObject::Int(4).into(),
-        )));
+        metrics.begin_turn(&resume_return(MontyObject::int(4)));
         assert_eq!(capture.i64_sum("monty.pool.workers.suspended"), 0);
 
         metrics.event(&call_event("double"));
@@ -1567,10 +1571,11 @@ mod tests {
 
         metrics.begin_turn(&feed());
         metrics.event(&call_event("double"));
-        metrics.begin_turn(&resume_call(pb::ext_function_result::Kind::ReturnValue(
-            MontyObject::Int(4).into(),
-        )));
-        metrics.event(&event(pb::child_event::Kind::Complete(pb::Complete { value: None })));
+        metrics.begin_turn(&resume_return(MontyObject::int(4)));
+        metrics.event(&event(pb::child_event::Kind::Complete(pb::Complete {
+            value: 0,
+            values: None,
+        })));
         logfire.force_flush().unwrap();
 
         let exported = exporter.get_finished_metrics().unwrap();

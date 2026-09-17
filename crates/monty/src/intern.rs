@@ -34,8 +34,6 @@ use num_bigint::BigInt;
 use storage::Entries;
 use strum::{EnumString, FromRepr, IntoStaticStr};
 
-#[cfg(feature = "test-hooks")]
-use crate::function::FunctionMetadataFault;
 use crate::{
     bytecode::CodeArenas,
     function::Function,
@@ -2146,18 +2144,6 @@ impl Interns {
     /// Restores code storage when an executor finishes or suspends.
     pub(crate) fn restore_arenas(&self, arenas: CodeArenas) {
         *self.arenas.borrow_mut() = arenas;
-    }
-
-    /// Corrupts owned metadata for dump-validation tests only.
-    #[cfg(feature = "test-hooks")]
-    pub(crate) fn corrupt_function_metadata_for_tests(&mut self, name: &str, fault: FunctionMetadataFault) {
-        let index = self
-            .functions
-            .iter()
-            .position(|function| self.get_str(function.name.name_id) == name)
-            .unwrap_or_else(|| panic!("test function '{name}' not found"));
-        self.functions
-            .modify(index, |function| function.corrupt_metadata_for_tests(fault));
     }
 
     /// Returns the same hash as an equal heap string.

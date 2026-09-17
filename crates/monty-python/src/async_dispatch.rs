@@ -7,7 +7,7 @@ use std::future::Future;
 
 use monty_pool::ResumeValue;
 use monty_proto::python::InstanceStore;
-use monty_types::{ExtFunctionResult, MontyObject, MontyUuid};
+use monty_types::{CallArgs, ExtFunctionResult, MontyUuid};
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
 use pyo3_async_runtimes::{into_future_with_locals, tokio::get_current_locals};
 use tokio::task::{JoinError, JoinSet};
@@ -23,18 +23,14 @@ use crate::external::{
 pub(crate) fn dispatch_function_call(
     function_name: &str,
     object_id: Option<MontyUuid>,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &CallArgs,
     external_lookup: Option<&Py<PyDict>>,
     instances: &InstanceStore,
 ) -> CallResult {
     Python::attach(|py| match object_id {
-        Some(object_id) => dispatch_object_call_or_coroutine(py, function_name, &object_id, args, kwargs, instances),
-        None => ExternalLookup::new(py, external_lookup.map(|d| d.bind(py)), instances).call_or_coroutine(
-            function_name,
-            args,
-            kwargs,
-        ),
+        Some(object_id) => dispatch_object_call_or_coroutine(py, function_name, &object_id, args, instances),
+        None => ExternalLookup::new(py, external_lookup.map(|d| d.bind(py)), instances)
+            .call_or_coroutine(function_name, args),
     })
 }
 

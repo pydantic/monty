@@ -5,7 +5,7 @@ use std::{
     mem,
 };
 
-use monty_types::{DictPairs, MontyClassType, MontyUuid};
+use monty_types::{ClassTypeNode, MontyUuid};
 
 use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value, str::allocate_string};
 use crate::{
@@ -65,15 +65,6 @@ impl HostClass {
             class_id,
             attrs,
         }
-    }
-
-    /// Rebuilds the wire [`MontyClassType`] this instance's class crosses out
-    /// as. The worker sends the `type` branch of an instance with empty
-    /// `attrs` (the host resolves the class by id); on the way in a host may
-    /// fill them, and the class's type object refreshes from them.
-    #[must_use]
-    pub fn class_type(&self, heap: &Heap, interns: &Interns) -> MontyClassType {
-        host_class_type(heap, self.class_id).class_type(interns)
     }
 
     /// Returns the class name, read from the shared class entry.
@@ -422,17 +413,17 @@ impl HostClassType {
         self.is_dataclass
     }
 
-    /// Rebuilds the wire [`MontyClassType`] this type object crosses out as —
+    /// Rebuilds the [`ClassTypeNode`] this type object crosses out as —
     /// minus `attrs`, which hold heap `Value`s: the object bridge converts
     /// and appends them when the type crosses out as a value.
     #[must_use]
-    pub fn class_type(&self, interns: &Interns) -> MontyClassType {
-        MontyClassType {
+    pub fn class_type(&self, interns: &Interns) -> ClassTypeNode {
+        ClassTypeNode {
             name: self.name.as_str(interns).to_owned(),
             id: self.type_id,
             host_defined: true,
             is_dataclass: self.is_dataclass,
-            attrs: DictPairs::default(),
+            attrs: Vec::new(),
         }
     }
 }
@@ -465,6 +456,16 @@ impl<'h> HeapRead<'h, HostClassType> {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
+    /// Suspends as a `__call__` on the class's uuid: constructing a host class
+    /// is the host's own policy decision, not the sandbox's.
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::MethodCall {
+            name: EitherStr::Heap("__call__".to_owned()),
+            args,
+            object_id: self.get(vm.heap).type_id(),
+        })
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Type
     }

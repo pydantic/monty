@@ -10,6 +10,7 @@
 use std::{error::Error, fmt, mem::size_of};
 
 use monty_types::TypeCheckState;
+use postcard::ser_flavors::Flavor;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -30,6 +31,11 @@ pub const DUMP_VERSION: u16 = 11;
 
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
+
+/// Initial payload capacity for [`dump`]. A fresh idle session dumps to ~130
+/// bytes and one suspended on a host call to ~480, so this never over-allocates
+/// meaningfully and skips the first few `Vec` doublings.
+const MIN_PAYLOAD_CAPACITY: usize = 200;
 
 /// Serializes a live session and its metadata into a versioned dump, readable
 /// by [`Dump::load`].
@@ -52,16 +58,41 @@ pub fn dump(
         state: SessionRef<'a>,
     }
 
-    let payload = postcard::to_allocvec(&DumpRef {
+    let mut bytes = Vec::with_capacity(HEADER_LEN + MIN_PAYLOAD_CAPACITY);
+    bytes.extend_from_slice(MAGIC);
+    bytes.extend_from_slice(&DUMP_VERSION.to_le_bytes());
+    // the payload is written after the header in place: no second buffer to copy it into
+    let dump = DumpRef {
         script_name,
         type_check,
         state,
-    })?;
-    let mut bytes = Vec::with_capacity(HEADER_LEN + payload.len());
-    bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&DUMP_VERSION.to_le_bytes());
-    bytes.extend_from_slice(&payload);
-    Ok(bytes)
+    };
+    postcard::serialize_with_flavor(&dump, PrefixedVec(bytes))
+}
+
+/// Postcard output flavor appending to a `Vec` that already holds the dump
+/// header. `postcard::to_extend` does the same through `Extend`, which
+/// benchmarks ~10% slower than `Vec::push`/`extend_from_slice`.
+struct PrefixedVec(Vec<u8>);
+
+impl Flavor for PrefixedVec {
+    type Output = Vec<u8>;
+
+    #[inline]
+    fn try_extend(&mut self, data: &[u8]) -> postcard::Result<()> {
+        self.0.extend_from_slice(data);
+        Ok(())
+    }
+
+    #[inline]
+    fn try_push(&mut self, data: u8) -> postcard::Result<()> {
+        self.0.push(data);
+        Ok(())
+    }
+
+    fn finalize(self) -> postcard::Result<Self::Output> {
+        Ok(self.0)
+    }
 }
 
 /// A complete REPL session snapshot: the interpreter state plus the
@@ -82,6 +113,14 @@ pub struct Dump {
 
 impl Dump {
     /// Restores a session dumped by [`dump`].
+    ///
+    /// # Snapshot trust
+    /// The caller must establish that the bytes are unmodified output from a trusted,
+    /// compatible Monty producer. Invalid snapshots have no correctness or availability
+    /// guarantees: loading or using them may panic, abort, hang, or produce wrong results,
+    /// but must not cause undefined behaviour in the host process.
+    /// Successful decoding does not authenticate or fully validate a snapshot.
+    /// The same contract applies to direct serde deserialization.
     ///
     /// # Errors
     /// Returns [`DumpError`] for a dump this build cannot read — most usefully
@@ -204,7 +243,6 @@ mod tests {
         // every postcard discriminant. Asserted rather than assumed, so a strum
         // upgrade that changed it says so instead of quietly narrowing the guard.
         assert!(Type::VARIANTS.contains(&"instance"));
-        assert!(MontyType::VARIANTS.contains(&"instance"));
         assert!(MontyType::VARIANTS.contains(&"exception"));
 
         assert_eq!(
@@ -215,7 +253,7 @@ mod tests {
         );
         assert_eq!(
             variant_order_fingerprint(MontyType::VARIANTS),
-            0xbde0_3964_2ba2_2ce1,
+            0x0e43_247e_0759_a195,
             "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_order_fingerprint(MontyType::VARIANTS))
         );
@@ -246,9 +284,9 @@ mod tests {
     /// failing the version check. Appending leaves this unchanged for every
     /// existing variant; inserting or reordering does not.
     ///
-    /// The list covers the `#[strum(disabled)]` variants too — `Type::Instance`,
-    /// `MontyType::{Instance, Exception}` — which carry discriminants like any
-    /// other despite having no name to round-trip through `EnumString`.
+    /// The list covers the `#[strum(disabled)]` variants too — `Type::Instance`
+    /// and `MontyType::Exception` — which carry discriminants like any other
+    /// despite having no name to round-trip through `EnumString`.
     fn variant_order_fingerprint(variants: &[&str]) -> u64 {
         const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
         const PRIME: u64 = 0x0100_0000_01b3;

@@ -270,6 +270,12 @@ any convertible value (`resume()` resolves a name to an external function
 only, and with no argument leaves the lookup unresolved: `NameError` for a
 plain name, `AttributeError` when `objectId` is set).
 
+Only restore unmodified session dumps and suspended snapshots from a trusted, compatible Monty producer.
+The caller must establish provenance and integrity before calling either `loadSession` or `loadSnapshot`;
+Monty does not authenticate the bytes.
+Invalid dumps and snapshots have no correctness or availability guarantees.
+Successful loading does not establish validity.
+
 `snapshot.dump()` serializes the paused worker to bytes; a fresh session's
 `loadSnapshot` restores it and returns the snapshot to resume. Re-supply the
 same `mount`s the paused feed used — their host paths are not stored in the
@@ -585,3 +591,15 @@ Browser/WASM does not yet implement this instrumentation path.
 | class instances   | `ClassInstance` wrappers / `MontyClassProxy` stand-ins |
 
 Plain objects are accepted as dict inputs (string keys).
+
+Object identity is kept within one message.
+A value the sandbox references twice (a returned `[x, x]`, or `f(x, x)` to a host function) arrives as one JavaScript
+object, and an object passed under two inputs is one sandbox object.
+Each separate feed or call gets its own copy.
+
+A cyclic input or return value is rejected with `TypeError: Circular reference detected`.
+A self-referential sandbox value arrives with its placeholder string (`'[...]'`, `'{...}'`) at the point of the cycle.
+
+The wire imposes no nesting limit, but a sandbox value nested deeper than `maxRecursionDepth` (1000 by default) arrives
+with the part below that depth replaced by the string `'<deeply nested>'`; see
+[`limitations/pool-architecture.md`](https://github.com/pydantic/monty/blob/main/limitations/pool-architecture.md#values-crossing-the-process-boundary).

@@ -48,7 +48,7 @@ fn run_monty_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i6
         CompileOptions::default(),
     )
     .unwrap();
-    let make_input = || vec![MontyObject::String(data.to_owned())];
+    let make_input = || vec![MontyObject::string(data.to_owned())];
     let r = ex.run_no_limits(make_input()).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, expected);

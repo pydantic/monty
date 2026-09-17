@@ -25,7 +25,9 @@ pub use compiler::Compiler;
 #[cfg(test)]
 pub(crate) use op::opcode_fingerprint;
 pub(crate) use op::{NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode};
-pub(crate) use vm::{CallResult, ContainsVM, FrameNamespace, PendingLookupEffect, RecursionToken, unpack_exact};
+pub(crate) use vm::{
+    CallResult, ContainsVM, FrameNamespace, PendingLookupEffect, RecursionToken, RunReentryGuard, unpack_exact,
+};
 pub use vm::{FrameExit, VM, VMSnapshot};
 
 /// Module-level dunder names Monty exposes with fixed values for CPython

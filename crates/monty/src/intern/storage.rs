@@ -36,16 +36,6 @@ impl<T> Entries<T> {
     pub(super) fn iter(&self) -> impl Iterator<Item = &T> {
         (0..self.len()).map(|index| &self[index])
     }
-
-    /// Changes metadata only for tests of dump validation.
-    #[cfg(feature = "test-hooks")]
-    pub(super) fn modify(&mut self, index: usize, f: impl FnOnce(&mut T)) {
-        f(self
-            .0
-            .entry(HeapId::from_index(index))
-            .expect("assigned entry")
-            .get_mut());
-    }
 }
 
 impl<T> Default for Entries<T> {

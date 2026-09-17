@@ -6,15 +6,13 @@
 use std::fmt::Write;
 
 use insta::assert_snapshot;
-#[cfg(feature = "test-hooks")]
-use monty::FunctionMetadataFault;
 use monty::{
     DUMP_VERSION, Dump, DumpError, MontyRepl, ReplContinuationMode, ReplProgress, ReplStartError, Session, SessionRef,
     detect_repl_continuation_mode, dump,
 };
 use monty_types::{
-    CompileOptions, DictPairs, ExcType, ExtFunctionResult, MontyClassInstance, MontyClassType, MontyException,
-    MontyObject, MontyType, MontyUuid, NameLookupResult, PrintWriter, ResourceLimits, ResourceTracker,
+    CallArgs, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyNode, MontyObject, MontyUuid,
+    NameLookupResult, PrintWriter, ResourceLimits, ResourceTracker,
 };
 use serde_json::to_value;
 
@@ -22,15 +20,15 @@ use serde_json::to_value;
 fn repl_executes_only_new_code() {
     let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
     let init_output = feed_run_print(&mut repl, "counter = 0").unwrap();
-    assert_eq!(init_output, MontyObject::None);
+    assert_eq!(init_output, MontyObject::none());
 
     // Execute a snippet that mutates state.
     let output = feed_run_print(&mut repl, "counter = counter + 1").unwrap();
-    assert_eq!(output, MontyObject::None);
+    assert_eq!(output, MontyObject::none());
 
     // Feed only the read expression. If replay happened, we'd get 2 instead of 1.
     let output = feed_run_print(&mut repl, "counter").unwrap();
-    assert_eq!(output, MontyObject::Int(1));
+    assert_eq!(output, MontyObject::int(1));
 }
 
 fn feed_run_print(repl: &mut MontyRepl, code: &str) -> Result<MontyObject, MontyException> {
@@ -102,100 +100,25 @@ fn dump_header_rejects_incompatible_data() {
     );
 }
 
-/// A dump is untrusted input, and the heap it carries is installed verbatim. A
-/// `time` entry that no constructor could have produced must be rejected at load
-/// rather than panicking, or contradicting itself, later — when the ranges and the
-/// `tzinfo` reference are read back as established facts.
-///
-/// A `time` stores only a reference to its zone, so a disagreement between an
-/// attached offset and the object it points at is not representable. What is left
-/// is a component out of range, a reference that is not a timezone, and an offset
-/// out of range on the timezone itself.
+/// Transient GC colors cannot be restored: the collector's reader protection
+/// relies on establishing Gray/White itself, even when the snapshot is invalid.
 #[test]
-fn dump_rejects_forged_time_entries() {
-    // Distinctive components so the encoded `time` can be found in the payload:
-    // three single-byte fields, then 444555 as a postcard varint.
-    const COMPONENTS: [u8; 6] = [11, 22, 33, 0x8B, 0x91, 0x1B];
-
-    let naive = dump_repl("import datetime\nt = datetime.time(11, 22, 33, 444555)");
-    // ... followed by fold and a `None` tzinfo.
-    let hour = offset_of(&naive, &[COMPONENTS.as_slice(), &[0, 0]].concat());
-    assert!(Dump::load(&naive).is_ok());
-
-    let mut forged = naive;
-    forged[hour] = 255;
-    assert_eq!(
-        Dump::load(&forged).unwrap_err(),
-        DumpError::Payload(postcard::Error::SerdeDeCustom)
-    );
-
-    // A *named* offset keeps a timezone entry of its own instead of canonicalizing
-    // onto the `timezone.utc` singleton, and 23 hours encodes as a three-byte
-    // varint, leaving room to forge a value outside the range `timezone()` accepts.
-    let aware = dump_repl(
-        "import datetime\ntz = datetime.timezone(datetime.timedelta(hours=23), 'AB')\nt = datetime.time(11, 22, 33, 444555, tzinfo=tz)",
-    );
-    assert!(Dump::load(&aware).is_ok());
-
-    // ... followed by fold and `Some(_)`, so the heap id ends the marker.
-    let tzinfo_ref = offset_of(&aware, &[COMPONENTS.as_slice(), &[0, 1]].concat()) + 8;
-    // The timezone entry: 82800 seconds zigzag-encoded, then `Some("AB")`.
-    let tz_offset = offset_of(&aware, &[0xE0, 0x8D, 0x0A, 1, 2, b'A', b'B']);
-
-    for (index, byte, what) in [
-        // The empty-tuple singleton: a live entry, but not a timezone.
-        (
-            tzinfo_ref,
-            0,
-            "a `tzinfo` reference to something that is not a timezone",
-        ),
-        (tzinfo_ref, 100, "a `tzinfo` reference to no entry at all"),
-        // `format_offset_hms` negates the offset, which panics on `i32::MIN`.
-        (tz_offset + 2, 0x7f, "a `tzinfo` object whose offset is out of range"),
-    ] {
-        let mut forged = aware.clone();
-        forged[index] = byte;
-        assert_eq!(
-            Dump::load(&forged).unwrap_err(),
-            DumpError::Payload(postcard::Error::SerdeDeCustom),
-            "a time with {what} must be rejected"
-        );
-    }
-}
-
-/// The `timezone_utc` cache is a raw heap id restored verbatim, and
-/// `get_timezone_utc` hands its target back as `datetime.timezone.utc` after an
-/// `inc_ref` that panics on a freed or out-of-range id. A forged cache must be
-/// rejected at load, whether it points at nothing, at a live non-timezone, or at
-/// a timezone that is not UTC.
-#[test]
-fn dump_rejects_forged_timezone_utc_cache() {
-    let bytes = dump_repl(
-        "import datetime\nutc = datetime.timezone.utc\nplus2 = datetime.timezone(datetime.timedelta(hours=2))",
-    );
+fn dump_rejects_transient_gc_colors() {
+    // A distinctive naive time payload: hour, minute, second, microsecond
+    // (varint), fold, tzinfo. The heap entry's color immediately follows it.
+    const TIME: [u8; 8] = [11, 22, 33, 0x8B, 0x91, 0x1B, 0, 0];
+    let bytes = dump_repl("import datetime\nt = datetime.time(11, 22, 33, 444555)");
+    let color = offset_of(&bytes, &TIME) + TIME.len();
+    assert_eq!(bytes[color], 0); // Black
     assert!(Dump::load(&bytes).is_ok());
 
-    // `timezone_utc` is the heap's last serialized field and `globals` is the
-    // session's, so the cached id sits a fixed distance from the end: `Some(2)`
-    // followed by the three globals, one of which is the `+02:00` timezone at 4.
-    let cached_id = bytes.len() - 8;
-    assert_eq!(
-        &bytes[cached_id - 1..=cached_id],
-        &[1, 2],
-        "timezone_utc is Some(HeapId(2))"
-    );
-
-    for (forged_id, what) in [
-        (100, "no entry at all"),
-        (0, "the empty-tuple singleton"),
-        (4, "the +02:00 timezone"),
-    ] {
+    for transient in [1, 2] {
+        // Gray, White
         let mut forged = bytes.clone();
-        forged[cached_id] = forged_id;
+        forged[color] = transient;
         assert_eq!(
             Dump::load(&forged).unwrap_err(),
-            DumpError::Payload(postcard::Error::SerdeDeCustom),
-            "a timezone.utc cache pointing at {what} must be rejected"
+            DumpError::Payload(postcard::Error::SerdeDeCustom)
         );
     }
 }
@@ -225,32 +148,32 @@ fn repl_persists_state_and_definitions() {
     feed_run_print(&mut repl, "def add(v):\n    return x + v").unwrap();
     feed_run_print(&mut repl, "x = 20").unwrap();
     let output = feed_run_print(&mut repl, "add(22)").unwrap();
-    assert_eq!(output, MontyObject::Int(42));
+    assert_eq!(output, MontyObject::int(42));
 }
 
 #[test]
 fn repl_function_redefinition_uses_latest_definition() {
     let (mut repl, init_output) = init_repl("");
-    assert_eq!(init_output, MontyObject::None);
+    assert_eq!(init_output, MontyObject::none());
 
     feed_run_print(&mut repl, "def f():\n    return 1").unwrap();
-    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(1));
+    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::int(1));
 
     feed_run_print(&mut repl, "def f():\n    return 2").unwrap();
-    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(2));
+    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::int(2));
 }
 
 #[test]
 fn repl_nested_function_redefinition_updates_callers() {
     let (mut repl, init_output) = init_repl("");
-    assert_eq!(init_output, MontyObject::None);
+    assert_eq!(init_output, MontyObject::none());
 
     feed_run_print(&mut repl, "def g():\n    return 10").unwrap();
     feed_run_print(&mut repl, "def f():\n    return g() + 1").unwrap();
-    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(11));
+    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::int(11));
 
     feed_run_print(&mut repl, "def g():\n    return 41").unwrap();
-    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(42));
+    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::int(42));
 }
 
 /// A later snippet's `def` for a builtin name must shadow that builtin for
@@ -261,14 +184,14 @@ fn repl_function_late_binds_user_def_over_builtin() {
     feed_run_print(&mut repl, "def call_sum():\n    return sum([1, 2, 3])").unwrap();
     assert_eq!(
         feed_run_print(&mut repl, "call_sum()").unwrap(),
-        MontyObject::Int(6),
+        MontyObject::int(6),
         "first call resolves via the builtin sum() fallback",
     );
 
     feed_run_print(&mut repl, "def sum(*args):\n    return 42").unwrap();
     assert_eq!(
         feed_run_print(&mut repl, "call_sum()").unwrap(),
-        MontyObject::Int(42),
+        MontyObject::int(42),
         "after `def sum`, the previously-compiled call_sum picks up the new module binding",
     );
 }
@@ -280,14 +203,14 @@ fn repl_module_scope_binds_user_def_over_builtin() {
     let (mut repl, _) = init_repl("");
     assert_eq!(
         feed_run_print(&mut repl, "max(1, 2)").unwrap(),
-        MontyObject::Int(2),
+        MontyObject::int(2),
         "snippet 1: builtin max wins because nothing else is bound",
     );
 
     feed_run_print(&mut repl, "def max(*args):\n    return 'shadowed'").unwrap();
     assert_eq!(
         feed_run_print(&mut repl, "max(1, 2)").unwrap(),
-        MontyObject::String("shadowed".to_owned()),
+        MontyObject::string("shadowed".to_owned()),
         "snippet 3: module-level call sees the user-defined max bound in snippet 2",
     );
 }
@@ -295,14 +218,14 @@ fn repl_module_scope_binds_user_def_over_builtin() {
 #[test]
 fn repl_runtime_error_keeps_partial_state_consistent() {
     let (mut repl, init_output) = init_repl("");
-    assert_eq!(init_output, MontyObject::None);
+    assert_eq!(init_output, MontyObject::none());
 
     let result = feed_run_print(&mut repl, "def f():\n    return 41\nx = 1\nraise RuntimeError('boom')");
     assert!(result.is_err(), "snippet should raise RuntimeError");
 
     // Definitions and assignments that happened before the exception should remain valid.
-    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(41));
-    assert_eq!(feed_run_print(&mut repl, "x").unwrap(), MontyObject::Int(1));
+    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::int(41));
+    assert_eq!(feed_run_print(&mut repl, "x").unwrap(), MontyObject::int(1));
 }
 
 #[test]
@@ -312,13 +235,13 @@ fn repl_heap_mutations_are_not_replayed() {
     feed_run_print(&mut repl, "items.append(1)").unwrap();
     assert_eq!(
         feed_run_print(&mut repl, "items").unwrap(),
-        MontyObject::List(vec![MontyObject::Int(1)])
+        MontyObject::list([MontyObject::int(1)])
     );
 
     feed_run_print(&mut repl, "items.append(2)").unwrap();
     assert_eq!(
         feed_run_print(&mut repl, "items").unwrap(),
-        MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2)])
+        MontyObject::list([MontyObject::int(1), MontyObject::int(2)])
     );
 }
 
@@ -395,7 +318,7 @@ fn repl_detects_continuation_mode_for_common_cases() {
 #[test]
 fn repl_tracebacks_use_incrementing_python_input_filenames() {
     let (mut repl, init_output) = init_repl("");
-    assert_eq!(init_output, MontyObject::None);
+    assert_eq!(init_output, MontyObject::none());
 
     let first = feed_run_print(&mut repl, "missing_name").unwrap_err();
     let second = feed_run_print(&mut repl, "missing_name").unwrap_err();
@@ -446,7 +369,7 @@ fn repl_dump_load_survives_between_snippets() {
 
     feed_run_print(&mut loaded, "total = total * 21").unwrap();
     let output = feed_run_print(&mut loaded, "total").unwrap();
-    assert_eq!(output, MontyObject::Int(42));
+    assert_eq!(output, MontyObject::int(42));
 }
 
 #[test]
@@ -456,11 +379,11 @@ fn repl_dump_load_derives_exact_positional_call_plans() {
 
     assert_eq!(
         feed_run_print(&mut loaded, "add(20, 22)").unwrap(),
-        MontyObject::Int(42)
+        MontyObject::int(42)
     );
     assert_eq!(
         feed_run_print(&mut loaded, "await async_add(20, 22)").unwrap(),
-        MontyObject::Int(42)
+        MontyObject::int(42)
     );
 
     // The fast path's arg-count guard must also survive the round trip: a
@@ -470,55 +393,30 @@ fn repl_dump_load_derives_exact_positional_call_plans() {
     assert_eq!(err.message(), Some("add() missing 1 required positional argument: 'b'"));
 }
 
-#[cfg(feature = "test-hooks")]
+/// Default arguments, variadics and nested closure slots survive restoration.
 #[test]
-fn repl_dump_load_rejects_invalid_function_metadata() {
-    /// Checks forged function metadata is rejected at dump load.
-    fn assert_rejected(function: &str, fault: FunctionMetadataFault) {
-        let code = r"
-def variadic(*args, **kwargs):
-    return args, kwargs
-
-def pos_defaults(value=1, /):
-    return value
-
-def defaults(value=1):
-    return value
-
-def kw_defaults(*, first=1, second=2):
-    return first, second
-
-def outer(first, second):
-    def middle():
+fn repl_dump_load_preserves_function_metadata() {
+    let (repl, _) = init_repl(
+        r"
+def outer(pos=10, /, arg=20, *, kw=12):
+    def middle(*args, **kwargs):
         local = 1
         def inner():
-            return first + second + local
+            return pos + arg + kw + local, args, kwargs
         return inner
     return middle
-";
-        let (mut repl, _) = init_repl(code);
-        repl.__corrupt_function_metadata_for_tests(function, fault);
-        let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
-        assert_eq!(
-            Dump::load(&bytes).unwrap_err(),
-            DumpError::Payload(postcard::Error::SerdeDeCustom)
-        );
-    }
-
-    assert_rejected("variadic", FunctionMetadataFault::SignatureSlotsBeyondNamespace);
-    assert_rejected("variadic", FunctionMetadataFault::NamespaceTooLarge);
-    assert_rejected("inner", FunctionMetadataFault::FreeVarLengthMismatch);
-    assert_rejected("outer", FunctionMetadataFault::CellVarLengthMismatch);
-    assert_rejected("inner", FunctionMetadataFault::FreeVarSlotOutOfRange);
-    assert_rejected("outer", FunctionMetadataFault::CellVarSlotOutOfRange);
-    assert_rejected("outer", FunctionMetadataFault::CellParamIndexOutOfRange);
-    assert_rejected("pos_defaults", FunctionMetadataFault::PosDefaultsCountOutOfRange);
-    assert_rejected("defaults", FunctionMetadataFault::ArgDefaultsCountOutOfRange);
-    assert_rejected("kw_defaults", FunctionMetadataFault::KwargDefaultMapLengthMismatch);
-    assert_rejected("kw_defaults", FunctionMetadataFault::KwargDefaultIndexGap);
-    assert_rejected("defaults", FunctionMetadataFault::DefaultsCountMismatch);
-    assert_rejected("inner", FunctionMetadataFault::DuplicateFreeVarSlot);
-    assert_rejected("middle", FunctionMetadataFault::CellFreeVarSlotOverlap);
+saved = outer()(99, tag='saved')
+",
+    );
+    let mut loaded = round_trip_repl(&repl);
+    feed_run_print(
+        &mut loaded,
+        r"
+assert saved() == (43, (99,), {'tag': 'saved'})
+assert outer(1, arg=2, kw=3)(4, extra=5)() == (7, (4,), {'extra': 5})
+",
+    )
+    .unwrap();
 }
 
 #[test]
@@ -532,30 +430,30 @@ fn repl_dump_load_preserves_heap_aliasing() {
     feed_run_print(&mut loaded, "b.append(2)").unwrap();
     assert_eq!(
         feed_run_print(&mut loaded, "a").unwrap(),
-        MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2)])
+        MontyObject::list([MontyObject::int(1), MontyObject::int(2)])
     );
     assert_eq!(
         feed_run_print(&mut loaded, "b").unwrap(),
-        MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2)])
+        MontyObject::list([MontyObject::int(1), MontyObject::int(2)])
     );
 }
 
 #[test]
 fn repl_start_external_call_resumes_to_updated_repl() {
     let (repl, init_output) = init_repl("");
-    assert_eq!(init_output, MontyObject::None);
+    assert_eq!(init_output, MontyObject::none());
 
     // With LoadGlobalCallable, function calls go directly to FunctionCall
     let progress = repl.feed_start("ext_fn(41) + 1", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "ext_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(41)]);
+    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(41)]);
 
-    let progress = call.resume(MontyObject::Int(41), PrintWriter::Stdout).unwrap();
+    let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
-    assert_eq!(value, MontyObject::Int(42));
-    assert_eq!(feed_run_print(&mut repl, "x = 5").unwrap(), MontyObject::None);
-    assert_eq!(feed_run_print(&mut repl, "x").unwrap(), MontyObject::Int(5));
+    assert_eq!(value, MontyObject::int(42));
+    assert_eq!(feed_run_print(&mut repl, "x = 5").unwrap(), MontyObject::none());
+    assert_eq!(feed_run_print(&mut repl, "x").unwrap(), MontyObject::int(5));
 }
 
 #[test]
@@ -570,12 +468,12 @@ fn repl_feed_start_restores_comprehension_slots_before_next_turn() {
         )
         .unwrap();
     let (repl, value) = progress.into_complete().expect("expected completion");
-    assert_eq!(value, MontyObject::None);
+    assert_eq!(value, MontyObject::none());
 
     let progress = repl.feed_start("foo()", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "foo");
-    assert!(call.args.is_empty());
+    assert!(call.args.arg_ids.is_empty());
     let _repl = call.into_repl();
 }
 
@@ -590,7 +488,7 @@ fn repl_feed_start_restores_comprehension_slots_after_runtime_error() {
     let progress = err.repl.feed_start("foo()", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "foo");
-    assert!(call.args.is_empty());
+    assert!(call.args.arg_ids.is_empty());
     let _repl = call.into_repl();
 }
 
@@ -603,12 +501,12 @@ fn repl_abandoned_snippet_keeps_rebound_globals_usable() {
     let check = |mut repl: MontyRepl| {
         assert_eq!(
             feed_run_print(&mut repl, "x").unwrap(),
-            MontyObject::String("rebound literal".to_owned())
+            MontyObject::string("rebound literal".to_owned())
         );
-        assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(2));
+        assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::int(2));
         // A new definition must not collide with the abandoned snippet's ids.
         feed_run_print(&mut repl, "def g():\n    return f() + 1").unwrap();
-        assert_eq!(feed_run_print(&mut repl, "g()").unwrap(), MontyObject::Int(3));
+        assert_eq!(feed_run_print(&mut repl, "g()").unwrap(), MontyObject::int(3));
     };
 
     let (repl, _) = init_repl("x = 'old'\ndef f():\n    return 1");
@@ -651,16 +549,16 @@ fn repl_failed_snippets_keep_session_tables() {
 
     let err = feed_run_print(&mut repl, "def g(:").unwrap_err();
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
-    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(1));
+    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::int(1));
 
     let err = feed_run_print(&mut repl, "__name__ = 'x'").unwrap_err();
     assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(1));
+    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::int(1));
 
     let err = repl
         .feed_run(
             "bad",
-            vec![("bad".to_owned(), MontyObject::Repr("bad".to_owned()))],
+            vec![("bad".to_owned(), MontyObject::repr("bad".to_owned()))],
             PrintWriter::Stdout,
         )
         .unwrap_err();
@@ -668,17 +566,17 @@ fn repl_failed_snippets_keep_session_tables() {
         err.message(),
         Some("invalid input type: 'Repr' is not a valid input value")
     );
-    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(1));
+    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::int(1));
 
     feed_run_print(&mut repl, "def h():\n    return f() + 1").unwrap();
-    assert_eq!(feed_run_print(&mut repl, "h()").unwrap(), MontyObject::Int(2));
+    assert_eq!(feed_run_print(&mut repl, "h()").unwrap(), MontyObject::int(2));
 
     let err = repl
         .feed_start("def g(:", vec![], PrintWriter::Stdout)
         .expect_err("expected syntax error");
     assert_eq!(err.error.exc_type(), ExcType::SyntaxError);
     let mut repl = err.repl;
-    assert_eq!(feed_run_print(&mut repl, "h()").unwrap(), MontyObject::Int(2));
+    assert_eq!(feed_run_print(&mut repl, "h()").unwrap(), MontyObject::int(2));
 }
 
 /// Rejection at any compiler stage leaves all committed tables unchanged.
@@ -701,11 +599,11 @@ fn repl_rejected_compilation_keeps_no_products() {
     let mut repl = round_trip_repl(&repl);
     assert_eq!(
         feed_run_print(&mut repl, "existing()").unwrap(),
-        MontyObject::String("retained".to_owned())
+        MontyObject::string("retained".to_owned())
     );
     feed_run_print(&mut repl, "exec('def accepted():\\n    return 42')").unwrap();
     let mut repl = round_trip_repl(&repl);
-    assert_eq!(feed_run_print(&mut repl, "accepted()").unwrap(), MontyObject::Int(42));
+    assert_eq!(feed_run_print(&mut repl, "accepted()").unwrap(), MontyObject::int(42));
 }
 
 /// A snippet rejected at compile time, after prepare has allocated its
@@ -731,7 +629,7 @@ fn repl_rejected_snippets_do_not_consume_slots_or_function_ids() {
         let err = repl
             .feed_run(
                 &code,
-                vec![(format!("input_{i}"), MontyObject::Int(1))],
+                vec![(format!("input_{i}"), MontyObject::int(1))],
                 PrintWriter::Stdout,
             )
             .unwrap_err();
@@ -739,7 +637,7 @@ fn repl_rejected_snippets_do_not_consume_slots_or_function_ids() {
     }
     let mut repl = round_trip_repl(&repl);
     feed_run_print(&mut repl, "def h():\n    return g_0() is None\nok = h()").unwrap();
-    assert_eq!(feed_run_print(&mut repl, "ok").unwrap(), MontyObject::Bool(true));
+    assert_eq!(feed_run_print(&mut repl, "ok").unwrap(), MontyObject::bool(true));
 }
 
 #[test]
@@ -752,13 +650,13 @@ fn repl_progress_dump_load_roundtrip() {
     let loaded = round_trip_progress(&progress);
 
     let call = loaded.into_function_call().expect("expected function call");
-    assert_eq!(call.args, vec![MontyObject::Int(20)]);
+    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(20)]);
 
-    let progress = call.resume(MontyObject::Int(20), PrintWriter::Stdout).unwrap();
+    let progress = call.resume(MontyObject::int(20), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
-    assert_eq!(value, MontyObject::Int(42));
-    assert_eq!(feed_run_print(&mut repl, "z = 1").unwrap(), MontyObject::None);
-    assert_eq!(feed_run_print(&mut repl, "z").unwrap(), MontyObject::Int(1));
+    assert_eq!(value, MontyObject::int(42));
+    assert_eq!(feed_run_print(&mut repl, "z = 1").unwrap(), MontyObject::none());
+    assert_eq!(feed_run_print(&mut repl, "z").unwrap(), MontyObject::int(1));
 }
 
 #[test]
@@ -786,17 +684,17 @@ async def main():
 
     let progress = state
         .resume(
-            vec![(call_id, ExtFunctionResult::Return(MontyObject::Int(41)))],
+            vec![(call_id, ExtFunctionResult::Return(MontyObject::int(41)))],
             PrintWriter::Stdout,
         )
         .unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
-    assert_eq!(value, MontyObject::Int(42));
+    assert_eq!(value, MontyObject::int(42));
     assert_eq!(
         feed_run_print(&mut repl, "final_value = 42").unwrap(),
-        MontyObject::None
+        MontyObject::none()
     );
-    assert_eq!(feed_run_print(&mut repl, "final_value").unwrap(), MontyObject::Int(42));
+    assert_eq!(feed_run_print(&mut repl, "final_value").unwrap(), MontyObject::int(42));
 }
 
 #[test]
@@ -814,11 +712,11 @@ fn repl_start_runtime_error_preserves_repl_state() {
     assert_eq!(error.message(), Some("boom"));
 
     // Variables from BEFORE the error snippet survive.
-    assert_eq!(feed_run_print(&mut repl, "x").unwrap(), MontyObject::Int(10));
+    assert_eq!(feed_run_print(&mut repl, "x").unwrap(), MontyObject::int(10));
     // Variable assigned BEFORE the raise within the erroring snippet also survives.
-    assert_eq!(feed_run_print(&mut repl, "y").unwrap(), MontyObject::Int(20));
+    assert_eq!(feed_run_print(&mut repl, "y").unwrap(), MontyObject::int(20));
     // New snippets continue to work normally.
-    assert_eq!(feed_run_print(&mut repl, "x + y + 12").unwrap(), MontyObject::Int(42));
+    assert_eq!(feed_run_print(&mut repl, "x + y + 12").unwrap(), MontyObject::int(42));
 }
 
 #[test]
@@ -839,28 +737,21 @@ fn repl_start_runtime_error_during_external_call_preserves_repl_state() {
     assert_eq!(error.exc_type(), ExcType::RuntimeError);
 
     // Variable from before the error is still accessible.
-    assert_eq!(feed_run_print(&mut repl, "z").unwrap(), MontyObject::Int(99));
+    assert_eq!(feed_run_print(&mut repl, "z").unwrap(), MontyObject::int(99));
 }
 
 #[test]
 fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
     // Create a REPL with a host class instance input and call a method on it.
     // This exercises the MethodCall path in repl.rs handle_repl_vm_result.
-    let point = MontyObject::ClassInstance(Box::new(MontyClassInstance {
-        class_type: MontyClassType {
-            name: "Point".to_string(),
-            id: MontyUuid::from_u128(7),
-            host_defined: true,
-            is_dataclass: true,
-            attrs: DictPairs::default(),
-        },
-        instance_id: MontyUuid::from_u128(42),
-        attrs: vec![
-            (MontyObject::String("x".to_string()), MontyObject::Int(1)),
-            (MontyObject::String("y".to_string()), MontyObject::Int(2)),
-        ]
-        .into(),
-    }));
+    let point = MontyObject::class_instance(
+        MontyObject::class_type("Point", MontyUuid::from_u128(7), true, true, []),
+        MontyUuid::from_u128(42),
+        [
+            (MontyObject::string("x".to_string()), MontyObject::int(1)),
+            (MontyObject::string("y".to_string()), MontyObject::int(2)),
+        ],
+    );
 
     let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
 
@@ -877,15 +768,15 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
         Some(MontyUuid::from_u128(42)),
         "should be a method call on instance 42"
     );
-    assert!(call.args.is_empty(), "receiver must not be included in args");
+    assert!(call.args.arg_ids.is_empty(), "receiver must not be included in args");
 
     // Resume with a return value (sum of x + y = 3)
-    let progress = call.resume(MontyObject::Int(3), PrintWriter::Stdout).unwrap();
+    let progress = call.resume(MontyObject::int(3), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
-    assert_eq!(value, MontyObject::Int(3));
+    assert_eq!(value, MontyObject::int(3));
 
     // Verify REPL state is preserved after method call
-    assert_eq!(feed_run_print(&mut repl, "1 + 1").unwrap(), MontyObject::Int(2));
+    assert_eq!(feed_run_print(&mut repl, "1 + 1").unwrap(), MontyObject::int(2));
 }
 
 /// `hasattr()` / `getattr(obj, name, default)` suspend a lazy lookup carrying
@@ -904,11 +795,11 @@ fn repl_hasattr_getattr_lookup_effects_survive_dump() {
 
     // (name, answer, round-trip through the dump format first)
     let steps = [
-        ("dims", NameLookupResult::Value(MontyObject::Int(2)), true),
+        ("dims", NameLookupResult::Value(MontyObject::int(2)), true),
         ("nope", NameLookupResult::Undefined, true),
         ("nope", NameLookupResult::Undefined, true),
         ("nope", NameLookupResult::Undefined, true),
-        ("dims", NameLookupResult::Value(MontyObject::Int(2)), false),
+        ("dims", NameLookupResult::Value(MontyObject::int(2)), false),
     ];
     for (name, answer, round_trip) in steps {
         let progress_in = if round_trip {
@@ -928,12 +819,12 @@ fn repl_hasattr_getattr_lookup_effects_survive_dump() {
     let (_repl, value) = progress.into_complete().expect("expected completion");
     assert_eq!(
         value,
-        MontyObject::Tuple(vec![
-            MontyObject::Bool(true),
-            MontyObject::Bool(false),
-            MontyObject::Int(7),
-            MontyObject::List(vec![MontyObject::Int(1)]),
-            MontyObject::Int(2),
+        MontyObject::tuple([
+            MontyObject::bool(true),
+            MontyObject::bool(false),
+            MontyObject::int(7),
+            MontyObject::list([MontyObject::int(1)]),
+            MontyObject::int(2),
         ])
     );
 }
@@ -971,9 +862,9 @@ fn repl_lookup_error_raises_in_sandbox() {
     let (mut repl, value) = progress.into_complete().expect("expected completion");
     assert_eq!(
         value,
-        MontyObject::List(vec![MontyObject::String("'boom'".to_owned()); 3])
+        MontyObject::list(vec![MontyObject::string("'boom'".to_owned()); 3])
     );
-    assert_eq!(feed_run_print(&mut repl, "1 + 1").unwrap(), MontyObject::Int(2));
+    assert_eq!(feed_run_print(&mut repl, "1 + 1").unwrap(), MontyObject::int(2));
 }
 
 /// An uncaught lookup error ends the snippet with a traceback pointing at
@@ -1005,7 +896,7 @@ point.boom",
     "#);
     // the session keeps the globals the snippet set before raising
     let mut repl = err.repl;
-    assert_eq!(feed_run_print(&mut repl, "x").unwrap(), MontyObject::Int(1));
+    assert_eq!(feed_run_print(&mut repl, "x").unwrap(), MontyObject::int(1));
 
     let progress = repl.feed_start("missing", vec![], PrintWriter::Stdout).unwrap();
     let lookup = progress.into_name_lookup().unwrap();
@@ -1031,36 +922,29 @@ fn host_point() -> MontyObject {
 /// A host `Point` instance (class id 7) with the given instance id and an
 /// attr-less class branch, as the bindings send instances.
 fn host_point_instance(instance_id: u128) -> MontyObject {
-    MontyObject::ClassInstance(Box::new(MontyClassInstance {
-        class_type: host_point_class_type("Point", DictPairs::default()),
-        instance_id: MontyUuid::from_u128(instance_id),
-        attrs: DictPairs::default(),
-    }))
+    MontyObject::class_instance(
+        host_point_class_type("Point", []),
+        MontyUuid::from_u128(instance_id),
+        [],
+    )
 }
 
 /// The host `Point` class (id 7) as a type input, with eager class attrs.
-fn host_point_type(attrs: DictPairs) -> MontyObject {
-    MontyObject::Type(MontyType::Instance(Box::new(host_point_class_type("Point", attrs))))
+fn host_point_type(attrs: Vec<(MontyObject, MontyObject)>) -> MontyObject {
+    host_point_class_type("Point", attrs)
 }
 
-/// The wire class type for host class id 7 under `name`.
-fn host_point_class_type(name: &str, attrs: DictPairs) -> MontyClassType {
-    MontyClassType {
-        name: name.to_owned(),
-        id: MontyUuid::from_u128(7),
-        host_defined: true,
-        is_dataclass: true,
-        attrs,
-    }
+/// The class type object for host class id 7 under `name`.
+fn host_point_class_type(name: &str, attrs: impl IntoIterator<Item = (MontyObject, MontyObject)>) -> MontyObject {
+    MontyObject::class_type(name, MontyUuid::from_u128(7), true, true, attrs)
 }
 
 /// `{name: int}` eager attrs.
-fn int_attrs(pairs: &[(&str, i64)]) -> DictPairs {
+fn int_attrs(pairs: &[(&str, i64)]) -> Vec<(MontyObject, MontyObject)> {
     pairs
         .iter()
-        .map(|(k, v)| (MontyObject::String((*k).to_owned()), MontyObject::Int(*v)))
-        .collect::<Vec<_>>()
-        .into()
+        .map(|(k, v)| (MontyObject::string((*k).to_owned()), MontyObject::int(*v)))
+        .collect()
 }
 
 /// The sandbox keeps one type object per host class uuid: instances share it,
@@ -1081,19 +965,19 @@ fn repl_host_class_type_is_one_object_per_class() {
                 is_dataclass(Point), is_dataclass(a), repr(type(a)))";
     assert_eq!(
         repl.feed_run(code, inputs, PrintWriter::Stdout).unwrap(),
-        MontyObject::Tuple(vec![
-            MontyObject::Bool(true),
-            MontyObject::Bool(true),
-            MontyObject::Bool(true),
-            MontyObject::Int(4),
-            MontyObject::Bool(true),
-            MontyObject::Bool(true),
-            MontyObject::Bool(true),
-            MontyObject::Bool(false),
-            MontyObject::Bool(false),
-            MontyObject::Bool(true),
-            MontyObject::Bool(true),
-            MontyObject::String("<class 'Point'>".to_owned()),
+        MontyObject::tuple([
+            MontyObject::bool(true),
+            MontyObject::bool(true),
+            MontyObject::bool(true),
+            MontyObject::int(4),
+            MontyObject::bool(true),
+            MontyObject::bool(true),
+            MontyObject::bool(true),
+            MontyObject::bool(false),
+            MontyObject::bool(false),
+            MontyObject::bool(true),
+            MontyObject::bool(true),
+            MontyObject::string("<class 'Point'>".to_owned()),
         ])
     );
 }
@@ -1102,20 +986,15 @@ fn repl_host_class_type_is_one_object_per_class() {
 #[test]
 fn repl_host_class_attrs_visible_via_type_from_instance_branch() {
     let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
-    let attrs: DictPairs = vec![(
-        MontyObject::String("KIND".to_owned()),
-        MontyObject::String("pt".to_owned()),
-    )]
-    .into();
-    let instance = MontyObject::ClassInstance(Box::new(MontyClassInstance {
-        class_type: host_point_class_type("Point", attrs),
-        instance_id: MontyUuid::from_u128(42),
-        attrs: DictPairs::default(),
-    }));
+    let attrs = vec![(
+        MontyObject::string("KIND".to_owned()),
+        MontyObject::string("pt".to_owned()),
+    )];
+    let instance = MontyObject::class_instance(host_point_class_type("Point", attrs), MontyUuid::from_u128(42), []);
     let value = repl
         .feed_run("type(x).KIND", vec![("x".to_owned(), instance)], PrintWriter::Stdout)
         .unwrap();
-    assert_eq!(value, MontyObject::String("pt".to_owned()));
+    assert_eq!(value, MontyObject::string("pt".to_owned()));
 }
 
 /// A re-sent class type refreshes the shared entry: non-empty eager attrs
@@ -1128,13 +1007,13 @@ fn repl_host_class_type_attrs_refresh_on_resend() {
     assert_eq!(
         repl.feed_run("Point.SIDES", point(int_attrs(&[("SIDES", 4)])), PrintWriter::Stdout)
             .unwrap(),
-        MontyObject::Int(4)
+        MontyObject::int(4)
     );
     let a = vec![("a".to_owned(), host_point_instance(42))];
     assert_eq!(
         repl.feed_run("(type(a) is Point, Point.SIDES)", a, PrintWriter::Stdout)
             .unwrap(),
-        MontyObject::Tuple(vec![MontyObject::Bool(true), MontyObject::Int(4)])
+        MontyObject::tuple([MontyObject::bool(true), MontyObject::int(4)])
     );
     let again = vec![("Point2".to_owned(), host_point_type(int_attrs(&[("SIDES", 5)])))];
     assert_eq!(
@@ -1144,12 +1023,9 @@ fn repl_host_class_type_attrs_refresh_on_resend() {
             PrintWriter::Stdout
         )
         .unwrap(),
-        MontyObject::Tuple(vec![MontyObject::Bool(true), MontyObject::Int(5), MontyObject::Int(5)])
+        MontyObject::tuple([MontyObject::bool(true), MontyObject::int(5), MontyObject::int(5)])
     );
-    let renamed = MontyObject::Type(MontyType::Instance(Box::new(host_point_class_type(
-        "Renamed",
-        DictPairs::default(),
-    ))));
+    let renamed = host_point_class_type("Renamed", []);
     assert_eq!(
         repl.feed_run(
             "(r is Point, type(a).__name__, Point.SIDES)",
@@ -1157,10 +1033,10 @@ fn repl_host_class_type_attrs_refresh_on_resend() {
             PrintWriter::Stdout
         )
         .unwrap(),
-        MontyObject::Tuple(vec![
-            MontyObject::Bool(true),
-            MontyObject::String("Renamed".to_owned()),
-            MontyObject::Int(5),
+        MontyObject::tuple([
+            MontyObject::bool(true),
+            MontyObject::string("Renamed".to_owned()),
+            MontyObject::int(5),
         ])
     );
 }
@@ -1170,29 +1046,23 @@ fn repl_host_class_type_attrs_refresh_on_resend() {
 #[test]
 fn repl_host_class_types_hash_and_eq_by_id() {
     let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
-    let other = MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
-        name: "Other".to_owned(),
-        id: MontyUuid::from_u128(8),
-        host_defined: true,
-        is_dataclass: false,
-        attrs: DictPairs::default(),
-    })));
+    let other = MontyObject::class_type("Other", MontyUuid::from_u128(8), true, false, []);
     let inputs = vec![
         ("a".to_owned(), host_point_instance(42)),
-        ("Point".to_owned(), host_point_type(DictPairs::default())),
+        ("Point".to_owned(), host_point_type(vec![])),
         ("Other".to_owned(), other),
     ];
     let code = "d = {type(a): 1}\nd[Point] = 2\n\
                 (len(d), d[type(a)], hash(type(a)) == hash(Point), type(a) in {Point}, type(a) == Other, Point != Other)";
     assert_eq!(
         repl.feed_run(code, inputs, PrintWriter::Stdout).unwrap(),
-        MontyObject::Tuple(vec![
-            MontyObject::Int(1),
-            MontyObject::Int(2),
-            MontyObject::Bool(true),
-            MontyObject::Bool(true),
-            MontyObject::Bool(false),
-            MontyObject::Bool(true),
+        MontyObject::tuple([
+            MontyObject::int(1),
+            MontyObject::int(2),
+            MontyObject::bool(true),
+            MontyObject::bool(true),
+            MontyObject::bool(false),
+            MontyObject::bool(true),
         ])
     );
 }
@@ -1212,18 +1082,14 @@ fn repl_host_class_type_survives_dump_restore() {
     let mut restored = round_trip_repl(&repl);
     assert_eq!(
         feed_run_print(&mut restored, "(type(a) is type(b), type(a) is Point, type(a).SIDES)").unwrap(),
-        MontyObject::Tuple(vec![
-            MontyObject::Bool(true),
-            MontyObject::Bool(true),
-            MontyObject::Int(4)
-        ])
+        MontyObject::tuple([MontyObject::bool(true), MontyObject::bool(true), MontyObject::int(4)])
     );
-    let again = vec![("P".to_owned(), host_point_type(DictPairs::default()))];
+    let again = vec![("P".to_owned(), host_point_type(vec![]))];
     assert_eq!(
         restored
             .feed_run("(P is Point, P.SIDES)", again, PrintWriter::Stdout)
             .unwrap(),
-        MontyObject::Tuple(vec![MontyObject::Bool(true), MontyObject::Int(4)])
+        MontyObject::tuple([MontyObject::bool(true), MontyObject::int(4)])
     );
 }
 
@@ -1234,16 +1100,16 @@ fn repl_host_class_dunder_class_ignores_attrs() {
     let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
     let inputs = vec![(
         "a".to_owned(),
-        MontyObject::ClassInstance(Box::new(MontyClassInstance {
-            class_type: host_point_class_type("Point", DictPairs::default()),
-            instance_id: MontyUuid::from_u128(42),
-            attrs: int_attrs(&[("__class__", 5)]),
-        })),
+        MontyObject::class_instance(
+            host_point_class_type("Point", []),
+            MontyUuid::from_u128(42),
+            int_attrs(&[("__class__", 5)]),
+        ),
     )];
     let code = "before = a.__class__ is type(a)\na.__class__ = 6\n(before, a.__class__ is type(a))";
     assert_eq!(
         repl.feed_run(code, inputs, PrintWriter::Stdout).unwrap(),
-        MontyObject::Tuple(vec![MontyObject::Bool(true), MontyObject::Bool(true)])
+        MontyObject::tuple([MontyObject::bool(true), MontyObject::bool(true)])
     );
 }
 
@@ -1261,7 +1127,7 @@ fn repl_host_class_type_freed_with_last_holder() {
     let inputs = vec![
         ("a".to_owned(), host_point_instance(42)),
         ("b".to_owned(), host_point_instance(43)),
-        ("Point".to_owned(), host_point_type(DictPairs::default())),
+        ("Point".to_owned(), host_point_type(vec![])),
     ];
     repl.feed_run("x = 1\nt = type(a)", inputs, PrintWriter::Stdout)
         .unwrap();
@@ -1270,7 +1136,7 @@ fn repl_host_class_type_freed_with_last_holder() {
     assert_eq!(repl.heap_entry_count(), control + 1);
     assert_eq!(
         feed_run_print(&mut repl, "t.__name__").unwrap(),
-        MontyObject::String("Point".to_owned())
+        MontyObject::string("Point".to_owned())
     );
     feed_run_print(&mut repl, "t = None").unwrap();
     assert_eq!(repl.heap_entry_count(), control);
@@ -1313,26 +1179,18 @@ fn repl_abandoned_lookup_releases_in_flight_state() {
 fn repl_sandbox_objects_round_trip_by_identity() {
     let (mut repl, _) = init_repl("class Foo:\n    def __init__(self):\n        self.x = 1\nfoo = Foo()");
     let instance = feed_run_print(&mut repl, "foo").unwrap();
-    let MontyObject::ClassInstance(boxed) = instance.clone() else {
-        panic!("expected a ClassInstance, got {instance:?}");
-    };
-    let MontyClassInstance {
-        class_type,
-        instance_id,
-        ..
-    } = *boxed;
-    assert!(!class_type.host_defined);
+    let (class_object, instance_id) = split_instance(&instance);
+    assert!(matches!(class_object.root_node(), MontyNode::ClassType(class) if !class.host_defined));
     // The class itself crosses out as repr text; its wire type (as carried by
     // the instance) is what a host can hand back.
-    let class_object = MontyObject::Type(MontyType::Instance(Box::new(class_type)));
 
     let checks = "(back is foo, cls is Foo, isinstance(back, cls), back.x)";
     let inputs = vec![("back".to_owned(), instance.clone()), ("cls".to_owned(), class_object)];
-    let expected = MontyObject::Tuple(vec![
-        MontyObject::Bool(true),
-        MontyObject::Bool(true),
-        MontyObject::Bool(true),
-        MontyObject::Int(1),
+    let expected = MontyObject::tuple([
+        MontyObject::bool(true),
+        MontyObject::bool(true),
+        MontyObject::bool(true),
+        MontyObject::int(1),
     ]);
     let progress = repl.feed_start(checks, inputs.clone(), PrintWriter::Stdout).unwrap();
     let (repl, value) = progress.into_complete().expect("expected completion");
@@ -1370,14 +1228,7 @@ fn repl_sandbox_object_resolution_edge_cases() {
     )
     .unwrap();
     let instance = feed_run_print(&mut repl, "foo").unwrap();
-    let MontyObject::ClassInstance(boxed) = instance.clone() else {
-        panic!("expected a ClassInstance, got {instance:?}");
-    };
-    let MontyClassInstance {
-        class_type,
-        instance_id,
-        ..
-    } = *boxed;
+    let (class_object, instance_id) = split_instance(&instance);
     let complete = |repl: MontyRepl, code: &str, inputs: Vec<(String, MontyObject)>| {
         let progress = repl.feed_start(code, inputs, PrintWriter::Stdout).unwrap();
         progress.into_complete().expect("expected completion")
@@ -1391,50 +1242,38 @@ fn repl_sandbox_object_resolution_edge_cases() {
     };
 
     // Nested in containers, carrying a stale attrs payload that is ignored.
-    let edited = MontyObject::ClassInstance(Box::new(MontyClassInstance {
-        class_type: class_type.clone(),
+    let edited = MontyObject::class_instance(
+        class_object.clone(),
         instance_id,
-        attrs: vec![(MontyObject::String("x".to_owned()), MontyObject::Int(99))].into(),
-    }));
+        [(MontyObject::string("x".to_owned()), MontyObject::int(99))],
+    );
     let inputs = vec![
-        ("items".to_owned(), MontyObject::List(vec![edited.clone()])),
+        ("items".to_owned(), MontyObject::list([edited.clone()])),
         (
             "mapping".to_owned(),
-            MontyObject::dict(vec![(MontyObject::String("k".to_owned()), edited)]),
+            MontyObject::dict([(MontyObject::string("k".to_owned()), edited)]),
         ),
     ];
     let (repl, value) = complete(repl, "(items[0] is foo, mapping['k'] is foo, foo.x)", inputs);
     assert_eq!(
         value,
-        MontyObject::Tuple(vec![
-            MontyObject::Bool(true),
-            MontyObject::Bool(true),
-            MontyObject::Int(1)
-        ])
+        MontyObject::tuple([MontyObject::bool(true), MontyObject::bool(true), MontyObject::int(1)])
     );
 
     // An id of the wrong kind never resolves: with a host origin it becomes a
     // host-backed copy, with a sandbox origin it is rejected.
-    let host_class_type = MontyClassType {
-        host_defined: true,
-        ..class_type.clone()
+    let MontyNode::ClassType(class) = class_object.root_node().clone() else {
+        panic!("expected a class type object");
     };
     let class_as_instance = |host_defined: bool| {
-        MontyObject::ClassInstance(Box::new(MontyClassInstance {
-            class_type: MontyClassType {
-                host_defined,
-                ..class_type.clone()
-            },
-            instance_id: class_type.id,
-            attrs: DictPairs::default(),
-        }))
+        MontyObject::class_instance(
+            MontyObject::class_type(class.name.clone(), class.id, host_defined, class.is_dataclass, []),
+            class.id,
+            [],
+        )
     };
     let instance_as_type = |host_defined: bool| {
-        MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
-            id: instance_id,
-            host_defined,
-            ..class_type.clone()
-        })))
+        MontyObject::class_type(class.name.clone(), instance_id, host_defined, class.is_dataclass, [])
     };
     let inputs = vec![
         ("a".to_owned(), class_as_instance(true)),
@@ -1444,13 +1283,13 @@ fn repl_sandbox_object_resolution_edge_cases() {
     let (repl, value) = complete(repl, code, inputs);
     assert_eq!(
         value,
-        MontyObject::Tuple(vec![
-            MontyObject::Bool(false),
-            MontyObject::Bool(false),
-            MontyObject::String("Foo".to_owned()),
-            MontyObject::Bool(false),
-            MontyObject::Bool(false),
-            MontyObject::String("Foo".to_owned()),
+        MontyObject::tuple([
+            MontyObject::bool(false),
+            MontyObject::bool(false),
+            MontyObject::string("Foo".to_owned()),
+            MontyObject::bool(false),
+            MontyObject::bool(false),
+            MontyObject::string("Foo".to_owned()),
         ])
     );
     let (repl, error) = start_error(repl, class_as_instance(false));
@@ -1458,7 +1297,7 @@ fn repl_sandbox_object_resolution_edge_cases() {
         error,
         format!(
             "RuntimeError: invalid input type: sandbox instance of 'Foo' (id {}) no longer exists",
-            class_type.id
+            class.id
         )
     );
     let (mut repl, error) = start_error(repl, instance_as_type(false));
@@ -1471,7 +1310,7 @@ fn repl_sandbox_object_resolution_edge_cases() {
     // resolves; the collector frees it and the id is forgotten.
     feed_run_print(&mut repl, "foo.me = foo\nfoo = None").unwrap();
     let (mut repl, value) = complete(repl, "back.x", vec![("back".to_owned(), instance.clone())]);
-    assert_eq!(value, MontyObject::Int(1));
+    assert_eq!(value, MontyObject::int(1));
     feed_run_print(&mut repl, "back = items = mapping = None\n[i for i in range(300)]").unwrap();
     let (repl, error) = start_error(repl, instance);
     assert_eq!(
@@ -1480,16 +1319,15 @@ fn repl_sandbox_object_resolution_edge_cases() {
     );
 
     // The class resolves while alive and is forgotten once freed.
-    let class_object = MontyObject::Type(MontyType::Instance(Box::new(class_type.clone())));
     let (mut repl, value) = complete(repl, "cls is Foo", vec![("cls".to_owned(), class_object.clone())]);
-    assert_eq!(value, MontyObject::Bool(true));
+    assert_eq!(value, MontyObject::bool(true));
     feed_run_print(&mut repl, "cls = Foo = None").unwrap();
     let (_repl, error) = start_error(repl, class_object);
     assert_eq!(
         error,
         format!(
             "RuntimeError: invalid input type: sandbox class 'Foo' (id {}) no longer exists",
-            host_class_type.id
+            class.id
         )
     );
 }
@@ -1506,15 +1344,15 @@ fn repl_start_new_external_function_in_later_block() {
     let progress = repl.feed_start("new_ext(y)", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "new_ext");
-    assert_eq!(call.args, vec![MontyObject::Int(15)]);
+    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(15)]);
 
-    let progress = call.resume(MontyObject::Int(100), PrintWriter::Stdout).unwrap();
+    let progress = call.resume(MontyObject::int(100), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
-    assert_eq!(value, MontyObject::Int(100));
+    assert_eq!(value, MontyObject::int(100));
 
     // REPL state from before the external call is still intact.
-    assert_eq!(feed_run_print(&mut repl, "x").unwrap(), MontyObject::Int(10));
-    assert_eq!(feed_run_print(&mut repl, "y").unwrap(), MontyObject::Int(15));
+    assert_eq!(feed_run_print(&mut repl, "x").unwrap(), MontyObject::int(10));
+    assert_eq!(feed_run_print(&mut repl, "y").unwrap(), MontyObject::int(15));
 }
 
 // ===========================================================================
@@ -1534,18 +1372,18 @@ fn call_simple_function() {
     let result = s
         .call_function(
             "add",
-            vec![MontyObject::Int(2), MontyObject::Int(3)],
+            vec![MontyObject::int(2), MontyObject::int(3)],
             PrintWriter::Stdout,
         )
         .unwrap();
-    assert_eq!(result, MontyObject::Int(5));
+    assert_eq!(result, MontyObject::int(5));
 }
 
 #[test]
 fn call_function_no_args() {
     let mut s = repl_with_code("def greet(): return 'hello'");
     let result = s.call_function("greet", vec![], PrintWriter::Stdout).unwrap();
-    assert_eq!(result, MontyObject::String("hello".to_owned()));
+    assert_eq!(result, MontyObject::string("hello".to_owned()));
 }
 
 #[test]
@@ -1565,7 +1403,7 @@ def run():
     let result = repl.call_function("run", vec![], PrintWriter::Stdout).unwrap();
     assert_eq!(
         result,
-        MontyObject::List(vec![MontyObject::Int(2), MontyObject::Int(4), MontyObject::Int(6)])
+        MontyObject::list([MontyObject::int(2), MontyObject::int(4), MontyObject::int(6)])
     );
 }
 
@@ -1573,16 +1411,16 @@ def run():
 fn call_function_returns_none() {
     let mut s = repl_with_code("def noop(): pass");
     let result = s.call_function("noop", vec![], PrintWriter::Stdout).unwrap();
-    assert_eq!(result, MontyObject::None);
+    assert_eq!(result, MontyObject::none());
 }
 
 #[test]
 fn call_function_one_arg() {
     let mut s = repl_with_code("def double(x): return x * 2");
     let result = s
-        .call_function("double", vec![MontyObject::Int(21)], PrintWriter::Stdout)
+        .call_function("double", vec![MontyObject::int(21)], PrintWriter::Stdout)
         .unwrap();
-    assert_eq!(result, MontyObject::Int(42));
+    assert_eq!(result, MontyObject::int(42));
 }
 
 #[test]
@@ -1592,13 +1430,13 @@ fn call_function_string_args() {
         .call_function(
             "concat",
             vec![
-                MontyObject::String("hello ".to_owned()),
-                MontyObject::String("world".to_owned()),
+                MontyObject::string("hello ".to_owned()),
+                MontyObject::string("world".to_owned()),
             ],
             PrintWriter::Stdout,
         )
         .unwrap();
-    assert_eq!(result, MontyObject::String("hello world".to_owned()));
+    assert_eq!(result, MontyObject::string("hello world".to_owned()));
 }
 
 #[test]
@@ -1606,9 +1444,9 @@ fn call_function_multiple_times() {
     let mut s = repl_with_code("def inc(x): return x + 1");
     for i in 0..5 {
         let result = s
-            .call_function("inc", vec![MontyObject::Int(i)], PrintWriter::Stdout)
+            .call_function("inc", vec![MontyObject::int(i)], PrintWriter::Stdout)
             .unwrap();
-        assert_eq!(result, MontyObject::Int(i + 1));
+        assert_eq!(result, MontyObject::int(i + 1));
     }
 }
 
@@ -1616,16 +1454,16 @@ fn call_function_multiple_times() {
 fn call_function_survives_repl_round_trip() {
     let mut repl = repl_with_code("def double(value): return value * 2");
     assert_eq!(
-        repl.call_function("double", vec![MontyObject::Int(2)], PrintWriter::Stdout)
+        repl.call_function("double", vec![MontyObject::int(2)], PrintWriter::Stdout)
             .unwrap(),
-        MontyObject::Int(4)
+        MontyObject::int(4)
     );
 
     let mut repl = round_trip_repl(&repl);
     assert_eq!(
-        repl.call_function("double", vec![MontyObject::Int(3)], PrintWriter::Stdout)
+        repl.call_function("double", vec![MontyObject::int(3)], PrintWriter::Stdout)
             .unwrap(),
-        MontyObject::Int(6)
+        MontyObject::int(6)
     );
 }
 
@@ -1636,9 +1474,9 @@ fn call_function_keeps_globals_the_call_added() {
     let mut repl = repl_with_code("def define():\n    exec('global added\\nadded = 41')");
     assert_eq!(
         repl.call_function("define", vec![], PrintWriter::Stdout).unwrap(),
-        MontyObject::None
+        MontyObject::none()
     );
-    assert_eq!(feed_run_print(&mut repl, "added + 1").unwrap(), MontyObject::Int(42));
+    assert_eq!(feed_run_print(&mut repl, "added + 1").unwrap(), MontyObject::int(42));
     assert_eq!(repl.function_names(), vec!["define"]);
 }
 
@@ -1648,15 +1486,15 @@ fn call_function_with_list() {
     let result = s
         .call_function(
             "length",
-            vec![MontyObject::List(vec![
-                MontyObject::Int(1),
-                MontyObject::Int(2),
-                MontyObject::Int(3),
+            vec![MontyObject::list([
+                MontyObject::int(1),
+                MontyObject::int(2),
+                MontyObject::int(3),
             ])],
             PrintWriter::Stdout,
         )
         .unwrap();
-    assert_eq!(result, MontyObject::Int(3));
+    assert_eq!(result, MontyObject::int(3));
 }
 
 #[test]
@@ -1672,15 +1510,15 @@ def increment():
     );
     assert_eq!(
         s.call_function("increment", vec![], PrintWriter::Stdout).unwrap(),
-        MontyObject::Int(1)
+        MontyObject::int(1)
     );
     assert_eq!(
         s.call_function("increment", vec![], PrintWriter::Stdout).unwrap(),
-        MontyObject::Int(2)
+        MontyObject::int(2)
     );
     assert_eq!(
         s.call_function("increment", vec![], PrintWriter::Stdout).unwrap(),
-        MontyObject::Int(3)
+        MontyObject::int(3)
     );
 }
 
@@ -1695,20 +1533,20 @@ def mul(a, b): return a * b
     assert_eq!(
         s.call_function(
             "add",
-            vec![MontyObject::Int(3), MontyObject::Int(4)],
+            vec![MontyObject::int(3), MontyObject::int(4)],
             PrintWriter::Stdout
         )
         .unwrap(),
-        MontyObject::Int(7)
+        MontyObject::int(7)
     );
     assert_eq!(
         s.call_function(
             "mul",
-            vec![MontyObject::Int(3), MontyObject::Int(4)],
+            vec![MontyObject::int(3), MontyObject::int(4)],
             PrintWriter::Stdout
         )
         .unwrap(),
-        MontyObject::Int(12)
+        MontyObject::int(12)
     );
 }
 
@@ -1721,9 +1559,9 @@ def quadruple(x): return double(double(x))
 ",
     );
     let result = s
-        .call_function("quadruple", vec![MontyObject::Int(5)], PrintWriter::Stdout)
+        .call_function("quadruple", vec![MontyObject::int(5)], PrintWriter::Stdout)
         .unwrap();
-    assert_eq!(result, MontyObject::Int(20));
+    assert_eq!(result, MontyObject::int(20));
 }
 
 #[test]
@@ -1732,11 +1570,11 @@ fn call_function_with_defaults() {
     let result = s
         .call_function(
             "greet",
-            vec![MontyObject::String("world".to_owned())],
+            vec![MontyObject::string("world".to_owned())],
             PrintWriter::Stdout,
         )
         .unwrap();
-    assert_eq!(result, MontyObject::String("Hello world".to_owned()));
+    assert_eq!(result, MontyObject::string("Hello world".to_owned()));
 }
 
 #[test]
@@ -1752,9 +1590,9 @@ add5 = make_adder(5)
 ",
     );
     let result = s
-        .call_function("add5", vec![MontyObject::Int(10)], PrintWriter::Stdout)
+        .call_function("add5", vec![MontyObject::int(10)], PrintWriter::Stdout)
         .unwrap();
-    assert_eq!(result, MontyObject::Int(15));
+    assert_eq!(result, MontyObject::int(15));
 }
 
 #[test]
@@ -1807,7 +1645,7 @@ fn call_function_raises_exception() {
 fn call_function_wrong_arg_count() {
     let mut s = repl_with_code("def add(a, b): return a + b");
     let err = s
-        .call_function("add", vec![MontyObject::Int(1)], PrintWriter::Stdout)
+        .call_function("add", vec![MontyObject::int(1)], PrintWriter::Stdout)
         .unwrap_err();
     assert_snapshot!(err, @r#"
     Traceback (most recent call last):
@@ -1880,11 +1718,11 @@ fn call_function_captures_print() {
     let result = s
         .call_function(
             "say_hello",
-            vec![MontyObject::String("world".to_owned())],
+            vec![MontyObject::string("world".to_owned())],
             PrintWriter::collect_string(&mut output),
         )
         .unwrap();
-    assert_eq!(result, MontyObject::None);
+    assert_eq!(result, MontyObject::none());
     assert_eq!(output, "Hello world\n");
 }
 
@@ -1892,11 +1730,11 @@ fn call_function_captures_print() {
 fn call_function_returns_list() {
     let mut s = repl_with_code("def make_list(n): return list(range(n))");
     let result = s
-        .call_function("make_list", vec![MontyObject::Int(3)], PrintWriter::Stdout)
+        .call_function("make_list", vec![MontyObject::int(3)], PrintWriter::Stdout)
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::List(vec![MontyObject::Int(0), MontyObject::Int(1), MontyObject::Int(2)])
+        MontyObject::list([MontyObject::int(0), MontyObject::int(1), MontyObject::int(2)])
     );
 }
 
@@ -1911,15 +1749,15 @@ def make_point(x, y):
     let result = s
         .call_function(
             "make_point",
-            vec![MontyObject::Int(1), MontyObject::Int(2)],
+            vec![MontyObject::int(1), MontyObject::int(2)],
             PrintWriter::Stdout,
         )
         .unwrap();
-    if let MontyObject::Dict(pairs) = result {
-        assert_eq!(pairs.into_iter().count(), 2);
-    } else {
-        panic!("expected dict, got: {result:?}");
-    }
+    let pairs = result
+        .as_ref()
+        .pairs()
+        .unwrap_or_else(|| panic!("expected dict, got: {result:?}"));
+    assert_eq!(pairs.len(), 2);
 }
 
 #[test]
@@ -1929,16 +1767,16 @@ fn call_function_many_args() {
         .call_function(
             "sum_all",
             vec![
-                MontyObject::Int(1),
-                MontyObject::Int(2),
-                MontyObject::Int(3),
-                MontyObject::Int(4),
-                MontyObject::Int(5),
+                MontyObject::int(1),
+                MontyObject::int(2),
+                MontyObject::int(3),
+                MontyObject::int(4),
+                MontyObject::int(5),
             ],
             PrintWriter::Stdout,
         )
         .unwrap();
-    assert_eq!(result, MontyObject::Int(15));
+    assert_eq!(result, MontyObject::int(15));
 }
 
 #[test]
@@ -1964,7 +1802,7 @@ fn call_function_catches_unsupported_os_call() {
     let mut s =
         repl_with_code("def try_open():\n    try:\n        open('/x.txt')\n    except:\n        return 'caught'");
     let result = s.call_function("try_open", vec![], PrintWriter::Stdout).unwrap();
-    assert_eq!(result, MontyObject::String("caught".to_owned()));
+    assert_eq!(result, MontyObject::string("caught".to_owned()));
 }
 
 #[test]
@@ -1973,11 +1811,11 @@ fn call_function_with_heap_defaults() {
     let result = s
         .call_function(
             "greet",
-            vec![MontyObject::String("Alice".to_owned())],
+            vec![MontyObject::string("Alice".to_owned())],
             PrintWriter::Stdout,
         )
         .unwrap();
-    assert_eq!(result, MontyObject::String("Hi Alice".to_owned()));
+    assert_eq!(result, MontyObject::string("Hi Alice".to_owned()));
 }
 
 #[test]
@@ -1986,7 +1824,7 @@ fn convert_args_single_repr_fails() {
     let err = s
         .call_function(
             "identity",
-            vec![MontyObject::Repr("bad".to_owned())],
+            vec![MontyObject::repr("bad".to_owned())],
             PrintWriter::Stdout,
         )
         .unwrap_err();
@@ -1999,7 +1837,7 @@ fn convert_args_two_second_repr_fails() {
     let err = s
         .call_function(
             "add",
-            vec![MontyObject::Int(1), MontyObject::Repr("bad".to_owned())],
+            vec![MontyObject::int(1), MontyObject::repr("bad".to_owned())],
             PrintWriter::Stdout,
         )
         .unwrap_err();
@@ -2012,7 +1850,7 @@ fn convert_args_two_first_repr_fails() {
     let err = s
         .call_function(
             "add",
-            vec![MontyObject::Repr("bad".to_owned()), MontyObject::Int(1)],
+            vec![MontyObject::repr("bad".to_owned()), MontyObject::int(1)],
             PrintWriter::Stdout,
         )
         .unwrap_err();
@@ -2026,10 +1864,10 @@ fn convert_args_many_middle_repr_fails() {
         .call_function(
             "f",
             vec![
-                MontyObject::Int(1),
-                MontyObject::Int(2),
-                MontyObject::Repr("bad".to_owned()),
-                MontyObject::Int(4),
+                MontyObject::int(1),
+                MontyObject::int(2),
+                MontyObject::repr("bad".to_owned()),
+                MontyObject::int(4),
             ],
             PrintWriter::Stdout,
         )
@@ -2043,11 +1881,39 @@ fn call_builtin_via_session() {
     let result = s
         .call_function(
             "my_len",
-            vec![MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2)])],
+            vec![MontyObject::list([MontyObject::int(1), MontyObject::int(2)])],
             PrintWriter::Stdout,
         )
         .unwrap();
-    assert_eq!(result, MontyObject::Int(2));
+    assert_eq!(result, MontyObject::int(2));
+}
+
+/// The class type object and instance id of a class instance value.
+fn split_instance(instance: &MontyObject) -> (MontyObject, MontyUuid) {
+    let MontyNode::ClassInstance {
+        class_type,
+        instance_id,
+        ..
+    } = instance.root_node()
+    else {
+        panic!("expected a ClassInstance, got {instance:?}");
+    };
+    (instance.graph.value(*class_type).to_owned(), *instance_id)
+}
+
+/// The synthetic call site is `name(*args)`, so keyword arguments are refused
+/// rather than silently dropped.
+#[test]
+fn call_function_rejects_keyword_arguments() {
+    let mut s = repl_with_code("def f(a, b=0): return a + b");
+    let mut args = CallArgs::new();
+    args.push_arg(MontyObject::int(1));
+    args.push_kwarg("b", MontyObject::int(2));
+    let err = s.call_function("f", args, PrintWriter::Stdout).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "TypeError: call_function() takes positional arguments only"
+    );
 }
 
 #[test]
@@ -2061,18 +1927,18 @@ fn repl_eval_suspends_at_external_call() {
         .unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "ext_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(41)]);
+    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(41)]);
 
-    let progress = call.resume(MontyObject::Int(41), PrintWriter::Stdout).unwrap();
+    let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
-    assert_eq!(value, MontyObject::Int(42));
+    assert_eq!(value, MontyObject::int(42));
 
     // What an exec'd snippet defines outlives the feed.
     assert_eq!(
         feed_run_print(&mut repl, "exec('def double(n):\\n    return n * 2')").unwrap(),
-        MontyObject::None
+        MontyObject::none()
     );
-    assert_eq!(feed_run_print(&mut repl, "double(21)").unwrap(), MontyObject::Int(42));
+    assert_eq!(feed_run_print(&mut repl, "double(21)").unwrap(), MontyObject::int(42));
 }
 
 /// Equal displayed filenames retain distinct source locations after loading a session.
@@ -2084,7 +1950,7 @@ fn repl_snippet_sources_survive_round_trip() {
     let mut repl = round_trip_repl(&repl);
     assert_eq!(
         feed_run_print(&mut repl, "filename == eval(\"'<string>'\")").unwrap(),
-        MontyObject::Bool(true)
+        MontyObject::bool(true)
     );
     let first = feed_run_print(&mut repl, "first()").unwrap_err();
     let second = feed_run_print(&mut repl, "second()").unwrap_err();

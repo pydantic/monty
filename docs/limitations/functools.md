@@ -52,7 +52,7 @@ These names are absent from the module namespace rather than stubbed, so they ar
 - **`partial` objects carry no dunder attributes.** `p.__call__` and `p.__doc__` both raise `AttributeError`, where
     CPython has a method-wrapper and the type's docstring respectively.
 - **A `partial` crossing the host boundary marshals as its `repr`.** Python and JavaScript hosts receive
-    `MontyObject::Repr("functools.partial(...)")` rather than a callable, since neither side can call back into a value
+    `MontyObject::repr("functools.partial(...)")` rather than a callable, since neither side can call back into a value
     that only exists inside the sandbox.
 
 ## Notes

@@ -6,8 +6,8 @@
 //! unconvertible values) into the matching `MontyError` subclasses rather
 //! than leaking raw PyO3 errors.
 
-use monty_proto::python::{InstanceStore, exc_py_to_monty, py_to_monty_value};
-use monty_types::{ExcType, MontyException, MontyObject, StringRepr};
+use monty_proto::python::{GraphEncoder, InstanceStore, exc_py_to_monty};
+use monty_types::{ExcType, MontyException, NamedValues, StringRepr};
 use pyo3::{
     exceptions::PyTypeError,
     prelude::*,
@@ -54,38 +54,43 @@ pub(crate) fn extract_type_check_stubs(
     }
 }
 
-/// Extracts the `inputs` dict into `(name, value)` pairs for a feed.
+/// Extracts the `inputs` dict into the named values of a feed: one arena for
+/// every input, so an object passed under two names is one sandbox object.
 pub(crate) fn extract_repl_inputs(
     inputs: Option<&Bound<'_, PyDict>>,
     instances: &InstanceStore,
-) -> PyResult<Vec<(String, MontyObject)>> {
+) -> PyResult<NamedValues> {
     let Some(inputs) = inputs else {
-        return Ok(vec![]);
+        return Ok(NamedValues::new());
     };
+    let py = inputs.py();
     // Keys and values are untrusted host input. A key problem is a
     // `MontyRuntimeError` — a non-string key (`TypeError`) or a string key that
     // fails UTF-8 conversion (the lone-surrogate `ValueError` its `extract`
     // produces). A value that fails to convert goes through
     // `MontyConversionError::value_conversion_err`: an unrepresentable *type*
     // surfaces as `MontyConversionError` (a `MontyError`), exactly as an
-    // `external_lookup` value does, while a depth-limit `RuntimeError` keeps its
-    // type.
-    inputs
-        .iter()
-        .map(|(key, value)| {
-            let py = key.py();
-            let Ok(key_str) = key.cast::<PyString>() else {
-                let exc = MontyException::new(ExcType::TypeError, Some("inputs keys must be str".to_string()));
-                return Err(MontyError::new_err(py, exc));
-            };
-            let name = key_str
-                .extract::<String>()
-                .map_err(|e| MontyError::new_err(py, exc_py_to_monty(py, &e)))?;
-            let obj =
-                py_to_monty_value(&value, instances).map_err(|e| MontyConversionError::value_conversion_err(py, e))?;
-            Ok((name, obj))
-        })
-        .collect::<PyResult<_>>()
+    // `external_lookup` value does, while a cyclic value's `ValueError` keeps
+    // its type.
+    let mut encoder = GraphEncoder::new(py, instances);
+    let mut names = Vec::with_capacity(inputs.len());
+    for (key, value) in inputs.iter() {
+        let Ok(key_str) = key.cast::<PyString>() else {
+            let exc = MontyException::new(ExcType::TypeError, Some("inputs keys must be str".to_string()));
+            return Err(MontyError::new_err(py, exc));
+        };
+        let name = key_str
+            .extract::<String>()
+            .map_err(|e| MontyError::new_err(py, exc_py_to_monty(py, &e)))?;
+        let id = encoder
+            .push(&value)
+            .map_err(|e| MontyConversionError::value_conversion_err(py, exc_py_to_monty(py, &e)))?;
+        names.push((name, id));
+    }
+    Ok(NamedValues {
+        graph: encoder.finish(),
+        names,
+    })
 }
 
 /// Calls the `connect_headers` callback and extracts its `str -> str` mapping.

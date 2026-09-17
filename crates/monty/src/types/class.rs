@@ -151,6 +151,11 @@ impl<'h> HeapRead<'h, Class> {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
+    /// Constructing an instance, which runs `__init__` as an ordinary frame.
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        vm.instantiate_class(self.id(), args)
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         // The type of a class object is `type` (matching `type(Foo) is type`).
         Type::Type

@@ -5,18 +5,19 @@
 //! these; the host (a `MountTable`, an `os` callback) decides whether to
 //! permit it. The interpreter itself never performs I/O.
 //!
-//! The fs/ layer matches on the enum directly (no [`MontyObject`](crate::MontyObject) introspection);
+//! The fs/ layer matches on the enum directly (no value introspection);
 //! host bindings get a generic `(positional, keyword)` view via
 //! [`OsFunctionCall::to_args`].
 
 use std::{borrow::Cow, fmt, ops::Deref};
 
 use crate::{
-    args::{ToArgs, ToMontyObject},
+    args::{PushValue, ToArgs},
     exceptions::{ExcType, MontyException},
     file_mode::FileMode,
     format::StringRepr,
-    object::{MontyObject, MontyTimeZone},
+    graph::{MontyGraph, MontyNode, NodeId},
+    object::{CallArgs, MontyObject, MontyTimeZone},
     virtual_path::normalize_virtual_path,
 };
 // =============================================================================
@@ -26,7 +27,7 @@ use crate::{
 /// Tagged dispatch value for OS-level operations.
 ///
 /// Each variant carries the strongly-typed args/kwargs the corresponding OS
-/// call needs. The fs/ layer matches on this enum directly (no [`MontyObject`](crate::MontyObject)
+/// call needs. The fs/ layer matches on this enum directly (no value
 /// introspection); host bindings get a generic `(positional, keyword)` view
 /// via [`OsFunctionCall::to_args`].
 ///
@@ -82,7 +83,7 @@ pub enum OsFunctionCall {
     // ---- FS mutate (custom shapes) ----------------------------------------
     /// Open a file. The host performs the open-time effect (truncate for
     /// `w`/`w+`, create-if-missing for `a`/`a+`, existence check for `r`/`r+`)
-    /// and returns a [`MontyObject::FileHandle`] — it never holds a live OS
+    /// and returns a [`MontyFileHandle`](crate::MontyFileHandle) — it never holds a live OS
     /// handle across calls.
     #[strum(serialize = "open")]
     Open(OpenCallArgs),
@@ -128,13 +129,13 @@ impl OsFunctionCall {
         self.into()
     }
 
-    /// Projects this call's args into `(positional, keyword)` [`MontyObject`](crate::MontyObject)
-    /// vectors for delivery to a host callback, with lexically normalized paths.
-    /// Empty paths stay empty. The interpreter checks NUL bytes before dispatch;
-    /// hosts constructing calls must use [`Self::check_path_null_bytes`] first.
-    /// Mounts must validate length limits on the original typed call.
+    /// Projects this call's args into the [`CallArgs`] delivered to a host
+    /// callback, with lexically normalized paths. Empty paths stay empty. The
+    /// interpreter checks NUL bytes before dispatch; hosts constructing calls
+    /// must use [`Self::check_path_null_bytes`] first. Mounts must validate
+    /// length limits on the original typed call.
     #[must_use]
-    pub fn to_args(mut self) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
+    pub fn to_args(mut self) -> CallArgs {
         for path in self.fs_paths_mut() {
             if !path.is_empty()
                 && let Cow::Owned(normalized) = normalize_virtual_path(path)
@@ -155,7 +156,7 @@ impl OsFunctionCall {
             | Self::Resolve(p)
             | Self::Absolute(p)
             | Self::Unlink(p)
-            | Self::Rmdir(p) => (vec![p.into_monty_object()], vec![]),
+            | Self::Rmdir(p) => single_arg(p),
             // Multi-field variants delegate to their derived `ToArgs`.
             Self::WriteText(a) | Self::AppendText(a) => a.to_args(),
             Self::WriteBytes(a) | Self::AppendBytes(a) => a.to_args(),
@@ -165,8 +166,8 @@ impl OsFunctionCall {
             Self::Getenv(a) => a.to_args(),
             Self::Urandom(a) => a.to_args(),
             // Unit & single-value non-FS variants.
-            Self::GetEnviron | Self::DateToday => (vec![], vec![]),
-            Self::DateTimeNow(tz) => (vec![tz.map_or(MontyObject::None, MontyObject::TimeZone)], vec![]),
+            Self::GetEnviron | Self::DateToday => CallArgs::new(),
+            Self::DateTimeNow(tz) => single_arg(tz.map_or(MontyNode::None, MontyNode::TimeZone)),
         }
     }
 
@@ -338,14 +339,21 @@ impl fmt::Display for OsFunctionCall {
         f.write_str(self.name())
     }
 }
+/// A call with one positional argument.
+fn single_arg(value: impl PushValue) -> CallArgs {
+    let mut call = CallArgs::new();
+    call.push_arg(value);
+    call
+}
+
 // =============================================================================
 // Args structs — per-variant payloads carried by `OsFunctionCall`.
 // =============================================================================
 //
 // Each variant carries a struct that derives `ToArgs` for projection to
-// `(positional, keyword)` MontyObjects. Zero-arg variants use empty structs so
-// `to_args()` has no special arms. Producers construct these directly via
-// struct literals (see `types/path.rs`, `builtins/open.rs`, etc.).
+// `CallArgs`. Zero-arg variants use empty structs so `to_args()` has no
+// special arms. Producers construct these directly via struct literals (see
+// `types/path.rs`, `builtins/open.rs`, etc.).
 
 /// `path + str data` shape used by `WriteText` and `AppendText`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
@@ -363,7 +371,7 @@ pub struct PathBytesDataArgs {
 
 /// `open(path, mode)` shape. The mode is parsed into [`FileMode`] before
 /// construction so the fs/ backend doesn't re-parse; [`ToArgs`](crate::args::ToArgs) re-serialises
-/// it back to a [`MontyObject::String`](crate::MontyObject::String) for the host.
+/// it back to a [`MontyNode::String`] for the host.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct OpenCallArgs {
     pub path: MontyPath,
@@ -411,8 +419,8 @@ pub struct UrandomArgs {
 /// Owned virtual (sandbox) path carried by OS-call args.
 ///
 /// Preserves the supplied string, including invalid components, for host validation.
-/// Derefs to `&str` for routing; [`ToMontyObject`](crate::args::ToMontyObject)
-/// projects it back to [`MontyObject::Path`] at the host boundary.
+/// Derefs to `&str` for routing; [`PushValue`](crate::args::PushValue)
+/// projects it back to a [`MontyNode::Path`] at the host boundary.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MontyPath(String);
 
@@ -456,16 +464,16 @@ impl From<&str> for MontyPath {
     }
 }
 
-impl ToMontyObject for MontyPath {
-    fn into_monty_object(self) -> MontyObject {
-        MontyObject::Path(self.0)
+impl PushValue for MontyPath {
+    fn push_into(self, graph: &mut MontyGraph) -> NodeId {
+        graph.push(MontyNode::Path(self.0))
     }
 }
 // =============================================================================
 // stat_result builders — separate utility API used by host backends.
 // =============================================================================
 //
-// These functions create MontyObject::NamedTuple values that match Python's
+// These functions create namedtuple values that match Python's
 // os.stat_result structure. The stat_result has 10 fields:
 // st_mode, st_ino, st_dev, st_nlink, st_uid, st_gid, st_size, st_atime, st_mtime, st_ctime.
 
@@ -536,22 +544,22 @@ pub fn stat_result(
     st_mtime: f64,
     st_ctime: f64,
 ) -> MontyObject {
-    MontyObject::NamedTuple {
-        type_name: STAT_RESULT_TYPE_NAME.to_owned(),
-        field_names: STAT_RESULT_FIELDS.iter().map(|s| (*s).to_owned()).collect(),
-        values: vec![
-            MontyObject::Int(st_mode),
-            MontyObject::Int(st_ino),
-            MontyObject::Int(st_dev),
-            MontyObject::Int(st_nlink),
-            MontyObject::Int(st_uid),
-            MontyObject::Int(st_gid),
-            MontyObject::Int(st_size),
-            MontyObject::Float(st_atime),
-            MontyObject::Float(st_mtime),
-            MontyObject::Float(st_ctime),
+    MontyObject::named_tuple(
+        STAT_RESULT_TYPE_NAME,
+        STAT_RESULT_FIELDS.iter().copied(),
+        [
+            MontyObject::int(st_mode),
+            MontyObject::int(st_ino),
+            MontyObject::int(st_dev),
+            MontyObject::int(st_nlink),
+            MontyObject::int(st_uid),
+            MontyObject::int(st_gid),
+            MontyObject::int(st_size),
+            MontyObject::float(st_atime),
+            MontyObject::float(st_mtime),
+            MontyObject::float(st_ctime),
         ],
-    }
+    )
 }
 
 const STAT_RESULT_TYPE_NAME: &str = "StatResult";

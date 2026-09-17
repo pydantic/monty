@@ -97,3 +97,17 @@ assert cmp_result == True
 # Nested ext calls in expression
 nested_expr = add_ints(add_ints(1, 2), add_ints(3, 4))
 assert nested_expr == 10
+
+# === The host function object itself ===
+# It is a function value like any other, and carries no attributes of its own.
+try:
+    add_ints.missing()
+    assert False, 'expected AttributeError calling a host function attribute'
+except AttributeError as exc:
+    assert str(exc) == "'function' object has no attribute 'missing'"
+
+try:
+    add_ints.missing
+    assert False, 'expected AttributeError reading a host function attribute'
+except AttributeError as exc:
+    assert str(exc) == "'function' object has no attribute 'missing'"

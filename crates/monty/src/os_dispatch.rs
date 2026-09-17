@@ -21,8 +21,9 @@
 
 use std::{borrow::Cow, mem};
 
+use ahash::AHashSet;
 use monty_types::{
-    ExcType, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
+    ExcType, MkdirCallArgs, MontyNode, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
     RenameCallArgs, ResourceTracker, normalize_virtual_path,
 };
 
@@ -125,17 +126,17 @@ pub(crate) enum PreConversionEffect {
 }
 
 impl PreConversionEffect {
-    /// Applies the effect to the host's reply, yielding the object the VM
-    /// converts and pushes; `Chdir` adopts the directory as a side effect.
-    pub(crate) fn reshape(self, obj: MontyObject, vm: &mut VM<'_>) -> Result<MontyObject, RunError> {
+    /// Applies the effect to the host's reply, yielding the value the VM
+    /// imports and pushes; `Chdir` adopts the directory as a side effect.
+    pub(crate) fn reshape(self, value: MontyObject, vm: &mut VM<'_>) -> Result<MontyObject, RunError> {
         match self {
-            Self::ListdirNames => listdir_names(obj),
-            Self::IterdirPaths { path } => iterdir_paths(obj, &path, &vm.heap.tracker),
-            Self::UrandomLength { size } => urandom_reply(obj, size),
+            Self::ListdirNames => listdir_names(value),
+            Self::IterdirPaths { path } => iterdir_paths(value, &path, &vm.heap.tracker),
+            Self::UrandomLength { size } => urandom_reply(value, size),
             Self::Chdir { path, spelled } => {
-                check_chdir_stat(&obj, &spelled)?;
+                check_chdir_stat(&value, &spelled)?;
                 vm.env.cwd = Cow::Owned(normalize_virtual_path(&path).into_owned());
-                Ok(MontyObject::None)
+                Ok(MontyObject::leaf(MontyNode::None))
             }
         }
     }
@@ -225,27 +226,27 @@ pub(crate) fn resolve_call_paths(call: &mut OsFunctionCall, cwd: &str) {
 
 /// Checks a host `Path.stat` reply for `os.chdir` — the resume half of
 /// [`PreConversionEffect::Chdir`], run on the raw [`MontyObject`] before heap
-/// conversion like [`listdir_names`].
+/// import like [`listdir_names`].
 ///
 /// A directory `st_mode` passes and the caller normalizes and adopts the path (`os.chdir`
 /// returns `None`); a file raises `NotADirectoryError` naming `spelled`, the
 /// path as the caller wrote it. Hosts that answered `Path.stat` with
 /// something other than a stat result get the same `RuntimeError` shape as
 /// `os.listdir`.
-pub(crate) fn check_chdir_stat(obj: &MontyObject, spelled: &str) -> Result<(), RunError> {
+pub(crate) fn check_chdir_stat(value: &MontyObject, spelled: &str) -> Result<(), RunError> {
     const S_IFMT: i64 = 0o170_000;
     const S_IFDIR: i64 = 0o040_000;
     // Located by name so a host's stat result is accepted whatever its field
     // order, and anything without an integer `st_mode` is refused.
-    let st_mode = match obj {
-        MontyObject::NamedTuple {
+    let st_mode = match value.root_node() {
+        MontyNode::NamedTuple {
             field_names, values, ..
         } => field_names
             .iter()
             .position(|name| name == "st_mode")
             .and_then(|index| values.get(index))
-            .and_then(|mode| match mode {
-                MontyObject::Int(mode) => Some(*mode),
+            .and_then(|mode| match value.graph.node(*mode) {
+                MontyNode::Int(mode) => Some(*mode),
                 _ => None,
             }),
         _ => None,
@@ -257,7 +258,7 @@ pub(crate) fn check_chdir_stat(obj: &MontyObject, spelled: &str) -> Result<(), R
             ExcType::RuntimeError,
             format!(
                 "invalid return type: os.chdir requires the host to return a stat result, got {}",
-                obj.type_name()
+                value.as_ref().type_name()
             ),
         )
         .into()),
@@ -268,21 +269,21 @@ pub(crate) fn check_chdir_stat(obj: &MontyObject, spelled: &str) -> Result<(), R
 /// of bare entry names `os.listdir` returns — the resume half of
 /// [`PreConversionEffect::ListdirNames`].
 ///
-/// Runs on the raw [`MontyObject`] before heap conversion (see `VM::resume`),
+/// Runs on the raw [`MontyObject`] before heap import (see `VM::resume`),
 /// so it needs no refcount handling; entries are renamed in place with no new
 /// allocations. Virtual paths are always POSIX, so the name is the substring
 /// after the last `/`. Hosts answering the `Path.iterdir` callback themselves
 /// may return `str` entries instead of paths — both work.
-pub(crate) fn listdir_names(obj: MontyObject) -> Result<MontyObject, RunError> {
-    directory_entries(obj, None)
+pub(crate) fn listdir_names(value: MontyObject) -> Result<MontyObject, RunError> {
+    directory_entries(value, None)
 }
 
 /// Accepts an `os.urandom` reply only as `bytes` of the requested length.
-fn urandom_reply(obj: MontyObject, size: usize) -> Result<MontyObject, RunError> {
-    match &obj {
-        MontyObject::Bytes(bytes) if bytes.len() == size => Ok(obj),
-        MontyObject::Bytes(bytes) => Err(urandom_reply_error(Ok(bytes.len()), size)),
-        other => Err(urandom_reply_error(Err(other.type_name()), size)),
+fn urandom_reply(value: MontyObject, size: usize) -> Result<MontyObject, RunError> {
+    match value.root_node() {
+        MontyNode::Bytes(bytes) if bytes.len() == size => Ok(value),
+        MontyNode::Bytes(bytes) => Err(urandom_reply_error(Ok(bytes.len()), size)),
+        _ => Err(urandom_reply_error(Err(value.as_ref().type_name()), size)),
     }
 }
 
@@ -302,13 +303,20 @@ pub(crate) fn urandom_reply_error(actual: Result<usize, &str>, expected: usize) 
 ///
 /// The joins repeat the receiver once per host entry, so their total is
 /// preflighted against `tracker` in one shot before any is built.
-pub(crate) fn iterdir_paths(obj: MontyObject, path: &str, tracker: &ResourceTracker) -> Result<MontyObject, RunError> {
-    directory_entries(obj, Some((path, tracker)))
+pub(crate) fn iterdir_paths(
+    value: MontyObject,
+    path: &str,
+    tracker: &ResourceTracker,
+) -> Result<MontyObject, RunError> {
+    directory_entries(value, Some((path, tracker)))
 }
 
 /// Reduces host paths to entry names, joining them onto the `Path.iterdir()`
 /// receiver when one is given (with the tracker its joins are charged to).
-fn directory_entries(obj: MontyObject, receiver: Option<(&str, &ResourceTracker)>) -> Result<MontyObject, RunError> {
+fn directory_entries(
+    mut value: MontyObject,
+    receiver: Option<(&str, &ResourceTracker)>,
+) -> Result<MontyObject, RunError> {
     let invalid = |type_name: &str| -> RunError {
         let operation = if receiver.is_some() {
             "Path.iterdir"
@@ -321,33 +329,41 @@ fn directory_entries(obj: MontyObject, receiver: Option<(&str, &ResourceTracker)
         )
         .into()
     };
-    let MontyObject::List(mut items) = obj else {
-        return Err(invalid(obj.type_name()));
+    let MontyNode::List(ids) = value.root_node() else {
+        return Err(invalid(value.as_ref().type_name()));
     };
+    let ids = ids.clone();
     let directory = match receiver {
         Some((path, tracker)) => {
             // Each joined path adds the receiver and a separator on top of the entry.
-            tracker.check_allocation(items.len().saturating_mul(path.len() + 1))?;
+            tracker.check_allocation(ids.len().saturating_mul(path.len() + 1))?;
             Some(Path::new(path.to_owned()))
         }
         None => None,
     };
-    for item in &mut items {
-        match item {
-            MontyObject::Path(entry) | MontyObject::String(entry) => {
-                if let Some(sep) = entry.rfind('/') {
-                    entry.drain(..=sep);
-                }
-                *item = if let Some(directory) = &directory {
-                    MontyObject::Path(directory.joinpath(entry))
-                } else {
-                    MontyObject::String(mem::take(entry))
-                };
-            }
-            other => return Err(invalid(other.type_name())),
+    // An entry the host listed twice is one shared node: rewrite it once.
+    let mut seen = AHashSet::new();
+    for id in ids {
+        if !seen.insert(id) {
+            continue;
         }
+        if !matches!(value.graph.node(id), MontyNode::Path(_) | MontyNode::String(_)) {
+            return Err(invalid(value.graph.type_name(id)));
+        }
+        let node = value.graph.node_mut(id);
+        let (MontyNode::Path(entry) | MontyNode::String(entry)) = node else {
+            unreachable!("checked above");
+        };
+        if let Some(sep) = entry.rfind('/') {
+            entry.drain(..=sep);
+        }
+        *node = if let Some(directory) = &directory {
+            MontyNode::Path(directory.joinpath(entry))
+        } else {
+            MontyNode::String(mem::take(entry))
+        };
     }
-    Ok(MontyObject::List(items))
+    Ok(value)
 }
 
 // =============================================================================

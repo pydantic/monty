@@ -9,7 +9,11 @@ implementation**.
 
 - `MontyObject` / `MontyType` — Python values and their types at the host
   boundary, including the `datetime` family (`MontyDate`, `MontyDateTime`,
-  `MontyTimeDelta`, `MontyTimeZone`), `DictPairs` and `MontyFileHandle`.
+  `MontyTimeDelta`, `MontyTimeZone`) and `MontyFileHandle`.
+- `MontyGraph` / `MontyNode` — the flat post-order node graph values cross the boundary in; a sub-object shared
+  inside the sandbox is one node however many times it is referenced.
+  `MontyObject` is a graph plus its root node, `ObjectRef` borrows one value inside a graph (`as_int`, `as_str`,
+  `items`, `pairs`), and `CallArgs` / `NamedValues` hold the arguments or inputs of one message.
 - `MontyException` / `ExcType` — exceptions with tracebacks (`StackFrame`,
   `CodeLoc`) and structured payloads (`ExcData`).
 - `OsFunctionCall` — the typed OS-call payloads sandboxed code suspends with
@@ -41,7 +45,7 @@ feature) link `monty`.
 ```rust
 use monty_types::MontyObject;
 
-let value = MontyObject::List(vec![MontyObject::Int(1), MontyObject::String("x".to_owned())]);
+let value = MontyObject::list([MontyObject::int(1), MontyObject::string("x".to_owned())]);
 assert_eq!(value.py_repr(), "[1, 'x']");
 ```
 

@@ -23,7 +23,7 @@ use std::{borrow::Cow, str::FromStr};
 /// variants as unreachable at runtime; do not pattern-match against them as
 /// if they were a valid result of parsing user input.
 ///
-/// Carried publicly by [`MontyObject::FileHandle`](crate::object::MontyObject) so a host servicing file
+/// Carried publicly by [`MontyFileHandle`](crate::MontyFileHandle) so a host servicing file
 /// operations can inspect the mode without re-parsing the raw string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum FileMode {

@@ -98,19 +98,6 @@ impl Time {
     pub(crate) fn to_components(&self) -> (u8, u8, u8, u32, u8) {
         (self.hour, self.minute, self.second, self.microsecond, self.fold)
     }
-
-    /// Whether every stored component is inside the range [`from_components`]
-    /// enforces.
-    ///
-    /// Deserializing writes these fields directly, so `Heap`'s restore pass
-    /// re-checks them: [`naive_time`] treats the ranges as established by
-    /// construction, and a forged dump carrying `hour = 255` would panic there
-    /// the first time the restored value reached `strftime()`. The offset is not
-    /// checked here — it lives on the referenced `timezone`, which restore
-    /// range-checks once for every referrer.
-    pub(crate) fn components_in_range(&self) -> bool {
-        self.hour <= 23 && self.minute <= 59 && self.second <= 59 && self.microsecond <= 999_999 && self.fold <= 1
-    }
 }
 
 /// The attached timezone of an aware time, cloned from the heap.
@@ -121,8 +108,7 @@ pub(crate) fn attached_timezone(time: &Time, heap: &HeapReader<'_>) -> Option<Ti
     let tz_id = time.tzinfo?;
     match heap.read(tz_id) {
         HeapReadOutput::TimeZone(tz) => Some(tz.get(heap).clone()),
-        // Constructors only ever attach a `timezone`, and restore rejects a dump
-        // whose reference lands anywhere else.
+        // Constructors only ever attach a `timezone`.
         _ => unreachable!("a time's tzinfo reference always points at a timezone"),
     }
 }

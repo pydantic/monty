@@ -58,7 +58,7 @@ pub(super) enum FsRequest {
     /// `Path.absolute()`
     Absolute { path: MontyPath },
     /// `open(path, mode)` — performs the open-time effect and returns a
-    /// [`MontyObject::FileHandle`]. The mode is parsed once during dispatch
+    /// [`MontyFileHandle`] value. The mode is parsed once during dispatch
     /// so backends never re-parse the raw string.
     Open {
         /// Target path.
@@ -189,12 +189,12 @@ pub(super) fn execute(
     }
 }
 
-/// Builds the [`MontyObject::FileHandle`] an `Open` request resolves to.
+/// Builds the [`MontyFileHandle`] value an `Open` request resolves to.
 ///
 /// The handle carries the **virtual** (sandbox) path — never a host path — so
 /// subsequent `read`/`write` calls re-resolve it against the mount descriptor.
 pub(super) fn file_handle_result(path: &str, mode: FileMode) -> MontyObject {
-    MontyObject::FileHandle(MontyFileHandle {
+    MontyObject::file_handle(MontyFileHandle {
         path: normalize_virtual_path(path).into_owned(),
         mode,
         position: 0,

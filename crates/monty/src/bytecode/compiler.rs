@@ -760,23 +760,13 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 // and, for every target except the last, emit `Dup` to keep a copy
                 // underneath the target-specific store logic. The final target
                 // consumes the remaining copy, leaving the stack balanced.
-                //
-                // The parser only produces `ChainAssign` with `targets.len() >= 2`,
-                // but because `Node` derives `Deserialize`, untrusted snapshot input
-                // could otherwise reach here with 0 or 1 targets. `split_last()`
-                // handles both cases safely without an unsigned underflow, and the
-                // `is_empty` branch pops the leftover RHS value so the operand stack
-                // stays balanced.
                 self.compile_expr(object)?;
-                if let Some((last, rest)) = targets.split_last() {
-                    for target in rest {
-                        self.code.emit(Opcode::Dup)?;
-                        self.compile_assign_target(target)?;
-                    }
-                    self.compile_assign_target(last)?;
-                } else {
-                    self.code.emit(Opcode::Pop)?;
+                let (last, rest) = targets.split_last().expect("chained assignment has targets");
+                for target in rest {
+                    self.code.emit(Opcode::Dup)?;
+                    self.compile_assign_target(target)?;
                 }
+                self.compile_assign_target(last)?;
             }
             Node::If { test, body, or_else } => self.compile_if(test, body, or_else)?,
             Node::For {
@@ -3390,24 +3380,13 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// `StoreAttr` expects `[.., value, object]` with `object` on top, so this evaluates
     /// `object` above the incoming value. Used by both `Node::AttrAssign` and chained-
     /// assignment attribute steps.
-    ///
-    /// The parser always stores attribute names as `EitherStr::Interned`, so the hot
-    /// path never hits the `Heap` branch. We still check it explicitly rather than
-    /// panicking because `Node` derives `Deserialize` — an untrusted snapshot could
-    /// carry a `Heap` attribute name, and defense-in-depth says the compiler should
-    /// surface that as a graceful `CompileError` instead of aborting the process.
     fn emit_attr_store(
         &mut self,
         object: &ExprLoc,
         attr: &EitherStr,
         target_position: CodeRange,
     ) -> Result<(), CompileError> {
-        let Some(name_id) = attr.string_id() else {
-            return Err(CompileError::new(
-                "internal error: attribute name in AST must be interned",
-                target_position,
-            ));
-        };
+        let name_id = attr.string_id().expect("attribute name in AST must be interned");
         let name_idx = check_name_index_u16(name_id, target_position)?;
         self.compile_expr(object)?;
         self.code.set_location(target_position, None);

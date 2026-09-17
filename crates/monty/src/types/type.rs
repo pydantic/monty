@@ -116,8 +116,8 @@ pub enum Type {
     /// `VM::instantiate_class`). It must NEVER be stored long-lived,
     /// serialized into snapshots/const pools, placed in `Builtins::Type` (the
     /// `type()` builtin returns the class object itself for instances), or
-    /// converted to `MontyObject` without resolving the name first (the public
-    /// boundary enum `MontyType` carries the resolved name as a `String`).
+    /// converted to `MontyType`, which has no class variant (a sandbox class
+    /// crosses the boundary as its own `ClassType` arena node).
     #[strum(disabled)]
     Instance(HeapId),
     /// Exception types render/parse via `ExcType`'s own strum name

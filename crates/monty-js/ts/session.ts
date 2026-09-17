@@ -11,7 +11,14 @@
 
 import type { NativeSession } from '../native-addon.js'
 import { bindPrintCallback, runWithCallbackContext } from './callbackContext.js'
-import { AttrNotExposed, attributeErrorMessage, InstanceStore, prepare, restore } from './classInstance.js'
+import {
+  AttrNotExposed,
+  attributeErrorMessage,
+  InstanceStore,
+  prepare,
+  restore,
+  type WalkMemo,
+} from './classInstance.js'
 import {
   MontyCrashedError,
   MontyError,
@@ -284,6 +291,11 @@ export class MontySession {
    * Valid only on a fresh session, before any feed or load (it replaces the
    * whole session); throws otherwise. The dump restores its own resource limits
    * and type-check state. Throws if the dump is actually a suspended snapshot.
+   *
+   * Only load unmodified bytes from a trusted, compatible Monty producer.
+   * The caller must establish provenance and integrity; Monty does not authenticate
+   * snapshots. Invalid snapshots have no correctness or availability guarantees.
+   * Successful loading does not establish validity.
    */
   async loadSession(state: Uint8Array): Promise<void> {
     this.claimFresh()
@@ -308,7 +320,8 @@ export class MontySession {
   /**
    * Restores a dumped **suspended** snapshot — bytes from `feedStart` +
    * `snapshot.dump()` — and resolves to the snapshot to resume. Use
-   * [`loadSession`] for a dump taken between feeds.
+   * [`loadSession`] for a dump taken between feeds. Its snapshot trust requirements
+   * also apply here.
    *
    * Valid only on a fresh session, before any feed or load; throws otherwise.
    * Re-supply the same `mount`s the paused feed used (their host paths are not
@@ -545,8 +558,8 @@ class TurnAnswerer {
     const fn = entry as ExternalFunction
     let returned: unknown
     try {
-      const args = restoreValues(call.args, this.instances)
-      returned = fn(...(buildCallArgs(args, restoreKwargPairs(call.kwargs, this.instances)) as never[]))
+      const [args, kwargs] = restoreCallArgs(call, this.instances)
+      returned = fn(...(buildCallArgs(args, kwargs) as never[]))
     } catch (err) {
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
@@ -589,9 +602,8 @@ class TurnAnswerer {
     }
     let returned: unknown
     try {
-      const args = restoreValues(call.args, this.instances)
-      const kwargs = kwargsToRecord(restoreKwargPairs(call.kwargs, this.instances))
-      returned = wrapper.callMethod(call.functionName, args, kwargs)
+      const [args, kwargs] = restoreCallArgs(call, this.instances)
+      returned = wrapper.callMethod(call.functionName, args, kwargsToRecord(kwargs))
     } catch (err) {
       if (err instanceof AttrNotExposed) {
         return this.native.resumeError('AttributeError', err.message, onPrint)
@@ -670,8 +682,8 @@ class TurnAnswerer {
     }
     let returned: unknown
     try {
-      const args = restoreValues(call.args, this.instances)
-      returned = this.os(call.functionName, args, kwargsToRecord(restoreKwargPairs(call.kwargs, this.instances)))
+      const [args, kwargs] = restoreCallArgs(call, this.instances)
+      returned = this.os(call.functionName, args, kwargsToRecord(kwargs))
       if (isThenable(returned)) {
         returned = await returned
       }
@@ -976,8 +988,9 @@ export class FunctionSnapshot extends SingleUse {
   ) {
     super()
     this.functionName = turn.functionName
-    this.args = restoreValues(turn.args, driver.instances)
-    this.kwargs = kwargsToRecord(restoreKwargPairs(turn.kwargs, driver.instances))
+    const [args, kwargs] = restoreCallArgs(turn, driver.instances)
+    this.args = args
+    this.kwargs = kwargsToRecord(kwargs)
     this.callId = turn.callId
     this.isOsFunction = isOsFunction
     this.allowEagerAwait = turn.kind === 'functionCall' && (turn.allowEagerAwait ?? false)
@@ -1151,7 +1164,8 @@ function buildCallArgs(args: unknown[], kwargs: [unknown, unknown][]): unknown[]
   return [...args, kwargsToRecord(kwargs)]
 }
 
-/** Prepares each input value for the wire (feed's `inputs` record). */
+/** Prepares each input value for the wire (feed's `inputs` record) with one
+ *  memo, so an object passed under two names is one sandbox object. */
 function prepareInputs(
   inputs: Record<string, unknown> | undefined,
   store: InstanceStore,
@@ -1162,22 +1176,25 @@ function prepareInputs(
   // null prototype so an exotic input name (e.g. `__proto__`) stays a plain
   // property of the rebuilt record
   const prepared: Record<string, unknown> = Object.create(null)
+  const memo: WalkMemo = new Map()
   let changed = false
   for (const [name, value] of Object.entries(inputs)) {
-    prepared[name] = prepare(value, store)
+    prepared[name] = prepare(value, store, memo)
     changed ||= prepared[name] !== value
   }
   return changed ? prepared : inputs
 }
 
-/** Restores each element of a sandbox-produced args array. */
-function restoreValues(values: unknown[], store: InstanceStore): unknown[] {
-  return values.map((value) => restore(value, store))
-}
-
-/** Restores the values of sandbox-produced `[key, value]` kwarg pairs. */
-function restoreKwargPairs(pairs: [unknown, unknown][], store: InstanceStore): [unknown, unknown][] {
-  return pairs.map(([key, value]): [unknown, unknown] => [key, restore(value, store)])
+/** Restores a call's args and the values of its `[key, value]` kwarg pairs
+ *  with one memo, so an object the sandbox passed twice is one host object. */
+function restoreCallArgs(
+  call: { args: unknown[]; kwargs: [unknown, unknown][] },
+  store: InstanceStore,
+): [unknown[], [unknown, unknown][]] {
+  const memo: WalkMemo = new Map()
+  const args = call.args.map((value) => restore(value, store, memo))
+  const kwargs = call.kwargs.map(([key, value]): [unknown, unknown] => [key, restore(value, store, memo)])
+  return [args, kwargs]
 }
 
 /**

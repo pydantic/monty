@@ -30,6 +30,8 @@ use crate::{
 /// - **Iterative execution**: Use [`start`](Self::start) to start execution which will pause at external function calls and
 ///   can be resumed later
 ///
+/// Deserialization requires trusted, unmodified state; see [`crate::Dump::load`].
+///
 /// # Example
 /// ```
 /// use monty::MontyRun;
@@ -42,12 +44,12 @@ use crate::{
 ///     CompileOptions::default(),
 /// )
 /// .unwrap();
-/// let result = runner.run_no_limits(vec![MontyObject::Int(41)]).unwrap();
-/// assert_eq!(result, MontyObject::Int(42));
+/// let result = runner.run_no_limits(vec![MontyObject::int(41)]).unwrap();
+/// assert_eq!(result, MontyObject::int(42));
 /// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MontyRun {
-    /// The underlying executor containing parsed AST and interns.
+    /// The underlying executor containing compiled bytecode and interns.
     executor: Executor,
 }
 
@@ -101,7 +103,7 @@ impl MontyRun {
     /// let code = "from datetime import date\ndate.today().year".to_owned();
     /// let clock = HostClock::Fixed { unix_seconds: 1_700_000_000, microsecond: 0, local_offset_seconds: 0 };
     /// let mut runner = MontyRun::new(code, "today.py", vec![], CompileOptions::default()).unwrap().with_host_clock(clock);
-    /// assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::Int(2023));
+    /// assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::int(2023));
     /// ```
     #[must_use]
     pub fn with_host_clock(mut self, clock: HostClock) -> Self {
@@ -182,7 +184,7 @@ impl MontyRun {
     /// # Errors
     /// Returns [`MontyException`] if:
     /// - The number of inputs doesn't match the expected count
-    /// - An input value is invalid (e.g., [`MontyObject::Repr`])
+    /// - An input value is invalid (e.g. a [`MontyNode::Repr`](monty_types::MontyNode::Repr) node)
     /// - A runtime error occurs during execution
     ///
     /// # Panics
@@ -649,7 +651,7 @@ impl Executor {
 
             // Convert return value while VM is still alive (needs access to interns).
             // Non-REPL: single source, so every frame resolves to `executor.code`.
-            let py_object = frame_exit_to_object(frame_exit_result, &mut vm)
+            let value = frame_exit_to_object(frame_exit_result, &mut vm)
                 .map_err(|e| e.into_python_exception(vm.interns, |_| Some(&*executor.program.code)))?;
 
             // Drop globals with proper ref counting
@@ -658,7 +660,7 @@ impl Executor {
             let allocations_since_gc = vm.heap.get_allocations_since_gc();
 
             Ok(RefCountOutput {
-                py_object,
+                value,
                 counts,
                 unreachable,
                 heap_count,
@@ -670,7 +672,7 @@ impl Executor {
     /// Creates an empty globals vector with all slots set to `Undefined`.
     ///
     /// Used to initialize global storage before input population. The VM is created
-    /// with these empty globals, then [`populate_inputs`](Self::populate_inputs) fills
+    /// with these empty globals, then [`populate_inputs`] fills
     /// the input slots while the VM is alive.
     pub(crate) fn empty_globals(&self) -> Vec<Value> {
         (0..self.namespace_size()).map(|_| Value::Undefined).collect()
@@ -813,7 +815,7 @@ pub(crate) fn default_clock() -> HostClock {
     HostClock::System
 }
 
-/// Converts module/frame exit results into plain `MontyObject` outputs.
+/// Converts module/frame exit results into exported `MontyObject` outputs.
 ///
 /// Used by non-iterative execution paths: lookups are answered as no host
 /// would (see [`answer_unserved_lookups`]) and the remaining suspendable
@@ -823,7 +825,7 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
     // so one `drop_with` releases whatever the exit owns, fields added later
     // included.
     let exit = match answer_unserved_lookups(frame_exit_result, vm)? {
-        FrameExit::Return(return_value) => return Ok(MontyObject::new(return_value, vm)),
+        FrameExit::Return(return_value) => return Ok(MontyObject::export(return_value, vm)),
         exit => exit,
     };
     let error: RunError = match &exit {
@@ -859,7 +861,7 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
 #[cfg(feature = "ref-count-return")]
 #[derive(Debug)]
 pub struct RefCountOutput {
-    pub py_object: MontyObject,
+    pub value: MontyObject,
     pub counts: ahash::AHashMap<String, usize>,
     /// Live heap entries reachable from no named variable, described as
     /// `"<type> (id N)"`. Non-empty means the run leaked: a missed `drop_with`

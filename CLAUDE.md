@@ -19,7 +19,8 @@ Project goals:
 
 ## `monty-types` — shared boundary types
 
-The public data types (`MontyObject`, `MontyException`/`ExcType`, `OsFunctionCall` +
+The public data types (the `MontyGraph`/`MontyNode` value graph and the `MontyObject`/`CallArgs`/`NamedValues`
+built on it, `MontyException`/`ExcType`, `OsFunctionCall` +
 its arg structs, `ResourceLimits`/`ResourceTracker`, `PrintStream`/`PrintWriter`,
 `CompileOptions`, `ExtFunctionResult`, `FileMode`, ...) live in `crates/monty-types`,
 which depends on no other monty crate except the `monty-macros` derives. `monty`
@@ -37,9 +38,14 @@ interpreter. Don't add a `monty` dependency to a host-side crate; if it needs a
 type, that type belongs in `monty-types`.
 
 Interpreter-coupled methods on these types live in `monty` as `pub(crate)`
-extension traits (`ExcTypeExt`, `MontyObjectExt`, `MontyTypeExt`, `StackFrameExt`,
-`FileModeExt`, `BuiltinsFunctionsExt`, `ExtFunctionResultExt`) — import the trait
-to call e.g. `ExcType::type_error(...)` or `MontyObject::new(value, vm)`.
+extension traits (`ExcTypeExt`, `MontyObjectExt`, `MontyGraphExt`, `CallArgsExt`,
+`MontyTypeExt`, `StackFrameExt`, `FileModeExt`, `BuiltinsFunctionsExt`,
+`ExtFunctionResultExt`) — import the trait to call e.g. `ExcType::type_error(...)` or
+`MontyObject::export(value, vm)`.
+`object_bridge::GraphExporter` builds one `MontyGraph` per outgoing message, so a sub-object shared in the sandbox
+crosses once; `MontyGraphExt::to_values` converts an incoming graph back into interpreter values.
+`MontyObject` is one owned value, a graph plus its root node: hosts build inputs with it and read results through its
+`ObjectRef` accessors.
 
 ## Cross-Platform Requirements
 
@@ -78,10 +84,25 @@ Possible security risks to consider:
 - subprocess/shell execution - os.system, subprocess, etc.
 - import system abuse - importing modules with side effects or accessing `__import__`
 - external function/callback misuse - callbacks run in host environment
-- deserialization attacks - loading untrusted serialized Monty/snapshot data
+- deserialization attacks - worker frames are untrusted; snapshots follow the trust contract below
 - regex/string DoS - catastrophic backtracking or operations bypassing limits
 - information leakage via timing or error messages
 - Python/Javascript/Rust APIs that accidentally allow developers to expose their host to monty code
+
+### Snapshot trust
+
+Snapshots and direct serde-serialized interpreter state must be unmodified output from a trusted, compatible Monty producer.
+The caller is responsible for establishing provenance and integrity before loading; the interpreter does not authenticate
+snapshots or fully validate their contents.
+Invalid snapshots have no correctness or availability guarantees: loading or using them may panic, abort, hang, or produce
+incorrect results, but MUST NOT cause undefined behaviour.
+Successful deserialization is not proof of validity.
+Genuine snapshots produced while running untrusted Python remain supported.
+
+Do not add semantic validation or graceful error paths solely for tampered snapshots.
+Keep memory-safety checks (including rejecting transient Gray/White GC states), reconstruction needed by valid snapshots,
+format/version checks, and transport compatibility checks.
+Worker frames, host values, callbacks and filesystem mounts remain untrusted boundaries independently of snapshot trust.
 
 ## Filesystem Mounts (`crates/monty-fs/`)
 
@@ -112,7 +133,7 @@ followed, even inside the mount (see `limitations/filesystem.md`) — do not
 check-then-use this removes.
 
 **Changes to `mount_table.rs` or `path_security.rs` require careful security
-review.** `heap.rs` and the mount boundary are the most security-critical
+review.** The `crates/monty/src/heap/` module and the mount boundary are the most security-critical
 code in the codebase.
 
 ## Subprocess isolation (`monty-proto`, `monty subprocess`, `monty-pool`)
@@ -125,11 +146,12 @@ subprocesses:
     (`proto/monty/v1/monty.proto`), checked-in prost-generated code (regenerate
     with `make generate-proto`; CI enforces sync via `make check-proto`),
     4-byte LE length-prefixed framing, and fallible conversions between wire
-    types and `MontyException`/etc. Values are special-cased for performance:
-    the `monty.v1.MontyObject` message is mapped via prost `extern_path` onto
-    `WireObject` (`src/wire.rs`), a hand-written `prost::Message` impl that
-    encodes borrowed `MontyObject`s and validates *while* decoding — no mirror
-    struct, no deep clone on the hot path. `tests/differential.rs` proves it
+    types and `MontyException`/etc. Values cross as one flat post-order `MontyGraph` per message (`monty.v1.Arena`):
+    every child index is lower than its holder's, an index used twice is a shared object, and the message names its
+    roots by index, so a shared sub-object crosses once and the wire imposes no nesting limit.
+    prost `extern_path` maps the message onto `WireArena` (`src/wire.rs`), a hand-written `prost::Message` impl that
+    encodes borrowed `MontyNode`s and validates *while* decoding, with no mirror struct, deep clone or recursion on
+    the hot path. `tests/differential.rs` proves it
     byte-compatible against a fully prost-generated oracle (`tests/oracle/`,
     regenerated and CI-checked together with the main codegen). Parents must
     treat frames from a (possibly compromised) child as untrusted — wire
@@ -217,7 +239,9 @@ They display as `<string>` without allowing duplicate entries in the string-dedu
 
 All heap-allocated Python objects (lists, dicts, strings, etc.) are stored in a paged arena (`Heap`). The `HeapReader` API provides **compile-time safe** access to heap data. This is the primary mechanism for reading and mutating heap objects throughout the codebase.
 
-**`heap.rs` is a critical safety boundary.** It contains `unsafe` code that underpins the soundness of the entire `HeapReader`/`HeapRead` system (pointer arithmetic, `UnsafeCell` access, reader-count invariants). Do NOT modify `heap.rs` without explicit user approval. Changes to this file require careful review of the safety invariants documented in the code comments.
+**The `crates/monty/src/heap/` module is a critical safety boundary.** Its `mod.rs`, `stable_heap.rs` and `free_list.rs` contain `unsafe` code that underpins the soundness of the entire `HeapReader`/`HeapRead` system (pointer arithmetic, `UnsafeCell` access, reader-count invariants).
+Do NOT modify files under `crates/monty/src/heap/` without explicit user approval.
+Changes to this module require careful review of the safety invariants documented in the code comments.
 
 #### Core concepts
 
@@ -875,7 +899,7 @@ If you find yourself fighting the borrow checker around `clone_with_heap` or `al
 ### Cycle collection — Bacon–Rajan trial deletion
 
 Reference counting alone cannot reclaim cycles. Monty uses **Bacon–Rajan trial deletion**
-(`Heap::collect_cycles` in `crates/monty/src/heap.rs`).
+(`Heap::collect_cycles` in `crates/monty/src/heap/mod.rs`).
 
 **Resource limits**: When a memory or time limit is exceeded, execution terminates with a `ResourceError`. No guarantees are made about the state of the heap or reference counts after a resource limit is exceeded. The heap may contain orphaned objects with incorrect refcounts. This is acceptable because resource exhaustion is a terminal error - the execution context should be discarded.
 
@@ -893,7 +917,7 @@ recovery, framing and value conversion all live in Rust.
 
 - `crates/monty-js/src/` - Rust napi crate (native-only): `pool.rs`
     (NativePool / NativeSession over `monty-pool`), `convert.rs`
-    (JS ↔ MontyObject), `exceptions.rs`, `limits.rs`
+    (JS ↔ `MontyGraph`; an object referenced twice crosses once in either direction), `exceptions.rs`, `limits.rs`
 - `crates/monty-js/ts/` - TypeScript wrapper: `pool.ts` (Monty),
     `session.ts` (MontySession + drive loop), `errors.ts`, `binary.ts`
     (monty binary resolution), `mount.ts`, `native.ts` (turn-object typings)

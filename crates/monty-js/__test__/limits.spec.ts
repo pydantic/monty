@@ -179,7 +179,14 @@ test('a suspension answering abort-feed ends the wasm worker', async () => {
   // servicing it would let it call host functions past the budget.
   const call = (callId: number) => ({
     tag: 'function-call' as const,
-    val: { callId, functionName: 'fetch', args: [], kwargs: [], allowEagerAwait: false },
+    val: {
+      callId,
+      functionName: 'fetch',
+      values: { nodes: [] },
+      args: new Uint32Array(),
+      kwargs: [],
+      allowEagerAwait: false,
+    },
   })
   const requests: string[] = []
   const transport = await WorkerTransport.create(async (request) => {

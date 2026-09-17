@@ -59,7 +59,7 @@ pub(crate) use itertools::ItertoolsIter;
 pub(crate) use list::List;
 pub(crate) use long_int::LongInt;
 pub(crate) use module::Module;
-pub(crate) use namedtuple::{NamedTuple, NamedTupleClass, construct_namedtuple};
+pub(crate) use namedtuple::{NamedTuple, NamedTupleClass};
 pub(crate) use partial::Partial;
 pub(crate) use path::Path;
 pub(crate) use property::Property;
