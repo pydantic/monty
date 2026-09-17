@@ -1816,6 +1816,14 @@ while True:
             .into_function_call()
             .expect("every iteration suspends");
     }
+    // The sandbox loop never ends on its own, so close the run through the
+    // host's teardown path: dropping a live suspension leaves the roots its
+    // snapshot holds unreleased.
+    call.abort(
+        MontyException::new(ExcType::RuntimeError, Some("enough turns".to_owned())),
+        PrintWriter::Stdout,
+    )
+    .unwrap_err();
 }
 
 /// A turn that runs away is caught even though neither the session nor the
