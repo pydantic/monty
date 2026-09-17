@@ -1,28 +1,23 @@
 use std::{cell::Cell, fmt::Write, mem};
 
-use ahash::AHashSet;
-use hashbrown::HashTable;
 use monty_types::{ResourceError, ResourceTracker};
-use smallvec::SmallVec;
 
 use super::{PyTrait, iter::checked_preallocation_hint};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::HashValue,
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem,
         HeapObjectRead, HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
-    identity::Identity,
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, clone_items, deep_copy},
-    resource_checks::check_entry_table_growth,
     types::{
         LazyHeapSet, Type,
-        dict::{ProbeOutcome, eq_is_native, probe_native_eq},
+        hash_table::{PyHashTable, TableEntry, TableSource, TableWalk},
         list::repr_items_fmt,
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -30,23 +25,32 @@ use crate::{
 
 /// Entry in the set storage, containing a value and its cached hash.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct SetEntry {
+pub(crate) struct SetEntry {
     pub(crate) value: Value,
     /// Cached hash for efficient lookup and reinsertion.
     pub(crate) hash: u64,
 }
 
+impl TableEntry for SetEntry {
+    #[inline]
+    fn probe_key(&self) -> &Value {
+        &self.value
+    }
+
+    #[inline]
+    fn hash(&self) -> u64 {
+        self.hash
+    }
+}
+
 /// Internal storage shared between Set and FrozenSet.
 ///
-/// Uses a `HashTable<usize>` for O(1) lookups combined with a dense `Vec<SetEntry>`
-/// to preserve insertion order (consistent with Python 3.7+ dict behavior).
-/// The hash table maps value hashes to indices in the entries vector.
+/// A [`PyHashTable`] of elements: the same insertion-ordered table `dict` uses,
+/// so the probe that has to survive a user `__eq__` is the one in
+/// [`TableSource`] rather than a set-shaped copy of it.
 #[derive(Debug, Default)]
 pub(crate) struct SetStorage {
-    /// Maps hash to index in entries vector.
-    indices: HashTable<usize>,
-    /// Dense vector of entries maintaining insertion order.
-    entries: Vec<SetEntry>,
+    table: PyHashTable<SetEntry>,
 }
 
 impl SetStorage {
@@ -58,8 +62,7 @@ impl SetStorage {
     /// Creates a new set storage with pre-allocated capacity.
     fn with_capacity(capacity: usize) -> Self {
         Self {
-            indices: HashTable::with_capacity(capacity),
-            entries: Vec::with_capacity(capacity),
+            table: PyHashTable::with_capacity(capacity),
         }
     }
 
@@ -68,16 +71,16 @@ impl SetStorage {
     /// Used to copy another set's contents before an operation that needs
     /// mutable heap access, sidestepping the borrow conflict. The caller owns
     /// the entries until they land here.
-    ///
-    /// The table is sized to the entry count: a `HashTable` keeps the buckets
-    /// it grew to across `clear` and `remove`, so a set rebuilt this way costs
-    /// what it holds rather than what it once held.
     fn from_entry_vec(entries: Vec<SetEntry>) -> Self {
-        let mut indices = HashTable::with_capacity(entries.len());
-        for (idx, entry) in entries.iter().enumerate() {
-            indices.insert_unique(entry.hash, idx, |&i| entries[i].hash);
+        Self {
+            table: PyHashTable::from_entries(entries),
         }
-        Self { indices, entries }
+    }
+
+    /// The entries, in insertion order.
+    #[inline]
+    fn entries(&self) -> &[SetEntry] {
+        self.table.entries()
     }
 
     /// Clones entries with proper reference counting.
@@ -85,7 +88,7 @@ impl SetStorage {
     /// The returned entries are owned: they implement [`DropWithContext`], so
     /// a caller that may abandon them partway must hold them in a guard.
     fn clone_entries(&self, heap: &impl ContainsHeap) -> Vec<SetEntry> {
-        self.entries
+        self.entries()
             .iter()
             .map(|e| SetEntry {
                 value: e.value.clone_with_heap(heap),
@@ -96,12 +99,12 @@ impl SetStorage {
 
     /// Returns the number of elements in the set.
     fn len(&self) -> usize {
-        self.entries.len()
+        self.table.len()
     }
 
     /// Returns true if the set is empty.
     fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.table.is_empty()
     }
 
     /// Adds an element to the set, transferring ownership.
@@ -129,7 +132,7 @@ impl SetStorage {
     ///
     /// Only for storages guest code cannot reach — a set still being built, or
     /// the fresh result of an algebra op. Those cannot be mutated mid-probe,
-    /// so unlike [`HeapRead::find_index`] this needs no revalidation; it does
+    /// so unlike [`TableSource::find_index`] this needs no revalidation; it does
     /// still have to let a raising `__eq__` out, which is what the error slot
     /// below is for. Use the `HeapRead` twin for a published set.
     fn add_with_hash(&mut self, value: Value, hash: u64, vm: &mut VM<'_>) -> RunResult<bool> {
@@ -138,26 +141,28 @@ impl SetStorage {
 
         // Check if value already exists. CPython compares the stored element on
         // the left, which an asymmetric user `__eq__` can tell apart — the
-        // mutation-safe twin ([`HeapRead::find_index`]) does the same.
+        // mutation-safe probe (`TableSource::find_index`) does the same.
         //
-        // `HashTable::find` wants a `-> bool` closure, so an exception is
-        // parked here and re-raised once the probe has let go of the table.
+        // `probe_raw` wants a `-> bool` closure, so an exception is parked
+        // here and re-raised once the probe has let go of the table.
         // Stopping the probe on the first error matches CPython, which aborts
         // the lookup as soon as a comparison raises.
         let mut error = None;
-        let existing = self.indices.find(hash, |&idx| {
-            if error.is_some() {
-                return false;
-            }
-            match self.entries[idx].value.py_eq(value, vm) {
-                Ok(eq) => eq,
-                Err(err) => {
-                    error = Some(err);
-                    false
+        let existing = self
+            .table
+            .probe_raw(hash, |_, entry| {
+                if error.is_some() {
+                    return false;
                 }
-            }
-        });
-        let existing = existing.is_some();
+                match entry.value.py_eq(value, vm) {
+                    Ok(eq) => eq,
+                    Err(err) => {
+                        error = Some(err);
+                        false
+                    }
+                }
+            })
+            .is_some();
 
         if let Some(err) = error {
             Err(err)
@@ -165,13 +170,11 @@ impl SetStorage {
             Ok(false)
         } else {
             let (value, vm) = value_guard.into_parts();
-            if let Err(err) = check_storage_growth(self, &vm.heap.tracker) {
+            if let Err(err) = self.table.check_growth(&vm.heap.tracker) {
                 value.drop_with(vm);
                 return Err(err.into());
             }
-            let index = self.entries.len();
-            self.entries.push(SetEntry { value, hash });
-            self.indices.insert_unique(hash, index, |&idx| self.entries[idx].hash);
+            self.table.push(SetEntry { value, hash });
             Ok(true)
         }
     }
@@ -190,13 +193,7 @@ impl<'h> HeapRead<'h, SetStorage> {
         };
 
         // Remove via short-lived mutable borrow
-        let storage = self.get_mut(vm.heap);
-        let removed_entry = storage.entries.remove(index);
-        storage.indices.clear();
-        for (idx, e) in storage.entries.iter().enumerate() {
-            storage.indices.insert_unique(e.hash, idx, |&i| storage.entries[i].hash);
-        }
-
+        let removed_entry = self.get_mut(vm.heap).table.remove_at(index);
         removed_entry.value.drop_with(vm);
         Ok(true)
     }
@@ -218,23 +215,13 @@ impl<'h> HeapRead<'h, SetStorage> {
         }
 
         // Remove the last entry (most efficient)
-        let storage = self.get_mut(vm.heap);
-        let entry = storage.entries.pop().expect("checked non-empty");
-
-        // Remove from hash table
-        storage
-            .indices
-            .find_entry(entry.hash, |&idx| idx == storage.entries.len())
-            .expect("entry must exist")
-            .remove();
-
+        let entry = self.get_mut(vm.heap).table.pop_last().expect("checked non-empty");
         Ok(entry.value)
     }
 
     /// Removes all elements from the set.
     fn clear(&mut self, vm: &mut VM<'h>) {
-        let entries = mem::take(&mut self.get_mut(vm.heap).entries);
-        self.get_mut(vm.heap).indices.clear();
+        let entries = self.get_mut(vm.heap).table.take_entries();
         entries.drop_with(vm);
     }
 }
@@ -246,7 +233,7 @@ impl SetStorage {
     /// would reproduce at the source's bucket count — see [`Self::from_entry_vec`].
     fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
         Self::from_entry_vec(
-            self.entries
+            self.entries()
                 .iter()
                 .map(|entry| SetEntry {
                     value: entry.value.clone_with_heap(heap),
@@ -273,194 +260,39 @@ impl<'h> HeapRead<'h, SetStorage> {
     pub fn contains_with_hash(&self, value: &Value, hash: u64, vm: &mut VM<'h>) -> RunResult<bool> {
         Ok(self.find_index(value, hash, vm)?.is_some())
     }
+}
 
-    /// Finds the index of the entry equal to `value`, or `None` if absent.
-    ///
-    /// Snapshots candidates so each can be validated around user `__eq__`
-    /// without holding a borrow of the hash table; only one that moved restarts
-    /// the probe. The twin of [`HeapRead::<Dict>::find_index_hash`], which
-    /// carries the full reasoning — the two must stay in sync.
-    fn find_index(&self, value: &Value, hash: u64, vm: &mut VM<'h>) -> RunResult<Option<usize>> {
-        // When no comparison can dispatch to user code, nothing can mutate the
-        // set mid-probe: skip revalidation and the miss continuation, as in
-        // the dict twin.
-        let value_native = eq_is_native(value, vm.heap);
+/// Probing and walking a live set goes through the shared table machinery, so
+/// the mutation-safety reasoning lives in one place rather than in a set-shaped
+/// copy of the dict probe.
+impl<'h> TableSource<'h> for HeapRead<'h, SetStorage> {
+    type Entry = SetEntry;
 
-        'restart: loop {
-            // Collected inline rather than through `probe_candidates`, for the
-            // reason given in the dict twin.
-            let mut candidate_indices: SmallVec<[usize; 2]> = SmallVec::new();
-            let mut candidate_values: SmallVec<[Value; 2]> = SmallVec::new();
-            let mut all_native = value_native;
-            let storage = self.get(vm.heap);
-            // Native pairs are compared inline during the probe walk; only
-            // pairs that may need user code are cloned for the guarded loop —
-            // see the dict twin.
-            let found = storage
-                .indices
-                .find(hash, |&idx| {
-                    let entry = &storage.entries[idx];
-                    if entry.hash != hash {
-                        return false;
-                    }
-                    if candidate_indices.is_empty()
-                        && let Some(eq) = probe_native_eq(&entry.value, value, vm)
-                    {
-                        eq
-                    } else {
-                        candidate_indices.push(idx);
-                        candidate_values.push(entry.value.clone_with_heap(vm.heap));
-                        all_native = all_native && eq_is_native(&entry.value, vm.heap);
-                        false
-                    }
-                })
-                .copied();
-            // Guarded before the early returns — see the dict twin.
-            defer_drop!(candidate_values, vm);
-            if let Some(index) = found {
-                return Ok(Some(index));
-            }
-            if candidate_indices.is_empty() {
-                return Ok(None);
-            }
-
-            for (&candidate_index, candidate_value) in candidate_indices.iter().zip(candidate_values.iter()) {
-                if !all_native && !self.probe_valid(candidate_index, hash, candidate_value, vm) {
-                    vm.heap.tracker.check_memory_time()?;
-                    continue 'restart;
-                }
-                // CPython compares the stored value on the left.
-                let eq = candidate_value.py_eq(value, vm)?;
-                if !all_native && !self.probe_valid(candidate_index, hash, candidate_value, vm) {
-                    vm.heap.tracker.check_memory_time()?;
-                    continue 'restart;
-                }
-                if eq {
-                    return Ok(Some(candidate_index));
-                }
-            }
-
-            // A comparison can itself have added a colliding value the snapshot
-            // never saw, so a pass that ran any hands over to the mutation-aware
-            // continuation — unless none could run user code.
-            if all_native {
-                return Ok(None);
-            }
-            match self.probe_after_compare(hash, value, candidate_values, vm)? {
-                ProbeOutcome::Found(index) => return Ok(Some(index)),
-                ProbeOutcome::Missing => return Ok(None),
-                // a candidate moved: fall through to the next probe from scratch
-                ProbeOutcome::Restart => (),
-            }
-        }
+    fn table<'r>(&self, vm: &'r VM<'h>) -> &'r PyHashTable<SetEntry> {
+        &self.get(vm.heap).table
     }
 
-    /// Continues a probe whose comparisons all missed, in case one of them
-    /// mutated the set and added a colliding value.
-    ///
-    /// The twin of [`HeapRead::<Dict>::probe_after_compare`]: re-reads the
-    /// candidates until a pass finds nothing new, never re-running user
-    /// `__eq__` on a value. Inline-compared native pairs may repeat — see there.
-    fn probe_after_compare(
-        &self,
-        hash: u64,
-        value: &Value,
-        already_compared: &[Value],
-        vm: &mut VM<'h>,
-    ) -> RunResult<ProbeOutcome> {
-        // The clones keep every compared value alive so its heap slot cannot
-        // be recycled into a new value that would then be skipped by identity.
-        let compared: SmallVec<[Value; 2]> = already_compared.iter().map(|v| v.clone_with_heap(vm.heap)).collect();
-        defer_drop_mut!(compared, vm);
-        // Identity set for O(1) seen-checks; see the dict twin for why the
-        // linear alternative is quadratic.
-        let mut compared_ids: AHashSet<Identity> = compared.iter().map(Value::id).collect();
-
-        loop {
-            // Polled up front so every entry checks the limits at least once —
-            // see the dict twin.
-            vm.heap.tracker.check_memory_time()?;
-            let (candidate_indices, candidate_values) = self.probe_candidates(hash, vm);
-            defer_drop!(candidate_values, vm);
-            let mut compared_any = false;
-
-            for (&candidate_index, candidate_value) in candidate_indices.iter().zip(candidate_values.iter()) {
-                if !compared_ids.insert(candidate_value.id()) {
-                    continue;
-                }
-                if !self.probe_valid(candidate_index, hash, candidate_value, vm) {
-                    vm.heap.tracker.check_memory_time()?;
-                    return Ok(ProbeOutcome::Restart);
-                }
-                compared.push(candidate_value.clone_with_heap(vm.heap));
-                compared_any = true;
-                // CPython compares the stored value on the left.
-                let eq = candidate_value.py_eq(value, vm)?;
-                if !self.probe_valid(candidate_index, hash, candidate_value, vm) {
-                    vm.heap.tracker.check_memory_time()?;
-                    return Ok(ProbeOutcome::Restart);
-                }
-                if eq {
-                    return Ok(ProbeOutcome::Found(candidate_index));
-                }
-            }
-
-            if !compared_any {
-                return Ok(ProbeOutcome::Missing);
-            }
-        }
-    }
-
-    /// Snapshots the live entries colliding on `hash`: their indices, plus an
-    /// owned reference to each of their values.
-    ///
-    /// Cloning the values lets `py_eq` run without the hash-table borrow held;
-    /// the caller owns the returned values and must drop them. Only the
-    /// mutation-aware continuation calls this — the fast path above inlines the
-    /// same collection.
-    fn probe_candidates(&self, hash: u64, vm: &VM<'h>) -> (SmallVec<[usize; 2]>, SmallVec<[Value; 2]>) {
-        let mut indices: SmallVec<[usize; 2]> = SmallVec::new();
-        let mut values: SmallVec<[Value; 2]> = SmallVec::new();
-        let storage = self.get(vm.heap);
-        storage.indices.find(hash, |&idx| {
-            if storage.entries[idx].hash == hash {
-                indices.push(idx);
-                values.push(storage.entries[idx].value.clone_with_heap(vm.heap));
-            }
-            false
-        });
-        (indices, values)
-    }
-
-    /// Checks that a snapshotted candidate still names the same live entry.
-    ///
-    /// The caller checks before and after `py_eq`; a mismatch restarts the probe.
-    #[inline]
-    fn probe_valid(&self, index: usize, hash: u64, value: &Value, vm: &VM<'h>) -> bool {
-        let storage = self.get(vm.heap);
-        storage
-            .entries
-            .get(index)
-            .is_some_and(|entry| entry.hash == hash && entry.value.is(value))
+    fn changed_size_error() -> RunError {
+        ExcType::runtime_error_set_changed_size()
     }
 }
 
 impl SetStorage {
     /// Returns an iterator over the values in the set.
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Value> {
-        self.entries.iter().map(|e| &e.value)
+        self.entries().iter().map(|e| &e.value)
     }
 
     /// Returns the value at the given index, if valid.
     ///
     /// Used by Python iterator objects for index-based iteration.
     pub(crate) fn value_at(&self, index: usize) -> Option<&Value> {
-        self.entries.get(index).map(|e| &e.value)
+        self.entries().get(index).map(|e| &e.value)
     }
 
     /// Collects heap IDs for reference counting cleanup.
     fn collect_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        for entry in &mut self.entries {
+        for entry in self.table.entries_mut() {
             if let Value::Ref(id) = &entry.value {
                 stack.push(*id);
                 #[cfg(feature = "memory-model-checks")]
@@ -522,9 +354,7 @@ impl<'h> HeapRead<'h, SetStorage> {
 /// returns `RuntimeError: Set changed size during iteration` (matching
 /// CPython and Monty's set-iterator behavior).
 pub(crate) struct SetIter<'a, 'h> {
-    storage: &'a HeapRead<'h, SetStorage>,
-    index: usize,
-    expected_len: usize,
+    walk: TableWalk<'a, 'h, HeapRead<'h, SetStorage>>,
     token: RecursionToken,
     /// Most-recently-yielded element. `Value::Undefined` when nothing is
     /// held — drops on that variant are no-ops, so `next` can
@@ -534,12 +364,9 @@ pub(crate) struct SetIter<'a, 'h> {
 
 impl<'a, 'h> SetIter<'a, 'h> {
     fn new(storage: &'a HeapRead<'h, SetStorage>, vm: &mut VM<'h>) -> RunResult<Self> {
-        let expected_len = storage.get(vm.heap).entries.len();
         let token = vm.recursion_token()?;
         Ok(Self {
-            storage,
-            index: 0,
-            expected_len,
+            walk: TableWalk::new(storage, vm),
             token,
             current: Value::Undefined,
         })
@@ -563,17 +390,12 @@ impl<'a, 'h> SetIter<'a, 'h> {
     pub(crate) fn next_entry<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<(&'i Value, u64)>> {
         // Drop the previously-yielded element (no-op when `current` is `Undefined`).
         mem::replace(&mut self.current, Value::Undefined).drop_with(vm.heap);
-        vm.heap.tracker.check_time_every(self.index)?;
-        let current = self.storage.get(vm.heap);
-        if current.entries.len() != self.expected_len {
-            return Err(ExcType::runtime_error_set_changed_size());
-        }
-        if self.index >= self.expected_len {
+        let Some(index) = self.walk.advance(vm)? else {
             return Ok(None);
-        }
-        let hash = current.entries[self.index].hash;
-        self.current = current.entries[self.index].value.clone_with_heap(vm.heap);
-        self.index += 1;
+        };
+        let entry = &self.walk.source().get(vm.heap).entries()[index];
+        let hash = entry.hash;
+        self.current = entry.value.clone_with_heap(vm.heap);
         Ok(Some((&self.current, hash)))
     }
 }
@@ -588,7 +410,7 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for SetIter<'_, 'h> {
 impl SetStorage {
     /// Returns true if this set is a subset of other.
     fn is_subset(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
-        for entry in &self.entries {
+        for entry in self.entries() {
             if !vm
                 .heap
                 .protect(other)
@@ -614,7 +436,7 @@ impl SetStorage {
             (other, self)
         };
 
-        for entry in &smaller.entries {
+        for entry in smaller.entries() {
             if vm
                 .heap
                 .protect(larger)
@@ -976,7 +798,7 @@ impl<'h> HeapRead<'h, Set> {
     /// `Ok(false)` if the element was already in the set (and the value is dropped).
     /// Returns `Err` if the element is unhashable (and the value is dropped).
     ///
-    /// Uses the mutation-safe storage lookup ([`HeapRead::find_index`]) to
+    /// Uses the mutation-safe storage lookup ([`TableSource::find_index`]) to
     /// detect duplicates, so a user `__eq__` mutating the set mid-add cannot
     /// leave the probe holding stale indices.
     pub fn add(&mut self, value: Value, vm: &mut VM<'h>) -> RunResult<bool> {
@@ -1001,16 +823,11 @@ impl<'h> HeapRead<'h, Set> {
 
         // Add new entry
         let (value, vm) = value_guard.into_parts();
-        if let Err(err) = check_storage_growth(&self.get(vm.heap).0, &vm.heap.tracker) {
+        if let Err(err) = self.get(vm.heap).0.table.check_growth(&vm.heap.tracker) {
             value.drop_with(vm);
             return Err(err.into());
         }
-        let storage = &mut self.get_mut(vm.heap).0;
-        let index = storage.entries.len();
-        storage.entries.push(SetEntry { value, hash });
-        storage
-            .indices
-            .insert_unique(hash, index, |&idx| storage.entries[idx].hash);
+        self.get_mut(vm.heap).0.table.push(SetEntry { value, hash });
         Ok(true)
     }
 
@@ -1039,7 +856,7 @@ impl<'h> HeapRead<'h, Set> {
 
         // Fall back to iterable
         let temp_set = Set::from_iterable(other, vm)?;
-        self.extend_from_entries(temp_set.0.entries, vm)
+        self.extend_from_entries(temp_set.0.table.into_entries(), vm)
     }
 
     /// Inserts owned entries in order, releasing any that are left if one fails.
@@ -1135,7 +952,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Set {
 
 impl<C: ContainsHeap> DropWithContext<C> for SetStorage {
     fn drop_with(self, heap: &mut C) {
-        self.entries.drop_with(heap);
+        self.table.into_entries().drop_with(heap);
     }
 }
 
@@ -1754,7 +1571,7 @@ fn get_storage_from_set_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Opt
 
 impl serde::Serialize for SetStorage {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.entries.serialize(serializer)
+        self.entries().serialize(serializer)
     }
 }
 
@@ -1897,20 +1714,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
         }
         Ok(item)
     }
-}
-
-/// Preflights the growth one insertion would cause in a set's two buffers.
-///
-/// The entry vector and the index table beside it can reallocate on the same
-/// insertion, so [`check_entry_table_growth`] sums their increments into one check.
-fn check_storage_growth(storage: &SetStorage, tracker: &ResourceTracker) -> Result<(), ResourceError> {
-    check_entry_table_growth(
-        storage.entries.len(),
-        storage.entries.capacity(),
-        mem::size_of::<SetEntry>(),
-        &storage.indices,
-        tracker,
-    )
 }
 
 fn set_element_hash(value: &Value, vm: &mut VM<'_>) -> RunResult<u64> {
