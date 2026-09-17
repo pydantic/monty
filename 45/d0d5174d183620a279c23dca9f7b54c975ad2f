@@ -1,0 +1,24 @@
+crates/monty-proto/src/wire.rs
+  s_b0f8ac10b9485a::t_c40ebba7d80441 1016-1042,1045,1055,1058
+crates/monty-proto/tests/decode_budget.rs
+  s_b0f8ac10b9485a::t_60883127d3e53d 148-149,154-159
+  s_b0f8ac10b9485a::t_fa9978ae065f72 75-76,78
+crates/monty-proto/src/frame.rs
+  s_b0f8ac10b9485a::t_60883127d3e53d 39-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "45d0d5174d183620a279c23dca9f7b54c975ad2f",
+  "prompts": {},
+  "sessions": {
+    "s_b0f8ac10b9485a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c7a03dc7-b1c4-413c-b8b3-61537212e316",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
