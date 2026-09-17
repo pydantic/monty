@@ -59,6 +59,7 @@ use crate::{
         dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync, turn_fn,
     },
     print_target::PrintTarget,
+    telemetry::{capture_otel_context, snapshot_trace_context},
 };
 
 /// Shared context threaded across a `feed_start` drive so each `resume` can
@@ -78,6 +79,8 @@ pub(crate) struct DriveContext {
     instances: InstanceStore,
     print_target: PrintTarget,
     script_name: String,
+    /// Host OTel context captured at feed/load entry; never serialized with the worker.
+    trace_context: Option<Py<PyAny>>,
     /// `external_lookup=` captured at `feed_start` / `load_snapshot`; consulted
     /// only by `resume_auto` (plain `resume` never looks names up here).
     external_lookup: Option<Py<PyDict>>,
@@ -100,12 +103,14 @@ impl DriveContext {
         script_name: String,
         external_lookup: Option<Py<PyDict>>,
         os: Option<Py<PyAny>>,
+        trace_context: Option<Py<PyAny>>,
     ) -> Self {
         Self {
             checkout,
             instances,
             print_target,
             script_name,
+            trace_context,
             external_lookup,
             os,
             pending_futures: Arc::new(Mutex::new(JoinSet::new())),
@@ -118,6 +123,7 @@ impl DriveContext {
             instances: self.instances.clone_ref(py),
             print_target: self.print_target.clone_handle(py),
             script_name: self.script_name.clone(),
+            trace_context: self.trace_context.as_ref().map(|ctx| ctx.clone_ref(py)),
             external_lookup: self.external_lookup.as_ref().map(|d| d.clone_ref(py)),
             os: self.os.as_ref().map(|o| o.clone_ref(py)),
             pending_futures: Arc::clone(&self.pending_futures),
@@ -151,7 +157,15 @@ pub(crate) fn feed_start_sync(
         instances,
         callback_context: _,
     } = args;
-    let ctx = DriveContext::new(checkout, instances, print_target, script_name, external_lookup, os);
+    let ctx = DriveContext::new(
+        checkout,
+        instances,
+        print_target,
+        script_name,
+        external_lookup,
+        os,
+        capture_otel_context(py),
+    );
     drive_sync(
         py,
         ctx,
@@ -185,7 +199,15 @@ pub(crate) fn feed_start_async(
         instances,
         callback_context: _,
     } = args;
-    let ctx = DriveContext::new(checkout, instances, print_target, script_name, external_lookup, os);
+    let ctx = DriveContext::new(
+        checkout,
+        instances,
+        print_target,
+        script_name,
+        external_lookup,
+        os,
+        capture_otel_context(py),
+    );
     future_into_py(py, async move {
         drive_async(
             ctx,
@@ -369,6 +391,29 @@ impl SnapshotState {
             ctx,
             resumed: AtomicBool::new(false),
         }
+    }
+
+    /// Returns the suspension's OTel context without activating it or consuming the snapshot.
+    fn trace_context(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if self.resumed.load(Ordering::SeqCst) {
+            return Err(PyRuntimeError::new_err("snapshot has already been resumed"));
+        }
+        let native = {
+            // Never block an event loop on a turn running in another task.
+            let checkout = self
+                .ctx
+                .checkout
+                .try_lock()
+                .map_err(|_| PyRuntimeError::new_err("snapshot session is busy"))?;
+            if self.resumed.load(Ordering::SeqCst) {
+                return Err(PyRuntimeError::new_err("snapshot has already been resumed"));
+            }
+            checkout
+                .as_ref()
+                .ok_or_else(|| PyRuntimeError::new_err("snapshot session is closed"))?
+                .callback_context()
+        };
+        snapshot_trace_context(py, &native, self.ctx.trace_context.as_ref())
     }
 
     /// Claims the single resume for this snapshot, returning a fresh
@@ -602,6 +647,11 @@ pub struct PyFunctionSnapshot(FunctionSnapshot);
 
 #[pymethods]
 impl PyFunctionSnapshot {
+    /// Returns the call's OTel context for manual handlers; requires `opentelemetry-api`.
+    fn trace_context(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.0.snapshot.trace_context(py)
+    }
+
     /// Whether the worker permits eager coroutine resolution at this suspension.
     #[getter]
     fn allow_eager_await(&self) -> bool {
@@ -728,6 +778,11 @@ pub struct PyAsyncFunctionSnapshot(FunctionSnapshot);
 
 #[pymethods]
 impl PyAsyncFunctionSnapshot {
+    /// Returns the call's OTel context for manual handlers; requires `opentelemetry-api`.
+    fn trace_context(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.0.snapshot.trace_context(py)
+    }
+
     /// Whether `resume_auto` may await a coroutine directly at this suspension.
     #[getter]
     fn allow_eager_await(&self) -> bool {
@@ -950,6 +1005,11 @@ pub struct PyNameLookupSnapshot(NameLookupSnapshot);
 
 #[pymethods]
 impl PyNameLookupSnapshot {
+    /// Returns the lookup's OTel context for manual handlers; requires `opentelemetry-api`.
+    fn trace_context(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.0.snapshot.trace_context(py)
+    }
+
     #[getter]
     fn script_name(&self) -> &str {
         &self.0.snapshot.ctx.script_name
@@ -1020,6 +1080,11 @@ pub struct PyAsyncNameLookupSnapshot(NameLookupSnapshot);
 
 #[pymethods]
 impl PyAsyncNameLookupSnapshot {
+    /// Returns the lookup's OTel context for manual handlers; requires `opentelemetry-api`.
+    fn trace_context(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.0.snapshot.trace_context(py)
+    }
+
     #[getter]
     fn script_name(&self) -> &str {
         &self.0.snapshot.ctx.script_name
@@ -1126,6 +1191,11 @@ pub struct PyFutureSnapshot(FutureSnapshot);
 
 #[pymethods]
 impl PyFutureSnapshot {
+    /// Returns the future-resolution OTel context for manual handlers; requires `opentelemetry-api`.
+    fn trace_context(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.0.snapshot.trace_context(py)
+    }
+
     #[getter]
     fn script_name(&self) -> &str {
         &self.0.snapshot.ctx.script_name
@@ -1165,6 +1235,11 @@ pub struct PyAsyncFutureSnapshot(FutureSnapshot);
 
 #[pymethods]
 impl PyAsyncFutureSnapshot {
+    /// Returns the future-resolution OTel context for manual handlers; requires `opentelemetry-api`.
+    fn trace_context(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.0.snapshot.trace_context(py)
+    }
+
     #[getter]
     fn script_name(&self) -> &str {
         &self.0.snapshot.ctx.script_name

@@ -291,7 +291,33 @@ otherwise concurrently, surfacing as an intermediate `FutureSnapshot`, exactly a
 Only restore unmodified snapshots from a trusted, compatible producer; the caller must establish provenance and integrity.
 See [snapshot security](../security.md#deserializing-snapshots) before accepting bytes through an untrusted channel.
 
-See [snapshots](../snapshots.md) for the model, which is identical to Python's.
+When answering a suspension manually, use `snapshot.traceContext()` with OpenTelemetry's `context.with()`:
+
+```ts
+import { context } from '@opentelemetry/api'
+import { FunctionSnapshot, Monty, MontyComplete } from '@pydantic/monty'
+
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+const snapshot = await session.feedStart('greet(name)', { inputs: { name: 'Ada' } })
+if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
+const result = await context.with(snapshot.traceContext(), async () => `hello ${snapshot.args[0]}`)
+const done = await snapshot.resume(result)
+if (!(done instanceof MontyComplete)) throw new Error('expected completion')
+console.log(done.output) // hello Ada
+```
+
+All three snapshot types expose an OTel `Context`, preserving baggage and other entries captured at `feedStart` /
+`loadSnapshot`.
+With [Monty instrumentation](#opentelemetry-instrumentation) enabled, host tracing inside the callback belongs to the
+suspension span; without it, the method returns that captured context unchanged.
+Context is not serialized: restoring captures the restoring caller's context instead.
+Use an SDK-configured OTel context manager to propagate context across awaits.
+Calling the method does not activate the context or resume execution.
+Calling it after resume throws; contexts retrieved earlier remain usable but do not keep the suspension span open.
+`resumeAuto()` already activates the suspension span around callbacks.
+
+See [snapshots](../snapshots.md) for the full model.
 
 ## Browsers and WebAssembly
 

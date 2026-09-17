@@ -16,6 +16,7 @@ fn snapshot(py: Python<'_>) -> SnapshotState {
         "test.py".to_owned(),
         None,
         None,
+        None,
     ))
 }
 

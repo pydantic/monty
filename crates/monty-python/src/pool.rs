@@ -72,7 +72,7 @@ use crate::{
     mount::PyMountDir,
     print_target::PrintTarget,
     snapshot::{DriveContext, build_snapshot, feed_start_async, feed_start_sync},
-    telemetry::{capture_telemetry_context, pool_metrics},
+    telemetry::{capture_otel_context, capture_telemetry_context, pool_metrics},
 };
 
 /// The pool handle shared between a pool object and its sessions. `None`
@@ -393,6 +393,7 @@ impl PyMontySession {
         let mounts = extract_mount_specs(mount)?;
         let print_target = PrintTarget::from_py(print_callback)?;
         let ext = external_lookup.map(|d| d.clone().unbind());
+        let trace_context = capture_otel_context(py);
         let (event, script_name) = self.restore_turn(py, state, mounts)?;
         let Some(event) = event else {
             discard_checkout_sync(py, &self.checkout);
@@ -409,6 +410,7 @@ impl PyMontySession {
             script_name.unwrap_or_else(|| self.repl_config.script_name.clone()),
             ext,
             os,
+            trace_context,
         );
         build_snapshot(py, ctx, event, false)
     }
@@ -915,6 +917,7 @@ impl PyAsyncMontySession {
         let checkout = Arc::clone(&self.checkout);
         let instances = self.instances.clone_ref(py);
         let config_script_name = self.repl_config.script_name.clone();
+        let trace_context = capture_otel_context(py);
         future_into_py(py, async move {
             let (event, restored_script_name) = restore_turn(&checkout, state, mounts)
                 .await
@@ -929,7 +932,7 @@ impl PyAsyncMontySession {
             // only if the worker did not report one (e.g. an older child)
             let script_name = restored_script_name.unwrap_or(config_script_name);
             Python::attach(|py| {
-                let ctx = DriveContext::new(checkout, instances, print_target, script_name, ext, os);
+                let ctx = DriveContext::new(checkout, instances, print_target, script_name, ext, os, trace_context);
                 build_snapshot(py, ctx, event, true)
             })
         })

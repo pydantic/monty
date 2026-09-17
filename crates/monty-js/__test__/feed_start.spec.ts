@@ -1,3 +1,4 @@
+import { context } from '@opentelemetry/api'
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
@@ -34,6 +35,26 @@ test('feedStart surfaces a name lookup', async () => {
     const snap = await session.feedStart('missing + 1')
     t.true(snap instanceof NameLookupSnapshot)
     t.is((snap as NameLookupSnapshot).variableName, 'missing')
+  } finally {
+    await session.close()
+  }
+})
+
+test('snapshot trace contexts preserve the captured context without Monty tracing', async () => {
+  const session = await pool().checkout()
+  try {
+    const name = (await session.feedStart('missing')) as NameLookupSnapshot
+    t.is(name.traceContext(), context.active())
+    await name.resumeValue(42)
+    t.throws(() => name.traceContext(), { message: 'snapshot has already been resumed' })
+
+    const call = (await session.feedStart('await callback()')) as FunctionSnapshot
+    t.is(call.traceContext(), context.active())
+    const futures = (await call.resumeFuture()) as FutureSnapshot
+    t.throws(() => call.traceContext(), { message: 'snapshot has already been resumed' })
+    t.is(futures.traceContext(), context.active())
+    await futures.resume([{ callId: call.callId, value: 42 }])
+    t.throws(() => futures.traceContext(), { message: 'snapshot has already been resumed' })
   } finally {
     await session.close()
   }

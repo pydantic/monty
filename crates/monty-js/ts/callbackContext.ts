@@ -1,10 +1,13 @@
-// Node installs these handlers; browser transports use the direct callback path.
+// Node supplies suspension spans; browser transports preserve the captured context.
+
+import { trace, type Context, type Span } from '@opentelemetry/api'
 
 type NativePrintCallback = (stream: 'stdout' | 'stderr', text: string, parent?: string | null) => void
 
 interface CallbackContextHandlers {
   bindPrint(callback: NativePrintCallback): NativePrintCallback
   run<T>(parent: string | undefined, callback: () => T): T
+  span(parent: string | undefined): Span | undefined
 }
 
 let handlers: CallbackContextHandlers | undefined
@@ -15,6 +18,16 @@ export function setCallbackContextHandlers(value: CallbackContextHandlers): void
 
 export function bindPrintCallback(callback: NativePrintCallback): NativePrintCallback {
   return handlers?.bindPrint(callback) ?? callback
+}
+
+/** Returns the suspension's span in its captured context, preserving baggage and other entries. */
+export function getCallbackContext(parent: string | undefined, captured: Context): Context {
+  try {
+    const span = handlers?.span(parent)
+    return span === undefined ? captured : trace.setSpan(captured, span)
+  } catch {
+    return captured
+  }
 }
 
 export function runWithCallbackContext<T>(parent: string | undefined, callback: () => T): T {
