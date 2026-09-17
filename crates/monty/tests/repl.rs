@@ -3,9 +3,9 @@
 //! The REPL session keeps heap/global namespace state between snippets and executes
 //! only the newly fed snippet each time.
 
+use std::fmt::Write;
+
 use insta::assert_snapshot;
-#[cfg(feature = "test-hooks")]
-use monty::FunctionMetadataFault;
 use monty::{
     DUMP_VERSION, Dump, DumpError, MontyRepl, ReplContinuationMode, ReplProgress, ReplStartError, Session, SessionRef,
     detect_repl_continuation_mode, dump,
@@ -78,12 +78,13 @@ fn dump_header_rejects_incompatible_data() {
     wrong_magic[0] = b'X';
     assert_eq!(Dump::load(&wrong_magic).unwrap_err(), DumpError::NotADump);
 
+    let previous_version = DUMP_VERSION - 1;
     let mut wrong_version = bytes.clone();
-    wrong_version[6] = 1;
+    wrong_version[6..8].copy_from_slice(&previous_version.to_le_bytes());
     assert_eq!(
         Dump::load(&wrong_version).unwrap_err(),
         DumpError::VersionMismatch {
-            found: 1,
+            found: previous_version,
             expected: DUMP_VERSION
         }
     );
@@ -98,100 +99,25 @@ fn dump_header_rejects_incompatible_data() {
     );
 }
 
-/// A dump is untrusted input, and the heap it carries is installed verbatim. A
-/// `time` entry that no constructor could have produced must be rejected at load
-/// rather than panicking, or contradicting itself, later — when the ranges and the
-/// `tzinfo` reference are read back as established facts.
-///
-/// A `time` stores only a reference to its zone, so a disagreement between an
-/// attached offset and the object it points at is not representable. What is left
-/// is a component out of range, a reference that is not a timezone, and an offset
-/// out of range on the timezone itself.
+/// Transient GC colors cannot be restored: the collector's reader protection
+/// relies on establishing Gray/White itself, even when the snapshot is invalid.
 #[test]
-fn dump_rejects_forged_time_entries() {
-    // Distinctive components so the encoded `time` can be found in the payload:
-    // three single-byte fields, then 444555 as a postcard varint.
-    const COMPONENTS: [u8; 6] = [11, 22, 33, 0x8B, 0x91, 0x1B];
-
-    let naive = dump_repl("import datetime\nt = datetime.time(11, 22, 33, 444555)");
-    // ... followed by fold and a `None` tzinfo.
-    let hour = offset_of(&naive, &[COMPONENTS.as_slice(), &[0, 0]].concat());
-    assert!(Dump::load(&naive).is_ok());
-
-    let mut forged = naive;
-    forged[hour] = 255;
-    assert_eq!(
-        Dump::load(&forged).unwrap_err(),
-        DumpError::Payload(postcard::Error::SerdeDeCustom)
-    );
-
-    // A *named* offset keeps a timezone entry of its own instead of canonicalizing
-    // onto the `timezone.utc` singleton, and 23 hours encodes as a three-byte
-    // varint, leaving room to forge a value outside the range `timezone()` accepts.
-    let aware = dump_repl(
-        "import datetime\ntz = datetime.timezone(datetime.timedelta(hours=23), 'AB')\nt = datetime.time(11, 22, 33, 444555, tzinfo=tz)",
-    );
-    assert!(Dump::load(&aware).is_ok());
-
-    // ... followed by fold and `Some(_)`, so the heap id ends the marker.
-    let tzinfo_ref = offset_of(&aware, &[COMPONENTS.as_slice(), &[0, 1]].concat()) + 8;
-    // The timezone entry: 82800 seconds zigzag-encoded, then `Some("AB")`.
-    let tz_offset = offset_of(&aware, &[0xE0, 0x8D, 0x0A, 1, 2, b'A', b'B']);
-
-    for (index, byte, what) in [
-        // The empty-tuple singleton: a live entry, but not a timezone.
-        (
-            tzinfo_ref,
-            0,
-            "a `tzinfo` reference to something that is not a timezone",
-        ),
-        (tzinfo_ref, 100, "a `tzinfo` reference to no entry at all"),
-        // `format_offset_hms` negates the offset, which panics on `i32::MIN`.
-        (tz_offset + 2, 0x7f, "a `tzinfo` object whose offset is out of range"),
-    ] {
-        let mut forged = aware.clone();
-        forged[index] = byte;
-        assert_eq!(
-            Dump::load(&forged).unwrap_err(),
-            DumpError::Payload(postcard::Error::SerdeDeCustom),
-            "a time with {what} must be rejected"
-        );
-    }
-}
-
-/// The `timezone_utc` cache is a raw heap id restored verbatim, and
-/// `get_timezone_utc` hands its target back as `datetime.timezone.utc` after an
-/// `inc_ref` that panics on a freed or out-of-range id. A forged cache must be
-/// rejected at load, whether it points at nothing, at a live non-timezone, or at
-/// a timezone that is not UTC.
-#[test]
-fn dump_rejects_forged_timezone_utc_cache() {
-    let bytes = dump_repl(
-        "import datetime\nutc = datetime.timezone.utc\nplus2 = datetime.timezone(datetime.timedelta(hours=2))",
-    );
+fn dump_rejects_transient_gc_colors() {
+    // A distinctive naive time payload: hour, minute, second, microsecond
+    // (varint), fold, tzinfo. The heap entry's color immediately follows it.
+    const TIME: [u8; 8] = [11, 22, 33, 0x8B, 0x91, 0x1B, 0, 0];
+    let bytes = dump_repl("import datetime\nt = datetime.time(11, 22, 33, 444555)");
+    let color = offset_of(&bytes, &TIME) + TIME.len();
+    assert_eq!(bytes[color], 0); // Black
     assert!(Dump::load(&bytes).is_ok());
 
-    // `timezone_utc` is the heap's last serialized field and `globals` is the
-    // session's, so the cached id sits a fixed distance from the end: `Some(2)`
-    // followed by the three globals, one of which is the `+02:00` timezone at 4.
-    let cached_id = bytes.len() - 8;
-    assert_eq!(
-        &bytes[cached_id - 1..=cached_id],
-        &[1, 2],
-        "timezone_utc is Some(HeapId(2))"
-    );
-
-    for (forged_id, what) in [
-        (100, "no entry at all"),
-        (0, "the empty-tuple singleton"),
-        (4, "the +02:00 timezone"),
-    ] {
+    for transient in [1, 2] {
+        // Gray, White
         let mut forged = bytes.clone();
-        forged[cached_id] = forged_id;
+        forged[color] = transient;
         assert_eq!(
             Dump::load(&forged).unwrap_err(),
-            DumpError::Payload(postcard::Error::SerdeDeCustom),
-            "a timezone.utc cache pointing at {what} must be rejected"
+            DumpError::Payload(postcard::Error::SerdeDeCustom)
         );
     }
 }
@@ -466,55 +392,30 @@ fn repl_dump_load_derives_exact_positional_call_plans() {
     assert_eq!(err.message(), Some("add() missing 1 required positional argument: 'b'"));
 }
 
-#[cfg(feature = "test-hooks")]
+/// Default arguments, variadics and nested closure slots survive restoration.
 #[test]
-fn repl_dump_load_rejects_invalid_function_metadata() {
-    /// Checks forged function metadata is rejected at dump load.
-    fn assert_rejected(function: &str, fault: FunctionMetadataFault) {
-        let code = r"
-def variadic(*args, **kwargs):
-    return args, kwargs
-
-def pos_defaults(value=1, /):
-    return value
-
-def defaults(value=1):
-    return value
-
-def kw_defaults(*, first=1, second=2):
-    return first, second
-
-def outer(first, second):
-    def middle():
+fn repl_dump_load_preserves_function_metadata() {
+    let (repl, _) = init_repl(
+        r"
+def outer(pos=10, /, arg=20, *, kw=12):
+    def middle(*args, **kwargs):
         local = 1
         def inner():
-            return first + second + local
+            return pos + arg + kw + local, args, kwargs
         return inner
     return middle
-";
-        let (mut repl, _) = init_repl(code);
-        repl.__corrupt_function_metadata_for_tests(function, fault);
-        let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
-        assert_eq!(
-            Dump::load(&bytes).unwrap_err(),
-            DumpError::Payload(postcard::Error::SerdeDeCustom)
-        );
-    }
-
-    assert_rejected("variadic", FunctionMetadataFault::SignatureSlotsBeyondNamespace);
-    assert_rejected("variadic", FunctionMetadataFault::NamespaceTooLarge);
-    assert_rejected("inner", FunctionMetadataFault::FreeVarLengthMismatch);
-    assert_rejected("outer", FunctionMetadataFault::CellVarLengthMismatch);
-    assert_rejected("inner", FunctionMetadataFault::FreeVarSlotOutOfRange);
-    assert_rejected("outer", FunctionMetadataFault::CellVarSlotOutOfRange);
-    assert_rejected("outer", FunctionMetadataFault::CellParamIndexOutOfRange);
-    assert_rejected("pos_defaults", FunctionMetadataFault::PosDefaultsCountOutOfRange);
-    assert_rejected("defaults", FunctionMetadataFault::ArgDefaultsCountOutOfRange);
-    assert_rejected("kw_defaults", FunctionMetadataFault::KwargDefaultMapLengthMismatch);
-    assert_rejected("kw_defaults", FunctionMetadataFault::KwargDefaultIndexGap);
-    assert_rejected("defaults", FunctionMetadataFault::DefaultsCountMismatch);
-    assert_rejected("inner", FunctionMetadataFault::DuplicateFreeVarSlot);
-    assert_rejected("middle", FunctionMetadataFault::CellFreeVarSlotOverlap);
+saved = outer()(99, tag='saved')
+",
+    );
+    let mut loaded = round_trip_repl(&repl);
+    feed_run_print(
+        &mut loaded,
+        r"
+assert saved() == (43, (99,), {'tag': 'saved'})
+assert outer(1, arg=2, kw=3)(4, extra=5)() == (7, (4,), {'extra': 5})
+",
+    )
+    .unwrap();
 }
 
 #[test]
@@ -590,6 +491,127 @@ fn repl_feed_start_restores_comprehension_slots_after_runtime_error() {
     let _repl = call.into_repl();
 }
 
+/// A snippet that rebinds existing globals to a fresh literal and function
+/// before suspending, then gets abandoned, must leave those globals usable:
+/// the ids they now hold were appended by the abandoned snippet.
+#[test]
+fn repl_abandoned_snippet_keeps_rebound_globals_usable() {
+    const REBIND: &str = "x = 'rebound literal'\ndef f():\n    return 2\next_fn()";
+    let check = |mut repl: MontyRepl| {
+        assert_eq!(
+            feed_run_print(&mut repl, "x").unwrap(),
+            MontyObject::String("rebound literal".to_owned())
+        );
+        assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(2));
+        // A new definition must not collide with the abandoned snippet's ids.
+        feed_run_print(&mut repl, "def g():\n    return f() + 1").unwrap();
+        assert_eq!(feed_run_print(&mut repl, "g()").unwrap(), MontyObject::Int(3));
+    };
+
+    let (repl, _) = init_repl("x = 'old'\ndef f():\n    return 1");
+    let progress = repl.feed_start(REBIND, vec![], PrintWriter::Stdout).unwrap();
+    check(
+        progress
+            .into_function_call()
+            .expect("expected function call")
+            .into_repl(),
+    );
+
+    let (repl, _) = init_repl("x = 'old'\ndef f():\n    return 1");
+    let progress = repl.feed_start(REBIND, vec![], PrintWriter::Stdout).unwrap();
+    check(round_trip_progress(&progress).into_repl());
+
+    let (repl, _) = init_repl("x = 'old'\ndef f():\n    return 1\nasync def main():\n    await ext_fn()");
+    let progress = repl
+        .feed_start(
+            "x = 'rebound literal'\ndef f():\n    return 2\nawait main()",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let call = progress.into_function_call().expect("expected function call");
+    let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+    check(
+        progress
+            .into_resolve_futures()
+            .expect("expected resolve futures")
+            .into_repl(),
+    );
+}
+
+/// Snippets that fail before running (syntax error, compile error, invalid
+/// input) leave the session's earlier definitions callable and later
+/// definitions working — compilation retains the session's tables.
+#[test]
+fn repl_failed_snippets_keep_session_tables() {
+    let (mut repl, _) = init_repl("def f():\n    return 1");
+
+    let err = feed_run_print(&mut repl, "def g(:").unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(1));
+
+    let err = feed_run_print(&mut repl, "__name__ = 'x'").unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(1));
+
+    let err = repl
+        .feed_run(
+            "bad",
+            vec![("bad".to_owned(), MontyObject::Repr("bad".to_owned()))],
+            PrintWriter::Stdout,
+        )
+        .unwrap_err();
+    assert_eq!(
+        err.message(),
+        Some("invalid input type: 'Repr' is not a valid input value")
+    );
+    assert_eq!(feed_run_print(&mut repl, "f()").unwrap(), MontyObject::Int(1));
+
+    feed_run_print(&mut repl, "def h():\n    return f() + 1").unwrap();
+    assert_eq!(feed_run_print(&mut repl, "h()").unwrap(), MontyObject::Int(2));
+
+    let err = repl
+        .feed_start("def g(:", vec![], PrintWriter::Stdout)
+        .expect_err("expected syntax error");
+    assert_eq!(err.error.exc_type(), ExcType::SyntaxError);
+    let mut repl = err.repl;
+    assert_eq!(feed_run_print(&mut repl, "h()").unwrap(), MontyObject::Int(2));
+}
+
+/// A snippet rejected at compile time, after prepare has allocated its
+/// global slots and the compiler has emitted its functions, must not consume
+/// those `u16` ids. One successful snippet takes the session to within a few
+/// ids of both caps, so a handful of rejected snippets would overflow them
+/// if their ids leaked — cheaper than 65k feeds, and just as conclusive.
+#[test]
+fn repl_rejected_snippets_do_not_consume_slots_or_function_ids() {
+    const HEADROOM: usize = 8;
+    let mut prefill = String::new();
+    for i in 0..usize::from(u16::MAX) + 1 - HEADROOM {
+        write!(prefill, "def g_{i}():\n    pass\n").unwrap();
+    }
+    let (mut repl, _) = init_repl(&prefill);
+
+    // Each would take four slots (input, function, global, `__name__`) and
+    // two function ids; repeated rejections would overflow if either leaked.
+    for i in 0..4 * HEADROOM {
+        let code = format!(
+            "def bad_{i}():\n    def inner():\n        return 1\n    return inner\nname_{i} = 1\n__name__ = 'x'"
+        );
+        let err = repl
+            .feed_run(
+                &code,
+                vec![(format!("input_{i}"), MontyObject::Int(1))],
+                PrintWriter::Stdout,
+            )
+            .unwrap_err();
+        assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    }
+    let mut repl = round_trip_repl(&repl);
+    feed_run_print(&mut repl, "def h():\n    return g_0() is None\nok = h()").unwrap();
+    assert_eq!(feed_run_print(&mut repl, "ok").unwrap(), MontyObject::Bool(true));
+}
+
 #[test]
 fn repl_progress_dump_load_roundtrip() {
     let (repl, _) = init_repl("");
@@ -607,6 +629,56 @@ fn repl_progress_dump_load_roundtrip() {
     assert_eq!(value, MontyObject::Int(42));
     assert_eq!(feed_run_print(&mut repl, "z = 1").unwrap(), MontyObject::None);
     assert_eq!(feed_run_print(&mut repl, "z").unwrap(), MontyObject::Int(1));
+}
+
+/// Frozen code survives in-place compilation, idle dumps, and suspended REPL dumps.
+#[test]
+fn repl_frozen_reduce_survives_incremental_compilation_and_dumps() {
+    let (mut repl, _) = init_repl("import functools\ndef add(a, b):\n    return a + b");
+    assert_eq!(
+        feed_run_print(&mut repl, "functools.reduce(add, [1, 2, 3])").unwrap(),
+        MontyObject::Int(6)
+    );
+    let repl = round_trip_repl(&repl);
+    let progress = repl
+        .feed_start(
+            "functools.reduce(ext_fn, [1, 2, 3])",
+            vec![(
+                "ext_fn".to_owned(),
+                MontyObject::Function {
+                    name: "ext_fn".to_owned(),
+                    docstring: None,
+                },
+            )],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let loaded = round_trip_progress(&progress);
+
+    for mut progress in [progress, loaded] {
+        for (args, result) in [([1, 2], 3), ([3, 3], 6)] {
+            let call = progress.into_function_call().expect("expected reduce callback");
+            assert_eq!(call.function_name, "ext_fn");
+            assert_eq!(call.args, args.into_iter().map(MontyObject::Int).collect::<Vec<_>>());
+            progress = call.resume(MontyObject::Int(result), PrintWriter::Stdout).unwrap();
+        }
+        let (mut repl, value) = progress.into_complete().expect("expected completion");
+        assert_eq!(value, MontyObject::Int(6));
+        feed_run_print(&mut repl, "def multiply(a, b):\n    return a * b").unwrap();
+        assert_eq!(
+            repl.call_function(
+                "multiply",
+                vec![MontyObject::Int(6), MontyObject::Int(7)],
+                PrintWriter::Stdout
+            )
+            .unwrap(),
+            MontyObject::Int(42)
+        );
+        assert_eq!(
+            feed_run_print(&mut repl, "functools.reduce(multiply, [2, 3, 4])").unwrap(),
+            MontyObject::Int(24)
+        );
+    }
 }
 
 #[test]

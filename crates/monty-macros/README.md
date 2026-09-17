@@ -85,8 +85,8 @@ are all incompatible.
 
 ### Modifiers
 
-- `at_most_total` — pre-count positionals + kwargs against the positional
-  maximum before dispatch (`{name}() takes at most N arguments (M given)`).
+- `at_most_total` — pre-count positionals + kwargs against all named parameters,
+  including keyword-only parameters, before dispatch (`{name}() takes at most N arguments (M given)`).
   This is a per-function empirical fact, not derivable from the fields or
   the style. Litmus test: call the CPython function with valid positionals
   plus one bogus kwarg — if it reports `takes at most N arguments (M

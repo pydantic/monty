@@ -7,7 +7,10 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::{DropGuard, HeapId, HeapRead},
-    types::{PyTrait, itertools::ItertoolsIter},
+    types::{
+        PyTrait,
+        itertools::{ItertoolsIter, step::next_source},
+    },
     value::Value,
 };
 
@@ -96,11 +99,7 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
 /// Advances one side, latching `done` when it runs out so a `None` outcome
 /// means the whole adaptor is spent rather than just this step.
 fn step<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, source: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-    let item = {
-        let mut read = source.read(vm);
-        read.py_next(vm)
-    };
-    if let Some(item) = item? {
+    if let Some(item) = next_source(source, vm)? {
         Ok(Some(item))
     } else {
         let ItertoolsIter::Compress(compress) = iter.get_mut(vm.heap) else {

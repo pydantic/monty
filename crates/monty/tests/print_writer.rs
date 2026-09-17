@@ -10,11 +10,12 @@
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, PrintWriter, ResourceTracker};
+use monty_types::{CollectedStreams, CompileOptions, PrintStream, PrintWriter, ResourceTracker};
 
 /// Run `code` under Monty with a string-collecting `PrintWriter` and return
 /// whatever was printed. Panics on parse/runtime errors — callers only care
-/// about the captured output.
+/// about the captured output. `CollectString` keeps no stream labels, so
+/// stderr output lands in the same buffer; see `run_and_capture_streams`.
 fn run_and_capture(code: &str) -> String {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let mut output = String::new();
@@ -232,4 +233,77 @@ fn print_multiline_sep() {
     2
     3
     ");
+}
+
+// === file= routing ===
+
+/// Run `code` and return the labelled fragments, so a test can tell which
+/// stream each one went to.
+fn run_and_capture_streams(code: &str) -> Vec<(PrintStream, String)> {
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut streams = CollectedStreams::default();
+    ex.run(
+        vec![],
+        ResourceTracker::default(),
+        PrintWriter::collect_streams(&mut streams),
+    )
+    .unwrap();
+    streams.into_entries()
+}
+
+#[test]
+fn print_file_stderr_is_labelled_stderr() {
+    assert_eq!(
+        run_and_capture_streams("import sys\nprint('oops', file=sys.stderr)"),
+        vec![(PrintStream::Stderr, "oops\n".to_owned())]
+    );
+}
+
+#[test]
+fn print_file_stdout_matches_the_default() {
+    assert_eq!(
+        run_and_capture_streams("import sys\nprint('a', file=sys.stdout)\nprint('b')"),
+        vec![(PrintStream::Stdout, "a\nb\n".to_owned())]
+    );
+}
+
+/// Consecutive fragments merge per stream, so alternating between the two
+/// produces one entry per switch and keeps them in the order printed.
+#[test]
+fn print_alternating_streams_keep_their_order() {
+    assert_eq!(
+        run_and_capture_streams("import sys\nprint('1')\nprint('2', file=sys.stderr)\nprint('3')"),
+        vec![
+            (PrintStream::Stdout, "1\n".to_owned()),
+            (PrintStream::Stderr, "2\n".to_owned()),
+            (PrintStream::Stdout, "3\n".to_owned()),
+        ]
+    );
+}
+
+/// `sep` and `end` follow the file the call names, not the default stream.
+#[test]
+fn print_sep_and_end_follow_the_file() {
+    assert_eq!(
+        run_and_capture_streams("import sys\nprint('a', 'b', sep='-', end='!', file=sys.stderr)"),
+        vec![(PrintStream::Stderr, "a-b!".to_owned())]
+    );
+}
+
+#[test]
+fn print_file_other_than_a_sys_stream_raises() {
+    let ex = MontyRun::new(
+        "print('x', file=42)".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let err = ex
+        .run(vec![], ResourceTracker::default(), PrintWriter::Disabled)
+        .expect_err("only sys.stdout and sys.stderr can be written to");
+    assert_snapshot!(
+        err.message().unwrap(),
+        @"print() 'file' argument must be sys.stdout or sys.stderr, not int"
+    );
 }

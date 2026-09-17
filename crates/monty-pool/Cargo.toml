@@ -16,16 +16,21 @@ repository = { workspace = true }
 name = "monty_pool"
 
 [features]
-telemetry-adapter = [
+telemetry = [
     "dep:logfire",
     "dep:num-traits",
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
+    "dep:opentelemetry-proto",
+    "dep:prost",
     "dep:serde",
     "dep:serde_json",
     "dep:tracing",
     "dep:tracing-opentelemetry",
 ]
+# Former name of `telemetry`, kept so consumers pinning this crate by git rev
+# or version keep building across the rename. Remove once they have moved.
+telemetry-adapter = ["telemetry"]
 
 [dependencies]
 monty-types = { workspace = true }
@@ -52,6 +57,9 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 # Typed values used when recording attributes; version must match logfire's.
 opentelemetry = { version = "0.32", optional = true }
+# Aggregated metrics cross language-extension boundaries as standard OTLP protobuf.
+opentelemetry-proto = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
 # Span construction and eager OTel context creation; versions must match Logfire.
 tracing = { version = "0.1", optional = true }
 tracing-opentelemetry = { version = "0.33", optional = true }

@@ -11,6 +11,7 @@
 
 mod async_dispatch;
 mod build;
+mod callback_context;
 pub mod exceptions;
 mod external;
 mod limits;
@@ -140,7 +141,7 @@ mod _monty {
     #[pymodule_export]
     use super::PyNameLookupSnapshot as NameLookupSnapshot;
     #[pymodule_export]
-    use super::telemetry::_install_telemetry_adapter;
+    use super::telemetry::_install_telemetry;
     use super::{get_not_handled, get_version};
 
     #[pymodule_init]

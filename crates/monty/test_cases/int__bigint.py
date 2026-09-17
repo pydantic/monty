@@ -484,3 +484,145 @@ assert b'ab' * neg == b''
 zero = big - big
 assert 'ab' * zero == ''
 assert b'ab' * zero == b''
+
+# === Mixed int/float arithmetic with long ints ===
+big = 2**70
+assert big // 3.0 == 3.935305402391371e20
+assert -big // 3.0 == -3.935305402391371e20
+assert 3.0 // big == 0.0
+assert big % 3.0 == 1.0
+assert -big % 3.0 == 2.0
+assert big % -3.0 == -2.0
+assert 3.0 % -big == -1.1805916207174113e21
+assert divmod(-big, 3.0) == (-3.935305402391371e20, 2.0)
+assert divmod(3.0, -big) == (-1.0, -1.1805916207174113e21)
+assert 1.0**big == 1.0
+assert 0.5**big == 0.0
+assert big**1.5 == 4.056481920730334e31
+assert big**-1 == 8.470329472543003e-22
+assert pow(0.5, big) == 0.0
+assert pow(big, 1.5) == 4.056481920730334e31
+assert pow(big, -1) == 8.470329472543003e-22
+assert 2**-big == 0.0
+assert float(big) == 1.1805916207174113e21
+assert float(-big) == -1.1805916207174113e21
+assert float(100000000000000000000000000000) == 1e29
+assert 100000000000000000000000000000 * 1.0 == 1e29
+
+for compute in [lambda: big / 0.0, lambda: big // 0.0, lambda: big % 0.0, lambda: divmod(big, 0.0)]:
+    try:
+        compute()
+        assert False, 'expected ZeroDivisionError'
+    except ZeroDivisionError as e:
+        assert str(e) == 'division by zero'
+
+for compute in [lambda: 0.0**-big, lambda: pow(0.0, -big)]:
+    try:
+        compute()
+        assert False, 'expected ZeroDivisionError'
+    except ZeroDivisionError as e:
+        assert str(e) == 'zero to a negative power'
+
+# === Float conversion overflow ===
+# Every mixed int/float operation converts the int the way float() does, so an int
+# beyond the float range raises instead of turning into inf.
+huge = 10**400
+for compute in [
+    lambda: float(huge),
+    lambda: huge + 1.0,
+    lambda: 1.0 + huge,
+    lambda: huge - 1.0,
+    lambda: 1.0 - huge,
+    lambda: huge * 1.0,
+    lambda: 1.0 * huge,
+    lambda: -huge * 1.0,
+    lambda: huge / 1.0,
+    lambda: 1.0 / huge,
+    lambda: huge // 1.0,
+    lambda: 1.0 // huge,
+    lambda: huge % 1.0,
+    lambda: 1.0 % huge,
+    lambda: divmod(huge, 1.0),
+    lambda: divmod(1.0, huge),
+    lambda: huge**1.5,
+    lambda: 1.5**huge,
+    lambda: huge**-1,
+    lambda: 2**-huge,
+    lambda: pow(huge, 1.5),
+    lambda: pow(1.5, huge),
+    lambda: pow(huge, -1),
+    lambda: pow(2, -huge),
+    lambda: huge * float('inf'),
+    lambda: huge * float('nan'),
+]:
+    try:
+        compute()
+        assert False, 'expected OverflowError'
+    except OverflowError as e:
+        assert str(e) == 'int too large to convert to float'
+
+x = 1.0
+try:
+    x *= huge
+    assert False, 'expected OverflowError'
+except OverflowError as e:
+    assert str(e) == 'int too large to convert to float'
+
+# Comparisons are exact and never convert.
+assert 1.0 < huge
+assert huge != 1.0
+
+# float() rounds half to even at the float boundary and its range edge.
+assert float(2**64 + 2**11) == 1.8446744073709552e19
+assert float(2**64 + 2**11 + 1) == 1.8446744073709556e19
+assert float(2**64 + 3 * 2**11) == 1.844674407370956e19
+assert float(2**1024 - 2**971) == 1.7976931348623157e308
+assert float(2**1024 - 2**970 - 1) == 1.7976931348623157e308
+try:
+    float(2**1024 - 2**970)
+    assert False, 'expected OverflowError'
+except OverflowError as e:
+    assert str(e) == 'int too large to convert to float'
+
+# === True division rounds once ===
+# int / int divides the integers and rounds to the nearest float, so operands beyond
+# the float range still divide, and i64 operands above 2**53 do not round twice.
+assert huge / huge == 1.0
+assert (huge + 1) / huge == 1.0
+assert huge / (huge // 2) == 2.0
+assert 1 / huge == 0.0
+assert str(-1 / huge) == '-0.0'
+assert (2**1024 - 2**971) / 1 == 1.7976931348623157e308
+assert (2**1024 - 2**970 - 1) / 1 == 1.7976931348623157e308
+assert (2**63 - 1) / (2**62 + 1) == 2.0
+assert -(2**63) / 3 == -3.0744573456182584e18
+assert 1 / 2**1074 == 5e-324
+assert 1 / 2**1075 == 0.0
+assert 3 / 2**1076 == 5e-324
+assert 3 / 2**1075 == 1e-323
+assert 5 / 2**1075 == 1e-323
+
+for compute in [lambda: huge / 1, lambda: -huge / 3, lambda: (2**1024 - 2**970) / 1, lambda: huge / -(2**70)]:
+    try:
+        compute()
+        assert False, 'expected OverflowError'
+    except OverflowError as e:
+        assert str(e) == 'integer division result too large for a float'
+
+# A zero base still converts the exponent first, so an out-of-range exponent overflows
+# before the zero-to-a-negative-power check.
+for compute in [lambda: 0**-huge, lambda: pow(0, -huge), lambda: False**-huge, lambda: pow(False, -huge)]:
+    try:
+        compute()
+        assert False, 'expected OverflowError'
+    except OverflowError as e:
+        assert str(e) == 'int too large to convert to float'
+for compute in [lambda: 0**-big, lambda: pow(0, -big), lambda: False**-big, lambda: (big - big) ** -big]:
+    try:
+        compute()
+        assert False, 'expected ZeroDivisionError'
+    except ZeroDivisionError as e:
+        assert str(e) == 'zero to a negative power'
+assert 0 / big == 0.0
+assert str(0 / -big) == '-0.0'
+assert str(-0.0 // big) == '-0.0'

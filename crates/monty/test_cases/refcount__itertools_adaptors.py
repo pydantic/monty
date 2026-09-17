@@ -121,6 +121,108 @@ except TypeError as exc:
     assert str(exc) == "'int' object is not iterable"
 
 
+# Resolving an argument re-enters the VM through `__iter__`, so a re-entrant
+# `next()` on the same chain can install a source that the outer pass then
+# displaces. The displaced iterator and the item it never reached are named by
+# NOTHING, so losing that ref shows up as an unreachable object rather than as
+# a count.
+class Displacing:
+    def __iter__(self):
+        # Installs an iterator over the argument below, with an item to spare.
+        next(displacing)
+        return iter([[3]])
+
+
+displacing = itertools.chain([[1]], Displacing(), [[9], [8]])
+assert [len(item) for item in displacing] == [1, 1]
+
+
+# `pairwise` primes `previous` after running the source, so a re-entrant
+# `next()` that primes it first leaves a value the priming pass must release.
+# The displaced item is named by NOTHING, so a lost ref shows up as an
+# unreachable object rather than as a count.
+class PrimeDisplacing:
+    def __init__(self):
+        self.calls = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.calls += 1
+        if self.calls == 1:
+            next(prime_displacing)
+        if self.calls > 4:
+            raise StopIteration
+        return [self.calls]
+
+
+prime_displacing = itertools.pairwise(PrimeDisplacing())
+# The pair is `([3], [4])`, not `([1], [2])`: the re-entrant call consumed the
+# first two items, so a count alone would pass on a wrong left half.
+assert list(prime_displacing) == [([3], [4])]
+
+
+# The same window, but the re-entrant call runs the source DRY: that latches the
+# adaptor and clears `previous`, so the outer pull's item must not be written
+# back. CPython releases it at exhaustion (verified with `weakref` on 3.14);
+# leaving it in `previous` pins it until the spent pairwise is itself collected.
+class PrimeExhausting:
+    def __init__(self):
+        self.calls = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.calls += 1
+        if self.calls == 1:
+            try:
+                next(prime_exhausting)
+                assert False, 'expected the re-entrant next to exhaust the source'
+            except StopIteration:
+                pass
+            return exhausted_item
+        raise StopIteration
+
+
+exhausted_item = [1]
+prime_exhausting = itertools.pairwise(PrimeExhausting())
+try:
+    next(prime_exhausting)
+    assert False, 'expected pairwise to stop once the source was spent'
+except StopIteration:
+    pass
+
+
+# A source that raises on the SECOND pull leaves `next` through a `?` while
+# the pass still holds the item it captured to pair — the path `Boom` above
+# cannot reach, since raising on the first pull holds nothing yet.
+class BoomLate:
+    def __init__(self):
+        self.calls = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.calls += 1
+        if self.calls > 1:
+            raise ValueError('boom')
+        return [self.calls]
+
+
+late_erroring = itertools.pairwise(BoomLate())
+try:
+    next(late_erroring)
+    assert False, 'expected ValueError'
+except ValueError:
+    pass
+# Dropped, not merely held: while the adaptor lives it still names the captured
+# item, so a ref the raising path failed to release stays reachable and hides.
+late_erroring = None
+
+
 # The predicate-driven adaptors own a CALLABLE as well as a source, so each has
 # a second trace edge. A closure is used deliberately: a plain `def` is an
 # immediate `Value`, not a heap ref, so it would exercise no hook at all.
@@ -140,6 +242,15 @@ def make_adder():
         return a + b + len(bound)
 
     return add
+
+
+def make_concat():
+    bound = []
+
+    def concat(a, b):
+        return a + b + bound
+
+    return concat
 
 
 def make_boom():
@@ -200,6 +311,48 @@ except ValueError:
     pass
 
 
+# Pulling an item runs user code that can step the same accumulate, advancing
+# `total` under the pass that made the pull. The outer fold reads the total left
+# behind and must release the one it displaces — that displaced total is named
+# by NOTHING, so losing the ref shows as an unreachable object, not as a count.
+class AccDisplacing:
+    def __init__(self):
+        self.calls = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.calls += 1
+        if self.calls == 2:
+            next(acc_displacing)
+        if self.calls > 4:
+            raise StopIteration
+        return [self.calls]
+
+
+acc_displacing = itertools.accumulate(AccDisplacing())
+# The re-entrant call advances `self.calls` as well as the total, so the item
+# the outer pull returns is `[3]` and it folds into the total that call left.
+assert list(acc_displacing) == [[1], [1, 3, 3], [1, 3, 3, 4]]
+# `AccDisplacing` counts 2: a spent `accumulate` keeps its source, as CPython's
+# does, so the instance holding the class stays live.
+
+
+# `accumulate`'s fold runs user code with both the total and the item held, so
+# a raising binop leaves through a `?` with two owned values live.
+acc_erroring = itertools.accumulate([[1], [2]], make_boom())
+next(acc_erroring)
+try:
+    next(acc_erroring)
+    assert False, 'expected ValueError'
+except ValueError:
+    pass
+# Dropped for the same reason: the total and the item the fold held are both
+# still named by a live adaptor.
+acc_erroring = None
+
+
 # Spending an adaptor releases what it can no longer reach, THERE AND THEN
 # rather than at destruction — as `pairwise` and `islice` do above. Each source
 # and callable is named separately, so a count of 1 means the spent adaptor let
@@ -218,5 +371,64 @@ drop_source = iter([[], [1]])
 past_drop = itertools.dropwhile(drop_pred, drop_source)
 assert next(past_drop) == [1]
 
+
+# The batch-three adaptors. `accumulate` has THREE edges — source, callable and
+# the running total. Two steps are needed for the total edge: the first stores
+# the source's own item untouched, and only the second folds one in to produce a
+# list the adaptor alone names.
+acc_live = itertools.accumulate([[1], [2]], make_concat())
+next(acc_live)
+next(acc_live)
+bat_live = itertools.batched([[1], [2]], 1)
+next(bat_live)
+zip_live = itertools.zip_longest([[1]], [[2], [3]])
+next(zip_live)
+
+# `zip_longest`'s fillvalue is a second edge, named only through the adaptor,
+# and is reached once a shorter source has run out.
+fill_live = itertools.zip_longest([[1]], [[2], [3]], fillvalue=[9])
+next(fill_live)
+next(fill_live)
+
+# The freeing paths: `py_dec_ref_ids` runs only on release, so each of these
+# must be dropped rather than merely held.
+gone_acc = itertools.accumulate([[1], [2]], make_concat())
+next(gone_acc)
+next(gone_acc)
+gone_acc = None
+gone_bat = itertools.batched([[1], [2]], 1)
+next(gone_bat)
+gone_bat = None
+gone_zip = itertools.zip_longest([[1]], [[2]], fillvalue=[9])
+next(gone_zip)
+gone_zip = None
+
+# Spending releases what can no longer be reached, THERE AND THEN. `batched`
+# clears its source on the empty batch that ends it, and `zip_longest` clears
+# each source as it runs out, so both counts fall to 1 while the adaptor lives.
+bat_source = iter([[1], [2]])
+spent_bat = itertools.batched(bat_source, 2)
+assert list(spent_bat) == [([1], [2])]
+zip_source = iter([[1]])
+spent_zip = itertools.zip_longest(zip_source)
+assert list(spent_zip) == [([1],)]
+
+# Arguments the constructors only inspect are released too. `batched` truth-tests
+# `strict` without storing it, and a heap-backed one is the only shape that shows
+# an over-count — an inline `strict=True` is not a ref at all.
+strict_flag = [1]
+inspected_bat = itertools.batched('AB', 2, strict=strict_flag)
+
+# `zip_longest` resolves every argument eagerly, so a non-iterable part-way along
+# has to release the ones already resolved AND the ones never reached. The bad
+# argument goes in the MIDDLE: put it last and the untouched tail is empty.
+zip_resolved = [1]
+zip_unreached = [2]
+try:
+    itertools.zip_longest(zip_resolved, 5, zip_unreached)
+    assert False, 'expected zip_longest to reject a non-iterable'
+except TypeError:
+    pass
+
 len('done')
-# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1, 'chain_drained_source': 1, 'chain_drained': 1, 'chain_unreached_source': 1, 'chain_failed': 1, 'take_live': 1, 'drop_live': 1, 'filter_live': 1, 'star_live': 1, 'filter_none': 1, 'rejected': 1, 'pred_erroring': 1, 'star_erroring': 1, 'take_pred': 1, 'take_source': 1, 'latched_take': 1, 'drop_pred': 2, 'drop_source': 2, 'past_drop': 1}
+# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1, 'chain_drained_source': 1, 'chain_drained': 1, 'chain_unreached_source': 1, 'chain_failed': 1, 'Displacing': 1, 'displacing': 1, 'PrimeDisplacing': 1, 'prime_displacing': 1, 'PrimeExhausting': 1, 'prime_exhausting': 1, 'exhausted_item': 1, 'BoomLate': 1, 'take_live': 1, 'drop_live': 1, 'filter_live': 1, 'star_live': 1, 'filter_none': 1, 'rejected': 1, 'pred_erroring': 1, 'star_erroring': 1, 'take_pred': 1, 'take_source': 1, 'latched_take': 1, 'drop_pred': 2, 'drop_source': 2, 'past_drop': 1, 'fill_live': 1, 'zip_live': 1, 'bat_live': 1, 'acc_live': 1, 'AccDisplacing': 2, 'acc_displacing': 1, 'bat_source': 1, 'spent_zip': 1, 'spent_bat': 1, 'zip_source': 1, 'strict_flag': 1, 'inspected_bat': 1, 'zip_resolved': 1, 'zip_unreached': 1}

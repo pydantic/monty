@@ -18,7 +18,7 @@ use pyo3::{
     types::{PyDict, PyTuple},
 };
 
-use crate::exceptions::MontyConversionError;
+use crate::{callback_context, exceptions::MontyConversionError};
 
 /// Dispatches a host-routed call — a method on a host class instance, or on
 /// a host class type (a classmethod, or construction spelled `__call__`) —
@@ -64,9 +64,10 @@ fn call_object_method_raw<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     validate_host_method_name(function_name)?;
     let (py_args_tuple, py_kwargs) = wire_call_arguments(py, args, kwargs, instances)?;
-    instances
-        .call_method(py, object_id, function_name, &py_args_tuple, &py_kwargs)
-        .map(|obj| obj.into_bound(py))
+    callback_context::call(py, || {
+        instances.call_method(py, object_id, function_name, &py_args_tuple, &py_kwargs)
+    })
+    .map(|obj| obj.into_bound(py))
 }
 
 /// Converts wire args/kwargs into the Python tuple/dict a host call needs.
@@ -105,7 +106,7 @@ pub fn resolve_object_attr(
         // from a (possibly compromised) child are untrusted.
         NameLookupResult::Undefined
     } else {
-        match instances.lookup_lazy_attr(py, object_id, name) {
+        match callback_context::call(py, || instances.lookup_lazy_attr(py, object_id, name)) {
             Ok(Some(value)) => match py_to_monty_value(value.bind(py), instances) {
                 Ok(obj) => NameLookupResult::Value(obj),
                 Err(exc) => NameLookupResult::Error(exc),
@@ -202,7 +203,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
             return Ok(None);
         };
         let (py_args_tuple, py_kwargs) = wire_call_arguments(self.py, args, kwargs, self.instances)?;
-        let result = callable.call(&py_args_tuple, Some(&py_kwargs))?;
+        let result = callback_context::call(self.py, || callable.call(&py_args_tuple, Some(&py_kwargs)))?;
         py_to_monty(&result, self.instances, 0).map(Some)
     }
 
@@ -239,7 +240,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
             return Ok(None);
         };
         let (py_args_tuple, py_kwargs) = wire_call_arguments(self.py, args, kwargs, self.instances)?;
-        callable.call(&py_args_tuple, Some(&py_kwargs)).map(Some)
+        callback_context::call(self.py, || callable.call(&py_args_tuple, Some(&py_kwargs))).map(Some)
     }
 }
 

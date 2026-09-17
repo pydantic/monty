@@ -1,6 +1,7 @@
 use std::{borrow::Cow, cmp::Ordering, fmt::Write};
 
 use ahash::AHashSet;
+
 /// Trait for heap-allocated Python values that need common operations.
 ///
 /// This trait abstracts over container types (List, Tuple, Str, Bytes) stored
@@ -12,8 +13,6 @@ use ahash::AHashSet;
 ///
 /// The trait is designed to work with `enum_dispatch` for efficient virtual
 /// dispatch on `HeapData` without boxing overhead.
-use monty_types::OsFunctionCall;
-
 use super::{Type, allocate_string};
 use crate::{
     args::ArgValues,
@@ -23,48 +22,8 @@ use crate::{
     hash::HashValue,
     heap::{DropWithContext, HeapId, HeapObjectRead, HeapReadOutput},
     identity::Identity,
-    intern::StringId,
     value::{EitherStr, Value},
 };
-
-/// Return type for attribute method calls on heap-allocated types.
-///
-/// Similar to `CallResult` but without the `FramePushed` variant, since attribute
-/// methods never push new frames directly. Used by `py_call_attr` implementations
-/// to signal the VM about what action to take after the call completes.
-///
-/// When needed for features like `list.sort(key=func)`, we can add:
-/// ```ignore
-/// CallFunction(Value, ArgValues)  // Call a callable, result becomes attr result
-/// ```
-#[derive(Debug)]
-pub enum AttrCallResult {
-    /// Call completed synchronously with a value to return.
-    Value(Value),
-
-    /// The method needs an OS operation. VM should yield `FrameExit::OsCall` to host.
-    ///
-    /// The host executes the OS operation and resumes the VM with the result.
-    /// Used by `Path` filesystem methods like `exists()`, `read_text()`, etc.
-    OsCall(OsFunctionCall),
-
-    /// The method needs to call an external function. VM should yield `FrameExit::ExternalCall`.
-    ///
-    /// Used when attribute methods delegate to registered external functions.
-    /// Currently unused - will be used when types need to call external functions from attribute methods.
-    #[expect(dead_code)]
-    ExternalCall(StringId, ArgValues),
-}
-
-impl From<AttrCallResult> for CallResult {
-    fn from(result: AttrCallResult) -> Self {
-        match result {
-            AttrCallResult::Value(v) => Self::Value(v),
-            AttrCallResult::OsCall(call) => Self::OsCall(call),
-            AttrCallResult::ExternalCall(ext_id, args) => Self::External(EitherStr::Interned(ext_id), args),
-        }
-    }
-}
 
 /// Outcome of an ordering comparison ([`PyTrait::py_cmp`] / [`Value::py_cmp`]).
 ///
@@ -418,6 +377,16 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
 
     /// Reflected implementation of Python modulus (`__rmod__`).
     fn py_rmod_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// One-sided implementation of Python `divmod()` (`__divmod__`).
+    fn py_divmod_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python `divmod()` (`__rdivmod__`).
+    fn py_rdivmod_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 

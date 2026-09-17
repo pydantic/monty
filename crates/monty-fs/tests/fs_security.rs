@@ -145,6 +145,18 @@ fn assert_blocked(mt: &mut MountTable, op: PathOp, path: &str) {
         PathOp::Mkdir => call_mkdir(mt, path, false, false),
         _ => call(mt, op, path),
     };
+    assert_result_blocked(result, path);
+}
+
+/// Like [`assert_blocked`] for a call that needs its own args (rename, rmdir).
+fn assert_call_blocked(mt: &mut MountTable, c: OsFunctionCall) {
+    let label = format!("{c:?}");
+    assert_result_blocked(dispatch(mt, c), &label);
+}
+
+/// A boundary refusal is any of the "no such thing here" errors, or the call
+/// not being handled at all; anything else is a bug.
+fn assert_result_blocked(result: Option<Result<MontyObject, MountError>>, label: &str) {
     match result {
         Some(Err(
             MountError::PathEscape { .. }
@@ -153,8 +165,8 @@ fn assert_blocked(mt: &mut MountTable, op: PathOp, path: &str) {
             | MountError::EmbeddedNullByte(_),
         ))
         | None => {}
-        Some(Ok(val)) => panic!("expected blocked, got Ok({val:?}) for path: {path}"),
-        Some(Err(other)) => panic!("unexpected error variant for {path}: {other}"),
+        Some(Ok(val)) => panic!("expected blocked, got Ok({val:?}) for {label}"),
+        Some(Err(other)) => panic!("unexpected error variant for {label}: {other}"),
     }
 }
 
@@ -184,18 +196,7 @@ fn assert_write_blocked(mt: &mut MountTable, op: PathOp, path: &str) {
         }),
         other => panic!("assert_write_blocked: unexpected op {other:?}"),
     };
-    let result = dispatch(mt, call_variant);
-    match result {
-        Some(Err(
-            MountError::PathEscape { .. }
-            | MountError::NoMountPoint(_)
-            | MountError::Io(_, _)
-            | MountError::EmbeddedNullByte(_),
-        ))
-        | None => {}
-        Some(Ok(val)) => panic!("expected write blocked, got Ok({val:?}) for path: {path}"),
-        Some(Err(other)) => panic!("unexpected error variant for write to {path}: {other}"),
-    }
+    assert_result_blocked(dispatch(mt, call_variant), path);
 }
 
 /// Asserts that `open(path, mode)` is blocked at open time.
@@ -1162,6 +1163,83 @@ mod symlink_tests {
 
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
         assert_blocked(&mut mt, PathOp::ReadText, "/mnt/link2/secret.txt");
+    }
+
+    /// A symlink whose *target string* ends in `/` must not let the chain escape.
+    ///
+    /// cap-primitives' fallback resolver (the only one on macOS and Windows, and
+    /// on Linux without `openat2`) re-appended that slash to the next `openat`,
+    /// and a trailing slash makes the kernel ignore `O_NOFOLLOW`
+    /// (GHSA-hp8f-xmx4-4qrg, fixed in cap-primitives 4.0.3). The caller's path
+    /// carries no slash, so virtual-path normalisation never sees it.
+    #[test]
+    fn symlink_target_with_trailing_slash_escape_blocked() {
+        if !symlinks_supported() {
+            return;
+        }
+        for mode in [
+            MountMode::ReadWrite,
+            MountMode::ReadOnly,
+            MountMode::OverlayMemory(OverlayState::new()),
+        ] {
+            let dir = create_test_dir();
+            let outside = TempDir::new().unwrap();
+            fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+            fs::write(outside.path().join("victim.txt"), "victim").unwrap();
+            fs::create_dir(outside.path().join("empty")).unwrap();
+            fs::create_dir(dir.path().join("a")).unwrap();
+
+            // link1 -> "evil/" (the slash lives in the target), evil -> outside.
+            symlink_dir("evil/", dir.path().join("a/link1"));
+            symlink_dir(outside.path(), dir.path().join("a/evil"));
+
+            let read_only = matches!(mode, MountMode::ReadOnly);
+            let mut mt = mount_at_mnt(&dir, mode);
+            assert_blocked(&mut mt, PathOp::ReadText, "/mnt/a/link1/secret.txt");
+            assert_blocked(&mut mt, PathOp::Iterdir, "/mnt/a/link1");
+            if read_only {
+                // The write gate refuses these before any path is resolved.
+                continue;
+            }
+            assert_blocked(&mut mt, PathOp::Mkdir, "/mnt/a/link1/pwned");
+            assert_blocked(&mut mt, PathOp::Unlink, "/mnt/a/link1/victim.txt");
+            assert_write_blocked(&mut mt, PathOp::WriteText, "/mnt/a/link1/dropped.txt");
+            assert_call_blocked(
+                &mut mt,
+                OsFunctionCall::Rmdir(MontyPath::new("/mnt/a/link1/empty".to_owned())),
+            );
+            // Pulling a host file in, and pushing mount data out.
+            assert_call_blocked(
+                &mut mt,
+                OsFunctionCall::Rename(RenameCallArgs {
+                    src: MontyPath::new("/mnt/a/link1/secret.txt".to_owned()),
+                    dst: MontyPath::new("/mnt/stolen.txt".to_owned()),
+                }),
+            );
+            assert_call_blocked(
+                &mut mt,
+                OsFunctionCall::Rename(RenameCallArgs {
+                    src: MontyPath::new("/mnt/hello.txt".to_owned()),
+                    dst: MontyPath::new("/mnt/a/link1/exfil.txt".to_owned()),
+                }),
+            );
+
+            // Ground truth on disk: nothing outside the mount changed.
+            let mut outside_names: Vec<String> = fs::read_dir(outside.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            outside_names.sort();
+            assert_eq!(outside_names, ["empty", "secret.txt", "victim.txt"]);
+            // Nothing from outside arrived in the mount, and nothing left it —
+            // checked through the mount, since an overlay's writes live in
+            // memory rather than on disk.
+            assert_invisible(&mut mt, PathOp::Exists, "/mnt/stolen.txt");
+            assert_eq!(
+                call(&mut mt, PathOp::Exists, "/mnt/hello.txt").unwrap().unwrap(),
+                MontyObject::Bool(true)
+            );
+        }
     }
 
     #[test]

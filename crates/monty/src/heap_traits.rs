@@ -236,7 +236,7 @@ impl<C, V: DropWithContext<C>> Drop for DropGuard<'_, C, V> {
 ///
 /// Beyond safety, this is often much more concise than inserting `drop_with` calls
 /// in every branch of complex control flow. For mutable access to the value, use
-/// [`defer_drop_mut!`].
+/// [`defer_drop_mut!`](crate::defer_drop_mut).
 ///
 /// # Limitation
 ///
@@ -255,7 +255,7 @@ macro_rules! defer_drop {
     };
 }
 
-/// Like [`defer_drop!`], but rebinds `$value` as `&mut V` via [`DropGuard::as_parts_mut`].
+/// Like [`defer_drop!`](crate::defer_drop), but rebinds `$value` as `&mut V` via [`DropGuard::as_parts_mut`].
 ///
 /// Use this when the value needs to be mutated in place — for example, advancing an
 /// iterator with `for_next()`, or swapping values during a min/max comparison.

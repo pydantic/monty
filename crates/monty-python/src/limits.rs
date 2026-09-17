@@ -11,9 +11,10 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 /// - `max_memory`: Maximum heap memory in bytes (int)
 /// - `gc_interval`: Run garbage collection every N allocations (int)
 /// - `max_recursion_depth`: Maximum function call stack depth (int, default: 1000)
+/// - `max_suspensions`: Maximum host round trips the pool will service (int, default: 1000)
 ///
 /// If a key is missing or set to `None`, that limit is not applied
-/// (except `max_recursion_depth` which defaults to 1000).
+/// (except `max_recursion_depth` and `max_suspensions`, which default to 1000).
 ///
 /// Raises `TypeError` if a value is present but has the wrong type.
 /// Raises `ValueError` if the dict contains an unknown key — limits are a
@@ -40,6 +41,7 @@ pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty_types::Resourc
             LimitKey::MaxMemory => limits.max_memory(value.extract()?),
             LimitKey::GcInterval => limits.gc_interval(value.extract()?),
             LimitKey::MaxRecursionDepth => limits.max_recursion_depth(value.extract()?),
+            LimitKey::MaxSuspensions => limits.max_suspensions(value.extract()?),
         };
     }
     Ok(limits)
@@ -53,6 +55,7 @@ enum LimitKey {
     MaxMemory,
     GcInterval,
     MaxRecursionDepth,
+    MaxSuspensions,
 }
 
 impl<'a, 'py> FromPyObject<'a, 'py> for LimitKey {
@@ -64,6 +67,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for LimitKey {
             "max_memory" => Ok(Self::MaxMemory),
             "gc_interval" => Ok(Self::GcInterval),
             "max_recursion_depth" => Ok(Self::MaxRecursionDepth),
+            "max_suspensions" => Ok(Self::MaxSuspensions),
             _ => {
                 // `repr()` runs user `__repr__`, which may itself raise — fall
                 // back so the promised `ValueError` is raised for every unknown key.
@@ -72,7 +76,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for LimitKey {
                     .map_or_else(|_| "<unprintable key>".to_owned(), |r| r.to_string());
                 Err(PyValueError::new_err(format!(
                     "unknown limits key {key_repr}; accepted keys are 'max_duration_secs', \
-                     'max_memory', 'gc_interval', 'max_recursion_depth'"
+                     'max_memory', 'gc_interval', 'max_recursion_depth', 'max_suspensions'"
                 )))
             }
         }

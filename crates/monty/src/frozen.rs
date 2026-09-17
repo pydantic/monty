@@ -12,7 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize, de::Error};
 use crate::{
     bytecode::{Compiler, Opcode},
     function::Function,
-    intern::{InternerBuilder, Interns},
+    intern::{FunctionId, Interns},
     parse::parse,
     prepare::prepare,
 };
@@ -126,21 +126,10 @@ impl<'de> Deserialize<'de> for FrozenFunctionCode {
     }
 }
 
-/// Creates an interner seeded with the frozen function bundle.
+/// Seeds a program or REPL with captured frozen code and its interned literals.
 ///
-/// Frozen string IDs form a stable prefix, allowing compiled bytecode to be
-/// cloned into each program while user strings are appended afterwards. Frozen
-/// bodies must be self-contained because global slots address the user module.
-pub(crate) fn seed_interner(code: &str) -> InternerBuilder {
-    InternerBuilder::from_interns(&frozen_interns(), code)
-}
-
-/// Returns frozen functions to capture in a newly compiled program.
-pub(crate) fn functions() -> Vec<FrozenFunctionCode> {
-    frozen_interns().frozen_functions_clone()
-}
-
-/// Clones the frozen metadata for a new empty REPL session.
+/// Frozen string IDs form a stable prefix before user strings are appended.
+/// Bodies must be self-contained because global slots address the user module.
 pub(crate) fn interns() -> Interns {
     frozen_interns().clone()
 }
@@ -158,16 +147,21 @@ fn frozen_interns() -> MutexGuard<'static, Interns> {
 fn compile_frozen_interns() -> Interns {
     let parsed = parse(FROZEN_SOURCE, FROZEN_FILENAME).expect("frozen Python source should parse");
     let prepared = prepare(parsed, Vec::new()).expect("frozen Python source should prepare");
-    let mut interns = Interns::new(prepared.interner, Vec::new());
-    let compiled = Compiler::compile_module(&prepared.nodes, &interns, &prepared.globals, CompileOptions::default())
-        .expect("frozen Python source should compile");
+    let mut interns = prepared.interner;
+    Compiler::compile_module(
+        &prepared.nodes,
+        &mut interns,
+        &prepared.globals,
+        CompileOptions::default(),
+    )
+    .expect("frozen Python source should compile");
     assert_eq!(
-        compiled.functions.len(),
+        interns.functions_len(),
         FROZEN_FUNCTION_COUNT,
         "frozen function table changed without updating IDs"
     );
-    let mut functions = compiled.functions.into_iter();
-    let reduce = functions.next().expect("frozen reduce function should exist");
+    let reduce = interns.get_function(FunctionId::from_index(0)).clone();
+    interns.truncate_functions(0);
     assert_eq!(
         reduce.code.bytecode().get(..REDUCE_LOOP_ENTRY),
         Some([Opcode::LoadLocal1 as u8, Opcode::GetIter as u8].as_slice()),

@@ -247,6 +247,7 @@ export interface ResourceLimits {
   maxMemoryBytes?: bigint
   gcInterval?: bigint
   maxRecursionDepth?: bigint
+  maxSuspensions?: bigint
 }
 /**
  * # Variants
@@ -287,11 +288,13 @@ export interface ConfigureRequest {
   assertMessageAnnotations?: number
   typeCheckFormat: TypeCheckFormat
   typeCheckColor: boolean
+  printFlushIntervalMs?: number
 }
 export interface FeedRequest {
   code: string
   inputs: Array<NamedValue>
   skipTypeCheck: boolean
+  cwd: string
 }
 export interface RaisedError {
   excType: string
@@ -348,6 +351,7 @@ export type Request =
   | RequestResumeCall
   | RequestResumeNameLookup
   | RequestResumeFutures
+  | RequestAbortFeed
   | RequestDump
   | RequestLoad
   | RequestReset
@@ -370,6 +374,10 @@ export interface RequestResumeNameLookup {
 export interface RequestResumeFutures {
   tag: 'resume-futures'
   val: Array<FutureResult>
+}
+export interface RequestAbortFeed {
+  tag: 'abort-feed'
+  val: RaisedError
 }
 export interface RequestDump {
   tag: 'dump'
@@ -408,6 +416,7 @@ export interface FunctionCallEvent {
   kwargs: Array<ValuePair>
   callId: number
   objectId?: string
+  allowEagerAwait: boolean
 }
 export interface NameLookupEvent {
   name: string
@@ -482,4 +491,5 @@ export interface EventShutdown {
 export interface DispatchResult {
   status: Status
   events: Array<Event>
+  maxSuspensions?: bigint
 }

@@ -6,7 +6,50 @@ import { test } from 'vitest'
 
 import { t } from './assertions.js'
 import { skipIfBrowser } from './env.js'
-import { Monty } from '@pydantic/monty/wasm'
+import { Monty, MontyFileHandle } from '@pydantic/monty/wasm'
+import { checkOsPathValidation, checkRelativePathResults } from './os_paths.js'
+
+test('WASM filesystem results preserve relative paths', async (ctx) => {
+  skipIfBrowser(ctx)
+  await using pool = await Monty.create()
+  await using session = await pool.checkout()
+  await checkRelativePathResults((code, options) => session.feedRun(code, options), MontyFileHandle)
+})
+
+test('WASM rejects NUL paths before callbacks and reports clean no-handler paths', async (ctx) => {
+  skipIfBrowser(ctx)
+  await using pool = await Monty.create()
+  await using session = await pool.checkout()
+  await checkOsPathValidation((code, options) => session.feedRun(code, options))
+})
+
+test('OS callback paths are normalized over the wasm transport', async (ctx) => {
+  skipIfBrowser(ctx)
+  await using pool = await Monty.create()
+  await using session = await pool.checkout()
+  const calls: unknown[] = []
+  await session.feedRun(
+    `import os
+from pathlib import Path
+Path('sub/../file.txt').exists()
+Path('/other//sub/../file.txt').exists()
+os.listdir()
+os.rename('./sub/../src', '../dst')`,
+    {
+      cwd: '/data',
+      os: (name, args) => {
+        calls.push([name, args])
+        return name === 'Path.iterdir' ? [] : true
+      },
+    },
+  )
+  t.deepEqual(calls, [
+    ['Path.exists', ['/data/file.txt']],
+    ['Path.exists', ['/other/file.txt']],
+    ['Path.iterdir', ['/data']],
+    ['Path.rename', ['/data/src', '/dst']],
+  ])
+})
 
 test('a time decodes over the wasm transport', async (ctx) => {
   skipIfBrowser(ctx)

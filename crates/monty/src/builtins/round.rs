@@ -1,12 +1,15 @@
 //! Implementation of the round() builtin function.
 
 use num_bigint::BigInt;
+use num_integer::Integer;
+use num_traits::Pow;
 
 use crate::{
     args::{ArgValues, FromArgs, is_long_int},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
+    heap::Heap,
     types::LongInt,
     value::Value,
 };
@@ -101,19 +104,14 @@ pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                 // Round to `d` decimal places using banker's rounding.
                 Ok(Value::Float(round_float_to_digits(*f, d)))
             } else {
-                // No digits: round to nearest integer and return int (banker's rounding)
-                if f.is_nan() {
-                    Err(SimpleException::new_msg(ExcType::ValueError, "cannot convert float NaN to integer").into())
-                } else if f.is_infinite() {
-                    Err(
-                        SimpleException::new_msg(ExcType::OverflowError, "cannot convert float infinity to integer")
-                            .into(),
-                    )
-                } else {
-                    Ok(Value::Int(f64_to_i64(bankers_round(*f))))
-                }
+                LongInt::value_from_f64(bankers_round(*f), vm.heap)
             }
         }
+        _ if let Some(n) = number.as_long_int(vm) => match digits {
+            Some(d) if d < 0 => Ok(round_to_tens(n, d.unsigned_abs(), vm.heap)),
+            // Rounding to a whole number of places leaves an int unchanged.
+            _ => Ok(number.clone_with_heap(vm.heap)),
+        },
         _ => {
             let type_name = number.py_type_name(vm);
             Err(SimpleException::new_msg(
@@ -123,6 +121,25 @@ pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             .into())
         }
     }
+}
+
+/// Rounds an integer to the nearest multiple of `10**k`, half to even, exactly in integers
+/// like CPython's `int.__round__`.
+fn round_to_tens(n: &BigInt, k: u64, heap: &Heap) -> Value {
+    // `10**k` exceeds `|n|` once `k` passes its decimal digit count, so the result is 0.
+    let digit_bound = n.bits().saturating_mul(30_103) / 100_000 + 1;
+    if k > digit_bound {
+        return Value::Int(0);
+    }
+    let factor = Pow::pow(BigInt::from(10u8), k);
+    let (quotient, remainder) = n.div_mod_floor(&factor);
+    let twice_remainder = remainder << 1u32;
+    let quotient = if twice_remainder > factor || (twice_remainder == factor && quotient.is_odd()) {
+        quotient + 1
+    } else {
+        quotient
+    };
+    LongInt::new(quotient * factor).into_value(heap)
 }
 
 /// Implements banker's rounding (round half to even).
@@ -137,9 +154,10 @@ fn bankers_round(value: f64) -> f64 {
         floor
     } else if frac > 0.5 {
         floor + 1.0
+    } else if floor % 2.0 == 0.0 {
+        floor
     } else {
-        // Exactly 0.5 - round to even
-        if f64_to_i64(floor) % 2 == 0 { floor } else { floor + 1.0 }
+        floor + 1.0
     }
 }
 
@@ -185,21 +203,4 @@ fn round_float_to_digits(value: f64, digits: i64) -> f64 {
     } else {
         rounded
     }
-}
-
-/// Converts `f64` to `i64` using saturating float-to-int casting.
-///
-/// Monty uses `i64` for integer values, so float-to-int conversion must pick a
-/// bounded representation:
-/// - Values outside the `i64` range saturate to `i64::MIN`/`i64::MAX`
-/// - `NaN` converts to `0`
-///
-/// This behavior is provided by Rust's `as` casting rules for float-to-int.
-fn f64_to_i64(value: f64) -> i64 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "intentional truncation; float-to-int casts saturate and map NaN to 0"
-    )]
-    let result = value as i64;
-    result
 }

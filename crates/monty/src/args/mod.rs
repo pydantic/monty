@@ -6,8 +6,6 @@ use std::{mem, slice, vec::IntoIter};
 
 pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
 pub(crate) use bind_python::Signature;
-#[cfg(feature = "test-hooks")]
-pub(crate) use bind_python::SignatureMetadataFault;
 pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg, is_long_int};
 pub(crate) use monty_macros::FromArgs;
 use monty_types::MontyObject;
@@ -17,7 +15,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::{ExprLoc, Identifier},
     heap::{ContainsHeap, DropWithContext, Heap},
-    intern::StringId,
+    intern::{Interns, StringId},
     object_bridge::MontyObjectExt,
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
@@ -66,6 +64,16 @@ impl ArgValues {
         match self {
             Self::Empty | Self::One(_) | Self::Two(_, _) => false,
             Self::Kwargs(kwargs) | Self::ArgsKargs { kwargs, .. } => !kwargs.is_empty(),
+        }
+    }
+
+    /// Rejects keywords before a positional-only function's arity or conversion checks.
+    pub(crate) fn reject_kwargs(self, name: &str, heap: &mut Heap) -> RunResult<Self> {
+        if self.has_kwargs() {
+            self.drop_with(heap);
+            Err(ExcType::type_error_no_kwargs(name))
+        } else {
+            Ok(self)
         }
     }
 
@@ -371,6 +379,25 @@ impl KwargsValues {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// The first keyword's name, for callables that accept none and report
+    /// CPython's `got an unexpected keyword argument`. A non-string key (only
+    /// possible via `**` unpacking) is CPython's `keywords must be strings`.
+    pub fn first_key(&self, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
+        let key = match self {
+            Self::Empty => return Ok(None),
+            Self::Inline(kvs) => return Ok(kvs.first().map(|(id, _)| interns.get_str(*id).to_owned())),
+            Self::Pairs(kvs) => kvs.first().map(|(key, _)| key),
+            Self::Dict(dict) => dict.iter().next().map(|(key, _)| key),
+        };
+        match key {
+            None => Ok(None),
+            Some(key) => key
+                .as_either_str(heap)
+                .map(|key| Some(key.as_str(interns).to_owned()))
+                .ok_or_else(ExcType::type_error_kwargs_nonstring_key),
+        }
     }
 
     /// Converts the arguments into a Vec of MontyObjects.

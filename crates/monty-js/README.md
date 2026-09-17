@@ -18,7 +18,8 @@ npm packages installed automatically (like esbuild). Browser builds use the
 package `browser` export and never import the napi loader; they run the sandbox
 in a Web Worker as a WIT-defined WASI 0.2 component with the same pool/session
 API. Advanced Node-only helpers are available from `@pydantic/monty/node`, and wasm-specific
-factories from `@pydantic/monty/wasm`.
+factories from `@pydantic/monty/wasm`: `Monty.create()` there is `createWorkerPool(await loadModule())`,
+and both are exported so an app can fetch and compile the wasm ahead of starting workers.
 
 ## Installation
 
@@ -46,6 +47,10 @@ await session.feedRun('x * 2') // 42
 
 Without `await using`, call `session.close()` (returns the worker to the pool)
 and `pool.close()` explicitly.
+
+`checkout({ scriptName })` names the script in tracebacks and type-checking
+diagnostics; its final path component is what the sandbox's `__file__` places
+under its working directory (`/main.py` by default).
 
 ## Inputs
 
@@ -239,8 +244,9 @@ pass an `externalLookup` (and/or `os`) to `feedStart` and drive with
 `snapshot.resumeAuto()`, which resolves each external call and name lookup from
 them automatically — the same resolution `feedRun` performs, but one step at a
 time so you can inspect or `dump()` each snapshot along the way. A
-promise-returning external is awaited concurrently (surfacing as an intermediate
-`FutureSnapshot`), exactly as under `feedRun`:
+promise-returning external is awaited directly when the snapshot's
+`allowEagerAwait` is true, and otherwise concurrently (surfacing as an
+intermediate `FutureSnapshot`), exactly as under `feedRun`:
 
 ```ts
 let snap = await session.feedStart('greet(name) + "!"', {
@@ -264,6 +270,12 @@ any convertible value (`resume()` resolves a name to an external function
 only, and with no argument leaves the lookup unresolved: `NameError` for a
 plain name, `AttributeError` when `objectId` is set).
 
+Only restore unmodified session dumps and suspended snapshots from a trusted, compatible Monty producer.
+The caller must establish provenance and integrity before calling either `loadSession` or `loadSnapshot`;
+Monty does not authenticate the bytes.
+Invalid dumps and snapshots have no correctness or availability guarantees.
+Successful loading does not establish validity.
+
 `snapshot.dump()` serializes the paused worker to bytes; a fresh session's
 `loadSnapshot` restores it and returns the snapshot to resume. Re-supply the
 same `mount`s the paused feed used — their host paths are not stored in the
@@ -284,8 +296,13 @@ session, before any feed; using the wrong one for a dump's kind throws.
 ## Print Output
 
 `printCallback` accepts a function or a host collector (`PrintTargetInput` in
-TypeScript). Output is line-buffered; without a callback it goes to the host
-process stdout/stderr.
+TypeScript); without a callback output goes to the host process stdout/stderr.
+
+The worker batches output rather than sending an event per `print()`, so a
+callback can receive several prints in one chunk, or one print in several.
+`printFlushInterval` on `checkout()` sets how long (in seconds) output may be
+held — 0.005 by default, or `0` to restore line buffering. Output is always
+flushed before a host call and before a feed ends.
 
 ```ts
 // Function form
@@ -320,6 +337,16 @@ import { MountDir } from '@pydantic/monty/node'
 
 const mount = new MountDir({ hostPath: '/path/on/host', virtualPath: '/mnt/data', mode: 'read-only' })
 await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
+```
+
+The sandbox's working directory is session state: the first feed sets it to
+the first mount's virtual path, or `/` without mounts, and it then persists
+(`os.chdir()` included) unless `cwd` switches it to another absolute virtual
+path. `os.getcwd()` reports it and relative paths resolve against it before
+reaching a mount or the `os` callback.
+
+```ts
+await session.feedRun("open('file.txt').read()", { mount, cwd: '/mnt/data' })
 ```
 
 Each mount has a 100 MB aggregate memory budget by default. Configure it with
@@ -398,6 +425,10 @@ turn and the host kills it `durationLimitGrace` (default 1s) after the
 remaining budget expires, covering cases where the in-sandbox limit cannot
 fire (its check only runs at interpreter checkpoints). Set
 `durationLimitGrace: null` to disable it.
+
+`maxSuspensions` limits the host round trips the pool services per checkout
+(default 1000; it cannot be disabled). Exceeding it ends the feed with an
+uncatchable `RuntimeError`.
 
 ## Assert message annotations
 
@@ -487,14 +518,59 @@ The `monty` binary resolves from: explicit `binaryPath` → the `MONTY_BIN`
 environment variable → the installed platform package → `PATH` → a cargo
 workspace `target/` build (development).
 
-The Node-only Logfire integration installs a version-1 adapter through
-`_installTelemetryAdapter(1, adapter)`. At checkout it propagates the active
-host trace context into Monty's exporter-free Rust spans, then reconstructs
-those records through the host SDK, which owns credentials, export, and
-shutdown. Delivery uses a bounded non-blocking queue; overflow permanently
-disables the adapter and sends one global cleanup notification rather than
-risking unbounded host memory. Browser/WASM does not yet implement this adapter
-path.
+## Observability
+
+Node applications can explicitly instrument Monty through the standard
+OpenTelemetry components configured by their SDK:
+
+```ts
+import { metrics, trace } from '@opentelemetry/api'
+import { logs } from '@opentelemetry/api-logs'
+import { instrumentTelemetry } from '@pydantic/monty/node'
+
+instrumentTelemetry({
+  tracer: trace.getTracer('@pydantic/monty'),
+  meter: metrics.getMeter('@pydantic/monty'),
+  logger: logs.getLogger('@pydantic/monty'),
+})
+```
+
+Each component is optional, but at least one is required. Install
+instrumentation before creating a pool. It applies process-wide and records
+potentially sensitive source, inputs, outputs, exceptions, and printed text.
+
+When configuring an OpenTelemetry `NodeSDK`, use `MontyInstrumentation` so the
+SDK supplies its tracer and meter providers through the standard
+instrumentation lifecycle. Configure providers and signal options before
+creating pools; changing them while pools are active is unsupported:
+
+```ts
+import { NodeSDK } from '@opentelemetry/sdk-node'
+import { MontyInstrumentation } from '@pydantic/monty/node'
+
+const instrumentation = new MontyInstrumentation()
+const sdk = new NodeSDK({
+  instrumentations: [instrumentation],
+})
+sdk.start()
+
+// Before application shutdown:
+await instrumentation.forceFlush()
+await sdk.shutdown()
+```
+
+The instrumentation obtains its logger through `@opentelemetry/api-logs`.
+Provider-owned IDs, sampling, metric views and aggregation, resources, readers,
+exporters, flushing, and shutdown therefore apply normally. Pool metrics cover
+every checkout and contain no sandbox-supplied dimensions.
+
+Native worker threads deliver records through bounded Node callback queues;
+span starts wait for host span creation so children receive its context, while
+span ends, logs, and raw metric measurements are queued without blocking
+workers. Queue overflow disables the affected telemetry path rather than
+risking unbounded host memory. Call `flushTelemetry()` before directly flushing
+providers, or `instrumentation.forceFlush()` before shutting down a `NodeSDK`.
+Browser/WASM does not yet implement this instrumentation path.
 
 ## Value Conversion
 

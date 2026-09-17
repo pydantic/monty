@@ -50,10 +50,15 @@ installed as part of the `pydantic-monty` meta-package.
 from pydantic_monty import Monty
 
 with Monty() as pool:
-    with pool.checkout() as session:
+    with pool.checkout(limits={'max_suspensions': 100}) as session:
         print(session.feed_run('1 + 2'))
         #> 3
 ```
+
+`max_suspensions` limits host-serviced suspensions per checkout (default
+1000; it cannot be disabled). Exceeding it
+aborts the feed with an uncatchable `RuntimeError`; the session remains usable,
+but its suspension count remains spent.
 
 or in async code:
 
@@ -74,6 +79,31 @@ if __name__ == '__main__':
 
     asyncio.run(main())
 ```
+
+## Restoring snapshots
+
+`session.load_session()` and `session.load_snapshot()` require unmodified snapshots from a trusted, compatible Monty producer.
+The caller must establish provenance and integrity before loading; Monty does not authenticate snapshots.
+Invalid snapshots have no correctness or availability guarantees.
+Successful loading does not establish validity.
+See the [snapshot security documentation](https://pydantic.dev/docs/monty/concepts/security/#deserializing-snapshots).
+
+## Working directory
+
+Pass `cwd='/data'` to `session.feed_run()` or `session.feed_start()` to set the sandbox's virtual working directory.
+The async session methods accept the same option.
+The path must be absolute and uses POSIX `/` separators on every host.
+On the first feed, omitting `cwd` selects the first mount's virtual path, or `/` if no mount is supplied.
+The directory then persists across feeds, including successful `os.chdir(path=...)` calls, until another feed sets `cwd`.
+`os.getcwd()` and `Path.cwd()` report it, and relative `open()`, `os`, and `pathlib` requests resolve against it.
+Setting `cwd` does not grant filesystem access; provide `mount=` or `os=` to handle filesystem operations.
+
+`OSAccess(max_urandom_bytes=...)` sets the largest `os.urandom()` request the default handler serves, 1 MiB by default.
+Larger requests raise `MemoryError` before allocating.
+Zero rejects every nonempty request, including the 2496 bytes an unseeded `random` generator requests.
+
+A `random.Random` instance or the `random.Random` class returned from the sandbox converts to its repr string.
+Return the generated values or `rng.getstate()` instead.
 
 See the [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) README for
 more details.

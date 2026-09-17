@@ -20,10 +20,10 @@ pip install pydantic-monty
 distributions that make up a working sandbox:
 
 - [`pydantic-monty-client`](https://pypi.org/project/pydantic-monty-client/) —
-  the `pydantic_monty` module you import (pool, sessions, value conversion)
+    the `pydantic_monty` module you import (pool, sessions, value conversion)
 - [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/) —
-  the `monty` worker binary the pool spawns, shipped the same way `uv` and
-  `ruff` ship their binaries
+    the `monty` worker binary the pool spawns, shipped the same way `uv` and
+    `ruff` ship their binaries
 
 Install `pydantic-monty-client` on its own when the worker binary comes from
 somewhere else — a base image, a system package, a build of this repo — and
@@ -210,8 +210,8 @@ with Monty() as pool:
 
 On `AsyncMonty`, `external_lookup` callables may be coroutine functions and
 `resume_auto` is awaitable (`snapshot = await snapshot.resume_auto()`); a
-coroutine external is awaited concurrently and settled via an
-`AsyncFutureSnapshot`.
+coroutine external is awaited directly when the snapshot's `allow_eager_await`
+is true, and otherwise concurrently, settled via an `AsyncFutureSnapshot`.
 
 `snapshot.dump()` serializes the paused worker to bytes; a fresh session's
 `load_snapshot` restores it and returns the snapshot to resume. This lets you
@@ -250,8 +250,8 @@ expose the same `feed_start` / `load_session` / `load_snapshot`, with awaitable
 ### Resource limits
 
 Limits are enforced inside the worker; the pool's `request_timeout` is a
-host-side backstop that kills a hung worker outright. An installed telemetry
-adapter invokes trusted Python SDK callbacks synchronously; enforcement is
+host-side backstop that kills a hung worker outright. Installed telemetry
+invokes trusted Python SDK callbacks synchronously; enforcement is
 delayed while such a callback runs. `max_duration_secs`
 limits cumulative *execution* time — the clock runs only while the
 interpreter executes, never while suspended waiting on the host, and
@@ -259,7 +259,9 @@ accumulates across feeds. The worker reports its execution time on every
 protocol turn, and sessions with the limit are additionally killed
 `duration_limit_grace` (1s, not currently configurable from Python) after
 the remaining budget expires, covering hangs the in-sandbox limit cannot
-catch (its check only runs at interpreter checkpoints).
+catch (its check only runs at interpreter checkpoints). `max_suspensions`
+limits the host round trips the pool services per checkout; exceeding it ends
+the feed with an uncatchable `RuntimeError`.
 
 ```python
 from pydantic_monty import Monty, MontyRuntimeError
@@ -329,3 +331,52 @@ with Monty() as pool:
         except MontyError:
             ...  # the worker died; the pool already replaced it
 ```
+
+### Observability
+
+Install the optional OpenTelemetry API support, then call
+`instrument_telemetry` with standard Python OpenTelemetry components before
+creating a pool:
+
+```bash
+pip install 'pydantic-monty[opentelemetry]'
+```
+
+```python test="skip"
+from opentelemetry import _logs, metrics, trace
+
+from pydantic_monty import instrument_telemetry
+
+instrument_telemetry(
+    tracer=trace.get_tracer('pydantic-monty'),
+    meter=metrics.get_meter('pydantic-monty'),
+    logger=_logs.get_logger('pydantic-monty'),
+)
+```
+
+Each component is optional. A configured tracer records each checkout as a
+session span with nested feed and suspension spans. A logger records exceptions
+and `print` output under those spans. An `AsyncMontyWebsocket` checkout also
+sends the active context as W3C `traceparent`/`tracestate` headers on its
+upgrade request, so a server that honours them can join the same trace. A meter
+records live, immediately available and host-blocked worker counts, checkout
+waits, worker deaths by reason, run durations and the sandbox execution time of
+each feed.
+
+The supplied OpenTelemetry providers own IDs, sampling, metric views and
+aggregation, resources, readers, exporters, flushing, and shutdown. Logfire and
+other OpenTelemetry distributions can therefore use the same instrumentation
+path. [`logfire.instrument_monty()`](https://logfire.pydantic.dev/docs/reference/api/logfire/#logfire.Logfire.instrument_monty)
+supplies components bound to its configured `Logfire` instance.
+
+Metrics cover every checkout and record no sandbox-supplied values: their
+attributes are closed sets, so nothing a script chooses (a called function's
+name, an exception class, or a path) can become a dimension. Traces and logs do
+record code, inputs, external calls, exceptions, and printed output; session
+dumps and restores are recorded by size only. Instrumentation is disabled until
+`instrument_telemetry` is called, and enabled instrumentation truncates large
+values at the telemetry attribute size limit.
+
+See `limitations/pool-architecture.md` in the repository for the behavioural
+details of subprocess execution (host-side mounts, buffered print callbacks,
+session dumps).

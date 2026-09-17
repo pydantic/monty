@@ -5,6 +5,7 @@ pub const MONTY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod args;
 mod builtins;
+mod clock;
 mod exceptions;
 mod file_mode;
 pub mod format;
@@ -16,16 +17,21 @@ mod results;
 mod run_options;
 mod type_checking;
 mod uuid;
+mod virtual_path;
 
 pub use crate::{
     builtins::BuiltinsFunctions,
+    clock::HostClock,
     exceptions::{
         CodeLoc, ExcData, ExcType, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject,
         unicode_decode_error_msg,
     },
     file_mode::FileMode,
     format::{FormatFloat, StringRepr, bytes_repr, bytes_repr_fmt, string_repr_fmt, utf8_error_reason},
-    io::{DEFAULT_MAX_PRINT_COLLECT_BYTES, PrintStream, PrintWriter, PrintWriterCallback, check_print_collect_limit},
+    io::{
+        COLLECT_STREAMS_ENTRY_OVERHEAD, CollectedStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES, PrintStream, PrintWriter,
+        PrintWriterCallback, check_print_collect_limit,
+    },
     object::{
         ConversionError, DictPairs, InvalidInputError, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
         MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
@@ -33,14 +39,15 @@ pub use crate::{
     },
     os::{
         GetenvArgs, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-        RenameCallArgs, dir_stat, file_stat, stat_result, symlink_stat,
+        RenameCallArgs, UrandomArgs, dir_stat, file_stat, stat_result, symlink_stat,
     },
     resource::{
-        BASELINE_MEMORY, DEFAULT_MAX_RECURSION_DEPTH, LARGE_RESULT_THRESHOLD, LIVE_MEMORY, OOM_EXIT_CODE,
-        ResourceError, ResourceLimits, ResourceTracker,
+        BASELINE_MEMORY, DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MAX_SUSPENSIONS, LARGE_RESULT_THRESHOLD, LIVE_MEMORY,
+        OOM_EXIT_CODE, ResourceError, ResourceLimits, ResourceTracker,
     },
     results::{ExtFunctionResult, NameLookupResult},
     run_options::{AssertMessageAnnotations, CompileOptions},
     type_checking::{TypeCheckState, TypeCheckingConfig, TypeCheckingFormat},
     uuid::MontyUuid,
+    virtual_path::{normalize_virtual_path, validate_cwd},
 };

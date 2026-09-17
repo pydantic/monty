@@ -1,6 +1,5 @@
 ---
 source: crates/monty-type-checking/tests/main.rs
-assertion_line: 199
 expression: actual
 ---
 bad_types.py:22:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `Literal["hello"]`
@@ -27,4 +26,4 @@ bad_types.py:122:23: error[invalid-key] Unknown key "uuid" for TypedDict `Search
 bad_types.py:127:19: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `int`
 bad_types.py:132:19: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `str`
 bad_types.py:133:19: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `int`
-bad_types.py:136:7: error[unresolved-attribute] Module `sys` has no member `copyright`
+bad_types.py:136:7: error[unresolved-attribute] Module `sys` has no member `missing`

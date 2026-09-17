@@ -40,13 +40,10 @@ use crate::{
 ///
 /// # Serialization
 ///
-/// Only `slots` is serialized; `by_name` is reconstructed deterministically
-/// on deserialization (see [`NameMapWire`]). Putting only the canonical
-/// forward direction on the wire ensures untrusted snapshot input cannot
-/// desync the two halves — every load goes through `try_from`, which also
-/// enforces the `NamespaceId` (`u16`) upper bound on `slots.len()`.
+/// Only `slots` is serialized; `by_name` is reconstructed on deserialization
+/// (see [`NameMapWire`]) rather than storing both directions.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(into = "NameMapWire", try_from = "NameMapWire")]
+#[serde(into = "NameMapWire", from = "NameMapWire")]
 pub(crate) struct NameMap {
     /// Name interned at each slot, indexed by `NamespaceId::index()`.
     slots: Vec<StringId>,
@@ -54,13 +51,7 @@ pub(crate) struct NameMap {
     by_name: AHashMap<StringId, NamespaceId>,
 }
 
-/// On-the-wire representation of a [`NameMap`].
-///
-/// Carries only the canonical `slots` direction so a deserialized `NameMap`
-/// always has a `by_name` map that is a deterministic function of `slots`.
-/// This eliminates an attacker-controlled inconsistency between the two
-/// halves that the previous derive-based deserialization would have
-/// accepted unconditionally.
+/// Serialized slots from which both directions of a [`NameMap`] are reconstructed.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct NameMapWire {
     slots: Vec<StringId>,
@@ -72,36 +63,21 @@ impl From<NameMap> for NameMapWire {
     }
 }
 
-impl TryFrom<NameMapWire> for NameMap {
-    type Error = String;
-
-    fn try_from(wire: NameMapWire) -> Result<Self, Self::Error> {
-        // Refuse oversized slot vectors at the wire boundary: `NamespaceId`
-        // is `u16`, so the bytecode slot operand cannot reach indices past
-        // `u16::MAX + 1`. Without this check a malicious snapshot could
-        // hand us an arbitrarily large vector and the subsequent
-        // `NamespaceId::new` panic would surface as an internal error.
-        let max_slots = usize::from(u16::MAX) + 1;
-        if wire.slots.len() > max_slots {
-            return Err(format!(
-                "NameMap has too many slots: {} (maximum is {max_slots})",
-                wire.slots.len(),
-            ));
-        }
+impl From<NameMapWire> for NameMap {
+    fn from(wire: NameMapWire) -> Self {
         let mut by_name = AHashMap::with_capacity(wire.slots.len());
         for (idx, &name_id) in wire.slots.iter().enumerate() {
-            // Safe by the length check above.
-            let slot = NamespaceId::new(idx).expect("slot index fits in NamespaceId by length check");
+            let slot = NamespaceId::new(idx).expect("namespace slot exceeds u16");
             // First occurrence wins, matching the live `ensure_slot` /
             // `push_aliased_slot` invariant where a function parameter
             // shadows any later cell/free-var slot that reuses its
             // `StringId`.
             by_name.entry(name_id).or_insert(slot);
         }
-        Ok(Self {
+        Self {
             slots: wire.slots,
             by_name,
-        })
+        }
     }
 }
 
@@ -172,6 +148,25 @@ impl NameMap {
         let id = NamespaceId::new(self.slots.len()).ok_or_else(|| namespace_overflow(position))?;
         self.slots.push(name_id);
         Ok(id)
+    }
+
+    /// Drops every slot at index `len` or above, undoing allocations made since
+    /// the map had `len` slots.
+    ///
+    /// Lets the REPL roll back the names a rejected snippet appended so they
+    /// don't count against the `u16` slot limit. Names whose canonical slot is
+    /// below `len` (aliased slots) keep their forward mapping.
+    pub fn truncate(&mut self, len: usize) {
+        for name_id in self.slots.drain(len..) {
+            if self.by_name.get(&name_id).is_some_and(|slot| slot.index() >= len) {
+                self.by_name.remove(&name_id);
+            }
+        }
+    }
+
+    /// The name at every slot, indexed by `NamespaceId::index()`.
+    pub fn names(&self) -> &[StringId] {
+        &self.slots
     }
 
     /// Iterates over `(slot, name)` pairs in slot order.

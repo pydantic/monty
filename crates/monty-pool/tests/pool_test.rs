@@ -3,11 +3,13 @@
 //! must surface as a clean error and never poison the pool.
 
 #[cfg(unix)]
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 #[cfg(windows)]
 use std::os::windows::fs::symlink_dir;
 use std::{
-    env, fs,
+    env,
+    fmt::Write as _,
+    fs,
     future::ready,
     io,
     path::{Path, PathBuf},
@@ -125,9 +127,65 @@ fn kill_pid(pid: u32) {
     }
 }
 
+/// Writes the executable stand-in for `monty` that a test drives, from a child shell rather than
+/// this process: a descriptor open for writing here would be inherited by any concurrently
+/// forking test, and executing the file while that child still holds it fails with `ETXTBSY`.
+#[cfg(unix)]
+fn write_fake_monty(dir: &Path, script: &str) -> PathBuf {
+    let fake = dir.join("monty");
+    let status = Command::new("sh")
+        .args(["-c", r#"printf '%s' "$2" > "$1" && chmod 755 "$1""#, "sh"])
+        .arg(&fake)
+        .arg(script)
+        .status()
+        .unwrap();
+    assert!(status.success(), "writing the stand-in `monty` failed");
+    fake
+}
+
 // =============================================================================
 // Happy path
 // =============================================================================
+
+/// Rejected eager answers leave the checkout and worker at the same call.
+#[tokio::test]
+async fn allow_eager_await_validates_replies_before_sending() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let event = session
+        .feed("await f()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    let TurnEvent::FunctionCall {
+        call_id,
+        allow_eager_await,
+        ..
+    } = event
+    else {
+        panic!("expected function call, got {event:?}")
+    };
+    assert!(allow_eager_await);
+    for results in [
+        vec![],
+        vec![(call_id + 1, ResumeValue::Return(MontyObject::Int(42)))],
+        vec![(call_id, ResumeValue::Future)],
+        vec![(call_id, ResumeValue::NotFound)],
+    ] {
+        assert!(matches!(
+            session.resume_futures(results, &mut no_print).await,
+            Err(PoolError::Protocol(_))
+        ));
+    }
+    let done = session
+        .resume_futures(
+            vec![(call_id, ResumeValue::Return(MontyObject::Int(42)))],
+            &mut no_print,
+        )
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(done), MontyObject::Int(42));
+    session.finish().await.unwrap();
+}
 
 /// An over-threshold frame round-trips through `decode_event`'s
 /// `block_in_place` branch (multi-thread runtime) without corruption.
@@ -354,6 +412,147 @@ async fn invalid_mount_host_path_is_rejected_cleanly() {
         .await
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(2));
+    session.finish().await.unwrap();
+}
+
+/// The sandbox working directory is session state: the first feed sets it
+/// (its first mount, else `/`), and later feeds keep it — `os.chdir`
+/// included — unless `feed_with_cwd` switches it.
+#[tokio::test]
+async fn working_directory_persists_across_feeds() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("data.txt"), "relative!").unwrap();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()];
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+
+    // The first feed's mount, so relative paths reach into it; `__file__` is placed under it.
+    let code = "\
+import os
+from pathlib import Path
+before = (os.getcwd(), __file__, open('data.txt').read())
+os.chdir('sub')
+(before, Path.cwd(), Path('..').resolve())";
+    let result = session.feed(code, vec![], mount(), false, &mut no_print).await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::Tuple(vec![
+            MontyObject::Tuple(vec![
+                MontyObject::String("/mnt".to_owned()),
+                MontyObject::String("/mnt/main.py".to_owned()),
+                MontyObject::String("relative!".to_owned()),
+            ]),
+            MontyObject::Path("/mnt/sub".to_owned()),
+            MontyObject::Path("/mnt".to_owned()),
+        ])
+    );
+
+    // The chdir persists, even into a feed without the mount.
+    let event = session
+        .feed("os.getcwd()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt/sub".to_owned()));
+
+    // An explicit cwd switches it, and the switch persists too.
+    let result = session
+        .feed_with_cwd("os.getcwd()", vec![], mount(), Some("/mnt/"), false, &mut no_print)
+        .await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt".to_owned()));
+
+    // A relative cwd is refused before anything is sent; the session survives unchanged.
+    let err = session
+        .feed_with_cwd("1", vec![], vec![], Some("data"), false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected a runtime error, got {err:?}");
+    };
+    assert_eq!(exc.exc_type(), ExcType::ValueError);
+    assert_eq!(exc.message().unwrap(), "cwd must be an absolute POSIX path: \"data\"");
+    let event = session
+        .feed("os.getcwd()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt".to_owned()));
+    session.finish().await.unwrap();
+
+    // A session whose first feed has no mount starts at the root and stays
+    // there when a later feed mounts something.
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let event = session
+        .feed(
+            "import os\n(os.getcwd(), __file__)",
+            vec![],
+            vec![],
+            false,
+            &mut no_print,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::Tuple(vec![
+            MontyObject::String("/".to_owned()),
+            MontyObject::String("/main.py".to_owned())
+        ])
+    );
+    let result = session.feed("os.getcwd()", vec![], mount(), false, &mut no_print).await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/".to_owned()));
+    session.finish().await.unwrap();
+}
+
+/// A first feed that type checking rejects never reaches the worker's
+/// directory switch, so the next feed still establishes the mount default.
+#[tokio::test]
+async fn working_directory_survives_a_rejected_first_feed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()];
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            type_check: true,
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let err = session
+        .feed("x: int = 'nope'", vec![], mount(), false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Typing(_)), "expected Typing, got {err:?}");
+    let result = session
+        .feed("import os\nos.getcwd()", vec![], mount(), false, &mut no_print)
+        .await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt".to_owned()));
+    session.finish().await.unwrap();
+}
+
+/// A first feed rejected as oversize never reaches the worker, so its
+/// directory is not established: the next feed still sends the mount default.
+#[tokio::test]
+async fn working_directory_survives_an_oversize_first_feed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()];
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    // just over monty_proto's 256 MiB MAX_FRAME_LEN
+    let huge = MontyObject::String("x".repeat(257 * 1024 * 1024));
+    let err = session
+        .feed("data", vec![("data".to_owned(), huge)], mount(), false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Runtime(_)), "expected Runtime, got {err:?}");
+    let result = session
+        .feed("import os\nos.getcwd()", vec![], mount(), false, &mut no_print)
+        .await;
+    let event = feed_with_mounts(&mut session, result).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("/mnt".to_owned()));
     session.finish().await.unwrap();
 }
 
@@ -709,6 +908,25 @@ async fn restored_os_call_is_serviced_by_restore_mounts() {
     restored.finish().await.unwrap();
 }
 
+/// A `max_duration` near `Duration::MAX` must not overflow the parent's
+/// backstop deadline arithmetic (limit plus grace).
+#[tokio::test]
+async fn huge_max_duration_does_not_overflow_the_backstop() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_duration(Duration::MAX)),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
+}
+
 /// An over-limit frame must fail as a clean, session-preserving error rather
 /// than crashing the worker: `Worker::send` rejects it before writing any
 /// bytes, so the stream stays synced. Covers both directions — a request the
@@ -945,6 +1163,188 @@ async fn inputs_and_prints() {
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(5));
     assert_eq!(output, "hello monty\n");
+    session.finish().await.unwrap();
+}
+
+/// A loop of small prints must not cost one `Print` event each: the worker
+/// batches them by size and elapsed time, which is what keeps the parent's
+/// per-event work (telemetry included) proportional to output rather than to
+/// how often the sandbox called `print()`.
+#[tokio::test]
+async fn prints_are_batched_into_few_events() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let mut output = String::new();
+    let mut events = 0;
+    let event = session
+        .feed(
+            "for i in range(2000):\n    print(i)",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| {
+                events += 1;
+                output.push_str(text);
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::None);
+    let mut expected = String::new();
+    for i in 0..2000 {
+        writeln!(expected, "{i}").unwrap();
+    }
+    assert_eq!(output, expected);
+    assert!(
+        events < 200,
+        "expected far fewer than one event per print, got {events}"
+    );
+    session.finish().await.unwrap();
+}
+
+/// The size threshold still bounds a chunk when the interval never expires:
+/// one huge write is split into ~8 KiB events rather than buffered whole. This
+/// is also what keeps the buffer below the threshold on entry to each write, so
+/// its remaining-room arithmetic cannot underflow.
+#[tokio::test]
+async fn one_huge_write_is_split_at_the_size_threshold() {
+    const FLUSH_BYTES: usize = 8 * 1024;
+    let pool = Pool::new(config()).await.unwrap();
+    // an interval nothing will reach, so only the size threshold can flush
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::from_secs(600)),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl).await.unwrap();
+    let mut chunks: Vec<usize> = Vec::new();
+    let mut total = 0;
+    session
+        .feed(
+            "print('x' * 100_000, end='')",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| {
+                chunks.push(text.len());
+                total += text.len();
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(total, 100_000);
+    assert!(chunks.len() > 1, "expected the write to be split, got {chunks:?}");
+    assert!(
+        chunks.iter().all(|len| *len <= FLUSH_BYTES),
+        "every chunk must stay within the threshold, got {chunks:?}"
+    );
+    session.finish().await.unwrap();
+}
+
+/// A zero interval turns the timer off and restores line buffering, for a host
+/// that wants each completed line delivered on its own.
+#[tokio::test]
+async fn zero_flush_interval_delivers_one_event_per_line() {
+    let pool = Pool::new(config()).await.unwrap();
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::ZERO),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl).await.unwrap();
+    let mut lines = Vec::new();
+    session
+        .feed(
+            "for i in range(20):\n    print(i)",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| lines.push(text.to_owned())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(lines.len(), 20);
+    assert_eq!(lines[0], "0\n");
+    assert_eq!(lines[19], "19\n");
+    session.finish().await.unwrap();
+}
+
+/// With the timer off the contract is one event per *completed line*, not one
+/// per write: a single `print()` carrying embedded newlines must still arrive
+/// as one event per line.
+#[tokio::test]
+async fn zero_flush_interval_splits_embedded_newlines() {
+    let pool = Pool::new(config()).await.unwrap();
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::ZERO),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl).await.unwrap();
+    let mut events = Vec::new();
+    session
+        .feed(
+            r#"print("a\nb")"#,
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| events.push(text.to_owned())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(events, vec!["a\n".to_owned(), "b\n".to_owned()]);
+    session.finish().await.unwrap();
+}
+
+/// Output must not sit in the worker's buffer while the program computes in
+/// silence: the interpreter polls the writer at its dispatch checkpoints, so a
+/// line printed before a long stretch of quiet work is released on its own
+/// rather than waiting for the next print.
+#[tokio::test]
+async fn silence_releases_buffered_output() {
+    let pool = Pool::new(config()).await.unwrap();
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::from_millis(1)),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl).await.unwrap();
+    let mut events: Vec<String> = Vec::new();
+    session
+        .feed(
+            // the loop is far longer than the 1ms interval in any build
+            "print('first')\nt = 0\nfor i in range(200_000):\n    t += i\nprint('second')",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| events.push(text.to_owned())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(events.first().map(String::as_str), Some("first\n"));
+    assert_eq!(events.concat(), "first\nsecond\n");
+    session.finish().await.unwrap();
+}
+
+/// Batching must never reorder output against the suspension that follows it:
+/// the worker drains its buffer before every turn-ending event, so a print
+/// made just before a host call still arrives before the call is announced.
+#[tokio::test]
+async fn buffered_output_is_flushed_before_a_suspension() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let mut output = String::new();
+    let event = session
+        .feed(
+            "print('before')\nask()",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| output.push_str(text)),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(event, TurnEvent::FunctionCall { ref function_name, .. } if function_name == "ask"),
+        "expected a call suspension, got {event:?}"
+    );
+    assert_eq!(output, "before\n");
     session.finish().await.unwrap();
 }
 
@@ -1199,11 +1599,9 @@ async fn max_memory_leaves_normal_work_alone() {
 #[tokio::test]
 async fn unrecognised_exit_code_stays_an_opaque_death() {
     let dir = tempfile::tempdir().unwrap();
-    let fake = dir.path().join("monty");
     // outlives the parent's first write, so the death is always observed while
     // waiting for the reply rather than racing with `sending a request`
-    fs::write(&fake, "#!/bin/sh\nsleep 0.2\nexit 64\n").unwrap();
-    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+    let fake = write_fake_monty(dir.path(), "#!/bin/sh\nsleep 0.2\nexit 64\n");
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
     let err = match pool.checkout(&ReplConfig::default()).await {
@@ -1244,11 +1642,12 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
 
-    let fake = dir.path().join("monty");
     // both frames are written up front and the process stays alive; the parent
     // reads them in turn as it sends `Configure` and then the raw request
-    fs::write(&fake, format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display())).unwrap();
-    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display()),
+    );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
     let mut checkout = pool
@@ -1260,6 +1659,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1287,9 +1687,10 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
 
-    let fake = dir.path().join("monty");
-    fs::write(&fake, format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display())).unwrap();
-    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display()),
+    );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
     let mut checkout = pool
@@ -1301,6 +1702,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1332,9 +1734,10 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
 
-    let fake = dir.path().join("monty");
-    fs::write(&fake, format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display())).unwrap();
-    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display()),
+    );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
     let mut checkout = pool
@@ -1346,6 +1749,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1479,6 +1883,90 @@ async fn suspension_time_does_not_consume_the_duration_budget() {
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::String("body!".to_owned()));
     session.finish().await.unwrap();
+}
+
+/// The pool aborts the first suspension past the limit uncatchably. The
+/// session remains usable, but its suspension budget stays spent.
+#[tokio::test]
+async fn suspension_limit_aborts_the_feed() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_suspensions(3)),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let code = "n = 0\nwhile True:\n    try:\n        open('/etc/passwd')\n    except Exception:\n        n += 1";
+    let mut event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+    for _ in 0..2 {
+        assert!(matches!(event, TurnEvent::OsCall { .. }), "got {event:?}");
+        event = session.resume(ResumeValue::NotHandled, &mut no_print).await.unwrap();
+    }
+    assert!(matches!(event, TurnEvent::OsCall { .. }), "got {event:?}");
+    let err = session
+        .resume(ResumeValue::NotHandled, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.exc_type().to_string(), "RuntimeError");
+    assert_eq!(exc.message(), Some("suspension limit 3 exceeded"));
+    // three refusals were caught before the fourth suspension was aborted
+    let event = session.feed("n", vec![], vec![], false, &mut no_print).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(3));
+    // the budget stays spent: a fresh feed's first suspension is aborted too
+    let err = session
+        .feed("fetch('x')", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("suspension limit 3 exceeded"));
+    session.finish().await.unwrap();
+}
+
+/// The `max_suspensions` budget travels in the dump and is re-adopted on
+/// restore, but the count is parent state and restarts at zero.
+#[tokio::test]
+async fn restored_session_readopts_its_suspension_limit() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_suspensions(1)),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let event = session
+        .feed("fetch('x')", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(matches!(event, TurnEvent::FunctionCall { .. }));
+    let state = session.dump().await.unwrap();
+    drop(session);
+
+    let mut restored = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let (event, _script_name) = restored.restore(state, vec![], &mut no_print).await.unwrap();
+    // the re-announced suspension is the restored checkout's first
+    assert!(matches!(event, Some(TurnEvent::FunctionCall { .. })), "got {event:?}");
+    let event = restored
+        .resume(ResumeValue::Return(MontyObject::Int(1)), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(1));
+    // the dump's limit of one applies to the next suspension
+    let err = restored
+        .feed("fetch('y')", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("suspension limit 1 exceeded"));
+    restored.finish().await.unwrap();
 }
 
 #[tokio::test]
@@ -1841,6 +2329,71 @@ async fn dump_survives_worker_death_and_loads_elsewhere() {
         .await
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(42));
+    restored.finish().await.unwrap();
+}
+
+/// Zero is the explicit line-buffering sentinel, so a positive interval must
+/// never round down into it. 100 prints would arrive as 100 events if the
+/// sub-millisecond interval had truncated to zero; any batching at all proves
+/// the timer is still on.
+#[tokio::test]
+async fn a_sub_millisecond_interval_does_not_become_line_buffering() {
+    let pool = Pool::new(config()).await.unwrap();
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::from_micros(400)),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl).await.unwrap();
+    let mut events = 0usize;
+    session
+        .feed(
+            "for i in range(100):\n    print(i)",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, _: &str| events += 1),
+        )
+        .await
+        .unwrap();
+    assert!(events < 100, "expected batching, got one event per line ({events})");
+    session.finish().await.unwrap();
+}
+
+/// A `Load` restores the repl without materializing the checkout's stored
+/// `Configure`, so the print flush interval has to be adopted when that config
+/// arrives — otherwise a restored session silently falls back to the default
+/// and ignores the line buffering its host asked for.
+#[tokio::test]
+async fn a_restored_session_honors_its_checkout_flush_interval() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    session
+        .feed("base = 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    let state = session.dump().await.unwrap();
+    drop(session);
+
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::ZERO),
+        ..ReplConfig::default()
+    };
+    let mut restored = pool.checkout(&repl).await.unwrap();
+    restored.restore(state, vec![], &mut no_print).await.unwrap();
+    let mut lines = Vec::new();
+    restored
+        .feed(
+            "for i in range(20):\n    print(base + i)",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, text: &str| lines.push(text.to_owned())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(lines.len(), 20);
+    assert_eq!(lines[0], "1\n");
+    assert_eq!(lines[19], "20\n");
     restored.finish().await.unwrap();
 }
 

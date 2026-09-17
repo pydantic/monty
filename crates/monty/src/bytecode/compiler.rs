@@ -6,9 +6,9 @@
 //!
 //! Functions are compiled recursively: when a `PreparedFunctionDef` is encountered,
 //! its body is compiled to bytecode and a `Function` struct is created. All compiled
-//! functions are collected and returned along with the module code.
+//! functions are appended to the session's intern table.
 
-use std::{borrow::Cow, mem};
+use std::borrow::Cow;
 
 use monty_types::{MontyException, StackFrame};
 
@@ -29,7 +29,6 @@ use crate::{
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
     intern::{Interns, StringId},
-    modules::StandardLib,
     name_map::NameMap,
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try},
@@ -128,13 +127,16 @@ fn check_comp_generators(count: usize, position: CodeRange) -> Result<(), Compil
 
 /// Returns a position that locates `target` in source for error reporting.
 ///
-/// `Name` / `Starred` carry the identifier's position; `Tuple` carries its
-/// own. Used by comp-target unpacking when the per-leaf position isn't
-/// available at the error point.
+/// `Name` carries the identifier's position, `Starred` its inner target's, and
+/// every other form its own. Used by comp-target unpacking when the per-leaf
+/// position isn't available at the error point.
 fn target_position(target: &UnpackTarget) -> CodeRange {
     match target {
-        UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => ident.position,
-        UnpackTarget::Tuple { position, .. } => *position,
+        UnpackTarget::Name(ident) => ident.position,
+        UnpackTarget::Starred(inner) => target_position(inner),
+        UnpackTarget::Tuple { position, .. }
+        | UnpackTarget::Attr { position, .. }
+        | UnpackTarget::Subscript { position, .. } => *position,
     }
 }
 
@@ -243,23 +245,17 @@ fn too_many_call_args(count: usize, kind: &'static str, position: CodeRange) -> 
 /// `CodeBuilder`. It handles variable scoping, control flow, and expression
 /// evaluation order following Python semantics.
 ///
-/// Functions are compiled recursively and collected in the `functions` vector.
-/// When a `PreparedFunctionDef` is encountered, its body is compiled first,
-/// creating a `Function` struct that is added to the vector. The index of the
-/// function in this vector becomes the operand for MakeFunction/MakeClosure opcodes.
+/// Functions are compiled recursively into the session's [`Interns`] table.
+/// Each function's body is compiled before registering it, so nested functions
+/// receive lower IDs. Those IDs become MakeFunction/MakeClosure operands.
 pub struct Compiler<'a> {
     /// Current code being built.
     code: CodeBuilder,
 
-    /// Reference to interns for string/function lookups.
-    interns: &'a Interns,
-
-    /// Compiled functions, indexed by their position in this vector.
-    ///
-    /// Functions are added in the order they are encountered during compilation.
-    /// Nested functions are compiled before their containing function's code
-    /// finishes, so inner functions have lower indices.
-    functions: Vec<Function>,
+    /// Session table for literal lookups and newly compiled functions.
+    /// Nested compilers reborrow it; failed module compilation rolls back
+    /// appended functions without disturbing earlier definitions.
+    interns: &'a mut Interns,
 
     /// Enclosing control blocks whose cleanup is emitted by non-local exits.
     /// This mirrors CPython's compiler `fblockinfo` stack and keeps each
@@ -501,21 +497,12 @@ enum CompSlot {
     Cell(u16),
 }
 
-/// Result of module compilation: the module code and all compiled functions.
-pub struct CompileResult {
-    /// The compiled module code.
-    pub code: Code,
-    /// All functions compiled during module compilation, indexed by their function ID.
-    pub functions: Vec<Function>,
-}
-
 impl<'a> Compiler<'a> {
     /// Creates a compiler for a module or function.
     /// `frame_locals` is zero at module scope or the function namespace size;
     /// comprehension slots follow it on the operand stack.
     fn new(
-        interns: &'a Interns,
-        functions: Vec<Function>,
+        interns: &'a mut Interns,
         is_module_scope: bool,
         frame_locals: u16,
         assert_message_annotations: bool,
@@ -525,7 +512,6 @@ impl<'a> Compiler<'a> {
         Self {
             code,
             interns,
-            functions,
             fblocks: Vec::new(),
             finally_copies: 0,
             is_module_scope,
@@ -535,48 +521,40 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Compiles module-level code (a sequence of statements).
+    /// Compiles module-level code (a sequence of statements) to the module `Code`.
     ///
-    /// Returns the compiled module Code and all compiled Functions, or a compile
-    /// error if limits were exceeded. The module implicitly returns the value
-    /// of the last expression, or None if empty.
+    /// Appends functions to `interns`, preserving existing `FunctionId`s and
+    /// rolling back new functions on failure. The module implicitly returns
+    /// the value of its last expression, or None if empty.
     pub fn compile_module(
         nodes: &[PreparedNode],
-        interns: &Interns,
+        interns: &mut Interns,
         globals: &NameMap,
         options: CompileOptions,
-    ) -> Result<CompileResult, CompileError> {
-        Self::compile_module_with_functions(nodes, interns, globals, Vec::new(), options)
+    ) -> Result<Code, CompileError> {
+        let functions_len = interns.functions_len();
+        let result = Self::compile_module_inner(nodes, interns, globals, options);
+        if result.is_err() {
+            interns.truncate_functions(functions_len);
+        }
+        result
     }
 
-    /// Compiles module-level code while preserving an existing function table prefix.
-    ///
-    /// This is used by incremental REPL compilation so previously created
-    /// `FunctionId`s remain stable: new function IDs are allocated after
-    /// `existing_functions.len()`.
-    pub fn compile_module_with_functions(
+    /// [`compile_module`](Self::compile_module) without rollback of appended functions.
+    fn compile_module_inner(
         nodes: &[PreparedNode],
-        interns: &Interns,
+        interns: &mut Interns,
         globals: &NameMap,
-        existing_functions: Vec<Function>,
         options: CompileOptions,
-    ) -> Result<CompileResult, CompileError> {
+    ) -> Result<Code, CompileError> {
         let num_locals = check_namespace_size_u16(globals.len(), "module")?;
         // Module frames have `locals_count = 0` at runtime (globals live in
         // `self.globals`), so comp-var offsets are emitted as plain operand-
         // stack indices.
-        let mut compiler = Compiler::new(
-            interns,
-            existing_functions,
-            true,
-            0,
-            options.assert_message_annotations.enabled(),
-        );
+        let mut compiler = Compiler::new(interns, true, 0, options.assert_message_annotations.enabled());
 
         // All globals are "local names" in the module
-        for (slot, name_id) in globals.iter() {
-            compiler.code.register_local_name(slot.as_u16(), name_id);
-        }
+        compiler.code.register_local_names(globals.names());
 
         compiler.compile_block(nodes)?;
 
@@ -584,38 +562,31 @@ impl<'a> Compiler<'a> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(CompileResult {
-            code: compiler.code.build(num_locals),
-            functions: compiler.functions,
-        })
+        Ok(compiler.code.build(num_locals))
     }
 
-    /// Compiles a function body to bytecode, returning the Code and any nested functions.
+    /// Compiles a function body to bytecode, appending nested functions to `interns`.
     ///
     /// Used internally when compiling function definitions. The function body is
     /// compiled to bytecode with an implicit `return None` at the end if there's
     /// no explicit return statement.
-    ///
-    /// The `functions` parameter receives any previously compiled functions, and
-    /// any nested functions found in the body will be added to it.
     fn compile_function_body(
         body: &[PreparedNode],
-        interns: &Interns,
-        functions: Vec<Function>,
+        interns: &mut Interns,
         num_locals: u16,
         assert_message_annotations: bool,
-    ) -> Result<(Code, Vec<Function>), CompileError> {
+    ) -> Result<Code, CompileError> {
         // Function frames have `locals_count = num_locals` at runtime, so
         // comp-var load/store opcodes use `num_locals + offset` to skip past
         // the locals region into the operand-stack region.
-        let mut compiler = Compiler::new(interns, functions, false, num_locals, assert_message_annotations);
+        let mut compiler = Compiler::new(interns, false, num_locals, assert_message_annotations);
         compiler.compile_block(body)?;
 
         // Implicit return None if no explicit return
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok((compiler.code.build(num_locals), compiler.functions))
+        Ok(compiler.code.build(num_locals))
     }
 
     /// Compiles statements, retaining `finally` bodies for inline cleanup.
@@ -743,23 +714,13 @@ impl<'a> Compiler<'a> {
                 // and, for every target except the last, emit `Dup` to keep a copy
                 // underneath the target-specific store logic. The final target
                 // consumes the remaining copy, leaving the stack balanced.
-                //
-                // The parser only produces `ChainAssign` with `targets.len() >= 2`,
-                // but because `Node` derives `Deserialize`, untrusted snapshot input
-                // could otherwise reach here with 0 or 1 targets. `split_last()`
-                // handles both cases safely without an unsigned underflow, and the
-                // `is_empty` branch pops the leftover RHS value so the operand stack
-                // stays balanced.
                 self.compile_expr(object)?;
-                if let Some((last, rest)) = targets.split_last() {
-                    for target in rest {
-                        self.code.emit(Opcode::Dup)?;
-                        self.compile_assign_target(target)?;
-                    }
-                    self.compile_assign_target(last)?;
-                } else {
-                    self.code.emit(Opcode::Pop)?;
+                let (last, rest) = targets.split_last().expect("chained assignment has targets");
+                for target in rest {
+                    self.code.emit(Opcode::Dup)?;
+                    self.compile_assign_target(target)?;
                 }
+                self.compile_assign_target(last)?;
             }
             Node::If { test, body, or_else } => self.compile_if(test, body, or_else)?,
             Node::For {
@@ -813,7 +774,7 @@ impl<'a> Compiler<'a> {
     /// This involves:
     /// 1. Recursively compiling the function body to bytecode
     /// 2. Creating a Function struct with the compiled Code
-    /// 3. Adding the Function to the compiler's functions vector
+    /// 3. Adding the Function to the session's intern table
     /// 4. Emitting bytecode to evaluate defaults and create the function at runtime
     fn compile_function_def(
         &mut self,
@@ -862,14 +823,8 @@ impl<'a> Compiler<'a> {
     /// variables are captured, the pushed cells are consumed by `MakeClosure`.
     fn emit_make_function(&mut self, func_def: &PreparedFunctionDef, what: &'static str) -> Result<(), CompileError> {
         let assert_message_annotations = self.assert_message_annotations;
-        self.emit_make_callable(func_def, what, |interns, functions, namespace_size| {
-            Self::compile_function_body(
-                &func_def.body,
-                interns,
-                functions,
-                namespace_size,
-                assert_message_annotations,
-            )
+        self.emit_make_callable(func_def, what, |interns, namespace_size| {
+            Self::compile_function_body(&func_def.body, interns, namespace_size, assert_message_annotations)
         })
     }
 
@@ -883,14 +838,13 @@ impl<'a> Compiler<'a> {
     /// use [`compile_function_body`](Self::compile_function_body) (implicit
     /// `return None` tail), while a class body uses
     /// [`compile_class_body`](Self::compile_class_body) (assemble-namespace +
-    /// return-class tail). It receives the interner, the moved-out `functions`
-    /// vector, and this body's namespace size; it returns the compiled body code
-    /// and the (possibly extended) `functions` vector.
+    /// return-class tail). It receives the session table and this body's
+    /// namespace size; nested functions are appended first, receiving lower IDs.
     fn emit_make_callable(
         &mut self,
         func_def: &PreparedFunctionDef,
         what: &'static str,
-        compile_body: impl FnOnce(&Interns, Vec<Function>, u16) -> Result<(Code, Vec<Function>), CompileError>,
+        compile_body: impl FnOnce(&mut Interns, u16) -> Result<Code, CompileError>,
     ) -> Result<(), CompileError> {
         let func_pos = func_def.name.position;
 
@@ -900,13 +854,10 @@ impl<'a> Compiler<'a> {
         let cell_count = check_call_args_u8(func_def.free_var_enclosing_slots.len(), "closure variables", func_pos)?;
 
         // 1. Compile the body recursively.
-        // Take ownership of functions for the recursive compile, then restore.
-        let functions = mem::take(&mut self.functions);
         let namespace_size = check_namespace_size_u16(func_def.namespace_size, what)?;
-        let (body_code, mut functions) = compile_body(self.interns, functions, namespace_size)?;
+        let body_code = compile_body(self.interns, namespace_size)?;
 
-        // 2. Create the compiled Function and add to the vector
-        let func_id = functions.len();
+        // 2. Register the compiled function in the session table.
         // `Function` retains the legacy numeric source metadata for serialized-code
         // compatibility, although closure construction is fully emitted here.
         let enclosing_slot_metadata = func_def
@@ -931,10 +882,7 @@ impl<'a> Compiler<'a> {
             func_def.is_async,
             body_code,
         );
-        functions.push(function);
-
-        // Restore functions to self
-        self.functions = functions;
+        let func_id = self.interns.push_function(function);
 
         // 3. Compile and push default values (evaluated at definition time)
         for default_expr in &func_def.default_exprs {
@@ -1025,14 +973,13 @@ impl<'a> Compiler<'a> {
         position: CodeRange,
     ) -> Result<(), CompileError> {
         let assert_message_annotations = self.assert_message_annotations;
-        self.emit_make_callable(body, "class body", |interns, functions, namespace_size| {
+        self.emit_make_callable(body, "class body", |interns, namespace_size| {
             Self::compile_class_body(
                 &body.body,
                 members,
                 class_name,
                 position,
                 interns,
-                functions,
                 namespace_size,
                 assert_message_annotations,
             )
@@ -1051,18 +998,16 @@ impl<'a> Compiler<'a> {
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
     /// emits `LoadLocal`; it would transparently emit `LoadCell` if that ever
     /// changed, so no assumption is hard-coded here.
-    #[expect(clippy::too_many_arguments)]
     fn compile_class_body(
         body: &[PreparedNode],
         members: &[Identifier],
         class_name: &Identifier,
         position: CodeRange,
-        interns: &Interns,
-        functions: Vec<Function>,
+        interns: &mut Interns,
         num_locals: u16,
         assert_message_annotations: bool,
-    ) -> Result<(Code, Vec<Function>), CompileError> {
-        let mut compiler = Compiler::new(interns, functions, false, num_locals, assert_message_annotations);
+    ) -> Result<Code, CompileError> {
+        let mut compiler = Compiler::new(interns, false, num_locals, assert_message_annotations);
         compiler.compile_block(body)?;
 
         // Assembly errors (e.g. resource limits while building the dict)
@@ -1089,39 +1034,20 @@ impl<'a> Compiler<'a> {
             .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok((compiler.code.build(num_locals), compiler.functions))
+        Ok(compiler.code.build(num_locals))
     }
 
-    /// Compiles an import statement.
-    ///
-    /// Emits `LoadModule` to create the module, then stores it to the binding name.
-    /// If the module is unknown, emits `RaiseImportError` to defer the error to runtime.
-    /// This allows imports inside `if TYPE_CHECKING:` blocks to compile successfully.
+    /// Compiles an import, resolving the module only when execution reaches it.
     fn compile_import(&mut self, module_name: StringId, binding: &Identifier) -> Result<(), CompileError> {
         let position = binding.position;
         self.code.set_location(position, None);
-
-        // Look up the module by name
-        if let Some(builtin_module) = StandardLib::from_string_id(module_name) {
-            // Known module - emit LoadModule
-            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8)?;
-            // Store to the binding (respects Local/Global/Cell scope)
-            self.compile_store(binding)?;
-        } else {
-            // Unknown module - defer error to runtime with RaiseImportError
-            // This allows TYPE_CHECKING imports to compile without error
-            let name_const = self.code.add_const(Value::InternString(module_name))?;
-            self.code.emit_u16(Opcode::RaiseImportError, name_const)?;
-        }
-        Ok(())
+        self.code
+            .emit_u16(Opcode::LoadModule, check_name_index_u16(module_name, position)?)?;
+        self.compile_store(binding)
     }
 
-    /// Compiles a `from module import name, ...` statement.
-    ///
-    /// Creates the module once, then loads each attribute and stores to the binding.
-    /// Invalid attribute names will raise `AttributeError` at runtime.
-    /// If the module is unknown, emits `RaiseImportError` to defer the error to runtime.
-    /// This allows imports inside `if TYPE_CHECKING:` blocks to compile successfully.
+    /// Creates the module once, then loads and binds each imported attribute.
+    /// Missing modules and attributes raise only when execution reaches the import.
     fn compile_import_from(
         &mut self,
         module_name: StringId,
@@ -1129,31 +1055,16 @@ impl<'a> Compiler<'a> {
         position: CodeRange,
     ) -> Result<(), CompileError> {
         self.code.set_location(position, None);
-
-        // Look up the module
-        if let Some(builtin_module) = StandardLib::from_string_id(module_name) {
-            // Known module - emit LoadModule
-            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8)?;
-
-            // For each name to import
-            for (i, (import_name, binding)) in names.iter().enumerate() {
-                // Dup the module if this isn't the last import (last one consumes the module)
-                if i < names.len() - 1 {
-                    self.code.emit(Opcode::Dup)?;
-                }
-
-                // Load the attribute from the module (raises ImportError if not found)
-                let name_idx = check_name_index_u16(*import_name, position)?;
-                self.code.emit_u16(Opcode::LoadAttrImport, name_idx)?;
-
-                // Store to the binding
-                self.compile_store(binding)?;
+        self.code
+            .emit_u16(Opcode::LoadModule, check_name_index_u16(module_name, position)?)?;
+        for (i, (import_name, binding)) in names.iter().enumerate() {
+            // Preserve the module for subsequent attributes; the last load consumes it.
+            if i < names.len() - 1 {
+                self.code.emit(Opcode::Dup)?;
             }
-        } else {
-            // Unknown module - defer error to runtime with RaiseImportError
-            // This allows TYPE_CHECKING imports to compile without error
-            let name_const = self.code.add_const(Value::InternString(module_name))?;
-            self.code.emit_u16(Opcode::RaiseImportError, name_const)?;
+            let name_idx = check_name_index_u16(*import_name, position)?;
+            self.code.emit_u16(Opcode::LoadAttrImport, name_idx)?;
+            self.compile_store(binding)?;
         }
         Ok(())
     }
@@ -3256,8 +3167,20 @@ impl<'a> Compiler<'a> {
         };
 
         match target {
-            UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => {
+            UnpackTarget::Name(ident) => {
                 sim.push(SimItem::Leaf(ident.namespace_id().as_u16()));
+            }
+            UnpackTarget::Starred(inner) => {
+                sim.push(SimItem::Pending(inner));
+                self.process_unpack_sim(sim)?;
+            }
+            // `prepare` rejects these in a comprehension target, where a leaf
+            // has to be a comp-var slot rather than a store to an object.
+            UnpackTarget::Attr { position, .. } | UnpackTarget::Subscript { position, .. } => {
+                return Err(CompileError::new(
+                    "internal error: comprehension target must be a name",
+                    *position,
+                ));
             }
             UnpackTarget::Tuple { targets, position } => {
                 // Pick UNPACK_EX vs UNPACK_SEQUENCE based on whether a starred
@@ -3318,11 +3241,17 @@ impl<'a> Compiler<'a> {
                 // Single identifier - just store directly
                 self.compile_store(ident)?;
             }
-            UnpackTarget::Starred(ident) => {
-                // Starred target by itself (shouldn't happen at top level normally)
-                // Just store as if it were a name
-                self.compile_store(ident)?;
+            UnpackTarget::Starred(inner) => {
+                // `UnpackEx` has already built the list for this slot, so the
+                // captured value is stored like any other target.
+                self.compile_unpack_target(inner)?;
             }
+            UnpackTarget::Attr { object, attr, position } => self.emit_attr_store(object, attr, *position)?,
+            UnpackTarget::Subscript {
+                container,
+                index,
+                position,
+            } => self.emit_subscript_store(container, index, *position)?,
             UnpackTarget::Tuple { targets, position } => {
                 // Check if there's a starred target
                 let star_idx = targets.iter().position(|t| matches!(t, UnpackTarget::Starred(_)));
@@ -3401,24 +3330,13 @@ impl<'a> Compiler<'a> {
     /// `StoreAttr` expects `[.., value, object]` with `object` on top, so this evaluates
     /// `object` above the incoming value. Used by both `Node::AttrAssign` and chained-
     /// assignment attribute steps.
-    ///
-    /// The parser always stores attribute names as `EitherStr::Interned`, so the hot
-    /// path never hits the `Heap` branch. We still check it explicitly rather than
-    /// panicking because `Node` derives `Deserialize` — an untrusted snapshot could
-    /// carry a `Heap` attribute name, and defense-in-depth says the compiler should
-    /// surface that as a graceful `CompileError` instead of aborting the process.
     fn emit_attr_store(
         &mut self,
         object: &ExprLoc,
         attr: &EitherStr,
         target_position: CodeRange,
     ) -> Result<(), CompileError> {
-        let Some(name_id) = attr.string_id() else {
-            return Err(CompileError::new(
-                "internal error: attribute name in AST must be interned",
-                target_position,
-            ));
-        };
+        let name_id = attr.string_id().expect("attribute name in AST must be interned");
         let name_idx = check_name_index_u16(name_id, target_position)?;
         self.compile_expr(object)?;
         self.code.set_location(target_position, None);

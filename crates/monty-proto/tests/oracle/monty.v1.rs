@@ -431,9 +431,10 @@ pub struct StackFrame {
     #[prost(bool, tag = "7")]
     pub hide_frame_name: bool,
 }
-/// Sandbox resource limits, enforced inside the child. Absent fields mean
-/// "unlimited" except recursion depth, which defaults to monty's standard
-/// limit (1000) when absent.
+/// Sandbox resource limits. Absent fields are unlimited except recursion depth
+/// and `max_suspensions`, which both default to 1000. The parent enforces
+/// `max_suspensions`; the child only retains it for dumps and echoes it on
+/// `ChildEvent`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResourceLimits {
     #[prost(uint64, optional, tag = "1")]
@@ -444,6 +445,8 @@ pub struct ResourceLimits {
     pub gc_interval: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "4")]
     pub max_recursion_depth: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    pub max_suspensions: ::core::option::Option<u64>,
 }
 /// Outcome of an external function / OS call, decided by the parent. Mirrors
 /// monty's `ExtFunctionResult`, plus `not_handled` (which only the child can
@@ -506,7 +509,7 @@ pub struct ParentRequest {
     /// not depend on it, and it is absent whenever the parent is not tracing.
     #[prost(string, optional, tag = "20")]
     pub trace_parent: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
+    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
     pub kind: ::core::option::Option<parent_request::Kind>,
 }
 /// Nested message and enum types in `ParentRequest`.
@@ -533,6 +536,8 @@ pub mod parent_request {
         Reset(super::Reset),
         #[prost(message, tag = "10")]
         Shutdown(super::Shutdown),
+        #[prost(message, tag = "11")]
+        AbortFeed(super::AbortFeed),
     }
 }
 /// Configures the REPL session this child will serve until `Reset`, sent once
@@ -584,6 +589,16 @@ pub struct Configure {
     /// in-band negotiation, so an undeclared peer cannot be assumed compatible.
     #[prost(uint32, tag = "9")]
     pub protocol_version: u32,
+    /// How long the child may hold buffered `print()` output before emitting it
+    /// as a `Print` event, in milliseconds. Absent means the child's default
+    /// (`DEFAULT_PRINT_FLUSH_INTERVAL`). 0 disables the timer and restores line
+    /// buffering — one event per completed line, as before this field existed —
+    /// for a host that wants each `print()` delivered on its own.
+    ///
+    /// Output is always flushed before a turn-ending event whatever this says, so
+    /// the field trades streaming latency for event volume and nothing else.
+    #[prost(uint32, optional, tag = "10")]
+    pub print_flush_interval_ms: ::core::option::Option<u32>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -596,6 +611,19 @@ pub struct Feed {
     /// Skip type checking for this feed even when the session enables it.
     #[prost(bool, tag = "3")]
     pub skip_type_check: bool,
+    /// Absolute virtual working directory to switch the session to before the
+    /// feed, resolved by the parent (an explicit choice, or the first mount on
+    /// the session's first feed). Empty keeps the session's current directory.
+    #[prost(string, tag = "4")]
+    pub cwd: ::prost::alloc::string::String,
+}
+/// Ends a pending suspension by raising `exception` uncatchably at its site.
+/// The session returns ready in an `Error` event. Hosts use this to stop a feed,
+/// including when `max_suspensions` is exceeded.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AbortFeed {
+    #[prost(message, optional, tag = "1")]
+    pub exception: ::core::option::Option<RaisedException>,
 }
 /// Answers a `FunctionCall` or `OsCall` suspension. `call_id` must match the
 /// suspension event.
@@ -634,6 +662,8 @@ pub mod resume_name_lookup {
 /// call ids.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResumeFutures {
+    /// Also answers an eager FunctionCall with exactly one result matching its
+    /// call_id. The worker creates a settled awaitable before continuing.
     #[prost(message, repeated, tag = "1")]
     pub results: ::prost::alloc::vec::Vec<FutureResult>,
 }
@@ -697,6 +727,10 @@ pub struct ChildEvent {
     /// state bytes) still learns the budget.
     #[prost(uint64, optional, tag = "21")]
     pub max_duration_micros: ::core::option::Option<u64>,
+    /// Echoes the parent-enforced budget so a host restoring an opaque dump can
+    /// recover it.
+    #[prost(uint64, optional, tag = "23")]
+    pub max_suspensions: ::core::option::Option<u64>,
     /// The session's script name, surfaced on a `Load` reply so a parent that
     /// restored a session (whose script name, like the limits above, travels
     /// inside the opaque dump bytes) learns it without parsing the dump. Set only
@@ -736,14 +770,23 @@ pub mod child_event {
         Shutdown(super::ShutdownDump),
     }
 }
-/// Streamed sandbox print() output. Zero or more of these precede each
-/// turn-ending event; text is flushed at line granularity.
+/// One run of print() output on a single stream, as one `Print` event may
+/// carry several.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Print {
+pub struct PrintSegment {
     #[prost(enumeration = "PrintStream", tag = "1")]
     pub stream: i32,
     #[prost(string, tag = "2")]
     pub text: ::prost::alloc::string::String,
+}
+/// Streamed sandbox print() output. Zero or more of these precede each
+/// turn-ending event, and each carries the runs the worker had buffered, in
+/// the order the sandbox produced them — so output alternating between the
+/// streams batches into one event without losing that order.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Print {
+    #[prost(message, repeated, tag = "3")]
+    pub segments: ::prost::alloc::vec::Vec<PrintSegment>,
 }
 /// Suspension: the sandbox called an external function, or — when `object_id`
 /// is set — a method on a host-backed object (the receiver is NOT included in
@@ -764,6 +807,11 @@ pub struct FunctionCall {
     /// The uuid of the receiver; absent for plain external function calls.
     #[prost(message, optional, tag = "5")]
     pub object_id: ::core::option::Option<Uuid>,
+    /// The host may await a coroutine and answer with ResumeFutures for this
+    /// call_id. Synchronous results use ResumeCall; returning a pending
+    /// future remains valid. Absent/false requires the ordinary call reply.
+    #[prost(bool, tag = "6")]
+    pub allow_eager_await: bool,
 }
 /// Suspension: the sandbox performed an OS operation, surfaced for the parent
 /// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
@@ -782,7 +830,7 @@ pub struct OsCall {
     pub call_id: u32,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -842,6 +890,13 @@ pub mod os_call {
         /// Fixed-offset timezone for an aware result; absent for a naive one.
         #[prost(message, optional, tag = "1")]
         pub tz: ::core::option::Option<super::TimeZone>,
+    }
+    /// os.urandom(size) — the byte count the sandbox validated; unsigned so
+    /// a negative count cannot be expressed on the wire.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Urandom {
+        #[prost(uint64, tag = "1")]
+        pub size: u64,
     }
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
@@ -917,6 +972,9 @@ pub mod os_call {
         /// datetime.now(tz) — the timezone argument (absent for a naive result).
         #[prost(message, tag = "24")]
         DateTimeNow(DateTimeNow),
+        /// os.urandom(size), also how `random` seeds an unseeded generator.
+        #[prost(message, tag = "25")]
+        Urandom(Urandom),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether

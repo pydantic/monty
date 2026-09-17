@@ -12,18 +12,26 @@ dev = [
     "maturin>=1.15.0,<2.0",
     "mypy>=2.1.0",
     "ruff>=0.14.7",
+    # markdown formatting (`make format-md`); style is in .mdformat.toml
+    "mdformat>=0.7.22",
+    "mdformat-tables>=1.0.0",
+    "mdformat-mkdocs>=5.2.1",
+    "mdformat-frontmatter>=2.1.2",
+    "httpx2>=2.12.0",
+    "websockets>=14",
+]
+# used only by `examples/`; opt in with `uv run --group examples ...`, `make dev-py` skips it, `make lint-py` needs it
+examples = [
     "duckdb>=1.0.0",
-    "httpx>=0.28.1",
     "playwright>=1.58.0",
     "beautifulsoup4>=4.14.3",
     "logfire>=4.25.0",
-    "devtools>=0.12.2",
     "pydantic-ai-slim[anthropic,openai]>=1.63.0",
-    "websockets>=14",
 ]
 docs = [
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.7",
+    "mkdocstrings[python]>=0.30",
 ]
 
 # https://beta.ruff.rs/docs/configuration/
@@ -69,6 +77,11 @@ combine-as-imports = true
 known-first-party = ["pydantic_monty"]
 
 [tool.ruff.lint.per-file-ignores]
+"crates/monty/test_cases/{str,bytes}__percent_format.py" = [
+    "F504", # unused mapping key - tests that a mapping operand never reports leftovers
+    "F506", # mixed positional and named placeholders - tests CPython's argument consumption order
+    "F507", # placeholder/argument count mismatch - the point of the argument-count tests
+]
 "crates/monty/test_cases/*.py" = [
     "E722", # bare except - needed for testing try/except with bare except clauses
     "E711", # Comparison to `None` should be `cond is None`
@@ -78,6 +91,7 @@ known-first-party = ["pydantic_monty"]
     "E731", # Do not assign a lambda expression, use a def - needed for testing lambda expressions
     "F541", # f-string without any placeholders
     "F601", # duplicate dict literal key - tests duplicate-key replacement behavior
+    "F622", # two starred expressions in one assignment - the SyntaxError under test
     "F632", # ignore replace `is` with `==` - we have lots of these tests
     "F701", # break outside loop - needed for testing break error handling
     "F702", # continue not properly in loop - needed for testing continue error handling
@@ -150,10 +164,30 @@ exclude = [
     # their TypeError messages
     "crates/monty/test_cases/functools__reduce.py",
     "crates/monty/test_cases/functools__partial.py",
+    # deliberately subscripts types with the wrong arity and with non-type
+    # arguments to pin `types.GenericAlias` behaviour
+    "crates/monty/test_cases/generic_alias.py",
+    "crates/monty/test_cases/generic_alias__not_subscriptable.py",
+    "crates/monty/test_cases/refcount__generic_alias.py",
+    "crates/monty/test_cases/typing__union.py",
+    "crates/monty/test_cases/refcount__typing_union.py",
     "scripts/startup_performance.py",
     "examples/web_scraper/example_code.py",
+    # two starred targets in one assignment is the SyntaxError under test
+    "crates/monty/test_cases/unpack__err_multiple_starred.py",
 ]
 venv = ".venv"
+
+# sandbox-side code copied verbatim from the PyScript example: `pydom`, `DOMParser`,
+# `open_url`, `set_interval` and `random` are bound by the host, not imported, and
+# the upstream file has no annotations; every other strict rule still applies
+[[tool.pyright.executionEnvironments]]
+root = "examples/antigravity"
+reportUndefinedVariable = false
+reportMissingParameterType = false
+reportUnknownParameterType = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
 
 # we include tests cases in type checking then switch off all rules that break
 # so the files don't show as errors in the IDE

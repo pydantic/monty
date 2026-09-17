@@ -6,9 +6,14 @@
 //! it is `Serialize`/`Deserialize`, so it is round-tripped through postcard
 //! directly to cover the serde impls a dump ultimately rests on.
 
+use std::fmt::Write;
+
 use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
-use monty_types::{CompileOptions, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
+use monty_types::{
+    CompileOptions, MontyException, MontyObject, MontyType, NameLookupResult, PrintWriter, ResourceTracker,
+};
 use serde::{Serialize, de::DeserializeOwned};
+use serde_json::to_value;
 
 /// Round-trips compiled code through postcard.
 fn round_trip<T: Serialize + DeserializeOwned>(value: &T) -> T {
@@ -126,6 +131,133 @@ fn monty_run_round_trip_comprehension_closure() {
         loaded.run_no_limits(vec![]).unwrap(),
         MontyObject::String("second".to_owned())
     );
+}
+
+/// A static tag is not part of the wire identity: text unknown to the loading
+/// build remains a usable owned interner entry at the same `StringId`.
+#[test]
+fn static_interns_deserialize_as_unknown_text() {
+    let runner = MontyRun::new("'partial'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut bytes = postcard::to_allocvec(&runner).unwrap();
+    let positions: Vec<_> = bytes
+        .windows(b"partial".len())
+        .enumerate()
+        .filter_map(|(index, value)| (value == b"partial").then_some(index))
+        .collect();
+    assert_eq!(positions.len(), 2, "expected interner text and source text");
+    bytes[positions[0]..positions[0] + b"mystery".len()].copy_from_slice(b"mystery");
+
+    let loaded: MontyRun = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(
+        loaded.run_no_limits(vec![]).unwrap(),
+        MontyObject::String("mystery".to_owned()),
+    );
+}
+
+/// Reserved strings retain their IDs across snapshots without occupying local slots.
+#[test]
+fn reserved_strings_round_trip_without_local_entries() {
+    let mut code = String::from("['',");
+    let mut expected = vec![MontyObject::String(String::new())];
+    for byte in 0..128u8 {
+        write!(code, "'\\x{byte:02x}',").unwrap();
+        expected.push(MontyObject::String(char::from(byte).to_string()));
+    }
+    code.push(']');
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+    let serialized = to_value(&runner).unwrap();
+    for entry in serialized["executor"]["interns"]["strings"].as_array().unwrap() {
+        assert!(entry.as_str().unwrap().len() > 1);
+    }
+    let loaded = round_trip(&runner);
+    assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::List(expected));
+}
+
+/// Heap-only allocation paths, builders and static attributes reuse the empty ID.
+#[test]
+fn empty_string_allocation_after_snapshot() {
+    let code = "
+import sys
+empty = ''
+values = [empty, x, str(), str(encoding='utf-8'), b''.decode(),
+          '{}'.format(x), f'{x}', ''.join([]), 'x'[:0], 'x' * 0,
+          empty + empty, 'x'.replace('x', ''), sys.prefix]
+assert len(set(values)) == 1
+assert len({value: 1 for value in values}) == 1
+[value is empty for value in values]
+";
+    let runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let loaded = round_trip(&runner);
+    assert_eq!(
+        loaded.run_no_limits(vec![MontyObject::String(String::new())]).unwrap(),
+        MontyObject::List(vec![MontyObject::Bool(true); 13]),
+    );
+}
+
+/// Module attributes are absent from compiled snapshots and interned lazily
+/// during execution, including when running the same loaded program twice.
+#[test]
+fn execution_interns_module_static_strings() {
+    let runner = MontyRun::new(
+        "import functools\n1".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let bytes = postcard::to_allocvec(&runner).unwrap();
+    assert_eq!(
+        bytes
+            .windows(b"partial".len())
+            .filter(|text| *text == b"partial")
+            .count(),
+        0
+    );
+    let loaded: MontyRun = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(1));
+    assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(1));
+}
+
+/// Each module can lazily construct its complete namespace after loading,
+/// without source attribute references masking missing interner entries.
+#[test]
+fn module_imports_after_snapshot() {
+    for module in [
+        "sys",
+        "typing",
+        "asyncio",
+        "pathlib",
+        "os",
+        "math",
+        "json",
+        "re",
+        "datetime",
+        "unicodedata",
+        "itertools",
+        "dataclasses",
+        "collections",
+        "functools",
+        "base64",
+        "binascii",
+    ] {
+        let runner = MontyRun::new(
+            format!("import {module}\n42"),
+            "test.py",
+            vec![],
+            CompileOptions::default(),
+        )
+        .unwrap();
+        let loaded = round_trip(&runner);
+        assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(42));
+        let loaded = round_trip(&loaded);
+        assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::Int(42));
+    }
 }
 
 #[test]
@@ -301,6 +433,90 @@ ext_fn(0)
         MontyObject::Tuple(vec![MontyObject::Int(1)]),
         MontyObject::Dict(vec![(MontyObject::String("c".to_owned()), MontyObject::Int(3))].into()),
         MontyObject::String("True".to_owned()),
+    ]);
+
+    // Both are resumed for the reason given in the itertools round-trip above.
+    let original = progress.into_function_call().expect("should be at function call");
+    assert_eq!(original.function_name, "ext_fn");
+    let from_original = original.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_original.into_complete().unwrap(), expected);
+
+    let call = loaded.into_function_call().expect("should be at function call");
+    let from_loaded = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_loaded.into_complete().unwrap(), expected);
+}
+
+/// A live `types.GenericAlias` on the heap survives a round-trip with its
+/// origin and `__args__` tuple intact — the only coverage that carries
+/// `HeapData::GenericAlias` through postcard.
+#[test]
+fn run_progress_round_trip_preserves_generic_alias() {
+    let code = r"
+Record = tuple[int, str, ...]
+ext_fn(0)
+[repr(Record), Record.__args__, repr(Record.__origin__), Record((1, 2)), Record == tuple[int, str, ...]]
+"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+
+    // Suspend at `ext_fn` with the alias built and still live.
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded: RunProgress = round_trip_progress(&progress);
+
+    let expected = MontyObject::List(vec![
+        MontyObject::String("tuple[int, str, ...]".to_owned()),
+        MontyObject::Tuple(vec![
+            MontyObject::Type(MontyType::Int),
+            MontyObject::Type(MontyType::Str),
+            MontyObject::Ellipsis,
+        ]),
+        MontyObject::String("<class 'tuple'>".to_owned()),
+        MontyObject::Tuple(vec![MontyObject::Int(1), MontyObject::Int(2)]),
+        MontyObject::Bool(true),
+    ]);
+
+    // Both are resumed for the reason given in the itertools round-trip above.
+    let original = progress.into_function_call().expect("should be at function call");
+    assert_eq!(original.function_name, "ext_fn");
+    let from_original = original.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_original.into_complete().unwrap(), expected);
+
+    let call = loaded.into_function_call().expect("should be at function call");
+    let from_loaded = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_loaded.into_complete().unwrap(), expected);
+}
+
+/// A live `typing.Union` on the heap survives a round-trip with its members
+/// intact — the only coverage that carries `HeapData::Union` through postcard.
+#[test]
+fn run_progress_round_trip_preserves_union() {
+    let code = r"
+Maybe = None | list[int]
+ext_fn(0)
+[repr(Maybe), Maybe.__args__, Maybe == list[int] | None, isinstance(None, Maybe), isinstance(3, int | Maybe)]
+"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+
+    // Suspend at `ext_fn` with the union built and still live.
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded: RunProgress = round_trip_progress(&progress);
+
+    let expected = MontyObject::List(vec![
+        MontyObject::String("None | list[int]".to_owned()),
+        MontyObject::Tuple(vec![
+            MontyObject::Type(MontyType::NoneType),
+            MontyObject::Repr("list[int]".to_owned()),
+        ]),
+        MontyObject::Bool(true),
+        MontyObject::Bool(true),
+        MontyObject::Bool(true),
     ]);
 
     // Both are resumed for the reason given in the itertools round-trip above.

@@ -5,11 +5,115 @@
 
 use std::thread;
 
-use monty::{MontyRun, ResolveFutures, RunProgress};
+use monty::{Dump, MontyRun, ResolveFutures, RunProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, PrintWriter,
     ResourceTracker,
 };
+
+/// Starts a snippet and resolves external names without answering its first call.
+fn start_external(code: &str) -> RunProgress {
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    resolve_name_lookups(
+        runner
+            .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+/// Sequential eager awaits retain container results without yielding ResolveFutures.
+#[test]
+fn allow_eager_await_sequential_results_and_errors() {
+    let mut progress = start_external("a = await foo()\nb = await foo()\n[a, b]");
+    for n in [1, 2] {
+        let call = progress.into_function_call().unwrap();
+        assert!(call.allow_eager_await);
+        progress = call
+            .resume_eager(Ok(MontyObject::List(vec![MontyObject::Int(n)])), PrintWriter::Stdout)
+            .unwrap();
+    }
+    assert_eq!(
+        progress.into_complete().unwrap(),
+        MontyObject::List(vec![
+            MontyObject::List(vec![MontyObject::Int(1)]),
+            MontyObject::List(vec![MontyObject::Int(2)]),
+        ])
+    );
+
+    let call = start_external("try:\n    await foo()\nexcept ValueError as e:\n    result = str(e)\nresult")
+        .into_function_call()
+        .unwrap();
+    assert!(call.allow_eager_await);
+    let progress = call
+        .resume_eager(
+            Err(MontyException::new(ExcType::ValueError, Some("failed".to_owned()))),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(
+        progress.into_complete().unwrap(),
+        MontyObject::String("failed".to_owned())
+    );
+}
+
+/// The hint does not change ordinary sync returns or require hosts to use eager resolution.
+#[test]
+fn allow_eager_await_keeps_existing_resume_semantics() {
+    let call = start_external("await foo()").into_function_call().unwrap();
+    assert!(call.allow_eager_await);
+    let err = call.resume(MontyObject::Int(42), PrintWriter::Stdout).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::TypeError);
+
+    let call = start_external("await foo()").into_function_call().unwrap();
+    let call_id = call.call_id;
+    let waiting = call
+        .resume_pending(PrintWriter::Stdout)
+        .unwrap()
+        .into_resolve_futures()
+        .unwrap();
+    let done = waiting
+        .resume(
+            vec![(call_id, ExtFunctionResult::Return(MontyObject::Int(42)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(done.into_complete().unwrap(), MontyObject::Int(42));
+}
+
+/// Deferred calls, ready siblings, and earlier pending futures must retain concurrency.
+#[test]
+fn allow_eager_await_excludes_competing_work() {
+    for code in [
+        "import asyncio\nawait asyncio.gather(foo(), foo())",
+        "import asyncio\nasync def task():\n    return await foo()\nawait asyncio.gather(task(), task())",
+        "f = foo()\nx = await foo()\nawait f",
+    ] {
+        let mut progress = start_external(code);
+        let mut results = Vec::new();
+        loop {
+            match progress {
+                RunProgress::FunctionCall(call) => {
+                    assert!(!call.allow_eager_await, "incorrect eager hint for {code}");
+                    results.push((call.call_id, ExtFunctionResult::Return(MontyObject::Int(1))));
+                    progress = resolve_name_lookups(call.resume_pending(PrintWriter::Stdout).unwrap()).unwrap();
+                }
+                RunProgress::ResolveFutures(waiting) => {
+                    assert_eq!(results.len(), 2);
+                    assert!(
+                        waiting
+                            .resume(results, PrintWriter::Stdout)
+                            .unwrap()
+                            .into_complete()
+                            .is_some()
+                    );
+                    break;
+                }
+                other => panic!("unexpected progress: {other:?}"),
+            }
+        }
+    }
+}
 
 /// Helper to create a MontyRun for async external function tests.
 ///
@@ -503,12 +607,7 @@ fn gather_first_external_fails_immediately() {
 
 // === Test: Gather - a coroutine child whose external call fails is dropped ===
 
-/// A gather child that is a coroutine gets its own task, and its failing
-/// external call is settled against the gather rather than raised inside the
-/// child. Nothing would then deliver the failure to that child, so it must be
-/// dropped here — otherwise it stays `Blocked` on a future that has just been
-/// failed and unregistered, holding its coroutine and the gather for the rest
-/// of the session. Its siblings are unaffected and keep running.
+/// An unhandled host rejection must release the child task while its siblings keep running.
 #[test]
 #[cfg(feature = "test-hooks")]
 fn gather_coroutine_child_dropped_when_its_external_fails() {
@@ -627,6 +726,261 @@ fn gather_both_fail() {
 
     let result = state.resume(results, PrintWriter::Stdout);
     assert!(result.is_err(), "should propagate one of the errors");
+}
+
+/// A host batch must deliver the first failure whether the surviving sibling fails or returns.
+#[test]
+fn gather_child_failure_survives_batch() {
+    for gather in [
+        "asyncio.gather(child(), child())",
+        "asyncio.gather(asyncio.gather(child()), child())",
+        "asyncio.gather(parent(), parent())",
+    ] {
+        for (reverse, second_fails) in [(false, false), (false, true), (true, false), (true, true)] {
+            let code = format!(
+                r"
+import asyncio
+
+async def child():
+    return await host_call()
+
+async def parent():
+    return await asyncio.gather(child())
+
+await {gather}
+"
+            );
+            let (state, mut call_ids) = drive_to_resolve_futures(start_external(&code));
+            assert_eq!(call_ids.len(), 2);
+            if reverse {
+                call_ids.reverse();
+            }
+            let error = state
+                .resume(
+                    vec![
+                        (
+                            call_ids[0],
+                            ExtFunctionResult::Error(MontyException::new(
+                                ExcType::ValueError,
+                                Some("first failure".to_owned()),
+                            )),
+                        ),
+                        (
+                            call_ids[1],
+                            if second_fails {
+                                ExtFunctionResult::Error(MontyException::new(
+                                    ExcType::TypeError,
+                                    Some("second failure".to_owned()),
+                                ))
+                            } else {
+                                ExtFunctionResult::Return(MontyObject::List(vec![MontyObject::Int(42)]))
+                            },
+                        ),
+                    ],
+                    PrintWriter::Stdout,
+                )
+                .unwrap_err();
+            assert_eq!(
+                error.exc_type(),
+                ExcType::ValueError,
+                "{gather}, reverse={reverse}, second_fails={second_fails}"
+            );
+            assert_eq!(error.message(), Some("first failure"));
+        }
+    }
+}
+
+/// Host rejections must reach each child's handlers before deciding whether its gather failed.
+#[test]
+fn gather_children_catch_batched_rejections() {
+    let code = r"
+import asyncio
+log = []
+
+async def child(index):
+    try:
+        return await host_call()
+    except ValueError as exc:
+        log.append(str(exc))
+        return index
+    finally:
+        log.append('finally ' + str(index))
+
+results = await asyncio.gather(child(0), child(1))
+[results, log]
+";
+    for order in [[0, 1], [1, 0]] {
+        let (state, calls) = drive_to_resolve_futures(start_external(code));
+        assert_eq!(calls.len(), 2);
+        let results = order
+            .into_iter()
+            .map(|i| {
+                (
+                    calls[i],
+                    ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some(format!("error {i}")))),
+                )
+            })
+            .collect();
+        let result = state
+            .resume(results, PrintWriter::Stdout)
+            .unwrap()
+            .into_complete()
+            .unwrap();
+        let log = order
+            .into_iter()
+            .flat_map(|i| [format!("error {i}"), format!("finally {i}")])
+            .map(MontyObject::String)
+            .collect();
+        assert_eq!(
+            result,
+            MontyObject::List(vec![
+                MontyObject::List(vec![MontyObject::Int(0), MontyObject::Int(1)]),
+                MontyObject::List(log),
+            ])
+        );
+    }
+}
+
+/// Cleanup may suspend before an unhandled rejection reaches the gather's waiter.
+#[test]
+fn gather_child_finally_suspends_before_propagating() {
+    let code = r"
+import asyncio
+log = []
+
+async def child():
+    try:
+        await host_call()
+    finally:
+        log.append('cleanup started')
+        await cleanup_call()
+        log.append('cleanup finished')
+
+try:
+    await asyncio.gather(child())
+except ValueError as exc:
+    log.append(str(exc))
+log
+";
+    let (state, calls) = drive_to_resolve_futures(start_external(code));
+    let progress = state
+        .resume(
+            vec![(
+                calls[0],
+                ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("rejected".to_owned()))),
+            )],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let (state, calls) = drive_collecting_calls(progress);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1, "cleanup_call");
+    let result = state
+        .resume(
+            vec![(calls[0].0, ExtFunctionResult::Return(MontyObject::None))],
+            PrintWriter::Stdout,
+        )
+        .unwrap()
+        .into_complete()
+        .unwrap();
+    assert_eq!(
+        result,
+        MontyObject::List(
+            ["cleanup started", "cleanup finished", "rejected"]
+                .map(|s| MontyObject::String(s.to_owned()))
+                .to_vec()
+        )
+    );
+}
+
+/// A caught gather failure must leave a sibling's batched exception available to its own handler.
+#[test]
+fn gather_batched_failures_are_caught_by_waiter_and_sibling() {
+    let code = r"
+import asyncio
+
+log = []
+
+async def child():
+    return await host_call()
+
+async def sibling():
+    try:
+        await host_call()
+    except TypeError as exc:
+        log.append(str(exc))
+    log.append(await sibling_tail())
+
+try:
+    await asyncio.gather(child(), sibling())
+except ValueError as exc:
+    log.append(str(exc))
+await main_tail()
+sorted(log)
+";
+    let (state, call_ids) = drive_to_resolve_futures(start_external(code));
+    assert_eq!(call_ids.len(), 2);
+    let progress = state
+        .resume(
+            vec![
+                (
+                    call_ids[0],
+                    ExtFunctionResult::Error(MontyException::new(
+                        ExcType::ValueError,
+                        Some("first failure".to_owned()),
+                    )),
+                ),
+                (
+                    call_ids[1],
+                    ExtFunctionResult::Error(MontyException::new(
+                        ExcType::TypeError,
+                        Some("second failure".to_owned()),
+                    )),
+                ),
+            ],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    // Both handlers continue through a host suspension, preserving any queued exception.
+    let dumped = dump("test.py", None, SessionRef::Running(&progress)).unwrap();
+    let Session::Running(loaded) = Dump::load(&dumped).unwrap().state else {
+        panic!("expected a running session");
+    };
+    for progress in [progress, *loaded] {
+        let (state, calls) = drive_collecting_calls(progress);
+        assert_eq!(calls.len(), 2);
+        let sibling_tail = calls.iter().find(|(_, name)| name == "sibling_tail").unwrap().0;
+        let main_tail = calls.iter().find(|(_, name)| name == "main_tail").unwrap().0;
+        let state = state
+            .resume(
+                vec![(
+                    sibling_tail,
+                    ExtFunctionResult::Return(MontyObject::String("finished".to_owned())),
+                )],
+                PrintWriter::Stdout,
+            )
+            .unwrap()
+            .into_resolve_futures()
+            .unwrap();
+        assert_eq!(state.pending_call_ids(), &[main_tail]);
+        let result = state
+            .resume(
+                vec![(main_tail, ExtFunctionResult::Return(MontyObject::None))],
+                PrintWriter::Stdout,
+            )
+            .unwrap()
+            .into_complete()
+            .unwrap();
+        assert_eq!(
+            result,
+            MontyObject::List(
+                ["finished", "first failure", "second failure"]
+                    .map(|s| MontyObject::String(s.to_owned()))
+                    .to_vec()
+            )
+        );
+    }
 }
 
 // === Test: Three-way gather, partial error ===
@@ -1166,14 +1520,8 @@ fn deep_blocked_task_chain_teardown_does_not_overflow_the_stack() {
     run_on_a_worker_stack(fail_sibling_of_deep_task_chain);
 }
 
-/// Wraps `leaf()` in 20,000 nested gathers and awaits that chain alongside a
-/// `sibling()`, so both park on external calls: the chain's `parked` (never
-/// resolved) and the sibling's `doomed`. Resolving `doomed` with an error
-/// fails the outer gather, which cancels all 20,000 blocked tasks in one walk,
-/// and asserts that error surfaces as the run's `ValueError`.
-///
-/// Failing the *sibling* is what makes it a single deep walk — failing the
-/// chain's own future would instead unwind it level by level.
+/// Leaves 20,000 nested tasks blocked when a sibling's rejection ends the run.
+/// Final VM cleanup must release the whole chain without overflowing the native stack.
 fn fail_sibling_of_deep_task_chain() {
     let code = r"
 import asyncio
@@ -1204,8 +1552,7 @@ await asyncio.gather(g, sibling())
         .expect("the sibling should have parked on an external call");
     assert_eq!(calls.len(), 2, "the chain's leaf and the sibling should both park");
 
-    // Failing the sibling tears down the enclosing gather, cancelling the
-    // chain top-down; the exception itself only walks up to the main task.
+    // The unhandled error ends the run; final cleanup cancels the surviving chain.
     let error = MontyException::new(ExcType::ValueError, Some("sibling failed".to_string()));
     let result = state.resume(vec![(doomed_id, ExtFunctionResult::Error(error))], PrintWriter::Stdout);
 

@@ -56,6 +56,13 @@ pub(crate) struct Cli {
     #[arg(short = 'm', long = "mount")]
     mounts: Vec<String>,
 
+    /// Sandbox working directory: an absolute virtual path.
+    ///
+    /// `os.getcwd()` reports it and relative paths resolve against it.
+    /// Defaults to the first `--mount` virtual path, or `/` without mounts.
+    #[arg(long)]
+    cwd: Option<String>,
+
     /// Maximum execution time in seconds (e.g. `0.5` for 500ms).
     #[arg(long)]
     max_duration: Option<f64>,
@@ -68,9 +75,13 @@ pub(crate) struct Cli {
     #[arg(long)]
     gc_interval: Option<usize>,
 
-    /// Maximum call-stack depth (defaults to 1000 when any limit is set).
+    /// Maximum call-stack depth (defaults to 1000).
     #[arg(long)]
     max_recursion_depth: Option<usize>,
+
+    /// Maximum suspensions serviced in one CLI session (defaults to 1000).
+    #[arg(long)]
+    max_suspensions: Option<usize>,
 
     #[command(subcommand)]
     subcommand: Option<Command>,
@@ -101,6 +112,8 @@ impl Cli {
             Some("--type-check")
         } else if !self.mounts.is_empty() {
             Some("--mount")
+        } else if self.cwd.is_some() {
+            Some("--cwd")
         } else if self.any_resource_limit_flag() {
             Some("a resource-limit flag")
         } else {
@@ -118,6 +131,7 @@ impl Cli {
             || self.max_memory.is_some()
             || self.gc_interval.is_some()
             || self.max_recursion_depth.is_some()
+            || self.max_suspensions.is_some()
     }
 
     /// Builds `ResourceLimits` from the parsed CLI arguments.
@@ -142,6 +156,9 @@ impl Cli {
         }
         if let Some(depth) = self.max_recursion_depth {
             limits = limits.max_recursion_depth(depth);
+        }
+        if let Some(max) = self.max_suspensions {
+            limits = limits.max_suspensions(max);
         }
         Ok(limits)
     }

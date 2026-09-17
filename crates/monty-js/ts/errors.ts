@@ -254,6 +254,7 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'TypeError',
   're.PatternError',
   'binascii.Error',
+  'binascii.Incomplete',
 ])
 
 /**

@@ -610,7 +610,10 @@ impl MontyObjectExt for MontyObject {
                 visited.remove(id);
                 result
             }
-            Value::Builtin(Builtins::Type(t)) => Self::Type(MontyType::from_internal(*t, vm)),
+            Value::Builtin(Builtins::Type(t)) => match MontyType::from_internal(*t, vm) {
+                Some(ty) => Self::Type(ty),
+                None => repr_or_error(object, vm),
+            },
             Value::Builtin(Builtins::ExcType(e)) => Self::Type(MontyType::Exception(*e)),
             Value::Builtin(Builtins::Function(f)) => Self::BuiltinFunction(*f),
             #[cfg(feature = "memory-model-checks")]
@@ -628,9 +631,9 @@ impl MontyObjectExt for MontyObject {
 pub(crate) trait MontyTypeExt: Sized {
     fn to_internal(&self) -> Option<Type>;
 
-    fn from_internal_static(ty: Type) -> Self;
+    fn from_internal_static(ty: Type) -> Option<Self>;
 
-    fn from_internal(ty: Type, vm: &mut VM<'_>) -> Self;
+    fn from_internal(ty: Type, vm: &mut VM<'_>) -> Option<Self>;
 }
 
 impl MontyTypeExt for MontyType {
@@ -680,9 +683,22 @@ impl MontyTypeExt for MontyType {
             Self::ItertoolsDropWhile => Some(Type::ItertoolsDropWhile),
             Self::ItertoolsFilterFalse => Some(Type::ItertoolsFilterFalse),
             Self::ItertoolsStarMap => Some(Type::ItertoolsStarMap),
+            Self::ItertoolsAccumulate => Some(Type::ItertoolsAccumulate),
+            Self::ItertoolsBatched => Some(Type::ItertoolsBatched),
+            Self::ItertoolsZipLongest => Some(Type::ItertoolsZipLongest),
+            Self::ItertoolsCombinations => Some(Type::ItertoolsCombinations),
+            Self::ItertoolsCombinationsWithReplacement => Some(Type::ItertoolsCombinationsWithReplacement),
+            Self::ItertoolsPermutations => Some(Type::ItertoolsPermutations),
+            Self::ItertoolsProduct => Some(Type::ItertoolsProduct),
+            Self::ItertoolsGroupBy => Some(Type::ItertoolsGroupBy),
+            Self::ItertoolsGrouper => Some(Type::ItertoolsGrouper),
+            Self::ItertoolsTee => Some(Type::ItertoolsTee),
+            Self::ItertoolsTeeDataObject => Some(Type::ItertoolsTeeDataObject),
             Self::ItertoolsCount => Some(Type::ItertoolsCount),
             Self::ItertoolsRepeat => Some(Type::ItertoolsRepeat),
             Self::Partial => Some(Type::Partial),
+            Self::GenericAlias => Some(Type::GenericAlias),
+            Self::Union => Some(Type::Union),
             Self::Tuple => Some(Type::Tuple),
             Self::NamedTuple => Some(Type::NamedTuple),
             Self::Dict => Some(Type::Dict),
@@ -714,15 +730,12 @@ impl MontyTypeExt for MontyType {
         }
     }
 
-    /// Mirrors a runtime [`Type`] whose class identity is NOT needed. Use
-    /// [`from_internal`](Self::from_internal) when a heap is available.
+    /// Mirrors runtime types without heap access; types that cross as reprs return `None`.
     ///
     /// # Panics
-    /// On `Instance`, whose class name cannot be resolved without a heap; it
-    /// is unreachable on every current call path (`Builtins::Type` and
-    /// `from_type_name` never hold/produce it).
-    fn from_internal_static(ty: Type) -> Self {
-        match ty {
+    /// On `Instance` or `HostClass`, whose identities require separate heap-backed conversion.
+    fn from_internal_static(ty: Type) -> Option<Self> {
+        Some(match ty {
             Type::Ellipsis => Self::Ellipsis,
             Type::NotImplementedType => Self::NotImplementedType,
             Type::Type => Self::Type,
@@ -764,9 +777,23 @@ impl MontyTypeExt for MontyType {
             Type::ItertoolsDropWhile => Self::ItertoolsDropWhile,
             Type::ItertoolsFilterFalse => Self::ItertoolsFilterFalse,
             Type::ItertoolsStarMap => Self::ItertoolsStarMap,
+            Type::ItertoolsAccumulate => Self::ItertoolsAccumulate,
+            Type::ItertoolsBatched => Self::ItertoolsBatched,
+            Type::ItertoolsZipLongest => Self::ItertoolsZipLongest,
+            Type::ItertoolsCombinations => Self::ItertoolsCombinations,
+            Type::ItertoolsCombinationsWithReplacement => Self::ItertoolsCombinationsWithReplacement,
+            Type::ItertoolsPermutations => Self::ItertoolsPermutations,
+            Type::ItertoolsProduct => Self::ItertoolsProduct,
+            Type::ItertoolsGroupBy => Self::ItertoolsGroupBy,
+            Type::ItertoolsGrouper => Self::ItertoolsGrouper,
+            Type::ItertoolsTee => Self::ItertoolsTee,
+            Type::ItertoolsTeeDataObject => Self::ItertoolsTeeDataObject,
             Type::ItertoolsCount => Self::ItertoolsCount,
             Type::ItertoolsRepeat => Self::ItertoolsRepeat,
             Type::Partial => Self::Partial,
+            Type::GenericAlias => Self::GenericAlias,
+            Type::Union => Self::Union,
+            Type::Random => return None,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
             Type::Dict => Self::Dict,
@@ -803,14 +830,14 @@ impl MontyTypeExt for MontyType {
             Type::ReMatch => Self::ReMatch,
             Type::DataclassField => Self::Field,
             Type::DataclassParams => Self::DataclassParams,
-        }
+        })
     }
 
-    /// The total mirror of a runtime [`Type`]: `Instance` resolves its class
-    /// via the heap, generating the class's boundary uuid on first crossing.
-    fn from_internal(ty: Type, vm: &mut VM<'_>) -> Self {
+    /// Maps supported runtime types to boundary types; others cross as reprs.
+    /// `Instance` resolves its class via the heap, generating its boundary uuid on first crossing.
+    fn from_internal(ty: Type, vm: &mut VM<'_>) -> Option<Self> {
         match ty {
-            Type::Instance(class_id) => Self::Instance(Box::new(sandbox_class_type(class_id, vm))),
+            Type::Instance(class_id) => Some(Self::Instance(Box::new(sandbox_class_type(class_id, vm)))),
             other => Self::from_internal_static(other),
         }
     }

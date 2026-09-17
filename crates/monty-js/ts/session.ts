@@ -10,6 +10,7 @@
 // delivered when the worker reports everything is blocked (`resolveFutures`).
 
 import type { NativeSession } from '../native-addon.js'
+import { bindPrintCallback, runWithCallbackContext } from './callbackContext.js'
 import { AttrNotExposed, attributeErrorMessage, InstanceStore, prepare, restore } from './classInstance.js'
 import {
   MontyCrashedError,
@@ -51,7 +52,7 @@ export type ExternalFunction = (...args: never[]) => unknown
  */
 export type OsCallback = (name: string, args: unknown[], kwargs: Record<string, unknown>) => unknown
 
-/** Receives sandbox `print()` output (line-buffered). */
+/** Receives sandbox `print()` output in batched chunks. */
 export type PrintCallback = (stream: 'stdout' | 'stderr', text: string) => void
 
 /**
@@ -78,6 +79,15 @@ export interface FeedOptions {
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
   mount?: MountDir | MountDir[]
+  /**
+   * Switches the sandbox's working directory before this feed, an absolute
+   * virtual path. The directory persists across the session's feeds,
+   * including any `os.chdir()`, so leaving it unset keeps the current one;
+   * the session's first feed defaults to its first mount's virtual path, or
+   * `/` without mounts. `os.getcwd()` reports it and relative paths resolve
+   * against it before reaching a mount or the `os` handler.
+   */
+  cwd?: string
   /** Handler for OS calls not covered by mounts. */
   os?: OsCallback
   /** Skip type checking for this feed even when the session enables it. */
@@ -104,6 +114,9 @@ export interface FeedStartOptions {
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
   mount?: MountDir | MountDir[]
+  /** Switches the sandbox's working directory before the feed, as in
+   *  [`FeedOptions.cwd`]; a dump taken mid-feed carries it. */
+  cwd?: string
   /** Handler for OS calls not covered by mounts. Consulted only by
    *  `resumeAuto()` — `feedStart` always surfaces OS calls as snapshots. */
   os?: OsCallback
@@ -172,12 +185,15 @@ export class MontySession {
    * Executes one snippet in the worker, driving external function calls
    * (which may return promises), OS callbacks, and print callbacks in this
    * process. Returns the snippet's trailing expression value.
+   *
+   * Node callbacks preserve the caller's async context. With telemetry enabled,
+   * spans created inside callbacks nest under the corresponding Monty operation.
    */
   async feedRun(code: string, options: FeedOptions = {}): Promise<unknown> {
     this.ensureUsable()
     this.driven = true
     const printTarget = new PrintTarget(options.printCallback)
-    const onPrint = printTarget.write.bind(printTarget)
+    const onPrint = bindPrintCallback(printTarget.write.bind(printTarget))
     // A fresh answerer (and its pending-future map) per feed, so promises the
     // worker never asks about again cannot accumulate across feeds.
     const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, options.os)
@@ -185,7 +201,7 @@ export class MontySession {
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      options.skipTypeCheck ?? false,
+      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
       onPrint,
     )) as NativeTurn
     for (;;) {
@@ -254,7 +270,7 @@ export class MontySession {
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      options.skipTypeCheck ?? false,
+      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
       driver.onPrint,
     )) as NativeTurn
     return driver.advance(turn)
@@ -268,6 +284,11 @@ export class MontySession {
    * Valid only on a fresh session, before any feed or load (it replaces the
    * whole session); throws otherwise. The dump restores its own resource limits
    * and type-check state. Throws if the dump is actually a suspended snapshot.
+   *
+   * Only load unmodified bytes from a trusted, compatible Monty producer.
+   * The caller must establish provenance and integrity; Monty does not authenticate
+   * snapshots. Invalid snapshots have no correctness or availability guarantees.
+   * Successful loading does not establish validity.
    */
   async loadSession(state: Uint8Array): Promise<void> {
     this.claimFresh()
@@ -292,7 +313,8 @@ export class MontySession {
   /**
    * Restores a dumped **suspended** snapshot — bytes from `feedStart` +
    * `snapshot.dump()` — and resolves to the snapshot to resume. Use
-   * [`loadSession`] for a dump taken between feeds.
+   * [`loadSession`] for a dump taken between feeds. Its snapshot trust requirements
+   * also apply here.
    *
    * Valid only on a fresh session, before any feed or load; throws otherwise.
    * Re-supply the same `mount`s the paused feed used (their host paths are not
@@ -457,7 +479,14 @@ class TurnAnswerer {
   ) {}
 
   /** Answers one suspension turn and returns the resume turn it produces. */
-  async answer(
+  answer(
+    turn: FunctionCallTurn | OsCallTurn | ResolveFuturesTurn | NameLookupTurn,
+    onPrint: PrintCallback,
+  ): Promise<NativeTurn> {
+    return runWithCallbackContext(turn.callbackSpanKey, () => this.answerInContext(turn, onPrint))
+  }
+
+  private async answerInContext(
     turn: FunctionCallTurn | OsCallTurn | ResolveFuturesTurn | NameLookupTurn,
     onPrint: PrintCallback,
   ): Promise<NativeTurn> {
@@ -529,6 +558,9 @@ class TurnAnswerer {
       return this.native.resumeError(excType, message, onPrint)
     }
     if (isThenable(returned)) {
+      if (call.allowEagerAwait) {
+        return this.answerEagerCoroutine(call.callId, returned, onPrint)
+      }
       this.registerFuture(call.callId, Promise.resolve(returned))
       return this.native.resumeFuture(onPrint)
     }
@@ -574,6 +606,9 @@ class TurnAnswerer {
       return this.native.resumeError(excType, message, onPrint)
     }
     if (isThenable(returned)) {
+      if (call.allowEagerAwait) {
+        return this.answerEagerCoroutine(call.callId, returned, onPrint)
+      }
       this.registerFuture(call.callId, Promise.resolve(returned))
       return this.native.resumeFuture(onPrint)
     }
@@ -654,6 +689,22 @@ class TurnAnswerer {
       return await this.native.resumeNotHandled(onPrint)
     }
     return await this.resumeWithValue(returned, onPrint)
+  }
+
+  /** Settles an eligible coroutine at its call suspension, including conversion errors. */
+  private async answerEagerCoroutine(
+    callId: number,
+    promise: PromiseLike<unknown>,
+    onPrint: PrintCallback,
+  ): Promise<object> {
+    let result: NativeFutureResult
+    try {
+      result = { callId, ok: true, value: prepare(await promise, this.instances) }
+    } catch (err) {
+      const { excType, message } = jsErrorParts(err)
+      result = { callId, ok: false, excType, message }
+    }
+    return await this.native.resolveFutures([result], onPrint)
   }
 
   /** Tracks a promise so `resolveFutures` can later deliver its outcome. */
@@ -763,7 +814,9 @@ class PrintTarget {
  */
 class SnapshotDriver {
   /** Exposed so the session's first turn can stream prints through it. */
-  readonly onPrint: PrintCallback
+  get onPrint(): PrintCallback {
+    return bindPrintCallback(this.printTarget.write.bind(this.printTarget))
+  }
 
   constructor(
     private readonly native: NativeSession,
@@ -773,9 +826,7 @@ class SnapshotDriver {
     private readonly printTarget: PrintTarget,
     private readonly answerer: TurnAnswerer,
     private readonly poison: (err: Error) => Error,
-  ) {
-    this.onPrint = printTarget.write.bind(printTarget)
-  }
+  ) {}
 
   /** Resolves a turn to the next snapshot, answering nothing automatically. */
   async advance(turn: NativeTurn): Promise<Snapshot> {
@@ -916,6 +967,8 @@ export class FunctionSnapshot extends SingleUse {
   readonly kwargs: Record<string, unknown>
   readonly callId: number
   readonly isOsFunction: boolean
+  /** `resumeAuto` may await a coroutine directly at this suspension. */
+  readonly allowEagerAwait: boolean
   /** Set for host-routed calls: the receiver's store uuid — a class
    *  instance, or a class type (a classmethod, or `__call__` construction).
    *  The receiver is not in `args`; `null` for plain external calls. */
@@ -933,6 +986,7 @@ export class FunctionSnapshot extends SingleUse {
     this.kwargs = kwargsToRecord(restoreKwargPairs(turn.kwargs, driver.instances))
     this.callId = turn.callId
     this.isOsFunction = isOsFunction
+    this.allowEagerAwait = turn.kind === 'functionCall' && (turn.allowEagerAwait ?? false)
     this.objectId = 'objectId' in turn ? (turn.objectId ?? null) : null
   }
 
@@ -946,8 +1000,8 @@ export class FunctionSnapshot extends SingleUse {
    * Answers this call automatically from the `externalLookup` / `os` captured
    * at `feedStart` / `loadSnapshot`, then resolves to the next snapshot (or
    * `MontyComplete`). A name absent from `externalLookup` makes the sandbox
-   * raise `NameError`; a promise-returning external is registered as a future
-   * (settled later by [`FutureSnapshot.resumeAuto`]). Resumes at most once.
+   * raise `NameError`. Eligible promises are awaited directly; others settle
+   * later through [`FutureSnapshot.resumeAuto`]. Resumes at most once.
    */
   resumeAuto(): Promise<Snapshot> {
     this.claim()

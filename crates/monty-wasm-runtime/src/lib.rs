@@ -47,8 +47,9 @@ struct Component;
 impl Guest for Component {
     fn dispatch(request: Request) -> DispatchResult {
         let (result, allocator_ready) = CHILD.with_borrow_mut(|child| {
-            let result = dispatch(child, request);
+            let mut result = dispatch(child, request);
             let budget = child.session_budget();
+            result.max_suspensions = budget.max_suspensions.map(|limit| limit as u64);
             let allocator_ready = monty_alloc::set_limit(budget.max_memory, budget.type_check);
             (result, allocator_ready)
         });
@@ -56,6 +57,7 @@ impl Guest for Component {
             DispatchResult {
                 status: Status::Shutdown,
                 events: vec![Event::FatalError(error.to_owned())],
+                max_suspensions: result.max_suspensions,
             }
         } else {
             result
@@ -73,6 +75,7 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
                 events: vec![event_from_proto(protocol_violation(&format!(
                     "malformed component request: {error}"
                 )))],
+                max_suspensions: None,
             };
         }
     };
@@ -82,6 +85,7 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
             events: vec![event_from_proto(child.fatal_event(&format!(
                 "request frame of {len} bytes exceeds maximum of {MAX_FRAME_LEN} bytes"
             )))],
+            max_suspensions: None,
         };
     }
 
@@ -105,6 +109,7 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
             Status::Shutdown
         },
         events: sink.events,
+        max_suspensions: None,
     }
 }
 
@@ -121,6 +126,18 @@ impl EventSink for ComponentEventSink {
                 len,
                 max: MAX_FRAME_LEN,
             })
+        } else if let Some(pb::child_event::Kind::Print(print)) = &event.kind {
+            // A `Print` event carries a run per stream switch, while the
+            // component's `PrintEvent` names one stream, so it expands into one
+            // event per run rather than converting whole. Checked before the
+            // clone below so print text is copied once, not twice.
+            for segment in &print.segments {
+                self.events.push(Event::Print(PrintEvent {
+                    stderr: segment.stream == i32::from(pb::PrintStream::Stderr),
+                    text: segment.text.clone(),
+                }));
+            }
+            Ok(())
         } else {
             let mut event = event.clone();
             let component_event = match event.kind.take() {
@@ -249,6 +266,7 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
                 })
                 .collect::<Result<_, String>>()?,
             skip_type_check: request.skip_type_check,
+            cwd: request.cwd,
         }),
         Request::ResumeCall(request) => pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: request.call_id,
@@ -277,6 +295,9 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
                 })
                 .collect::<Result<_, String>>()?,
         }),
+        Request::AbortFeed(error) => pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
+            exception: Some(raised_exception_from_component(error)),
+        }),
         Request::Dump => pb::parent_request::Kind::Dump(pb::Dump {}),
         Request::Load(state) => pb::parent_request::Kind::Load(pb::Load { state }),
         Request::Reset => pb::parent_request::Kind::Reset(pb::Reset {}),
@@ -296,6 +317,7 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
             max_memory_bytes: limits.max_memory_bytes,
             gc_interval: limits.gc_interval,
             max_recursion_depth: limits.max_recursion_depth,
+            max_suspensions: limits.max_suspensions,
         }),
         type_check: request.type_check,
         type_check_stubs: request.type_check_stubs,
@@ -304,6 +326,10 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         type_check_format: i32::from(type_check_format_from_component(request.type_check_format)),
         type_check_color: request.type_check_color,
         protocol_version: PROTOCOL_VERSION,
+        // Frames arrive as one batch at the end of a turn, but their
+        // boundaries survive it: the host gets one print callback per frame,
+        // and a print collector charges its cap per frame.
+        print_flush_interval_ms: request.print_flush_interval_ms,
     }
 }
 
@@ -353,10 +379,7 @@ fn raised_exception_from_component(error: RaisedError) -> pb::RaisedException {
 /// Converts one child event into its semantic component representation.
 fn event_from_proto(event: pb::ChildEvent) -> Event {
     match event.kind {
-        Some(pb::child_event::Kind::Print(print)) => Event::Print(PrintEvent {
-            stderr: print.stream == i32::from(pb::PrintStream::Stderr),
-            text: print.text,
-        }),
+        Some(pb::child_event::Kind::Print(_)) => invalid_event("Print event bypassed segment expansion"),
         Some(pb::child_event::Kind::FunctionCall(call)) => {
             let object_id = call.object_id.map(|uuid| uuid.to_string());
             Event::FunctionCall(FunctionCallEvent {
@@ -372,6 +395,7 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
                     .collect(),
                 call_id: call.call_id,
                 object_id,
+                allow_eager_await: call.allow_eager_await,
             })
         }
         Some(pb::child_event::Kind::OsCall(_)) => invalid_event("OsCall event bypassed component budget preparation"),

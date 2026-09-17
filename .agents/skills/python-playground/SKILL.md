@@ -10,8 +10,8 @@ Run Python code in an isolated playground directory for testing and experimentat
 ## Instructions
 
 1. First, ensure the playground directory exists. If the `playground` directory doesn't already exist, run `mkdir playground`.
-2. Use the Write tool to create the Python file at `playground/test.py`
-3. Run with: `uv run playground/test.py` to test cpython behavior or `cargo run -- playground/test.py` to test monty behavior
+1. Use the Write tool to create the Python file at `playground/test.py`
+1. Run with: `uv run playground/test.py` to test cpython behavior or `cargo run -- playground/test.py` to test monty behavior
 
 IMPORTANT: Use separate tool calls for each step - do NOT chain commands with `&&`. This allows the pre-approved commands to work without prompting.
 

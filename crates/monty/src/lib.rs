@@ -25,6 +25,7 @@ mod namespace;
 mod object_bridge;
 mod os_dispatch;
 mod parse;
+mod percent_format;
 mod predicate;
 mod prepare;
 mod repl;
@@ -33,14 +34,13 @@ mod run;
 mod run_progress;
 mod sorting;
 mod source_map;
+mod str_format;
 mod string_builder;
 mod stringize;
 mod types;
 mod value;
+mod virtual_path;
 
-#[cfg(feature = "test-hooks")]
-#[doc(hidden)]
-pub use crate::function::FunctionMetadataFault;
 #[cfg(feature = "ref-count-return")]
 pub use crate::run::RefCountOutput;
 pub use crate::{

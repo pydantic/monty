@@ -39,7 +39,7 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropWithContext},
-    intern::{Interns, StringId},
+    intern::{Interns, StaticStrings},
     value::{EitherStr, Value},
 };
 
@@ -142,7 +142,7 @@ fn bind_slow<const N: usize>(
     if spec.vectorcall && n_kw == 0 && n_pos > spec.n_positional {
         return Err(ExcType::type_error_at_most(spec.func_name, spec.n_positional, n_pos));
     }
-    if spec.at_most_total && n_pos + n_kw > spec.n_positional {
+    if spec.at_most_total && n_pos + n_kw > spec.params.len() {
         return Err(total_overflow_error(spec, n_pos, n_kw));
     }
     if spec.uses_c_method_arity() && n_pos < spec.n_required_pos_only {
@@ -295,7 +295,7 @@ pub(crate) struct ParamSpec {
     pub varargs: bool,
     /// `**kwargs` — unmatched kwargs are collected instead of erroring.
     pub varkwargs: bool,
-    /// Pre-count `positional + kwarg` against `n_positional` before dispatch,
+    /// Pre-count `positional + kwarg` against all named slots before dispatch,
     /// reproducing `PyArg_ParseTupleAndKeywords`' total pre-check. Set per
     /// function from CPython's observed behaviour — not derivable from the
     /// field shapes (identical signatures differ by parser generation).
@@ -336,11 +336,8 @@ impl ParamSpec {
 /// One named parameter slot of a [`ParamSpec`].
 pub(crate) struct Param {
     pub name: &'static str,
-    /// Interned id used for kwarg matching. `None` only for `pos_only` params
-    /// without a `static_string` override — such params are not matchable by
-    /// keyword and a kwarg with their name falls through to unknown-kwarg
-    /// handling (rather than the "positional-only passed as keyword" error).
-    pub kwarg_id: Option<StringId>,
+    /// Executor-independent identity used for keyword matching.
+    pub keyword_name: Option<StaticStrings>,
     pub kind: ParamKind,
     /// True when the param has no default.
     pub required: bool,
@@ -567,13 +564,15 @@ impl<C: ContainsHeap> DropWithContext<C> for IterState {
     }
 }
 
-/// Find the param a kwarg key names, by matching interned ids in declaration
-/// order. Params without a `kwarg_id` (plain pos-only) never match.
+/// Finds the parameter named by a keyword in declaration order.
+///
+/// Plain positional-only parameters have no keyword identity and do not match.
 fn find_param<'s>(spec: &'s ParamSpec, key: &EitherStr, interns: &Interns) -> Option<(usize, &'s Param)> {
+    let name = key.static_string(interns)?;
     spec.params
         .iter()
         .enumerate()
-        .find(|(_, p)| p.kwarg_id.is_some_and(|id| key.matches(id, interns)))
+        .find(|(_, param)| param.keyword_name == Some(name))
 }
 
 /// How a duplicate (slot already filled) kwarg should be reported.
@@ -643,12 +642,9 @@ fn unpack_arity_error(spec: &ParamSpec, n_pos: usize) -> Option<RunError> {
 fn total_overflow_error(spec: &ParamSpec, n_pos: usize, n_kw: usize) -> RunError {
     let total = n_pos + n_kw;
     match spec.family {
-        ErrorFamily::C {
-            positional_pivot: false,
-        } => ExcType::type_error_c_at_most(spec.n_positional, total),
-        ErrorFamily::C { positional_pivot: true } => ExcType::type_error_c_at_most_positional(spec.n_positional, total),
+        ErrorFamily::C { .. } => ExcType::type_error_c_at_most(spec.params.len(), total),
         // Clinic / CNamed (`def`/`unpack` reject the flag at derive time).
-        _ => ExcType::type_error_method_at_most(spec.func_name, spec.n_positional, total, n_pos == 0),
+        _ => ExcType::type_error_method_at_most(spec.func_name, spec.params.len(), total, n_pos == 0),
     }
 }
 

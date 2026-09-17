@@ -90,8 +90,22 @@ format-py: ## Format Python code - WARNING be careful about this command as it m
 format-js: install-js ## Format JS code with prettier
 	cd crates/monty-js && npm run format
 
+# tracked markdown, minus the vendored typeshed, the `.macroscope/` config files that only
+# look like markdown, the AGENTS.md symlink (CLAUDE.md is formatted directly), and the crate
+# READMEs: rustdoc embeds those and clippy's `doc_overindented_list_items` rejects the
+# four-space list continuations mdformat-mkdocs writes
+MD_FILES := $(shell git ls-files '*.md' ':!:crates/monty-typeshed/**' ':!:.macroscope/**' ':!:AGENTS.md' ':!:crates/*/README*.md')
+
+.PHONY: format-md
+format-md: ## Format markdown with mdformat (tables, mkdocs admonitions, frontmatter)
+	uv run mdformat $(MD_FILES)
+
+.PHONY: lint-md
+lint-md: ## Check markdown formatting with mdformat
+	uv run mdformat --check $(MD_FILES)
+
 .PHONY: format
-format: format-rs format-py format-js ## Format Rust code, this does not format Python code as we have to be careful with that
+format: format-rs format-py format-js format-md ## Format Rust code, this does not format Python code as we have to be careful with that
 
 .PHONY: lint-rs
 lint-rs:  ## Lint Rust code with clippy and import checks
@@ -113,16 +127,21 @@ generate-proto: ## Regenerate monty-proto's checked-in code from the .proto sche
 check-proto: generate-proto ## Verify monty-proto's checked-in code matches the .proto schema
 	git diff --exit-code crates/monty-proto/src/generated crates/monty-proto/tests/oracle
 
+.PHONY: generate-api-docs
+generate-api-docs: ## Generate the Rust API reference into docs/api/rust/ (gitignored) from rustdoc JSON
+	cargo run -p monty-apidoc
+
 .PHONY: lint-py
 lint-py: dev-py ## Lint Python code with ruff
 	uv run ruff format --check
 	uv run ruff check
-	uv run basedpyright
+	# basedpyright type-checks examples/, so it needs that group's packages installed
+	uv run --group examples basedpyright
 	# mypy-stubtest requires a build of the python package, hence dev-py
 	uv run -m mypy.stubtest pydantic_monty._monty --ignore-disjoint-bases
 
 .PHONY: lint
-lint: lint-rs lint-py ## Lint the code with ruff and clippy
+lint: lint-rs lint-py lint-md ## Lint the code with ruff, clippy and mdformat
 
 .PHONY: test-no-features
 test-no-features: ## Run rust tests without any features enabled
@@ -158,7 +177,7 @@ test-type-checking: ## Run rust tests on monty-type-checking
 .PHONY: test-subprocess
 test-subprocess: ## Run subprocess protocol, child-mode, and worker-pool tests
 	cargo build -p monty-runtime
-	cargo test -p monty-proto -p monty-runtime -p monty-pool
+	cargo test -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
 
 .PHONY: pytest
 pytest: ## Run Python tests with pytest
@@ -166,6 +185,7 @@ pytest: ## Run Python tests with pytest
 
 .PHONY: test-py
 test-py: dev-py pytest ## Build the python package (debug profile) and run tests
+	cargo test -p pydantic-monty-client --lib
 
 .PHONY: test-docs
 test-docs: dev-py ## Test docs examples only (docs/, README.md, crates/monty-python/README.md)
@@ -173,12 +193,16 @@ test-docs: dev-py ## Test docs examples only (docs/, README.md, crates/monty-pyt
 	cargo test --doc --workspace
 
 .PHONY: docs
-docs: ## Build the docs site from docs/ and mkdocs.yml
+docs: generate-api-docs ## Build the docs site from docs/ and mkdocs.yml
 	uv run --group docs mkdocs build --strict
 
 .PHONY: docs-serve
-docs-serve: ## Serve the docs site locally with live reload
+docs-serve: generate-api-docs ## Serve the docs site locally with live reload
 	uv run --group docs mkdocs serve
+
+.PHONY: docs-dev
+docs-dev: generate-api-docs ## Preview this checkout in a sibling pydantic/unified-docs checkout (../unified-docs)
+	pnpm --dir ../unified-docs docs:dev --library monty --source $(CURDIR)
 
 .PHONY: test
 test: test-memory-model-checks test-ref-count-return test-no-features test-type-checking test-subprocess test-py miri ## Run rust tests
@@ -207,6 +231,14 @@ testcov: ## Run Rust tests with coverage, print table, and generate HTML report
 .PHONY: complete-tests
 complete-tests: ## Fill in incomplete test expectations using CPython
 	uv run scripts/complete_tests.py
+
+.PHONY: generate-unicode-type
+generate-unicode-type: ## Regenerate the str character-property tables from the current CPython
+	uv run scripts/gen_unicode_type.py
+
+.PHONY: check-unicode-type
+check-unicode-type: generate-unicode-type ## Verify the checked-in str character-property tables match the current CPython
+	git diff --exit-code crates/monty/src/types/unicode_type_data.rs
 
 .PHONY: update-typeshed
 update-typeshed: ## Update vendored typeshed from upstream

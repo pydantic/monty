@@ -49,7 +49,12 @@ export interface MontyOptions {
 
 /** Options for [`Monty.checkout`], mirroring `pydantic_monty`. */
 export interface CheckoutOptions {
-  /** Name used in type-checking diagnostics (default `'main.py'`). */
+  /**
+   * Name used in tracebacks and type-checking diagnostics (default
+   * `'main.py'`), and the basis of the sandbox's `__file__`: its final path
+   * component placed under the working directory a feed starts in
+   * (`/main.py` at the root).
+   */
   scriptName?: string
   /** Resource limits enforced inside the worker for the whole session. */
   limits?: ResourceLimits
@@ -76,18 +81,29 @@ export interface CheckoutOptions {
    * per-operand repr truncation length (default 120 bytes).
    */
   assertMessageAnnotations?: AssertMessageAnnotations
+  /**
+   * How long, in seconds, the worker may hold buffered `print()` output before
+   * sending it, so a burst of prints costs one `printCallback` call rather
+   * than one each (default 0.005). `0` restores line buffering, delivering
+   * each completed line on its own. Output is always flushed before a host
+   * call and before a feed ends, so this only sets how far live output may
+   * lag — never what arrives, or in what order.
+   */
+  printFlushInterval?: number
 }
 
 /**
- * Sandbox resource limits. An omitted field means "unlimited", except
- * `maxRecursionDepth`, which falls back to its 1000-frame default and cannot
- * be disabled.
+ * Sandbox resource limits. Omitted fields are unlimited except
+ * `maxRecursionDepth` and `maxSuspensions`, which keep their 1000 defaults.
+ * The pool counts `maxSuspensions` per checkout and aborts an over-budget
+ * feed with an uncatchable `RuntimeError`.
  */
 export interface ResourceLimits {
   maxDurationSecs?: number
   maxMemory?: number
   gcInterval?: number
   maxRecursionDepth?: number
+  maxSuspensions?: number
 }
 
 /**
@@ -145,6 +161,7 @@ export class Monty {
       ...(options.typeCheckFormat !== undefined ? { typeCheckFormat: options.typeCheckFormat } : {}),
       ...(options.typeCheckColor !== undefined ? { typeCheckColor: options.typeCheckColor } : {}),
       ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
+      ...(options.printFlushInterval !== undefined ? { printFlushIntervalMs: options.printFlushInterval * 1000 } : {}),
     })
     const telemetryContext = captureTelemetryContext()
     await native.enter(telemetryContext)

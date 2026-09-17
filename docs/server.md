@@ -1,6 +1,6 @@
-# Running monty-server
+# Full Monty
 
-`monty-server` is a WebSocket server that hosts Monty sandbox workers: each connection gets its own `monty` worker
+Full Monty is a WebSocket server that hosts Monty sandbox workers: each connection gets its own `monty` worker
 subprocess from an elastic pool.
 A worker serves one session at a time and is reset or replaced between sessions, so no sandbox state crosses from one
 client to another.
@@ -8,24 +8,30 @@ client to another.
 subprocess-only today and cannot dial a remote server.
 The server adds capacity limits, timeouts, per-caller quotas, health probes, graceful drain and tracing to [Pydantic
 Logfire](https://pydantic.dev/logfire). The `monty` worker provides the sandboxing.
+Additionally, Full Monty can act as a reverse proxy, forwarding requests to a full sandbox running CPython.
 
 The server is closed-source and distributed as a container image.
-For access and licensing, [contact us](https://pydantic.dev/contact).
+
+!!! tip "Design partners"
+
+    If you're interested in being an early design partner for Full Monty, please
+    [contact us](https://pydantic.dev/contact). We're currently offering Full Monty free to a select set of
+    organizations while we finalize the commercial platform.
 
 ## Why Monty over WebSocket
 
 Running Monty on a remote server provides:
 
 - **Security**: escaping the sandbox gets you the machine running Monty, not the machine running the agent or
-  application code. That machine is an empty container.
+    application code. That machine is an empty container.
 - **Centralized monitoring, observability, and scaling**: one horizontally scalable service for all Monty code
-  execution, instead of every service running its own worker pool.
+    execution, instead of every service running its own worker pool.
 - **Density**: Monty workers have a small baseline footprint (as little as 2MB), plus additional memory for limits and
-  optional type checking, so a single machine can run hundreds.
+    optional type checking, so a single machine can run hundreds.
 - **Same behavior as local Monty**: the wire protocol carries host callbacks, name lookups, async futures and mounted
-  client directories, so code that runs against a local pool runs unchanged against the server.
-- **Future full sandbox option**: a VM running CPython for code that needs dependencies, bash or a real filesystem,
-  exposed through the same interface.
+    client directories, so code that runs against a local pool runs unchanged against the server.
+- **Full sandbox option**: a VM running CPython for code that needs dependencies, bash or a real filesystem,
+    exposed through the same interface.
 
 ## Quickstart
 
@@ -133,24 +139,24 @@ Docker port is reachable. Arguments after the image name in `docker run <image> 
 include `--host 0.0.0.0` when passing any flags. Hostnames are accepted, but `--host localhost` resolves to the
 container's loopback interface and is not reachable through `-p 8000:8000`.
 
-| Flag                                | Meaning                                                                  | Default                                    |
-| ----------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------ |
-| `--host <address>`                  | interface to bind                                                        | image: `0.0.0.0`; binary: `127.0.0.1`      |
-| `--port <port>`                     | port to bind; 0 selects an ephemeral port                                | 8000                                       |
-| `--monty-bin <path>`                | worker binary                                                            | image: `/usr/local/bin/monty`               |
-| `--max-sessions <n>`                | concurrent sessions across the server                                    | 64                                         |
-| `--max-sessions-per-client <n>`     | concurrent sessions per caller; 0 disables                              | 10                                         |
-| `--idle-timeout <seconds>`          | maximum gap between requests; 0 disables                                 | 60                                         |
-| `--keepalive <seconds>`             | WebSocket ping interval for detecting vanished clients; 0 disables       | 5                                          |
-| `--session-timeout <seconds>`       | maximum total session lifetime; 0 disables                               | 3600                                       |
-| `--turn-timeout <seconds>`          | wall-clock cap on one request; 0 disables                                | 300                                        |
-| `--drain-grace <seconds>`           | time after SIGTERM for existing sessions to collect a dump               | 30                                         |
-| `--max-memory-mib <MiB>`            | per-session memory ceiling; 0 disables                                   | 64                                         |
-| `--max-duration <seconds>`          | cumulative sandbox execution time per session; 0 disables                | 60                                         |
-| `--max-recursion-depth <n>`         | per-session call-stack ceiling; cannot be disabled                       | 1000                                       |
-| `--trust-forwarded-for`             | use the last `X-Forwarded-For` entry as the caller identity               | off                                        |
-| `--dump-key <key>`                  | required key of at least 16 bytes for signing session dumps              | none (required)                            |
-| `--logfire-token <token>`           | export traces to Logfire                                                 | off                                        |
+| Flag                            | Meaning                                                            | Default                               |
+| ------------------------------- | ------------------------------------------------------------------ | ------------------------------------- |
+| `--host <address>`              | interface to bind                                                  | image: `0.0.0.0`; binary: `127.0.0.1` |
+| `--port <port>`                 | port to bind; 0 selects an ephemeral port                          | 8000                                  |
+| `--monty-bin <path>`            | worker binary                                                      | image: `/usr/local/bin/monty`         |
+| `--max-sessions <n>`            | concurrent sessions across the server                              | 64                                    |
+| `--max-sessions-per-client <n>` | concurrent sessions per caller; 0 disables                         | 10                                    |
+| `--idle-timeout <seconds>`      | maximum gap between requests; 0 disables                           | 60                                    |
+| `--keepalive <seconds>`         | WebSocket ping interval for detecting vanished clients; 0 disables | 5                                     |
+| `--session-timeout <seconds>`   | maximum total session lifetime; 0 disables                         | 3600                                  |
+| `--turn-timeout <seconds>`      | wall-clock cap on one request; 0 disables                          | 300                                   |
+| `--drain-grace <seconds>`       | time after SIGTERM for existing sessions to collect a dump         | 30                                    |
+| `--max-memory-mib <MiB>`        | per-session memory ceiling; 0 disables                             | 64                                    |
+| `--max-duration <seconds>`      | cumulative sandbox execution time per session; 0 disables          | 60                                    |
+| `--max-recursion-depth <n>`     | per-session call-stack ceiling; cannot be disabled                 | 1000                                  |
+| `--trust-forwarded-for`         | use the last `X-Forwarded-For` entry as the caller identity        | off                                   |
+| `--dump-key <key>`              | required key of at least 16 bytes for signing session dumps        | none (required)                       |
+| `--logfire-token <token>`       | export traces to Logfire                                           | off                                   |
 
 When the global session limit is full, a new WebSocket upgrade gets `503 Service Unavailable`; exceeding the
 per-client limit gets `429 Too Many Requests`.
@@ -175,11 +181,11 @@ limits can be disabled, but recursion depth is always bounded.
 
 The server flags and Python client keys use different names and, for memory, different units:
 
-| Server flag                       | `pool.checkout(limits=...)` key | Unit    |
-| --------------------------------- | ------------------------------- | ------- |
-| `--max-duration <seconds>`        | `max_duration_secs`             | seconds |
-| `--max-memory-mib <MiB>`          | `max_memory`                    | bytes   |
-| `--max-recursion-depth <n>`       | `max_recursion_depth`           | count   |
+| Server flag                 | `pool.checkout(limits=...)` key | Unit    |
+| --------------------------- | ------------------------------- | ------- |
+| `--max-duration <seconds>`  | `max_duration_secs`             | seconds |
+| `--max-memory-mib <MiB>`    | `max_memory`                    | bytes   |
+| `--max-recursion-depth <n>` | `max_recursion_depth`           | count   |
 
 For example, this asks for 30 seconds, 32 MiB and a recursion depth of 500; the server may lower any value to its own
 ceiling:

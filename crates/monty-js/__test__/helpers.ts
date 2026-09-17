@@ -16,10 +16,6 @@ export interface PoolFixture {
   pool: () => Monty
 }
 
-/**
- * Registers before/after hooks creating and closing the spec file's shared
- * pool, and returns the `run` helper bound to it.
- */
 export function setupPool(): PoolFixture {
   let pool: Monty | null = null
   beforeEachFile(async () => {
@@ -43,6 +39,7 @@ export function setupPool(): PoolFixture {
       typeCheckFormat,
       typeCheckColor,
       assertMessageAnnotations,
+      printFlushInterval,
       ...feed
     } = options
     const session = await get().checkout({
@@ -53,6 +50,7 @@ export function setupPool(): PoolFixture {
       ...(typeCheckFormat !== undefined ? { typeCheckFormat } : {}),
       ...(typeCheckColor !== undefined ? { typeCheckColor } : {}),
       ...(assertMessageAnnotations !== undefined ? { assertMessageAnnotations } : {}),
+      ...(printFlushInterval !== undefined ? { printFlushInterval } : {}),
     })
     try {
       return await session.feedRun(code, feed)

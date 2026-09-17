@@ -77,9 +77,10 @@ impl Error for ResourceError {}
 /// Configuration for resource limits.
 ///
 /// The time/memory/GC limits are optional — set to `None` to disable — but
-/// recursion depth is always bounded (default
-/// [`DEFAULT_MAX_RECURSION_DEPTH`]): unbounded recursion would let sandboxed
-/// code overflow the native stack and abort the process. Use
+/// recursion depth and the suspension budget are always bounded (defaults
+/// [`DEFAULT_MAX_RECURSION_DEPTH`] and [`DEFAULT_MAX_SUSPENSIONS`]): unbounded
+/// recursion would let sandboxed code overflow the native stack and abort the
+/// process, and unbounded suspensions would let it loop on host calls. Use
 /// `ResourceLimits::default()` for the recursion-only defaults, or build
 /// custom limits with the builder pattern.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -94,12 +95,22 @@ pub struct ResourceLimits {
     pub gc_interval: Option<usize>,
     /// Maximum recursion depth (function call stack depth).
     pub max_recursion_depth: usize,
+    /// Maximum suspensions the host may service (default
+    /// [`DEFAULT_MAX_SUSPENSIONS`]; always bounded, like recursion depth).
+    /// The interpreter only stores this limit; hosts must enforce it.
+    pub max_suspensions: usize,
 }
 
 /// Recommended maximum recursion depth if not otherwise specified.
 pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
 
-/// Creates a new ResourceLimits with all limits disabled, except max recursion which is set to 1000.
+/// Maximum suspensions a host services per session if not otherwise
+/// specified: a backstop against a sandbox looping on host calls while
+/// `max_duration` is paused.
+pub const DEFAULT_MAX_SUSPENSIONS: usize = 1000;
+
+/// Creates a new ResourceLimits with all limits disabled, except max recursion
+/// depth and max suspensions, which are set to 1000.
 impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
@@ -107,6 +118,7 @@ impl Default for ResourceLimits {
             max_memory: None,
             gc_interval: None,
             max_recursion_depth: DEFAULT_MAX_RECURSION_DEPTH,
+            max_suspensions: DEFAULT_MAX_SUSPENSIONS,
         }
     }
 }
@@ -140,6 +152,13 @@ impl ResourceLimits {
     #[must_use]
     pub fn max_recursion_depth(mut self, limit: usize) -> Self {
         self.max_recursion_depth = limit;
+        self
+    }
+
+    /// Sets the host-enforced maximum number of suspensions.
+    #[must_use]
+    pub fn max_suspensions(mut self, limit: usize) -> Self {
+        self.max_suspensions = limit;
         self
     }
 }
@@ -246,6 +265,13 @@ impl ResourceTracker {
         self.limits.max_memory
     }
 
+    /// Returns the host-enforced suspension budget (default
+    /// [`DEFAULT_MAX_SUSPENSIONS`]; never unlimited).
+    #[must_use]
+    pub fn max_suspensions(&self) -> usize {
+        self.limits.max_suspensions
+    }
+
     /// Returns whether the VM has a memory or time limit configured.
     #[must_use]
     pub fn has_memory_time_limit(&self) -> bool {
@@ -347,6 +373,63 @@ impl ResourceTracker {
         }
     }
 
+    /// Preflights the reallocation that pushing one more element onto a dense
+    /// buffer causes; a push that fits the existing capacity costs nothing.
+    ///
+    /// A `Vec` charges its whole doubling in one allocation, so a push
+    /// straddling the soft limit can land past the allocator's fixed
+    /// hard-limit headroom, killing the worker with no checkpoint in between
+    /// at which to raise `MemoryError`. Only for the one-push shape: a bulk
+    /// reservation needs [`ResourceTracker::check_allocation`] sized for the
+    /// whole result, since preflighting less than the final buffer — one
+    /// operand of a merge, say — leaves the same window open.
+    #[inline]
+    pub fn check_growth(&self, len: usize, capacity: usize, elem_size: usize) -> Result<(), ResourceError> {
+        self.check_pending_allocation(Self::growth_bytes(len, capacity, elem_size))
+    }
+
+    /// The bytes [`check_growth`](Self::check_growth) would preflight, or zero
+    /// if the push allocates nothing.
+    ///
+    /// Split out for containers that grow two buffers on one insertion, such
+    /// as a dict's entry vector and index table: checking each increment alone
+    /// passes both while their sum clears the headroom, so the caller sums
+    /// them and passes the total to
+    /// [`check_pending_allocation`](Self::check_pending_allocation).
+    #[inline]
+    #[must_use]
+    pub fn growth_bytes(len: usize, capacity: usize, elem_size: usize) -> usize {
+        if len < capacity {
+            0
+        } else {
+            // A buffer growing from nothing jumps straight to
+            // `RawVec::MIN_NON_ZERO_CAP`, which is also what stops the
+            // increment coming out as zero.
+            let min_non_zero_capacity = match elem_size {
+                1 => 8,
+                2..=1024 => 4,
+                _ => 1,
+            };
+            let new_capacity = capacity
+                .saturating_mul(2)
+                .max(len.saturating_add(1))
+                .max(min_non_zero_capacity);
+            new_capacity.saturating_sub(capacity).saturating_mul(elem_size)
+        }
+    }
+
+    /// [`check_allocation`](Self::check_allocation) for preflights whose
+    /// increment may be zero: a push that allocates nothing must not pay for
+    /// the usage probe.
+    #[inline]
+    pub fn check_pending_allocation(&self, additional: usize) -> Result<(), ResourceError> {
+        if additional == 0 {
+            Ok(())
+        } else {
+            self.check_allocation(additional)
+        }
+    }
+
     /// Called before pushing a new call frame to check recursion depth.
     ///
     /// Returns `Ok(())` if within recursion limit, or `Err(ResourceError::Recursion)`
@@ -369,7 +452,7 @@ impl ResourceTracker {
     ///
     /// This allows pre-emptive rejection of operations like `2 ** 10_000_000`
     /// before the memory is actually allocated. The check only happens for
-    /// estimated result sizes above `LARGE_RESULT_THRESHOLD` to avoid overhead
+    /// estimated result sizes above [`LARGE_RESULT_THRESHOLD`] to avoid overhead
     /// on small operations.
     #[inline]
     pub fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError> {

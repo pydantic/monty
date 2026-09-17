@@ -341,9 +341,9 @@ fn zero_limit_means_off_not_a_zero_length_repr() {
 }
 
 #[test]
-fn forged_snapshot_cannot_smuggle_in_a_zero_limit() {
-    // Dumps are untrusted. The `MaxBytes(1)` case pins the encoding (variant
-    // index 1, then the u32) so the rejection can't pass for another reason.
+fn deserialization_preserves_nonzero_limit_representation() {
+    // `NonZeroU32` must remain nonzero even in invalid serialized state.
+    // Pin the encoding (variant index 1, then the u32) with `MaxBytes(1)`.
     let valid: AssertMessageAnnotations = postcard::from_bytes(&[1u8, 1u8]).expect("MaxBytes(1) should decode");
     assert_eq!(valid, AssertMessageAnnotations::from_max_bytes(1));
     postcard::from_bytes::<AssertMessageAnnotations>(&[1u8, 0u8]).expect_err("MaxBytes(0) must not decode");

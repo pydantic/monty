@@ -4,7 +4,7 @@
 
 use monty_types::{
     GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
-    PathStringDataArgs, RenameCallArgs,
+    PathStringDataArgs, RenameCallArgs, UrandomArgs,
 };
 
 use crate::{
@@ -56,6 +56,7 @@ impl From<OsFunctionCall> for os_call::Call {
                     name: tz.name,
                 }),
             }),
+            OsFunctionCall::Urandom(a) => Self::Urandom(os_call::Urandom { size: a.size }),
         }
     }
 }
@@ -109,6 +110,7 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
                 offset_seconds: tz.offset_seconds,
                 name: tz.name,
             })),
+            os_call::Call::Urandom(u) => Self::Urandom(UrandomArgs { size: u.size }),
         })
     }
 }

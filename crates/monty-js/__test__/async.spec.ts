@@ -12,6 +12,14 @@ import { setupPool } from './helpers.js'
 
 const { run } = setupPool()
 
+test('sequential coroutines use one suspension per call', async () => {
+  const result = await run('a = await fetch()\nb = await fetch()\na[0] + b[0]', {
+    limits: { maxSuspensions: 2 },
+    externalLookup: { fetch: async () => [21] },
+  })
+  t.is(result, 42)
+})
+
 // =============================================================================
 // Basic async external function tests
 // =============================================================================

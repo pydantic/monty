@@ -32,11 +32,8 @@ pub(crate) enum AsyncioFunctions {
 ///
 /// The module contains only the `run` and `gather` functions. Other asyncio functions
 /// are not implemented as they would require additional VM/scheduler features.
-///
-/// # Panics
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Asyncio);
+    let mut module = Module::new(StaticStrings::Asyncio, vm.interns);
 
     module.set_attr(
         StaticStrings::Gather,

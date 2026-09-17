@@ -345,14 +345,16 @@ message StackFrame {
 // Configuration
 // ============================================================================
 
-// Sandbox resource limits, enforced inside the child. Absent fields mean
-// "unlimited" except recursion depth, which defaults to monty's standard
-// limit (1000) when absent.
+// Sandbox resource limits. Absent fields are unlimited except recursion depth
+// and `max_suspensions`, which both default to 1000. The parent enforces
+// `max_suspensions`; the child only retains it for dumps and echoes it on
+// `ChildEvent`.
 message ResourceLimits {
   optional uint64 max_duration_micros = 1;
   optional uint64 max_memory_bytes = 2;
   optional uint64 gc_interval = 3;
   optional uint64 max_recursion_depth = 4;
+  optional uint64 max_suspensions = 5;
 }
 
 // ============================================================================
@@ -413,6 +415,7 @@ message ParentRequest {
     Load load = 8;
     Reset reset = 9;
     Shutdown shutdown = 10;
+    AbortFeed abort_feed = 11;
   }
 
   // W3C `traceparent` identifying the caller's span, so a child that exports
@@ -461,6 +464,15 @@ message Configure {
   // is not a monty parent — and is always rejected. The protocol has no
   // in-band negotiation, so an undeclared peer cannot be assumed compatible.
   uint32 protocol_version = 9;
+  // How long the child may hold buffered `print()` output before emitting it
+  // as a `Print` event, in milliseconds. Absent means the child's default
+  // (`DEFAULT_PRINT_FLUSH_INTERVAL`). 0 disables the timer and restores line
+  // buffering — one event per completed line, as before this field existed —
+  // for a host that wants each `print()` delivered on its own.
+  //
+  // Output is always flushed before a turn-ending event whatever this says, so
+  // the field trades streaming latency for event volume and nothing else.
+  optional uint32 print_flush_interval_ms = 10;
 }
 
 // Rendering of the typing diagnostics a `TypingError` carries; mirrors ty's
@@ -486,6 +498,17 @@ message Feed {
   repeated NamedValue inputs = 2;
   // Skip type checking for this feed even when the session enables it.
   bool skip_type_check = 3;
+  // Absolute virtual working directory to switch the session to before the
+  // feed, resolved by the parent (an explicit choice, or the first mount on
+  // the session's first feed). Empty keeps the session's current directory.
+  string cwd = 4;
+}
+
+// Ends a pending suspension by raising `exception` uncatchably at its site.
+// The session returns ready in an `Error` event. Hosts use this to stop a feed,
+// including when `max_suspensions` is exceeded.
+message AbortFeed {
+  RaisedException exception = 1;
 }
 
 // Answers a `FunctionCall` or `OsCall` suspension. `call_id` must match the
@@ -513,6 +536,8 @@ message ResumeNameLookup {
 // Answers a `ResolveFutures` suspension with results for some or all pending
 // call ids.
 message ResumeFutures {
+  // Also answers an eager FunctionCall with exactly one result matching its
+  // call_id. The worker creates a settled awaitable before continuing.
   repeated FutureResult results = 1;
 }
 
@@ -592,6 +617,10 @@ message ChildEvent {
   // state bytes) still learns the budget.
   optional uint64 max_duration_micros = 21;
 
+  // Echoes the parent-enforced budget so a host restoring an opaque dump can
+  // recover it.
+  optional uint64 max_suspensions = 23;
+
   // The session's script name, surfaced on a `Load` reply so a parent that
   // restored a session (whose script name, like the limits above, travels
   // inside the opaque dump bytes) learns it without parsing the dump. Set only
@@ -605,11 +634,23 @@ enum PrintStream {
   PRINT_STREAM_STDERR = 2;
 }
 
-// Streamed sandbox print() output. Zero or more of these precede each
-// turn-ending event; text is flushed at line granularity.
-message Print {
+// One run of print() output on a single stream, as one `Print` event may
+// carry several.
+message PrintSegment {
   PrintStream stream = 1;
   string text = 2;
+}
+
+// Streamed sandbox print() output. Zero or more of these precede each
+// turn-ending event, and each carries the runs the worker had buffered, in
+// the order the sandbox produced them — so output alternating between the
+// streams batches into one event without losing that order.
+message Print {
+  // 1 and 2 were the single stream and text this event carried before it
+  // could hold more than one run.
+  reserved 1, 2;
+  reserved "stream", "text";
+  repeated PrintSegment segments = 3;
 }
 
 // Suspension: the sandbox called an external function, or — when `object_id`
@@ -625,6 +666,10 @@ message FunctionCall {
   uint32 call_id = 4;
   // The uuid of the receiver; absent for plain external function calls.
   Uuid object_id = 5;
+  // The host may await a coroutine and answer with ResumeFutures for this
+  // call_id. Synchronous results use ResumeCall; returning a pending
+  // future remains valid. Absent/false requires the ordinary call reply.
+  bool allow_eager_await = 6;
 }
 
 // Suspension: the sandbox performed an OS operation, surfaced for the parent
@@ -671,6 +716,8 @@ message OsCall {
     Unit date_today = 23; // date.today()
     // datetime.now(tz) — the timezone argument (absent for a naive result).
     DateTimeNow date_time_now = 24;
+    // os.urandom(size), also how `random` seeds an unseeded generator.
+    Urandom urandom = 25;
   }
 
   message TextWrite {
@@ -706,6 +753,11 @@ message OsCall {
   message DateTimeNow {
     // Fixed-offset timezone for an aware result; absent for a naive one.
     optional TimeZone tz = 1;
+  }
+  // os.urandom(size) — the byte count the sandbox validated; unsigned so
+  // a negative count cannot be expressed on the wire.
+  message Urandom {
+    uint64 size = 1;
   }
 }
 

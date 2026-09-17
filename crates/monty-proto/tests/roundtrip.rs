@@ -8,7 +8,7 @@ use monty_types::{
     MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
     MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, OpenCallArgs,
     OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame,
-    UnicodeErrorData,
+    UnicodeErrorData, UrandomArgs,
 };
 use num_bigint::BigInt;
 use prost::Message;
@@ -571,24 +571,28 @@ fn resource_limits_round_trip() {
         max_memory: Some(64 * 1024 * 1024),
         gc_interval: Some(100),
         max_recursion_depth: 50,
+        max_suspensions: 7,
     };
     let back = ResourceLimits::from(pb::ResourceLimits::from(&limits));
     assert_eq!(back.max_duration, limits.max_duration);
     assert_eq!(back.max_memory, limits.max_memory);
     assert_eq!(back.gc_interval, limits.gc_interval);
     assert_eq!(back.max_recursion_depth, limits.max_recursion_depth);
+    assert_eq!(back.max_suspensions, limits.max_suspensions);
 }
 
 #[test]
 fn empty_resource_limits_default_recursion_depth() {
     // an all-absent wire message must behave like ResourceLimits::default():
-    // unlimited everything except the standard recursion-depth default
+    // unlimited everything except the recursion-depth and suspension defaults
     let back = ResourceLimits::from(pb::ResourceLimits::default());
     let expected = ResourceLimits::default();
     assert_eq!(back.max_duration, expected.max_duration);
     assert_eq!(back.max_memory, expected.max_memory);
     assert_eq!(back.gc_interval, expected.gc_interval);
     assert_eq!(back.max_recursion_depth, expected.max_recursion_depth);
+    assert_eq!(back.max_suspensions, expected.max_suspensions);
+    assert_eq!(back.max_suspensions, 1000);
 }
 
 #[test]
@@ -740,6 +744,7 @@ fn decodes_in_frame(value: &MontyObject) -> bool {
                 value: Some(WireObject::new(value.clone())),
             }],
             skip_type_check: false,
+            cwd: "/work".to_owned(),
         })),
         trace_parent: None,
     };
@@ -865,9 +870,25 @@ fn os_calls_round_trip_all_variants() {
             offset_seconds: 3600,
             name: Some("CET".to_owned()),
         })),
+        OsFunctionCall::Urandom(UrandomArgs { size: 2496 }),
     ] {
         assert_os_call_round_trip(call);
     }
+}
+
+/// The byte count is unsigned on the wire, so the parent cannot see a
+/// negative one; a count above `i64::MAX` from a compromised child still
+/// converts, reaching the host handler as an exact `BigInt` for its cap to
+/// reject.
+#[test]
+fn os_call_urandom_size_above_i64_converts_exactly() {
+    let call = OsFunctionCall::Urandom(UrandomArgs { size: u64::MAX });
+    assert_os_call_round_trip(call.clone());
+    let (args, kwargs) = call.to_args();
+    assert_eq!(args, vec![MontyObject::BigInt(BigInt::from(u64::MAX))]);
+    assert!(kwargs.is_empty());
+    let (args, _) = OsFunctionCall::Urandom(UrandomArgs { size: 2496 }).to_args();
+    assert_eq!(args, vec![MontyObject::Int(2496)]);
 }
 
 #[test]

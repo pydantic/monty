@@ -15,9 +15,15 @@ implementation**.
 - `OsFunctionCall` — the typed OS-call payloads sandboxed code suspends with
   (file reads/writes, `open()`, `os.getenv`, ...), plus the `stat_result`
   builders hosts use to answer them.
+- `MontyPath` preserves OS-call paths for validation; `normalize_virtual_path`
+  provides the lexical POSIX normalization shared by the interpreter, mounts, and `OsFunctionCall::to_args()` callbacks.
+  It borrows canonical paths and resolves relative inputs from `/`.
+  Validate NUL bytes and path limits before calling it; it does not confine filesystem access.
 - `ResourceTracker` / `ResourceLimits` — the resource tracker the
-  interpreter uses to enforce time/memory/recursion limits.
-- `PrintStream` / `PrintWriter` — `print()` output capture.
+  interpreter uses to enforce time/memory/recursion limits, plus the
+  `max_suspensions` budget hosts enforce themselves.
+- `PrintStream` / `PrintWriter` / `CollectedStreams` — `print()` output
+  capture, and the labelled buffer behind `PrintWriter::CollectStreams`.
 - `CompileOptions`, `ExtFunctionResult`, `NameLookupResult`, `FileMode`, and
   the CPython-compatible formatting helpers behind their `repr()`s.
 

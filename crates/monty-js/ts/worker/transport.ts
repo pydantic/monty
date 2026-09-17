@@ -26,12 +26,29 @@ import { decodeValue, encodeValue } from './value.js'
 
 type OnPrint = (stream: 'stdout' | 'stderr', text: string) => void
 
-/** Resource limits enforced inside the worker, mirroring the napi pool's. */
+/**
+ * Encodes a print flush interval (seconds) as whole milliseconds for the WIT
+ * `u32`, mirroring `monty-pool`'s `flush_interval_ms`.
+ *
+ * The component encodes a `u32` as `val >>> 0`, which would silently wrap a
+ * negative or non-finite value into a huge interval, so reject those here.
+ * Zero is the line-buffering sentinel, so a positive interval never rounds
+ * down into it.
+ */
+function flushIntervalMs(interval: number): number {
+  if (!Number.isFinite(interval) || interval < 0) {
+    throw new TypeError(`invalid printFlushInterval: expected a non-negative number of seconds, got ${interval}`)
+  }
+  return interval === 0 ? 0 : Math.min(Math.max(Math.floor(interval * 1000), 1), 0xffffffff)
+}
+
+/** Resource limits mirrored from the napi pool; the transport enforces `maxSuspensions`. */
 export interface ResourceLimits {
   maxDurationSecs?: number
   maxMemory?: number
   gcInterval?: number
   maxRecursionDepth?: number
+  maxSuspensions?: number
 }
 
 /** Session-creation options sent to the component worker. */
@@ -49,6 +66,14 @@ export interface WorkerSessionConfig {
    * child's default, false disables them, and an integer customizes truncation.
    */
   assertMessageAnnotations?: AssertMessageAnnotations
+  /**
+   * How long, in seconds, the worker may hold buffered `print()` output before
+   * sending it (default 0.005). `0` restores line buffering, delivering each
+   * completed line on its own. A turn's frames all reach the host together
+   * here, but this still sets how they are split: one `printCallback` call per
+   * frame, and a print collector charges its `maxBytes` cap per frame.
+   */
+  printFlushInterval?: number
 }
 
 /** A session-shaped adapter over one semantic component dispatcher. */
@@ -62,6 +87,9 @@ export class WorkerTransport {
 
   /** Whether a crash or channel error made this worker unreusable. */
   private dead = false
+
+  private suspensionLimit: bigint | undefined
+  private suspensionsSeen = 0n
 
   /** Reports whether the worker can return to its pool when the session ends. */
   onFinish?: (reusable: boolean) => void
@@ -83,6 +111,9 @@ export class WorkerTransport {
           ...(assertMessageAnnotations === undefined ? {} : { assertMessageAnnotations }),
           typeCheckFormat: componentTypeCheckFormat(config.typeCheckFormat ?? 'full'),
           typeCheckColor: config.typeCheckColor ?? false,
+          ...(config.printFlushInterval === undefined
+            ? {}
+            : { printFlushIntervalMs: flushIntervalMs(config.printFlushInterval) }),
         },
       },
       'ok',
@@ -96,11 +127,15 @@ export class WorkerTransport {
     code: string,
     inputs: Record<string, unknown> | null,
     mounts: readonly unknown[],
-    skipTypeCheck: boolean,
+    options: { cwd?: string; skipTypeCheck: boolean },
     onPrint: OnPrint,
   ): Promise<NativeTurn> {
     if (mounts.length > 0) {
       throw new Error('the wasm worker does not support filesystem mounts (browser has no host filesystem)')
+    }
+    const cwd = feedCwd(options.cwd)
+    if (typeof cwd !== 'string') {
+      return Promise.resolve(cwd)
     }
     return this.turn(
       {
@@ -108,7 +143,8 @@ export class WorkerTransport {
         val: {
           code,
           inputs: Object.entries(inputs ?? {}).map(([name, value]) => ({ name, value: encodeValue(value) })),
-          skipTypeCheck,
+          skipTypeCheck: options.skipTypeCheck,
+          cwd,
         },
       },
       onPrint,
@@ -219,7 +255,7 @@ export class WorkerTransport {
     }
     const event = await this.run({ tag: 'load', val: state }, onPrint)
     if (!event) return crashed('worker exited without a turn-ending event')
-    return event.tag === 'ok' ? { kind: 'loaded' } : this.toTurn(event)
+    return event.tag === 'ok' ? { kind: 'loaded' } : this.enforceSuspensionLimit(this.toTurn(event), onPrint)
   }
 
   /** Resets a live worker for reuse and disposes a dead worker. */
@@ -246,6 +282,27 @@ export class WorkerTransport {
   private async turn(request: ComponentRequest, onPrint: OnPrint): Promise<NativeTurn> {
     const event = await this.run(request, onPrint)
     const turn = event ? this.toTurn(event) : crashed('worker exited without a turn-ending event')
+    return this.enforceSuspensionLimit(turn, onPrint)
+  }
+
+  /** Counts a suspension and aborts the feed when it exceeds the session limit. */
+  private async enforceSuspensionLimit(turn: NativeTurn, onPrint: OnPrint): Promise<NativeTurn> {
+    if (isSuspension(turn)) {
+      this.suspensionsSeen += 1n
+      // Abort instead of exposing an over-budget suspension to the host.
+      if (this.suspensionLimit !== undefined && this.suspensionsSeen > this.suspensionLimit) {
+        const message = `suspension limit ${this.suspensionLimit} exceeded`
+        const aborted = await this.run({ tag: 'abort-feed', val: { excType: 'RuntimeError', message } }, onPrint)
+        turn = aborted ? this.toTurn(aborted) : crashed('worker exited without a turn-ending event')
+        // the component answers an abort with an error, never a suspension;
+        // servicing one would let a compromised worker call the host past
+        // the budget, so it ends the worker instead
+        if (turn.kind !== 'error' && turn.kind !== 'crashed') {
+          this.dead = true
+          turn = { kind: 'protocol', message: `worker answered abort-feed with ${turn.kind}` }
+        }
+      }
+    }
     if (turn.kind === 'crashed') this.dead = true
     return turn
   }
@@ -264,6 +321,12 @@ export class WorkerTransport {
     try {
       const result = await this.dispatcher(request)
       if (result.status === 'shutdown') this.dead = true
+      // the component reports the limit in force (the configured one, else
+      // the 1000 default; a dump's on load), so it is adopted from the reply
+      if (request.tag === 'configure' || request.tag === 'load') {
+        this.suspensionLimit = result.maxSuspensions
+        this.suspensionsSeen = 0n
+      }
       events = result.events
     } catch {
       return null
@@ -299,6 +362,7 @@ export class WorkerTransport {
           callId: event.val.callId,
           // null (not undefined) for plain calls, matching the napi turn shape
           objectId: event.val.objectId ?? null,
+          allowEagerAwait: event.val.allowEagerAwait,
         }
       case 'os-call':
         this.pendingCallId = event.val.callId
@@ -337,7 +401,18 @@ function encodeLimits(limits: ResourceLimits): ComponentResourceLimits {
     ...(limits.maxMemory === undefined ? {} : { maxMemoryBytes: BigInt(limits.maxMemory) }),
     ...(limits.gcInterval === undefined ? {} : { gcInterval: BigInt(limits.gcInterval) }),
     ...(limits.maxRecursionDepth === undefined ? {} : { maxRecursionDepth: BigInt(limits.maxRecursionDepth) }),
+    ...(limits.maxSuspensions === undefined ? {} : { maxSuspensions: BigInt(limits.maxSuspensions) }),
   }
+}
+
+/** Identifies turns that consume the host-side suspension budget. */
+function isSuspension(turn: NativeTurn): boolean {
+  return (
+    turn.kind === 'functionCall' ||
+    turn.kind === 'osCall' ||
+    turn.kind === 'nameLookup' ||
+    turn.kind === 'resolveFutures'
+  )
 }
 
 /** Converts a host return value, turning conversion failures into Python `TypeError`. */
@@ -347,6 +422,61 @@ function returnValue(value: unknown): CallResult {
   } catch (error) {
     return errorResult('TypeError', error instanceof Error ? error.message : String(error))
   }
+}
+
+/**
+ * Resolves a feed's working directory the way `monty-pool` does for native
+ * workers: unset keeps the session's current directory (the root until a
+ * feed or `os.chdir` changes it — there are no mounts in the browser to
+ * default to), an explicit value must be an absolute POSIX path without NUL
+ * bytes and loses its trailing slashes. A rejected value is the
+ * session-preserving `ValueError` turn the native path produces, so keep
+ * this in step with `validate_cwd` in `monty-types` (`mount.spec.ts` runs
+ * the same rejected values through both backends).
+ */
+function feedCwd(cwd: string | undefined): string | NativeTurn {
+  const invalid = (problem: string): NativeTurn => ({
+    kind: 'error',
+    exception: {
+      excType: 'ValueError',
+      message: `cwd ${problem}: ${rustDebugString(cwd ?? '')}`,
+      traceback: '',
+      frames: [],
+    },
+  })
+  if (cwd === undefined) {
+    return ''
+  }
+  if (cwd.includes('\0')) {
+    return invalid('must not contain NUL bytes')
+  }
+  if (!cwd.startsWith('/')) {
+    return invalid('must be an absolute POSIX path')
+  }
+  const trimmed = cwd.replace(/\/+$/, '')
+  return trimmed === '' ? '/' : trimmed
+}
+
+/**
+ * Quotes a string the way Rust's `{:?}` does for ASCII (`\0`, `\n`, `\t`,
+ * `\r`, `\\`, `\"`, other control characters as `\u{xx}`), so a wasm-side
+ * `ValueError` matches the native one byte for byte. Non-ASCII passes through,
+ * which Rust also does for printable characters.
+ */
+function rustDebugString(value: string): string {
+  const escapes: Record<string, string> = {
+    '\0': '\\0',
+    '\n': '\\n',
+    '\t': '\\t',
+    '\r': '\\r',
+    '\\': '\\\\',
+    '"': '\\"',
+  }
+  // oxlint-disable-next-line no-control-regex
+  const quoted = value.replace(/[\0\n\t\r\\"\x01-\x1f\x7f]/g, (char) => {
+    return escapes[char] ?? `\\u{${char.charCodeAt(0).toString(16)}}`
+  })
+  return `"${quoted}"`
 }
 
 /** Creates a traceback-free host exception result. */

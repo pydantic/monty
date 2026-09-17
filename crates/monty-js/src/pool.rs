@@ -31,9 +31,9 @@ use std::{
 
 use monty_pool::{
     exceeds_max_value_depth,
-    telemetry_adapter::{TelemetryAdapterHandle, TelemetryContext},
-    Checkout, MountSpec, MountSpecMode, OnPrint, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue,
-    TurnEvent,
+    telemetry::{TelemetryAdapterHandle, TelemetryContext},
+    Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
+    ResumeValue, TurnEvent,
 };
 use monty_types::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, NameLookupResult, PrintStream, StackFrame,
@@ -47,12 +47,13 @@ use napi::{
     Env, Error, Result,
 };
 use napi_derive::napi;
+use opentelemetry::{trace::TraceContextExt, Context};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
     convert::{js_to_monty, monty_to_js},
     limits::{extract_limits, JsResourceLimits},
-    telemetry::configured_adapter,
+    telemetry::{configured_adapter, configured_tracing_adapter},
 };
 
 /// Deepest *list-like* value nesting the wire protocol accepts (dicts and
@@ -71,7 +72,14 @@ type SharedPool = Arc<Mutex<Option<Arc<Pool>>>>;
 type SharedCheckout = Arc<AsyncMutex<Option<Checkout>>>;
 /// The per-turn JS print callback, reached from the turn future through a
 /// threadsafe function.
-type PrintCallback<'env> = Function<'env, FnArgs<(String, String)>, UnknownReturnValue>;
+type PrintCallback<'env> = Function<'env, FnArgs<(String, String, Option<String>)>, UnknownReturnValue>;
+
+fn callback_span_key(context: &Context) -> Option<String> {
+    let span = context.span();
+    let span = span.span_context();
+    span.is_valid()
+        .then(|| format!("{}:{}", span.trace_id(), span.span_id()))
+}
 
 /// The boxed future a turn closure returns: one computation borrowing the
 /// locked checkout and the per-turn print callback.
@@ -132,6 +140,21 @@ pub struct NativeCheckoutOptions {
     /// operand reprs to `n` bytes. The TypeScript wrapper normalizes the
     /// public `boolean | number` option into this encoding.
     pub assert_message_annotations: Option<u32>,
+
+    /// How long the worker may hold buffered `print()` output before sending
+    /// it (ms). Absent: the worker's default. `0` restores line buffering,
+    /// delivering each completed line on its own.
+    pub print_flush_interval_ms: Option<f64>,
+}
+
+/// Per-feed settings other than the mounts, passed by the TypeScript
+/// `MontySession` from its feed options.
+#[napi(object, js_name = "NativeFeedOptions")]
+pub struct NativeFeedOptions {
+    /// Absolute virtual working directory; unset takes the first mount, else `/`.
+    pub cwd: Option<String>,
+    /// Skip type checking for this feed even when the session enables it.
+    pub skip_type_check: bool,
 }
 
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
@@ -194,10 +217,20 @@ impl NativePool {
         let mut config = PoolConfig::subprocess(&options.binary_path);
         config.min_processes = options.min_processes as usize;
         config.max_processes = options.max_processes as usize;
-        config.checkout_timeout = options.checkout_timeout_ms.map(duration_from_ms).transpose()?;
-        config.request_timeout = options.request_timeout_ms.map(duration_from_ms).transpose()?;
-        config.duration_limit_grace = options.duration_limit_grace_ms.map(duration_from_ms).transpose()?;
+        config.checkout_timeout = options
+            .checkout_timeout_ms
+            .map(|ms| duration_from_ms("checkoutTimeout", ms))
+            .transpose()?;
+        config.request_timeout = options
+            .request_timeout_ms
+            .map(|ms| duration_from_ms("requestTimeout", ms))
+            .transpose()?;
+        config.duration_limit_grace = options
+            .duration_limit_grace_ms
+            .map(|ms| duration_from_ms("durationLimitGrace", ms))
+            .transpose()?;
         config.max_checkouts_per_worker = options.max_checkouts_per_worker;
+        config.metrics = configured_adapter().map(TelemetryAdapterHandle::metrics);
         if config.max_processes < 1 {
             return Err(invalid("maxProcesses must be at least 1"));
         }
@@ -244,6 +277,10 @@ impl NativePool {
                     AssertMessageAnnotations::default,
                     AssertMessageAnnotations::from_max_bytes,
                 ),
+                print_flush_interval: options
+                    .print_flush_interval_ms
+                    .map(|ms| duration_from_ms("printFlushInterval", ms))
+                    .transpose()?,
             },
             checkout: Arc::new(AsyncMutex::new(None)),
         })
@@ -285,11 +322,12 @@ impl NativeTelemetryContext {
             .zip(self.span_id)
             .and_then(|(trace_id, span_id)| {
                 adapter
-                    .context(
+                    .context_with_remote(
                         &trace_id,
                         &span_id,
                         self.trace_flags.unwrap_or_default(),
                         self.trace_state.as_deref().unwrap_or_default(),
+                        false,
                     )
                     .ok()
             })
@@ -321,18 +359,19 @@ impl NativeSession {
         let repl_config = self.repl_config.clone();
         let slot = Arc::clone(&self.checkout);
         let telemetry_context =
-            telemetry_context.and_then(|context| configured_adapter().map(|adapter| context.parse(adapter)));
+            telemetry_context.and_then(|context| configured_tracing_adapter().map(|adapter| context.parse(adapter)));
         env.spawn_future(async move {
             let pool = lock(&pool)
                 .as_ref()
                 .map(Arc::clone)
                 .ok_or_else(|| invalid("the pool is not started — create it with Monty.create()"))?;
-            let checkout = if let Some(context) = telemetry_context {
-                pool.checkout_with_telemetry(&repl_config, context).await
-            } else {
-                pool.checkout(&repl_config).await
-            }
-            .map_err(pool_error)?;
+            let checkout = pool
+                .checkout_with(
+                    &repl_config,
+                    CheckoutOptions::default().with_telemetry(telemetry_context),
+                )
+                .await
+                .map_err(pool_error)?;
             *slot.lock().await = Some(checkout);
             Ok(())
         })
@@ -347,16 +386,21 @@ impl NativeSession {
         code: String,
         inputs: Option<Object<'env>>,
         mounts: Vec<ClassInstance<'env, NativeMountDir>>,
-        skip_type_check: bool,
+        options: NativeFeedOptions,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let inputs = convert_inputs(env, inputs)?;
         let mounts = mount_specs(&mounts)?;
+        let NativeFeedOptions { cwd, skip_type_check } = options;
         self.run_turn(
             env,
             on_print,
             outcome_fn(move |checkout, on_print| {
-                Box::pin(async move { checkout.feed(&code, inputs, mounts, skip_type_check, on_print).await })
+                Box::pin(async move {
+                    checkout
+                        .feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, on_print)
+                        .await
+                })
             }),
         )
     }
@@ -713,8 +757,9 @@ impl NativeSession {
             async move {
                 let mut guard = slot.lock().await;
                 let Some(checkout) = guard.as_mut() else {
-                    return Ok(TurnOutcome::Protocol(
-                        "the session is closed — check out a new one".to_owned(),
+                    return Ok((
+                        TurnOutcome::Protocol("the session is closed — check out a new one".to_owned()),
+                        None,
                     ));
                 };
                 // Forward each print to JS and *await the callback having
@@ -729,12 +774,17 @@ impl NativeSession {
                         PrintStream::Stderr => "stderr",
                     };
                     let tsfn = Arc::clone(&tsfn);
-                    let args = FnArgs::from((stream.to_owned(), text.to_owned()));
+                    let args = FnArgs::from((
+                        stream.to_owned(),
+                        text.to_owned(),
+                        callback_span_key(&Context::current()),
+                    ));
                     Box::pin(async move {
                         let _ = tsfn.call_async(args).await;
                     })
                 };
-                Ok(compute(checkout, &mut on_print).await)
+                let outcome = compute(checkout, &mut on_print).await;
+                Ok((outcome, callback_span_key(&checkout.callback_context())))
             },
             turn_to_js,
         )
@@ -808,8 +858,11 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
 /// `ts/session.ts`. All keys are fixed strings; sandbox-controlled data only
 /// ever appears in *values* (kwargs cross as `[key, value]` pairs so the
 /// TypeScript layer can build a null-prototype record safely).
-fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
+fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> Result<Object<'_>> {
     let mut obj = Object::new(env)?;
+    if let Some(context) = context {
+        obj.set("callbackSpanKey", context)?;
+    }
     match outcome {
         TurnOutcome::Event(TurnEvent::Complete(value)) => {
             obj.set("kind", "complete")?;
@@ -821,8 +874,10 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
             kwargs,
             call_id,
             object_id,
+            allow_eager_await,
         }) => {
             obj.set("kind", "functionCall")?;
+            obj.set("allowEagerAwait", allow_eager_await)?;
             obj.set("functionName", function_name)?;
             obj.set("args", values_to_js(env, &args)?)?;
             obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;
@@ -1017,7 +1072,7 @@ fn sendable_value(env: &Env, value: Unknown<'_>) -> StdResult<MontyObject, Monty
             Some("Max input depth exceeded".to_owned()),
         )),
         Ok(value) => Ok(value),
-        Err(err) => Err(MontyException::new(ExcType::TypeError, Some(err.reason.clone()))),
+        Err(err) => Err(MontyException::new(ExcType::TypeError, Some(err.reason))),
     }
 }
 
@@ -1064,9 +1119,10 @@ fn bytes_limit(limit: f64, name: &str) -> Result<u64> {
     }
 }
 
-/// Converts a millisecond count from JS into a `Duration`.
-fn duration_from_ms(ms: f64) -> Result<Duration> {
-    Duration::try_from_secs_f64(ms / 1000.0).map_err(|err| invalid(&format!("invalid timeout: {err}")))
+/// Converts a millisecond count from JS into a `Duration`, naming the option
+/// in the error so a rejected value says which one it was.
+fn duration_from_ms(name: &str, ms: f64) -> Result<Duration> {
+    Duration::try_from_secs_f64(ms / 1000.0).map_err(|err| invalid(&format!("invalid {name}: {err}")))
 }
 
 /// Locks the shared *pool* slot, ignoring poisoning (a panic elsewhere must
