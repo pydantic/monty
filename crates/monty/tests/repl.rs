@@ -59,16 +59,42 @@ fn round_trip_progress(progress: &ReplProgress) -> ReplProgress {
     }
 }
 
-/// `Unsupported` has no producer until a compatibility mechanism lands, so its
-/// message is pinned here — one that starts constructing it inherits a checked
-/// format rather than inventing one.
+/// Only the `Display` string reaches a Python or JavaScript host — the worker
+/// stringifies `DumpError` into a `RuntimeError` message at the boundary — so
+/// every variant's wording is pinned here, including `Unsupported`, which has no
+/// producer until a compatibility mechanism lands. Literal versions rather than
+/// `DUMP_VERSION` keep the snapshots stable across a bump.
 #[test]
-fn unsupported_dump_error_names_what_blocked_it() {
-    let err = DumpError::Unsupported {
-        found: 7,
-        reason: "`Heap` changed in version 9".to_string(),
-    };
-    assert_snapshot!(err.to_string(), @"dump format version 7 is unsupported: `Heap` changed in version 9");
+fn dump_error_messages_are_stable() {
+    assert_snapshot!(DumpError::NotADump.to_string(), @"not a monty dump");
+    assert_snapshot!(
+        DumpError::VersionTooOld {
+            found: 7,
+            min_supported: 9,
+        }
+        .to_string(),
+        @"dump format version 7 is older than 9, the oldest this build reads"
+    );
+    assert_snapshot!(
+        DumpError::VersionTooNew {
+            found: 12,
+            max_supported: 9,
+        }
+        .to_string(),
+        @"dump format version 12 is newer than 9, the newest this build reads"
+    );
+    assert_snapshot!(
+        DumpError::Unsupported {
+            found: 7,
+            reason: "`Heap` changed in version 9".to_string(),
+        }
+        .to_string(),
+        @"dump format version 7 is unsupported: `Heap` changed in version 9"
+    );
+    assert_snapshot!(
+        DumpError::Payload(postcard::Error::DeserializeBadEncoding).to_string(),
+        @"malformed dump payload: The original data was not well encoded"
+    );
 }
 
 /// The header must reject anything this build cannot read, and each rejection
