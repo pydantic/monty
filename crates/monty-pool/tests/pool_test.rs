@@ -2551,7 +2551,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "x".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -2622,7 +2622,7 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "x".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
