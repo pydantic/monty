@@ -414,8 +414,8 @@ fn shutdown_request_reports_shutdown() {
     );
 }
 
-/// A dump written by a different `DUMP_VERSION` is rejected, and the error
-/// names both versions so a host can tell a stale snapshot from a corrupt one.
+/// A dump written by an older `DUMP_VERSION` is rejected, and the error names
+/// the bound it missed so a host can tell a stale snapshot from a corrupt one.
 #[test]
 fn load_rejects_old_dump_version() {
     // a real dump rewound to the previous version, so only the version is wrong
@@ -435,7 +435,8 @@ fn load_rejects_old_dump_version() {
     assert_eq!(
         error.exception.unwrap().message.unwrap(),
         format!(
-            "protocol violation: failed to load session: dump format version {}, this build reads {DUMP_VERSION}",
+            "protocol violation: failed to load session: dump format version {} is older than \
+             {DUMP_VERSION}, the oldest this build reads",
             DUMP_VERSION - 1
         )
     );

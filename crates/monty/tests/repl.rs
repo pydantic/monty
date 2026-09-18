@@ -59,9 +59,21 @@ fn round_trip_progress(progress: &ReplProgress) -> ReplProgress {
     }
 }
 
+/// `Unsupported` has no producer until a compatibility mechanism lands, so its
+/// message is pinned here — one that starts constructing it inherits a checked
+/// format rather than inventing one.
+#[test]
+fn unsupported_dump_error_names_what_blocked_it() {
+    let err = DumpError::Unsupported {
+        found: 7,
+        reason: "`Heap` changed in version 9".to_string(),
+    };
+    assert_snapshot!(err.to_string(), @"dump format version 7 is unsupported: `Heap` changed in version 9");
+}
+
 /// The header must reject anything this build cannot read, and each rejection
-/// must say which of the three it was — a stale snapshot needs rebuilding, a
-/// corrupt one needs investigating.
+/// must say which kind it was — a stale snapshot needs rebuilding, one from a
+/// newer build needs a newer reader, a corrupt one needs investigating.
 #[test]
 fn dump_header_rejects_incompatible_data() {
     let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
@@ -83,9 +95,20 @@ fn dump_header_rejects_incompatible_data() {
     wrong_version[6..8].copy_from_slice(&previous_version.to_le_bytes());
     assert_eq!(
         Dump::load(&wrong_version).unwrap_err(),
-        DumpError::VersionMismatch {
+        DumpError::VersionTooOld {
             found: previous_version,
-            expected: DUMP_VERSION
+            min_supported: DUMP_VERSION
+        }
+    );
+
+    // the other side of the range: intact bytes this build is simply too old for
+    let next_version = DUMP_VERSION + 1;
+    wrong_version[6..8].copy_from_slice(&next_version.to_le_bytes());
+    assert_eq!(
+        Dump::load(&wrong_version).unwrap_err(),
+        DumpError::VersionTooNew {
+            found: next_version,
+            max_supported: DUMP_VERSION
         }
     );
 
