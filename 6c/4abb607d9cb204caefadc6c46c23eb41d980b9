@@ -1,0 +1,25 @@
+crates/monty-js/ts/worker/transport.ts
+  s_440a7ea0ee4e52::t_3c4b12bf9a3b60 119-124,131-136,140,413,683-688
+crates/monty-pool/src/checkout.rs
+  s_440a7ea0ee4e52::t_3c4b12bf9a3b60 408-412,431-432,455,463,471-473,484-485
+crates/monty-js/__test__/limits.spec.ts
+  s_440a7ea0ee4e52::t_d43d569cf75936 238-265
+crates/monty-js/__test__/wasm_auto_os_calls.spec.ts
+  s_440a7ea0ee4e52::t_d43d569cf75936 28-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6c4abb607d9cb204caefadc6c46c23eb41d980b9",
+  "prompts": {},
+  "sessions": {
+    "s_440a7ea0ee4e52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a9754f7-13d8-42d0-a0e4-9657814a0b0c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
