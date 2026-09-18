@@ -87,7 +87,8 @@ that hangs or is killed yields nothing either way.
 In the Python and JavaScript pool APIs, a print callback that raises aborts the feed after the current protocol turn,
 not at the offending `print()`.
 Sandboxed code cannot catch the callback's exception.
-If the turn suspended, the binding clears the suspension before reporting the error so later feeds can continue.
+If the turn suspended, both bindings discard the session; later feeds on it fail.
+Check out a fresh session before running more code.
 
 ## CollectString / CollectStreams caps
 

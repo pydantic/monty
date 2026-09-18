@@ -30,7 +30,8 @@ Neither exception occurs on the local subprocess transport.
 [`install_dependencies()`][pydantic_monty.AsyncMontySession.install_dependencies] is supported only by embedded-CPython workers.
 It installs PEP 508 requirements using `uv`, within the pool's `request_timeout`.
 Those workers also install PEP 723 inline dependencies before running a feed.
-A Monty sandbox worker rejects installation with `MontyRuntimeError` and ignores PEP 723 comments.
+A Monty sandbox worker rejects non-empty installation requests with `MontyRuntimeError` and ignores PEP 723 comments.
+`install_dependencies([])` is a no-op on either worker.
 
 ## API
 

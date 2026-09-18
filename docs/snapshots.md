@@ -86,7 +86,8 @@ In JavaScript those are separate methods: `resume(value)`, `resumeError(err)` an
 
 A snapshot refers to the worker's current suspension; it does not own an independent copy of the execution state.
 Only one suspension is live per session.
-Resuming twice or feeding while suspended raises `RuntimeError`.
+Resuming twice or feeding while suspended raises `RuntimeError` in Python.
+JavaScript throws `Error` for a second resume and `ProtocolError` when feeding while suspended.
 To branch execution, dump the snapshot and restore it into separate sessions.
 
 ### Tracing manual handlers
@@ -286,9 +287,9 @@ feeding:
     }
     ```
 
-A failed load, including using the wrong loader for a dump's kind, discards the worker.
+Once restoration is attempted, a failure, including using the wrong loader for a dump's kind, discards the worker.
 Check out a fresh session rather than retrying on the failed one.
-Calling a loader after a feed or a previous load is rejected: restoring is only supported on fresh sessions.
+Calling a loader after a feed or a previous load is rejected before restoration, leaving the existing session usable.
 
 ## What restoring does and does not carry
 

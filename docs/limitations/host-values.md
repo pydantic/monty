@@ -25,7 +25,8 @@ see [classes](classes.md#crossing-the-host-boundary-pydantic_monty-pydanticmonty
 
 A self-referential container replaces the cycle with a placeholder string such as `[...]`, `{...}`, `(...)` or `...`.
 Rust receives a `Cycle` node, which cannot be sent back as an input.
-Cyclic host inputs are rejected: Python raises `ValueError: Circular reference detected`, JavaScript `TypeError`.
+Cyclic host inputs are rejected: Python raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError]
+wrapping `ValueError('Circular reference detected')`; JavaScript throws `TypeError`.
 
 Exporting sandbox values counts against `max_recursion_depth` (1000 by default, shared with the call stack).
 Values below the remaining depth become the string `<deeply nested>` (`Repr` nodes in Rust).
