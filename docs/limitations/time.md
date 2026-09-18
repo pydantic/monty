@@ -6,7 +6,8 @@ host's wait, as the session's `AutoOsCalls` say (`auto_os_calls` on `checkout()`
 Rust).
 
 `asyncio.sleep()` is documented in [asyncio.md](asyncio.md); it shares
-`time.sleep()`'s handling of the delay argument and its sleep mode.
+`time.sleep()`'s sleep mode, while its delay argument follows CPython's `asyncio.sleep()` (a negative delay waits
+zero seconds rather than raising).
 
 ## Module surface
 
@@ -49,8 +50,10 @@ sandbox — the call is a wait, so there is nothing to resume into.
 
 `max_feed_duration` and `max_turn_duration` measure execution time, and the clock stops while the sandbox is suspended,
 so a sleep costs nothing against them, however long it lasts.
-Each sleep is one suspension (two when an `asyncio.sleep()` answered with a future is awaited later), so
-`max_suspensions` (default 1000) bounds a sandbox that sleeps in a loop.
+In the pools and the CLI each sleep is one suspension (two when an `asyncio.sleep()` answered with a future is
+awaited later), so `max_suspensions` (default 1000) bounds a sandbox that sleeps in a loop; Rust's non-suspending
+`MontyRun::run` waits out a `'system'` sleep inline instead, and a zero-delay `asyncio.sleep()` settles without
+suspending at all.
 Under `'system'` a sleep is also charged to `max_total_sleep`, the cumulative time the sandbox may ask the host to
 wait, and a sleep that would take the total over is refused before it suspends with an uncatchable
 `TimeoutError: sleep limit exceeded: <total> > <limit>` — the Rust `Duration` debug renderings, e.g. `1.5s > 1s`.

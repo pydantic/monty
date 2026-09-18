@@ -238,7 +238,7 @@ def test_abstract_os_date_today(monty_run: RunMonty):
 
 
 def test_abstract_os_urandom_default(monty_run: RunMonty, monkeypatch: pytest.MonkeyPatch):
-    """AbstractOS.urandom() answers `os.urandom()` from the host's by default."""
+    """AbstractOS.urandom() answers `os.urandom()` from the host's entropy by default."""
     fs = TestOS()
 
     result = monty_run('import os\nlen(os.urandom(8))', os=fs)

@@ -482,9 +482,7 @@ function encodeLimits(limits: ResourceLimits): ComponentResourceLimits {
     ...(limits.gcInterval === undefined ? {} : { gcInterval: BigInt(limits.gcInterval) }),
     ...(limits.maxRecursionDepth === undefined ? {} : { maxRecursionDepth: BigInt(limits.maxRecursionDepth) }),
     ...(limits.maxSuspensions === undefined ? {} : { maxSuspensions: BigInt(limits.maxSuspensions) }),
-    ...(limits.maxTotalSleepSecs === undefined
-      ? {}
-      : { maxTotalSleepMicros: BigInt(Math.round(limits.maxTotalSleepSecs * 1_000_000)) }),
+    ...micros('maxTotalSleepMicros', 'maxTotalSleepSecs', limits.maxTotalSleepSecs),
   }
 }
 
@@ -499,7 +497,7 @@ function encodeLimits(limits: ResourceLimits): ComponentResourceLimits {
  * so a misspelled key would be dropped silently instead of failing to compile.
  */
 function micros(
-  key: 'maxFeedDurationMicros' | 'maxTurnDurationMicros',
+  key: 'maxFeedDurationMicros' | 'maxTurnDurationMicros' | 'maxTotalSleepMicros',
   option: string,
   seconds: number | undefined,
 ): Partial<ComponentResourceLimits> {

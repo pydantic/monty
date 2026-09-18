@@ -184,7 +184,7 @@ class RandomSeed(TypedDict):
     """`AutoOSCalls['random_start']`: start the sandbox's `random` as `random.seed(seed)` would."""
 
     seed: int | float | str | bytes
-    """What `random.seed()` accepts; any int size."""
+    """An int of any size, a float, a `str` or `bytes`, as `random.seed(seed)` takes them."""
 
 
 class AutoOSCalls(TypedDict, total=False):

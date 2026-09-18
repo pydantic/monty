@@ -111,6 +111,10 @@ test('invalid datetime and timezone values are rejected before the checkout', as
   await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { name: 'CET' } as unknown as 'system' } }), {
     instanceOf: TypeError,
   })
+  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { offsetSeconds: 86_400 } } }), {
+    instanceOf: RangeError,
+    message: 'timezone offsetSeconds must be within ±86399, got 86400',
+  })
 })
 
 // =============================================================================
@@ -134,15 +138,18 @@ test('sleepSystemMax cuts a system sleep short', async () => {
 
 test('gathered sandbox sleeps overlap', async () => {
   const code = [
+    // overlap is an ordering: every sleep starts before any of them finishes
     'import asyncio, time',
+    'starts, ends = [], []',
     'async def w(n):',
+    '    starts.append(time.time())',
     '    await asyncio.sleep(0.05, n)',
+    '    ends.append(time.time())',
     '    return n * 2',
     'async def main():',
     '    return await asyncio.gather(w(1), w(2), w(3))',
-    't = time.time()',
     'r = asyncio.run(main())',
-    '(r, time.time() - t < 0.14)',
+    '(r, max(starts) < min(ends))',
   ].join('\n')
   t.deepEqual(await run(code), [[2, 4, 6], true])
 })
@@ -241,5 +248,9 @@ test('an invalid randomStart is rejected before the checkout', async () => {
   })
   await t.throwsAsync(() => pool().checkout({ autoOsCalls: { randomStart: { sead: 1 } as unknown as 'system' } }), {
     instanceOf: TypeError,
+  })
+  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { randomStart: { seed: Number.NaN } } }), {
+    instanceOf: RangeError,
+    message: 'randomStart seed must be finite, got NaN',
   })
 })

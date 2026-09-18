@@ -1,6 +1,6 @@
 //! [`AutoOsCalls`]: which OS calls the sandbox answers itself instead of
-//! suspending to the host — the clock and `random`'s first state — and how
-//! the sleeps, always the host's wait, are cut and budgeted.
+//! suspending to the host — the clock and `random`'s first state — and what
+//! the sleeps do: the host's wait, cut and budgeted, or no wait at all.
 
 use std::time::Duration;
 

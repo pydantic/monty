@@ -274,6 +274,7 @@ pub(crate) struct Program {
     pub(crate) options: CompileOptions,
     /// Which OS calls the sandbox answers itself (see [`MontyRun::with_auto_os_calls`]).
     /// Shared with the REPL session like `script_name`.
+    #[serde(default)]
     pub(crate) auto_os_calls: Arc<AutoOsCalls>,
     /// The user-facing script name (`main.py`), whose final component
     /// `__file__` is derived from. For REPL snippets this is the session's

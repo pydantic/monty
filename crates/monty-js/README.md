@@ -474,7 +474,7 @@ By default these never reach an `os` callback: `date.today()`,
 `asyncio.sleep()` are waited out by the pool itself, each call cut to
 `sleepSystemMax` (10 seconds), with gathered `asyncio.sleep()` calls
 overlapping; and an unseeded `random` seeds itself from the worker's OS
-entropy. A wait costs nothing against `maxDurationSecs`; each sleep is one
+entropy. A wait costs nothing against the duration limits; each sleep is one
 suspension, and the `maxTotalSleepSecs` limit bounds their sum. The
 per-session `autoOsCalls` option changes that:
 

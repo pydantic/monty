@@ -259,7 +259,8 @@ The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `
 `os.getenv`, `os.environ` and `os.urandom`, plus — only when the session's `auto_os_calls` route them to the
 host — `date.today`, `datetime.now`, `time.time`, `time.sleep` and `asyncio.sleep` (see
 [the clock](security.md#the-clock)).
-An unseeded `random` generator calls `os.urandom` only under `random_start='call_host'`; otherwise it seeds itself
+An unseeded `random` generator (or a `random.seed()` with no value) calls `os.urandom` only under
+`random_start='call_host'`; otherwise it seeds itself
 inside the sandbox (see [random](limitations/random.md)).
 
 `os` callbacks run in your process with your process's authority.

@@ -7,6 +7,7 @@ unchanged inside the worker.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from collections.abc import AsyncIterator
 from pathlib import PurePosixPath
@@ -1158,12 +1159,23 @@ asyncio.run(main())
 
 async def test_os_access_sleeps_concurrently_under_async_monty(asession_call_host: AsyncMontySession):
     """`OSAccess` needs no override for gathered sleeps to overlap."""
-    dispatched: list[float] = []
+    started: list[float] = []
+    finished: list[float] = []
 
     class Timed(OSAccess):
         def dispatch(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: Any = None, **rest: Any) -> Any:
-            dispatched.append(time.monotonic())
-            return super().dispatch(function_name, args, kwargs, **rest)
+            started.append(time.monotonic())
+            result = super().dispatch(function_name, args, kwargs, **rest)
+            if not inspect.isawaitable(result):
+                finished.append(time.monotonic())
+                return result
+
+            async def finish() -> Any:
+                value = await result
+                finished.append(time.monotonic())
+                return value
+
+            return finish()
 
     code = """
 import asyncio
@@ -1175,8 +1187,8 @@ asyncio.run(main())
 """
     result = await asession_call_host.feed_run(code, os=Timed())
     assert result == snapshot([1, 2])
-    # the second sleep was dispatched while the first was still waiting
-    assert dispatched[1] - dispatched[0] < 0.05
+    # the second sleep was dispatched before the first finished waiting
+    assert started[1] < finished[0]
 
 
 async def test_legacy_dispatch_override_still_sleeps(asession_call_host: AsyncMontySession):

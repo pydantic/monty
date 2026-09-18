@@ -82,6 +82,7 @@ pub struct MontyRepl {
     /// Which OS calls the session answers itself, on every path; see
     /// [`with_auto_os_calls`](Self::with_auto_os_calls). Shared with each
     /// snippet's executor rather than copied per feed.
+    #[serde(default)]
     auto_os_calls: Arc<AutoOsCalls>,
     /// Sandbox working directory the next snippet starts in: what
     /// [`set_cwd`](Self::set_cwd) chose, then whatever `os.chdir` left the

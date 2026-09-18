@@ -14,6 +14,7 @@ import asyncio
 import datetime
 import importlib.util
 import sys
+import time
 from collections.abc import AsyncIterator, Callable
 from contextvars import ContextVar
 from pathlib import Path
@@ -123,9 +124,12 @@ async def test_auto_os_calls_over_websocket(ws_url: str):
             auto_os_calls={'datetime': frozen, 'sleep': 'zero', 'random_start': {'seed': 42}}
         ) as session:
             code = 'import random, time\nfrom datetime import datetime\ntime.sleep(3600)\n(datetime.now(), random.random())'
+            started = time.monotonic()
             assert await session.feed_run(code) == snapshot(
                 (datetime.datetime(2024, 1, 15, 10, 30, 5, 123456), 0.6394267984578837)
             )
+            # a `'zero'` sleep returns at once; the default would wait out `sleep_system_max`
+            assert time.monotonic() - started < 5
 
 
 async def test_separate_checkouts_are_isolated(ws_url: str):

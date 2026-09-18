@@ -25,7 +25,7 @@ An unseeded generator seeds itself on its first draw from the session's `random_
     falls back to seeding from the time and process id instead.
 - A seed (`{'seed': s}` in Python, `{ seed }` in JavaScript, `RandomStart::Seed` in Rust; any int, a float, a `str` or
     `bytes`) starts the module-level generator exactly as `random.seed(s)` would, so its draws are CPython's for that
-    seed. An unseeded `random.Random()` instance takes a state derived from the seed instead — deterministic from run
+    seed (except a NaN float; see below). An unseeded `random.Random()` instance takes a state derived from the seed instead — deterministic from run
     to run, but distinct from the module generator's and from other instances' — where CPython would read fresh
     entropy for each. `random.seed()` and `random.seed(None)` take the next such derived state rather than entropy.
 - `'call_host'` suspends the first draw with an `os.urandom` host call for the 2496 bytes, and the reply seeds the
@@ -36,7 +36,8 @@ An unseeded generator seeds itself on its first draw from the session's `random_
     `RuntimeError: 'os.urandom' is not supported in this environment`; under Rust's non-suspending `MontyRun::run`
     it raises `NotImplementedError`, as every unanswered OS call does there.
 
-Code that seeds explicitly behaves the same under every start.
+Code that seeds with a value (`random.seed(s)`) behaves the same under every start; `random.seed()` and
+`random.seed(None)` follow the start as described above, so only a value makes a run reproducible.
 `getstate()` on a never-seeded generator seeds it first, since there is no state to report until then.
 
 The module-level generator is session state like the globals: a seed set in one `feed_run` applies to the next, and

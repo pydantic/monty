@@ -919,16 +919,19 @@ def test_sleep_system_max(monty_run: RunMonty):
 
 def test_sandbox_sleeps_overlap(monty_run: RunMonty):
     """Gathered sandbox sleeps are timers served while the other tasks run, so they overlap."""
+    # overlap is an ordering: every sleep starts before any of them finishes
     code = (
         'import asyncio, time\n'
+        'starts, ends = [], []\n'
         'async def w(n):\n'
+        '    starts.append(time.time())\n'
         '    await asyncio.sleep(0.05, n)\n'
+        '    ends.append(time.time())\n'
         '    return n * 2\n'
         'async def main():\n'
         '    return await asyncio.gather(w(1), w(2), w(3))\n'
-        't = time.time()\n'
         'r = asyncio.run(main())\n'
-        '(r, time.time() - t < 0.14)'
+        '(r, max(starts) < min(ends))'
     )
     assert monty_run(code) == snapshot(([2, 4, 6], True))
 
@@ -1043,6 +1046,8 @@ def test_random_start_seed_instances_are_deterministic(monty_run: RunMonty):
             "random_start must be 'system', 'call_host' or {'seed': int | float | str | bytes}, got {'sead': 1}",
         ),
         ({'seed': True}, TypeError, 'random_start seed must be an int, float, str or bytes, not bool'),
+        ({'seed': float('nan')}, ValueError, 'random_start seed must be finite, not NaN'),
+        ({'seed': float('-inf')}, ValueError, 'random_start seed must be finite, not -inf'),
         ({'seed': None}, TypeError, 'random_start seed must be an int, float, str or bytes, not NoneType'),
         (1, TypeError, "random_start must be 'system', 'call_host' or {'seed': int | float | str | bytes}, not int"),
     ],
@@ -1161,6 +1166,7 @@ def test_timezone_call_host_sends_only_the_naive_calls(monty_run: RunMonty):
             "timezone must be 'system', 'call_host' or {'offset_seconds': int, 'name': str}, got {'name': 'CET'}",
         ),
         ({'offset_seconds': True}, TypeError, 'timezone offset_seconds must be an int'),
+        ({'offset_seconds': 86_400}, ValueError, 'timezone offset_seconds must be within -86399..=86399, got 86400'),
         ({'offset_seconds': 0, 'name': 1}, TypeError, 'timezone name must be a str'),
         (3600, TypeError, "timezone must be 'system', 'call_host' or {'offset_seconds': int, 'name': str}, not int"),
     ],

@@ -23,7 +23,8 @@ Concretely:
 - **There is no ambient authority.** With no mounts and no host functions configured, the sandbox cannot read a file,
     read an environment variable, open a socket, or spawn a process.
     Not "it is blocked" — the capability does not exist in the bytecode VM.
-    The wall clock is the one exception: every session reads it by default; see [the clock](#the-clock).
+    The wall clock and OS entropy are the exceptions: every session reads the clock by default and seeds `random`
+    from entropy; see [the clock](#the-clock) and [entropy](#entropy).
 - **The interpreter performs no filesystem I/O at all.** It suspends with a description of the operation it wants, and a
     host component decides what to do about it.
     All filesystem code lives in a separate crate (`monty-fs`) that worker artifacts do not even link in some builds.
@@ -278,11 +279,11 @@ resolved inside the sandbox and reaches a mount as an absolute virtual path.
 ### The clock
 
 `date.today()`, `datetime.now()` and `time.time()` are the only calls that read a clock.
-By default the sandbox reads this machine's clock and local timezone, in every session and every embedding —
-the pools, the CLI and an in-process Rust run alike.
+By default the sandbox reads this machine's clock and local timezone (UTC in the wasm worker), in every session and
+every embedding — the pools, the CLI and an in-process Rust run alike.
 The session's `auto_os_calls` ([`AutoOSCalls`][pydantic_monty.AutoOSCalls] on
 [`Monty.checkout`][pydantic_monty.Monty.checkout] in Python, `autoOsCalls` on `checkout()` in JavaScript,
-`AutoOsCalls` in Rust) choose otherwise, for the instant (`datetime`) and the zone (`timezone`) separately:
+`AutoOsCalls` in Rust) chooses otherwise, for the instant (`datetime`) and the zone (`timezone`) separately:
 
 - `'call_host'` sends each call to your `os=` handler as an OS call like any other, so you decide what the sandbox
     sees, and a handler that answers none of them makes all three raise;

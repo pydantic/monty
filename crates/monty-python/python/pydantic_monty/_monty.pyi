@@ -589,8 +589,9 @@ class Monty:
                 life of the session — the clock and `random`'s first state —
                 and what the sleeps do; see `AutoOSCalls`. `None` (the default)
                 reads the worker's clock and local zone, seeds `random` from
-                its entropy, and has the pool wait out each sleep, cut to ten
-                seconds, without the `os=` handler.
+                its entropy, and has the pool wait out each sleep, cut to
+                `sleep_system_max` (ten seconds by default), without the `os=`
+                handler.
         """
 
 @final

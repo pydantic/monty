@@ -9,7 +9,10 @@
 use std::time::Duration;
 
 use chrono::NaiveDate;
-use monty_types::{AutoOsCalls, DateTimeSource, RandomSeed, RandomStart, SandboxTimeZone, SleepMode};
+use monty_types::{
+    AutoOsCalls, DateTimeSource, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, RandomSeed, RandomStart,
+    SandboxTimeZone, SleepMode,
+};
 use num_bigint::BigInt;
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
@@ -176,6 +179,12 @@ fn time_zone(value: &Bound<'_, PyAny>) -> PyResult<SandboxTimeZone> {
         let Some(offset_seconds) = offset_seconds else {
             return Err(PyValueError::new_err(format!("{SHAPE}, got {}", mapping.repr()?)));
         };
+        // the range `datetime.timezone` accepts: strictly within a day of UTC
+        if !(MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&offset_seconds) {
+            return Err(PyValueError::new_err(format!(
+                "timezone offset_seconds must be within {MIN_TIMEZONE_OFFSET_SECONDS}..={MAX_TIMEZONE_OFFSET_SECONDS}, got {offset_seconds}"
+            )));
+        }
         Ok(SandboxTimeZone::Fixed { offset_seconds, name })
     } else {
         Err(PyTypeError::new_err(format!(
@@ -263,7 +272,15 @@ fn random_seed(seed: &Bound<'_, PyAny>) -> PyResult<RandomSeed> {
     } else if let Ok(n) = seed.cast::<PyInt>() {
         Ok(RandomSeed::Int(n.extract::<BigInt>()?))
     } else if let Ok(f) = seed.cast::<PyFloat>() {
-        Ok(RandomSeed::Float(f.value()))
+        // the wire refuses a non-finite seed, so refuse it here, at the checkout
+        let f = f.value();
+        if f.is_finite() {
+            Ok(RandomSeed::Float(f))
+        } else {
+            Err(PyValueError::new_err(format!(
+                "random_start seed must be finite, not {f}"
+            )))
+        }
     } else if let Ok(s) = seed.cast::<PyString>() {
         Ok(RandomSeed::Str(s.to_cow()?.into_owned()))
     } else if let Ok(b) = seed.cast::<PyBytes>() {

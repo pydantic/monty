@@ -111,6 +111,8 @@ export class WorkerPool {
   /** Borrows a worker and returns a session bound to it. */
   async checkout(config: WorkerSessionConfig = {}): Promise<MontySession> {
     if (this.closed) throw new Error('pool is closed')
+    // validated before a worker is held, so a bad option never leaks a checkout
+    const systemSleep = systemSleepOf(encodeAutoOsCalls(config.autoOsCalls ?? {}))
     const slot = await this.acquire()
     let transport: WorkerTransport
     try {
@@ -120,10 +122,7 @@ export class WorkerPool {
       throw err
     }
     transport.onFinish = (reusable) => this.release(slot, reusable)
-    return new MontySession(
-      transport as unknown as SessionNative,
-      systemSleepOf(encodeAutoOsCalls(config.autoOsCalls ?? {})),
-    )
+    return new MontySession(transport as unknown as SessionNative, systemSleep)
   }
 
   /** Terminates every worker and rejects anyone still waiting. */

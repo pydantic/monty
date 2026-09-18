@@ -21,8 +21,8 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 /// Raises `TypeError` if a value is present but has the wrong type.
 /// Raises `ValueError` if the dict contains an unknown key — limits are a
 /// security surface, so a misspelled key (e.g. `max_memroy`) must not silently
-/// run without the intended cap — or if a `*_duration_secs` value is not a
-/// valid duration.
+/// run without the intended cap — or if a `*_secs` value is not a valid
+/// duration.
 pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty_types::ResourceLimits> {
     let mut limits = monty_types::ResourceLimits::default();
     // Keys parse into `LimitKey` and values are read from the same entry, so

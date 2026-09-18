@@ -158,6 +158,12 @@ export interface EncodedAutoOsCalls {
 
 const SLEEP_MODES: readonly SleepMode[] = ['system', 'call_host', 'zero']
 
+/** The widest fixed zone `datetime.timezone` accepts: strictly within a day of UTC. */
+const MAX_TIMEZONE_OFFSET_SECONDS = 86_399
+
+/** The longest duration the wire's `u64` microseconds can carry, in whole seconds. */
+const MAX_WIRE_SECS = 18_446_744_073_709
+
 /**
  * The sleeps this process waits out itself, without the `os` callback:
  * `sleep: 'system'` (the default) with its cap in seconds. `null` when the
@@ -200,6 +206,10 @@ export function encodeAutoOsCalls(options: AutoOsCalls): EncodedAutoOsCalls {
     if (typeof secs !== 'number' || Number.isNaN(secs) || secs < 0) {
       throw new RangeError('sleepSystemMax must be a non-negative number of seconds (Infinity for no cap)')
     }
+    // a finite cap must fit the wire's u64 microseconds; Infinity is the no-cap sentinel
+    if (secs !== Infinity && secs > MAX_WIRE_SECS) {
+      throw new RangeError(`sleepSystemMax must be at most ${MAX_WIRE_SECS} seconds (Infinity for no cap)`)
+    }
     // a cap on a sleep that never happens in the worker is a contradiction, not something to ignore
     if (options.sleep !== undefined && options.sleep !== 'system') {
       throw new RangeError(`sleepSystemMax only applies to sleep: 'system', not '${options.sleep}'`)
@@ -233,8 +243,12 @@ function encodeTimeZone(timezone: TimeZone): 'system' | 'call_host' | FixedTimeZ
     throw new TypeError(shape)
   }
   const { offsetSeconds, name } = timezone
-  if (!Number.isInteger(offsetSeconds) || Math.abs(offsetSeconds) > 0x7fff_ffff) {
+  if (!Number.isInteger(offsetSeconds)) {
     throw new RangeError('timezone offsetSeconds must be an integer number of seconds')
+  }
+  // the range `datetime.timezone` accepts: strictly within a day of UTC
+  if (Math.abs(offsetSeconds) > MAX_TIMEZONE_OFFSET_SECONDS) {
+    throw new RangeError(`timezone offsetSeconds must be within ±${MAX_TIMEZONE_OFFSET_SECONDS}, got ${offsetSeconds}`)
   }
   if (name !== undefined && typeof name !== 'string') {
     throw new TypeError('timezone name must be a string')
@@ -247,6 +261,8 @@ function encodeRandomSeed(start: RandomStart): EncodedRandomSeed {
   const seed = typeof start === 'object' && start !== null && Object.hasOwn(start, 'seed') ? start.seed : undefined
   if (typeof seed === 'bigint') return { int: bigintToSignedLeBytes(seed) }
   if (typeof seed === 'number') {
+    // the wire refuses a non-finite seed, so refuse it here, at the checkout
+    if (!Number.isFinite(seed)) throw new RangeError(`randomStart seed must be finite, got ${seed}`)
     return Number.isInteger(seed) ? { int: bigintToSignedLeBytes(BigInt(seed)) } : { float: seed }
   }
   if (typeof seed === 'string') return { str: seed }

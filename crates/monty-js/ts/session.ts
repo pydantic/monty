@@ -722,9 +722,7 @@ class TurnAnswerer {
     }
     const asked = call.args[0]
     const secs = Math.min(typeof asked === 'number' && asked > 0 ? asked : 0, this.systemSleep.maxSecs)
-    // setTimeout's delay is a signed 32-bit millisecond count
-    const ms = Math.min(secs * 1000, 2 ** 31 - 1)
-    return new Promise((resolve) => setTimeout(resolve, ms))
+    return sleepMs(secs * 1000)
   }
 
   /**
@@ -1316,4 +1314,18 @@ function bytesForNative(bytes: Uint8Array): Buffer {
 
 function bufferFrom(bytes: Uint8Array): Buffer {
   return (typeof Buffer === 'undefined' ? bytes : Buffer.from(bytes)) as Buffer
+}
+
+/**
+ * Resolves after `ms` milliseconds. `setTimeout` takes a signed 32-bit
+ * millisecond count, so a longer wait is chained rather than cut short.
+ */
+async function sleepMs(ms: number): Promise<void> {
+  const MAX_TIMEOUT_MS = 2 ** 31 - 1
+  let left = ms
+  while (left > MAX_TIMEOUT_MS) {
+    await new Promise<void>((resolve) => setTimeout(resolve, MAX_TIMEOUT_MS))
+    left -= MAX_TIMEOUT_MS
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, left))
 }

@@ -642,6 +642,17 @@ fn malformed_auto_os_calls_are_rejected() {
         AutoOsCalls::try_from(fixed).unwrap_err().to_string(),
         @"invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
     );
+    // a fixed zone is bounded like `datetime.timezone`: strictly within a day of UTC
+    let zone = pb::AutoOsCalls {
+        timezone: Some(pb::SandboxTimeZone {
+            zone: Some(pb::sandbox_time_zone::Zone::Fixed(pb::TimeZone {
+                offset_seconds: 86_400,
+                name: None,
+            })),
+        }),
+        ..Default::default()
+    };
+    assert_snapshot!(AutoOsCalls::try_from(zone).unwrap_err().to_string(), @"invalid value for TimeZone.offset_seconds: 86400 is outside the range -86399..=86399");
     let seed = pb::AutoOsCalls {
         random_start: Some(pb::auto_os_calls::RandomStart::Seed(pb::RandomSeed {
             value: Some(pb::random_seed::Value::Float(f64::NAN)),

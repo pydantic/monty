@@ -7,7 +7,10 @@
 
 use std::time::Duration;
 
-use monty_types::{AutoOsCalls, DateTimeSource, RandomSeed, RandomStart, SandboxTimeZone, SleepMode};
+use monty_types::{
+    AutoOsCalls, DateTimeSource, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, RandomSeed, RandomStart,
+    SandboxTimeZone, SleepMode,
+};
 use num_bigint::BigInt;
 
 use crate::{
@@ -89,10 +92,21 @@ impl TryFrom<pb::AutoOsCalls> for AutoOsCalls {
             None => defaults.timezone,
             Some(Zone::System(_)) => SandboxTimeZone::System,
             Some(Zone::CallHost(_)) => SandboxTimeZone::CallHost,
-            Some(Zone::Fixed(fixed)) => SandboxTimeZone::Fixed {
-                offset_seconds: fixed.offset_seconds,
-                name: fixed.name,
-            },
+            Some(Zone::Fixed(fixed)) => {
+                if !(MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&fixed.offset_seconds) {
+                    return Err(ProtoConvertError::InvalidValue {
+                        field: "TimeZone.offset_seconds",
+                        reason: format!(
+                            "{} is outside the range {MIN_TIMEZONE_OFFSET_SECONDS}..={MAX_TIMEZONE_OFFSET_SECONDS}",
+                            fixed.offset_seconds
+                        ),
+                    });
+                }
+                SandboxTimeZone::Fixed {
+                    offset_seconds: fixed.offset_seconds,
+                    name: fixed.name,
+                }
+            }
         };
         let sleep = match calls.sleep.and_then(|sleep| sleep.mode) {
             None => defaults.sleep,

@@ -201,8 +201,8 @@ indistinguishable from a stack overflow.
 - `max_total_sleep` (`max_total_sleep_secs` in the bindings, `--max-total-sleep`
     in the CLI) bounds the cumulative time `time.sleep()` and `asyncio.sleep()`
     may ask the host to wait under the default `sleep` mode (see
-    [time.md](time.md)). Sleeps run off the `max_duration` clock, so without it
-    a sleeping loop is bounded only by `max_suspensions`, one per sleep.
+    [time.md](time.md)). A sleep costs nothing against the duration limits, so
+    without it a sleeping loop is bounded only by `max_suspensions`, one per sleep.
 - It is off by default. A sleep that would take the total over is refused
     before it suspends, with an uncatchable
     `TimeoutError: sleep limit exceeded: <total> > <limit>`; the total

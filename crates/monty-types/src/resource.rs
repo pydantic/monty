@@ -172,9 +172,11 @@ pub struct ResourceLimits {
     /// The interpreter only stores this limit; hosts must enforce it.
     pub max_suspensions: usize,
     /// Maximum cumulative time `time.sleep()` and `asyncio.sleep()` may ask
-    /// of the host under `SleepMode::System`. Sleeps run off the
-    /// `max_feed_duration` clock, so without this a sleeping loop is bounded only
-    /// by `max_suspensions` and a host deadline.
+    /// of the host under `SleepMode::System`. A sleep costs nothing against the
+    /// duration limits, so without this a sleeping loop is bounded only by
+    /// `max_suspensions` and a host deadline. Defaulted on deserialization
+    /// like `max_feed_duration`.
+    #[serde(default)]
     pub max_total_sleep: Option<Duration>,
 }
 

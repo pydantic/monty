@@ -8,7 +8,7 @@ use std::{
     iter::repeat_n,
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use monty_proto::{
@@ -551,10 +551,16 @@ fn clock_and_entropy_are_answered_in_the_worker_by_default() {
     let mut child = ChildProc::spawn();
     child.create_repl();
 
-    let (_, event) = child.feed(
-        "from datetime import date
-date.today().year >= 2026",
-    );
+    // the worker's clock is this machine's: within a minute of ours, on the same calendar
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock before the epoch")
+        .as_secs_f64();
+    let (_, event) = child.feed(&format!(
+        "import time
+from datetime import date, datetime
+abs(time.time() - {now}) < 60 and date.today().year == datetime.now().year"
+    ));
     assert_eq!(expect_complete(event), MontyObject::bool(true));
     let (_, event) = child.feed("import time\ntime.sleep(3600)");
     let pb::child_event::Kind::OsCall(call) = event else {

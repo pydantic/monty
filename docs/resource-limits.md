@@ -105,9 +105,10 @@ Both duration limits count **execution time**, not wall clock:
 - The clock runs only while the interpreter executes bytecode.
 - It is paused while execution is suspended waiting on the host — a [host function](host-functions.md) that takes a
     minute costs nothing, and neither does a `time.sleep()` or `asyncio.sleep()`, which the host waits out.
-    Those sleeps are charged to `max_total_sleep_secs` instead, which refuses a sleep that would take the total over
-    with an uncatchable `TimeoutError`; each is also a suspension, so `max_suspensions` bounds a sleeping loop as
-    well. See [security](security.md#waiting).
+    Under the default `'system'` sleep mode those sleeps are charged to `max_total_sleep_secs` instead, which refuses
+    a sleep that would take the total over with an uncatchable `TimeoutError`; each is also a suspension, so
+    `max_suspensions` bounds a sleeping loop as well. Under `'call_host'` the host waits uncharged, and a `'zero'`
+    sleep does not suspend at all. See [security](security.md#waiting).
 - There is no way for sandboxed code to observe a budget or the time remaining.
 
 They read the same clock and differ only in when it restarts:

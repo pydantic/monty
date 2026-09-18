@@ -149,11 +149,12 @@ naive result is read in is `timezone`.
 - A fixed zone (`{'offset_seconds': ..., 'name': ...}` in Python, `{ offsetSeconds, name }` in
     JavaScript, `SandboxTimeZone::Fixed` in Rust) is a fixed offset from UTC, as
     `datetime.timezone(offset, name)` carries — not an IANA zone, so it has no DST rules. The
-    name is stored for the calls that will report it (`astimezone()`, `time.tzname`, `%Z`),
-    none of which exist yet.
+    name is stored for the calls that will report it (`astimezone()`, `time.tzname`, `%Z` on a
+    naive value), none of which can expose the session zone yet.
 - `'call_host'` suspends only the calls that need the zone — `date.today()` and a naive
-    `datetime.now()` — to the host; `time.time()` and `datetime.now(tz)` are still answered
-    from the sandbox's clock.
+    `datetime.now()` — to the host; while `datetime` stays sandbox-answered, `time.time()` and
+    `datetime.now(tz)` are still answered from the sandbox's clock (under `datetime='call_host'`
+    every clock call already suspends).
 
 Whatever answers them, both calls read local wall time for `date.today()`
 and a naive `datetime.now()`, and convert into the argument for
