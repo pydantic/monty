@@ -86,10 +86,11 @@ Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
 `fromisoformat(date_string)`, `combine(date, time, tzinfo=self.tzinfo)`.
 
 - `now()` reads the clock — see "Reading the clock" below.
-- `now(tz)` returns a `datetime` whose `tzinfo` is `==` the input timezone
-    but not `is` it: the original `tzinfo` object isn't threaded through the
-    return path, so a fresh `timezone` is reconstructed from the
-    offset/name. This holds however the call is answered.
+- `now(tz)` answered by the host (`datetime='call_host'`) returns a
+    `datetime` whose `tzinfo` is `==` the input timezone but not `is` it: the
+    original `tzinfo` object isn't threaded through the host round trip, so a
+    fresh `timezone` is reconstructed from the offset/name. Answered by the
+    sandbox, the default, it is the same object, as in CPython.
 - `strptime()` requires the string to carry a date: a time-only format
     (`strptime('12:30', '%H:%M')`) raises
     `ValueError: time data '12:30' does not match format '%H:%M'`, where

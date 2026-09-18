@@ -1,5 +1,6 @@
 //! [`AutoOsCalls`]: which OS calls the sandbox answers itself instead of
-//! suspending to the host — the clock, the sleeps and `random`'s first state.
+//! suspending to the host — the clock and `random`'s first state — and how
+//! the sleeps, always the host's wait, are cut and budgeted.
 
 use std::time::Duration;
 
@@ -9,8 +10,10 @@ use num_bigint::BigInt;
 /// Per-session choice of which OS calls the sandbox serves in-process, on
 /// every execution path. Each field names an in-sandbox answer or `CallHost`,
 /// which suspends the call to the host as any other OS call (with no host,
-/// `NotImplementedError`). The default answers everything in the sandbox:
-/// system clock and zone, sleeps of at most ten seconds, entropy-seeded `random`.
+/// `NotImplementedError`). The default answers the clock and `random` in the
+/// sandbox (system clock and zone, entropy-seeded `random`) and hands each
+/// sleep to the host cut to ten seconds, for it to wait out without its `os`
+/// handler; standard execution waits inline.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct AutoOsCalls {
     /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
@@ -122,11 +125,14 @@ pub fn unix_seconds(utc: NaiveDateTime) -> f64 {
 /// What the sleep calls do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SleepMode {
-    /// Wait in the sandbox, each call cut to the maximum given (a longer
-    /// request is cut short, not refused). The wait is not execution time;
-    /// `ResourceLimits::max_total_sleep` bounds the sum of them.
+    /// Suspend to the host, which waits out the delay itself without
+    /// consulting its `os` handler. Each call is cut to the maximum given (a
+    /// longer request is cut short, not refused) and charged to
+    /// `ResourceLimits::max_total_sleep` before it suspends; the wait is not
+    /// execution time. Standard execution, having no host, waits inline.
     System(Duration),
-    /// Suspend to the host, which performs (or declines) the wait.
+    /// Suspend to the host's `os` handler, which performs (or declines) the
+    /// wait, uncut and uncharged.
     CallHost,
     /// Return at once without waiting.
     Zero,
@@ -138,7 +144,7 @@ impl SleepMode {
 }
 
 impl Default for SleepMode {
-    /// Sleeps performed in the sandbox for at most [`DEFAULT_MAX`](Self::DEFAULT_MAX) each.
+    /// Sleeps the host waits out, cut to [`DEFAULT_MAX`](Self::DEFAULT_MAX) each.
     fn default() -> Self {
         Self::System(Self::DEFAULT_MAX)
     }

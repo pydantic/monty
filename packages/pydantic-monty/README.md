@@ -280,15 +280,15 @@ with Monty(request_timeout=10) as pool:
 
 ### Clock, sleeping and entropy
 
-By default the sandbox answers these itself, with no `os=` handler involved:
-`date.today()`, `datetime.now()` and `time.time()` read the worker's clock;
-`time.sleep()` and `asyncio.sleep()` wait inside the worker, each call cut to
+By default these never reach an `os=` handler: `date.today()`,
+`datetime.now()` and `time.time()` read the worker's clock; `time.sleep()` and
+`asyncio.sleep()` are waited out by the pool itself, each call cut to
 `sleep_system_max` (10 seconds), with gathered `asyncio.sleep()` calls
 overlapping; and an unseeded `random` seeds itself from the worker's OS
-entropy. A sandbox wait costs nothing against `max_duration_secs` and is not a
-suspension: the `max_total_sleep_secs` limit and `request_timeout` are what
-bound a sleeping loop. The `auto_os_calls` argument of `checkout()` changes
-that, for the life of the session:
+entropy. A wait costs nothing against `max_duration_secs`; each sleep is one
+suspension, and the `max_total_sleep_secs` limit bounds their sum. The
+`auto_os_calls` argument of `checkout()` changes that, for the life of the
+session:
 
 ```python
 from datetime import datetime
@@ -305,14 +305,14 @@ f'{datetime.now():%Y-%m-%d %H:%M} {random.random():.4f}'
 # datetime: 'system' (default), 'call_host' or a datetime
 # timezone: 'system' (default), 'call_host' or {'offset_seconds': int, 'name': str}
 # sleep: 'system' (default), 'call_host' or 'zero'
-# sleep_system_max: seconds per sandbox sleep; float('inf') for no cap
+# sleep_system_max: seconds per 'system' sleep; float('inf') for no cap
 # random_start: 'system' (default), 'call_host' or {'seed': int | float | str | bytes}
 with Monty() as pool:
     with pool.checkout(
         auto_os_calls={
             'datetime': datetime(2026, 1, 1, 9, 30),
             'timezone': {'offset_seconds': 3600, 'name': 'CET'},
-            'sleep': 'zero',
+            'sleep': 'system',
             'sleep_system_max': 0.5,
             'random_start': {'seed': 42},
         }

@@ -43,14 +43,14 @@ monty --help
 - `--max-memory 10MB`, `--max-feed-duration 0.5`,
   `--max-turn-duration`, `--max-recursion-depth`, `--gc-interval`,
   `--max-suspensions` — sandbox resource limits
-- `--max-sleep 10` — longest wait a `time.sleep()` / `asyncio.sleep()` performs
-  inside the sandbox, in seconds; longer sleeps are cut short (`inf` for no limit)
-- `--max-total-sleep 30` — maximum cumulative time the sandbox spends in those
-  sleeps, in seconds; a sleep that would go over is refused (`inf` for no limit)
+- `--max-sleep 10` — longest wait a `time.sleep()` / `asyncio.sleep()` performs,
+  in seconds; longer sleeps are cut short (`inf` for no limit)
+- `--max-total-sleep 30` — maximum cumulative time those sleeps may ask for, in
+  seconds; a sleep that would go over is refused (`inf` for no limit)
 
 `date.today()` and `datetime.now()` read this machine's clock and local
 timezone, and `time.time()` its clock as Unix epoch seconds; `time.sleep()` and
-`asyncio.sleep()` wait inside the sandbox, capped by `--max-sleep`; an unseeded
+`asyncio.sleep()` are waited out by the CLI, capped by `--max-sleep`; an unseeded
 `random` draw seeds from the machine's entropy — the defaults of every
 embedding. `MontyRun::with_auto_os_calls` is how a Rust embedder chooses
 otherwise; the CLI has no flag for it. Nothing answers `os.urandom()`, so it

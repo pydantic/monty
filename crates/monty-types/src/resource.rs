@@ -171,10 +171,10 @@ pub struct ResourceLimits {
     /// [`DEFAULT_MAX_SUSPENSIONS`]; always bounded, like recursion depth).
     /// The interpreter only stores this limit; hosts must enforce it.
     pub max_suspensions: usize,
-    /// Maximum cumulative time the sandbox may spend waiting out
-    /// `time.sleep()` and `asyncio.sleep()` itself. Sleeps run off the
-    /// `max_duration` clock, so without this a sleeping loop is bounded only
-    /// by a host deadline.
+    /// Maximum cumulative time `time.sleep()` and `asyncio.sleep()` may ask
+    /// of the host under `SleepMode::System`. Sleeps run off the
+    /// `max_feed_duration` clock, so without this a sleeping loop is bounded only
+    /// by `max_suspensions` and a host deadline.
     pub max_total_sleep: Option<Duration>,
 }
 
@@ -248,7 +248,7 @@ impl ResourceLimits {
         self
     }
 
-    /// Sets the maximum cumulative time the sandbox may sleep itself.
+    /// Sets the maximum cumulative time the sandbox may ask to sleep.
     #[must_use]
     pub fn max_total_sleep(mut self, limit: Duration) -> Self {
         self.max_total_sleep = Some(limit);
@@ -312,7 +312,7 @@ pub struct ResourceTracker {
     /// existed (`#[serde(default)]` gives back the `None` fallback case).
     #[serde(default)]
     recursion_limit_override: Cell<Option<usize>>,
-    /// Time spent in sleeps the sandbox answered itself, checked against
+    /// Time asked of the host in `SleepMode::System` sleeps, checked against
     /// `limits.max_total_sleep`. Serialized like the execution time, so a
     /// restored session resumes its sleep budget too.
     #[serde(default)]
@@ -419,13 +419,13 @@ impl ResourceTracker {
         self.limits.max_suspensions
     }
 
-    /// Returns the configured maximum cumulative sandbox sleep, if any.
+    /// Returns the configured maximum cumulative sleep, if any.
     #[must_use]
     pub fn max_total_sleep(&self) -> Option<Duration> {
         self.limits.max_total_sleep
     }
 
-    /// Time spent so far in sleeps the sandbox answered itself.
+    /// Time asked so far in `SleepMode::System` sleeps.
     #[must_use]
     pub fn total_sleep(&self) -> Duration {
         self.total_sleep.get()
@@ -713,11 +713,11 @@ impl ResourceTracker {
         self.turn_execution_time.set(Duration::ZERO);
     }
 
-    /// Charges a sleep the sandbox is about to answer itself to
-    /// `max_total_sleep`, refusing it up front — before anything waits — once
-    /// the total would go over. Called at the sleep call for the delay asked,
-    /// so an `asyncio.sleep` timer is charged when it is created, not when it
-    /// fires, and the check is deterministic.
+    /// Charges a `SleepMode::System` sleep to `max_total_sleep`, refusing it
+    /// up front — before it suspends — once the total would go over. Called
+    /// at the sleep call for the delay asked, so an `asyncio.sleep` is
+    /// charged when it is created, not when it is awaited, and the check is
+    /// deterministic.
     pub fn charge_sleep(&self, duration: Duration) -> Result<(), ResourceError> {
         let total = self.total_sleep.get().saturating_add(duration);
         if let Some(limit) = self.limits.max_total_sleep
@@ -729,15 +729,15 @@ impl ResourceTracker {
         Ok(())
     }
 
-    /// Blocks for `duration` with the execution clock stopped: a sleep the
-    /// sandbox serves itself (`time.sleep`, a sandbox `asyncio.sleep` timer)
-    /// costs nothing against `max_feed_duration`, exactly as a host-performed one
-    /// would not. Its budget is [`charge_sleep`](Self::charge_sleep), taken
-    /// by the caller first. The clock restarts only if it was running, so
-    /// this is safe outside an execution window too.
+    /// Blocks for `duration` with the execution clock stopped: how standard
+    /// execution, its own host, waits out a `SleepMode::System` sleep at no
+    /// cost against `max_feed_duration`, exactly as a host-performed one. Its
+    /// budget is [`charge_sleep`](Self::charge_sleep), taken at the call. The
+    /// clock restarts only if it was running, so this is safe outside an
+    /// execution window too.
     ///
     /// The one place the interpreter waits, so a platform without a blocking
-    /// sleep has a single function to adapt (see [`block_for`]).
+    /// sleep has a single function to adapt (see `block_for`).
     pub fn sandbox_sleep(&self, duration: Duration) {
         let was_running = self.running_since.get().is_some();
         self.on_execution_stop();
@@ -791,8 +791,8 @@ fn block_for(duration: Duration) {
 
 /// Blocks for `duration` on wasm by spinning on the monotonic clock:
 /// `std::thread::sleep` needs `wasi:io/poll`, which a browser host serves
-/// only asynchronously. The worker is idle during a sleep anyway, and the
-/// per-sleep cap bounds the spin (see `limitations/time.md`).
+/// only asynchronously. Only standard execution waits here; the wasm worker
+/// suspends its sleeps to the JavaScript host instead.
 #[cfg(target_arch = "wasm32")]
 fn block_for(duration: Duration) {
     let started = Instant::now();

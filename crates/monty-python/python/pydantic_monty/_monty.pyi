@@ -586,11 +586,11 @@ class Monty:
                 how far live output may lag — never what arrives, or in what
                 order.
             auto_os_calls: Which OS calls the worker answers itself for the
-                life of the session — the clock, the sleeps and `random`'s
-                first state — and how; see `AutoOSCalls`. `None` (the default)
-                answers all of them in the worker: its clock and local zone,
-                sleeps of at most ten seconds each, `random` seeded from its
-                entropy.
+                life of the session — the clock and `random`'s first state —
+                and what the sleeps do; see `AutoOSCalls`. `None` (the default)
+                reads the worker's clock and local zone, seeds `random` from
+                its entropy, and has the pool wait out each sleep, cut to ten
+                seconds, without the `os=` handler.
         """
 
 @final

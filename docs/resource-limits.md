@@ -54,7 +54,7 @@ Monty enforces hard limits on memory, execution time and recursion depth, config
 | `max_recursion_depth`    | Maximum function call stack depth (default 1000)                                                                      |
 | `gc_interval`            | Run garbage collection every N allocations                                                                            |
 | `max_suspensions`        | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000) |
-| `max_total_sleep_secs`   | Maximum cumulative time the sandbox spends waiting out `time.sleep()` and `asyncio.sleep()` itself, in seconds        |
+| `max_total_sleep_secs`   | Maximum cumulative time `time.sleep()` and `asyncio.sleep()` may ask the host to wait, in seconds                     |
 
 Every key is optional.
 Omit `max_memory`, either duration key or `max_total_sleep_secs`, or set them to `None`, to disable that limit.
@@ -104,11 +104,10 @@ Both duration limits count **execution time**, not wall clock:
 
 - The clock runs only while the interpreter executes bytecode.
 - It is paused while execution is suspended waiting on the host — a [host function](host-functions.md) that takes a
-    minute costs nothing — and while the sandbox waits out a `time.sleep()` or `asyncio.sleep()` itself.
-    Those sandbox sleeps are charged to `max_total_sleep_secs` instead, which refuses a sleep that would take the
-    total over with an uncatchable `TimeoutError`; without it a sleeping loop is bounded only by the pool's
-    `request_timeout`, reached after at most `sleep_system_max` (10 seconds by default) per iteration. See
-    [security](security.md#waiting).
+    minute costs nothing, and neither does a `time.sleep()` or `asyncio.sleep()`, which the host waits out.
+    Those sleeps are charged to `max_total_sleep_secs` instead, which refuses a sleep that would take the total over
+    with an uncatchable `TimeoutError`; each is also a suspension, so `max_suspensions` bounds a sleeping loop as
+    well. See [security](security.md#waiting).
 - There is no way for sandboxed code to observe a budget or the time remaining.
 
 They read the same clock and differ only in when it restarts:
@@ -181,7 +180,8 @@ could abort the process.
 ## Suspensions
 
 `max_suspensions` counts external calls, host-object method calls and construction, lazy attribute lookups, `os`
-callbacks (the clock and the sleeps among them only under `'call_host'`), name lookups and future-resolution events.
+callbacks (the sleeps among them in every mode but `'zero'`, the clock only under `'call_host'`), name lookups and
+future-resolution events.
 These host round trips are outside `max_memory`; each [`ClassType`](host-objects.md) construction with `init=True` also
 adds an instance-store entry.
 Because the duration limits pause during suspensions, a snippet could otherwise retry rejected calls indefinitely.

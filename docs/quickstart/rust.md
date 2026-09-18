@@ -209,9 +209,11 @@ assert!(err.to_string().contains("feed time limit exceeded"));
 
 ### The clock, sleeping and entropy
 
-The sandbox answers `date.today()`, `datetime.now()` and `time.time()` from this machine's clock, waits out
-`time.sleep()` and `asyncio.sleep()` itself (each call cut to ten seconds), and seeds an unseeded `random` from OS
-entropy — under `run` and `start` alike, with no host involved:
+The sandbox answers `date.today()`, `datetime.now()` and `time.time()` from this machine's clock and seeds an
+unseeded `random` from OS entropy, under `run` and `start` alike, with no host involved.
+`time.sleep()` and `asyncio.sleep()` are the host's to wait out, each call cut to ten seconds: `run`, its own host,
+waits inline, while under `start` they pause as `RunProgress::OsCall` for you to wait out and answer with `None`
+(or a future for `asyncio.sleep()`):
 
 ```rust
 use monty::MontyRun;
@@ -225,8 +227,8 @@ assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
 
 `with_auto_os_calls` changes that, per call: `DateTimeSource::Fixed` freezes the clock, `SandboxTimeZone::Fixed`
 pins the zone naive calls read in, and `RandomStart::Seed` seeds `random` as `random.seed()` would, for runs that
-have to be reproducible; `SleepMode::Zero` skips the waits and `SleepMode::System(max)` bounds them; and
-`CallHost` on any field hands those calls to the host instead — under `start` they pause as
+have to be reproducible; `SleepMode::Zero` skips the waits and `SleepMode::System(max)` changes their cut; and
+`CallHost` on any field hands those calls to the host's own handler instead — under `start` they pause as
 `RunProgress::OsCall`, and under `run`, which has no host, they raise `NotImplementedError`:
 
 ```rust

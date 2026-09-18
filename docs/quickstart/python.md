@@ -172,9 +172,9 @@ with Monty() as pool:
 ```
 
 The clock, the sleeps and `random`'s seed are the session's too.
-By default the sandbox reads the worker's clock, waits out `time.sleep()` itself (ten seconds at most per call) and
-seeds `random` from the worker's entropy; `checkout()`'s `auto_os_calls` can freeze the clock, pin its zone, skip
-the sleeps and pin the seed, so a run is reproducible:
+By default the sandbox reads the worker's clock and seeds `random` from the worker's entropy, and the pool waits out
+`time.sleep()` for it (ten seconds at most per call); `checkout()`'s `auto_os_calls` can freeze the clock, pin its
+zone, skip the sleeps and pin the seed, so a run is reproducible:
 
 ```python
 from datetime import datetime

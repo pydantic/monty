@@ -210,17 +210,17 @@ class AutoOSCalls(TypedDict, total=False):
     sleep: Literal['system', 'call_host', 'zero']
     """What `time.sleep()` and `asyncio.sleep()` do.
 
-    `'system'` (the default) waits inside the worker, each call cut to `sleep_system_max`, and gathered
-    `asyncio.sleep()` calls overlap; `'call_host'` sends both to the `os=` handler, which performs the wait;
-    `'zero'` returns at once."""
+    `'system'` (the default) has the pool wait, without the `os=` handler, each call cut to `sleep_system_max`,
+    and gathered `asyncio.sleep()` calls overlap; `'call_host'` sends both to the `os=` handler, which performs the
+    wait; `'zero'` returns at once."""
 
     sleep_system_max: float
     """Longest wait a `'system'` performs per call, in seconds (default 10; `inf` for no cap).
 
     Given alongside any other `sleep` it is a `ValueError`, not ignored.
 
-    A wait costs nothing against `max_duration_secs` and is not a suspension: `max_total_sleep_secs` and
-    `request_timeout` are what bound a sleeping loop."""
+    A wait costs nothing against `max_duration_secs`; each sleep is one suspension, and `max_total_sleep_secs`
+    bounds their sum."""
 
     random_start: Literal['system', 'call_host'] | RandomSeed
     """Where an unseeded `random` generator gets its first state.

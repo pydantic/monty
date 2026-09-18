@@ -36,6 +36,7 @@ use std::{
         Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
+    thread,
     time::Duration,
 };
 
@@ -45,8 +46,8 @@ use monty_pool::{
 };
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value};
 use monty_types::{
-    AssertMessageAnnotations, AutoOsCalls, CallArgs, ExtFunctionResult, MontyException, NameLookupResult, NamedValues,
-    PrintStream, TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, AutoOsCalls, CallArgs, ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
+    NamedValues, PrintStream, TypeCheckingConfig, TypeCheckingFormat,
 };
 use pyo3::{
     Borrowed,
@@ -59,10 +60,13 @@ use tokio::{
     runtime::{Handle, RuntimeFlavor},
     sync::Mutex as AsyncMutex,
     task::{JoinSet, block_in_place},
+    time::sleep as tokio_sleep,
 };
 
 use crate::{
-    async_dispatch::{CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, wait_for_futures},
+    async_dispatch::{
+        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_system_sleep, wait_for_futures,
+    },
     auto_os_calls::AutoOsCallsArg,
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
@@ -1398,6 +1402,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
         instances,
     } = args;
     let lookup = ExternalLookup::new(py, external_lookup, &instances);
+    let mut sleeps: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
     let mut event = run_turn_sync(
         py,
         &checkout,
@@ -1426,6 +1431,47 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
         let callback_guard = callback_context.enter(py, &native)?;
         let resume_with = match event {
             TurnEvent::Complete(value) => return monty_to_py(py, &value, &instances),
+            // A `'system'` sleep is this loop's own wait, never the `os=`
+            // callback's: `time.sleep` (and an `asyncio.sleep` awaited at
+            // once) blocks here with the GIL released; any other
+            // `asyncio.sleep` is a tokio timer, so gathered sleeps overlap.
+            TurnEvent::OsCall {
+                function_name,
+                call_id,
+                allow_eager_await,
+                ..
+            } if let Some(delay) = py.detach(|| block_on_sync(pending_system_sleep(&checkout)))? => {
+                match CoroutineMode::for_os_call(&function_name, allow_eager_await) {
+                    CoroutineMode::Future => {
+                        sleeps.spawn_on(
+                            async move {
+                                tokio_sleep(delay).await;
+                                (call_id, ExtFunctionResult::Return(MontyObject::none()))
+                            },
+                            get_runtime().handle(),
+                        );
+                        TurnAnswer::Call(ResumeValue::Future)
+                    }
+                    CoroutineMode::Eager => {
+                        py.detach(|| thread::sleep(delay));
+                        TurnAnswer::Eager(call_id, ResumeValue::Return(MontyObject::none()))
+                    }
+                    CoroutineMode::AsValue => {
+                        py.detach(|| thread::sleep(delay));
+                        TurnAnswer::Call(ResumeValue::Return(MontyObject::none()))
+                    }
+                }
+            }
+            // Only the loop's own sleeps can be pending under `Monty`.
+            TurnEvent::ResolveFutures { .. } if !sleeps.is_empty() => {
+                let results = py.detach(|| block_on_sync(wait_for_futures(&mut sleeps)))??;
+                TurnAnswer::Futures(
+                    results
+                        .into_iter()
+                        .map(|(id, r)| ext_to_resume(r).map(|r| (id, r)))
+                        .collect::<PyResult<_>>()?,
+                )
+            }
             // This feed's mounts get first refusal on every OS call; only what
             // they don't cover reaches the `os=` callback.
             TurnEvent::OsCall {
@@ -1473,7 +1519,8 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                     match resume_with {
                         TurnAnswer::Call(value) => c.resume(value, p).await,
                         TurnAnswer::Name(value) => c.resume_name_lookup(value, p).await,
-                        TurnAnswer::Eager(..) => unreachable!("eager awaits require AsyncMonty"),
+                        TurnAnswer::Eager(call_id, value) => c.resume_futures(vec![(call_id, value)], p).await,
+                        TurnAnswer::Futures(results) => c.resume_futures(results, p).await,
                     }
                 })
             }),
@@ -1652,6 +1699,17 @@ async fn drive_async_inner(
                 .await?;
                 continue;
             }
+            // A `'system'` sleep is this loop's own timer, never the `os=`
+            // callback's; see `dispatch_system_sleep`.
+            TurnEvent::OsCall {
+                function_name,
+                call_id,
+                allow_eager_await,
+                ..
+            } if let Some(delay) = pending_system_sleep(&checkout).await => {
+                let mode = CoroutineMode::for_os_call(&function_name, allow_eager_await);
+                dispatched_answer(dispatch_system_sleep(delay, call_id, mode, &mut join_set), call_id).await?
+            }
             // Mounts get first refusal, as in `drive_sync`.
             TurnEvent::OsCall {
                 function_name,
@@ -1707,6 +1765,7 @@ async fn drive_async_inner(
                         TurnAnswer::Call(value) => c.resume(value, p).await,
                         TurnAnswer::Name(value) => c.resume_name_lookup(value, p).await,
                         TurnAnswer::Eager(call_id, value) => c.resume_futures(vec![(call_id, value)], p).await,
+                        TurnAnswer::Futures(results) => c.resume_futures(results, p).await,
                     }
                 })
             }),
@@ -1794,6 +1853,14 @@ enum TurnAnswer {
     Name(NameLookupResult),
     /// A settled coroutine answered at its function-call suspension.
     Eager(u32, ResumeValue),
+    /// Settled futures answering a `ResolveFutures` suspension.
+    Futures(Vec<(u32, ResumeValue)>),
+}
+
+/// The wait the pending suspension asks of the drive loop itself (see
+/// `Checkout::system_sleep`): `None` for anything but a `'system'` sleep.
+async fn pending_system_sleep(checkout: &SharedCheckout) -> Option<Duration> {
+    checkout.lock().await.as_ref().and_then(Checkout::system_sleep)
 }
 
 /// What a turn helper may return, so one implementation serves both an

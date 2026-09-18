@@ -10,6 +10,7 @@ use std::env;
 use std::{
     fmt, fs, io,
     process::ExitCode,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -603,7 +604,7 @@ impl SuspensionBudget {
 }
 
 /// What the CLI lends the sandbox as its host: the `-m` mounts, and the
-/// `--max-sleep` cap on the sleeps the sandbox performs itself.
+/// sleeps, waited out here under the `--max-sleep` cap.
 struct HostOs {
     mounts: Option<MountTable>,
     /// Longest wait a sleep performs; longer ones are cut short.
@@ -616,10 +617,10 @@ impl HostOs {
         self.mounts.is_some()
     }
 
-    /// What the sandbox answers itself: the defaults — this machine's clock,
-    /// entropy-seeded `random`, sleeps waited out in the sandbox — with
-    /// `--max-sleep` as the sleep cap. A CLI run is one local script
-    /// expecting CPython's behaviour, so none of these calls reaches the host.
+    /// The defaults — this machine's clock, entropy-seeded `random`, sleeps
+    /// the CLI waits out itself with `--max-sleep` as the cap. A CLI run is
+    /// one local script expecting CPython's behaviour; without a mount the
+    /// interpreter's standard execution performs the sleeps instead.
     fn auto_os_calls(&self) -> AutoOsCalls {
         AutoOsCalls {
             sleep: SleepMode::System(self.max_sleep),
@@ -627,13 +628,18 @@ impl HostOs {
         }
     }
 
-    /// Answers an `OsCall` from a mount.
+    /// Answers an `OsCall`: a sleep is waited out here, cut to `--max-sleep`
+    /// again in case the sandbox did not; anything else goes to the mounts.
     ///
     /// Consumes the call (moving write payloads into the mount backend) and
     /// returns the operation result as an `ExtFunctionResult` — either a
     /// successful `MontyObject` or an exception for errors / unsupported
     /// operations.
     fn handle_os_call(&mut self, call: OsFunctionCall) -> ExtFunctionResult {
+        if let OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay) = call {
+            thread::sleep(delay.min(self.max_sleep));
+            return MontyObject::none().into();
+        }
         match self.mounts.as_mut() {
             Some(mounts) => match mounts.handle_os_call(call) {
                 MountCallOutcome::Handled(Ok(obj)) => obj.into(),

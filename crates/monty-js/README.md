@@ -469,22 +469,22 @@ uncatchable `RuntimeError`.
 
 ## Clock, sleeping and entropy
 
-By default the sandbox answers these itself, with no `os` callback involved:
-`date.today()`, `datetime.now()` and `time.time()` read the worker's clock;
-`time.sleep()` and `asyncio.sleep()` wait inside the worker, each call cut to
+By default these never reach an `os` callback: `date.today()`,
+`datetime.now()` and `time.time()` read the worker's clock; `time.sleep()` and
+`asyncio.sleep()` are waited out by the pool itself, each call cut to
 `sleepSystemMax` (10 seconds), with gathered `asyncio.sleep()` calls
 overlapping; and an unseeded `random` seeds itself from the worker's OS
-entropy. A sandbox wait costs nothing against `maxDurationSecs` and is not a
-suspension: the `maxTotalSleepSecs` limit and `requestTimeout` are what bound a
-sleeping loop. The per-session `autoOsCalls` option changes that:
+entropy. A wait costs nothing against `maxDurationSecs`; each sleep is one
+suspension, and the `maxTotalSleepSecs` limit bounds their sum. The
+per-session `autoOsCalls` option changes that:
 
 ```ts
 const fixed = await pool.checkout({
   autoOsCalls: {
     datetime: new Date('2026-01-01T09:30:00Z'), // 'system' (default) | 'call_host' | Date
     timezone: { offsetSeconds: 3600, name: 'CET' }, // 'system' (default) | 'call_host' | a fixed offset
-    sleep: 'zero', // 'system' (default) | 'call_host' | 'zero'
-    sleepSystemMax: 0.5, // seconds per sandbox sleep; Infinity for no cap
+    sleep: 'system', // 'system' (default) | 'call_host' | 'zero'
+    sleepSystemMax: 0.5, // seconds per 'system' sleep; Infinity for no cap
     randomStart: { seed: 42 }, // 'system' (default) | 'call_host' | { seed: number | bigint | string | Uint8Array }
   },
 })

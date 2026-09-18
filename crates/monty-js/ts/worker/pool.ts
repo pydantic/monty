@@ -16,6 +16,7 @@
 // The message-channel backends enforce the per-turn watchdog by terminating
 // their worker; the in-process fallback cannot preempt a runaway turn.
 
+import { encodeAutoOsCalls, systemSleepOf } from '../options.js'
 import { MontySession } from '../session.js'
 import { type ComponentModules, WasmHost, type Dispatcher, inProcessDispatcher } from './host.js'
 import { WorkerTransport, type WorkerSessionConfig } from './transport.js'
@@ -119,7 +120,10 @@ export class WorkerPool {
       throw err
     }
     transport.onFinish = (reusable) => this.release(slot, reusable)
-    return new MontySession(transport as unknown as SessionNative)
+    return new MontySession(
+      transport as unknown as SessionNative,
+      systemSleepOf(encodeAutoOsCalls(config.autoOsCalls ?? {})),
+    )
   }
 
   /** Terminates every worker and rejects anyone still waiting. */

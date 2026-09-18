@@ -13,8 +13,8 @@ use chrono::{Local, Offset, TimeZone};
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    AutoOsCalls, CompileOptions, DateTimeSource, MontyObject, PrintWriter, ResourceLimits, ResourceTracker,
-    SandboxTimeZone, SleepMode,
+    AutoOsCalls, CompileOptions, DateTimeSource, MontyObject, OsFunctionCall, PrintWriter, ResourceLimits,
+    ResourceTracker, SandboxTimeZone, SleepMode,
 };
 
 /// 2023-11-14 22:13:20 UTC — the instant the datatest fixtures already freeze
@@ -500,21 +500,50 @@ fn sleep_arguments_are_validated_in_every_mode() {
     }
 }
 
-/// Gathered sandbox sleeps overlap: each is a timer the scheduler serves
-/// while the other tasks run, so three 50 ms sleeps take 50 ms, not 150.
+/// A gathered `asyncio.sleep` reaches the host as an `asyncio.sleep` OS call
+/// it may answer with a future, so the other tasks run while it waits and
+/// the host decides whether sleeps overlap; the delay arrives already cut to
+/// the mode's maximum.
 #[test]
-fn gathered_sandbox_sleeps_overlap() {
+fn gathered_sleeps_are_the_hosts_to_overlap() {
     let code = "import asyncio\n\
                 async def wait_then(n):\n    \
-                    await asyncio.sleep(0.05)\n    \
+                    await asyncio.sleep(3600)\n    \
                     return n * 2\n\
                 async def main():\n    \
-                    return await asyncio.gather(wait_then(1), wait_then(2), wait_then(3))\n\
+                    return await asyncio.gather(wait_then(1), wait_then(2))\n\
                 asyncio.run(main())";
-    let (result, elapsed) = timed_run(code, AutoOsCalls::default());
-    assert_eq!(result, MontyObject::list([2, 4, 6].map(MontyObject::int)));
-    assert!(elapsed >= Duration::from_millis(50), "took {elapsed:?}");
-    assert!(elapsed < Duration::from_millis(140), "took {elapsed:?}");
+    let mut progress = runner(code, with_sleep(SleepMode::System(Duration::from_millis(20))))
+        .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
+        .unwrap();
+    let mut call_ids = vec![];
+    for _ in 0..2 {
+        let RunProgress::OsCall(call) = progress else {
+            panic!("expected asyncio.sleep, got {progress:?}")
+        };
+        assert!(
+            matches!(call.function_call, OsFunctionCall::AsyncSleep(delay) if delay == Duration::from_millis(20)),
+            "got {:?}",
+            call.function_call
+        );
+        let call_id = call.call_id;
+        call_ids.push(call_id);
+        progress = call
+            .resume(monty_types::ExtFunctionResult::Future(call_id), PrintWriter::Disabled)
+            .unwrap();
+    }
+    let RunProgress::ResolveFutures(state) = progress else {
+        panic!("expected both sleeps pending, got {progress:?}")
+    };
+    let mut pending = state.pending_call_ids().to_vec();
+    pending.sort_unstable();
+    assert_eq!(pending, call_ids);
+    let results = call_ids.iter().map(|id| (*id, MontyObject::none().into())).collect();
+    let progress = state.resume(results, PrintWriter::Disabled).unwrap();
+    assert_eq!(
+        progress.into_complete().expect("expected Complete"),
+        MontyObject::list([2, 4].map(MontyObject::int))
+    );
 }
 
 /// `result` never leaves the sandbox, so a value with no host form works.
@@ -529,67 +558,49 @@ fn sandbox_sleep_result_need_not_be_convertible() {
     assert_eq!(run(code, AutoOsCalls::default()).unwrap(), MontyObject::int(84));
 }
 
-/// A timer pending while another task suspends to the host is due when the
-/// host answers; the host never sees a `ResolveFutures` for it, and the
-/// suspension can be dumped and restored meanwhile.
+/// Under `System` a sleep reaches the host already cut to the maximum and
+/// charged to `max_total_sleep`: one over budget is refused before it
+/// suspends, so the host never performs a wait the budget denies.
 #[test]
-fn a_timer_survives_a_host_suspension() {
-    let code = "import asyncio\n\
-                async def other():\n    \
-                    return fetch()\n\
-                async def main():\n    \
-                    return await asyncio.gather(asyncio.sleep(0.02, 'slept'), other())\n\
-                asyncio.run(main())";
-    let progress = runner(code, AutoOsCalls::default())
-        .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
+fn system_sleeps_reach_the_host_cut_and_charged() {
+    let code = "import time\ntime.sleep(3600)\ntime.sleep(3600)";
+    let calls = with_sleep(SleepMode::System(Duration::from_millis(100)));
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_total_sleep(Duration::from_millis(150)));
+    let progress = runner(code, calls)
+        .start(vec![], tracker, PrintWriter::Disabled)
         .unwrap();
-    let bytes = dump("test.py", None, SessionRef::Running(&progress)).unwrap();
-    let Session::Running(restored) = Dump::load(&bytes).unwrap().state else {
-        panic!("expected a paused run");
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected time.sleep, got {progress:?}")
     };
-    for progress in [progress, *restored] {
-        let call = progress.into_function_call().expect("fetch() suspends to the host");
-        assert_eq!(call.function_name, "fetch");
-        let progress = call
-            .resume(MontyObject::string("fetched"), PrintWriter::Disabled)
-            .unwrap();
-        assert_eq!(
-            progress.into_complete().expect("the timer is served in the sandbox"),
-            MontyObject::list([MontyObject::string("slept"), MontyObject::string("fetched")])
-        );
-    }
+    assert!(
+        matches!(call.function_call, OsFunctionCall::Sleep(delay) if delay == Duration::from_millis(100)),
+        "got {:?}",
+        call.function_call
+    );
+    let err = call.resume(MontyObject::none(), PrintWriter::Disabled).unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap(),
+        "TimeoutError: sleep limit exceeded: 200ms > 150ms"
+    );
 }
 
-/// Once the timers have fired, futures only the host can resolve still
-/// surface as `ResolveFutures` — with the fired timers no longer listed.
+/// A sleep created in one feed is waited out at the call, so awaiting it in
+/// a later feed finds it settled.
 #[test]
-fn host_futures_surface_once_no_timer_is_pending() {
-    let code = "import asyncio\n\
-                async def main():\n    \
-                    return await asyncio.gather(asyncio.sleep(0.01, 'slept'), fetch())\n\
-                asyncio.run(main())";
-    let progress = runner(code, AutoOsCalls::default())
-        .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
-        .unwrap();
-    let RunProgress::FunctionCall(call) = progress else {
-        panic!("expected fetch(), got {progress:?}")
-    };
-    let call_id = call.call_id;
-    let progress = call
-        .resume(monty_types::ExtFunctionResult::Future(call_id), PrintWriter::Disabled)
-        .unwrap();
-    let RunProgress::ResolveFutures(state) = progress else {
-        panic!("expected the host future to block, got {progress:?}")
-    };
-    assert_eq!(state.pending_call_ids(), vec![call_id]);
-    let progress = state
-        .resume(
-            vec![(call_id, MontyObject::string("fetched").into())],
+fn a_sleep_saved_across_repl_feeds_is_settled() {
+    let mut repl = MontyRepl::new("<test>", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "import asyncio\nsleeper = asyncio.sleep(0.01, 'slept')",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    let result = repl
+        .feed_run(
+            "async def main():\n    return await sleeper\nasyncio.run(main())",
+            vec![],
             PrintWriter::Disabled,
         )
         .unwrap();
-    assert_eq!(
-        progress.into_complete().expect("expected Complete"),
-        MontyObject::list([MontyObject::string("slept"), MontyObject::string("fetched")])
-    );
+    assert_eq!(result, MontyObject::string("slept"));
 }

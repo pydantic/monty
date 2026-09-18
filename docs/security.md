@@ -23,8 +23,7 @@ Concretely:
 - **There is no ambient authority.** With no mounts and no host functions configured, the sandbox cannot read a file,
     read an environment variable, open a socket, or spawn a process.
     Not "it is blocked" — the capability does not exist in the bytecode VM.
-    The wall clock is the one exception, and only for in-process Rust runs, which read it by default; see
-    [the clock](#the-clock).
+    The wall clock is the one exception: every session reads it by default; see [the clock](#the-clock).
 - **The interpreter performs no filesystem I/O at all.** It suspends with a description of the operation it wants, and a
     host component decides what to do about it.
     All filesystem code lives in a separate crate (`monty-fs`) that worker artifacts do not even link in some builds.
@@ -313,24 +312,27 @@ See [random](limitations/random.md).
 
 ### Waiting
 
-`time.sleep()` and `asyncio.sleep()` wait inside the sandbox by default, each call cut short at
-`sleep_system_max` — ten seconds unless you say otherwise (`--max-sleep` in the CLI).
-In the browser worker that wait is a busy spin, so a sleeping worker occupies a core until the cap.
-Gathered `asyncio.sleep()` calls overlap: the sandbox's scheduler runs the other tasks while a sleep is pending.
+`time.sleep()` and `asyncio.sleep()` never wait inside the sandbox: each call suspends to the host, which performs
+the wait.
+By default (`sleep: 'system'`) the host is this process itself, without your `os=` handler: the sandbox cuts each
+call to `sleep_system_max` — ten seconds unless you say otherwise (`--max-sleep` in the CLI) — and the pool waits
+that long, on the calling thread under `Monty`, as a timer under `AsyncMonty` and in JavaScript (the browser worker
+included).
+Gathered `asyncio.sleep()` calls overlap: every pool answers them as futures, so the sandbox's other tasks run while
+a sleep is pending.
 
-A wait costs nothing against the duration limits, which measure execution time and stop while the sandbox waits,
-and a sandbox wait is not a suspension either: what bounds a session that sleeps in a loop is `max_total_sleep_secs`,
-the cumulative time the sandbox may sleep itself (a sleep that would go over is refused with an uncatchable
-`TimeoutError`), and your own turn deadline (`request_timeout` for the pools), reached after at most
-`sleep_system_max` per iteration.
+A wait costs nothing against the duration limits, which measure execution time and stop while the sandbox is
+suspended.
+Each sleep is a suspension (one per sleep, two when an `asyncio.sleep()` answered with a future is awaited later), so
+`max_suspensions` bounds a session that sleeps in a loop, and `max_total_sleep_secs` bounds the cumulative time it
+may ask for: a sleep that would take the total over is refused with an uncatchable `TimeoutError` before the host is
+asked.
 See [resource limits](resource-limits.md).
 
-The session's `sleep` setting chooses otherwise: `'call_host'` sends both calls to your `os=` handler, which decides
-how long a wait it is willing to perform — cap it, scale it, or refuse it — and one that answers neither leaves both
-raising; `'zero'` makes both calls return at once.
+The session's `sleep` setting chooses otherwise: `'call_host'` sends both calls to your `os=` handler, uncut and
+uncharged, which decides how long a wait it is willing to perform — cap it, scale it, or refuse it — and one that
+answers neither leaves both raising; `'zero'` makes both calls return at once.
 [`OSAccess`][pydantic_monty.OSAccess] caps every wait at its `max_sleep`, ten seconds unless you say otherwise.
-Under `'call_host'` each sleep is a suspension, so `max_suspensions` bounds it too (one per sleep, two when an
-`asyncio.sleep()` answered with a future is awaited later).
 
 Under [`AsyncMonty`][pydantic_monty.AsyncMonty] and in JavaScript a `'call_host'` handler may be `async`.
 Its answer to `asyncio.sleep()` then runs alongside the sandbox's other tasks, so gathered sleeps overlap;

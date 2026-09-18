@@ -8,7 +8,10 @@ use std::{
     },
 };
 
-use monty_types::{AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker};
+use monty_types::{
+    AssertMessageAnnotations, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall, PrintWriter,
+    ResourceTracker, SleepMode,
+};
 pub use monty_types::{AutoOsCalls, CompileOptions};
 use ruff_python_stdlib::identifiers::is_identifier;
 
@@ -24,6 +27,7 @@ use crate::{
     prepare::{prepare, prepare_with_existing_names},
     run_progress::{
         RunProgress, answer_unserved_lookups, build_run_progress, check_snapshot_from_converted, convert_frame_exit,
+        resume_with_result,
     },
     types::str::StringRepr,
     value::Value,
@@ -606,6 +610,18 @@ impl Executor {
                     args.drop_with(vm);
                     let err = ExcType::name_error(name);
                     frame_exit_result = vm.resume_with_exception(err.into());
+                }
+                // Standard execution is its own host: a sleep it answers is
+                // waited out here, off the execution clock, as the bindings
+                // do under `SleepMode::System`.
+                Ok(FrameExit::OsCall {
+                    function_call: OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay),
+                    effect,
+                    ..
+                }) if matches!(vm.env.auto_os_calls.sleep, SleepMode::System(_)) => {
+                    vm.pending_effect = effect;
+                    vm.heap.tracker.sandbox_sleep(delay);
+                    frame_exit_result = resume_with_result(vm, ExtFunctionResult::Return(MontyObject::none()), None);
                 }
                 other => return frame_exit_to_object(other, vm),
             }

@@ -1103,33 +1103,9 @@ impl<'h> VM<'h> {
     /// instead, whose time is already inside the enclosing window.
     pub(crate) fn run_external(&mut self) -> Result<FrameExit, RunError> {
         self.heap.tracker.on_execution_start();
-        let result = self.run_serving_timers();
+        let result = self.run();
         self.heap.tracker.on_execution_stop();
         self.finish_host_turn(result)
-    }
-
-    /// The dispatch loop, re-entered after each sandbox timer it alone is
-    /// waiting on: a `ResolveFutures` exit leaves here only once no sandbox
-    /// timer is pending, so the host never sees a sleep it did not perform.
-    ///
-    /// A timer's wake-up can raise (a task activated with a pending error),
-    /// which is caught inline rather than via `resume_with_exception`, whose
-    /// `run_external` would nest the execution window.
-    fn run_serving_timers(&mut self) -> Result<FrameExit, RunError> {
-        let mut result = self.run();
-        while matches!(result, Ok(FrameExit::ResolveFutures(_))) {
-            result = match self.wait_sandbox_timers() {
-                Ok(true) => self.run(),
-                // The fired timers are gone, so the pending ids are recomputed.
-                Ok(false) => return self.pending_futures_exit(),
-                Err(error) => match self.handle_exception(error) {
-                    Some(uncaught) => Err(uncaught),
-                    None if self.current_frame.is_parked => return self.pending_futures_exit(),
-                    None => self.run(),
-                },
-            };
-        }
-        result
     }
 
     /// Epilogue for every host-boundary execution window (here and

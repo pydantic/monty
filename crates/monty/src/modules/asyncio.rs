@@ -8,8 +8,6 @@
 //! Other asyncio functions (`create_task`, `wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
 
-use std::time::Duration;
-
 use monty_types::{OsFunctionCall, SleepMode, sleep_duration_saturating};
 use num_traits::ToPrimitive;
 
@@ -22,7 +20,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     heap_traits::DropGuard,
     intern::StaticStrings,
-    modules::ModuleFunctions,
+    modules::{ModuleFunctions, time::host_sleep_delay},
     os_dispatch::PostConversionEffect,
     types::Module,
     value::Value,
@@ -71,10 +69,11 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
 }
 
 /// `asyncio.sleep(delay, result=None)` — an awaitable producing `result` once
-/// the session's `SleepMode` wait is over. Unlike CPython the wait starts at
-/// the call: in the sandbox a scheduler timer ([`sandbox_sleep_awaitable`]),
-/// under `CallHost` a suspension the host answers with a pending future or
-/// inline, [`PostConversionEffect::SleepResult`] keeping `result` here. See `limitations/asyncio.md`.
+/// the wait is over. Unlike CPython the wait starts at the call: a suspension
+/// the host answers with a pending future or inline ([`host_sleep_delay`]
+/// says for how long), [`PostConversionEffect::SleepResult`] keeping `result`
+/// here; a zero delay, and every delay under `Zero`, is settled at once. See
+/// `limitations/asyncio.md`.
 fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let SleepArgs { delay, result } = SleepArgs::from_args(args, vm)?;
     // `result` outlives `delay`: it moves into the awaitable once the delay is valid.
@@ -84,37 +83,20 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         defer_drop!(delay, vm);
         let seconds = delay_seconds(delay, vm)?;
         // NaN is the one delay CPython refuses; the rest clamp.
-        sleep_duration_saturating(seconds).map_err(|_| ExcType::value_error("Invalid delay: NaN (not a number)"))?
+        let delay = sleep_duration_saturating(seconds)
+            .map_err(|_| ExcType::value_error("Invalid delay: NaN (not a number)"))?;
+        host_sleep_delay(vm, delay)?
     };
     let (result, vm) = result_guard.into_parts();
-    Ok(match vm.env.auto_os_calls.sleep {
-        SleepMode::System(max) => CallResult::Value(sandbox_sleep_awaitable(vm, delay.min(max), result)?),
-        SleepMode::CallHost => CallResult::OsCallWithEffect {
-            call: OsFunctionCall::AsyncSleep(delay),
-            effect: PostConversionEffect::SleepResult { result }.into(),
-        },
-        SleepMode::Zero => CallResult::Value(vm.settled_awaitable(result)),
-    })
-}
-
-/// The awaitable for an `asyncio.sleep` the sandbox answers itself: settled
-/// at once for a zero delay, waited inline when awaited at once with nothing
-/// else to run (indistinguishable from a timer, minus the bookkeeping), else
-/// a scheduler timer. The whole delay is charged to the sleep budget here,
-/// timer or not; `result` is released if the budget refuses it.
-fn sandbox_sleep_awaitable(vm: &mut VM<'_>, delay: Duration, result: Value) -> RunResult<Value> {
-    let mut result_guard = DropGuard::new(result, vm);
-    let (_, vm) = result_guard.as_parts_mut();
-    vm.heap.tracker.charge_sleep(delay)?;
-    let eager = !delay.is_zero() && vm.allow_eager_await();
-    if eager {
-        vm.heap.tracker.sandbox_sleep(delay);
-    }
-    let (result, vm) = result_guard.into_parts();
-    Ok(if delay.is_zero() || eager {
-        vm.settled_awaitable(result)
-    } else {
-        vm.add_sandbox_timer(delay, result)
+    Ok(match delay {
+        // A zero delay is a round trip for nothing: the sandbox answers it.
+        Some(delay) if !delay.is_zero() || matches!(vm.env.auto_os_calls.sleep, SleepMode::CallHost) => {
+            CallResult::OsCallWithEffect {
+                call: OsFunctionCall::AsyncSleep(delay),
+                effect: PostConversionEffect::SleepResult { result }.into(),
+            }
+        }
+        _ => CallResult::Value(vm.settled_awaitable(result)),
     })
 }
 

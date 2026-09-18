@@ -233,9 +233,9 @@ The pool enforces `maxSuspensions`: the first suspension over the budget ends th
 See [resource limits](../resource-limits.md) and [type checking](../type-checking.md).
 
 The clock, the sleeps and `random`'s seed are session options too.
-By default the sandbox reads the worker's clock, waits out `time.sleep()` itself (ten seconds at most per call) and
-seeds `random` from the worker's entropy; `autoOsCalls` (`datetime`, `timezone`, `sleep`, `sleepSystemMax` and
-`randomStart`) changes that, so a run can be made reproducible:
+By default the sandbox reads the worker's clock and seeds `random` from the worker's entropy, and the pool waits out
+`time.sleep()` for it (ten seconds at most per call); `autoOsCalls` (`datetime`, `timezone`, `sleep`, `sleepSystemMax`
+and `randomStart`) changes that, so a run can be made reproducible:
 
 ```ts
 import { Monty } from '@pydantic/monty'

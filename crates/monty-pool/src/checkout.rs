@@ -22,7 +22,7 @@ use monty_proto::{
 use monty_types::{
     AssertMessageAnnotations, AutoOsCalls, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult,
     MONTY_VERSION, MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, PrintStream,
-    ResourceLimits, TypeCheckingConfig, validate_cwd,
+    ResourceLimits, SleepMode, TypeCheckingConfig, validate_cwd,
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
@@ -72,10 +72,14 @@ pub struct ReplConfig {
     /// line-buffering sentinel.
     pub print_flush_interval: Option<Duration>,
     /// Which OS calls the worker answers itself for the whole session — the
-    /// clock, the sleeps and `random`'s first state. The default answers all
-    /// of them (the worker's clock, sleeps waited out in the worker for at
-    /// most 10 s each, `random` seeded from the worker's entropy); a field set
-    /// to `CallHost` delivers those calls as [`TurnEvent::OsCall`] instead.
+    /// clock and `random`'s first state — and how the sleeps reach the caller.
+    /// The default answers the clock from the worker's and seeds `random`
+    /// from its entropy; a field set to `CallHost` delivers those calls as
+    /// [`TurnEvent::OsCall`] instead. Every sleep is a [`TurnEvent::OsCall`]:
+    /// under the default `SleepMode::System` it arrives cut to the mode's
+    /// maximum for the caller to wait out itself, without consulting its own
+    /// `os` handler (see [`Checkout::system_sleep`]); under `CallHost` the
+    /// handler decides.
     pub auto_os_calls: AutoOsCalls,
 }
 
@@ -380,6 +384,8 @@ pub struct Checkout {
     /// Consulted only by [`Checkout::resume_from_mounts`]. Dropped when the
     /// feed ends so overlay writes never leak into the next feed.
     feed_mounts: Option<MountTable>,
+    /// The session's sleep mode, for [`Checkout::system_sleep`].
+    sleep: SleepMode,
     /// Whether the session's working directory has been established (a feed
     /// chose it, or a restored dump carried it). Until then a feed without an
     /// explicit `cwd` sends the mount-derived default; afterwards it sends
@@ -612,6 +618,7 @@ impl Checkout {
             armed_deadline: None,
             restored_script_name: None,
             feed_mounts: None,
+            sleep: repl.auto_os_calls.sleep,
             cwd_set: false,
             request_sent: false,
             #[cfg(feature = "telemetry")]
@@ -806,6 +813,30 @@ impl Checkout {
         // `request_turn` surfaces it with the suspension still answerable.
         // Every turn-ending reply overwrites `pending` anyway.
         self.expect_turn(&request, on_print).await
+    }
+
+    /// The wait the pending [`TurnEvent::OsCall`] asks the caller to perform
+    /// itself: `Some(delay)` for a `time.sleep` or `asyncio.sleep` under
+    /// `SleepMode::System`, cut to the mode's maximum here as well as in the
+    /// worker, so a caller need not trust the worker's arithmetic. The caller
+    /// waits that long — inline, or as a future for `asyncio.sleep` — and
+    /// answers `ResumeValue::Return(MontyObject::none())` without consulting
+    /// its own `os` handler. `None` for every other call, and for every call
+    /// under another sleep mode, where the handler decides.
+    #[must_use]
+    pub fn system_sleep(&self) -> Option<Duration> {
+        let SleepMode::System(max) = self.sleep else {
+            return None;
+        };
+        match &self.pending {
+            Some(Pending::Call {
+                os_call: Some(call), ..
+            }) => match **call {
+                OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay) => Some(delay.min(max)),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// Answers a pending [`TurnEvent::OsCall`] from this feed's mounts, when

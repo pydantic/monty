@@ -939,14 +939,15 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
         // Deterministic "entropy" for explicit `os.urandom()`: a fixture can
         // only assert invariants on it anyway, since CPython reads real entropy.
         OsFunctionCall::Urandom(args) => MontyObject::bytes(fixture_entropy(args.size)).into(),
-        // The clock, the sleeps and `random`'s seed are answered in the
-        // sandbox (`AutoOsCalls::default()`), as they are for every embedder.
-        OsFunctionCall::DateToday
-        | OsFunctionCall::DateTimeNow(_)
-        | OsFunctionCall::Time
-        | OsFunctionCall::Sleep(_)
-        | OsFunctionCall::AsyncSleep(_) => {
+        // The clock and `random`'s seed are answered in the sandbox
+        // (`AutoOsCalls::default()`), as they are for every embedder.
+        OsFunctionCall::DateToday | OsFunctionCall::DateTimeNow(_) | OsFunctionCall::Time => {
             unreachable!("{} is answered in the sandbox", call.name())
+        }
+        // The sleeps are the host's to wait out, already cut and budgeted.
+        OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay) => {
+            thread::sleep(*delay);
+            MontyObject::none().into()
         }
         OsFunctionCall::GetEnviron => {
             let env_dict = vec![

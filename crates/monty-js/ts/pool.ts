@@ -14,6 +14,7 @@ import {
   type TypeCheckFormat,
   encodeAssertMessageAnnotations,
   encodeAutoOsCalls,
+  systemSleepOf,
 } from './options.js'
 import { MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
@@ -105,11 +106,12 @@ export interface CheckoutOptions {
   printFlushInterval?: number
   /**
    * Which OS calls the worker answers itself for the life of the session —
-   * the clock and its zone, the sleeps and `random`'s first state — and how
-   * (see `AutoOsCalls`). Omitted: the worker's clock and local zone, sleeps
-   * of at most ten seconds each, `random` seeded from its entropy. A sandbox
-   * wait costs nothing against `maxDurationSecs` and is not a suspension:
-   * `maxTotalSleepSecs` and `requestTimeout` are what bound a sleeping loop.
+   * the clock and its zone, `random`'s first state — and what the sleeps do
+   * (see `AutoOsCalls`). Omitted: the worker's clock and local zone, `random`
+   * seeded from its entropy, and sleeps this process waits out itself, each
+   * cut to ten seconds, without consulting the `os` callback. A sleep costs
+   * nothing against `maxDurationSecs`; each is one suspension, and
+   * `maxTotalSleepSecs` bounds their sum.
    */
   autoOsCalls?: AutoOsCalls
 }
@@ -210,7 +212,7 @@ export class Monty {
     })
     const telemetryContext = captureTelemetryContext()
     await native.enter(telemetryContext)
-    return new MontySession(native)
+    return new MontySession(native, systemSleepOf(autoOsCalls))
   }
 
   /**

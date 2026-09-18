@@ -194,18 +194,17 @@ indistinguishable from a stack overflow.
 ## Sleep
 
 - `max_total_sleep` (`max_total_sleep_secs` in the bindings, `--max-total-sleep`
-    in the CLI) bounds the cumulative time the sandbox spends waiting out
-    `time.sleep()` and `asyncio.sleep()` itself (the default `sleep` mode, see
-    [time.md](time.md)). Sleeps run off the `max_duration` clock and are not
-    suspensions, so without it a sleeping loop is bounded only by the host's
-    turn deadline.
+    in the CLI) bounds the cumulative time `time.sleep()` and `asyncio.sleep()`
+    may ask the host to wait under the default `sleep` mode (see
+    [time.md](time.md)). Sleeps run off the `max_duration` clock, so without it
+    a sleeping loop is bounded only by `max_suspensions`, one per sleep.
 - It is off by default. A sleep that would take the total over is refused
-    before it waits, with an uncatchable
+    before it suspends, with an uncatchable
     `TimeoutError: sleep limit exceeded: <total> > <limit>`; the total
     reported includes the refused sleep. A sleep is charged at the call for
     the delay asked (after the `sleep_system_max` cut), so an
-    `asyncio.sleep()` timer costs its whole delay when created, however long
-    it really waits.
+    `asyncio.sleep()` costs its whole delay when created, however long the
+    host really waits.
 - The time already slept travels in dumps with the limit, like execution time,
     so a restored session resumes its budget rather than restarting from zero.
 - Sleeps handed to the host under `'call_host'` are not charged to it.

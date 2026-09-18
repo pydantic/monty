@@ -93,8 +93,9 @@ export type TimeZone = 'system' | 'call_host' | { offsetSeconds: number; name?: 
 
 /**
  * `AutoOsCalls.sleep`: what `time.sleep()` and `asyncio.sleep()` do.
- * `'system'` (the default) waits inside the worker, `'call_host'` sends
- * both to the `os` callback, `'zero'` returns at once.
+ * `'system'` (the default) has this process wait, each call cut to
+ * `sleepSystemMax`, without consulting the `os` callback; `'call_host'`
+ * sends both to the `os` callback; `'zero'` returns at once.
  */
 export type SleepMode = 'system' | 'call_host' | 'zero'
 
@@ -118,8 +119,8 @@ export interface AutoOsCalls {
   timezone?: TimeZone
   sleep?: SleepMode
   /**
-   * Longest wait a `'system'` performs per call, in seconds (default 10;
-   * `Infinity` for no cap). Given alongside any other `sleep` it is a
+   * Longest wait a `'system'` sleep performs per call, in seconds (default
+   * 10; `Infinity` for no cap). Given alongside any other `sleep` it is a
    * `RangeError`, not ignored.
    */
   sleepSystemMax?: number
@@ -156,6 +157,21 @@ export interface EncodedAutoOsCalls {
 }
 
 const SLEEP_MODES: readonly SleepMode[] = ['system', 'call_host', 'zero']
+
+/**
+ * The sleeps this process waits out itself, without the `os` callback:
+ * `sleep: 'system'` (the default) with its cap in seconds. `null` when the
+ * `os` callback (`'call_host'`) or nothing (`'zero'`) answers them.
+ */
+export interface SystemSleep {
+  readonly maxSecs: number
+}
+
+/** The sleep policy the encoded options imply for the session's host; see `SystemSleep`. */
+export function systemSleepOf(calls: EncodedAutoOsCalls): SystemSleep | null {
+  if (calls.sleep !== undefined && calls.sleep !== 'system') return null
+  return { maxSecs: calls.sleepSystemMaxSecs ?? 10 }
+}
 
 /**
  * Validates and normalizes the options, throwing `RangeError` / `TypeError`

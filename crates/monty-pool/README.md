@@ -69,9 +69,11 @@ async fn main() -> Result<(), PoolError> {
 snippet, `print_flush_interval` — how long the worker may batch `print()` output before
 sending it, so a burst of prints costs one event rather than one each (`Duration::ZERO`
 restores line buffering, one event per completed line) — and `auto_os_calls`, which OS calls
-the worker answers itself for the life of the session (the clock and its zone, the sleeps and
-`random`'s first state; a field set to `CallHost` delivers those calls as `TurnEvent::OsCall`
-instead); `Checkout::feed` accepts inputs (host values exposed as sandbox globals) and
+the worker answers itself for the life of the session (the clock and its zone and `random`'s
+first state; a field set to `CallHost` delivers those calls as `TurnEvent::OsCall` instead) and
+how the sleeps reach the caller (every sleep is a `TurnEvent::OsCall`; under the default
+`SleepMode::System` it arrives cut to the mode's maximum for the caller to wait out itself, as
+`Checkout::system_sleep` says, without consulting its own `os` handler); `Checkout::feed` accepts inputs (host values exposed as sandbox globals) and
 per-feed filesystem mounts (`MountSpec`) and, through `Checkout::feed_with_cwd`, a switch of the
 sandbox's working directory (the first feed's first mount by default; it then persists across feeds). Sessions can be snapshotted with `Checkout::dump`
 and restored later — including on a different worker or machine — with `Checkout::restore`.

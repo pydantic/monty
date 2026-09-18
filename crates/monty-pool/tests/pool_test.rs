@@ -1877,16 +1877,44 @@ async fn suspension_time_does_not_consume_the_duration_budget() {
 }
 
 /// The session's `AutoOsCalls` travel in `Configure`: by default the worker
-/// answers the clock, the sleeps and `random`'s seed itself, so none of them
-/// costs a turn; a seed and a fixed clock are honoured exactly.
+/// answers the clock and `random`'s seed itself, so neither costs a turn,
+/// while each sleep is an `OsCall` the caller waits out as
+/// `Checkout::system_sleep` says, cut to the mode's maximum; a seed and a
+/// fixed clock are honoured exactly.
 #[tokio::test]
 async fn auto_os_calls_are_answered_in_the_worker() {
     let pool = Pool::new(config()).await.unwrap();
-    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
-    let code = "import asyncio, random, time\nfrom datetime import date\nt = time.time()\ntime.sleep(0.01)\n\
+    let mut session = pool
+        .checkout(&ReplConfig {
+            auto_os_calls: AutoOsCalls {
+                sleep: SleepMode::System(Duration::from_millis(10)),
+                ..AutoOsCalls::default()
+            },
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let code = "import asyncio, random, time\nfrom datetime import date\nt = time.time()\ntime.sleep(3600)\n\
                 (date.today().year >= 2026, time.time() >= t + 0.01, \
-                asyncio.run(asyncio.sleep(0.01, 'woken')), 0 <= random.random() < 1)";
-    let event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+                asyncio.run(asyncio.sleep(3600, 'woken')), 0 <= random.random() < 1)";
+    let mut event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+    let mut slept = vec![];
+    while let TurnEvent::OsCall { function_name, .. } = &event {
+        let delay = session.system_sleep().expect("only the sleeps reach the caller");
+        slept.push((function_name.clone(), delay));
+        sleep(delay).await;
+        event = session
+            .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        slept,
+        vec![
+            ("time.sleep".to_owned(), Duration::from_millis(10)),
+            ("asyncio.sleep".to_owned(), Duration::from_millis(10)),
+        ]
+    );
     assert_eq!(
         expect_complete(event),
         MontyObject::tuple([

@@ -114,19 +114,6 @@ impl Task {
     }
 }
 
-/// An `asyncio.sleep` the sandbox serves itself (`SleepMode::System`): also
-/// an ordinary `Scheduler::pending_externals` entry, resolved with `None`
-/// once the deadline passes so everything downstream of a host-resolved
-/// future applies unchanged. The deadline is absolute wall-clock time, so a
-/// timer pending across a host suspension is simply due, not restarted.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-pub(crate) struct SandboxTimer {
-    /// The call id of the timer's `ExternalFuture`.
-    pub call_id: CallId,
-    /// When it fires, as microseconds since the Unix epoch.
-    pub deadline_unix_micros: i64,
-}
-
 /// Owns live tasks, pending external futures, and call IDs for both sync and async execution.
 /// A blocked task is queued once when its awaitable settles, for either a value or an error.
 /// Selecting that task consumes its queue entry and resume result before bytecode can run.
@@ -154,8 +141,6 @@ pub(crate) struct Scheduler {
     /// dispatch from coroutine heap id back to the driving task without
     /// scanning all tasks.
     coroutine_to_task: AHashMap<HeapId, TaskId>,
-    /// Sandbox-served sleeps not yet due, unordered (a handful at most).
-    timers: Vec<SandboxTimer>,
 }
 
 impl Scheduler {
@@ -173,7 +158,6 @@ impl Scheduler {
             next_call_id: 0,
             pending_externals: AHashMap::new(),
             coroutine_to_task: AHashMap::new(),
-            timers: Vec::new(),
         }
     }
 
@@ -244,31 +228,6 @@ impl Scheduler {
     /// Returns all pending (unresolved) CallIds.
     pub fn pending_call_ids(&self) -> Vec<CallId> {
         self.pending_externals.keys().copied().collect()
-    }
-
-    /// Registers a sandbox timer for an already-pending `call_id`.
-    pub fn add_timer(&mut self, call_id: CallId, deadline_unix_micros: i64) {
-        self.timers.push(SandboxTimer {
-            call_id,
-            deadline_unix_micros,
-        });
-    }
-
-    /// The timer due soonest, if any is pending.
-    pub fn earliest_timer(&self) -> Option<SandboxTimer> {
-        self.timers
-            .iter()
-            .copied()
-            .min_by_key(|timer| timer.deadline_unix_micros)
-    }
-
-    /// Removes and returns every timer due at `now_unix_micros`.
-    pub fn take_due_timers(&mut self, now_unix_micros: i64) -> SmallVec<[CallId; 2]> {
-        let (due, pending): (Vec<_>, Vec<_>) = mem::take(&mut self.timers)
-            .into_iter()
-            .partition(|timer| timer.deadline_unix_micros <= now_unix_micros);
-        self.timers = pending;
-        due.into_iter().map(|timer| timer.call_id).collect()
     }
 
     /// Removes the queue entry when delivering directly to an exiting task's waiter.
@@ -451,9 +410,7 @@ impl Scheduler {
     /// Cleans up all scheduler resources: the pending-future inc_refs and
     /// every remaining task (via [`Scheduler::cancel_task`]).
     pub fn cleanup(&mut self, heap: &mut HeapReader<'_>) {
-        // Release the inc_refs the scheduler holds on each pending future;
-        // timers own nothing beyond their `pending_externals` entry.
-        self.timers.clear();
+        // Release the inc_refs the scheduler holds on each pending future.
         for (_, future_id) in mem::take(&mut self.pending_externals) {
             heap.dec_ref(future_id);
         }

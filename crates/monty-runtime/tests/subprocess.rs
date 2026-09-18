@@ -543,10 +543,11 @@ fn external_function_not_found_raises_name_error() {
     child.shutdown();
 }
 
-/// By default the worker answers the clock, the sleeps and `random`'s seed
-/// itself: none of them reaches the parent.
+/// By default the worker answers the clock and `random`'s seed itself, so
+/// neither reaches the parent, while each sleep crosses the wire already cut
+/// to the default ten-second maximum for the parent to wait out.
 #[test]
-fn clock_sleeps_and_entropy_are_answered_in_the_worker_by_default() {
+fn clock_and_entropy_are_answered_in_the_worker_by_default() {
     let mut child = ChildProc::spawn();
     child.create_repl();
 
@@ -555,17 +556,28 @@ fn clock_sleeps_and_entropy_are_answered_in_the_worker_by_default() {
 date.today().year >= 2026",
     );
     assert_eq!(expect_complete(event), MontyObject::bool(true));
-    let (_, event) = child.feed(
-        "import time
-t = time.time()
-time.sleep(0.01)
-time.time() >= t + 0.01",
+    let (_, event) = child.feed("import time\ntime.sleep(3600)");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::Sleep(pb::os_call::Sleep { seconds: 10.0 }))
     );
-    assert_eq!(expect_complete(event), MontyObject::bool(true));
+    let (_, event) = child.resume_return(call.call_id, MontyObject::none());
+    assert_eq!(expect_complete(event), MontyObject::none());
     let (_, event) = child.feed(
         "import asyncio
-asyncio.run(asyncio.sleep(0.01, 'woken'))",
+asyncio.run(asyncio.sleep(3600, 'woken'))",
     );
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep { delay: 10.0 }))
+    );
+    let (_, event) = child.resume_return(call.call_id, MontyObject::none());
     assert_eq!(expect_complete(event), MontyObject::string("woken"));
     let (_, event) = child.feed(
         "import random

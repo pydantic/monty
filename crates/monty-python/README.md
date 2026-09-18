@@ -139,10 +139,10 @@ Larger requests raise `MemoryError` before allocating.
 An unseeded `random` generator makes that request only under `auto_os_calls={'random_start': 'call_host'}`; otherwise
 it seeds itself inside the worker, from OS entropy or from the seed given.
 
-The clock (`date.today()`, `datetime.now()`, `time.time()`) and the sleeps (`time.sleep()`, `asyncio.sleep()`) are
-answered inside the worker by default; `'call_host'` on the `datetime`, `timezone` or `sleep` keys of `checkout()`'s
-`auto_os_calls` sends them to the `os=` handler instead, where `OSAccess` answers them from the host process and caps
-each wait at its `max_sleep`.
+The clock (`date.today()`, `datetime.now()`, `time.time()`) is answered inside the worker by default, and the sleeps
+(`time.sleep()`, `asyncio.sleep()`) are waited out by the pool itself, each cut to `sleep_system_max`; `'call_host'`
+on the `datetime`, `timezone` or `sleep` keys of `checkout()`'s `auto_os_calls` sends them to the `os=` handler
+instead, where `OSAccess` answers them from the host process and caps each wait at its `max_sleep`.
 
 A `random.Random` instance or the `random.Random` class returned from the sandbox converts to its repr string.
 Return the generated values or `rng.getstate()` instead.

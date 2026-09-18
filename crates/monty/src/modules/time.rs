@@ -1,10 +1,14 @@
 //! Implementation of the `time` module.
 //!
-//! Two functions, `time()` and `sleep()`, each answered in the sandbox or
-//! suspended to the host as the session's `AutoOsCalls` says, exactly like
-//! `date.today()`. See `limitations/time.md` for what diverges from CPython;
+//! Two functions: `time()`, answered in the sandbox or suspended to the host
+//! as the session's `AutoOsCalls` says, exactly like `date.today()`, and
+//! `sleep()`, always the host's wait (or none under `SleepMode::Zero`), the
+//! mode deciding the cut and the budget. See `limitations/time.md` for what
+//! diverges from CPython;
 //! the monotonic clocks and the `struct_time` family are absent rather than
 //! stubbed, so they raise `AttributeError` up front.
+
+use std::time::Duration;
 
 use monty_types::{OsFunctionCall, SleepError, SleepMode, sleep_duration, unix_seconds};
 use num_traits::ToPrimitive;
@@ -66,11 +70,10 @@ fn time(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     }
 }
 
-/// `time.sleep(seconds)` — wait as the session's `SleepMode` says: in the
-/// sandbox, cut to the mode's maximum and charged to `max_total_sleep`
-/// rather than the execution clock; under `CallHost`, a wait the host
-/// performs, [`PostConversionEffect::DiscardResult`] making the call `None`
-/// whatever it answered. The argument is validated the same way in every mode.
+/// `time.sleep(seconds)` — a wait the host performs ([`host_sleep_delay`]
+/// says for how long), [`PostConversionEffect::DiscardResult`] making the
+/// call `None` whatever it answered; under `Zero` nothing waits. The
+/// argument is validated the same way in every mode.
 fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     // METH_O in CPython: keywords are refused wholesale, before arity.
     let seconds = args
@@ -85,19 +88,30 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     });
     seconds.drop_with(vm.heap);
     let duration = result?;
-    Ok(match vm.env.auto_os_calls.sleep {
-        SleepMode::System(max) => {
-            let duration = duration.min(max);
-            vm.heap.tracker.charge_sleep(duration)?;
-            vm.heap.tracker.sandbox_sleep(duration);
-            CallResult::Value(Value::None)
-        }
-        SleepMode::CallHost => CallResult::OsCallWithEffect {
+    Ok(match host_sleep_delay(vm, duration)? {
+        Some(duration) => CallResult::OsCallWithEffect {
             call: OsFunctionCall::Sleep(duration),
             effect: PostConversionEffect::DiscardResult.into(),
         },
-        SleepMode::Zero => CallResult::Value(Value::None),
+        None => CallResult::Value(Value::None),
     })
+}
+
+/// The delay a sleep hands to the host, or `None` when nothing waits
+/// (`SleepMode::Zero`). Under `System` the delay is cut to the mode's maximum
+/// and charged to `max_total_sleep` first, so a sleep over budget is refused
+/// before it suspends; the host then waits it out without consulting its own
+/// `os` handler. Under `CallHost` it is the delay asked, uncut and uncharged.
+pub(crate) fn host_sleep_delay(vm: &VM<'_>, delay: Duration) -> RunResult<Option<Duration>> {
+    match vm.env.auto_os_calls.sleep {
+        SleepMode::System(max) => {
+            let delay = delay.min(max);
+            vm.heap.tracker.charge_sleep(delay)?;
+            Ok(Some(delay))
+        }
+        SleepMode::CallHost => Ok(Some(delay)),
+        SleepMode::Zero => Ok(None),
+    }
 }
 
 /// Converts a sleep length to float seconds the way CPython's

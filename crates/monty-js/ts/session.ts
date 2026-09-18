@@ -32,6 +32,7 @@ import {
 import { PYTHON_EXC_NAMES } from './errors.js'
 import { mountsToNative } from './mount.js'
 import type { MountDir } from './mountDir.js'
+import type { SystemSleep } from './options.js'
 import {
   type FunctionCallTurn,
   type LoadedTurn,
@@ -187,7 +188,11 @@ export class MontySession {
   private readonly instances = new InstanceStore()
 
   /** @internal — sessions are created by `Monty.checkout`. */
-  constructor(native: NativeSession) {
+  constructor(
+    native: NativeSession,
+    /** The sleeps this process waits out itself; see `SystemSleep`. */
+    private readonly systemSleep: SystemSleep | null = null,
+  ) {
     this.native = native
   }
 
@@ -206,7 +211,7 @@ export class MontySession {
     const onPrint = bindPrintCallback(printTarget.write.bind(printTarget))
     // A fresh answerer (and its pending-future map) per feed, so promises the
     // worker never asks about again cannot accumulate across feeds.
-    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, options.os)
+    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, options.os, this.systemSleep)
     let turn = (await this.native.feed(
       code,
       prepareInputs(options.inputs, this.instances),
@@ -379,7 +384,7 @@ export class MontySession {
    *  captured `externalLookup` / `os` back `snapshot.resumeAuto()`. */
   private newDriver(options: FeedStartOptions): SnapshotDriver {
     const printTarget = new PrintTarget(options.printCallback)
-    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, options.os)
+    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, options.os, this.systemSleep)
     return new SnapshotDriver(this.native, this.instances, printTarget, answerer, (err) => this.poison(err))
   }
 
@@ -486,6 +491,7 @@ class TurnAnswerer {
     private readonly instances: InstanceStore,
     readonly externalLookup: Record<string, unknown> | undefined,
     readonly os: OsCallback | undefined,
+    private readonly systemSleep: SystemSleep | null,
   ) {}
 
   /** Answers one suspension turn and returns the resume turn it produces. */
@@ -662,10 +668,19 @@ class TurnAnswerer {
   }
 
   /**
-   * Answers an OS call: the feed's mounts get first refusal, then the `os`
-   * callback, then the sandbox's own no-handler default.
+   * Answers an OS call: a `'system'` sleep is waited out here, then the feed's
+   * mounts get first refusal, then the `os` callback, then the sandbox's own
+   * no-handler default.
    */
   async answerOsCall(call: OsCallTurn, onPrint: PrintCallback): Promise<object> {
+    const wait = this.systemSleepFor(call)
+    if (wait !== null) {
+      if (osCallAcceptsFuture(call.functionName)) {
+        return await this.answerAwaitedCall(call, wait, onPrint)
+      }
+      await wait
+      return await this.resumeWithValue(null, onPrint)
+    }
     const mounted = (await this.native.resumeFromMounts(onPrint)) as NativeTurn | NotMountedTurn
     if (mounted.kind !== 'notMounted') {
       return mounted
@@ -693,6 +708,23 @@ class TurnAnswerer {
       return await this.native.resumeNotHandled(onPrint)
     }
     return await this.resumeWithValue(returned, onPrint)
+  }
+
+  /**
+   * The wait a `'system'` sleep asks of this process, as a promise: the delay
+   * the worker sent, cut to the cap again here so a worker's arithmetic is
+   * never trusted. `null` for any other call, and under any other sleep mode,
+   * where the `os` callback decides.
+   */
+  private systemSleepFor(call: OsCallTurn): Promise<void> | null {
+    if (this.systemSleep === null || (call.functionName !== 'time.sleep' && call.functionName !== 'asyncio.sleep')) {
+      return null
+    }
+    const asked = call.args[0]
+    const secs = Math.min(typeof asked === 'number' && asked > 0 ? asked : 0, this.systemSleep.maxSecs)
+    // setTimeout's delay is a signed 32-bit millisecond count
+    const ms = Math.min(secs * 1000, 2 ** 31 - 1)
+    return new Promise((resolve) => setTimeout(resolve, ms))
   }
 
   /**

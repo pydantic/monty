@@ -959,6 +959,19 @@ def test_sleep_system_max_contradicts_other_modes(pool: Monty, sleep: Any):
     assert str(exc_info.value) == f"sleep_system_max only applies to sleep='system', not '{sleep}'"
 
 
+def test_sleep_system_never_reaches_os(monty_run: RunMonty):
+    """The default sleeps are the pool's own waits: the `os=` handler is not consulted."""
+    calls: list[Any] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append((name, args))
+        return None
+
+    code = "import asyncio, time\ntime.sleep(0.001)\nasyncio.run(asyncio.sleep(0.001, 'woken'))"
+    assert monty_run(code, os=os_handler) == snapshot('woken')
+    assert calls == snapshot([])
+
+
 def test_sleep_call_host_reaches_os(monty_run: RunMonty):
     calls: list[Any] = []
 

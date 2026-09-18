@@ -147,6 +147,19 @@ test('gathered sandbox sleeps overlap', async () => {
   t.deepEqual(await run(code), [[2, 4, 6], true])
 })
 
+test('system sleeps are waited out here without the os callback', async () => {
+  const calls: [string, unknown[]][] = []
+  const code = "import asyncio, time\ntime.sleep(0.001)\nasyncio.run(asyncio.sleep(0.001, 'woken'))"
+  t.is(
+    await runWith(code, {}, (name, args) => {
+      calls.push([name, args])
+      return null
+    }),
+    'woken',
+  )
+  t.deepEqual(calls, [])
+})
+
 test('invalid sleep options are rejected before the checkout', async () => {
   await t.throwsAsync(() => pool().checkout({ autoOsCalls: { sleep: 'forever' as 'zero' } }), {
     instanceOf: RangeError,
