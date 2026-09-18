@@ -9,10 +9,12 @@
 
 use std::time::{Duration, Instant};
 
+use chrono::{Local, Offset, TimeZone};
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    AutoOsCalls, CompileOptions, DateTimeSource, MontyObject, PrintWriter, ResourceLimits, ResourceTracker, SleepMode,
+    AutoOsCalls, CompileOptions, DateTimeSource, MontyObject, PrintWriter, ResourceLimits, ResourceTracker,
+    SandboxTimeZone, SleepMode,
 };
 
 /// 2023-11-14 22:13:20 UTC — the instant the datatest fixtures already freeze
@@ -24,18 +26,29 @@ const FIXTURE_SECONDS: i64 = 1_700_000_000;
 /// full second as a leap second instead of rejecting it.
 const LAST_SECOND_OF_A_MINUTE: i64 = 1_700_000_039;
 
-/// A clock frozen at [`FIXTURE_SECONDS`] in a UTC+02:00 local zone, which puts
-/// the local date one day ahead of the UTC one.
+/// A clock frozen at [`FIXTURE_SECONDS`].
 const FIXED: DateTimeSource = DateTimeSource::Fixed {
     unix_seconds: FIXTURE_SECONDS,
     microsecond: 123_456,
-    local_offset_seconds: 7_200,
 };
 
-/// The defaults with `datetime` replaced.
+/// A UTC+02:00 local zone, which puts [`FIXED`]'s local date one day ahead of
+/// the UTC one.
+const PLUS_TWO: SandboxTimeZone = SandboxTimeZone::Fixed {
+    offset_seconds: 7_200,
+    name: None,
+};
+
+/// The defaults with `datetime` replaced; a fixed instant is read in
+/// [`PLUS_TWO`] so its expectations do not depend on the host's zone.
 fn with_datetime(datetime: DateTimeSource) -> AutoOsCalls {
+    let timezone = match datetime {
+        DateTimeSource::Fixed { .. } => PLUS_TWO,
+        DateTimeSource::CallHost | DateTimeSource::System => SandboxTimeZone::System,
+    };
     AutoOsCalls {
         datetime,
+        timezone,
         ..AutoOsCalls::default()
     }
 }
@@ -74,8 +87,13 @@ fn run(code: &str, calls: AutoOsCalls) -> Result<MontyObject, String> {
 
 /// Runs a `datetime` expression under `datetime` and returns its `repr()`.
 fn run_repr(expr: &str, datetime: DateTimeSource) -> String {
+    run_repr_under(expr, with_datetime(datetime))
+}
+
+/// Runs a `datetime` expression under `calls` and returns its `repr()`.
+fn run_repr_under(expr: &str, calls: AutoOsCalls) -> String {
     let code = format!("from datetime import date, datetime, timedelta, timezone\nrepr({expr})");
-    let obj = run(&code, with_datetime(datetime)).unwrap();
+    let obj = run(&code, calls).unwrap();
     (&obj).try_into().unwrap()
 }
 
@@ -181,7 +199,6 @@ fn unrepresentable_fixed_instant_raises() {
     let far_future = with_datetime(DateTimeSource::Fixed {
         unix_seconds: 300_000_000_000,
         microsecond: 0,
-        local_offset_seconds: 0,
     });
     assert_eq!(
         run("from datetime import date\ndate.today()", far_future.clone()).unwrap_err(),
@@ -199,7 +216,6 @@ fn out_of_range_microsecond_raises() {
     let overflowing = with_datetime(DateTimeSource::Fixed {
         unix_seconds: FIXTURE_SECONDS,
         microsecond: 1_500_000,
-        local_offset_seconds: 0,
     });
     assert_eq!(
         run("from datetime import datetime\ndatetime.now()", overflowing).unwrap_err(),
@@ -212,11 +228,57 @@ fn out_of_range_microsecond_raises() {
     let leap_second = with_datetime(DateTimeSource::Fixed {
         unix_seconds: LAST_SECOND_OF_A_MINUTE,
         microsecond: 1_500_000,
-        local_offset_seconds: 0,
     });
     assert_eq!(
         run("from datetime import datetime\ndatetime.now()", leap_second).unwrap_err(),
         "OverflowError: date value out of range"
+    );
+}
+
+/// The zone is the session's own: a fixed instant read in the system zone
+/// lands on the host's wall clock, and `CallHost` on the zone alone sends
+/// only the calls that need it — naive `now()` and `today()` — to the host.
+#[test]
+fn the_zone_is_chosen_separately_from_the_instant() {
+    let system_zone = AutoOsCalls {
+        datetime: FIXED,
+        timezone: SandboxTimeZone::System,
+        ..AutoOsCalls::default()
+    };
+    let code = "from datetime import datetime, timezone\n\
+                (datetime.now() - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()";
+    // the host's offset at the instant read, not now: DST may differ
+    let host_offset = Local
+        .timestamp_opt(FIXTURE_SECONDS, 0)
+        .unwrap()
+        .offset()
+        .fix()
+        .local_minus_utc();
+    assert_eq!(
+        run(code, system_zone).unwrap(),
+        MontyObject::float(f64::from(host_offset))
+    );
+
+    let host_zone = AutoOsCalls {
+        datetime: FIXED,
+        timezone: SandboxTimeZone::CallHost,
+        ..AutoOsCalls::default()
+    };
+    assert_eq!(
+        run("import time\ntime.time()", host_zone.clone()).unwrap(),
+        MontyObject::float(1_700_000_000.123_456)
+    );
+    assert_eq!(
+        run_repr_under("datetime.now(timezone.utc)", host_zone.clone()),
+        "datetime.datetime(2023, 11, 14, 22, 13, 20, 123456, tzinfo=datetime.timezone.utc)"
+    );
+    assert_eq!(
+        run("from datetime import datetime\ndatetime.now()", host_zone.clone()).unwrap_err(),
+        "NotImplementedError: OS function 'datetime.now' not implemented with standard execution"
+    );
+    assert_eq!(
+        run("from datetime import date\ndate.today()", host_zone).unwrap_err(),
+        "NotImplementedError: OS function 'date.today' not implemented with standard execution"
     );
 }
 

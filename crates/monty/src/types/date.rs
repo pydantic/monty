@@ -135,25 +135,19 @@ struct DateInitArgs {
     day: i32,
 }
 
-/// Classmethod implementation for `date.today()`: the local date of the
-/// session's clock, or a `DateToday` OS call under `CallHost` (the host
+/// Classmethod implementation for `date.today()`: the session's clock read
+/// in its zone, or a `DateToday` OS call when either is the host's (the host
 /// answers with a `MontyObject::Date`).
 pub(crate) fn class_today(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("date.today", vm.heap)?;
-    match datetime::sandbox_now(vm)? {
-        None => Ok(CallResult::OsCall(OsFunctionCall::DateToday)),
-        Some(reading) => {
-            let local = reading.local(reading.local_offset_seconds).ok_or_else(|| {
-                RunError::from(SimpleException::new_msg(
-                    ExcType::OverflowError,
-                    "date value out of range",
-                ))
-            })?;
-            Ok(CallResult::Value(Value::Ref(
-                vm.heap.allocate(HeapData::Date(Date(local.date()))),
-            )))
-        }
-    }
+    let local = match datetime::sandbox_instant(vm)? {
+        Some(utc) => datetime::sandbox_local_wall_clock(vm, utc)?,
+        None => None,
+    };
+    Ok(match local {
+        None => CallResult::OsCall(OsFunctionCall::DateToday),
+        Some(local) => CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(Date(local.date()))))),
+    })
 }
 
 /// Classmethod `date.fromisoformat(date_string)`.

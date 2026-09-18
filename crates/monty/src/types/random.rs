@@ -41,8 +41,9 @@ const MATRIX_A: u32 = 0x9908_b0df;
 const UPPER_MASK: u32 = 0x8000_0000;
 const LOWER_MASK: u32 = 0x7fff_ffff;
 
-/// Bytes of entropy an unseeded generator reads: one full state vector,
-/// exactly what CPython's `random_seed_urandom` reads.
+/// Bytes of entropy an unseeded generator reads (or asks the host for under
+/// `CallHost`): one full state vector, exactly what CPython's
+/// `random_seed_urandom` reads.
 pub(crate) const SEED_BYTES: usize = N * 4;
 
 /// The session's `random` state: the module-level generator, and where
@@ -60,19 +61,22 @@ pub(crate) struct SessionRandom {
 
 impl SessionRandom {
     /// The state an unseeded `target` starts with: exactly `random.seed(s)` for
-    /// the module generator under `Seed(s)`, otherwise a fresh state.
-    pub(crate) fn first_state(&mut self, target: RandomTarget, start: &RandomStart) -> Mt19937 {
+    /// the module generator under `Seed(s)`, otherwise a fresh state. `None`
+    /// is `CallHost`: the state is the host's to supply.
+    pub(crate) fn first_state(&mut self, target: RandomTarget, start: &RandomStart) -> Option<Mt19937> {
         match (start, target) {
-            (RandomStart::Seed(seed), RandomTarget::Global) => Mt19937::from_key(&seed_key_from_seed(seed)),
+            (RandomStart::Seed(seed), RandomTarget::Global) => Some(Mt19937::from_key(&seed_key_from_seed(seed))),
             _ => self.fresh_state(start),
         }
     }
 
     /// A state for `seed()` / `seed(None)` or an unseeded instance: OS entropy,
     /// or under `Seed(s)` the next state of the stream derived from `s`.
-    pub(crate) fn fresh_state(&mut self, start: &RandomStart) -> Mt19937 {
+    /// `None` is `CallHost`: the state is the host's to supply.
+    pub(crate) fn fresh_state(&mut self, start: &RandomStart) -> Option<Mt19937> {
         match start {
-            RandomStart::Random => Mt19937::from_os_entropy(),
+            RandomStart::CallHost => None,
+            RandomStart::Random => Some(Mt19937::from_os_entropy()),
             RandomStart::Seed(seed) => {
                 let stream = self.derived.get_or_insert_with(|| {
                     // One extra word keeps the stream distinct from `seed(s)`'s own state.
@@ -81,7 +85,7 @@ impl SessionRandom {
                     Mt19937::from_key(&key)
                 });
                 let words: Vec<u32> = (0..N).map(|_| stream.next_u32()).collect();
-                Mt19937::from_key(&words)
+                Some(Mt19937::from_key(&words))
             }
         }
     }
@@ -172,9 +176,12 @@ struct RandomInitArgs {
 pub(crate) const SEED_VERSION_DEFAULT: i64 = 2;
 
 /// Which generator a `random` operation acts on: the module-level one on the
-/// VM, or a `random.Random` instance on the heap. The instance form holds no
-/// reference of its own: the caller's `HeapRead` keeps the object alive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// VM, or a `random.Random` instance on the heap.
+///
+/// Carried by the entropy suspension (`PostConversionEffect::SeedRandom`) so
+/// the resume can seed the right generator; the instance form holds no
+/// reference of its own — the effect pins the object across the yield.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum RandomTarget {
     /// The module-level generator behind `random.random()` and friends.
     Global,
@@ -460,7 +467,7 @@ impl Mt19937 {
     }
 
     /// Seeds from `SEED_BYTES` bytes of entropy read as little-endian words.
-    fn from_entropy(bytes: &[u8]) -> Self {
+    pub(crate) fn from_entropy(bytes: &[u8]) -> Self {
         let words: Vec<u32> = bytes
             .as_chunks::<4>()
             .0
@@ -643,7 +650,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Random> {
             .static_string(vm.interns)
             .and_then(RandomFunctions::from_static_string)
         {
-            random_dispatch(RandomTarget::Instance(self.id()), function, args, vm).map(CallResult::Value)
+            random_dispatch(RandomTarget::Instance(self.id()), function, args, vm)
         } else {
             args.drop_with(vm);
             Err(ExcType::attribute_error("Random", attr.as_str(vm.interns)))

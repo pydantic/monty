@@ -12,7 +12,7 @@ use std::{
 use chrono::{
     Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike, format::StrftimeItems,
 };
-use monty_types::{DateTimeReading, DateTimeSource, MontyTimeZone, OsFunctionCall};
+use monty_types::{DateTimeSource, MontyTimeZone, OsFunctionCall, local_wall_clock};
 
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
@@ -279,40 +279,53 @@ struct DatetimeInitArgs {
 
 /// Classmethod implementation for `datetime.now(tz=None)`.
 ///
-/// Read from the session's [`DateTimeSource`] when it has one: a naive
-/// result is the local wall clock, `now(tz)` the same instant in `tz`, with
-/// the argument itself attached so `now(tz).tzinfo is tz`. Under `CallHost`
-/// it yields a `DateTimeNow` OS call carrying the tz argument as a typed
-/// [`Option<MontyTimeZone>`] — validated here, so the call can never carry
-/// an arbitrary object.
+/// Read from the session's clock when it has one: a naive result is the
+/// wall clock in the session's zone, `now(tz)` the same instant in `tz`, with
+/// the argument itself attached so `now(tz).tzinfo is tz`. When the instant,
+/// or the zone a naive result needs, is the host's, it yields a `DateTimeNow`
+/// OS call carrying the tz argument as a typed [`Option<MontyTimeZone>`] —
+/// validated here, so the call can never carry an arbitrary object.
 pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let NowArgs { tz } = NowArgs::from_args(args, vm)?;
     defer_drop!(tz, vm);
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
-    let Some(reading) = sandbox_now(vm)? else {
+    let local = match (sandbox_instant(vm)?, &tz) {
+        (Some(utc), Some(tz)) => from_utc_naive_with_timezone_parts(utc, tz.offset_seconds, tz.name.clone()),
+        (Some(utc), None) => match sandbox_local_wall_clock(vm, utc)? {
+            Some(local) => from_local_naive(local),
+            None => None,
+        },
+        (None, _) => None,
+    };
+    let Some(mut dt) = local else {
         let tz = tz.map(|tz| MontyTimeZone {
             offset_seconds: tz.offset_seconds,
             name: tz.name,
         });
         return Ok(CallResult::OsCall(OsFunctionCall::DateTimeNow(tz)));
     };
-    let mut dt = match tz {
-        None => reading.local(reading.local_offset_seconds).and_then(from_local_naive),
-        Some(tz) => from_utc_naive_with_timezone_parts(reading.utc, tz.offset_seconds, tz.name),
-    }
-    .ok_or_else(date_out_of_range)?;
     attach_or_allocate_tzinfo_ref(&mut dt, tz_ref, vm.heap);
     Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt)))))
 }
 
-/// Reads the session's clock for `date.today()`, `datetime.now()` and
-/// `time.time()`: `None` means the source is `CallHost` and the call must
-/// suspend to the host. A `Fixed` instant no Python `datetime` can hold
-/// raises `OverflowError`, keeping the three calls all-or-nothing.
-pub(crate) fn sandbox_now(vm: &VM<'_>) -> RunResult<Option<DateTimeReading>> {
+/// Reads the session's clock as a UTC wall clock, for `date.today()`,
+/// `datetime.now()` and `time.time()`: `None` means the instant is the
+/// host's and the call must suspend. A `Fixed` instant no Python `datetime`
+/// can hold raises `OverflowError`, keeping the three calls all-or-nothing.
+pub(crate) fn sandbox_instant(vm: &VM<'_>) -> RunResult<Option<NaiveDateTime>> {
     match vm.env.auto_os_calls.datetime {
         DateTimeSource::CallHost => Ok(None),
         source => source.read().map(Some).ok_or_else(date_out_of_range),
+    }
+}
+
+/// `utc` as the wall clock in the session's zone, for a naive `now()` or
+/// `today()`: `None` means the zone is the host's and the call must suspend.
+/// A wall clock outside `datetime`'s year range raises `OverflowError`.
+pub(crate) fn sandbox_local_wall_clock(vm: &VM<'_>, utc: NaiveDateTime) -> RunResult<Option<NaiveDateTime>> {
+    match vm.env.auto_os_calls.timezone.offset_seconds(utc) {
+        None => Ok(None),
+        Some(offset) => local_wall_clock(utc, offset).map(Some).ok_or_else(date_out_of_range),
     }
 }
 

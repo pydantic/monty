@@ -37,7 +37,7 @@ use crate::{
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
-    modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
+    modules::{StandardLib, json::JsonStringCache, random::apply_seed_random, re::RePatternCache},
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect, resolve_call_paths},
     parse::CodeRange,
@@ -2058,6 +2058,9 @@ impl<'h> VM<'h> {
                 apply_write_position(file_id, value, self)
             }
             Some(PendingEffect::Post(PostConversionEffect::OpenName { name })) => apply_open_name(name, value, self),
+            Some(PendingEffect::Post(PostConversionEffect::SeedRandom { target, retry })) => {
+                apply_seed_random(target, retry, value, self)
+            }
             // The sleeps were answered above; any pre-conversion effect was consumed.
             Some(
                 PendingEffect::Post(PostConversionEffect::DiscardResult | PostConversionEffect::SleepResult { .. })
@@ -2111,6 +2114,11 @@ impl<'h> VM<'h> {
                         drop(file);
                     }
                     self.heap.dec_ref(file_id);
+                }
+                // The generator was never seeded, so there is nothing to roll
+                // back: dropping the pin and the stashed retry is the whole undo.
+                PendingEffect::Post(PostConversionEffect::SeedRandom { target, retry }) => {
+                    PostConversionEffect::SeedRandom { target, retry }.release(self.heap);
                 }
                 PendingEffect::Post(PostConversionEffect::SleepResult { result }) => result.drop_with(self),
                 // Hold no state or heap references — nothing to roll back.

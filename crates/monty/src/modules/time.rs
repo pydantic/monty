@@ -6,7 +6,7 @@
 //! the monotonic clocks and the `struct_time` family are absent rather than
 //! stubbed, so they raise `AttributeError` up front.
 
-use monty_types::{OsFunctionCall, SleepError, SleepMode, sleep_duration};
+use monty_types::{OsFunctionCall, SleepError, SleepMode, sleep_duration, unix_seconds};
 use num_traits::ToPrimitive;
 
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
-    types::{Module, PyTrait, datetime::sandbox_now},
+    types::{Module, PyTrait, datetime::sandbox_instant},
     value::Value,
 };
 
@@ -60,9 +60,9 @@ pub(super) fn call(vm: &mut VM<'_>, function: TimeFunctions, args: ArgValues) ->
 /// exposes, so the value need not agree with the machine's wall clock.
 fn time(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("time.time", vm.heap)?;
-    match sandbox_now(vm)? {
+    match sandbox_instant(vm)? {
         None => Ok(CallResult::OsCall(OsFunctionCall::Time)),
-        Some(reading) => Ok(CallResult::Value(Value::Float(reading.unix_seconds()))),
+        Some(utc) => Ok(CallResult::Value(Value::Float(unix_seconds(utc)))),
     }
 }
 

@@ -21,7 +21,10 @@ mod uuid;
 mod virtual_path;
 
 pub use crate::{
-    auto_os_calls::{AutoOsCalls, DateTimeReading, DateTimeSource, RandomSeed, RandomStart, SleepMode},
+    auto_os_calls::{
+        AutoOsCalls, DateTimeSource, RandomSeed, RandomStart, SandboxTimeZone, SleepMode, local_wall_clock,
+        unix_seconds,
+    },
     builtins::BuiltinsFunctions,
     exceptions::{
         CodeLoc, ExcData, ExcType, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject,

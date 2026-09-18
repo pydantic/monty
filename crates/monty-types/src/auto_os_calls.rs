@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeDelta};
+use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeDelta, TimeZone};
 use num_bigint::BigInt;
 
 /// Per-session choice of which OS calls the sandbox serves in-process.
@@ -13,24 +13,27 @@ use num_bigint::BigInt;
 /// or `CallHost`, which suspends the call to the host as any other OS call
 /// (under standard execution, where there is no host, such a call raises
 /// `NotImplementedError`). The default answers everything in the sandbox:
-/// the system clock, sleeps of at most ten seconds each, and `random` seeded
-/// from OS entropy.
+/// the system clock in the system zone, sleeps of at most ten seconds each,
+/// and `random` seeded from OS entropy.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct AutoOsCalls {
-    /// What `date.today()`, `datetime.now()` and `time.time()` read.
+    /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
     pub datetime: DateTimeSource,
+    /// The local zone naive `datetime.now()` and `date.today()` read that
+    /// instant in.
+    pub timezone: SandboxTimeZone,
     /// What `time.sleep()` and `asyncio.sleep()` do.
     pub sleep: SleepMode,
     /// Where an unseeded `random` generator gets its first state.
     pub random_start: RandomStart,
 }
 
-/// Where the clock calls read the time.
+/// Where the clock calls read the instant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum DateTimeSource {
     /// Suspend to the host, which answers each call.
     CallHost,
-    /// The process's own clock, in its local timezone.
+    /// The process's own clock.
     #[default]
     System,
     /// A frozen instant, for runs that have to be reproducible: every call
@@ -43,75 +46,81 @@ pub enum DateTimeSource {
         unix_seconds: i64,
         /// Sub-second component, 0..=999_999. Anything larger raises.
         microsecond: u32,
-        /// Offset of the clock's local timezone from UTC, in seconds. Naive
-        /// `datetime.now()` and `date.today()` are read in this zone.
-        local_offset_seconds: i32,
     },
 }
 
 impl DateTimeSource {
-    /// Reads the clock. `None` is an unrepresentable [`Fixed`](Self::Fixed)
-    /// instant; callers handle [`CallHost`](Self::CallHost) before calling.
+    /// Reads the instant as a UTC wall clock. `None` is an unrepresentable
+    /// [`Fixed`](Self::Fixed) instant; callers handle
+    /// [`CallHost`](Self::CallHost) before calling.
     #[must_use]
-    pub fn read(self) -> Option<DateTimeReading> {
-        let reading = match self {
+    pub fn read(self) -> Option<NaiveDateTime> {
+        let utc = match self {
             Self::CallHost => return None,
-            Self::System => {
-                let now = Local::now();
-                DateTimeReading {
-                    utc: now.naive_utc(),
-                    local_offset_seconds: now.offset().local_minus_utc(),
-                }
-            }
+            Self::System => Local::now().naive_utc(),
             Self::Fixed {
                 unix_seconds,
                 microsecond,
-                local_offset_seconds,
             } => {
                 // Kept under a full second here rather than left to
                 // `from_timestamp`, which on the last second of a minute reads
                 // anything above one as a leap second and accepts it, yielding a
                 // `microsecond` no Python `datetime` can hold.
                 let nanoseconds = microsecond.checked_mul(1_000).filter(|ns| *ns < 1_000_000_000)?;
-                DateTimeReading {
-                    utc: DateTime::from_timestamp(unix_seconds, nanoseconds)?.naive_utc(),
-                    local_offset_seconds,
-                }
+                DateTime::from_timestamp(unix_seconds, nanoseconds)?.naive_utc()
             }
         };
         // All-or-nothing: an instant `datetime.now()` refuses is refused by
         // `time.time()` too.
-        reading.local(0).map(|_| reading)
+        local_wall_clock(utc, 0).map(|_| utc)
     }
 }
 
-/// One reading of a [`DateTimeSource`]: the UTC wall clock and the local
-/// zone's offset, from which each clock call derives its own value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DateTimeReading {
-    /// The instant, as a UTC wall clock.
-    pub utc: NaiveDateTime,
-    /// Offset of the local timezone from UTC, in seconds.
-    pub local_offset_seconds: i32,
+/// The local zone naive `datetime.now()` and `date.today()` read in, and
+/// what `astimezone()`, `time.tzname` and `%Z` will report once implemented.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum SandboxTimeZone {
+    /// Suspend the calls that need the zone to the host, which answers them.
+    CallHost,
+    /// The process's own local zone, at its offset for the instant read.
+    #[default]
+    System,
+    /// A fixed offset from UTC, with the name `datetime.timezone(offset, name)`
+    /// would carry. Not an IANA zone: there are no DST rules in the sandbox.
+    Fixed {
+        /// Offset from UTC, in seconds.
+        offset_seconds: i32,
+        /// The zone's name, if it has one.
+        name: Option<String>,
+    },
 }
 
-impl DateTimeReading {
-    /// The wall clock in a zone `offset_seconds` from UTC, or `None` outside
-    /// the 1..=9999 years Python's `datetime` can hold.
+impl SandboxTimeZone {
+    /// The zone's offset from UTC at `utc`, in seconds; `None` is
+    /// [`CallHost`](Self::CallHost).
     #[must_use]
-    pub fn local(&self, offset_seconds: i32) -> Option<NaiveDateTime> {
-        let shifted = self
-            .utc
-            .checked_add_signed(TimeDelta::seconds(i64::from(offset_seconds)))?;
-        (1..=9999).contains(&shifted.year()).then_some(shifted)
+    pub fn offset_seconds(&self, utc: NaiveDateTime) -> Option<i32> {
+        match self {
+            Self::CallHost => None,
+            Self::System => Some(Local.offset_from_utc_datetime(&utc).local_minus_utc()),
+            Self::Fixed { offset_seconds, .. } => Some(*offset_seconds),
+        }
     }
+}
 
-    /// The instant as `time.time()` reports it: seconds since the Unix epoch.
-    #[must_use]
-    pub fn unix_seconds(&self) -> f64 {
-        let epoch = self.utc.and_utc();
-        epoch.timestamp() as f64 + f64::from(epoch.timestamp_subsec_micros()) / 1_000_000.0
-    }
+/// The wall clock `offset_seconds` from UTC at `utc`, or `None` outside the
+/// 1..=9999 years Python's `datetime` can hold.
+#[must_use]
+pub fn local_wall_clock(utc: NaiveDateTime, offset_seconds: i32) -> Option<NaiveDateTime> {
+    let shifted = utc.checked_add_signed(TimeDelta::seconds(i64::from(offset_seconds)))?;
+    (1..=9999).contains(&shifted.year()).then_some(shifted)
+}
+
+/// The instant as `time.time()` reports it: seconds since the Unix epoch.
+#[must_use]
+pub fn unix_seconds(utc: NaiveDateTime) -> f64 {
+    let epoch = utc.and_utc();
+    epoch.timestamp() as f64 + f64::from(epoch.timestamp_subsec_micros()) / 1_000_000.0
 }
 
 /// What the sleep calls do.
@@ -143,7 +152,10 @@ impl Default for SleepMode {
 /// Where an unseeded `random` generator gets its first state.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum RandomStart {
-    /// From the sandbox's own OS entropy, never the host.
+    /// Suspend the first draw with an `os.urandom` call for one state vector
+    /// (2496 bytes), which the host answers.
+    CallHost,
+    /// From the sandbox's own OS entropy.
     #[default]
     Random,
     /// The module-level generator starts exactly as `random.seed(seed)` leaves

@@ -34,7 +34,8 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
-    types::{Path, file::FileName},
+    modules::random::RandomRetry,
+    types::{Path, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
 };
@@ -74,6 +75,7 @@ impl PendingEffect {
         match self {
             Self::Pre(effect) => Some(effect.operation_name()),
             Self::Post(PostConversionEffect::OpenName { .. }) => Some("open"),
+            Self::Post(PostConversionEffect::SeedRandom { .. }) => Some("os.urandom"),
             // `time.sleep` blocks by definition, so a future would leave the
             // sandbox running before the wait it asked for finished.
             Self::Post(PostConversionEffect::DiscardResult) => Some("time.sleep"),
@@ -157,11 +159,11 @@ impl PreConversionEffect {
     }
 }
 
-/// Applies the converted host value to VM state. The file variants own a
-/// reference to their heap object across the host yield (see
-/// `inc_ref_for_pending_oscall`) and `SleepResult` owns its value; each is
-/// released exactly once — on apply, or via [`Self::release`] when the effect
-/// is discarded.
+/// Applies the converted host value to VM state. The file variants and
+/// `SeedRandom`'s instance target own a reference to their heap object across
+/// the host yield (see `inc_ref_for_pending_oscall`) and `SleepResult` owns its
+/// value; each is released exactly once — on apply, or via [`Self::release`]
+/// when the effect is discarded.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PostConversionEffect {
     /// Store a full-file read result into the file buffer, then compute the
@@ -179,6 +181,13 @@ pub(crate) enum PostConversionEffect {
     },
     /// Preserve `open()`'s filename while the returned handle supplies the I/O target.
     OpenName { name: FileName },
+    /// Seed a `random` generator from the host's `os.urandom` reply, then
+    /// answer `None` (`seed()`) or re-run the draw that found it unseeded
+    /// (`retry`, which owns the call's arguments across the yield).
+    SeedRandom {
+        target: RandomTarget,
+        retry: Option<RandomRetry>,
+    },
     /// Drop the host's answer and evaluate to `None` (`time.sleep`, whose
     /// CPython return value is always `None`).
     DiscardResult,
@@ -191,19 +200,26 @@ pub(crate) enum PostConversionEffect {
 }
 
 impl PostConversionEffect {
-    /// Releases what the effect held across the yield: the pinned file handle
-    /// or a sleep's result. The single place that knows which variants carry a refcount.
+    /// Releases what the effect held across the yield: the pinned heap object
+    /// (a file handle, or a `random.Random` instance), any stashed arguments
+    /// and a sleep's result. The single place that knows which variants carry a refcount.
     pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
         match self {
             Self::BufferStore { file_id } | Self::WritePosition { file_id, .. } => heap.heap_mut().dec_ref(file_id),
             Self::OpenName { .. } | Self::DiscardResult => {}
             Self::SleepResult { result } => result.drop_with(heap),
+            Self::SeedRandom { target, retry } => {
+                if let RandomTarget::Instance(id) = target {
+                    heap.heap_mut().dec_ref(id);
+                }
+                retry.drop_with(heap);
+            }
         }
     }
 }
 
-/// Releases an effect that will never be resumed, dropping the heap pin or
-/// sleep result it carried (see `inc_ref_for_pending_oscall`).
+/// Releases an effect that will never be resumed, dropping the heap pin,
+/// arguments or sleep result it carried (see `inc_ref_for_pending_oscall`).
 ///
 /// Reached via the owner's `drop_with`, or `Drop for VM` once the effect is
 /// armed and no owning value remains.

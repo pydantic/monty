@@ -105,7 +105,7 @@ impl MontyRun {
     /// use monty_types::{AutoOsCalls, CompileOptions, DateTimeSource, MontyObject};
     ///
     /// let code = "from datetime import date\ndate.today().year".to_owned();
-    /// let datetime = DateTimeSource::Fixed { unix_seconds: 1_700_000_000, microsecond: 0, local_offset_seconds: 0 };
+    /// let datetime = DateTimeSource::Fixed { unix_seconds: 1_700_000_000, microsecond: 0 };
     /// let calls = AutoOsCalls { datetime, ..AutoOsCalls::default() };
     /// let runner = MontyRun::new(code, "today.py", vec![], CompileOptions::default()).unwrap().with_auto_os_calls(calls);
     /// assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::int(2023));
