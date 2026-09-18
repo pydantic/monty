@@ -79,8 +79,8 @@ session's `sleep` setting (see [time.md](time.md)):
     a pending future lets sibling tasks run.
 
 A sleep is a suspension, counted by `max_suspensions`, and under `'system'`
-is charged to `max_total_sleep`; neither is charged to `max_duration` (see
-[time.md](time.md)).
+is charged to `max_total_sleep`; neither is charged to `max_feed_duration` or
+`max_turn_duration` (see [time.md](time.md)).
 
 What follows from waiting at the call:
 

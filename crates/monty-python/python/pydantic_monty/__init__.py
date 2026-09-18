@@ -166,7 +166,7 @@ class ResourceLimits(TypedDict, total=False):
     max_total_sleep_secs: float | None
     """Maximum cumulative time the sandbox may spend waiting out `time.sleep()` and `asyncio.sleep()` itself.
 
-    Sandbox sleeps run off the `max_duration_secs` clock, so this is what bounds a sleeping loop; a sleep that
+    A sleep costs nothing against the duration limits, so this is what bounds a sleeping loop; a sleep that
     would go over is refused with an uncatchable `TimeoutError` before it waits."""
 
 
@@ -219,7 +219,7 @@ class AutoOSCalls(TypedDict, total=False):
 
     Given alongside any other `sleep` it is a `ValueError`, not ignored.
 
-    A wait costs nothing against `max_duration_secs`; each sleep is one suspension, and `max_total_sleep_secs`
+    A wait costs nothing against the duration limits; each sleep is one suspension, and `max_total_sleep_secs`
     bounds their sum."""
 
     random_start: Literal['system', 'call_host'] | RandomSeed

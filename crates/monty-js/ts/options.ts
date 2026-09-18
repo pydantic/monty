@@ -158,6 +158,9 @@ export interface EncodedAutoOsCalls {
 
 const SLEEP_MODES: readonly SleepMode[] = ['system', 'call_host', 'zero']
 
+/** Mirrors monty-types' `SleepMode::DEFAULT_MAX`: the cap on one `'system'` sleep, in seconds. */
+const DEFAULT_SLEEP_SYSTEM_MAX_SECS = 10
+
 /** The widest fixed zone `datetime.timezone` accepts: strictly within a day of UTC. */
 const MAX_TIMEZONE_OFFSET_SECONDS = 86_399
 
@@ -176,7 +179,7 @@ export interface SystemSleep {
 /** The sleep policy the encoded options imply for the session's host; see `SystemSleep`. */
 export function systemSleepOf(calls: EncodedAutoOsCalls): SystemSleep | null {
   if (calls.sleep !== undefined && calls.sleep !== 'system') return null
-  return { maxSecs: calls.sleepSystemMaxSecs ?? 10 }
+  return { maxSecs: calls.sleepSystemMaxSecs ?? DEFAULT_SLEEP_SYSTEM_MAX_SECS }
 }
 
 /**

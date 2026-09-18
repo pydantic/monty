@@ -444,7 +444,7 @@ fn the_system_maximum_cuts_a_long_sleep_short() {
     assert!(elapsed < Duration::from_secs(1), "took {elapsed:?}");
 }
 
-/// Sandbox sleeps are charged to `max_total_sleep`, which `max_duration`
+/// Sandbox sleeps are charged to `max_total_sleep`, which the duration limits
 /// cannot see: the sleep that would take the total over is refused before it
 /// waits, uncatchably, for `time.sleep` and a sandbox `asyncio.sleep` alike.
 #[test]

@@ -875,11 +875,6 @@ impl<'h> VM<'h> {
         Value::Ref(self.heap.allocate(HeapData::ExternalFuture(Box::new(future))))
     }
 
-    /// Gets the pending call IDs from the scheduler.
-    pub fn get_pending_call_ids(&self) -> Vec<CallId> {
-        self.scheduler.pending_call_ids()
-    }
-
     /// Raises `exc` uncatchably at the suspension point, for hosts enforcing
     /// a limit while execution is suspended.
     ///
@@ -939,7 +934,7 @@ impl<'h> VM<'h> {
             return self.run_external();
         }
 
-        let pending_call_ids = self.get_pending_call_ids();
+        let pending_call_ids = self.scheduler.pending_call_ids();
 
         if pending_call_ids.is_empty() {
             // A stalled turn loses one `feed_run`, aborting loses the session.

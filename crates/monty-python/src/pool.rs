@@ -28,6 +28,7 @@
 //! `print_callback` — always execute in the host process.
 
 use std::{
+    collections::HashSet,
     future::{Future, ready},
     num::NonZeroU32,
     path::PathBuf,
@@ -1403,6 +1404,8 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
     } = args;
     let lookup = ExternalLookup::new(py, external_lookup, &instances);
     let mut sleeps: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
+    // the call ids of those sleeps: the only futures this loop may be asked to resolve
+    let mut sleep_ids: HashSet<u32> = HashSet::new();
     let mut event = run_turn_sync(
         py,
         &checkout,
@@ -1443,6 +1446,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
             } if let Some(delay) = py.detach(|| block_on_sync(pending_system_sleep(&checkout)))? => {
                 match CoroutineMode::for_os_call(&function_name, allow_eager_await) {
                     CoroutineMode::Future => {
+                        sleep_ids.insert(call_id);
                         sleeps.spawn_on(
                             async move {
                                 tokio_sleep(delay).await;
@@ -1462,13 +1466,23 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                     }
                 }
             }
-            // Only the loop's own sleeps can be pending under `Monty`.
-            TurnEvent::ResolveFutures { .. } if !sleeps.is_empty() => {
+            // Only the loop's own sleeps can be pending under `Monty`: any other
+            // id would never be answered, so it is a bug here, not a stall.
+            TurnEvent::ResolveFutures { pending_call_ids } if !sleeps.is_empty() => {
+                if let Some(id) = pending_call_ids.iter().find(|id| !sleep_ids.contains(id)) {
+                    discard_checkout_sync(py, &checkout);
+                    return Err(PyRuntimeError::new_err(format!(
+                        "internal error: pending future {id} is not one of the pool's own sleeps"
+                    )));
+                }
                 let results = py.detach(|| block_on_sync(wait_for_futures(&mut sleeps)))??;
                 TurnAnswer::Futures(
                     results
                         .into_iter()
-                        .map(|(id, r)| ext_to_resume(r).map(|r| (id, r)))
+                        .map(|(id, r)| {
+                            sleep_ids.remove(&id);
+                            ext_to_resume(r).map(|r| (id, r))
+                        })
                         .collect::<PyResult<_>>()?,
                 )
             }
