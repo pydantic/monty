@@ -18,20 +18,18 @@ use std::{
         mpsc::{self, RecvTimeoutError},
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use ahash::AHashMap;
-use chrono::{Datelike, Timelike};
 // only the dump round-trip needs these, and it is skipped under memory-model-checks
 #[cfg(not(feature = "memory-model-checks"))]
 use monty::{Dump, Session, SessionRef, dump};
 use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
-    CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime, MontyException,
-    MontyFileHandle, MontyObject, MontyTimeZone, MontyUuid, NameLookupResult, OsFunctionCall, PrintWriter,
-    ResourceLimits, ResourceTracker, dir_stat, file_stat,
+    CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject,
+    MontyUuid, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -938,30 +936,17 @@ fn get_virtual_dir_entries(path: &str) -> Option<Vec<String>> {
 #[expect(clippy::cast_possible_wrap)] // Virtual file sizes are tiny, no wrap possible
 fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
     match call {
-        OsFunctionCall::DateToday => MontyObject::date(MontyDate {
-            year: 2023,
-            month: 11,
-            day: 15,
-        })
-        .into(),
-        OsFunctionCall::DateTimeNow(tz) => dispatch_datetime_now(tz.as_ref()).into(),
-        // Deterministic "entropy": a fixture can only assert invariants on
-        // unseeded draws anyway, since CPython's side reads real entropy.
+        // Deterministic "entropy" for explicit `os.urandom()`: a fixture can
+        // only assert invariants on it anyway, since CPython reads real entropy.
         OsFunctionCall::Urandom(args) => MontyObject::bytes(fixture_entropy(args.size)).into(),
-        // The clock calls above are frozen for reproducibility, but `time.time()`
-        // is only ever asserted against loosely (and CPython runs the same case
-        // against the real clock), so it reads the host's.
-        OsFunctionCall::Time => MontyObject::float(SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(
-            |before| -before.duration().as_secs_f64(),
-            |since_epoch| since_epoch.as_secs_f64(),
-        ))
-        .into(),
-        // Both sleeps wait here, so a gathered `asyncio.sleep` runs in series
-        // rather than concurrently — fine for fixtures, which sleep for
-        // milliseconds at most.
-        OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay) => {
-            thread::sleep(*delay);
-            MontyObject::none().into()
+        // The clock, the sleeps and `random`'s seed are answered in the
+        // sandbox (`AutoOsCalls::default()`), as they are for every embedder.
+        OsFunctionCall::DateToday
+        | OsFunctionCall::DateTimeNow(_)
+        | OsFunctionCall::Time
+        | OsFunctionCall::Sleep(_)
+        | OsFunctionCall::AsyncSleep(_) => {
+            unreachable!("{} is answered in the sandbox", call.name())
         }
         OsFunctionCall::GetEnviron => {
             let env_dict = vec![
@@ -1249,55 +1234,10 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
     }
 }
 
-/// Deterministic UTC timestamp for datetime test fixtures (2023-11-14 22:13:20 UTC).
-const DATETIME_FIXTURE_TIMESTAMP: i64 = 1_700_000_000;
-
 /// Answers `os.urandom(size)` with a fixed byte pattern of the requested length.
 fn fixture_entropy(size: u64) -> Vec<u8> {
     #[expect(clippy::cast_possible_truncation)] // reduced mod 256 first
     (0..size).map(|i| (i % 256) as u8).collect()
-}
-
-/// Dispatches a `DateTimeNow` OS call, returning a deterministic `MontyDateTime`.
-///
-/// The `tz` argument determines whether a naive or aware datetime is returned.
-/// The deterministic timestamp is 1_700_000_000 UTC (2023-11-14 22:13:20 UTC).
-/// For naive datetimes the virtual local offset is UTC+02:00.
-fn dispatch_datetime_now(tz: Option<&MontyTimeZone>) -> MontyObject {
-    match tz {
-        None => {
-            // Naive datetime: apply local offset to get local wall-clock time
-            // 1_700_000_000 UTC + 7200 = 2023-11-15 00:13:20 local
-            MontyObject::datetime(MontyDateTime {
-                year: 2023,
-                month: 11,
-                day: 15,
-                hour: 0,
-                minute: 13,
-                second: 20,
-                microsecond: 0,
-                offset_seconds: None,
-                timezone_name: None,
-            })
-        }
-        Some(tz) => {
-            // Aware datetime: convert UTC timestamp to the requested timezone
-            let offset_delta = chrono::TimeDelta::try_seconds(i64::from(tz.offset_seconds)).expect("valid offset");
-            let utc = chrono::DateTime::from_timestamp(DATETIME_FIXTURE_TIMESTAMP, 0).expect("valid timestamp");
-            let local = (utc + offset_delta).naive_utc();
-            MontyObject::datetime(MontyDateTime {
-                year: local.year(),
-                month: u8::try_from(local.month()).expect("month fits u8"),
-                day: u8::try_from(local.day()).expect("day fits u8"),
-                hour: u8::try_from(local.hour()).expect("hour fits u8"),
-                minute: u8::try_from(local.minute()).expect("minute fits u8"),
-                second: u8::try_from(local.second()).expect("second fits u8"),
-                microsecond: 0,
-                offset_seconds: Some(tz.offset_seconds),
-                timezone_name: tz.name.clone(),
-            })
-        }
-    }
 }
 
 /// Helper to create parent directories recursively.

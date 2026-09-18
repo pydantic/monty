@@ -9,11 +9,11 @@
 //! cloned, so the cost of a feed depends on the snippet, not on how much the
 //! session has already run.
 
-use std::{mem, ops::ControlFlow, sync::Arc};
+use std::{mem, sync::Arc};
 
 use ahash::AHashMap;
 use monty_types::{
-    CallArgs, ExcType, HostClock, MontyException, MontyObject, MontyUuid, NamedValues, OsFunctionCall, PrintWriter,
+    AutoOsCalls, CallArgs, ExcType, MontyException, MontyObject, MontyUuid, NamedValues, OsFunctionCall, PrintWriter,
     ResourceTracker,
     unstable::{self, MontyGraph, NodeId},
 };
@@ -29,12 +29,12 @@ use crate::{
     intern::Interns,
     name_map::NameMap,
     object_bridge::{MontyGraphExt, MontyObjectExt},
-    run::{CompileOptions, DEFAULT_CWD, Executor, ReplSession, default_clock},
+    run::{CompileOptions, DEFAULT_CWD, Executor, ReplSession},
     run_progress::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
         resume_lookup, resume_with_result,
     },
-    types::{Random, tuple::allocate_tuple},
+    types::{SessionRandom, tuple::allocate_tuple},
     value::Value,
     virtual_path::canonical_cwd,
 };
@@ -79,19 +79,17 @@ pub struct MontyRepl {
     /// at construction so all snippets compile consistently.
     #[serde(default)]
     options: CompileOptions,
-    /// Clock serving `date.today()` / `datetime.now()` on the non-suspending
-    /// [`feed_run`](Self::feed_run) and [`call_function`](Self::call_function)
-    /// paths. The host's own unless changed; see
-    /// [`with_host_clock`](Self::with_host_clock).
-    #[serde(default = "default_clock")]
-    clock: HostClock,
+    /// Which OS calls the session answers itself, on every path; see
+    /// [`with_auto_os_calls`](Self::with_auto_os_calls). Shared with each
+    /// snippet's executor rather than copied per feed.
+    auto_os_calls: Arc<AutoOsCalls>,
     /// Sandbox working directory the next snippet starts in: what
     /// [`set_cwd`](Self::set_cwd) chose, then whatever `os.chdir` left the
     /// last snippet in — the directory is session state, like the globals.
     cwd: Arc<str>,
-    /// The module-level `random` generator, carried between snippets like the
+    /// The session's `random` state, carried between snippets like the
     /// globals so a `random.seed()` in one feed governs the draws of the next.
-    random: Random,
+    random: SessionRandom,
     /// Persistent heap across snippets.
     heap: Heap,
     /// Persistent global variable values across snippets.
@@ -119,24 +117,22 @@ impl MontyRepl {
             interns: Interns::default(),
             sources: AHashMap::new(),
             options,
-            clock: default_clock(),
+            auto_os_calls: Arc::new(AutoOsCalls::default()),
             cwd: Arc::from(DEFAULT_CWD),
-            random: Random::default(),
+            random: SessionRandom::default(),
             heap,
             globals: Vec::new(),
         }
     }
 
-    /// Chooses what `date.today()` and `datetime.now()` read, replacing the
-    /// [`System`](HostClock::System) clock a session starts with.
-    ///
-    /// Only the non-suspending [`feed_run`](Self::feed_run) and
-    /// [`call_function`](Self::call_function) consult it. Under
-    /// [`feed_start`](Self::feed_start) the host answers both calls itself, so
-    /// a clock set here is ignored.
+    /// Chooses which OS calls the session answers itself — the clock, the
+    /// sleeps and `random`'s first state — replacing the
+    /// [`AutoOsCalls::default()`] a session starts with. Applies to every
+    /// path, [`feed_start`](Self::feed_start) included; see
+    /// [`MontyRun::with_auto_os_calls`](crate::MontyRun::with_auto_os_calls).
     #[must_use]
-    pub fn with_host_clock(mut self, clock: HostClock) -> Self {
-        self.clock = clock;
+    pub fn with_auto_os_calls(mut self, auto_os_calls: AutoOsCalls) -> Self {
+        self.auto_os_calls = Arc::new(auto_os_calls);
         self
     }
 
@@ -217,6 +213,7 @@ impl MontyRepl {
         let session = ReplSession {
             script_name: &this.script_name,
             cwd: &this.cwd,
+            auto_os_calls: &this.auto_os_calls,
         };
         let executor = match Executor::new_repl_snippet(
             code,
@@ -304,6 +301,7 @@ impl MontyRepl {
         let session = ReplSession {
             script_name: &self.script_name,
             cwd: &self.cwd,
+            auto_os_calls: &self.auto_os_calls,
         };
         let executor = Executor::new_repl_snippet(
             code,
@@ -313,8 +311,7 @@ impl MontyRepl {
             &input_names,
             self.options,
             session,
-        )?
-        .with_clock(self.clock);
+        )?;
 
         self.ensure_globals_size(executor.namespace_size());
 
@@ -403,9 +400,9 @@ impl MontyRepl {
             ReplSession {
                 script_name: &self.script_name,
                 cwd: &self.cwd,
+                auto_os_calls: &self.auto_os_calls,
             },
-        )?
-        .with_clock(self.clock);
+        )?;
         self.sources.insert(input_script_name, executor.code.clone());
 
         let original_globals_len = self.globals.len();
@@ -446,16 +443,10 @@ impl MontyRepl {
                                 vm.push(value);
                                 vm.run_external()
                             }
-                            // A granted clock is the session's, not the entry
-                            // point's: `date.today()` / `datetime.now()` are
-                            // answered here exactly as `feed_run` answers them.
-                            Ok(exit) => match executor.resolve_clock_call(vm, exit) {
-                                ControlFlow::Continue(resumed) => resumed,
-                                ControlFlow::Break(exit) => {
-                                    let error = vm.unsupported_frame_exit("MontyRepl::call_function", exit);
-                                    vm.resume_with_exception(error)
-                                }
-                            },
+                            Ok(exit) => {
+                                let error = vm.unsupported_frame_exit("MontyRepl::call_function", exit);
+                                vm.resume_with_exception(error)
+                            }
                             Err(error) => {
                                 break Err(error.into_python_exception(&executor.interns, |fname| {
                                     self.sources.get(fname).map(|source| &**source)
@@ -1248,7 +1239,7 @@ impl ReplSnapshot {
 /// `random` generator, and the working directory when the snippet (or the
 /// snapshot it resumed from) owns one, so an `os.chdir` or a `random.seed()`
 /// persists into later feeds like the globals do.
-fn reclaim_vm_state(globals: &mut Vec<Value>, cwd: &mut Arc<str>, random: &mut Random, vm: &mut VM<'_>) {
+fn reclaim_vm_state(globals: &mut Vec<Value>, cwd: &mut Arc<str>, random: &mut SessionRandom, vm: &mut VM<'_>) {
     *globals = vm.take_globals();
     if let Some(changed) = vm.take_changed_cwd() {
         *cwd = Arc::from(changed);

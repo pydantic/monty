@@ -1,30 +1,33 @@
-//! `random` at the host boundary: repr output, entropy callbacks and state
-//! preserved across snapshots and REPL feeds.
+//! `random` at the host boundary: repr output, how an unseeded generator
+//! takes its first state (`RandomStart`), and state preserved across
+//! snapshots and REPL feeds.
 //!
 //! Seeded values are pinned against a live CPython in `test_cases/`; these
-//! tests cover only what a fixture cannot drive — the suspension itself.
+//! tests cover only what a fixture cannot drive — the host-chosen start.
 
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyType, OsFunctionCall, PrintWriter,
+    AutoOsCalls, CompileOptions, MontyObject, MontyType, OsFunctionCall, PrintWriter, RandomSeed, RandomStart,
     ResourceTracker, UrandomArgs,
     unstable::{self, MontyNode},
 };
 
-/// Bytes of entropy an unseeded generator asks for: one MT19937 state vector.
-const SEED_BYTES: usize = 2496;
-
-/// A fixed "entropy" reply. Its top byte is non-zero, so CPython seeds
-/// identically from `int.from_bytes(pattern, 'little')`, which is how
-/// [`PATTERN_FIRST_RANDOM`] was obtained.
-fn pattern() -> MontyObject {
-    #[expect(clippy::cast_possible_truncation, reason = "reduced mod 256 first")]
-    MontyObject::bytes((0..SEED_BYTES).map(|i| (i % 256) as u8).collect::<Vec<u8>>())
+/// A runner for `code` that starts `random` from `seed`.
+fn seeded_runner(code: &str, seed: RandomSeed) -> MontyRun {
+    let auto_os_calls = AutoOsCalls {
+        random_start: RandomStart::Seed(seed),
+        ..AutoOsCalls::default()
+    };
+    MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .with_auto_os_calls(auto_os_calls)
 }
 
-/// CPython's first `random()` after seeding from [`pattern`].
-const PATTERN_FIRST_RANDOM: f64 = 0.246_986_487_449_397_1;
+/// Runs `code` with `random` started from `seed`.
+fn run_seeded(code: &str, seed: RandomSeed) -> MontyObject {
+    seeded_runner(code, seed).run_no_limits(vec![]).unwrap()
+}
 
 /// Generator state and constructors stay in the sandbox, including inside returned containers.
 #[test]
@@ -54,51 +57,26 @@ fn start(code: &str) -> RunProgress {
         .unwrap()
 }
 
-/// Asserts `progress` is paused on the entropy call and hands it back.
-fn expect_entropy_call(progress: RunProgress) -> monty::OsCall {
-    match progress {
-        RunProgress::OsCall(call) => {
-            assert!(
-                matches!(call.function_call, OsFunctionCall::Urandom(UrandomArgs { size: 2496 })),
-                "expected os.urandom(2496), got {:?}",
-                call.function_call
-            );
-            call
-        }
-        other => panic!("expected an OsCall suspension, got {other:?}"),
+/// An unseeded generator seeds itself from OS entropy on its first draw, so
+/// nothing suspends and two runs disagree.
+#[test]
+fn an_unseeded_draw_never_suspends() {
+    let draw = || {
+        start("import random\nrandom.random()")
+            .into_complete()
+            .expect("entropy is read in the sandbox")
+    };
+    let (first, second) = (draw(), draw());
+    for value in [&first, &second] {
+        let Some(value) = value.as_ref().as_float() else {
+            panic!("expected a float, got {value:?}");
+        };
+        assert!((0.0..1.0).contains(&value));
     }
+    assert_ne!(first, second);
 }
 
-#[test]
-fn an_unseeded_draw_asks_the_host_for_one_state_vector() {
-    let call = expect_entropy_call(start("import random\nrandom.random()"));
-    let result = call
-        .resume(pattern(), PrintWriter::Stdout)
-        .unwrap()
-        .into_complete()
-        .unwrap();
-    assert_eq!(result, MontyObject::float(PATTERN_FIRST_RANDOM));
-}
-
-#[test]
-fn the_reply_seeds_every_later_draw_without_suspending_again() {
-    let code = "import random\nfirst = random.random()\n[first, random.randint(1, 100), random.random() < 1.0]";
-    let call = expect_entropy_call(start(code));
-    let result = call
-        .resume(pattern(), PrintWriter::Stdout)
-        .unwrap()
-        .into_complete()
-        .unwrap();
-    assert_eq!(
-        result,
-        MontyObject::list([
-            MontyObject::float(PATTERN_FIRST_RANDOM),
-            MontyObject::int(77),
-            MontyObject::bool(true),
-        ])
-    );
-}
-
+/// A seeded generator produces CPython's sequence and never suspends.
 #[test]
 fn seeded_code_never_suspends() {
     let progress = start("import random\nrandom.seed(42)\nrandom.random()");
@@ -108,105 +86,69 @@ fn seeded_code_never_suspends() {
     );
 }
 
+/// `RandomStart::Seed(s)` starts the module generator exactly as
+/// `random.seed(s)` would, for every seed type CPython accepts. The values
+/// are CPython's: `random.seed(s); random.random(), random.randint(1, 100)`.
 #[test]
-fn explicit_seed_with_no_argument_reseeds_from_the_host() {
-    let call = expect_entropy_call(start("import random\nrandom.seed(1)\nrandom.seed()\nrandom.random()"));
-    let result = call
-        .resume(pattern(), PrintWriter::Stdout)
-        .unwrap()
-        .into_complete()
-        .unwrap();
-    assert_eq!(result, MontyObject::float(PATTERN_FIRST_RANDOM));
-}
-
-#[test]
-fn an_unseeded_instance_seeds_itself_even_when_nothing_else_holds_it() {
-    // The instance is a temporary: only the suspension's pin keeps it alive.
-    let call = expect_entropy_call(start("import random\nrandom.Random().random()"));
-    let result = call
-        .resume(pattern(), PrintWriter::Stdout)
-        .unwrap()
-        .into_complete()
-        .unwrap();
-    assert_eq!(result, MontyObject::float(PATTERN_FIRST_RANDOM));
-}
-
-#[test]
-fn a_wrong_sized_reply_is_a_runtime_error() {
-    let call = expect_entropy_call(start("import random\nrandom.random()"));
-    let err = call
-        .resume(MontyObject::bytes(vec![1, 2, 3]), PrintWriter::Stdout)
-        .unwrap_err();
-    assert_snapshot!(err.to_string(), @r#"
-    Traceback (most recent call last):
-      File "test.py", line 2, in <module>
-        random.random()
-        ~~~~~~~~~~~~~~~
-    RuntimeError: 'os.urandom' returned 3 bytes, expected 2496
-    "#);
-
-    let call = expect_entropy_call(start("import random\nrandom.random()"));
-    let err = call
-        .resume(MontyObject::string("nope".to_owned()), PrintWriter::Stdout)
-        .unwrap_err();
-    assert_snapshot!(err.to_string(), @r#"
-    Traceback (most recent call last):
-      File "test.py", line 2, in <module>
-        random.random()
-        ~~~~~~~~~~~~~~~
-    RuntimeError: 'os.urandom' must return bytes, not str
-    "#);
-}
-
-#[test]
-fn a_host_error_leaves_the_generator_unseeded_and_catchable() {
-    let code = "\
-import random
-try:
-    random.random()
-except OSError as exc:
-    caught = str(exc)
-[caught, random.random()]";
-    let call = expect_entropy_call(start(code));
-    let error = ExtFunctionResult::Error(MontyException::new(ExcType::OSError, Some("no entropy".to_owned())));
-    // The draw retries on the next call, so a second suspension follows the caught error.
-    let call = expect_entropy_call(call.resume(error, PrintWriter::Stdout).unwrap());
-    let result = call
-        .resume(pattern(), PrintWriter::Stdout)
-        .unwrap()
-        .into_complete()
-        .unwrap();
+fn a_session_seed_matches_random_seed() {
+    let code = "import random\n[random.random(), random.randint(1, 100)]";
+    for (seed, expected) in [
+        (RandomSeed::Int(42.into()), (0.639_426_798_457_883_7, 4)),
+        (RandomSeed::Int((-42).into()), (0.639_426_798_457_883_7, 4)),
+        (
+            RandomSeed::Int(num_bigint::BigInt::from(2u8).pow(70)),
+            (0.232_788_271_830_183_8, 54),
+        ),
+        (RandomSeed::Float(1.5), (0.551_763_726_942_059, 33)),
+        (RandomSeed::Str("abc".to_owned()), (0.772_024_631_415_754_5, 72)),
+        (RandomSeed::Bytes(b"abc".to_vec()), (0.772_024_631_415_754_5, 72)),
+    ] {
+        assert_eq!(
+            run_seeded(code, seed.clone()),
+            MontyObject::list([MontyObject::float(expected.0), MontyObject::int(expected.1)]),
+            "seed {seed:?}"
+        );
+    }
+    // `random.seed(42)` in the sandbox lands on the same state
     assert_eq!(
-        result,
-        MontyObject::list([
-            MontyObject::string("no entropy".to_owned()),
-            MontyObject::float(PATTERN_FIRST_RANDOM),
-        ])
+        run_seeded(
+            "import random\nrandom.seed(42)\nrandom.random()",
+            RandomSeed::Str("x".to_owned())
+        ),
+        MontyObject::float(0.639_426_798_457_883_7)
     );
 }
 
+/// Under a session seed, unseeded instances and `seed()` take deterministic
+/// states derived from it: the same from run to run, but distinct from the
+/// module generator's and from each other.
 #[test]
-fn a_dump_taken_while_waiting_for_entropy_resumes_the_stashed_draw() {
-    let code = "import random\nrandom.choice(['a', 'b', 'c']) + random.choice('xyz')";
-    let progress = start(code);
-    let bytes = dump("test.py", None, SessionRef::Running(&progress)).unwrap();
-    let Session::Running(loaded) = Dump::load(&bytes).unwrap().state else {
-        panic!("expected a running session");
+fn derived_states_are_deterministic_and_distinct() {
+    let code = "import random\n\
+                a = random.Random().random()\n\
+                b = random.Random().random()\n\
+                m = random.random()\n\
+                random.seed()\n\
+                r = random.random()\n\
+                [a, b, m, r, len({a, b, m, r})]";
+    let first = run_seeded(code, RandomSeed::Int(42.into()));
+    let second = run_seeded(code, RandomSeed::Int(42.into()));
+    assert_eq!(first, second);
+    let Some(values) = first.as_ref().items() else {
+        panic!("expected a list");
     };
+    assert_eq!(values[2], MontyObject::float(0.639_426_798_457_883_7));
+    assert_eq!(values[4], MontyObject::int(4));
+}
 
-    let from_original = expect_entropy_call(progress)
-        .resume(pattern(), PrintWriter::Stdout)
-        .unwrap()
+/// `random.seed()` with no argument reseeds from entropy, so the draw that
+/// follows no longer matches the explicit seed.
+#[test]
+fn explicit_seed_with_no_argument_reseeds_from_entropy() {
+    let result = start("import random\nrandom.seed(42)\nrandom.seed()\nrandom.random()")
         .into_complete()
         .unwrap();
-    let from_loaded = expect_entropy_call(*loaded)
-        .resume(pattern(), PrintWriter::Stdout)
-        .unwrap()
-        .into_complete()
-        .unwrap();
-    assert_eq!(from_original, from_loaded);
-    // CPython: two `choice` draws after seeding from the same bytes.
-    assert_eq!(from_original, MontyObject::string("ax".to_owned()));
+    assert_ne!(result, MontyObject::float(0.639_426_798_457_883_7));
 }
 
 #[test]
@@ -255,23 +197,6 @@ fn os_urandom_accepts_only_bytes_of_the_requested_length() {
 }
 
 #[test]
-fn standard_execution_has_no_host_to_ask() {
-    let err = MontyRun::new(
-        "import random\nrandom.random()".to_owned(),
-        "test.py",
-        vec![],
-        CompileOptions::default(),
-    )
-    .unwrap()
-    .run_no_limits(vec![])
-    .unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "NotImplementedError: OS function 'os.urandom' not implemented with standard execution"
-    );
-}
-
-#[test]
 fn the_module_generator_persists_across_repl_feeds() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run("import random\nrandom.seed(5)", vec![], PrintWriter::Stdout)
@@ -294,4 +219,27 @@ fn the_module_generator_persists_across_repl_feeds() {
         .feed_run("import random\nrandom.random()", vec![], PrintWriter::Stdout)
         .unwrap();
     assert_eq!(actual, expected);
+}
+
+/// The session seed applies to the first draw whichever feed makes it, and
+/// travels through a dump like the generator itself.
+#[test]
+fn a_session_seed_applies_across_repl_feeds_and_dumps() {
+    let auto_os_calls = AutoOsCalls {
+        random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
+        ..AutoOsCalls::default()
+    };
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default())
+        .with_auto_os_calls(auto_os_calls);
+    repl.feed_run("import random", vec![], PrintWriter::Stdout).unwrap();
+    let bytes = dump("test.py", None, SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected an idle session");
+    };
+    for repl in [&mut repl, &mut restored] {
+        assert_eq!(
+            repl.feed_run("random.random()", vec![], PrintWriter::Stdout).unwrap(),
+            MontyObject::float(0.639_426_798_457_883_7)
+        );
+    }
 }

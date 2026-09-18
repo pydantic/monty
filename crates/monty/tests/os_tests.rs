@@ -6,9 +6,23 @@
 
 use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
 use monty_types::{
-    CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime, MontyException,
-    MontyFileHandle, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker, dir_stat, file_stat,
+    AutoOsCalls, CallArgs, CompileOptions, DateTimeSource, ExcType, ExtFunctionResult, FileMode, MontyDate,
+    MontyDateTime, MontyException, MontyFileHandle, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker,
+    SleepMode, dir_stat, file_stat,
 };
+
+/// A runner whose clock and sleep calls reach the host, so the tests below
+/// see them as OS calls rather than answered in the sandbox.
+fn host_runner(code: &str) -> MontyRun {
+    let auto_os_calls = AutoOsCalls {
+        datetime: DateTimeSource::CallHost,
+        sleep: SleepMode::CallHost,
+        ..AutoOsCalls::default()
+    };
+    MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .with_auto_os_calls(auto_os_calls)
+}
 
 /// Helper to run code and extract the OsCall progress.
 ///
@@ -17,7 +31,7 @@ use monty_types::{
 /// positional args projected via `to_args`. State is resumed with a mock
 /// result to properly clean up ref counts.
 fn run_to_oscall(code: &str) -> (&'static str, Vec<MontyObject>) {
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let runner = host_runner(code);
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
@@ -86,7 +100,7 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
 
 /// Helper to run code, provide an OS call result, and get the final value.
 fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (&'static str, Vec<MontyObject>, MontyObject) {
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let runner = host_runner(code);
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
@@ -1352,7 +1366,7 @@ some_external('x')
 }
 
 // =============================================================================
-// time.time() / time.sleep() / asyncio.sleep()
+// time.time() / time.sleep() / asyncio.sleep() when they reach the host
 // =============================================================================
 
 #[test]
@@ -1394,13 +1408,7 @@ fn time_sleep_discards_the_host_answer() {
 /// so the sandbox refuses one rather than carrying on.
 #[test]
 fn time_sleep_refuses_a_future_answer() {
-    let runner = MontyRun::new(
-        "import time\ntime.sleep(0)".to_owned(),
-        "test.py",
-        vec![],
-        CompileOptions::default(),
-    )
-    .unwrap();
+    let runner = host_runner("import time\ntime.sleep(0)");
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
@@ -1461,13 +1469,7 @@ fn asyncio_sleep_result_need_not_be_convertible() {
 /// produces `result` whatever the host resolved with.
 #[test]
 fn asyncio_sleep_answered_with_a_future_blocks_until_resolved() {
-    let runner = MontyRun::new(
-        "import asyncio\nasyncio.run(asyncio.sleep(5, 'late'))".to_owned(),
-        "test.py",
-        vec![],
-        CompileOptions::default(),
-    )
-    .unwrap();
+    let runner = host_runner("import asyncio\nasyncio.run(asyncio.sleep(5, 'late'))");
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
@@ -1499,7 +1501,7 @@ fn asyncio_sleep_answered_with_a_future_blocks_until_resolved() {
 #[test]
 fn asyncio_sleep_awaited_at_once_allows_an_eager_answer() {
     let code = "import asyncio\nasync def main():\n    return await asyncio.sleep(5, 'late')\nasyncio.run(main())";
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let runner = host_runner(code);
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
@@ -1526,7 +1528,7 @@ fn only_an_immediately_awaited_asyncio_sleep_allows_an_eager_answer() {
         ),
         ("import time\ntime.sleep(0)", MontyObject::none()),
     ] {
-        let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let runner = host_runner(code);
         let progress = runner
             .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
             .unwrap();
@@ -1545,7 +1547,7 @@ fn only_an_immediately_awaited_asyncio_sleep_allows_an_eager_answer() {
 #[test]
 fn unawaited_sleep_future_releases_its_result() {
     let code = "import asyncio\nx = asyncio.sleep(5, [1, 2])\n'done'";
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let runner = host_runner(code);
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
@@ -1567,7 +1569,7 @@ fn unawaited_sleep_future_releases_its_result() {
 #[test]
 fn asyncio_sleep_answered_with_a_failed_future_raises() {
     let code = "import asyncio\nasync def main():\n    try:\n        await asyncio.sleep(5, [1, 2])\n    except OSError as e:\n        return str(e)\nasyncio.run(main())";
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let runner = host_runner(code);
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();

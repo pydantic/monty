@@ -7,10 +7,10 @@
 //! module-level functions and the `random.Random` methods share one
 //! dispatcher, [`random_dispatch`], parameterised by the [`RandomTarget`].
 //!
-//! Entropy comes from the host: an unseeded generator suspends with an
-//! `os.urandom` call on its first draw, and the resume ([`apply_seed_random`])
-//! seeds it and re-runs the draw. See `limitations/random.md` for the
-//! divergences.
+//! An unseeded generator takes its first state from the session's
+//! `RandomStart` on its first draw — OS entropy, or a state derived from a
+//! host-chosen seed — so no draw ever suspends to the host. See
+//! `limitations/random.md` for the divergences.
 
 use std::{
     cmp::Ordering,
@@ -20,7 +20,7 @@ use std::{
 };
 
 use ahash::AHashSet;
-use monty_types::{OsFunctionCall, ResourceTracker, UrandomArgs};
+use monty_types::ResourceTracker;
 use num_bigint::{BigInt, BigUint};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -31,16 +31,15 @@ use crate::{
     bytecode::{CallResult, VM, unpack_exact},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    os_dispatch::{PostConversionEffect, urandom_reply_error},
     types::{
         List, LongInt, Module, PyTrait, Type,
         bytes::allocate_bytes,
         iter::collect_owned_iterable,
         long_int::bigint_to_f64_checked,
-        random::{Mt19937, RandomTarget, SEED_BYTES, seed_key_from_value},
+        random::{Mt19937, RandomTarget, seed_key_from_value},
         tuple::{TupleVec, allocate_tuple},
     },
     value::{VALUE_SIZE, Value, float_pow},
@@ -130,116 +129,30 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 
 /// Dispatches a module-level call, which acts on the VM's own generator.
 pub(super) fn call(vm: &mut VM<'_>, function: RandomFunctions, args: ArgValues) -> RunResult<CallResult> {
-    random_dispatch(RandomTarget::Global, function, args, vm)
+    random_dispatch(RandomTarget::Global, function, args, vm).map(CallResult::Value)
 }
 
 /// Runs `function` against `target`'s generator, for module functions and
 /// `Random` methods alike.
 ///
-/// A draw from an unseeded generator suspends for host entropy instead,
-/// stashing the call in a [`RandomRetry`] that the resume replays once the
-/// generator is seeded. Only `seed(x)` and `setstate()` never need entropy.
+/// An unseeded generator is seeded first from the session's `RandomStart`,
+/// so a draw never suspends. Only `seed(x)` and `setstate()` skip that.
 pub(crate) fn random_dispatch(
     target: RandomTarget,
     function: RandomFunctions,
     args: ArgValues,
     vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
+) -> RunResult<Value> {
     match function {
         RandomFunctions::Seed => seed(target, args, vm),
-        RandomFunctions::Setstate => setstate(target, args, vm).map(CallResult::Value),
-        _ if !target.is_seeded(vm) => Ok(request_entropy(target, Some(RandomRetry { function, args }), vm)),
-        _ => call_seeded(target, function, args, vm).map(CallResult::Value),
-    }
-}
-
-/// A draw stashed while its generator waits for host entropy, replayed by
-/// [`apply_seed_random`]. Owns the call's arguments across the yield.
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct RandomRetry {
-    function: RandomFunctions,
-    args: ArgValues,
-}
-
-impl<C: ContainsHeap> DropWithContext<C> for RandomRetry {
-    fn drop_with(self, ctx: &mut C) {
-        self.args.drop_with(ctx);
-    }
-}
-
-/// Suspends for [`SEED_BYTES`] of host entropy, pinning an instance target
-/// across the yield (released by [`apply_seed_random`] or the effect's `release`).
-fn request_entropy(target: RandomTarget, retry: Option<RandomRetry>, vm: &mut VM<'_>) -> CallResult {
-    if let RandomTarget::Instance(id) = target {
-        vm.heap.inc_ref(id);
-    }
-    CallResult::OsCallWithEffect {
-        call: OsFunctionCall::Urandom(UrandomArgs {
-            size: SEED_BYTES as u64,
-        }),
-        effect: PostConversionEffect::SeedRandom { target, retry }.into(),
-    }
-}
-
-/// Resume half of [`request_entropy`]: seeds `target` from the host's
-/// `os.urandom` reply, then answers `None` (`seed()`) or replays the stashed
-/// draw. The instance pin is dropped on every path.
-pub(crate) fn apply_seed_random(
-    target: RandomTarget,
-    retry: Option<RandomRetry>,
-    reply: Value,
-    vm: &mut VM<'_>,
-) -> RunResult<Value> {
-    let result = seed_from_reply(target, retry, reply, vm);
-    if let RandomTarget::Instance(id) = target {
-        vm.heap.dec_ref(id);
-    }
-    result
-}
-
-/// [`apply_seed_random`] without the unpin: validates the reply as exactly
-/// [`SEED_BYTES`] bytes, seeds, and replays.
-fn seed_from_reply(
-    target: RandomTarget,
-    retry: Option<RandomRetry>,
-    reply: Value,
-    vm: &mut VM<'_>,
-) -> RunResult<Value> {
-    defer_drop!(reply, vm);
-    let seeded = match value_as_bytes(reply, vm) {
-        Some(bytes) if bytes.len() == SEED_BYTES => Ok(Mt19937::from_entropy(bytes)),
-        Some(bytes) => Err(urandom_reply_error(Ok(bytes.len()), SEED_BYTES)),
-        None => Err(urandom_reply_error(Err(&reply.py_type_name(vm)), SEED_BYTES)),
-    };
-    let rng = match seeded {
-        Ok(rng) => rng,
-        Err(err) => {
-            retry.drop_with(vm);
-            return Err(err);
-        }
-    };
-    target.reseed(vm, rng);
-    match retry {
-        None => Ok(Value::None),
-        Some(RandomRetry { function, args }) => match random_dispatch(target, function, args, vm)? {
-            CallResult::Value(value) => Ok(value),
-            other => {
-                other.drop_with(vm);
-                unreachable!("a seeded generator never suspends")
+        RandomFunctions::Setstate => setstate(target, args, vm),
+        _ => {
+            if !target.is_seeded(vm) {
+                let state = vm.random.first_state(target, &vm.env.auto_os_calls.random_start);
+                target.reseed(vm, state);
             }
-        },
-    }
-}
-
-/// Borrows the bytes behind a `bytes` value, interned or heap-allocated.
-fn value_as_bytes<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<&'a [u8]> {
-    match value {
-        Value::InternBytes(id) => Some(vm.interns.get_bytes(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(bytes) => Some(bytes.as_slice()),
-            _ => None,
-        },
-        _ => None,
+            call_seeded(target, function, args, vm)
+        }
     }
 }
 
@@ -288,18 +201,20 @@ struct SeedArgs {
     version: Value,
 }
 
-/// `seed(a=None, version=2)`: `None` asks the host for entropy (and answers
-/// `None` on resume); anything else seeds synchronously.
-fn seed(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+/// `seed(a=None, version=2)`: `None` takes a fresh state from the session's
+/// `RandomStart` (entropy, or the next state derived from the session seed);
+/// anything else seeds as `random.py` does.
+fn seed(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     let SeedArgs { a, version } = SeedArgs::from_args(args, vm)?;
     defer_drop!(a, vm);
     defer_drop!(version, vm);
-    if matches!(a, Value::None) {
-        return Ok(request_entropy(target, None, vm));
-    }
-    let key = seed_key_from_value(a, version_number(version), vm)?;
-    target.reseed(vm, Mt19937::from_key(&key));
-    Ok(CallResult::Value(Value::None))
+    let state = if matches!(a, Value::None) {
+        vm.random.fresh_state(&vm.env.auto_os_calls.random_start)
+    } else {
+        Mt19937::from_key(&seed_key_from_value(a, version_number(version), vm)?)
+    };
+    target.reseed(vm, state);
+    Ok(Value::None)
 }
 
 /// The `version` a seed call named, for the `== 1` / `== 2` tests in

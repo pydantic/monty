@@ -2452,7 +2452,6 @@ name = "monty-datatest"
 version = "0.0.23"
 dependencies = [
  "ahash",
- "chrono",
  "datatest-stable",
  "monty",
  "monty-fs",

@@ -8,7 +8,7 @@
 //! Other asyncio functions (`create_task`, `wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
 
-use monty_types::{OsFunctionCall, sleep_duration_saturating};
+use monty_types::{OsFunctionCall, SleepMode, sleep_duration_saturating};
 use num_traits::ToPrimitive;
 
 use crate::{
@@ -68,18 +68,21 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
     }
 }
 
-/// `asyncio.sleep(delay, result=None)` — an awaitable the host completes.
+/// `asyncio.sleep(delay, result=None)` — an awaitable that produces `result`
+/// once the wait is over, the wait being whatever the session's `SleepMode`
+/// says.
 ///
-/// Unlike CPython, the call itself suspends to the host rather than returning
-/// a coroutine that starts on `await`: the wait is the host's to schedule, and
-/// only it knows whether it can run other tasks meanwhile. A host with an
-/// event loop should answer with a pending future so sibling tasks keep
-/// running; one without can wait inline and answer with anything. Either way
-/// [`PostConversionEffect::SleepResult`] keeps `result` in the sandbox and
-/// makes it the value of the `await`. See `limitations/asyncio.md`.
+/// Unlike CPython, the wait starts at the call rather than at the `await`.
+/// In the sandbox it is a timer the scheduler serves while sibling tasks run
+/// (or an inline wait when the call is awaited at once with nothing else to
+/// run), cut to `sandbox_sleep_clamp`. Under `CallHost` the call suspends: a
+/// host with an event loop answers with a pending future so sibling tasks
+/// keep running, one without waits inline and answers with anything, and
+/// [`PostConversionEffect::SleepResult`] keeps `result` in the sandbox either
+/// way. See `limitations/asyncio.md`.
 fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let SleepArgs { delay, result } = SleepArgs::from_args(args, vm)?;
-    // `result` outlives `delay`: it moves into the effect once the delay is valid.
+    // `result` outlives `delay`: it moves into the awaitable once the delay is valid.
     let mut result_guard = DropGuard::new(result, vm);
     let delay = {
         let (_, vm) = result_guard.as_parts_mut();
@@ -88,10 +91,27 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         // NaN is the one delay CPython refuses; the rest clamp.
         sleep_duration_saturating(seconds).map_err(|_| ExcType::value_error("Invalid delay: NaN (not a number)"))?
     };
-    let (result, _) = result_guard.into_parts();
-    Ok(CallResult::OsCallWithEffect {
-        call: OsFunctionCall::AsyncSleep(delay),
-        effect: PostConversionEffect::SleepResult { result }.into(),
+    let (result, vm) = result_guard.into_parts();
+    let calls = vm.env.auto_os_calls;
+    Ok(match calls.sleep {
+        SleepMode::CallHost => CallResult::OsCallWithEffect {
+            call: OsFunctionCall::AsyncSleep(delay),
+            effect: PostConversionEffect::SleepResult { result }.into(),
+        },
+        SleepMode::Zero => CallResult::Value(vm.settled_awaitable(result)),
+        SleepMode::SandboxSleep => {
+            let delay = delay.min(calls.sandbox_sleep_clamp);
+            if delay.is_zero() {
+                CallResult::Value(vm.settled_awaitable(result))
+            } else if vm.allow_eager_await() {
+                // Awaited at once with nothing else to run: waiting here is
+                // indistinguishable from a timer and skips the bookkeeping.
+                vm.heap.tracker.sandbox_sleep(delay);
+                CallResult::Value(vm.settled_awaitable(result))
+            } else {
+                CallResult::Value(vm.add_sandbox_timer(delay, result))
+            }
+        }
     })
 }
 

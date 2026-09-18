@@ -581,7 +581,7 @@ impl Type {
                 Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
             }
             (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
-            (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm.heap, args),
+            (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm, args),
             (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
             (Self::Date, Some(StaticStrings::Fromisoformat)) => {
                 date::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)

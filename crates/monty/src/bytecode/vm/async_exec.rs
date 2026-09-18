@@ -6,7 +6,11 @@
 //! - Task completion and failure handling
 //! - External future resolution
 
-use std::{mem, task::Poll};
+use std::{
+    mem,
+    task::Poll,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
@@ -834,6 +838,13 @@ impl<'h> VM<'h> {
     /// Allocates the pending `ExternalFuture`, indexes it for the host's
     /// resolution and pushes it as the call's value.
     fn push_pending_future(&mut self, call_id: CallId, sleep_result: Option<Value>) {
+        let future = self.pending_future(call_id, sleep_result);
+        self.push(future);
+    }
+
+    /// Allocates a pending `ExternalFuture` for `call_id`, indexed in the
+    /// scheduler so a resolution can find it, and returns the user's reference.
+    fn pending_future(&mut self, call_id: CallId, sleep_result: Option<Value>) -> Value {
         let future_id = self
             .heap
             .allocate(HeapData::ExternalFuture(Box::new(ExternalFuture::new_pending(
@@ -841,7 +852,46 @@ impl<'h> VM<'h> {
                 sleep_result,
             ))));
         self.scheduler.add_pending_external(call_id, future_id, self.heap);
-        self.push(Value::Ref(future_id));
+        Value::Ref(future_id)
+    }
+
+    /// An `asyncio.sleep(delay, result)` the sandbox serves itself: a pending
+    /// awaitable that [`Self::wait_sandbox_timers`] resolves with `result`
+    /// once `delay` has passed, letting sibling tasks run meanwhile.
+    pub(crate) fn add_sandbox_timer(&mut self, delay: Duration, result: Value) -> Value {
+        let call_id = self.allocate_call_id();
+        let future = self.pending_future(call_id, Some(result));
+        let deadline = unix_micros_now().saturating_add(i64::try_from(delay.as_micros()).unwrap_or(i64::MAX));
+        self.scheduler.add_timer(call_id, deadline);
+        future
+    }
+
+    /// Serves the sandbox timers when every task is blocked: sleeps until the
+    /// earliest deadline (off the execution clock), fires every timer then
+    /// due and activates the first task that woke. `false` means no timer is
+    /// pending, so the `ResolveFutures` exit really is the host's to answer.
+    ///
+    /// Each wait is capped at `sandbox_sleep_clamp` and always fires the
+    /// earliest timer, so a wall clock jumping backwards costs at most one
+    /// clamp per timer rather than a stall.
+    pub(super) fn wait_sandbox_timers(&mut self) -> RunResult<bool> {
+        loop {
+            let Some(earliest) = self.scheduler.earliest_timer() else {
+                return Ok(false);
+            };
+            let now = unix_micros_now();
+            let remaining = u64::try_from(earliest.deadline_unix_micros.saturating_sub(now)).unwrap_or(0);
+            let wait = Duration::from_micros(remaining).min(self.env.auto_os_calls.sandbox_sleep_clamp);
+            self.heap.tracker.sandbox_sleep(wait);
+            let now = unix_micros_now().max(earliest.deadline_unix_micros);
+            for call_id in self.scheduler.take_due_timers(now) {
+                self.resolve_future(call_id.raw(), Value::None);
+            }
+            if let Some(next_task_id) = self.scheduler.next_ready_task() {
+                self.activate_task(next_task_id)?;
+                return Ok(true);
+            }
+        }
     }
 
     /// Allocates an `ExternalFuture` already resolved with `value`, for an OS
@@ -860,11 +910,6 @@ impl<'h> VM<'h> {
             sleep_result: None,
         };
         Value::Ref(self.heap.allocate(HeapData::ExternalFuture(Box::new(future))))
-    }
-
-    /// Gets the pending call IDs from the scheduler.
-    pub fn get_pending_call_ids(&self) -> Vec<CallId> {
-        self.scheduler.pending_call_ids()
     }
 
     /// Raises `exc` uncatchably at the suspension point, for hosts enforcing
@@ -919,24 +964,26 @@ impl<'h> VM<'h> {
     /// Returns an internal error if neither runnable tasks nor pending calls remain.
     pub fn resume_with_resolved_futures(&mut self, results: Vec<(u32, ExtFunctionResult)>) -> RunResult<FrameExit> {
         self.apply_future_results(results)?;
-        if let Some(next_task_id) = self.scheduler.next_ready_task() {
-            if let Err(error) = self.activate_task(next_task_id) {
-                return self.resume_with_exception(error);
-            }
-            return self.run_external();
-        }
-
-        let pending_call_ids = self.get_pending_call_ids();
-
-        if pending_call_ids.is_empty() {
-            // A stalled turn loses one `feed_run`, aborting loses the session.
-            Err(RunError::internal(
-                "asyncio scheduler stalled: no ready tasks and no pending external calls",
-            ))
-        } else {
-            Ok(FrameExit::ResolveFutures(pending_call_ids))
+        // A sandbox timer is served here too: the host's answer may have
+        // woken nothing while a sleep is still the next thing due.
+        let woke = match self.scheduler.next_ready_task() {
+            Some(next_task_id) => self.activate_task(next_task_id).map(|()| true),
+            None => self.wait_sandbox_timers(),
+        };
+        match woke {
+            Ok(true) => self.run_external(),
+            Ok(false) => self.pending_futures_exit(),
+            Err(error) => self.resume_with_exception(error),
         }
     }
+}
+
+/// The wall clock as microseconds since the Unix epoch, for timer deadlines.
+fn unix_micros_now() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(
+        |before| -i64::try_from(before.duration().as_micros()).unwrap_or(i64::MAX),
+        |since| i64::try_from(since.as_micros()).unwrap_or(i64::MAX),
+    )
 }
 
 /// One gather part-way through being committed — a frame of the walk in

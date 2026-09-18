@@ -1,13 +1,12 @@
 //! Implementation of the `time` module.
 //!
-//! Two functions, both of which need the host: `time()` reads its clock and
-//! `sleep()` asks it to wait. Neither is served in the interpreter — they
-//! yield an [`OsFunctionCall`] the host permits, serves or refuses, exactly
-//! like `date.today()`. See `limitations/time.md` for what diverges from
-//! CPython; the monotonic clocks and the `struct_time` family are absent
-//! rather than stubbed, so they raise `AttributeError` up front.
+//! Two functions, `time()` and `sleep()`, each answered in the sandbox or
+//! suspended to the host as the session's `AutoOsCalls` says, exactly like
+//! `date.today()`. See `limitations/time.md` for what diverges from CPython;
+//! the monotonic clocks and the `struct_time` family are absent rather than
+//! stubbed, so they raise `AttributeError` up front.
 
-use monty_types::{OsFunctionCall, SleepError, sleep_duration};
+use monty_types::{OsFunctionCall, SleepError, SleepMode, sleep_duration};
 use num_traits::ToPrimitive;
 
 use crate::{
@@ -18,7 +17,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
-    types::{Module, PyTrait},
+    types::{Module, PyTrait, datetime::sandbox_now},
     value::Value,
 };
 
@@ -56,24 +55,25 @@ pub(super) fn call(vm: &mut VM<'_>, function: TimeFunctions, args: ArgValues) ->
     }
 }
 
-/// `time.time()` — seconds since the Unix epoch, as a float.
-///
-/// The host answers from whatever clock it exposes, so the value need not
-/// agree with the machine's wall clock (and a host with no clock refuses it).
+/// `time.time()` — seconds since the Unix epoch, as a float, read from the
+/// session's clock. Under `CallHost` the host answers from whatever clock it
+/// exposes, so the value need not agree with the machine's wall clock.
 fn time(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("time.time", vm.heap)?;
-    Ok(CallResult::OsCall(OsFunctionCall::Time))
+    match sandbox_now(vm)? {
+        None => Ok(CallResult::OsCall(OsFunctionCall::Time)),
+        Some(reading) => Ok(CallResult::Value(Value::Float(reading.unix_seconds()))),
+    }
 }
 
-/// `time.sleep(seconds)` — suspend until the host says the wait is over.
+/// `time.sleep(seconds)` — wait as the session's `SleepMode` says.
 ///
-/// The sandbox holds no clock and cannot block, so the wait is the host's to
-/// perform; [`PostConversionEffect::DiscardResult`] then makes the call
-/// evaluate to `None` whatever the host answered with, matching CPython.
-///
-/// The duration limits do not run while the sandbox is suspended, so a sleep
-/// is bounded by the host's own turn deadline and by `max_suspensions` rather
-/// than by `max_feed_duration`/`max_turn_duration` (see `limitations/time.md`).
+/// A sandbox wait is cut to `sandbox_sleep_clamp` and runs off the execution
+/// clock, so it counts against neither `max_feed_duration` nor `max_suspensions`.
+/// Under `CallHost` the wait is the host's to perform, and
+/// [`PostConversionEffect::DiscardResult`] makes the call evaluate to `None`
+/// whatever the host answered with. The argument is validated identically in
+/// every mode, so the CPython errors do not depend on the mode.
 fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     // METH_O in CPython: keywords are refused wholesale, before arity.
     let seconds = args
@@ -87,9 +87,18 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         })
     });
     seconds.drop_with(vm.heap);
-    Ok(CallResult::OsCallWithEffect {
-        call: OsFunctionCall::Sleep(result?),
-        effect: PostConversionEffect::DiscardResult.into(),
+    let duration = result?;
+    let calls = vm.env.auto_os_calls;
+    Ok(match calls.sleep {
+        SleepMode::CallHost => CallResult::OsCallWithEffect {
+            call: OsFunctionCall::Sleep(duration),
+            effect: PostConversionEffect::DiscardResult.into(),
+        },
+        SleepMode::Zero => CallResult::Value(Value::None),
+        SleepMode::SandboxSleep => {
+            vm.heap.tracker.sandbox_sleep(duration.min(calls.sandbox_sleep_clamp));
+            CallResult::Value(Value::None)
+        }
     })
 }
 

@@ -680,7 +680,7 @@ impl ResourceTracker {
 
     /// Blocks for `duration` with the execution clock stopped: a sleep the
     /// sandbox serves itself (`time.sleep`, a sandbox `asyncio.sleep` timer)
-    /// counts against neither `max_duration` nor the host's suspension budget,
+    /// counts against neither `max_feed_duration` nor the host's suspension budget,
     /// exactly as a host-performed one would not. The clock restarts only if
     /// it was running, so this is safe outside an execution window too.
     ///
