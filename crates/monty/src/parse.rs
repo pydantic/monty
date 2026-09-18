@@ -2390,7 +2390,7 @@ fn describe_expr_kind(expr: &AstExpr) -> &'static str {
 /// on the relevant line only) at diagnostic time.
 #[derive(Clone, Copy, Default, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CodeRange {
-    /// Interned filename ID - look up in Interns to get the actual string.
+    /// Filename identity, resolved by `Interns::get_filename`.
     pub filename: StringId,
     /// Byte offset of the range start within the source text.
     pub start_byte: u32,

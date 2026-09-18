@@ -2079,8 +2079,14 @@ impl Interns {
         intern_static(&self.static_string_ids, &self.strings, value)
     }
 
-    /// Looks up text; snippet filename IDs display as `<string>`.
+    /// Looks up a Python string; filename identities use `get_filename` instead.
+    #[inline]
     pub fn get_str(&self, id: StringId) -> &str {
+        get_str(&self.strings, id)
+    }
+
+    /// Resolves a traceback filename, displaying each snippet's source identity as `<string>`.
+    pub(crate) fn get_filename(&self, id: StringId) -> &str {
         if id.index() >= SOURCE_ID_BASE {
             assert!(
                 id.index() - SOURCE_ID_BASE < self.eval_sources.len(),
@@ -2098,16 +2104,19 @@ impl Interns {
     }
 
     /// Borrows a committed bytes literal.
+    #[inline]
     pub fn get_bytes(&self, id: BytesId) -> &[u8] {
         self.bytes[id.index()].value()
     }
 
     /// Borrows a committed integer literal.
+    #[inline]
     pub fn get_long_int(&self, id: LongIntId) -> &BigInt {
         self.long_ints[id.index()].value()
     }
 
     /// Borrows a function; later compilation cannot invalidate this reference.
+    #[inline]
     pub fn get_function(&self, id: FunctionId) -> &Function {
         &self.functions[id.index()]
     }

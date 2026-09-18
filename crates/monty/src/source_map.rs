@@ -197,7 +197,7 @@ pub(crate) trait StackFrameExt {
     /// expands the position's byte offsets to line/column and a preview
     /// line via `source_map`.
     fn from_raw(f: &RawStackFrame, interns: &Interns, source_map: &mut SourceMap<'_>) -> StackFrame {
-        let filename = interns.get_str(f.position.filename).to_string();
+        let filename = interns.get_filename(f.position.filename).to_string();
         let (start, end, preview_line) = source_map.resolve_range(f.position);
         StackFrame {
             filename,

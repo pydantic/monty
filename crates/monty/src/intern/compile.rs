@@ -110,9 +110,7 @@ impl<'i> CompileInterns<'i> {
     /// Borrows either committed or pending text for preparation and diagnostics.
     pub(crate) fn get_str(&self, id: StringId) -> &str {
         let base = next_string_id(self.base.strings.len()).index();
-        if id.index() >= SOURCE_ID_BASE {
-            "<string>"
-        } else if id.index() >= base {
+        if id.index() >= base {
             self.strings[id.index() - base].as_str()
         } else {
             self.base.get_str(id)

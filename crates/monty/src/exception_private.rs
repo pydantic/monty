@@ -2531,7 +2531,8 @@ impl ExceptionRaise {
                     let sm_idx = if let Some(i) = cache.iter().position(|(k, _)| *k == fname_id) {
                         i
                     } else {
-                        let src = eval_source.unwrap_or_else(|| source_for(interns.get_str(fname_id)).unwrap_or(""));
+                        let src =
+                            eval_source.unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
                         cache.push((fname_id, SourceMap::new(src)));
                         cache.len() - 1
                     };

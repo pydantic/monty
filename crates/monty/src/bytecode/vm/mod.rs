@@ -497,6 +497,89 @@ impl<'code> CallFrame<'code> {
 }
 
 impl CallFrame<'_> {
+    /// Fetches `N` operand bytes with a single bounds check and advances the frame IP.
+    #[inline]
+    fn fetch_array<const N: usize>(&mut self) -> [u8; N] {
+        let Some(bytes) = self.bytecode.get(self.ip..).and_then(<[u8]>::first_chunk::<N>) else {
+            unreachable!("instruction IP is out of bounds of the bytecode")
+        };
+        self.ip += N;
+        *bytes
+    }
+
+    /// Fetches a `u8` operand at the current IP.
+    #[inline]
+    fn fetch_u8(&mut self) -> u8 {
+        self.fetch_array::<1>()[0]
+    }
+
+    /// Fetches an `i8` operand at the current IP.
+    #[inline]
+    fn fetch_i8(&mut self) -> i8 {
+        self.fetch_u8().cast_signed()
+    }
+
+    /// Fetches a little-endian `u16` operand at the current IP.
+    #[inline]
+    fn fetch_u16(&mut self) -> u16 {
+        u16::from_le_bytes(self.fetch_array())
+    }
+
+    /// Fetches a little-endian `i16` operand at the current IP.
+    #[inline]
+    fn fetch_i16(&mut self) -> i16 {
+        self.fetch_u16().cast_signed()
+    }
+
+    /// Fetches two consecutive `u8` operands in a single bounds check.
+    ///
+    /// Mirrors `CodeBuilder::emit_u8_u8` on the encode side.
+    #[inline]
+    fn fetch_u8_u8(&mut self) -> (u8, u8) {
+        let [a, b] = self.fetch_array();
+        (a, b)
+    }
+
+    /// Fetches a little-endian `u16` followed by a `u8`, in a single bounds check.
+    ///
+    /// Mirrors `CodeBuilder::emit_u16_u8` on the encode side.
+    #[inline]
+    fn fetch_u16_u8(&mut self) -> (u16, u8) {
+        let [a, b, c] = self.fetch_array();
+        (u16::from_le_bytes([a, b]), c)
+    }
+
+    /// Fetches two consecutive little-endian `u16`s, in a single bounds check.
+    ///
+    /// Mirrors the `Operand::U16U16` encoding (e.g. `LoadGlobalCallable`).
+    #[inline]
+    fn fetch_u16_u16(&mut self) -> (u16, u16) {
+        let [a, b, c, d] = self.fetch_array();
+        (u16::from_le_bytes([a, b]), u16::from_le_bytes([c, d]))
+    }
+
+    /// Fetches a little-endian `u16` followed by two `u8`s, in a single bounds check.
+    ///
+    /// Mirrors `CodeBuilder::emit_u16_u8_u8` on the encode side.
+    #[inline]
+    fn fetch_u16_u8_u8(&mut self) -> (u16, u8, u8) {
+        let [a, b, c, d] = self.fetch_array();
+        (u16::from_le_bytes([a, b]), c, d)
+    }
+
+    /// Fetches two little-endian `u16`s followed by a `u8`, in a single bounds check.
+    ///
+    /// Mirrors `CodeBuilder::emit_name_op` on the encode side.
+    #[inline]
+    fn fetch_u16_u16_u8(&mut self) -> (u16, u16, u8) {
+        let [slot_lo, slot_hi, name_lo, name_hi, flags] = self.fetch_array();
+        (
+            u16::from_le_bytes([slot_lo, slot_hi]),
+            u16::from_le_bytes([name_lo, name_hi]),
+            flags,
+        )
+    }
+
     /// Start of this frame's locals region on the VM stack.
     #[inline]
     pub(super) fn stack_base(&self) -> usize {
@@ -1221,8 +1304,8 @@ impl<'h> VM<'h> {
                 }
                 // Constants & Literals
                 Opcode::LoadConst => {
-                    let idx = self.fetch_u16();
-                    let value = self.constant(idx);
+                    let idx = self.current_frame.fetch_u16();
+                    let value = self.current_frame.code.constant(idx);
                     // Handle InternLongInt specially - convert to heap-allocated LongInt
                     if let Value::InternLongInt(long_int_id) = value {
                         let bi = self.interns.get_long_int(*long_int_id).clone();
@@ -1240,7 +1323,7 @@ impl<'h> VM<'h> {
                     self.push(Value::Ref(cell_id));
                 }
                 Opcode::LoadSmallInt => {
-                    let n = self.fetch_i8();
+                    let n = self.current_frame.fetch_i8();
                     self.push(Value::Int(i64::from(n)));
                 }
                 // Variables - Specialized Local Loads (no operand)
@@ -1250,23 +1333,23 @@ impl<'h> VM<'h> {
                 Opcode::LoadLocal3 => try_catch!(self, self.load_local(3)),
                 // Variables - General Local Operations
                 Opcode::LoadLocal => {
-                    let slot = u16::from(self.fetch_u8());
+                    let slot = u16::from(self.current_frame.fetch_u8());
                     try_catch!(self, self.load_local(slot));
                 }
                 Opcode::LoadLocalW => {
-                    let slot = self.fetch_u16();
+                    let slot = self.current_frame.fetch_u16();
                     try_catch!(self, self.load_local(slot));
                 }
                 Opcode::StoreLocal => {
-                    let slot = u16::from(self.fetch_u8());
+                    let slot = u16::from(self.current_frame.fetch_u8());
                     self.store_local(slot);
                 }
                 Opcode::StoreLocalW => {
-                    let slot = self.fetch_u16();
+                    let slot = self.current_frame.fetch_u16();
                     self.store_local(slot);
                 }
                 Opcode::LiftToTop => {
-                    let n = self.fetch_u8();
+                    let n = self.current_frame.fetch_u8();
                     // Move the item at TOS - n to TOS, shifting items in
                     // between down by one. Single `rotate_left(1)` on the
                     // affected slice does exactly that.
@@ -1275,56 +1358,56 @@ impl<'h> VM<'h> {
                     self.stack[src_idx..].rotate_left(1);
                 }
                 Opcode::RaiseUnboundLocal => {
-                    let name_idx = self.fetch_u16();
+                    let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
                     catch!(self, self.unbound_local_error(0, Some(name_id)));
                 }
                 Opcode::DeleteLocal => {
-                    let slot = u16::from(self.fetch_u8());
+                    let slot = u16::from(self.current_frame.fetch_u8());
                     self.delete_local(slot);
                 }
                 Opcode::DeleteGlobal => {
-                    let slot = self.fetch_u16();
+                    let slot = self.current_frame.fetch_u16();
                     try_catch!(self, self.delete_global(slot));
                 }
                 // Variables - runtime name resolution (eval/exec snippets)
                 Opcode::LoadName => {
-                    let (slot, name_idx, flags) = self.fetch_u16_u16_u8();
+                    let (slot, name_idx, flags) = self.current_frame.fetch_u16_u16_u8();
                     handle_load_result!(self, self.load_name(slot, StringId::from_index(name_idx), flags));
                 }
                 Opcode::StoreName => {
-                    let (slot, name_idx, flags) = self.fetch_u16_u16_u8();
+                    let (slot, name_idx, flags) = self.current_frame.fetch_u16_u16_u8();
                     try_catch!(self, self.store_name(slot, StringId::from_index(name_idx), flags));
                 }
                 Opcode::DeleteName => {
-                    let (slot, name_idx, flags) = self.fetch_u16_u16_u8();
+                    let (slot, name_idx, flags) = self.current_frame.fetch_u16_u16_u8();
                     try_catch!(self, self.delete_name(slot, StringId::from_index(name_idx), flags));
                 }
                 // Variables - Global Operations
                 Opcode::LoadGlobal => {
-                    let slot = self.fetch_u16();
+                    let slot = self.current_frame.fetch_u16();
                     handle_load_result!(self, self.load_global(slot));
                 }
                 Opcode::LoadGlobalCallable => {
-                    let (slot, name_idx) = self.fetch_u16_u16();
+                    let (slot, name_idx) = self.current_frame.fetch_u16_u16();
                     let name_id = StringId::from_index(name_idx);
                     self.load_global_callable(slot, name_id);
                 }
                 Opcode::StoreGlobal => {
-                    let slot = self.fetch_u16();
+                    let slot = self.current_frame.fetch_u16();
                     self.store_global(slot);
                 }
                 // Variables - Cell Operations (closures)
                 Opcode::LoadCell => {
-                    let slot = self.fetch_u16();
+                    let slot = self.current_frame.fetch_u16();
                     try_catch!(self, self.load_cell(slot));
                 }
                 Opcode::StoreCell => {
-                    let slot = self.fetch_u16();
+                    let slot = self.current_frame.fetch_u16();
                     self.store_cell(slot);
                 }
                 Opcode::DeleteCell => {
-                    let slot = self.fetch_u16();
+                    let slot = self.current_frame.fetch_u16();
                     self.delete_cell(slot);
                 }
                 // Binary Operations - route through exception handling for tracebacks
@@ -1422,27 +1505,27 @@ impl<'h> VM<'h> {
                 }
                 // Collection Building - route through exception handling
                 Opcode::BuildList => {
-                    let count = self.fetch_u16() as usize;
+                    let count = self.current_frame.fetch_u16() as usize;
                     self.build_list(count);
                 }
                 Opcode::BuildTuple => {
-                    let count = self.fetch_u16() as usize;
+                    let count = self.current_frame.fetch_u16() as usize;
                     self.build_tuple(count);
                 }
                 Opcode::BuildDict => {
-                    let count = self.fetch_u16() as usize;
+                    let count = self.current_frame.fetch_u16() as usize;
                     try_catch!(self, self.build_dict(count));
                 }
                 Opcode::BuildSet => {
-                    let count = self.fetch_u16() as usize;
+                    let count = self.current_frame.fetch_u16() as usize;
                     try_catch!(self, self.build_set(count));
                 }
                 Opcode::FormatValue => {
-                    let flags = self.fetch_u8();
+                    let flags = self.current_frame.fetch_u8();
                     try_catch!(self, self.format_value(flags));
                 }
                 Opcode::BuildFString => {
-                    let count = self.fetch_u16() as usize;
+                    let count = self.current_frame.fetch_u16() as usize;
                     try_catch!(self, self.build_fstring(count));
                 }
                 Opcode::BuildSlice => {
@@ -1455,33 +1538,33 @@ impl<'h> VM<'h> {
                     try_catch!(self, self.list_to_tuple());
                 }
                 Opcode::DictMerge => {
-                    let func_name_id = self.fetch_u16();
+                    let func_name_id = self.current_frame.fetch_u16();
                     try_catch!(self, self.dict_merge(func_name_id));
                 }
                 Opcode::MethodDictMerge => {
-                    let func_name_id = self.fetch_u16();
+                    let func_name_id = self.current_frame.fetch_u16();
                     try_catch!(self, self.method_dict_merge(func_name_id));
                 }
                 // PEP 448 literal building
                 Opcode::DictUpdate => {
-                    let depth = self.fetch_u8() as usize;
+                    let depth = self.current_frame.fetch_u8() as usize;
                     try_catch!(self, self.dict_update(depth));
                 }
                 Opcode::SetExtend => {
-                    let depth = self.fetch_u8() as usize;
+                    let depth = self.current_frame.fetch_u8() as usize;
                     try_catch!(self, self.set_extend(depth));
                 }
                 // Comprehension Building - append/add/set items during iteration
                 Opcode::ListAppend => {
-                    let depth = self.fetch_u8() as usize;
+                    let depth = self.current_frame.fetch_u8() as usize;
                     try_catch!(self, self.list_append(depth));
                 }
                 Opcode::SetAdd => {
-                    let depth = self.fetch_u8() as usize;
+                    let depth = self.current_frame.fetch_u8() as usize;
                     try_catch!(self, self.set_add(depth));
                 }
                 Opcode::DictSetItem => {
-                    let depth = self.fetch_u8() as usize;
+                    let depth = self.current_frame.fetch_u8() as usize;
                     try_catch!(self, self.dict_set_item(depth));
                 }
                 // Subscript & Attribute - route through exception handling
@@ -1508,27 +1591,27 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::LoadAttr => {
-                    let name_idx = self.fetch_u16();
+                    let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
                     handle_call_result!(self, self.load_attr(name_id));
                 }
                 Opcode::LoadAttrImport => {
-                    let name_idx = self.fetch_u16();
+                    let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
                     handle_call_result!(self, self.load_attr_import(name_id));
                 }
                 Opcode::StoreAttr => {
-                    let name_idx = self.fetch_u16();
+                    let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
                     try_catch!(self, self.store_attr(name_id));
                 }
                 // Control Flow - use self.current_frame.ip directly for jumps
                 Opcode::Jump => {
-                    let offset = self.fetch_i16();
+                    let offset = self.current_frame.fetch_i16();
                     jump_relative!(self.current_frame.ip, offset);
                 }
                 Opcode::JumpIfTrue => {
-                    let offset = self.fetch_i16();
+                    let offset = self.current_frame.fetch_i16();
                     let cond = self.pop();
                     let result = cond.py_bool(self);
                     cond.drop_with(self);
@@ -1539,7 +1622,7 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::JumpIfFalse => {
-                    let offset = self.fetch_i16();
+                    let offset = self.current_frame.fetch_i16();
                     let cond = self.pop();
                     let result = cond.py_bool(self);
                     cond.drop_with(self);
@@ -1550,7 +1633,7 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::JumpIfTrueOrPop => {
-                    let offset = self.fetch_i16();
+                    let offset = self.current_frame.fetch_i16();
                     let value = self.pop();
                     match value.py_bool(self) {
                         Ok(true) => {
@@ -1565,7 +1648,7 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::JumpIfFalseOrPop => {
-                    let offset = self.fetch_i16();
+                    let offset = self.current_frame.fetch_i16();
                     let value = self.pop();
                     match value.py_bool(self) {
                         Ok(true) => value.drop_with(self),
@@ -1590,7 +1673,7 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::ForIter => {
-                    let offset = self.fetch_i16();
+                    let offset = self.current_frame.fetch_i16();
                     // Iterator implementations return heap objects from `py_iter`.
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
@@ -1619,16 +1702,16 @@ impl<'h> VM<'h> {
                 }
                 // Function Calls
                 Opcode::CallFunction => {
-                    let arg_count = self.fetch_u8() as usize;
+                    let arg_count = self.current_frame.fetch_u8() as usize;
                     handle_call_result!(self, self.exec_call_function(arg_count));
                 }
                 Opcode::CallBuiltinFunction => {
-                    let (builtin_id, arg_count) = self.fetch_u8_u8();
+                    let (builtin_id, arg_count) = self.current_frame.fetch_u8_u8();
                     let result = self.exec_call_builtin_function(builtin_id, arg_count as usize);
                     handle_call_result!(self, result);
                 }
                 Opcode::CallBuiltinType => {
-                    let (type_id, arg_count) = self.fetch_u8_u8();
+                    let (type_id, arg_count) = self.current_frame.fetch_u8_u8();
                     let arg_count = arg_count as usize;
 
                     match self.exec_call_builtin_type(type_id, arg_count) {
@@ -1638,13 +1721,13 @@ impl<'h> VM<'h> {
                 }
                 Opcode::CallFunctionKw => {
                     // Fetch operands: pos_count, kw_count, then kw_count name indices
-                    let (pos_count, kw_count) = self.fetch_u8_u8();
+                    let (pos_count, kw_count) = self.current_frame.fetch_u8_u8();
                     let (pos_count, kw_count) = (pos_count as usize, kw_count as usize);
 
                     // Read keyword name StringIds
                     let mut kwname_ids = Vec::with_capacity(kw_count);
                     for _ in 0..kw_count {
-                        kwname_ids.push(StringId::from_index(self.fetch_u16()));
+                        kwname_ids.push(StringId::from_index(self.current_frame.fetch_u16()));
                     }
 
                     handle_call_result!(self, self.exec_call_function_kw(pos_count, kwname_ids));
@@ -1652,7 +1735,7 @@ impl<'h> VM<'h> {
                 Opcode::CallAttr => {
                     // CallAttr: u16 name_id, u8 arg_count
                     // Stack: [obj, arg1, arg2, ..., argN] -> [result]
-                    let (name_idx, arg_count) = self.fetch_u16_u8();
+                    let (name_idx, arg_count) = self.current_frame.fetch_u16_u8();
                     let name_id = StringId::from_index(name_idx);
                     let arg_count = arg_count as usize;
 
@@ -1661,26 +1744,26 @@ impl<'h> VM<'h> {
                 Opcode::CallAttrKw => {
                     // CallAttrKw: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices
                     // Stack: [obj, pos_args..., kw_values...] -> [result]
-                    let (name_idx, pos_count, kw_count) = self.fetch_u16_u8_u8();
+                    let (name_idx, pos_count, kw_count) = self.current_frame.fetch_u16_u8_u8();
                     let name_id = StringId::from_index(name_idx);
                     let (pos_count, kw_count) = (pos_count as usize, kw_count as usize);
 
                     // Read keyword name StringIds
                     let mut kwname_ids = Vec::with_capacity(kw_count);
                     for _ in 0..kw_count {
-                        kwname_ids.push(StringId::from_index(self.fetch_u16()));
+                        kwname_ids.push(StringId::from_index(self.current_frame.fetch_u16()));
                     }
 
                     handle_call_result!(self, self.exec_call_attr_kw(name_id, pos_count, kwname_ids));
                 }
                 Opcode::CallFunctionExtended => {
-                    let flags = self.fetch_u8();
+                    let flags = self.current_frame.fetch_u8();
                     let has_kwargs = (flags & 0x01) != 0;
 
                     handle_call_result!(self, self.exec_call_function_extended(has_kwargs));
                 }
                 Opcode::CallAttrExtended => {
-                    let (name_idx, flags) = self.fetch_u16_u8();
+                    let (name_idx, flags) = self.current_frame.fetch_u16_u8();
                     let name_id = StringId::from_index(name_idx);
                     let has_kwargs = (flags & 0x01) != 0;
 
@@ -1688,7 +1771,7 @@ impl<'h> VM<'h> {
                 }
                 // Function Definition
                 Opcode::MakeFunction => {
-                    let (func_idx, defaults_count) = self.fetch_u16_u8();
+                    let (func_idx, defaults_count) = self.current_frame.fetch_u16_u8();
                     let func_id = FunctionId::from_index(func_idx);
                     let defaults_count = defaults_count as usize;
 
@@ -1718,7 +1801,7 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::MakeClosure => {
-                    let (func_idx, defaults_count, cell_count) = self.fetch_u16_u8_u8();
+                    let (func_idx, defaults_count, cell_count) = self.current_frame.fetch_u16_u8_u8();
                     let func_id = FunctionId::from_index(func_idx);
                     let (defaults_count, cell_count) = (defaults_count as usize, cell_count as usize);
 
@@ -1788,13 +1871,15 @@ impl<'h> VM<'h> {
                     yield_if_parked!(self);
                 }
                 Opcode::Assert => {
-                    match decode_assert_flags(self.fetch_u8()).expect("invalid assert flags in bytecode") {
+                    match decode_assert_flags(self.current_frame.fetch_u8()).expect("invalid assert flags in bytecode")
+                    {
                         Some(op) => try_catch!(self, self.assert_cmp(op)),
                         None => try_catch!(self, self.assert_test()),
                     }
                 }
                 Opcode::AssertFailed => {
-                    let cmp_op = decode_assert_flags(self.fetch_u8()).expect("invalid assert flags in bytecode");
+                    let cmp_op =
+                        decode_assert_flags(self.current_frame.fetch_u8()).expect("invalid assert flags in bytecode");
                     let error = self.assert_failed_msg(cmp_op);
                     catch!(self, error);
                 }
@@ -1927,11 +2012,11 @@ impl<'h> VM<'h> {
                 }
                 // Unpacking - route through exception handling
                 Opcode::UnpackSequence => {
-                    let count = self.fetch_u8() as usize;
+                    let count = self.current_frame.fetch_u8() as usize;
                     try_catch!(self, self.unpack_sequence(count));
                 }
                 Opcode::UnpackEx => {
-                    let (before, after) = self.fetch_u8_u8();
+                    let (before, after) = self.current_frame.fetch_u8_u8();
                     try_catch!(self, self.unpack_ex(before as usize, after as usize));
                 }
                 // Special
@@ -1940,7 +2025,7 @@ impl<'h> VM<'h> {
                 }
                 // Module Operations
                 Opcode::LoadModule => {
-                    let module_id = self.fetch_u16();
+                    let module_id = self.current_frame.fetch_u16();
                     try_catch!(self, self.load_module(module_id));
                 }
                 // Context Managers
@@ -2122,96 +2207,6 @@ impl<'h> VM<'h> {
     #[inline]
     pub(super) fn current_frame_mut(&mut self) -> &mut CallFrame<'h> {
         &mut self.current_frame
-    }
-
-    /// Returns a constant from the running frame's compiled body.
-    #[inline]
-    fn constant(&self, index: u16) -> &Value {
-        self.current_frame.code.constant(index)
-    }
-
-    /// Fetches `N` operand bytes with a single bounds check and advances the frame IP.
-    #[inline]
-    fn fetch_array<const N: usize>(&mut self) -> [u8; N] {
-        let frame = &mut self.current_frame;
-        let Some(bytes) = frame.bytecode.get(frame.ip..).and_then(<[u8]>::first_chunk::<N>) else {
-            unreachable!("instruction IP is out of bounds of the bytecode")
-        };
-        frame.ip += N;
-        *bytes
-    }
-
-    /// Fetches a `u8` operand at the current IP.
-    #[inline]
-    fn fetch_u8(&mut self) -> u8 {
-        self.fetch_array::<1>()[0]
-    }
-
-    /// Fetches an `i8` operand at the current IP.
-    #[inline]
-    fn fetch_i8(&mut self) -> i8 {
-        self.fetch_u8().cast_signed()
-    }
-
-    /// Fetches a little-endian `u16` operand at the current IP.
-    #[inline]
-    fn fetch_u16(&mut self) -> u16 {
-        u16::from_le_bytes(self.fetch_array())
-    }
-
-    /// Fetches a little-endian `i16` operand at the current IP.
-    #[inline]
-    fn fetch_i16(&mut self) -> i16 {
-        self.fetch_u16().cast_signed()
-    }
-
-    /// Fetches two consecutive `u8` operands in a single bounds check.
-    ///
-    /// Mirrors `CodeBuilder::emit_u8_u8` on the encode side.
-    #[inline]
-    fn fetch_u8_u8(&mut self) -> (u8, u8) {
-        let [a, b] = self.fetch_array();
-        (a, b)
-    }
-
-    /// Fetches a little-endian `u16` followed by a `u8`, in a single bounds check.
-    ///
-    /// Mirrors `CodeBuilder::emit_u16_u8` on the encode side.
-    #[inline]
-    fn fetch_u16_u8(&mut self) -> (u16, u8) {
-        let [a, b, c] = self.fetch_array();
-        (u16::from_le_bytes([a, b]), c)
-    }
-
-    /// Fetches two consecutive little-endian `u16`s, in a single bounds check.
-    ///
-    /// Mirrors the `Operand::U16U16` encoding (e.g. `LoadGlobalCallable`).
-    #[inline]
-    fn fetch_u16_u16(&mut self) -> (u16, u16) {
-        let [a, b, c, d] = self.fetch_array();
-        (u16::from_le_bytes([a, b]), u16::from_le_bytes([c, d]))
-    }
-
-    /// Fetches a little-endian `u16` followed by two `u8`s, in a single bounds check.
-    ///
-    /// Mirrors `CodeBuilder::emit_u16_u8_u8` on the encode side.
-    #[inline]
-    fn fetch_u16_u8_u8(&mut self) -> (u16, u8, u8) {
-        let [a, b, c, d] = self.fetch_array();
-        (u16::from_le_bytes([a, b]), c, d)
-    }
-
-    /// Fetches two little-endian `u16`s followed by a `u8`, in a single bounds check.
-    ///
-    /// Mirrors `CodeBuilder::emit_name_op` on the encode side.
-    #[inline]
-    fn fetch_u16_u16_u8(&mut self) -> (u16, u16, u8) {
-        let [slot_lo, slot_hi, name_lo, name_hi, flags] = self.fetch_array();
-        (
-            u16::from_le_bytes([slot_lo, slot_hi]),
-            u16::from_le_bytes([name_lo, name_hi]),
-            flags,
-        )
     }
 
     /// Pushes a frame, releasing its state if the recursion limit rejects it.
@@ -2505,6 +2500,7 @@ impl<'h> VM<'h> {
     /// When the variable is undefined, falls back to builtin resolution (see
     /// [`builtin_for_name`]) before yielding `NameLookup` so the host can supply
     /// an external binding.
+    #[inline]
     fn load_global(&mut self, slot: u16) -> Result<Option<FrameExit>, RunError> {
         let value = self.globals[slot as usize].clone_with_heap(self);
 
@@ -2548,6 +2544,7 @@ impl<'h> VM<'h> {
     /// Reassigning a reserved module dunder (see [`RESERVED_MODULE_DUNDERS`]) is
     /// rejected at compile time (see `Compiler::compile_store`), so no name
     /// check is needed here.
+    #[inline]
     fn store_global(&mut self, slot: u16) {
         let value = self.pop();
         self.set_global_slot(slot, value);
