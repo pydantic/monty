@@ -29,9 +29,9 @@ mod bindings {
 mod value;
 
 use bindings::exports::pydantic::monty::worker::{
-    CallResult, CompleteEvent, ConfigureRequest, DispatchResult, Event, FunctionCallEvent, Guest, NameLookupEvent,
-    NameLookupResult, OsCallEvent, PrintEvent, RaisedError, RaisedException, Request, StackFrame, Status,
-    TypeCheckFormat,
+    AutoOsCalls, CallResult, CompleteEvent, ConfigureRequest, DatetimeSource, DispatchResult, Event, FunctionCallEvent,
+    Guest, NameLookupEvent, NameLookupResult, OsCallEvent, PrintEvent, RaisedError, RaisedException, RandomSeed,
+    RandomStart, Request, SleepMode, StackFrame, Status, TypeCheckFormat,
 };
 
 thread_local! {
@@ -324,6 +324,43 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         // boundaries survive it: the host gets one print callback per frame,
         // and a print collector charges its cap per frame.
         print_flush_interval_ms: request.print_flush_interval_ms,
+        auto_os_calls: request.auto_os_calls.map(auto_os_calls_from_component),
+    }
+}
+
+/// Converts the component's `auto-os-calls` record into the protocol message;
+/// the protocol conversion validates it as it would from any parent.
+fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
+    let datetime = calls.datetime.map(|source| match source {
+        DatetimeSource::CallHost => pb::auto_os_calls::Datetime::CallHost(pb::Unit {}),
+        DatetimeSource::System => pb::auto_os_calls::Datetime::System(pb::Unit {}),
+        DatetimeSource::Fixed(fixed) => pb::auto_os_calls::Datetime::Fixed(pb::FixedDateTime {
+            unix_seconds: fixed.unix_seconds,
+            microsecond: fixed.microsecond,
+            local_offset_seconds: fixed.local_offset_seconds,
+        }),
+    });
+    let sleep = calls.sleep.map_or(pb::SleepMode::Unspecified, |mode| match mode {
+        SleepMode::CallHost => pb::SleepMode::CallHost,
+        SleepMode::Zero => pb::SleepMode::Zero,
+        SleepMode::SandboxSleep => pb::SleepMode::SandboxSleep,
+    });
+    let random_start = calls.random_start.map(|start| match start {
+        RandomStart::Random => pb::auto_os_calls::RandomStart::Random(pb::Unit {}),
+        RandomStart::Seed(seed) => pb::auto_os_calls::RandomStart::Seed(pb::RandomSeed {
+            value: Some(match seed {
+                RandomSeed::Int(bytes) => pb::random_seed::Value::Int(bytes.into()),
+                RandomSeed::Float(f) => pb::random_seed::Value::Float(f),
+                RandomSeed::Str(s) => pb::random_seed::Value::Str(s),
+                RandomSeed::Bytes(b) => pb::random_seed::Value::Bytes(b.into()),
+            }),
+        }),
+    });
+    pb::AutoOsCalls {
+        datetime,
+        sleep: i32::from(sleep),
+        sandbox_sleep_clamp_micros: calls.sandbox_sleep_clamp_micros,
+        random_start,
     }
 }
 

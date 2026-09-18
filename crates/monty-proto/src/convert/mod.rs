@@ -14,6 +14,7 @@
 //! wire; the conversions here pair each root with its arena and check the
 //! index is in range.
 
+mod auto_os_calls;
 mod exception;
 pub(crate) mod limits;
 mod os_call;

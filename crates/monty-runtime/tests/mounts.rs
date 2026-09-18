@@ -91,6 +91,20 @@ fn max_sleep_caps_a_long_sleep() {
     assert!(start.elapsed().as_secs() < 5, "the sleep was not capped");
 }
 
+/// The sleep is the sandbox's own, so the cap applies to an in-process run
+/// with no mount just the same.
+#[test]
+fn max_sleep_applies_without_a_mount() {
+    let script_dir = script_dir("import time\ntime.sleep(3600)\nprint('woke')\n");
+    let script = script_dir.path().join("script.py");
+
+    let start = Instant::now();
+    let (success, stderr) = run_monty(&["--max-sleep", "0.001", script.to_str().expect("utf-8 path")]);
+
+    assert!(success, "unexpected stderr: {stderr}");
+    assert!(start.elapsed().as_secs() < 5, "the sleep was not capped");
+}
+
 #[test]
 fn mount_write_limit_is_enforced_from_cli_spec() {
     let host_dir = TempDir::new().expect("tempdir should be created");

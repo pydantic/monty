@@ -7,11 +7,12 @@ use monty_proto::{
     named_values_to_proto, os_call_from_proto, os_call_to_proto, pb,
 };
 use monty_types::{
-    CodeLoc, CompileOptions, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MAX_SLEEP_SECONDS,
-    MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues, OpenCallArgs, OsFunctionCall,
-    PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData, UrandomArgs,
-    sleep_duration, sleep_duration_saturating,
+    AutoOsCalls, CodeLoc, CompileOptions, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs,
+    JsonErrorData, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
+    MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult,
+    NamedValues, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RandomSeed, RandomStart,
+    RenameCallArgs, ResourceLimits, SleepMode, StackFrame, UnicodeErrorData, UrandomArgs, sleep_duration,
+    sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
@@ -572,6 +573,88 @@ fn resource_limits_round_trip() {
     assert_eq!(back.gc_interval, limits.gc_interval);
     assert_eq!(back.max_recursion_depth, limits.max_recursion_depth);
     assert_eq!(back.max_suspensions, limits.max_suspensions);
+}
+
+#[test]
+fn auto_os_calls_round_trip() {
+    let seeds = [
+        RandomSeed::Int(BigInt::from(-7)),
+        RandomSeed::Int(BigInt::from(2u8).pow(70)),
+        RandomSeed::Float(1.5),
+        RandomSeed::Str("abc".to_owned()),
+        RandomSeed::Bytes(b"abc".to_vec()),
+    ];
+    for seed in seeds {
+        let calls = AutoOsCalls {
+            datetime: DateTimeSource::Fixed {
+                unix_seconds: 1_700_000_000,
+                microsecond: 999_999,
+                local_offset_seconds: -3_600,
+            },
+            sleep: SleepMode::Zero,
+            sandbox_sleep_clamp: Duration::from_millis(250),
+            random_start: RandomStart::Seed(seed),
+        };
+        let back = AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap();
+        assert_eq!(back, calls);
+    }
+    let calls = AutoOsCalls {
+        datetime: DateTimeSource::CallHost,
+        sleep: SleepMode::CallHost,
+        ..AutoOsCalls::default()
+    };
+    assert_eq!(AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap(), calls);
+}
+
+/// An all-absent message, as an older parent sends, is every default.
+#[test]
+fn empty_auto_os_calls_is_the_default() {
+    let back = AutoOsCalls::try_from(pb::AutoOsCalls::default()).unwrap();
+    assert_eq!(back, AutoOsCalls::default());
+    assert_eq!(back.sleep, SleepMode::SandboxSleep);
+    assert_eq!(back.sandbox_sleep_clamp, Duration::from_secs(10));
+}
+
+#[test]
+fn malformed_auto_os_calls_are_rejected() {
+    let fixed = pb::AutoOsCalls {
+        datetime: Some(pb::auto_os_calls::Datetime::Fixed(pb::FixedDateTime {
+            unix_seconds: 0,
+            microsecond: 1_000_000,
+            local_offset_seconds: 0,
+        })),
+        ..Default::default()
+    };
+    assert_snapshot!(
+        AutoOsCalls::try_from(fixed).unwrap_err().to_string(),
+        @"invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
+    );
+    let sleep = pb::AutoOsCalls {
+        sleep: 99,
+        ..Default::default()
+    };
+    assert_snapshot!(
+        AutoOsCalls::try_from(sleep).unwrap_err().to_string(),
+        @"invalid value for AutoOsCalls.sleep: unknown sleep mode 99"
+    );
+    let seed = pb::AutoOsCalls {
+        random_start: Some(pb::auto_os_calls::RandomStart::Seed(pb::RandomSeed {
+            value: Some(pb::random_seed::Value::Float(f64::NAN)),
+        })),
+        ..Default::default()
+    };
+    assert_snapshot!(
+        AutoOsCalls::try_from(seed).unwrap_err().to_string(),
+        @"invalid value for RandomSeed.float: NaN is not finite"
+    );
+    let empty_seed = pb::AutoOsCalls {
+        random_start: Some(pb::auto_os_calls::RandomStart::Seed(pb::RandomSeed { value: None })),
+        ..Default::default()
+    };
+    assert_snapshot!(
+        AutoOsCalls::try_from(empty_seed).unwrap_err().to_string(),
+        @"missing required field RandomSeed.value"
+    );
 }
 
 #[test]

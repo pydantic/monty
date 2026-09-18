@@ -447,6 +447,93 @@ pub struct ResourceLimits {
     #[prost(uint64, optional, tag = "7")]
     pub max_turn_duration_micros: ::core::option::Option<u64>,
 }
+/// Mirrors monty's `AutoOsCalls`: which OS calls the sandbox answers itself.
+/// Each unset arm means that field's default.
+#[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct AutoOsCalls {
+    /// What `time.sleep()` and `asyncio.sleep()` do; UNSPECIFIED = SANDBOX_SLEEP.
+    #[prost(enumeration = "SleepMode", tag = "4")]
+    pub sleep: i32,
+    /// Longest wait `SLEEP_MODE_SANDBOX_SLEEP` performs per call; longer sleeps
+    /// are cut short. Absent = 10s.
+    #[prost(uint64, optional, tag = "5")]
+    pub sandbox_sleep_clamp_micros: ::core::option::Option<u64>,
+    /// What `date.today()`, `datetime.now()` and `time.time()` read.
+    #[prost(oneof = "auto_os_calls::Datetime", tags = "1, 2, 3")]
+    pub datetime: ::core::option::Option<auto_os_calls::Datetime>,
+    /// Where an unseeded `random` generator gets its first state.
+    #[prost(oneof = "auto_os_calls::RandomStart", tags = "6, 7")]
+    pub random_start: ::core::option::Option<auto_os_calls::RandomStart>,
+}
+/// Nested message and enum types in `AutoOsCalls`.
+pub mod auto_os_calls {
+    /// What `date.today()`, `datetime.now()` and `time.time()` read.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Oneof)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub enum Datetime {
+        /// Suspend to the parent, as every other OS call does.
+        #[prost(message, tag = "1")]
+        CallHost(super::Unit),
+        /// The child's clock and local timezone.
+        #[prost(message, tag = "2")]
+        System(super::Unit),
+        /// One frozen instant, for reproducible runs.
+        #[prost(message, tag = "3")]
+        Fixed(super::FixedDateTime),
+    }
+    /// Where an unseeded `random` generator gets its first state.
+    #[derive(Clone, PartialEq, crate::budgeted_prost::Oneof)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub enum RandomStart {
+        /// From the child's own OS entropy.
+        #[prost(message, tag = "6")]
+        Random(super::Unit),
+        /// As `random.seed(seed)` would, for reproducible runs.
+        #[prost(message, tag = "7")]
+        Seed(super::RandomSeed),
+    }
+}
+/// A frozen clock reading.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct FixedDateTime {
+    /// Seconds since the Unix epoch, UTC.
+    #[prost(int64, tag = "1")]
+    pub unix_seconds: i64,
+    /// 0..=999999; anything larger is rejected.
+    #[prost(uint32, tag = "2")]
+    pub microsecond: u32,
+    /// UTC offset of the clock's local zone, in seconds; naive `datetime.now()`
+    /// and `date.today()` are read in it.
+    #[prost(int32, tag = "3")]
+    pub local_offset_seconds: i32,
+}
+/// A `random.seed()` argument: the types CPython accepts.
+#[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct RandomSeed {
+    #[prost(oneof = "random_seed::Value", tags = "1, 2, 3, 4")]
+    pub value: ::core::option::Option<random_seed::Value>,
+}
+/// Nested message and enum types in `RandomSeed`.
+pub mod random_seed {
+    #[derive(Clone, PartialEq, crate::budgeted_prost::Oneof)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub enum Value {
+        /// Two's-complement little-endian bytes (`BigInt::to_signed_bytes_le`),
+        /// any size.
+        #[prost(bytes, tag = "1")]
+        Int(crate::budgeted_prost::alloc::vec::Vec<u8>),
+        /// Must be finite.
+        #[prost(double, tag = "2")]
+        Float(f64),
+        #[prost(string, tag = "3")]
+        Str(crate::budgeted_prost::alloc::string::String),
+        #[prost(bytes, tag = "4")]
+        Bytes(crate::budgeted_prost::alloc::vec::Vec<u8>),
+    }
+}
 /// Outcome of an external function / OS call, decided by the parent. Mirrors
 /// monty's `ExtFunctionResult`, plus `not_handled` (which only the child can
 /// resolve, against its suspended call).
@@ -554,7 +641,7 @@ pub mod parent_request {
 /// the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
 /// worker can still be initialized by `Load` instead. Valid only when the
 /// worker has no session yet.
-#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct Configure {
     #[prost(string, tag = "1")]
@@ -611,6 +698,13 @@ pub struct Configure {
     /// the field trades streaming latency for event volume and nothing else.
     #[prost(uint32, optional, tag = "10")]
     pub print_flush_interval_ms: ::core::option::Option<u32>,
+    /// Which OS calls the child answers itself instead of suspending to the
+    /// parent. Absent = every default (`AutoOsCalls::default()` in monty-types):
+    /// the child's own clock, sleeps waited out in the child capped at 10s, and
+    /// an unseeded `random` seeded from the child's entropy. A `Load` restores
+    /// the dump's own settings instead, as it does for `limits`.
+    #[prost(message, optional, tag = "11")]
+    pub auto_os_calls: ::core::option::Option<AutoOsCalls>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -1199,6 +1293,51 @@ impl TypeOrigin {
             "TYPE_ORIGIN_BUILTIN" => Some(Self::Builtin),
             "TYPE_ORIGIN_SANDBOX" => Some(Self::Sandbox),
             "TYPE_ORIGIN_HOST" => Some(Self::Host),
+            _ => None,
+        }
+    }
+}
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    crate::budgeted_prost::Enumeration
+)]
+#[prost(prost_path = "crate::budgeted_prost")]
+#[repr(i32)]
+pub enum SleepMode {
+    Unspecified = 0,
+    CallHost = 1,
+    /// Return at once without waiting.
+    Zero = 2,
+    /// Wait in the child, capped by `sandbox_sleep_clamp_micros`.
+    SandboxSleep = 3,
+}
+impl SleepMode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SLEEP_MODE_UNSPECIFIED",
+            Self::CallHost => "SLEEP_MODE_CALL_HOST",
+            Self::Zero => "SLEEP_MODE_ZERO",
+            Self::SandboxSleep => "SLEEP_MODE_SANDBOX_SLEEP",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SLEEP_MODE_UNSPECIFIED" => Some(Self::Unspecified),
+            "SLEEP_MODE_CALL_HOST" => Some(Self::CallHost),
+            "SLEEP_MODE_ZERO" => Some(Self::Zero),
+            "SLEEP_MODE_SANDBOX_SLEEP" => Some(Self::SandboxSleep),
             _ => None,
         }
     }

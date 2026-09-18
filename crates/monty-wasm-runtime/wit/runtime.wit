@@ -179,6 +179,63 @@ interface worker {
         max-suspensions: option<u64>,
     }
 
+    /// A frozen clock reading (see `auto-os-calls`).
+    record fixed-datetime {
+        /// Seconds since the Unix epoch, UTC.
+        unix-seconds: s64,
+        /// 0..=999999.
+        microsecond: u32,
+        /// UTC offset of the clock's local zone, in seconds.
+        local-offset-seconds: s32,
+    }
+
+    /// What `date.today()`, `datetime.now()` and `time.time()` read.
+    variant datetime-source {
+        /// Suspend to the host, as every other OS call does.
+        call-host,
+        /// The worker's own clock.
+        system,
+        /// One frozen instant.
+        fixed(fixed-datetime),
+    }
+
+    /// What `time.sleep()` and `asyncio.sleep()` do.
+    enum sleep-mode {
+        call-host,
+        /// Return at once without waiting.
+        zero,
+        /// Wait in the worker, capped by `sandbox-sleep-clamp-micros`.
+        sandbox-sleep,
+    }
+
+    /// A `random.seed()` argument: the types CPython accepts.
+    variant random-seed {
+        /// Two's-complement little-endian bytes, any size.
+        int(list<u8>),
+        /// Must be finite.
+        float(f64),
+        str(string),
+        bytes(list<u8>),
+    }
+
+    /// Where an unseeded `random` generator gets its first state.
+    variant random-start {
+        /// The worker's own OS entropy.
+        random,
+        /// As `random.seed(seed)` would.
+        seed(random-seed),
+    }
+
+    /// Which OS calls the sandbox answers itself; absent fields take their
+    /// defaults (system clock, sandbox sleeps capped at 10s, entropy).
+    record auto-os-calls {
+        datetime: option<datetime-source>,
+        sleep: option<sleep-mode>,
+        /// Longest wait `sandbox-sleep` performs per call.
+        sandbox-sleep-clamp-micros: option<u64>,
+        random-start: option<random-start>,
+    }
+
     /// Available renderings for type-check diagnostics.
     enum type-check-format {
         full,
@@ -204,6 +261,8 @@ interface worker {
         /// How long the child may hold buffered print output. Absent takes its
         /// default; zero restores line buffering, one event per completed line.
         print-flush-interval-ms: option<u32>,
+        /// Which OS calls the sandbox answers itself; absent = every default.
+        auto-os-calls: option<auto-os-calls>,
     }
 
     /// One Python snippet and its host inputs.

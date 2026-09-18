@@ -377,6 +377,65 @@ message ResourceLimits {
   optional uint64 max_turn_duration_micros = 7;
 }
 
+// Mirrors monty's `AutoOsCalls`: which OS calls the sandbox answers itself.
+// Each unset arm means that field's default.
+message AutoOsCalls {
+  // What `date.today()`, `datetime.now()` and `time.time()` read.
+  oneof datetime {
+    // Suspend to the parent, as every other OS call does.
+    Unit call_host = 1;
+    // The child's clock and local timezone.
+    Unit system = 2;
+    // One frozen instant, for reproducible runs.
+    FixedDateTime fixed = 3;
+  }
+  // What `time.sleep()` and `asyncio.sleep()` do; UNSPECIFIED = SANDBOX_SLEEP.
+  SleepMode sleep = 4;
+  // Longest wait `SLEEP_MODE_SANDBOX_SLEEP` performs per call; longer sleeps
+  // are cut short. Absent = 10s.
+  optional uint64 sandbox_sleep_clamp_micros = 5;
+  // Where an unseeded `random` generator gets its first state.
+  oneof random_start {
+    // From the child's own OS entropy.
+    Unit random = 6;
+    // As `random.seed(seed)` would, for reproducible runs.
+    RandomSeed seed = 7;
+  }
+}
+
+// A frozen clock reading.
+message FixedDateTime {
+  // Seconds since the Unix epoch, UTC.
+  int64 unix_seconds = 1;
+  // 0..=999999; anything larger is rejected.
+  uint32 microsecond = 2;
+  // UTC offset of the clock's local zone, in seconds; naive `datetime.now()`
+  // and `date.today()` are read in it.
+  int32 local_offset_seconds = 3;
+}
+
+// A `random.seed()` argument: the types CPython accepts.
+message RandomSeed {
+  oneof value {
+    // Two's-complement little-endian bytes (`BigInt::to_signed_bytes_le`),
+    // any size.
+    bytes int = 1;
+    // Must be finite.
+    double float = 2;
+    string str = 3;
+    bytes bytes = 4;
+  }
+}
+
+enum SleepMode {
+  SLEEP_MODE_UNSPECIFIED = 0;
+  SLEEP_MODE_CALL_HOST = 1;
+  // Return at once without waiting.
+  SLEEP_MODE_ZERO = 2;
+  // Wait in the child, capped by `sandbox_sleep_clamp_micros`.
+  SLEEP_MODE_SANDBOX_SLEEP = 3;
+}
+
 // ============================================================================
 // Resume payloads
 // ============================================================================
@@ -495,6 +554,12 @@ message Configure {
   // Output is always flushed before a turn-ending event whatever this says, so
   // the field trades streaming latency for event volume and nothing else.
   optional uint32 print_flush_interval_ms = 10;
+  // Which OS calls the child answers itself instead of suspending to the
+  // parent. Absent = every default (`AutoOsCalls::default()` in monty-types):
+  // the child's own clock, sleeps waited out in the child capped at 10s, and
+  // an unseeded `random` seeded from the child's entropy. A `Load` restores
+  // the dump's own settings instead, as it does for `limits`.
+  optional AutoOsCalls auto_os_calls = 11;
 }
 
 // Rendering of the typing diagnostics a `TypingError` carries; mirrors ty's

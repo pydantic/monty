@@ -20,9 +20,9 @@ use monty_proto::{
     os_call_from_proto, pb, validate_requirement,
 };
 use monty_types::{
-    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION,
-    MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, PrintStream, ResourceLimits,
-    TypeCheckingConfig, validate_cwd,
+    AssertMessageAnnotations, AutoOsCalls, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult,
+    MONTY_VERSION, MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, PrintStream,
+    ResourceLimits, TypeCheckingConfig, validate_cwd,
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
@@ -71,6 +71,12 @@ pub struct ReplConfig {
     /// below 1 ms is sent as 1 ms rather than rounding down into the
     /// line-buffering sentinel.
     pub print_flush_interval: Option<Duration>,
+    /// Which OS calls the worker answers itself for the whole session — the
+    /// clock, the sleeps and `random`'s first state. The default answers all
+    /// of them (the worker's clock, sleeps waited out in the worker for at
+    /// most 10 s each, `random` seeded from the worker's entropy); a field set
+    /// to `CallHost` delivers those calls as [`TurnEvent::OsCall`] instead.
+    pub auto_os_calls: AutoOsCalls,
 }
 
 impl Default for ReplConfig {
@@ -83,6 +89,7 @@ impl Default for ReplConfig {
             type_check_config: TypeCheckingConfig::default(),
             assert_message_annotations: AssertMessageAnnotations::default(),
             print_flush_interval: None,
+            auto_os_calls: AutoOsCalls::default(),
         }
     }
 }
@@ -592,6 +599,7 @@ impl Checkout {
             // Diagnostic only, so a rejection can report both builds.
             monty_version: MONTY_VERSION.to_owned(),
             print_flush_interval_ms: repl.print_flush_interval.map(flush_interval_ms),
+            auto_os_calls: Some((&repl.auto_os_calls).into()),
         }));
         let mut this = Self {
             worker: Some(worker),
