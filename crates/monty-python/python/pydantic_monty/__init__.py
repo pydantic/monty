@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 from types import EllipsisType
 from typing import Any, Callable, Literal, Protocol
 
@@ -51,7 +52,9 @@ from .os_access import (
 __all__ = (
     # this file
     'ResourceLimits',
+    'AutoOSCalls',
     'RandomSeed',
+    'TimeZone',
     'ExternalResult',
     'ExternalSettledResult',
     'ExternalReturnValue',
@@ -161,11 +164,63 @@ class ResourceLimits(TypedDict, total=False):
     session remains usable. Restoring a dump resets the count."""
 
 
+class TimeZone(TypedDict):
+    """A fixed offset from UTC, as `datetime.timezone(offset, name)` carries it: not an IANA zone."""
+
+    offset_seconds: int
+    """Offset from UTC, in seconds."""
+
+    name: NotRequired[str]
+    """The zone's name, if it has one."""
+
+
 class RandomSeed(TypedDict):
-    """`checkout(random_start=...)`: start the sandbox's `random` as `random.seed(seed)` would."""
+    """`AutoOSCalls['random_start']`: start the sandbox's `random` as `random.seed(seed)` would."""
 
     seed: int | float | str | bytes
     """What `random.seed()` accepts; any int size."""
+
+
+class AutoOSCalls(TypedDict, total=False):
+    """`checkout(auto_os_calls=...)`: which OS calls the worker answers itself, for the life of the session.
+
+    Every key is optional; an omitted key keeps its default. `'call_host'` on a key sends those calls to the
+    `os=` handler instead, as OS calls like any other.
+    """
+
+    datetime: Literal['system', 'call_host'] | datetime.datetime
+    """The instant `date.today()`, `datetime.now()` and `time.time()` read.
+
+    `'system'` (the default) is the worker's clock; a `datetime.datetime` freezes the clock at that instant and,
+    unless `timezone` is given, sets the zone too — its `utcoffset()` and `tzname()`, or UTC when naive — so
+    `datetime.now()` returns it exactly."""
+
+    timezone: Literal['system', 'call_host'] | TimeZone
+    """The local zone naive `datetime.now()` and `date.today()` read in.
+
+    `'system'` (the default) is the worker's local zone; `'call_host'` sends the calls that need the zone to the
+    `os=` handler; a `TimeZone` is a fixed offset."""
+
+    sleep: Literal['sandbox_sleep', 'zero', 'call_host']
+    """What `time.sleep()` and `asyncio.sleep()` do.
+
+    `'sandbox_sleep'` (the default) waits inside the worker, each call cut to `sandbox_sleep_clamp`, and gathered
+    `asyncio.sleep()` calls overlap; `'zero'` returns at once; `'call_host'` sends both to the `os=` handler, which
+    performs the wait."""
+
+    sandbox_sleep_clamp: float
+    """Longest wait a `'sandbox_sleep'` performs per call, in seconds (default 10; `inf` for no cap).
+
+    A wait costs nothing against `max_duration_secs` and is not a suspension, so `request_timeout` is what bounds a
+    sleeping loop."""
+
+    random_start: Literal['random', 'call_host'] | RandomSeed
+    """Where an unseeded `random` generator gets its first state.
+
+    `'random'` (the default) seeds from the worker's OS entropy; `'call_host'` sends an `os.urandom` request for
+    2496 bytes to the `os=` handler on the first draw; `{'seed': s}` starts the module-level generator exactly as
+    `random.seed(s)` would (any int, float, str or bytes), with unseeded `random.Random()` instances taking
+    deterministic states derived from it. `random.seed()` in the sandbox still applies afterwards."""
 
 
 class ExternalReturnValue(TypedDict):

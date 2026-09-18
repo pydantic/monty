@@ -63,7 +63,7 @@ use tokio::{
 
 use crate::{
     async_dispatch::{CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, wait_for_futures},
-    auto_os_calls::{DateTimeArg, RandomStartArg, SleepArg, SleepClampArg, parse_auto_os_calls},
+    auto_os_calls::AutoOsCallsArg,
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
@@ -187,10 +187,7 @@ impl PyMonty {
         type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
-        datetime = DateTimeArg::default(),
-        sleep = SleepArg::default(),
-        sandbox_sleep_clamp = SleepClampArg::default(),
-        random_start = RandomStartArg::default(),
+        auto_os_calls = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -204,10 +201,7 @@ impl PyMonty {
         type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
-        datetime: DateTimeArg,
-        sleep: SleepArg,
-        sandbox_sleep_clamp: SleepClampArg,
-        random_start: RandomStartArg,
+        auto_os_calls: Option<AutoOsCallsArg>,
     ) -> PyResult<PyMontySession> {
         Ok(PyMontySession {
             pool: Arc::clone(&self.pool),
@@ -223,7 +217,7 @@ impl PyMonty {
                 },
                 assert_message_annotations,
                 print_flush_interval,
-                parse_auto_os_calls(datetime, sleep, sandbox_sleep_clamp, random_start),
+                auto_os_calls.unwrap_or_default().0,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -586,10 +580,7 @@ impl PyAsyncMonty {
         type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
-        datetime = DateTimeArg::default(),
-        sleep = SleepArg::default(),
-        sandbox_sleep_clamp = SleepClampArg::default(),
-        random_start = RandomStartArg::default(),
+        auto_os_calls = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -603,10 +594,7 @@ impl PyAsyncMonty {
         type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
-        datetime: DateTimeArg,
-        sleep: SleepArg,
-        sandbox_sleep_clamp: SleepClampArg,
-        random_start: RandomStartArg,
+        auto_os_calls: Option<AutoOsCallsArg>,
     ) -> PyResult<PyAsyncMontySession> {
         Ok(PyAsyncMontySession {
             pool: Arc::clone(&self.pool),
@@ -622,7 +610,7 @@ impl PyAsyncMonty {
                 },
                 assert_message_annotations,
                 print_flush_interval,
-                parse_auto_os_calls(datetime, sleep, sandbox_sleep_clamp, random_start),
+                auto_os_calls.unwrap_or_default().0,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -740,10 +728,7 @@ impl PyAsyncMontyWebsocket {
         type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
-        datetime = DateTimeArg::default(),
-        sleep = SleepArg::default(),
-        sandbox_sleep_clamp = SleepClampArg::default(),
-        random_start = RandomStartArg::default(),
+        auto_os_calls = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -757,10 +742,7 @@ impl PyAsyncMontyWebsocket {
         type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
-        datetime: DateTimeArg,
-        sleep: SleepArg,
-        sandbox_sleep_clamp: SleepClampArg,
-        random_start: RandomStartArg,
+        auto_os_calls: Option<AutoOsCallsArg>,
     ) -> PyResult<PyAsyncMontySession> {
         Ok(PyAsyncMontySession {
             pool: Arc::clone(&self.pool),
@@ -776,7 +758,7 @@ impl PyAsyncMontyWebsocket {
                 },
                 assert_message_annotations,
                 print_flush_interval,
-                parse_auto_os_calls(datetime, sleep, sandbox_sleep_clamp, random_start),
+                auto_os_calls.unwrap_or_default().0,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),

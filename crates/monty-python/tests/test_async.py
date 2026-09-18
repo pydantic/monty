@@ -44,7 +44,7 @@ async def asession(apool: AsyncMonty) -> AsyncIterator[AsyncMontySession]:
 @pytest.fixture
 async def asession_call_host(apool: AsyncMonty) -> AsyncIterator[AsyncMontySession]:
     """A session whose clock and sleep calls reach the `os=` handler."""
-    async with apool.checkout(datetime='call_host', sleep='call_host') as session:
+    async with apool.checkout(auto_os_calls={'datetime': 'call_host', 'sleep': 'call_host'}) as session:
         yield session
 
 

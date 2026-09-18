@@ -1,4 +1,3 @@
-import datetime as dt
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -9,11 +8,11 @@ from typing_extensions import Self
 
 from . import (
     AsyncSnapshot,
+    AutoOSCalls,
     ExternalResult,
     ExternalSettledResult,
     OsHandler,
     PrintCallback,
-    RandomSeed,
     ResourceLimits,
     SyncSnapshot,
     TypeCheckFormat,
@@ -547,10 +546,7 @@ class Monty:
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
-        datetime: Literal['system', 'call_host'] | dt.datetime = ...,
-        sleep: Literal['sandbox_sleep', 'zero', 'call_host'] = ...,
-        sandbox_sleep_clamp: float = ...,
-        random_start: Literal['random'] | RandomSeed = ...,
+        auto_os_calls: AutoOSCalls | None = None,
     ) -> MontySession:
         """
         Prepare a REPL session served by a dedicated worker.
@@ -589,31 +585,12 @@ class Monty:
                 before a host call and before a run ends, so this only sets
                 how far live output may lag — never what arrives, or in what
                 order.
-            datetime: What `date.today()`, `datetime.now()` and `time.time()`
-                read. `'system'` (the default) is the worker's clock and local
-                timezone; `'call_host'` sends each call to the `os=` handler;
-                a `datetime.datetime` freezes the clock at that instant — an
-                aware one sets the sandbox's local zone to its `utcoffset()`,
-                a naive one is read as UTC, so `datetime.now()` returns it
-                exactly.
-            sleep: What `time.sleep()` and `asyncio.sleep()` do.
-                `'sandbox_sleep'` (the default) waits inside the worker, each
-                call cut to `sandbox_sleep_clamp`; gathered `asyncio.sleep()`
-                calls overlap. `'zero'` returns at once. `'call_host'` sends
-                both to the `os=` handler, which performs the wait.
-            sandbox_sleep_clamp: Longest wait a `'sandbox_sleep'` performs
-                per call, in seconds (default 10; `inf` for no cap). A wait
-                costs nothing against `max_duration_secs` and is not a
-                suspension, so `request_timeout` is what bounds a sleeping
-                loop.
-            random_start: Where an unseeded `random` generator gets its first
-                state. `'random'` (the default) seeds from the worker's OS
-                entropy; `{'seed': s}` starts the module-level generator
-                exactly as `random.seed(s)` would (any int, float, str or
-                bytes), with unseeded `random.Random()` instances taking
-                deterministic states derived from it. `random.seed()` in the
-                sandbox still applies afterwards, and explicit `os.urandom()`
-                calls still reach the `os=` handler.
+            auto_os_calls: Which OS calls the worker answers itself for the
+                life of the session — the clock, the sleeps and `random`'s
+                first state — and how; see `AutoOSCalls`. `None` (the default)
+                answers all of them in the worker: its clock and local zone,
+                sleeps of at most ten seconds each, `random` seeded from its
+                entropy.
         """
 
 @final
@@ -890,10 +867,7 @@ class AsyncMonty:
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
-        datetime: Literal['system', 'call_host'] | dt.datetime = ...,
-        sleep: Literal['sandbox_sleep', 'zero', 'call_host'] = ...,
-        sandbox_sleep_clamp: float = ...,
-        random_start: Literal['random'] | RandomSeed = ...,
+        auto_os_calls: AutoOSCalls | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated worker.
@@ -994,10 +968,7 @@ class AsyncMontyWebsocket:
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
-        datetime: Literal['system', 'call_host'] | dt.datetime = ...,
-        sleep: Literal['sandbox_sleep', 'zero', 'call_host'] = ...,
-        sandbox_sleep_clamp: float = ...,
-        random_start: Literal['random'] | RandomSeed = ...,
+        auto_os_calls: AutoOSCalls | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated remote connection.

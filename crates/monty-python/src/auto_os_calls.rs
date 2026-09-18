@@ -1,15 +1,15 @@
-//! Extraction of the `checkout()` arguments that build the session's
-//! [`AutoOsCalls`]: `datetime`, `sleep`, `sandbox_sleep_clamp` and
-//! `random_start`.
+//! Extraction of the `auto_os_calls` checkout argument — the `AutoOSCalls`
+//! TypedDict — into the session's [`AutoOsCalls`].
 //!
-//! Each argument is a newtype with a `FromPyObject` impl, so a bad value is
-//! rejected at argument-extraction time with a message naming the accepted
-//! forms, rather than surfacing later as a worker error.
+//! Every key is optional and defaults as the Rust struct does; an unknown
+//! key is a `ValueError`, since a misspelt one would silently leave a call
+//! answered differently from what the caller meant. Values are rejected at
+//! argument-extraction time with a message naming the accepted forms.
 
 use std::time::Duration;
 
 use chrono::NaiveDate;
-use monty_types::{AutoOsCalls, DateTimeSource, RandomSeed, RandomStart, SleepMode};
+use monty_types::{AutoOsCalls, DateTimeSource, RandomSeed, RandomStart, SandboxTimeZone, SleepMode};
 use num_bigint::BigInt;
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
@@ -23,74 +23,96 @@ use pyo3::{
 
 use crate::pool::duration_from_secs;
 
-/// Builds the session's [`AutoOsCalls`] from the four checkout arguments.
-/// The clamp only applies to a sandbox sleep; the other modes ignore it.
-pub(crate) fn parse_auto_os_calls(
-    datetime: DateTimeArg,
-    sleep: SleepArg,
-    sandbox_sleep_clamp: SleepClampArg,
-    random_start: RandomStartArg,
-) -> AutoOsCalls {
-    let sleep = match sleep.0 {
-        SleepMode::SandboxSleep(_) => SleepMode::SandboxSleep(sandbox_sleep_clamp.0),
-        other => other,
-    };
-    AutoOsCalls {
-        datetime: datetime.0,
-        sleep,
-        random_start: random_start.0,
-    }
-}
+/// The `auto_os_calls` checkout argument; `None` is every default.
+#[derive(Clone, Default)]
+pub(crate) struct AutoOsCallsArg(pub AutoOsCalls);
 
-/// The `datetime` checkout argument: `'system'` (the default), `'call_host'`,
-/// or a `datetime.datetime` to freeze the clock at.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct DateTimeArg(pub DateTimeSource);
-
-impl<'a, 'py> FromPyObject<'a, 'py> for DateTimeArg {
+impl<'a, 'py> FromPyObject<'a, 'py> for AutoOsCallsArg {
     type Error = PyErr;
 
     fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
-        if let Ok(name) = ob.cast::<PyString>() {
-            match &*name.to_cow()? {
-                "system" => Ok(Self(DateTimeSource::System)),
-                "call_host" => Ok(Self(DateTimeSource::CallHost)),
-                other => Err(PyValueError::new_err(format!(
-                    "datetime must be 'system', 'call_host' or a datetime.datetime, got '{other}'"
-                ))),
-            }
-        } else if let Ok(datetime) = ob.cast::<PyDateTime>() {
-            fixed_datetime(&datetime).map(Self)
-        } else {
-            Err(PyTypeError::new_err(format!(
-                "datetime must be 'system', 'call_host' or a datetime.datetime, not {}",
+        let Ok(dict) = ob.cast::<PyDict>() else {
+            return Err(PyTypeError::new_err(format!(
+                "auto_os_calls must be a dict, not {}",
                 ob.get_type().name()?
-            )))
+            )));
+        };
+        let mut calls = AutoOsCalls::default();
+        // A fixed `datetime` implies a zone (see `fixed_datetime`) unless
+        // `timezone` says otherwise, so the zone key is applied last.
+        let mut timezone = None;
+        let mut clamp = None;
+        for (key, value) in dict.iter() {
+            let key = key
+                .cast::<PyString>()
+                .map_err(|_| PyTypeError::new_err("auto_os_calls keys must be str"))?
+                .to_cow()?;
+            match &*key {
+                "datetime" => {
+                    let (source, implied_zone) = datetime_source(&value)?;
+                    calls.datetime = source;
+                    if let Some(zone) = implied_zone {
+                        calls.timezone = zone;
+                    }
+                }
+                "timezone" => timezone = Some(time_zone(&value)?),
+                "sleep" => calls.sleep = sleep_mode(&value)?,
+                "sandbox_sleep_clamp" => clamp = Some(sleep_clamp(&value)?),
+                "random_start" => calls.random_start = random_start(&value)?,
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "unknown auto_os_calls key '{other}', expected one of: \
+                         datetime, timezone, sleep, sandbox_sleep_clamp, random_start"
+                    )));
+                }
+            }
         }
+        if let Some(timezone) = timezone {
+            calls.timezone = timezone;
+        }
+        // The clamp only applies to a sandbox sleep; the other modes ignore it.
+        if let (Some(clamp), SleepMode::SandboxSleep(_)) = (clamp, calls.sleep) {
+            calls.sleep = SleepMode::SandboxSleep(clamp);
+        }
+        Ok(Self(calls))
     }
 }
 
-/// A `datetime.datetime` as a frozen instant: an aware one is its instant with
-/// the sandbox's local zone at its `utcoffset()`; a naive one is read as UTC,
-/// so `datetime.now()` in the sandbox returns exactly the value given.
-fn fixed_datetime(datetime: &Bound<'_, PyDateTime>) -> PyResult<DateTimeSource> {
+/// `datetime`: `'system'`, `'call_host'`, or a `datetime.datetime` to freeze
+/// the clock at. A `datetime` also implies the zone naive calls read in — its
+/// `utcoffset()`, or UTC when naive — so `datetime.now()` returns it exactly.
+fn datetime_source(value: &Bound<'_, PyAny>) -> PyResult<(DateTimeSource, Option<SandboxTimeZone>)> {
+    if let Ok(name) = value.cast::<PyString>() {
+        match &*name.to_cow()? {
+            "system" => Ok((DateTimeSource::System, None)),
+            "call_host" => Ok((DateTimeSource::CallHost, None)),
+            other => Err(PyValueError::new_err(format!(
+                "datetime must be 'system', 'call_host' or a datetime.datetime, got '{other}'"
+            ))),
+        }
+    } else if let Ok(datetime) = value.cast::<PyDateTime>() {
+        fixed_datetime(datetime).map(|(source, zone)| (source, Some(zone)))
+    } else {
+        Err(PyTypeError::new_err(format!(
+            "datetime must be 'system', 'call_host' or a datetime.datetime, not {}",
+            value.get_type().name()?
+        )))
+    }
+}
+
+/// A `datetime.datetime` as a frozen instant plus the zone it implies.
+fn fixed_datetime(datetime: &Bound<'_, PyDateTime>) -> PyResult<(DateTimeSource, SandboxTimeZone)> {
     let py = datetime.py();
-    let local_offset_seconds = match datetime
+    let offset_seconds = match datetime
         .call_method0(intern!(py, "utcoffset"))?
         .extract::<Option<Bound<'_, PyDelta>>>()?
     {
         None => 0,
-        Some(offset) => {
-            if offset.get_microseconds() != 0 {
-                return Err(PyValueError::new_err(
-                    "datetime utcoffset must be a whole number of seconds",
-                ));
-            }
-            i64::from(offset.get_days()) * 86_400 + i64::from(offset.get_seconds())
-        }
+        Some(offset) => offset_seconds(&offset, "datetime utcoffset")?,
     };
-    let local_offset_seconds =
-        i32::try_from(local_offset_seconds).map_err(|_| PyValueError::new_err("datetime utcoffset is out of range"))?;
+    let name = datetime
+        .call_method0(intern!(py, "tzname"))?
+        .extract::<Option<String>>()?;
     let wall = NaiveDate::from_ymd_opt(
         datetime.get_year(),
         u32::from(datetime.get_month()),
@@ -104,91 +126,118 @@ fn fixed_datetime(datetime: &Bound<'_, PyDateTime>) -> PyResult<DateTimeSource> 
         )
     })
     .ok_or_else(|| PyValueError::new_err("datetime is out of range"))?;
-    Ok(DateTimeSource::Fixed {
-        unix_seconds: wall.and_utc().timestamp() - i64::from(local_offset_seconds),
+    let source = DateTimeSource::Fixed {
+        unix_seconds: wall.and_utc().timestamp() - i64::from(offset_seconds),
         microsecond: datetime.get_microsecond(),
-        local_offset_seconds,
-    })
+    };
+    Ok((source, SandboxTimeZone::Fixed { offset_seconds, name }))
 }
 
-/// The `sleep` checkout argument: `'sandbox_sleep'` (the default), `'zero'`
-/// or `'call_host'`. A sandbox sleep carries the default clamp here;
-/// [`parse_auto_os_calls`] applies the `sandbox_sleep_clamp` argument.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct SleepArg(pub SleepMode);
-
-impl<'a, 'py> FromPyObject<'a, 'py> for SleepArg {
-    type Error = PyErr;
-
-    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
-        let name = ob
-            .cast::<PyString>()
-            .map_err(|_| PyTypeError::new_err("sleep must be a str"))?;
+/// `timezone`: `'system'`, `'call_host'`, or a `{'offset_seconds': int,
+/// 'name': str}` mapping (`name` optional).
+fn time_zone(value: &Bound<'_, PyAny>) -> PyResult<SandboxTimeZone> {
+    const SHAPE: &str = "timezone must be 'system', 'call_host' or {'offset_seconds': int, 'name': str}";
+    if let Ok(name) = value.cast::<PyString>() {
         match &*name.to_cow()? {
-            "sandbox_sleep" => Ok(Self(SleepMode::default())),
-            "zero" => Ok(Self(SleepMode::Zero)),
-            "call_host" => Ok(Self(SleepMode::CallHost)),
-            other => Err(PyValueError::new_err(format!(
-                "sleep must be 'sandbox_sleep', 'zero' or 'call_host', got '{other}'"
-            ))),
+            "system" => Ok(SandboxTimeZone::System),
+            "call_host" => Ok(SandboxTimeZone::CallHost),
+            other => Err(PyValueError::new_err(format!("{SHAPE}, got '{other}'"))),
         }
-    }
-}
-
-/// The `sandbox_sleep_clamp` checkout argument: seconds (default 10), `inf`
-/// for no cap. `bool` is refused rather than read as 0/1.
-#[derive(Clone, Copy)]
-pub(crate) struct SleepClampArg(pub Duration);
-
-impl Default for SleepClampArg {
-    fn default() -> Self {
-        Self(SleepMode::DEFAULT_CLAMP)
-    }
-}
-
-impl<'a, 'py> FromPyObject<'a, 'py> for SleepClampArg {
-    type Error = PyErr;
-
-    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
-        if ob.cast::<PyBool>().is_ok() || (ob.cast::<PyInt>().is_err() && ob.cast::<PyFloat>().is_err()) {
-            return Err(PyTypeError::new_err(format!(
-                "sandbox_sleep_clamp must be a number of seconds, not {}",
-                ob.get_type().name()?
-            )));
-        }
-        let seconds: f64 = ob.extract()?;
-        if seconds == f64::INFINITY {
-            Ok(Self(Duration::MAX))
-        } else {
-            duration_from_secs("sandbox_sleep_clamp", seconds).map(Self)
-        }
-    }
-}
-
-/// The `random_start` checkout argument: `'random'` (the default) or a
-/// `{'seed': ...}` mapping whose seed is what `random.seed()` accepts.
-#[derive(Clone, Default)]
-pub(crate) struct RandomStartArg(pub RandomStart);
-
-impl<'a, 'py> FromPyObject<'a, 'py> for RandomStartArg {
-    type Error = PyErr;
-
-    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
-        const SHAPE: &str = "random_start must be 'random' or {'seed': int | float | str | bytes}";
-        if let Ok(name) = ob.cast::<PyString>() {
-            match &*name.to_cow()? {
-                "random" => Ok(Self(RandomStart::Random)),
-                other => Err(PyValueError::new_err(format!("{SHAPE}, got '{other}'"))),
+    } else if let Ok(mapping) = value.cast::<PyDict>() {
+        let mut offset_seconds = None;
+        let mut name = None;
+        for (key, item) in mapping.iter() {
+            let key = key
+                .cast::<PyString>()
+                .map_err(|_| PyTypeError::new_err("timezone keys must be str"))?
+                .to_cow()?;
+            match &*key {
+                "offset_seconds" if item.cast::<PyBool>().is_err() && item.cast::<PyInt>().is_ok() => {
+                    offset_seconds = Some(item.extract::<i32>()?);
+                }
+                "offset_seconds" => return Err(PyTypeError::new_err("timezone offset_seconds must be an int")),
+                "name" if item.cast::<PyString>().is_ok() => name = Some(item.extract::<String>()?),
+                "name" => return Err(PyTypeError::new_err("timezone name must be a str")),
+                _ => return Err(PyValueError::new_err(format!("{SHAPE}, got {}", mapping.repr()?))),
             }
-        } else if let Ok(mapping) = ob.cast::<PyDict>() {
-            let py = ob.py();
-            let (1, Some(seed)) = (mapping.len(), mapping.get_item(intern!(py, "seed"))?) else {
-                return Err(PyValueError::new_err(format!("{SHAPE}, got {}", mapping.repr()?)));
-            };
-            random_seed(&seed).map(|seed| Self(RandomStart::Seed(seed)))
-        } else {
-            Err(PyTypeError::new_err(format!("{SHAPE}, not {}", ob.get_type().name()?)))
         }
+        let Some(offset_seconds) = offset_seconds else {
+            return Err(PyValueError::new_err(format!("{SHAPE}, got {}", mapping.repr()?)));
+        };
+        Ok(SandboxTimeZone::Fixed { offset_seconds, name })
+    } else {
+        Err(PyTypeError::new_err(format!(
+            "{SHAPE}, not {}",
+            value.get_type().name()?
+        )))
+    }
+}
+
+/// A `timedelta` as whole seconds, for a zone offset.
+fn offset_seconds(offset: &Bound<'_, PyDelta>, what: &str) -> PyResult<i32> {
+    if offset.get_microseconds() != 0 {
+        return Err(PyValueError::new_err(format!(
+            "{what} must be a whole number of seconds"
+        )));
+    }
+    i32::try_from(i64::from(offset.get_days()) * 86_400 + i64::from(offset.get_seconds()))
+        .map_err(|_| PyValueError::new_err(format!("{what} is out of range")))
+}
+
+/// `sleep`: `'sandbox_sleep'` (with the default clamp until
+/// `sandbox_sleep_clamp` replaces it), `'zero'` or `'call_host'`.
+fn sleep_mode(value: &Bound<'_, PyAny>) -> PyResult<SleepMode> {
+    let name = value
+        .cast::<PyString>()
+        .map_err(|_| PyTypeError::new_err("sleep must be a str"))?;
+    match &*name.to_cow()? {
+        "sandbox_sleep" => Ok(SleepMode::default()),
+        "zero" => Ok(SleepMode::Zero),
+        "call_host" => Ok(SleepMode::CallHost),
+        other => Err(PyValueError::new_err(format!(
+            "sleep must be 'sandbox_sleep', 'zero' or 'call_host', got '{other}'"
+        ))),
+    }
+}
+
+/// `sandbox_sleep_clamp`: seconds, `inf` for no cap. `bool` is refused
+/// rather than read as 0/1.
+fn sleep_clamp(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
+    if value.cast::<PyBool>().is_ok() || (value.cast::<PyInt>().is_err() && value.cast::<PyFloat>().is_err()) {
+        return Err(PyTypeError::new_err(format!(
+            "sandbox_sleep_clamp must be a number of seconds, not {}",
+            value.get_type().name()?
+        )));
+    }
+    let seconds: f64 = value.extract()?;
+    if seconds == f64::INFINITY {
+        Ok(Duration::MAX)
+    } else {
+        duration_from_secs("sandbox_sleep_clamp", seconds)
+    }
+}
+
+/// `random_start`: `'random'`, `'call_host'`, or a `{'seed': ...}` mapping
+/// whose seed is what `random.seed()` accepts.
+fn random_start(value: &Bound<'_, PyAny>) -> PyResult<RandomStart> {
+    const SHAPE: &str = "random_start must be 'random', 'call_host' or {'seed': int | float | str | bytes}";
+    if let Ok(name) = value.cast::<PyString>() {
+        match &*name.to_cow()? {
+            "random" => Ok(RandomStart::Random),
+            "call_host" => Ok(RandomStart::CallHost),
+            other => Err(PyValueError::new_err(format!("{SHAPE}, got '{other}'"))),
+        }
+    } else if let Ok(mapping) = value.cast::<PyDict>() {
+        let py = value.py();
+        let (1, Some(seed)) = (mapping.len(), mapping.get_item(intern!(py, "seed"))?) else {
+            return Err(PyValueError::new_err(format!("{SHAPE}, got {}", mapping.repr()?)));
+        };
+        random_seed(&seed).map(RandomStart::Seed)
+    } else {
+        Err(PyTypeError::new_err(format!(
+            "{SHAPE}, not {}",
+            value.get_type().name()?
+        )))
     }
 }
 
