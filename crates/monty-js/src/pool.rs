@@ -145,24 +145,31 @@ pub struct NativeCheckoutOptions {
     /// delivering each completed line on its own.
     pub print_flush_interval_ms: Option<f64>,
 
-    /// What the clock calls read: `'system'`, `'call_host'` or `'fixed'`
-    /// (with the three `datetime*` parts below). Absent: `'system'`.
+    /// The instant the clock calls read: `'system'`, `'call_host'` or
+    /// `'fixed'` (with the two `datetime*` parts below). Absent: `'system'`.
     pub datetime_kind: Option<String>,
     /// A fixed clock's instant, seconds since the Unix epoch (UTC).
     pub datetime_unix_seconds: Option<BigInt>,
     /// A fixed clock's sub-second part, 0..=999999.
     pub datetime_microsecond: Option<u32>,
-    /// A fixed clock's local-zone offset from UTC, in seconds.
-    pub datetime_local_offset_seconds: Option<i32>,
+    /// The zone naive clock calls read in: `'system'`, `'call_host'` or
+    /// `'fixed'` (with the two `timezone*` parts below). Absent: `'system'`.
+    pub timezone_kind: Option<String>,
+    /// A fixed zone's offset from UTC, in seconds.
+    pub timezone_offset_seconds: Option<i32>,
+    /// A fixed zone's name, if it has one.
+    pub timezone_name: Option<String>,
     /// What the sleeps do: `'sandbox_sleep'`, `'zero'` or `'call_host'`.
     /// Absent: `'sandbox_sleep'`.
     pub sleep: Option<String>,
     /// Longest sandbox sleep per call, in seconds; `Infinity` lifts the cap.
     /// Absent: 10.
     pub sandbox_sleep_clamp_secs: Option<f64>,
-    /// `random`'s seed, at most one set: an int as two's-complement
-    /// little-endian bytes, a finite float, a string, or bytes. All absent:
-    /// seeded from the worker's entropy.
+    /// Where `random` starts: `'random'`, `'call_host'` or `'seed'` (with
+    /// exactly one `random_seed_*` field below). Absent: `'random'`.
+    pub random_start_kind: Option<String>,
+    /// The seed: an int as two's-complement little-endian bytes, a finite
+    /// float, a string, or bytes.
     pub random_seed_int: Option<Buffer>,
     pub random_seed_float: Option<f64>,
     pub random_seed_str: Option<String>,

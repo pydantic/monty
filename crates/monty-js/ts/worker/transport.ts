@@ -8,7 +8,7 @@
 import type { NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
 import {
   type AssertMessageAnnotations,
-  type AutoOsCallsOptions,
+  type AutoOsCalls,
   type EncodedAutoOsCalls,
   type EncodedRandomSeed,
   type TypeCheckFormat,
@@ -24,6 +24,7 @@ import type {
   NameLookupRequest,
   RandomSeed as ComponentRandomSeed,
   Request as ComponentRequest,
+  TimeZone as ComponentTimeZone,
   ResourceLimits as ComponentResourceLimits,
   TypeCheckFormat as ComponentTypeCheckFormat,
 } from './component/monty.component.js'
@@ -69,7 +70,7 @@ export interface ResourceLimits {
 }
 
 /** Session-creation options sent to the component worker. */
-export interface WorkerSessionConfig extends AutoOsCallsOptions {
+export interface WorkerSessionConfig {
   scriptName?: string
   limits?: ResourceLimits
   typeCheck?: boolean
@@ -91,6 +92,8 @@ export interface WorkerSessionConfig extends AutoOsCallsOptions {
    * frame, and a print collector charges its `maxBytes` cap per frame.
    */
   printFlushInterval?: number
+  /** Which OS calls the worker answers itself; see `AutoOsCalls`. */
+  autoOsCalls?: AutoOsCalls
 }
 
 /** A session-shaped adapter over one semantic component dispatcher. */
@@ -117,7 +120,7 @@ export class WorkerTransport {
   static async create(dispatcher: Dispatcher, config: WorkerSessionConfig = {}): Promise<WorkerTransport> {
     const transport = new WorkerTransport(dispatcher)
     const assertMessageAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
-    const autoOsCalls = componentAutoOsCalls(encodeAutoOsCalls(config))
+    const autoOsCalls = componentAutoOsCalls(encodeAutoOsCalls(config.autoOsCalls ?? {}))
     await transport.control(
       {
         tag: 'configure',
@@ -437,6 +440,7 @@ function componentAutoOsCalls(calls: EncodedAutoOsCalls): ComponentAutoOsCalls |
   if (calls.datetime === 'call_host') record.datetime = { tag: 'call-host' }
   else if (calls.datetime === 'system') record.datetime = { tag: 'system' }
   else if (calls.datetime !== undefined) record.datetime = { tag: 'fixed', val: calls.datetime }
+  if (calls.timezone !== undefined) record.timezone = componentTimeZone(calls.timezone)
   if (calls.sleep === 'call_host') record.sleep = { tag: 'call-host' }
   else if (calls.sleep === 'zero') record.sleep = { tag: 'zero' }
   else if (calls.sleep === 'sandbox_sleep' || calls.sandboxSleepClampSecs !== undefined) {
@@ -451,10 +455,18 @@ function componentAutoOsCalls(calls: EncodedAutoOsCalls): ComponentAutoOsCalls |
           : BigInt(Math.round(clamp * 1_000_000))
     record.sleep = { tag: 'sandbox-sleep', val }
   }
-  if (calls.randomSeed !== undefined) {
-    record.randomStart = { tag: 'seed', val: componentRandomSeed(calls.randomSeed) }
+  if (calls.randomStart === 'call_host') record.randomStart = { tag: 'call-host' }
+  else if (calls.randomStart !== undefined) {
+    record.randomStart = { tag: 'seed', val: componentRandomSeed(calls.randomStart.seed) }
   }
   return Object.keys(record).length === 0 ? undefined : record
+}
+
+/** The zone as the WIT `time-zone` variant. */
+function componentTimeZone(timezone: NonNullable<EncodedAutoOsCalls['timezone']>): ComponentTimeZone {
+  if (timezone === 'call_host') return { tag: 'call-host' }
+  if (timezone === 'system') return { tag: 'system' }
+  return { tag: 'fixed', val: { offsetSeconds: timezone.offsetSeconds, name: timezone.name } }
 }
 
 /** The seed as the WIT `random-seed` variant. */

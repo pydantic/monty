@@ -9,10 +9,8 @@ import { NativePool } from '../native-addon.js'
 import { findMontyBinary } from './binary.js'
 import {
   type AssertMessageAnnotations,
-  type DateTimeSource,
+  type AutoOsCalls,
   type EncodedAutoOsCalls,
-  type RandomStart,
-  type SleepMode,
   type TypeCheckFormat,
   encodeAssertMessageAnnotations,
   encodeAutoOsCalls,
@@ -106,35 +104,14 @@ export interface CheckoutOptions {
    */
   printFlushInterval?: number
   /**
-   * What `date.today()`, `datetime.now()` and `time.time()` read (default
-   * `'system'`, the worker's clock and local timezone). `'call_host'` sends
-   * each call to the `os` callback; a `Date` freezes the clock at that
-   * instant, read as UTC, so `datetime.now()` returns it exactly.
+   * Which OS calls the worker answers itself for the life of the session —
+   * the clock and its zone, the sleeps and `random`'s first state — and how
+   * (see `AutoOsCalls`). Omitted: the worker's clock and local zone, sleeps
+   * of at most ten seconds each, `random` seeded from its entropy. A sandbox
+   * wait costs nothing against `maxDurationSecs` and is not a suspension, so
+   * `requestTimeout` is what bounds a sleeping loop.
    */
-  datetime?: DateTimeSource
-  /**
-   * What `time.sleep()` and `asyncio.sleep()` do. `'sandbox_sleep'` (default)
-   * waits inside the worker, each call cut to `sandboxSleepClamp`, and
-   * gathered `asyncio.sleep()` calls overlap; `'zero'` returns at once;
-   * `'call_host'` sends both to the `os` callback, which performs the wait.
-   */
-  sleep?: SleepMode
-  /**
-   * Longest wait a `'sandbox_sleep'` performs per call, in seconds (default
-   * 10; `Infinity` for no cap). A wait costs nothing against
-   * `maxDurationSecs` and is not a suspension, so `requestTimeout` is what
-   * bounds a sleeping loop.
-   */
-  sandboxSleepClamp?: number
-  /**
-   * Where an unseeded `random` generator gets its first state. `'random'`
-   * (default) seeds from the worker's OS entropy; `{ seed }` starts the
-   * module-level generator exactly as `random.seed(seed)` would, with
-   * unseeded `random.Random()` instances taking deterministic states derived
-   * from it. `random.seed()` in the sandbox still applies afterwards, and
-   * explicit `os.urandom()` calls still reach the `os` callback.
-   */
-  randomStart?: RandomStart
+  autoOsCalls?: AutoOsCalls
 }
 
 /**
@@ -212,7 +189,7 @@ export class Monty {
       throw new Error('the pool is closed — create a new Monty pool')
     }
     const assertAnnotations = encodeAssertMessageAnnotations(options.assertMessageAnnotations)
-    const autoOsCalls = encodeAutoOsCalls(options)
+    const autoOsCalls = encodeAutoOsCalls(options.autoOsCalls ?? {})
     const native = this.native.checkout({
       scriptName: options.scriptName ?? 'main.py',
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
@@ -256,8 +233,8 @@ function graceMs(key: string, seconds: number | null | undefined): Record<string
 
 /**
  * Flattens the normalized options into the native binding's fields: the
- * fixed clock's three parts, the sleep mode and cap, and the seed as one of
- * four typed fields (all absent = `'random'`).
+ * fixed clock's parts, the zone's parts, the sleep mode and cap, and the
+ * random start as a kind plus the seed in one of four typed fields.
  */
 function nativeAutoOsCalls(calls: EncodedAutoOsCalls): Record<string, unknown> {
   const fields: Record<string, unknown> = {}
@@ -267,12 +244,21 @@ function nativeAutoOsCalls(calls: EncodedAutoOsCalls): Record<string, unknown> {
     fields.datetimeKind = 'fixed'
     fields.datetimeUnixSeconds = calls.datetime.unixSeconds
     fields.datetimeMicrosecond = calls.datetime.microsecond
-    fields.datetimeLocalOffsetSeconds = calls.datetime.localOffsetSeconds
+  }
+  if (typeof calls.timezone === 'string') {
+    fields.timezoneKind = calls.timezone
+  } else if (calls.timezone !== undefined) {
+    fields.timezoneKind = 'fixed'
+    fields.timezoneOffsetSeconds = calls.timezone.offsetSeconds
+    if (calls.timezone.name !== undefined) fields.timezoneName = calls.timezone.name
   }
   if (calls.sleep !== undefined) fields.sleep = calls.sleep
   if (calls.sandboxSleepClampSecs !== undefined) fields.sandboxSleepClampSecs = calls.sandboxSleepClampSecs
-  const seed = calls.randomSeed
-  if (seed !== undefined) {
+  if (calls.randomStart === 'call_host') {
+    fields.randomStartKind = 'call_host'
+  } else if (calls.randomStart !== undefined) {
+    fields.randomStartKind = 'seed'
+    const seed = calls.randomStart.seed
     if ('int' in seed) fields.randomSeedInt = Buffer.from(seed.int)
     else if ('float' in seed) fields.randomSeedFloat = seed.float
     else if ('str' in seed) fields.randomSeedStr = seed.str

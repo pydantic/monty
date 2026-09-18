@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use monty_types::{AutoOsCalls, DateTimeSource, RandomSeed, RandomStart, SleepMode};
+use monty_types::{AutoOsCalls, DateTimeSource, RandomSeed, RandomStart, SandboxTimeZone, SleepMode};
 use napi::{bindgen_prelude::BigInt, Error, Result, Status};
 use num_bigint::BigInt as NumBigInt;
 
@@ -35,10 +35,21 @@ pub(crate) fn extract_auto_os_calls(options: &NativeCheckoutOptions) -> Result<A
             DateTimeSource::Fixed {
                 unix_seconds,
                 microsecond,
-                local_offset_seconds: options.datetime_local_offset_seconds.unwrap_or(0),
             }
         }
         Some(other) => return Err(invalid(&format!("datetime: unknown source '{other}'"))),
+    };
+    let timezone = match options.timezone_kind.as_deref() {
+        None => defaults.timezone,
+        Some("system") => SandboxTimeZone::System,
+        Some("call_host") => SandboxTimeZone::CallHost,
+        Some("fixed") => SandboxTimeZone::Fixed {
+            offset_seconds: options
+                .timezone_offset_seconds
+                .ok_or_else(|| invalid("timezone: a fixed zone needs timezoneOffsetSeconds"))?,
+            name: options.timezone_name.clone(),
+        },
+        Some(other) => return Err(invalid(&format!("timezone: unknown zone '{other}'"))),
     };
     let clamp = match options.sandbox_sleep_clamp_secs {
         None => SleepMode::DEFAULT_CLAMP,
@@ -52,25 +63,35 @@ pub(crate) fn extract_auto_os_calls(options: &NativeCheckoutOptions) -> Result<A
         Some("call_host") => SleepMode::CallHost,
         Some(other) => return Err(invalid(&format!("sleep: unknown mode '{other}'"))),
     };
-    let random_start = match (
+    let random_start = match options.random_start_kind.as_deref() {
+        None | Some("random") => RandomStart::Random,
+        Some("call_host") => RandomStart::CallHost,
+        Some("seed") => RandomStart::Seed(random_seed(options)?),
+        Some(other) => return Err(invalid(&format!("randomStart: unknown start '{other}'"))),
+    };
+    Ok(AutoOsCalls {
+        datetime,
+        timezone,
+        sleep,
+        random_start,
+    })
+}
+
+/// The seed from whichever one of the four typed fields is set.
+fn random_seed(options: &NativeCheckoutOptions) -> Result<RandomSeed> {
+    match (
         &options.random_seed_int,
         options.random_seed_float,
         &options.random_seed_str,
         &options.random_seed_bytes,
     ) {
-        (None, None, None, None) => RandomStart::Random,
-        (Some(bytes), None, None, None) => RandomStart::Seed(RandomSeed::Int(NumBigInt::from_signed_bytes_le(bytes))),
-        (None, Some(f), None, None) if f.is_finite() => RandomStart::Seed(RandomSeed::Float(f)),
-        (None, Some(_), None, None) => return Err(invalid("randomStart: a float seed must be finite")),
-        (None, None, Some(s), None) => RandomStart::Seed(RandomSeed::Str(s.clone())),
-        (None, None, None, Some(bytes)) => RandomStart::Seed(RandomSeed::Bytes(bytes.to_vec())),
-        _ => return Err(invalid("randomStart: at most one seed field may be set")),
-    };
-    Ok(AutoOsCalls {
-        datetime,
-        sleep,
-        random_start,
-    })
+        (Some(bytes), None, None, None) => Ok(RandomSeed::Int(NumBigInt::from_signed_bytes_le(bytes))),
+        (None, Some(f), None, None) if f.is_finite() => Ok(RandomSeed::Float(f)),
+        (None, Some(_), None, None) => Err(invalid("randomStart: a float seed must be finite")),
+        (None, None, Some(s), None) => Ok(RandomSeed::Str(s.clone())),
+        (None, None, None, Some(bytes)) => Ok(RandomSeed::Bytes(bytes.to_vec())),
+        _ => Err(invalid("randomStart: a seed needs exactly one seed field")),
+    }
 }
 
 /// A JS `bigint` as `i64`, rejecting one that does not fit.

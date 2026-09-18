@@ -13,9 +13,12 @@ test('a fixed clock, zero sleeps and a seed reach the wasm worker', async (ctx) 
   skipIfBrowser(ctx)
   const pool = await Monty.create()
   const session = await pool.checkout({
-    datetime: new Date('2024-01-15T10:30:05.123Z'),
-    sleep: 'zero',
-    randomStart: { seed: 42 },
+    autoOsCalls: {
+      datetime: new Date('2024-01-15T10:30:05.123Z'),
+      timezone: { offsetSeconds: 3600, name: 'CET' },
+      sleep: 'zero',
+      randomStart: { seed: 42 },
+    },
   })
   try {
     const code =
@@ -26,7 +29,7 @@ test('a fixed clock, zero sleeps and a seed reach the wasm worker', async (ctx) 
       year: 2024,
       month: 1,
       day: 15,
-      hour: 10,
+      hour: 11,
       minute: 30,
       second: 5,
       microsecond: 123000,

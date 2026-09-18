@@ -244,7 +244,21 @@ export interface ResourceLimits {
 export interface FixedDatetime {
   unixSeconds: bigint
   microsecond: number
-  localOffsetSeconds: number
+}
+export interface FixedTimeZone {
+  offsetSeconds: number
+  name?: string
+}
+export type TimeZone = TimeZoneCallHost | TimeZoneSystem | TimeZoneFixed
+export interface TimeZoneCallHost {
+  tag: 'call-host'
+}
+export interface TimeZoneSystem {
+  tag: 'system'
+}
+export interface TimeZoneFixed {
+  tag: 'fixed'
+  val: FixedTimeZone
 }
 export type DatetimeSource = DatetimeSourceCallHost | DatetimeSourceSystem | DatetimeSourceFixed
 export interface DatetimeSourceCallHost {
@@ -285,7 +299,10 @@ export interface RandomSeedBytes {
   tag: 'bytes'
   val: Uint8Array
 }
-export type RandomStart = RandomStartRandom | RandomStartSeed
+export type RandomStart = RandomStartCallHost | RandomStartRandom | RandomStartSeed
+export interface RandomStartCallHost {
+  tag: 'call-host'
+}
 export interface RandomStartRandom {
   tag: 'random'
 }
@@ -295,6 +312,7 @@ export interface RandomStartSeed {
 }
 export interface AutoOsCalls {
   datetime?: DatetimeSource
+  timezone?: TimeZone
   sleep?: SleepMode
   randomStart?: RandomStart
 }

@@ -74,33 +74,50 @@ export function encodeAssertMessageAnnotations(value: AssertMessageAnnotations |
 }
 
 /**
- * The `datetime` checkout option: what `date.today()`, `datetime.now()` and
- * `time.time()` read. `'system'` (the default) is the worker's clock and local
- * timezone, `'call_host'` sends each call to the `os` callback, and a `Date`
- * freezes the clock at that instant (read as UTC).
+ * `AutoOsCalls.datetime`: the instant `date.today()`, `datetime.now()` and
+ * `time.time()` read. `'system'` (the default) is the worker's clock,
+ * `'call_host'` sends each call to the `os` callback, and a `Date` freezes
+ * the clock at that instant — and, unless `timezone` is given, sets the zone
+ * to UTC, so `datetime.now()` returns it exactly.
  */
 export type DateTimeSource = 'call_host' | 'system' | Date
 
 /**
- * The `sleep` checkout option: what `time.sleep()` and `asyncio.sleep()` do.
+ * `AutoOsCalls.timezone`: the local zone naive `datetime.now()` and
+ * `date.today()` read in. `'system'` (the default) is the worker's local
+ * zone, `'call_host'` sends the calls that need the zone to the `os`
+ * callback, and an object is a fixed offset from UTC with an optional name —
+ * what `datetime.timezone(offset, name)` carries, not an IANA zone.
+ */
+export type TimeZone = 'call_host' | 'system' | { offsetSeconds: number; name?: string }
+
+/**
+ * `AutoOsCalls.sleep`: what `time.sleep()` and `asyncio.sleep()` do.
  * `'sandbox_sleep'` (the default) waits inside the worker, `'zero'` returns
  * at once, `'call_host'` sends both to the `os` callback.
  */
 export type SleepMode = 'call_host' | 'zero' | 'sandbox_sleep'
 
 /**
- * The `randomStart` checkout option: where an unseeded `random` generator
- * gets its first state. `'random'` (the default) is the worker's OS entropy;
- * `{ seed }` starts it as `random.seed(seed)` would, with the types CPython
- * accepts (a `number` is an int when integral, `bigint` for larger ints,
- * `string`, or `Uint8Array` for `bytes`).
+ * `AutoOsCalls.randomStart`: where an unseeded `random` generator gets its
+ * first state. `'random'` (the default) is the worker's OS entropy;
+ * `'call_host'` sends an `os.urandom` request for 2496 bytes to the `os`
+ * callback on the first draw; `{ seed }` starts it as `random.seed(seed)`
+ * would, with the types CPython accepts (a `number` is an int when integral,
+ * `bigint` for larger ints, `string`, or `Uint8Array` for `bytes`).
  */
-export type RandomStart = 'random' | { seed: number | bigint | string | Uint8Array }
+export type RandomStart = 'call_host' | 'random' | { seed: number | bigint | string | Uint8Array }
 
-/** The four options as they appear on `CheckoutOptions`. */
-export interface AutoOsCallsOptions {
+/**
+ * The `autoOsCalls` checkout option: which OS calls the worker answers
+ * itself, for the life of the session. Every field is optional; an omitted
+ * one keeps its default.
+ */
+export interface AutoOsCalls {
   datetime?: DateTimeSource
+  timezone?: TimeZone
   sleep?: SleepMode
+  /** Longest wait a `'sandbox_sleep'` performs per call, in seconds (default 10; `Infinity` for no cap). */
   sandboxSleepClamp?: number
   randomStart?: RandomStart
 }
@@ -109,7 +126,12 @@ export interface AutoOsCallsOptions {
 export interface FixedDateTime {
   unixSeconds: bigint
   microsecond: number
-  localOffsetSeconds: number
+}
+
+/** A fixed zone, as the wire carries it. */
+export interface FixedTimeZone {
+  offsetSeconds: number
+  name?: string
 }
 
 /** A `random.seed()` argument in its wire form: one of the four CPython types. */
@@ -121,25 +143,31 @@ export type EncodedRandomSeed = { int: Uint8Array } | { float: number } | { str:
  */
 export interface EncodedAutoOsCalls {
   datetime?: 'call_host' | 'system' | FixedDateTime
+  timezone?: 'call_host' | 'system' | FixedTimeZone
   sleep?: SleepMode
   /** Seconds; `Infinity` lifts the cap. */
   sandboxSleepClampSecs?: number
   /** Absent means `'random'`. */
-  randomSeed?: EncodedRandomSeed
+  randomStart?: 'call_host' | { seed: EncodedRandomSeed }
 }
 
 const SLEEP_MODES: readonly SleepMode[] = ['call_host', 'zero', 'sandbox_sleep']
 
 /**
- * Validates and normalizes the four options, throwing `RangeError` /
- * `TypeError` for a value the wire cannot carry. Own-property and instance
- * checks matter here as in {@link encodeTypeCheckFormat}: callers are not
- * bound by the types.
+ * Validates and normalizes the options, throwing `RangeError` / `TypeError`
+ * for a value the wire cannot carry. Own-property and instance checks matter
+ * here as in {@link encodeTypeCheckFormat}: callers are not bound by the
+ * types.
  */
-export function encodeAutoOsCalls(options: AutoOsCallsOptions): EncodedAutoOsCalls {
+export function encodeAutoOsCalls(options: AutoOsCalls): EncodedAutoOsCalls {
   const encoded: EncodedAutoOsCalls = {}
   if (options.datetime !== undefined) {
     encoded.datetime = encodeDateTime(options.datetime)
+    // a Date is read as UTC unless the zone is given explicitly
+    if (options.datetime instanceof Date) encoded.timezone = { offsetSeconds: 0 }
+  }
+  if (options.timezone !== undefined) {
+    encoded.timezone = encodeTimeZone(options.timezone)
   }
   if (options.sleep !== undefined) {
     if (!SLEEP_MODES.includes(options.sleep)) {
@@ -154,13 +182,15 @@ export function encodeAutoOsCalls(options: AutoOsCallsOptions): EncodedAutoOsCal
     }
     encoded.sandboxSleepClampSecs = secs
   }
-  if (options.randomStart !== undefined && options.randomStart !== 'random') {
-    encoded.randomSeed = encodeRandomSeed(options.randomStart)
+  if (options.randomStart === 'call_host') {
+    encoded.randomStart = 'call_host'
+  } else if (options.randomStart !== undefined && options.randomStart !== 'random') {
+    encoded.randomStart = { seed: encodeRandomSeed(options.randomStart) }
   }
   return encoded
 }
 
-/** A `Date` becomes its instant read as UTC; the two names pass through. */
+/** A `Date` becomes its instant; the two names pass through. */
 function encodeDateTime(datetime: DateTimeSource): 'call_host' | 'system' | FixedDateTime {
   if (datetime === 'call_host' || datetime === 'system') return datetime
   if (!(datetime instanceof Date) || Number.isNaN(datetime.getTime())) {
@@ -168,7 +198,24 @@ function encodeDateTime(datetime: DateTimeSource): 'call_host' | 'system' | Fixe
   }
   const ms = datetime.getTime()
   const seconds = Math.floor(ms / 1000)
-  return { unixSeconds: BigInt(seconds), microsecond: (ms - seconds * 1000) * 1000, localOffsetSeconds: 0 }
+  return { unixSeconds: BigInt(seconds), microsecond: (ms - seconds * 1000) * 1000 }
+}
+
+/** A fixed zone is validated field by field; the two names pass through. */
+function encodeTimeZone(timezone: TimeZone): 'call_host' | 'system' | FixedTimeZone {
+  if (timezone === 'call_host' || timezone === 'system') return timezone
+  const shape = "timezone must be 'system', 'call_host' or { offsetSeconds: number, name?: string }"
+  if (typeof timezone !== 'object' || timezone === null || !Object.hasOwn(timezone, 'offsetSeconds')) {
+    throw new TypeError(shape)
+  }
+  const { offsetSeconds, name } = timezone
+  if (!Number.isInteger(offsetSeconds) || Math.abs(offsetSeconds) > 0x7fff_ffff) {
+    throw new RangeError('timezone offsetSeconds must be an integer number of seconds')
+  }
+  if (name !== undefined && typeof name !== 'string') {
+    throw new TypeError('timezone name must be a string')
+  }
+  return name === undefined ? { offsetSeconds } : { offsetSeconds, name }
 }
 
 /** The seed in its wire form; `bool` and other types are refused. */
@@ -180,7 +227,7 @@ function encodeRandomSeed(start: RandomStart): EncodedRandomSeed {
   }
   if (typeof seed === 'string') return { str: seed }
   if (seed instanceof Uint8Array) return { bytes: seed }
-  throw new TypeError("randomStart must be 'random' or { seed: number | bigint | string | Uint8Array }")
+  throw new TypeError("randomStart must be 'random', 'call_host' or { seed: number | bigint | string | Uint8Array }")
 }
 
 /** Two's-complement little-endian bytes of `n`, as `BigInt::from_signed_bytes_le` reads them. */

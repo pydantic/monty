@@ -123,7 +123,7 @@ test('os handler is used by resumeAuto, not auto-dispatched', async () => {
 })
 
 test('resumeAuto settles an immediately awaited asyncio.sleep in place', async () => {
-  const session = await pool().checkout({ sleep: 'call_host' })
+  const session = await pool().checkout({ autoOsCalls: { sleep: 'call_host' } })
   try {
     const snap = await session.feedStart("import asyncio\nawait asyncio.sleep(0.001, 'woken')", {
       os: async (name, args) => {
