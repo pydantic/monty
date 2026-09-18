@@ -801,16 +801,24 @@ pub struct Print {
 /// `ExtFunctionResult.not_handled`: the child raises the call's own default
 /// (PermissionError naming the path for filesystem calls, RuntimeError for
 /// the rest — monty's `OsFunctionCall::on_no_handler`).
+///
+/// Tags 2-49 are reserved for `call` arms and the other message-level fields
+/// start at 50, as in `ChildEvent`, so a new call never has to jump the numbering.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OsCall {
     #[prost(uint32, tag = "1")]
     pub call_id: u32,
     /// The arena any value-typed argument (`Getenv.default`) indexes.
-    #[prost(message, optional, tag = "26")]
+    #[prost(message, optional, tag = "50")]
     pub values: ::core::option::Option<crate::WireArena>,
+    /// As on `FunctionCall`: the parent may await a coroutine and answer with
+    /// `ResumeFutures` for `call_id`. Only ever set on `async_sleep`, the one
+    /// call a future may answer at all.
+    #[prost(bool, tag = "51")]
+    pub allow_eager_await: bool,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -879,7 +887,29 @@ pub mod os_call {
         #[prost(uint64, tag = "1")]
         pub size: u64,
     }
-    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    /// time.sleep(seconds) — the parent waits, then answers (the sandbox
+    /// evaluates the call to None whatever the answer carried). Answering with a
+    /// future is refused: the call is a block by definition.
+    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    pub struct Sleep {
+        /// How long to wait. Always finite, non-negative, and small enough to be a
+        /// duration of nanoseconds in an int64; a frame breaking that is rejected.
+        #[prost(double, tag = "1")]
+        pub seconds: f64,
+    }
+    /// asyncio.sleep(delay) — the awaitable form. A parent running an event
+    /// loop should answer `ExtFunctionResult.future` and resolve it once the
+    /// delay elapses, so the sandbox's other tasks keep running; answering
+    /// directly is equivalent to a wait that blocks them. The answer's value is
+    /// ignored: the sandbox keeps the `result` argument itself and produces it
+    /// from the `await`.
+    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    pub struct AsyncSleep {
+        /// How long to wait, under the same constraints as `Sleep.seconds`.
+        #[prost(double, tag = "1")]
+        pub delay: f64,
+    }
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
         /// ---- FS read / check / remove — the string is the virtual path -------
         ///
@@ -956,6 +986,15 @@ pub mod os_call {
         /// os.urandom(size), also how `random` seeds an unseeded generator.
         #[prost(message, tag = "25")]
         Urandom(Urandom),
+        /// time.time()
+        #[prost(message, tag = "26")]
+        Time(super::Unit),
+        /// time.sleep(seconds)
+        #[prost(message, tag = "27")]
+        Sleep(Sleep),
+        /// asyncio.sleep(delay)
+        #[prost(message, tag = "28")]
+        AsyncSleep(AsyncSleep),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether

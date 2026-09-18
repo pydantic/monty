@@ -7,7 +7,7 @@ use std::future::Future;
 
 use monty_pool::ResumeValue;
 use monty_proto::python::InstanceStore;
-use monty_types::{CallArgs, ExtFunctionResult, MontyUuid};
+use monty_types::{CallArgs, ExtFunctionResult, MontyUuid, OsFunctionCall};
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
 use pyo3_async_runtimes::{into_future_with_locals, tokio::get_current_locals};
 use tokio::task::{JoinError, JoinSet};
@@ -34,30 +34,68 @@ pub(crate) fn dispatch_function_call(
     })
 }
 
-/// Spawns a Python coroutine as a tokio task in the `JoinSet`, converting its
-/// eventual result to an `ExtFunctionResult`.
-pub(crate) fn spawn_coroutine_task(
-    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
-    call_id: u32,
-    coro: Py<PyAny>,
-    instances: &InstanceStore,
-) -> PyResult<()> {
-    let future = coroutine_future(coro, instances)?;
-    join_set.spawn(async move { (call_id, future.await) });
-    Ok(())
+/// How a host coroutine answers a sandbox call, chosen by whether the sandbox
+/// code `await`s that call and so expects an awaitable rather than a value.
+#[derive(Clone, Copy)]
+pub(crate) enum CoroutineMode {
+    /// The sandbox awaits the call and has nothing else to run: the host awaits
+    /// the coroutine now and answers with `resume_futures`, skipping the
+    /// `ResolveFutures` round trip.
+    Eager,
+    /// The sandbox awaits the call and may run other tasks meanwhile: the
+    /// coroutine is spawned and the call answered with a future, resolved later.
+    Future,
+    /// The sandbox does not await the call (`time.sleep`, `Path.read_text`), so a
+    /// future would be an error: the host awaits the coroutine now and answers
+    /// with its plain value. Only this session waits.
+    AsValue,
 }
 
-/// Converts a coroutine under the current asyncio task-locals, for eager await or spawning.
-pub(crate) fn coroutine_future(
+impl CoroutineMode {
+    /// External functions and host methods are always awaited by the sandbox.
+    pub(crate) fn for_function_call(allow_eager_await: bool) -> Self {
+        if allow_eager_await { Self::Eager } else { Self::Future }
+    }
+
+    /// Only an OS call that accepts a future is awaited by the sandbox.
+    pub(crate) fn for_os_call(function_name: &str, allow_eager_await: bool) -> Self {
+        if allow_eager_await {
+            Self::Eager
+        } else if OsFunctionCall::accepts_future(function_name) {
+            Self::Future
+        } else {
+            Self::AsValue
+        }
+    }
+}
+
+/// Converts the coroutine a host callback answered `call_id` with, spawning it
+/// into `join_set` or handing it back to await outside the callback context.
+pub(crate) fn dispatch_coroutine(
+    coro: Py<PyAny>,
+    call_id: u32,
+    mode: CoroutineMode,
+    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    instances: &InstanceStore,
+) -> PyResult<Dispatched<impl Future<Output = ExtFunctionResult> + Send + use<>>> {
+    let future = coroutine_future(coro, instances)?;
+    Ok(match mode {
+        CoroutineMode::Eager => Dispatched::Eager(future),
+        CoroutineMode::Future => {
+            join_set.spawn(async move { (call_id, future.await) });
+            Dispatched::Done(ResumeValue::Future)
+        }
+        CoroutineMode::AsValue => Dispatched::AsValue(future),
+    })
+}
+
+/// Converts a coroutine under the current asyncio task-locals, for awaiting or spawning.
+fn coroutine_future(
     coro: Py<PyAny>,
     instances: &InstanceStore,
 ) -> PyResult<impl Future<Output = ExtFunctionResult> + Send + use<>> {
     let instances = Python::attach(|py| instances.clone_ref(py));
-    let future = Python::attach(|py| {
-        let locals = get_current_locals(py)?.copy_context(py)?;
-        into_future_with_locals(&locals, coro.into_bound(py))
-    })?;
-
+    let future = python_future(coro)?;
     Ok(async move {
         match future.await {
             Ok(py_result) => Python::attach(|py| {
@@ -69,11 +107,23 @@ pub(crate) fn coroutine_future(
     })
 }
 
-/// Outcome of dispatching a function call under the callback context: either
-/// an answer, or an eager coroutine future still to be awaited outside the GIL.
+/// Schedules `coro` on the caller's event loop, under the task-locals the
+/// current `future_into_py` scope established.
+fn python_future(coro: Py<PyAny>) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send + use<>> {
+    Python::attach(|py| {
+        let locals = get_current_locals(py)?.copy_context(py)?;
+        into_future_with_locals(&locals, coro.into_bound(py))
+    })
+}
+
+/// Outcome of dispatching a call under the callback context: either an answer,
+/// or a coroutine future still to be awaited outside the GIL.
 pub(crate) enum Dispatched<F> {
     Done(ResumeValue),
+    /// Settles into a `resume_futures` answer; see [`CoroutineMode::Eager`].
     Eager(F),
+    /// Settles into a plain `resume` answer; see [`CoroutineMode::AsValue`].
+    AsValue(F),
 }
 
 /// Waits for at least one `JoinSet` task to complete, then drains any other

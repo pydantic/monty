@@ -31,6 +31,7 @@ pub(crate) mod pathlib;
 pub(crate) mod random;
 pub(crate) mod re;
 pub(crate) mod sys;
+pub(crate) mod time;
 pub(crate) mod typing;
 pub(crate) mod unicodedata;
 
@@ -77,6 +78,9 @@ pub(crate) enum StandardLib {
     Random,
     /// The `copy` module providing `copy()` and `deepcopy()`.
     Copy,
+    /// The `time` module providing `time()` and `sleep()`, both of which the
+    /// host serves.
+    Time,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -106,6 +110,7 @@ impl StandardLib {
             StaticStrings::Binascii => Some(Self::Binascii),
             StaticStrings::Random => Some(Self::Random),
             StaticStrings::Copy => Some(Self::Copy),
+            StaticStrings::Time => Some(Self::Time),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -134,6 +139,7 @@ impl StandardLib {
             Self::Binascii => binascii::create_module(vm),
             Self::Random => random::create_module(vm),
             Self::Copy => copy::create_module(vm),
+            Self::Time => time::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -163,6 +169,7 @@ pub(crate) enum ModuleFunctions {
     Binascii(binascii::BinasciiFunctions),
     Random(random::RandomFunctions),
     Copy(copy::CopyFunctions),
+    Time(time::TimeFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -193,6 +200,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Binascii(func) => write!(f, "{func}"),
             Self::Random(func) => write!(f, "{func}"),
             Self::Copy(func) => write!(f, "{func}"),
+            Self::Time(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -222,6 +230,7 @@ impl ModuleFunctions {
             Self::Binascii(functions) => binascii::call(vm, functions, args).map(CallResult::Value),
             Self::Random(functions) => random::call(vm, functions, args),
             Self::Copy(functions) => copy::call(vm, functions, args).map(CallResult::Value),
+            Self::Time(functions) => time::call(vm, functions, args),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

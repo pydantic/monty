@@ -1,10 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
+import functools
+import inspect
 import os
+import time
 from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, Protocol, Sequence, TypeAlias, TypeGuard
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Coroutine,
+    Literal,
+    NamedTuple,
+    Protocol,
+    Sequence,
+    TypeAlias,
+    TypeGuard,
+)
 
 from ._monty import NOT_HANDLED, MontyFileHandle
 
@@ -48,6 +63,9 @@ OsFunction = Literal[
     'date.today',
     'datetime.now',
     'os.urandom',
+    'time.time',
+    'time.sleep',
+    'asyncio.sleep',
 ]
 
 MAX_URANDOM_BYTES_DEFAULT: int = 1_048_576
@@ -67,10 +85,7 @@ class StatResult(NamedTuple):
             size: File size in bytes
             mode: File permissions as octal (e.g., 0o644) or full mode with file type
             mtime: Modification time as Unix timestamp, defaults to Now.
-
         """
-        import time
-
         # If only permission bits provided (no file type), add regular file type
         if mode < 0o1000:
             mode = mode | 0o100_000
@@ -90,8 +105,6 @@ class StatResult(NamedTuple):
         Returns:
             A namedtuple with stat_result fields
         """
-        import time
-
         # If only permission bits provided (no file type), add directory type
         if mode < 0o1000:
             mode = mode | 0o040_000
@@ -143,23 +156,48 @@ class AbstractOS(ABC):
     max_urandom_bytes: int = MAX_URANDOM_BYTES_DEFAULT
     """Maximum host allocation per `urandom()` call; defaults to 1 MiB."""
 
-    def __call__(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
-        """Adapter used by Monty's `os=` callback surface.
+    max_sleep: float | None = 10
+    """Longest wait `sleep()` and `async_sleep()` perform, in seconds.
 
-        Monty calls `__call__` directly, so this method stays as the public
-        callable entrypoint. Override `dispatch()` when you want to customize
-        routing or return `NOT_HANDLED`.
+    A longer `time.sleep()` or `asyncio.sleep()` is cut short to this, so
+    sandboxed code cannot hold the host for longer; `None` waits the full time.
+    """
+
+    def __call__(
+        self,
+        *,
+        name: OsFunction,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        is_async: bool,
+        **_future_kwargs: Any,
+    ) -> Any:
+        """The `OsHandler` entrypoint Monty calls; see `OsHandler`.
+
+        Override `dispatch()` when you want to customize routing or return
+        `NOT_HANDLED`.
 
         Returns:
             The OS operation result, or `NOT_HANDLED` to let Monty apply its
             standard unhandled-operation behavior.
         """
         try:
-            return self.dispatch(function_name, args, kwargs)
+            if _dispatch_takes_is_async(type(self)):
+                return self.dispatch(name, args, kwargs, is_async=is_async)
+            # an override with the older three-argument signature never sees
+            # `is_async`, so its sleeps block as they did before it existed
+            return self.dispatch(name, args, kwargs)
         except NotImplementedError:
             return NOT_HANDLED
 
-    def dispatch(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any] | None = None) -> Any:
+    def dispatch(
+        self,
+        function_name: OsFunction,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any] | None = None,
+        *,
+        is_async: bool = False,
+    ) -> Any:
         """Dispatch an OS operation to the appropriate method.
 
         This handles Monty's built-in `pathlib.Path`, `os`, and host clock
@@ -170,6 +208,7 @@ class AbstractOS(ABC):
             function_name: The OS operation being called (e.g., 'Path.exists').
             args: The arguments passed to the method.
             kwargs: The keyword arguments passed to the method.
+            is_async: Whether the caller can await a coroutine answer; see `OsHandler`.
 
         Returns:
             The result of the OS operation.
@@ -233,6 +272,12 @@ class AbstractOS(ABC):
                 return self.datetime_now(*args)
             case 'os.urandom':
                 return self.urandom(*args)
+            case 'time.time':
+                return self.time()
+            case 'time.sleep':
+                return self.sleep(*args)
+            case 'asyncio.sleep':
+                return self.async_sleep(*args, is_async=is_async)
             case _:  # pyright: ignore[reportUnnecessaryComparison]
                 raise NotImplementedError(f'Unknown OS function: {function_name}')
 
@@ -566,6 +611,63 @@ class AbstractOS(ABC):
             raise MemoryError(f'os.urandom() size exceeds max_urandom_bytes ({self.max_urandom_bytes})')
         return os.urandom(size)
 
+    def time(self) -> float:
+        """Return the epoch seconds for Monty's `time.time()` callback.
+
+        Override this alongside `date_today()` and `datetime_now()` when the
+        sandbox should observe a virtual or fixed clock.
+        """
+        return time.time()
+
+    def sleep(self, seconds: float) -> None:
+        """Wait for Monty's `time.sleep()` callback, for at most `max_sleep`.
+
+        The wait happens in the host process, blocking this thread: override it
+        to scale or refuse (raise, or return `NOT_HANDLED`) the waits sandboxed
+        code asks for, beyond the cap `max_sleep` already applies.
+        """
+        time.sleep(self._capped(seconds))
+
+    def async_sleep(self, delay: float, *, is_async: bool) -> Coroutine[Any, Any, None] | None:
+        """Wait for Monty's `asyncio.sleep()` callback.
+
+        Under `AsyncMonty` (`is_async` is true) the default returns
+        `asyncio.sleep(delay)`, which the pool awaits while the sandbox's other
+        tasks keep running, so gathered sleeps overlap. Under `Monty`, which has
+        no event loop, it waits with `sleep()` and the sandbox is blocked for the
+        delay. An override may return `None` once it has waited, or a coroutine
+        (not a `Future` or `Task`, which the bridge does not recognise) when
+        `is_async` is true. What the coroutine returns is ignored: the sandbox
+        keeps the `result` argument of `asyncio.sleep()`.
+        """
+        if is_async:
+            return asyncio.sleep(self._capped(delay))
+        return self.sleep(delay)
+
+    def _capped(self, seconds: float) -> float:
+        """`seconds` cut down to `max_sleep`, when there is one.
+
+        Fails closed: a NaN cap is returned rather than the request (`min()` would keep
+        the request), so the sleep raises instead of running uncapped.
+        """
+        cap = self.max_sleep
+        return seconds if cap is None or seconds <= cap else cap
+
+
+@functools.cache
+def _dispatch_takes_is_async(cls: type[AbstractOS]) -> bool:
+    """Whether `cls.dispatch` accepts `is_async`, cached per subclass.
+
+    Overrides written against the three-argument `dispatch` predate the keyword
+    and would fail on every call if it were passed; `**kwargs` counts as taking it.
+    """
+    params = inspect.signature(cls.dispatch).parameters
+    is_async = params.get('is_async')
+    by_keyword = {inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+    return (is_async is not None and is_async.kind in by_keyword) or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
 
 class AbstractFile(Protocol):
     """Protocol defining the interface for files used with OSAccess.
@@ -822,6 +924,7 @@ class OSAccess(AbstractOS):
         *,
         root_dir: str | PurePosixPath = '/',
         max_urandom_bytes: int = MAX_URANDOM_BYTES_DEFAULT,
+        max_sleep: float | None = 10,
     ):
         """Create a virtual filesystem with the given files.
 
@@ -835,12 +938,17 @@ class OSAccess(AbstractOS):
                 paths in files will be prefixed with this. Default is '/'.
             max_urandom_bytes: Maximum bytes per `os.urandom()` call, defaulting to 1 MiB.
                 Zero rejects nonempty requests, including unseeded `random` draws.
+            max_sleep: Longest wait a `time.sleep()` or `asyncio.sleep()` performs,
+                in seconds (default 10); longer sleeps are cut short, `None` waits
+                the full time.
 
         Raises:
             AssertionError: If root_dir is not an absolute path.
             ValueError: If a file path conflicts with another file (e.g., trying
                 to create a file inside another file's path), or `max_urandom_bytes` is negative.
-            TypeError: If `max_urandom_bytes` is not an int (a float `nan` would disable the cap).
+                Also if `max_sleep` is negative or `nan`, either of which would disable the cap.
+            TypeError: If `max_urandom_bytes` is not an int (a float `nan` would disable the cap),
+                or `max_sleep` is not a number or `None`.
         """
         if not isinstance(max_urandom_bytes, int):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f'max_urandom_bytes must be an int, not {type(max_urandom_bytes).__name__}')
@@ -849,6 +957,13 @@ class OSAccess(AbstractOS):
         self.max_urandom_bytes = max_urandom_bytes
         self.files = list(files) if files else []
         self.environ = environ or {}
+        if max_sleep is not None:
+            if isinstance(max_sleep, bool) or not isinstance(max_sleep, (int, float)):  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise TypeError(f'max_sleep must be a number or None, not {type(max_sleep).__name__}')
+            # `not >=` rather than `<` so `nan`, which compares false both ways, is rejected
+            if not max_sleep >= 0:
+                raise ValueError('max_sleep must be non-negative')
+        self.max_sleep = max_sleep
         # Initialize tree with root directory - / is always present
         self._tree = {'/': {}}
         root_dir = PurePosixPath(root_dir)

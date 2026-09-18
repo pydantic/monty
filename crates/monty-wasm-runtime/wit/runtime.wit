@@ -344,6 +344,9 @@ interface worker {
         args: list<u32>,
         kwargs: list<node-pair>,
         call-id: u32,
+        /// As on `function-call-event`: the host may await its wait and answer
+        /// with `resume-futures`. Only ever set on `asyncio.sleep`.
+        allow-eager-await: bool,
     }
 
     /// A finished feed's value: an index into its arena.

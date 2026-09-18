@@ -1737,6 +1737,18 @@ pub enum StaticStrings {
     Combine,
     /// `resolution` class constant of the `datetime` classes.
     Resolution,
+
+    // ==========================
+    // `time` module strings, appended at the enum end like every block before
+    // it. The module name itself reuses [`Self::Time`], already interned as
+    // `datetime.time`, since both spell "time".
+    /// `time.sleep()` and `asyncio.sleep()`.
+    Sleep,
+    /// `delay` parameter of `asyncio.sleep()`.
+    Delay,
+    /// `result` parameter of `asyncio.sleep()`.
+    #[strum(serialize = "result")]
+    ResultArg,
 }
 
 /// One immutable interned string with directly accessible dispatch metadata.

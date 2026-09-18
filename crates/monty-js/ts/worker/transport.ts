@@ -391,6 +391,7 @@ export class WorkerTransport {
           args: Array.from(event.val.args, get),
           kwargs: event.val.kwargs.map(({ key, value }) => [get(key), get(value)]),
           callId: event.val.callId,
+          allowEagerAwait: event.val.allowEagerAwait,
         }
       }
       case 'name-lookup':

@@ -136,7 +136,7 @@ async def run(index, url=None):
                 await asyncio.sleep(0.01)
                 assert request.get() == index
             return 20
-        def os_callback(function, args, kwargs):
+        def os_callback(*, name, args, **_):
             assert request.get() == index
             assert baggage.get_baggage('request') == str(index)
             with tracer.start_as_current_span(f'os {index}'):
@@ -342,7 +342,7 @@ if failure != 'disabled':
     instrument_telemetry(tracer=tracer)
 calls = []
 
-def fail(*args):
+def fail(*args, **kwargs):
     span = trace.get_current_span()
     assert span.is_recording()
     calls.append(span.get_span_context().span_id)

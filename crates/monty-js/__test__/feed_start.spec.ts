@@ -122,6 +122,26 @@ test('os handler is used by resumeAuto, not auto-dispatched', async () => {
   }
 })
 
+test('resumeAuto settles an immediately awaited asyncio.sleep in place', async () => {
+  const session = await pool().checkout()
+  try {
+    const snap = await session.feedStart("import asyncio\nawait asyncio.sleep(0.001, 'woken')", {
+      os: async (name, args) => {
+        t.is(name, 'asyncio.sleep')
+        await new Promise((resolve) => setTimeout(resolve, (args[0] as number) * 1000))
+      },
+    })
+    t.true(snap instanceof FunctionSnapshot)
+    t.true((snap as FunctionSnapshot).allowEagerAwait)
+    // no FutureSnapshot in between: the wait is done when the answer arrives
+    const done = (await (snap as FunctionSnapshot).resumeAuto()) as MontyComplete
+    t.true(done instanceof MontyComplete)
+    t.is(done.output, 'woken')
+  } finally {
+    await session.close()
+  }
+})
+
 test('the sandbox future mechanism is caller-driven', async () => {
   const session = await pool().checkout()
   try {

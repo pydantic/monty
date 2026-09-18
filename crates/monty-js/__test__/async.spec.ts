@@ -319,3 +319,64 @@ test('printCallback with multiple prints', async () => {
 
   t.is(output.join(''), 'a\nb\nc\n')
 })
+
+// =============================================================================
+// Sleeping: `time.sleep` and `asyncio.sleep` reach the `os` callback
+// =============================================================================
+
+test('time.sleep reaches the os callback and evaluates to None', async () => {
+  const calls: unknown[] = []
+  const result = await run('import time\nrepr(time.sleep(1.5))', {
+    os: (name, args) => {
+      calls.push([name, args])
+      return null // the host decides how long to wait — here, not at all
+    },
+  })
+  t.is(result, 'None')
+  t.deepEqual(calls, [['time.sleep', [1.5]]])
+})
+
+test('an async os callback answers asyncio.sleep as a future, so gathered sleeps overlap', async () => {
+  const calls: unknown[] = []
+  const started: number[] = []
+  const finished: number[] = []
+  const code = [
+    'import asyncio',
+    'async def main():',
+    "    return await asyncio.gather(asyncio.sleep(0.05, 'a'), asyncio.sleep(0.05, 'b'))",
+    'asyncio.run(main())',
+  ].join('\n')
+  const result = await run(code, {
+    os: async (name, args) => {
+      calls.push([name, args])
+      started.push(performance.now())
+      await new Promise((resolve) => setTimeout(resolve, (args[0] as number) * 1000))
+      finished.push(performance.now())
+      return new Map() // ignored, so it need not convert
+    },
+  })
+  t.deepEqual(result, ['a', 'b'])
+  t.deepEqual(calls, [
+    ['asyncio.sleep', [0.05]],
+    ['asyncio.sleep', [0.05]],
+  ])
+  // the second sleep started before the first finished, so they overlapped
+  t.true(started[1] < finished[0])
+})
+
+test('an async os callback answering time.sleep is awaited before the sandbox resumes', async () => {
+  const result = await run('import time\nrepr(time.sleep(0.001))', {
+    os: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1))
+      return 'ignored'
+    },
+  })
+  t.is(result, 'None')
+})
+
+test('sleeping without an os callback is refused', async () => {
+  const error = await t.throwsAsync(() => run('import time\ntime.sleep(30)'), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.message, "RuntimeError: 'time.sleep' is not supported in this environment")
+})
