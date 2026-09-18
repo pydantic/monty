@@ -10,7 +10,7 @@ from pathlib import PurePosixPath
 from unittest.mock import Mock
 
 import pytest
-from conftest import RunMonty
+from conftest import CALL_HOST, RunMonty
 from inline_snapshot import snapshot
 
 import pydantic_monty
@@ -229,21 +229,21 @@ def test_abstract_filesystem_exists_missing(monty_run: RunMonty):
 
 
 def test_abstract_os_date_today(monty_run: RunMonty):
-    """AbstractOS.date_today() is dispatched through the os callback."""
+    """AbstractOS.date_today() is dispatched through the os callback under `datetime='call_host'`."""
     fs = TestOS()
 
-    result = monty_run('from datetime import date; date.today()', os=fs)
+    result = monty_run('from datetime import date; date.today()', os=fs, checkout=CALL_HOST)
 
     assert (type(result).__name__, repr(result)) == snapshot(('date', 'datetime.date(2024, 1, 15)'))
 
 
 def test_abstract_os_urandom_default(monty_run: RunMonty, monkeypatch: pytest.MonkeyPatch):
-    """AbstractOS.urandom() answers from the host's os.urandom by default."""
+    """AbstractOS.urandom() answers `os.urandom()` from the host's by default."""
     fs = TestOS()
 
-    result = monty_run('import os, random\n(len(os.urandom(8)), 0.0 <= random.random() < 1.0)', os=fs)
+    result = monty_run('import os\nlen(os.urandom(8))', os=fs)
 
-    assert result == snapshot((8, True))
+    assert result == snapshot(8)
 
     entropy = Mock(side_effect=AssertionError('oversized host allocation'))
     monkeypatch.setattr('pydantic_monty.os_access.os.urandom', entropy)
@@ -256,7 +256,7 @@ def test_abstract_os_datetime_now_with_timezone(monty_run: RunMonty):
     """AbstractOS.datetime_now() receives the requested timezone."""
     fs = TestOS()
 
-    result = monty_run('from datetime import datetime, timezone; datetime.now(timezone.utc)', os=fs)
+    result = monty_run('from datetime import datetime, timezone; datetime.now(timezone.utc)', os=fs, checkout=CALL_HOST)
 
     assert (type(result).__name__, repr(result)) == snapshot(
         (

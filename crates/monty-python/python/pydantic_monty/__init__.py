@@ -51,6 +51,7 @@ from .os_access import (
 __all__ = (
     # this file
     'ResourceLimits',
+    'RandomSeed',
     'ExternalResult',
     'ExternalSettledResult',
     'ExternalReturnValue',
@@ -158,6 +159,13 @@ class ResourceLimits(TypedDict, total=False):
 
     The pool aborts an over-budget feed with an uncatchable `RuntimeError`; the
     session remains usable. Restoring a dump resets the count."""
+
+
+class RandomSeed(TypedDict):
+    """`checkout(random_start=...)`: start the sandbox's `random` as `random.seed(seed)` would."""
+
+    seed: int | float | str | bytes
+    """What `random.seed()` accepts; any int size."""
 
 
 class ExternalReturnValue(TypedDict):

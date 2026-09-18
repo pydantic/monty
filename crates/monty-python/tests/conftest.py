@@ -34,7 +34,12 @@ class RunMonty(Protocol):
         os: OsHandler | None = None,
         skip_type_check: bool = False,
         limits: ResourceLimits | None = None,
+        checkout: dict[str, Any] | None = None,
     ) -> Any: ...
+
+
+CALL_HOST: dict[str, Any] = {'datetime': 'call_host', 'sleep': 'call_host'}
+"""`checkout=` kwargs routing the clock and the sleeps to the `os=` handler."""
 
 
 @pytest.fixture(scope='session')
@@ -70,8 +75,9 @@ def monty_run(pool: Monty) -> RunMonty:
         os: OsHandler | None = None,
         skip_type_check: bool = False,
         limits: ResourceLimits | None = None,
+        checkout: dict[str, Any] | None = None,
     ) -> Any:
-        with pool.checkout(limits=limits) as s:
+        with pool.checkout(limits=limits, **(checkout or {})) as s:
             return s.feed_run(
                 code,
                 inputs=inputs,

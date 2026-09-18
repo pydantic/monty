@@ -45,8 +45,8 @@ use monty_pool::{
 };
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value};
 use monty_types::{
-    AssertMessageAnnotations, CallArgs, ExtFunctionResult, MontyException, NameLookupResult, NamedValues, PrintStream,
-    TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, AutoOsCalls, CallArgs, ExtFunctionResult, MontyException, NameLookupResult, NamedValues,
+    PrintStream, TypeCheckingConfig, TypeCheckingFormat,
 };
 use pyo3::{
     Borrowed,
@@ -63,6 +63,7 @@ use tokio::{
 
 use crate::{
     async_dispatch::{CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, wait_for_futures},
+    auto_os_calls::{DateTimeArg, RandomStartArg, SleepArg, SleepClampArg, parse_auto_os_calls},
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
@@ -186,6 +187,10 @@ impl PyMonty {
         type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
+        datetime = DateTimeArg::default(),
+        sleep = SleepArg::default(),
+        sandbox_sleep_clamp = SleepClampArg::default(),
+        random_start = RandomStartArg::default(),
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -199,6 +204,10 @@ impl PyMonty {
         type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
+        datetime: DateTimeArg,
+        sleep: SleepArg,
+        sandbox_sleep_clamp: SleepClampArg,
+        random_start: RandomStartArg,
     ) -> PyResult<PyMontySession> {
         Ok(PyMontySession {
             pool: Arc::clone(&self.pool),
@@ -214,6 +223,7 @@ impl PyMonty {
                 },
                 assert_message_annotations,
                 print_flush_interval,
+                parse_auto_os_calls(datetime, sleep, sandbox_sleep_clamp, random_start),
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -576,6 +586,10 @@ impl PyAsyncMonty {
         type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
+        datetime = DateTimeArg::default(),
+        sleep = SleepArg::default(),
+        sandbox_sleep_clamp = SleepClampArg::default(),
+        random_start = RandomStartArg::default(),
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -589,6 +603,10 @@ impl PyAsyncMonty {
         type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
+        datetime: DateTimeArg,
+        sleep: SleepArg,
+        sandbox_sleep_clamp: SleepClampArg,
+        random_start: RandomStartArg,
     ) -> PyResult<PyAsyncMontySession> {
         Ok(PyAsyncMontySession {
             pool: Arc::clone(&self.pool),
@@ -604,6 +622,7 @@ impl PyAsyncMonty {
                 },
                 assert_message_annotations,
                 print_flush_interval,
+                parse_auto_os_calls(datetime, sleep, sandbox_sleep_clamp, random_start),
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -721,6 +740,10 @@ impl PyAsyncMontyWebsocket {
         type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
+        datetime = DateTimeArg::default(),
+        sleep = SleepArg::default(),
+        sandbox_sleep_clamp = SleepClampArg::default(),
+        random_start = RandomStartArg::default(),
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -734,6 +757,10 @@ impl PyAsyncMontyWebsocket {
         type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
+        datetime: DateTimeArg,
+        sleep: SleepArg,
+        sandbox_sleep_clamp: SleepClampArg,
+        random_start: RandomStartArg,
     ) -> PyResult<PyAsyncMontySession> {
         Ok(PyAsyncMontySession {
             pool: Arc::clone(&self.pool),
@@ -749,6 +776,7 @@ impl PyAsyncMontyWebsocket {
                 },
                 assert_message_annotations,
                 print_flush_interval,
+                parse_auto_os_calls(datetime, sleep, sandbox_sleep_clamp, random_start),
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -1225,6 +1253,7 @@ pub(crate) fn parse_repl_config(
     type_check_config: TypeCheckingConfig,
     assert_message_annotations: AssertAnnotationsArg,
     print_flush_interval: Option<f64>,
+    auto_os_calls: AutoOsCalls,
 ) -> PyResult<ReplConfig> {
     Ok(ReplConfig {
         script_name: script_name.to_owned(),
@@ -1236,6 +1265,7 @@ pub(crate) fn parse_repl_config(
         print_flush_interval: print_flush_interval
             .map(|secs| duration_from_secs("print_flush_interval", secs))
             .transpose()?,
+        auto_os_calls,
     })
 }
 
@@ -2012,7 +2042,7 @@ pub(crate) fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
 
 /// Converts a seconds argument to a `Duration`, naming the argument in the
 /// error so a rejected value says which one it was.
-fn duration_from_secs(name: &str, secs: f64) -> PyResult<Duration> {
+pub(crate) fn duration_from_secs(name: &str, secs: f64) -> PyResult<Duration> {
     Duration::try_from_secs_f64(secs).map_err(|err| PyValueError::new_err(format!("invalid {name}: {err}")))
 }
 

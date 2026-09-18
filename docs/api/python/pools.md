@@ -21,6 +21,7 @@ Install as [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) — see 
             - AsyncMonty
             - AsyncMontySession
             - ResourceLimits
+            - RandomSeed
             - CollectStreams
             - CollectString
             - TypeCheckFormat

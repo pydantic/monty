@@ -148,7 +148,7 @@ class AbstractOS(ABC):
 
     Subclass this and implement the abstract methods to provide a custom
     filesystem and selected host-backed operations that Monty code can interact
-    with via `pathlib.Path`, `os`, `date.today()`, and `datetime.now()`.
+    with via `pathlib.Path`, `os`, and (under `call_host`) the clock and the sleeps.
 
     Pass an instance to `feed_run(code, os=...)`.
     """
@@ -161,6 +161,8 @@ class AbstractOS(ABC):
 
     A longer `time.sleep()` or `asyncio.sleep()` is cut short to this, so
     sandboxed code cannot hold the host for longer; `None` waits the full time.
+    Only reached under `checkout(sleep='call_host')`: by default the sandbox
+    waits itself, capped by `sandbox_sleep_clamp`.
     """
 
     def __call__(
@@ -586,7 +588,8 @@ class AbstractOS(ABC):
     def date_today(self) -> datetime.date:
         """Return today's date for Monty's `date.today()` host callback.
 
-        Override this when the sandbox should observe a virtual or fixed clock.
+        Reached only under `checkout(datetime='call_host')`; a fixed clock is
+        simpler to set with `checkout(datetime=...)`.
         The default implementation proxies to the host Python process.
         """
         return datetime.date.today()
@@ -594,7 +597,8 @@ class AbstractOS(ABC):
     def datetime_now(self, tz: datetime.tzinfo | None = None) -> datetime.datetime:
         """Return the current datetime for Monty's `datetime.now(tz=...)` callback.
 
-        Override this when the sandbox should observe a virtual or fixed clock.
+        Reached only under `checkout(datetime='call_host')`; a fixed clock is
+        simpler to set with `checkout(datetime=...)`.
         The default implementation proxies to the host Python process and passes
         any provided timezone through to `datetime.datetime.now()`.
         """
@@ -614,13 +618,15 @@ class AbstractOS(ABC):
     def time(self) -> float:
         """Return the epoch seconds for Monty's `time.time()` callback.
 
-        Override this alongside `date_today()` and `datetime_now()` when the
-        sandbox should observe a virtual or fixed clock.
+        Reached only under `checkout(datetime='call_host')`; override it
+        alongside `date_today()` and `datetime_now()` for a virtual clock.
         """
         return time.time()
 
     def sleep(self, seconds: float) -> None:
         """Wait for Monty's `time.sleep()` callback, for at most `max_sleep`.
+
+        Reached only under `checkout(sleep='call_host')`.
 
         The wait happens in the host process, blocking this thread: override it
         to scale or refuse (raise, or return `NOT_HANDLED`) the waits sandboxed
@@ -629,7 +635,7 @@ class AbstractOS(ABC):
         time.sleep(self._capped(seconds))
 
     def async_sleep(self, delay: float, *, is_async: bool) -> Coroutine[Any, Any, None] | None:
-        """Wait for Monty's `asyncio.sleep()` callback.
+        """Wait for Monty's `asyncio.sleep()` callback, under `checkout(sleep='call_host')`.
 
         Under `AsyncMonty` (`is_async` is true) the default returns
         `asyncio.sleep(delay)`, which the pool awaits while the sandbox's other

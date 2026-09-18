@@ -8,11 +8,14 @@ return values from the host are properly converted and used by Monty code.
 from __future__ import annotations
 
 import datetime
+import random
+import time
 from pathlib import PurePosixPath
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
-from conftest import RunMonty
+from conftest import CALL_HOST, RunMonty
 from inline_snapshot import snapshot
 
 from pydantic_monty import NOT_HANDLED, Monty, MontyFileHandle, MontyRuntimeError, StatResult
@@ -396,7 +399,7 @@ def test_os_getenv_callback_with_default(monty_run: RunMonty):
 
 
 # =============================================================================
-# Clock functions (date.today / datetime.now)
+# Clock functions (date.today / datetime.now), under `datetime='call_host'`
 # =============================================================================
 
 
@@ -409,7 +412,7 @@ def test_date_today_callback(monty_run: RunMonty):
             return datetime.date(2024, 1, 15)
         return None
 
-    result = monty_run('from datetime import date; date.today()', os=os_handler)
+    result = monty_run('from datetime import date; date.today()', os=os_handler, checkout=CALL_HOST)
     assert (type(result).__name__, repr(result)) == snapshot(('date', 'datetime.date(2024, 1, 15)'))
 
 
@@ -423,7 +426,7 @@ def test_datetime_now_callback_naive(monty_run: RunMonty):
             return datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)
         return None
 
-    result = monty_run('from datetime import datetime; datetime.now()', os=os_handler)
+    result = monty_run('from datetime import datetime; datetime.now()', os=os_handler, checkout=CALL_HOST)
     assert (type(result).__name__, repr(result)) == snapshot(
         ('datetime', 'datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)')
     )
@@ -439,7 +442,8 @@ def test_datetime_now_callback_with_timezone(monty_run: RunMonty):
             return datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=tzinfo)
         return None
 
-    result = monty_run('from datetime import datetime, timezone; datetime.now(timezone.utc)', os=os_handler)
+    code = 'from datetime import datetime, timezone; datetime.now(timezone.utc)'
+    result = monty_run(code, os=os_handler, checkout=CALL_HOST)
     assert (type(result).__name__, repr(result)) == snapshot(
         (
             'datetime',
@@ -457,11 +461,11 @@ def test_time_time_callback(monty_run: RunMonty):
             return 1700000000.5
         return None
 
-    assert monty_run('import time; time.time()', os=os_handler) == snapshot(1700000000.5)
+    assert monty_run('import time; time.time()', os=os_handler, checkout=CALL_HOST) == snapshot(1700000000.5)
 
 
 # =============================================================================
-# Sleeping (time.sleep / asyncio.sleep)
+# Sleeping (time.sleep / asyncio.sleep), under `sleep='call_host'`
 # =============================================================================
 
 
@@ -474,7 +478,7 @@ def test_time_sleep_callback(monty_run: RunMonty):
         # the host decides how long to wait; waiting not at all is a valid choice
         return None
 
-    assert monty_run('import time; time.sleep(1.5) is None', os=os_handler) == snapshot(True)
+    assert monty_run('import time; time.sleep(1.5) is None', os=os_handler, checkout=CALL_HOST) == snapshot(True)
     assert calls == snapshot([('time.sleep', (1.5,))])
 
 
@@ -485,7 +489,7 @@ def test_time_sleep_can_be_refused(monty_run: RunMonty):
         return NOT_HANDLED
 
     with pytest.raises(MontyRuntimeError) as exc_info:
-        monty_run('import time; time.sleep(30)', os=os_handler)
+        monty_run('import time; time.sleep(30)', os=os_handler, checkout=CALL_HOST)
     assert str(exc_info.value) == snapshot("RuntimeError: 'time.sleep' is not supported in this environment")
 
 
@@ -499,7 +503,7 @@ def test_asyncio_sleep_callback(monty_run: RunMonty):
         return 'ignored'
 
     code = "import asyncio; asyncio.run(asyncio.sleep(0.25, 'woken'))"
-    assert monty_run(code, os=os_handler) == snapshot('woken')
+    assert monty_run(code, os=os_handler, checkout=CALL_HOST) == snapshot('woken')
     assert calls == snapshot([('asyncio.sleep', (0.25,))])
 
 
@@ -510,7 +514,7 @@ def test_asyncio_sleep_result_stays_in_the_sandbox(monty_run: RunMonty):
         return None
 
     code = 'import asyncio\ndef f():\n    return 42\nasyncio.run(asyncio.sleep(0, f))()'
-    assert monty_run(code, os=os_handler) == snapshot(42)
+    assert monty_run(code, os=os_handler, checkout=CALL_HOST) == snapshot(42)
 
 
 def test_async_os_callback_requires_async_monty(pool: Monty):
@@ -519,7 +523,7 @@ def test_async_os_callback_requires_async_monty(pool: Monty):
     async def os_handler(**_: Any) -> Any:
         return None
 
-    with pool.checkout() as session:
+    with pool.checkout(sleep='call_host') as session:
         with pytest.raises(RuntimeError) as exc_info:
             session.feed_run('import time; time.sleep(0)', os=os_handler)
         assert str(exc_info.value) == snapshot('async os callbacks require AsyncMonty')
@@ -531,8 +535,6 @@ def test_async_os_callback_requires_async_monty(pool: Monty):
 # =============================================================================
 # Entropy (os.urandom / random)
 # =============================================================================
-
-SEED_BYTES = bytes(i % 256 for i in range(2496))
 
 
 def test_os_urandom_callback(monty_run: RunMonty):
@@ -548,18 +550,17 @@ def test_os_urandom_callback(monty_run: RunMonty):
     assert calls == snapshot([('os.urandom', (4,))])
 
 
-def test_random_unseeded_draws_ask_for_entropy_once(monty_run: RunMonty):
-    """An unseeded generator asks for one 2496-byte state vector, then draws are local."""
-    calls: list[Any] = []
+def test_random_unseeded_draws_never_call_the_host(monty_run: RunMonty):
+    """An unseeded generator seeds itself from the worker's entropy; two sessions disagree."""
 
-    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bytes:
-        calls.append((name, args))
-        return SEED_BYTES
+    def os_handler(*, name: str, **_: Any) -> bytes:
+        raise AssertionError(f'unexpected OS call {name}')
 
-    code = 'import random\n[random.random(), random.randint(1, 100), random.Random(1).random()]'
-    result = monty_run(code, os=os_handler)
-    assert result == snapshot([0.2469864874493971, 77, 0.13436424411240122])
-    assert calls == snapshot([('os.urandom', (2496,))])
+    code = 'import random\n[random.random(), random.Random().random()]'
+    first = monty_run(code, os=os_handler)
+    second = monty_run(code, os=os_handler)
+    assert all(0.0 <= x < 1.0 for x in first + second)
+    assert first != second
 
 
 def test_random_seeded_never_calls_host(monty_run: RunMonty):
@@ -567,27 +568,6 @@ def test_random_seeded_never_calls_host(monty_run: RunMonty):
         raise AssertionError(f'unexpected OS call {name}')
 
     assert monty_run('import random\nrandom.seed(42)\nrandom.random()', os=os_handler) == snapshot(0.6394267984578837)
-
-
-@pytest.mark.parametrize('with_callback', [True, False])
-def test_random_without_entropy_raises(monty_run: RunMonty, with_callback: bool):
-    """A missing or declining handler leaves an unseeded draw with no entropy."""
-
-    def os_handler(**_: Any) -> object:
-        return NOT_HANDLED
-
-    with pytest.raises(MontyRuntimeError) as exc_info:
-        monty_run('import random\nrandom.random()', os=os_handler if with_callback else None)
-    assert str(exc_info.value) == snapshot("RuntimeError: 'os.urandom' is not supported in this environment")
-
-
-def test_random_rejects_short_entropy(monty_run: RunMonty):
-    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bytes:
-        return b'abc'
-
-    with pytest.raises(MontyRuntimeError) as exc_info:
-        monty_run('import random\nrandom.random()', os=os_handler)
-    assert str(exc_info.value) == snapshot("RuntimeError: 'os.urandom' returned 3 bytes, expected 2496")
 
 
 def test_random_seed_persists_across_feeds(pool: Monty):
@@ -835,3 +815,202 @@ Path('/tmp/mydir/file.txt').read_text()
             ('Path.read_text', (PurePosixPath('/tmp/mydir/file.txt'),)),
         ]
     )
+
+
+# =============================================================================
+# Auto OS calls: the `checkout()` kwargs choosing what the sandbox answers itself
+# =============================================================================
+
+
+def test_datetime_default_reads_worker_clock(monty_run: RunMonty):
+    """With no `os=` handler at all, the worker's own clock answers."""
+    before = datetime.datetime.now()
+    result = monty_run('from datetime import datetime\ndatetime.now()')
+    after = datetime.datetime.now()
+    assert before - datetime.timedelta(seconds=60) <= result <= after + datetime.timedelta(seconds=60)
+
+
+def test_datetime_fixed_naive_is_utc(monty_run: RunMonty):
+    """A naive datetime is the sandbox's wall clock, in UTC, so it comes back exactly."""
+    frozen = datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)
+    code = (
+        'import time\nfrom datetime import date, datetime, timezone\n'
+        '(datetime.now(), date.today(), time.time(), datetime.now(timezone.utc), datetime.now() == datetime.now())'
+    )
+    result = monty_run(code, checkout={'datetime': frozen})
+    assert result == snapshot(
+        (
+            datetime.datetime(2024, 1, 15, 10, 30, 5, 123456),
+            datetime.date(2024, 1, 15),
+            1705314605.123456,
+            datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc),
+            True,
+        )
+    )
+
+
+def test_datetime_fixed_aware_uses_its_offset(monty_run: RunMonty):
+    """An aware datetime is that instant, with its offset as the sandbox's local zone."""
+    frozen = datetime.datetime(2024, 1, 15, 10, 30, 5, tzinfo=datetime.timezone(datetime.timedelta(hours=2)))
+    code = 'import time\nfrom datetime import datetime, timezone\n(datetime.now(), datetime.now(timezone.utc), time.time())'
+    result = monty_run(code, checkout={'datetime': frozen})
+    assert result == snapshot(
+        (
+            datetime.datetime(2024, 1, 15, 10, 30, 5),
+            datetime.datetime(2024, 1, 15, 8, 30, 5, tzinfo=datetime.timezone.utc),
+            1705307405.0,
+        )
+    )
+
+
+def test_datetime_fixed_zoneinfo(monty_run: RunMonty):
+    """A zone that needs the date to resolve its offset works too."""
+    frozen = datetime.datetime(2024, 7, 1, 12, 0, tzinfo=ZoneInfo('Europe/Paris'))
+    code = 'from datetime import datetime, timezone\n(datetime.now(), datetime.now(timezone.utc))'
+    result = monty_run(code, checkout={'datetime': frozen})
+    assert result == snapshot(
+        (
+            datetime.datetime(2024, 7, 1, 12, 0),
+            datetime.datetime(2024, 7, 1, 10, 0, tzinfo=datetime.timezone.utc),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        ('later', ValueError, "datetime must be 'system', 'call_host' or a datetime.datetime, got 'later'"),
+        (123, TypeError, "datetime must be 'system', 'call_host' or a datetime.datetime, not int"),
+        (
+            datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone(datetime.timedelta(microseconds=500))),
+            ValueError,
+            'datetime utcoffset must be a whole number of seconds',
+        ),
+    ],
+)
+def test_datetime_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(datetime=value)
+    assert str(exc_info.value) == message
+
+
+def test_sleep_zero_returns_at_once(monty_run: RunMonty):
+    start = time.monotonic()
+    code = "import asyncio, time\ntime.sleep(3600)\nasyncio.run(asyncio.sleep(3600, 'woken'))"
+    assert monty_run(code, checkout={'sleep': 'zero'}) == snapshot('woken')
+    assert time.monotonic() - start < 5
+
+
+def test_sandbox_sleep_clamp(monty_run: RunMonty):
+    """The default waits in the worker; the clamp cuts a long sleep short."""
+    start = time.monotonic()
+    code = "import asyncio, time\nt = time.time()\ntime.sleep(3600)\nasyncio.run(asyncio.sleep(3600, 'woken'))\ntime.time() >= t"
+    assert monty_run(code, checkout={'sandbox_sleep_clamp': 0.001}) == snapshot(True)
+    assert time.monotonic() - start < 5
+    assert monty_run('import time\ntime.sleep(0.001)', checkout={'sandbox_sleep_clamp': float('inf')}) is None
+
+
+def test_sandbox_sleeps_overlap(monty_run: RunMonty):
+    """Gathered sandbox sleeps are timers served while the other tasks run, so they overlap."""
+    code = (
+        'import asyncio, time\n'
+        'async def w(n):\n'
+        '    await asyncio.sleep(0.05, n)\n'
+        '    return n * 2\n'
+        'async def main():\n'
+        '    return await asyncio.gather(w(1), w(2), w(3))\n'
+        't = time.time()\n'
+        'r = asyncio.run(main())\n'
+        '(r, time.time() - t < 0.14)'
+    )
+    assert monty_run(code) == snapshot(([2, 4, 6], True))
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        (-1, ValueError, 'invalid sandbox_sleep_clamp: cannot convert float seconds to Duration: value is negative'),
+        (
+            float('nan'),
+            ValueError,
+            'invalid sandbox_sleep_clamp: cannot convert float seconds to Duration: value is either too big or NaN',
+        ),
+        ('1', TypeError, 'sandbox_sleep_clamp must be a number of seconds, not str'),
+        (True, TypeError, 'sandbox_sleep_clamp must be a number of seconds, not bool'),
+    ],
+)
+def test_sandbox_sleep_clamp_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(sandbox_sleep_clamp=value)
+    assert str(exc_info.value) == message
+
+
+def test_sleep_call_host_reaches_os(monty_run: RunMonty):
+    calls: list[Any] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append((name, args))
+        return None
+
+    assert monty_run('import time\ntime.sleep(1.5)', os=os_handler, checkout={'sleep': 'call_host'}) is None
+    assert calls == snapshot([('time.sleep', (1.5,))])
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        ('forever', ValueError, "sleep must be 'sandbox_sleep', 'zero' or 'call_host', got 'forever'"),
+        (0, TypeError, 'sleep must be a str'),
+    ],
+)
+def test_sleep_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(sleep=value)
+    assert str(exc_info.value) == message
+
+
+@pytest.mark.parametrize('seed', [42, -42, 2**70, 1.5, 'abc', b'abc'])
+def test_random_start_seed_matches_random_seed(monty_run: RunMonty, seed: Any):
+    """`{'seed': s}` starts the module generator exactly as `random.seed(s)` would."""
+    expected = random.Random(seed)
+    code = 'import random\n[random.random(), random.randint(1, 100)]'
+    assert monty_run(code, checkout={'random_start': {'seed': seed}}) == [expected.random(), expected.randint(1, 100)]
+
+
+def test_random_start_seed_persists_and_is_overridable(pool: Monty):
+    """The seed applies to the first draw whichever feed makes it; `random.seed()` still wins."""
+    with pool.checkout(random_start={'seed': 42}) as session:
+        session.feed_run('import random')
+        assert session.feed_run('random.random()') == snapshot(0.6394267984578837)
+        session.feed_run('random.seed(5)')
+        assert session.feed_run('random.random()') == snapshot(0.6229016948897019)
+
+
+def test_random_start_seed_instances_are_deterministic(monty_run: RunMonty):
+    """Unseeded instances take states derived from the seed: repeatable, but distinct."""
+    code = 'import random\n[random.Random().random(), random.Random().random(), random.random()]'
+    first = monty_run(code, checkout={'random_start': {'seed': 42}})
+    second = monty_run(code, checkout={'random_start': {'seed': 42}})
+    assert first == second
+    assert len(set(first)) == 3
+    assert first[2] == snapshot(0.6394267984578837)
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        ('seeded', ValueError, "random_start must be 'random' or {'seed': int | float | str | bytes}, got 'seeded'"),
+        (
+            {'sead': 1},
+            ValueError,
+            "random_start must be 'random' or {'seed': int | float | str | bytes}, got {'sead': 1}",
+        ),
+        ({'seed': True}, TypeError, 'random_start seed must be an int, float, str or bytes, not bool'),
+        ({'seed': None}, TypeError, 'random_start seed must be an int, float, str or bytes, not NoneType'),
+        (1, TypeError, "random_start must be 'random' or {'seed': int | float | str | bytes}, not int"),
+    ],
+)
+def test_random_start_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(random_start=value)
+    assert str(exc_info.value) == message
