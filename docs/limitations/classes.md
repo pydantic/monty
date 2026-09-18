@@ -136,12 +136,6 @@ order and error wording, but with these divergences:
     evaluation such as `map()`, `filter()`, `sorted()`/`list.sort(key=...)`,
     `min()`/`max(key=...)`, and exotic `__init__` recursion (see the "Recursion"
     section of [resource_limits.md](resource_limits.md)).
-- **Comprehensions in the class body** can see class variables, because Monty
-    inlines comprehensions into the enclosing scope. In CPython a comprehension
-    has its own scope that skips the class scope, so only the *leftmost iterable*
-    is evaluated in class scope and the body cannot see class variables
-    (`[n + offset for n in nums]` referencing a class variable `offset` raises
-    `NameError` in CPython but succeeds in Monty).
 - **Same-name collision is rejected, not resolved.** When an enclosing-function
     local and a class variable share a name *and* a method captures the enclosing
     one, CPython keeps the two distinct (a class-dict entry vs. a closure cell).
