@@ -107,8 +107,9 @@ Invalid snapshots have no correctness or availability guarantees.
 
 Ordinary sandbox exceptions leave the session usable.
 After a soft memory or time limit, the worker survives but the heap has no correctness guarantees.
-A spent cumulative `max_duration` budget makes later feeds fail; after a soft memory limit, later feeds may succeed.
-Discard the session in either case.
+Later feeds may still succeed: the duration budgets restart at the next feed, and a soft memory limit does not end
+the session either.
+Discard it yourself.
 A failed restore also discards the worker.
 
 Timeouts kill the single worker PID, not a process group; the Monty sandbox must never spawn subprocesses.
