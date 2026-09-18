@@ -357,12 +357,8 @@ fn zero_returns_at_once() {
 
 #[test]
 fn the_clamp_cuts_a_long_sleep_short() {
-    let calls = AutoOsCalls {
-        sandbox_sleep_clamp: Duration::from_millis(20),
-        ..AutoOsCalls::default()
-    };
     let code = "import asyncio, time\ntime.sleep(5)\nasyncio.run(asyncio.sleep(5, 'woken'))";
-    let (result, elapsed) = timed_run(code, calls);
+    let (result, elapsed) = timed_run(code, with_sleep(SleepMode::SandboxSleep(Duration::from_millis(20))));
     assert_eq!(result, MontyObject::string("woken"));
     assert!(elapsed < Duration::from_secs(1), "took {elapsed:?}");
 }

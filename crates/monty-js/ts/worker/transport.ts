@@ -25,7 +25,6 @@ import type {
   RandomSeed as ComponentRandomSeed,
   Request as ComponentRequest,
   ResourceLimits as ComponentResourceLimits,
-  SleepMode as ComponentSleepMode,
   TypeCheckFormat as ComponentTypeCheckFormat,
 } from './component/monty.component.js'
 import type { Dispatcher } from './host.js'
@@ -438,20 +437,19 @@ function componentAutoOsCalls(calls: EncodedAutoOsCalls): ComponentAutoOsCalls |
   if (calls.datetime === 'call_host') record.datetime = { tag: 'call-host' }
   else if (calls.datetime === 'system') record.datetime = { tag: 'system' }
   else if (calls.datetime !== undefined) record.datetime = { tag: 'fixed', val: calls.datetime }
-  if (calls.sleep !== undefined) {
-    const modes: Record<typeof calls.sleep, ComponentSleepMode> = {
-      call_host: 'call-host',
-      zero: 'zero',
-      sandbox_sleep: 'sandbox-sleep',
-    }
-    record.sleep = modes[calls.sleep]
-  }
-  if (calls.sandboxSleepClampSecs !== undefined) {
-    // u64::MAX lifts the cap, as the native binding's `Duration::MAX` does
-    record.sandboxSleepClampMicros =
-      calls.sandboxSleepClampSecs === Infinity
-        ? 0xffff_ffff_ffff_ffffn
-        : BigInt(Math.round(calls.sandboxSleepClampSecs * 1_000_000))
+  if (calls.sleep === 'call_host') record.sleep = { tag: 'call-host' }
+  else if (calls.sleep === 'zero') record.sleep = { tag: 'zero' }
+  else if (calls.sleep === 'sandbox_sleep' || calls.sandboxSleepClampSecs !== undefined) {
+    // the clamp only applies to a sandbox sleep; u64::MAX lifts it, as the
+    // native binding's `Duration::MAX` does
+    const clamp = calls.sandboxSleepClampSecs
+    const val =
+      clamp === undefined
+        ? undefined
+        : clamp === Infinity
+          ? 0xffff_ffff_ffff_ffffn
+          : BigInt(Math.round(clamp * 1_000_000))
+    record.sleep = { tag: 'sandbox-sleep', val }
   }
   if (calls.randomSeed !== undefined) {
     record.randomStart = { tag: 'seed', val: componentRandomSeed(calls.randomSeed) }

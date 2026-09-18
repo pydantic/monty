@@ -12,7 +12,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
+use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker, SleepMode};
 use smallvec::{SmallVec, smallvec};
 
 use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM};
@@ -871,7 +871,7 @@ impl<'h> VM<'h> {
     /// due and activates the first task that woke. `false` means no timer is
     /// pending, so the `ResolveFutures` exit really is the host's to answer.
     ///
-    /// Each wait is capped at `sandbox_sleep_clamp` and always fires the
+    /// Each wait is capped at the sleep mode's clamp and always fires the
     /// earliest timer, so a wall clock jumping backwards costs at most one
     /// clamp per timer rather than a stall.
     pub(super) fn wait_sandbox_timers(&mut self) -> RunResult<bool> {
@@ -881,7 +881,13 @@ impl<'h> VM<'h> {
             };
             let now = unix_micros_now();
             let remaining = u64::try_from(earliest.deadline_unix_micros.saturating_sub(now)).unwrap_or(0);
-            let wait = Duration::from_micros(remaining).min(self.env.auto_os_calls.sandbox_sleep_clamp);
+            // A timer only exists under `SandboxSleep`; the clamp is a bound on
+            // the wait, not the deadline, which was clamped when the timer was set.
+            let clamp = match self.env.auto_os_calls.sleep {
+                SleepMode::SandboxSleep(clamp) => clamp,
+                SleepMode::CallHost | SleepMode::Zero => Duration::MAX,
+            };
+            let wait = Duration::from_micros(remaining).min(clamp);
             self.heap.tracker.sandbox_sleep(wait);
             let now = unix_micros_now().max(earliest.deadline_unix_micros);
             for call_id in self.scheduler.take_due_timers(now) {

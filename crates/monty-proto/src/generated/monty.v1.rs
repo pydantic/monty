@@ -452,18 +452,15 @@ pub struct ResourceLimits {
 #[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct AutoOsCalls {
-    /// What `time.sleep()` and `asyncio.sleep()` do; UNSPECIFIED = SANDBOX_SLEEP.
-    #[prost(enumeration = "SleepMode", tag = "4")]
-    pub sleep: i32,
-    /// Longest wait `SLEEP_MODE_SANDBOX_SLEEP` performs per call; longer sleeps
-    /// are cut short. Absent = 10s.
-    #[prost(uint64, optional, tag = "5")]
-    pub sandbox_sleep_clamp_micros: ::core::option::Option<u64>,
     /// What `date.today()`, `datetime.now()` and `time.time()` read.
     #[prost(oneof = "auto_os_calls::Datetime", tags = "1, 2, 3")]
     pub datetime: ::core::option::Option<auto_os_calls::Datetime>,
+    /// What `time.sleep()` and `asyncio.sleep()` do; unset = a sandbox sleep
+    /// with the default clamp.
+    #[prost(oneof = "auto_os_calls::SleepMode", tags = "4, 5, 6")]
+    pub sleep_mode: ::core::option::Option<auto_os_calls::SleepMode>,
     /// Where an unseeded `random` generator gets its first state.
-    #[prost(oneof = "auto_os_calls::RandomStart", tags = "6, 7")]
+    #[prost(oneof = "auto_os_calls::RandomStart", tags = "7, 8")]
     pub random_start: ::core::option::Option<auto_os_calls::RandomStart>,
 }
 /// Nested message and enum types in `AutoOsCalls`.
@@ -482,17 +479,40 @@ pub mod auto_os_calls {
         #[prost(message, tag = "3")]
         Fixed(super::FixedDateTime),
     }
+    /// What `time.sleep()` and `asyncio.sleep()` do; unset = a sandbox sleep
+    /// with the default clamp.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Oneof)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub enum SleepMode {
+        /// Suspend to the parent, which performs the wait.
+        #[prost(message, tag = "4")]
+        SleepCallHost(super::Unit),
+        /// Return at once without waiting.
+        #[prost(message, tag = "5")]
+        SleepZero(super::Unit),
+        /// Wait in the child.
+        #[prost(message, tag = "6")]
+        SandboxSleep(super::SandboxSleep),
+    }
     /// Where an unseeded `random` generator gets its first state.
     #[derive(Clone, PartialEq, crate::budgeted_prost::Oneof)]
     #[prost(prost_path = "crate::budgeted_prost")]
     pub enum RandomStart {
         /// From the child's own OS entropy.
-        #[prost(message, tag = "6")]
+        #[prost(message, tag = "7")]
         Random(super::Unit),
         /// As `random.seed(seed)` would, for reproducible runs.
-        #[prost(message, tag = "7")]
+        #[prost(message, tag = "8")]
         Seed(super::RandomSeed),
     }
+}
+/// A sleep the child performs itself.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct SandboxSleep {
+    /// Longest wait one call performs; longer sleeps are cut short. Absent = 10s.
+    #[prost(uint64, optional, tag = "1")]
+    pub clamp_micros: ::core::option::Option<u64>,
 }
 /// A frozen clock reading.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
@@ -1293,51 +1313,6 @@ impl TypeOrigin {
             "TYPE_ORIGIN_BUILTIN" => Some(Self::Builtin),
             "TYPE_ORIGIN_SANDBOX" => Some(Self::Sandbox),
             "TYPE_ORIGIN_HOST" => Some(Self::Host),
-            _ => None,
-        }
-    }
-}
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    crate::budgeted_prost::Enumeration
-)]
-#[prost(prost_path = "crate::budgeted_prost")]
-#[repr(i32)]
-pub enum SleepMode {
-    Unspecified = 0,
-    CallHost = 1,
-    /// Return at once without waiting.
-    Zero = 2,
-    /// Wait in the child, capped by `sandbox_sleep_clamp_micros`.
-    SandboxSleep = 3,
-}
-impl SleepMode {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "SLEEP_MODE_UNSPECIFIED",
-            Self::CallHost => "SLEEP_MODE_CALL_HOST",
-            Self::Zero => "SLEEP_MODE_ZERO",
-            Self::SandboxSleep => "SLEEP_MODE_SANDBOX_SLEEP",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "SLEEP_MODE_UNSPECIFIED" => Some(Self::Unspecified),
-            "SLEEP_MODE_CALL_HOST" => Some(Self::CallHost),
-            "SLEEP_MODE_ZERO" => Some(Self::Zero),
-            "SLEEP_MODE_SANDBOX_SLEEP" => Some(Self::SandboxSleep),
             _ => None,
         }
     }

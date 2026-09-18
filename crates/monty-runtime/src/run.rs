@@ -24,8 +24,8 @@ use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     AutoOsCalls, CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MontyException,
-    MontyObject, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig,
-    memory_limit_with_headroom, validate_cwd,
+    MontyObject, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, SleepMode,
+    TypeCheckingConfig, memory_limit_with_headroom, validate_cwd,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
@@ -622,7 +622,7 @@ impl HostOs {
     /// expecting CPython's behaviour, so none of these calls reaches the host.
     fn auto_os_calls(&self) -> AutoOsCalls {
         AutoOsCalls {
-            sandbox_sleep_clamp: self.max_sleep,
+            sleep: SleepMode::SandboxSleep(self.max_sleep),
             ..AutoOsCalls::default()
         }
     }

@@ -126,7 +126,7 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
 - `FunctionCall::object_id` and `NameLookup::object_id` identify the host receiver for routed calls and lookups,
   including class construction via `__call__`.
   Plain calls and lookups carry `None`.
-- `MontyRun::with_auto_os_calls` / `MontyRepl::with_auto_os_calls` — choose which OS calls the sandbox answers itself, on every path: what `date.today()`, `datetime.now()` and `time.time()` read (`DateTimeSource`: this machine's clock, a frozen instant, or the host), what `time.sleep()` and `asyncio.sleep()` do (`SleepMode`: wait in the sandbox up to a clamp, return at once, or the host), and where an unseeded `random` starts (`RandomStart`: OS entropy, or a seed as `random.seed()` would take it). `AutoOsCalls::default()` answers all three in the sandbox; a field set to `CallHost` surfaces those calls as `RunProgress::OsCall`.
+- `MontyRun::with_auto_os_calls` / `MontyRepl::with_auto_os_calls` — choose which OS calls the sandbox answers itself, on every path: what `date.today()`, `datetime.now()` and `time.time()` read (`DateTimeSource`: this machine's clock, a frozen instant, or the host), what `time.sleep()` and `asyncio.sleep()` do (`SleepMode`: wait in the sandbox up to a clamp, `SandboxSleep(Duration)`, return at once, or the host), and where an unseeded `random` starts (`RandomStart`: OS entropy, or a seed as `random.seed()` would take it). `AutoOsCalls::default()` answers all three in the sandbox; a field set to `CallHost` surfaces those calls as `RunProgress::OsCall`.
 
 ## Monty crates
 

@@ -24,16 +24,20 @@ use pyo3::{
 use crate::pool::duration_from_secs;
 
 /// Builds the session's [`AutoOsCalls`] from the four checkout arguments.
+/// The clamp only applies to a sandbox sleep; the other modes ignore it.
 pub(crate) fn parse_auto_os_calls(
     datetime: DateTimeArg,
     sleep: SleepArg,
     sandbox_sleep_clamp: SleepClampArg,
     random_start: RandomStartArg,
 ) -> AutoOsCalls {
+    let sleep = match sleep.0 {
+        SleepMode::SandboxSleep(_) => SleepMode::SandboxSleep(sandbox_sleep_clamp.0),
+        other => other,
+    };
     AutoOsCalls {
         datetime: datetime.0,
-        sleep: sleep.0,
-        sandbox_sleep_clamp: sandbox_sleep_clamp.0,
+        sleep,
         random_start: random_start.0,
     }
 }
@@ -108,7 +112,8 @@ fn fixed_datetime(datetime: &Bound<'_, PyDateTime>) -> PyResult<DateTimeSource> 
 }
 
 /// The `sleep` checkout argument: `'sandbox_sleep'` (the default), `'zero'`
-/// or `'call_host'`.
+/// or `'call_host'`. A sandbox sleep carries the default clamp here;
+/// [`parse_auto_os_calls`] applies the `sandbox_sleep_clamp` argument.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SleepArg(pub SleepMode);
 
@@ -120,7 +125,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for SleepArg {
             .cast::<PyString>()
             .map_err(|_| PyTypeError::new_err("sleep must be a str"))?;
         match &*name.to_cow()? {
-            "sandbox_sleep" => Ok(Self(SleepMode::SandboxSleep)),
+            "sandbox_sleep" => Ok(Self(SleepMode::default())),
             "zero" => Ok(Self(SleepMode::Zero)),
             "call_host" => Ok(Self(SleepMode::CallHost)),
             other => Err(PyValueError::new_err(format!(
@@ -137,7 +142,7 @@ pub(crate) struct SleepClampArg(pub Duration);
 
 impl Default for SleepClampArg {
     fn default() -> Self {
-        Self(AutoOsCalls::DEFAULT_SANDBOX_SLEEP_CLAMP)
+        Self(SleepMode::DEFAULT_CLAMP)
     }
 }
 

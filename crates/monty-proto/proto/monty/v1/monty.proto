@@ -389,18 +389,29 @@ message AutoOsCalls {
     // One frozen instant, for reproducible runs.
     FixedDateTime fixed = 3;
   }
-  // What `time.sleep()` and `asyncio.sleep()` do; UNSPECIFIED = SANDBOX_SLEEP.
-  SleepMode sleep = 4;
-  // Longest wait `SLEEP_MODE_SANDBOX_SLEEP` performs per call; longer sleeps
-  // are cut short. Absent = 10s.
-  optional uint64 sandbox_sleep_clamp_micros = 5;
+  // What `time.sleep()` and `asyncio.sleep()` do; unset = a sandbox sleep
+  // with the default clamp.
+  oneof sleep_mode {
+    // Suspend to the parent, which performs the wait.
+    Unit sleep_call_host = 4;
+    // Return at once without waiting.
+    Unit sleep_zero = 5;
+    // Wait in the child.
+    SandboxSleep sandbox_sleep = 6;
+  }
   // Where an unseeded `random` generator gets its first state.
   oneof random_start {
     // From the child's own OS entropy.
-    Unit random = 6;
+    Unit random = 7;
     // As `random.seed(seed)` would, for reproducible runs.
-    RandomSeed seed = 7;
+    RandomSeed seed = 8;
   }
+}
+
+// A sleep the child performs itself.
+message SandboxSleep {
+  // Longest wait one call performs; longer sleeps are cut short. Absent = 10s.
+  optional uint64 clamp_micros = 1;
 }
 
 // A frozen clock reading.
@@ -425,15 +436,6 @@ message RandomSeed {
     string str = 3;
     bytes bytes = 4;
   }
-}
-
-enum SleepMode {
-  SLEEP_MODE_UNSPECIFIED = 0;
-  SLEEP_MODE_CALL_HOST = 1;
-  // Return at once without waiting.
-  SLEEP_MODE_ZERO = 2;
-  // Wait in the child, capped by `sandbox_sleep_clamp_micros`.
-  SLEEP_MODE_SANDBOX_SLEEP = 3;
 }
 
 // ============================================================================

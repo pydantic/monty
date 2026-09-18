@@ -3,9 +3,7 @@
 //! Every unset wire arm means that field's default, so an empty message is
 //! `AutoOsCalls::default()` and a parent that predates a field still gets the
 //! behaviour it had. Rust → proto sets every arm; proto → Rust rejects a
-//! microsecond past a second, an unknown sleep mode (a sandbox-policy choice,
-//! not a cosmetic one, so it is not silently defaulted) and a non-finite
-//! float seed.
+//! microsecond past a second and a non-finite float seed.
 
 use std::time::Duration;
 
@@ -16,7 +14,7 @@ use crate::{
     convert::ProtoConvertError,
     pb::{
         self,
-        auto_os_calls::{Datetime, RandomStart as WireRandomStart},
+        auto_os_calls::{Datetime, RandomStart as WireRandomStart, SleepMode as WireSleepMode},
         random_seed::Value,
     },
 };
@@ -40,10 +38,16 @@ impl From<&AutoOsCalls> for pb::AutoOsCalls {
             RandomStart::Random => WireRandomStart::Random(pb::Unit {}),
             RandomStart::Seed(seed) => WireRandomStart::Seed(seed.into()),
         };
+        let sleep_mode = match calls.sleep {
+            SleepMode::CallHost => WireSleepMode::SleepCallHost(pb::Unit {}),
+            SleepMode::Zero => WireSleepMode::SleepZero(pb::Unit {}),
+            SleepMode::SandboxSleep(clamp) => WireSleepMode::SandboxSleep(pb::SandboxSleep {
+                clamp_micros: Some(u64::try_from(clamp.as_micros()).unwrap_or(u64::MAX)),
+            }),
+        };
         Self {
             datetime: Some(datetime),
-            sleep: pb::SleepMode::from(calls.sleep).into(),
-            sandbox_sleep_clamp_micros: Some(u64::try_from(calls.sandbox_sleep_clamp.as_micros()).unwrap_or(u64::MAX)),
+            sleep_mode: Some(sleep_mode),
             random_start: Some(random_start),
         }
     }
@@ -72,12 +76,16 @@ impl TryFrom<pb::AutoOsCalls> for AutoOsCalls {
                 }
             }
         };
-        let sleep = pb::SleepMode::try_from(calls.sleep)
-            .map_err(|_| ProtoConvertError::InvalidValue {
-                field: "AutoOsCalls.sleep",
-                reason: format!("unknown sleep mode {}", calls.sleep),
-            })?
-            .into();
+        let sleep = match calls.sleep_mode {
+            None => defaults.sleep,
+            Some(WireSleepMode::SleepCallHost(_)) => SleepMode::CallHost,
+            Some(WireSleepMode::SleepZero(_)) => SleepMode::Zero,
+            Some(WireSleepMode::SandboxSleep(sandbox)) => SleepMode::SandboxSleep(
+                sandbox
+                    .clamp_micros
+                    .map_or(SleepMode::DEFAULT_CLAMP, Duration::from_micros),
+            ),
+        };
         let random_start = match calls.random_start {
             None => defaults.random_start,
             Some(WireRandomStart::Random(_)) => RandomStart::Random,
@@ -86,32 +94,8 @@ impl TryFrom<pb::AutoOsCalls> for AutoOsCalls {
         Ok(Self {
             datetime,
             sleep,
-            sandbox_sleep_clamp: calls
-                .sandbox_sleep_clamp_micros
-                .map_or(defaults.sandbox_sleep_clamp, Duration::from_micros),
             random_start,
         })
-    }
-}
-
-impl From<SleepMode> for pb::SleepMode {
-    fn from(mode: SleepMode) -> Self {
-        match mode {
-            SleepMode::CallHost => Self::CallHost,
-            SleepMode::Zero => Self::Zero,
-            SleepMode::SandboxSleep => Self::SandboxSleep,
-        }
-    }
-}
-
-impl From<pb::SleepMode> for SleepMode {
-    /// `Unspecified` is a parent that never set the field: the default.
-    fn from(mode: pb::SleepMode) -> Self {
-        match mode {
-            pb::SleepMode::CallHost => Self::CallHost,
-            pb::SleepMode::Zero => Self::Zero,
-            pb::SleepMode::Unspecified | pb::SleepMode::SandboxSleep => Self::SandboxSleep,
-        }
     }
 }
 

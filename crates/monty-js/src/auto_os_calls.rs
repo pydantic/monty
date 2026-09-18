@@ -40,17 +40,17 @@ pub(crate) fn extract_auto_os_calls(options: &NativeCheckoutOptions) -> Result<A
         }
         Some(other) => return Err(invalid(&format!("datetime: unknown source '{other}'"))),
     };
+    let clamp = match options.sandbox_sleep_clamp_secs {
+        None => SleepMode::DEFAULT_CLAMP,
+        Some(secs) if secs == f64::INFINITY => Duration::MAX,
+        Some(secs) => Duration::try_from_secs_f64(secs).map_err(|err| invalid(&format!("sandboxSleepClamp: {err}")))?,
+    };
+    // The clamp only applies to a sandbox sleep; the other modes ignore it.
     let sleep = match options.sleep.as_deref() {
-        None => defaults.sleep,
-        Some("sandbox_sleep") => SleepMode::SandboxSleep,
+        None | Some("sandbox_sleep") => SleepMode::SandboxSleep(clamp),
         Some("zero") => SleepMode::Zero,
         Some("call_host") => SleepMode::CallHost,
         Some(other) => return Err(invalid(&format!("sleep: unknown mode '{other}'"))),
-    };
-    let sandbox_sleep_clamp = match options.sandbox_sleep_clamp_secs {
-        None => defaults.sandbox_sleep_clamp,
-        Some(secs) if secs == f64::INFINITY => Duration::MAX,
-        Some(secs) => Duration::try_from_secs_f64(secs).map_err(|err| invalid(&format!("sandboxSleepClamp: {err}")))?,
     };
     let random_start = match (
         &options.random_seed_int,
@@ -69,7 +69,6 @@ pub(crate) fn extract_auto_os_calls(options: &NativeCheckoutOptions) -> Result<A
     Ok(AutoOsCalls {
         datetime,
         sleep,
-        sandbox_sleep_clamp,
         random_start,
     })
 }

@@ -1908,7 +1908,6 @@ async fn auto_os_calls_are_answered_in_the_worker() {
                 },
                 sleep: SleepMode::Zero,
                 random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
-                ..AutoOsCalls::default()
             },
             ..ReplConfig::default()
         })

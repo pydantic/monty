@@ -257,16 +257,17 @@ export interface DatetimeSourceFixed {
   tag: 'fixed'
   val: FixedDatetime
 }
-/**
- * # Variants
- *
- * ## `"call-host"`
- *
- * ## `"zero"`
- *
- * ## `"sandbox-sleep"`
- */
-export type SleepMode = 'call-host' | 'zero' | 'sandbox-sleep'
+export type SleepMode = SleepModeCallHost | SleepModeZero | SleepModeSandboxSleep
+export interface SleepModeCallHost {
+  tag: 'call-host'
+}
+export interface SleepModeZero {
+  tag: 'zero'
+}
+export interface SleepModeSandboxSleep {
+  tag: 'sandbox-sleep'
+  val: bigint | undefined
+}
 export type RandomSeed = RandomSeedInt | RandomSeedFloat | RandomSeedStr | RandomSeedBytes
 export interface RandomSeedInt {
   tag: 'int'
@@ -295,7 +296,6 @@ export interface RandomStartSeed {
 export interface AutoOsCalls {
   datetime?: DatetimeSource
   sleep?: SleepMode
-  sandboxSleepClampMicros?: bigint
   randomStart?: RandomStart
 }
 /**

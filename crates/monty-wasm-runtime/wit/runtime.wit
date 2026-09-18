@@ -200,12 +200,13 @@ interface worker {
     }
 
     /// What `time.sleep()` and `asyncio.sleep()` do.
-    enum sleep-mode {
+    variant sleep-mode {
         call-host,
         /// Return at once without waiting.
         zero,
-        /// Wait in the worker, capped by `sandbox-sleep-clamp-micros`.
-        sandbox-sleep,
+        /// Wait in the worker, each call capped at these microseconds
+        /// (absent = 10s).
+        sandbox-sleep(option<u64>),
     }
 
     /// A `random.seed()` argument: the types CPython accepts.
@@ -231,8 +232,6 @@ interface worker {
     record auto-os-calls {
         datetime: option<datetime-source>,
         sleep: option<sleep-mode>,
-        /// Longest wait `sandbox-sleep` performs per call.
-        sandbox-sleep-clamp-micros: option<u64>,
         random-start: option<random-start>,
     }
 

@@ -591,19 +591,20 @@ fn auto_os_calls_round_trip() {
                 microsecond: 999_999,
                 local_offset_seconds: -3_600,
             },
-            sleep: SleepMode::Zero,
-            sandbox_sleep_clamp: Duration::from_millis(250),
+            sleep: SleepMode::SandboxSleep(Duration::from_millis(250)),
             random_start: RandomStart::Seed(seed),
         };
         let back = AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap();
         assert_eq!(back, calls);
     }
-    let calls = AutoOsCalls {
-        datetime: DateTimeSource::CallHost,
-        sleep: SleepMode::CallHost,
-        ..AutoOsCalls::default()
-    };
-    assert_eq!(AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap(), calls);
+    for sleep in [SleepMode::CallHost, SleepMode::Zero] {
+        let calls = AutoOsCalls {
+            datetime: DateTimeSource::CallHost,
+            sleep,
+            ..AutoOsCalls::default()
+        };
+        assert_eq!(AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap(), calls);
+    }
 }
 
 /// An all-absent message, as an older parent sends, is every default.
@@ -611,8 +612,13 @@ fn auto_os_calls_round_trip() {
 fn empty_auto_os_calls_is_the_default() {
     let back = AutoOsCalls::try_from(pb::AutoOsCalls::default()).unwrap();
     assert_eq!(back, AutoOsCalls::default());
-    assert_eq!(back.sleep, SleepMode::SandboxSleep);
-    assert_eq!(back.sandbox_sleep_clamp, Duration::from_secs(10));
+    assert_eq!(back.sleep, SleepMode::SandboxSleep(Duration::from_secs(10)));
+    // a sandbox sleep with no clamp given is the default clamp too
+    let sandbox = pb::AutoOsCalls {
+        sleep_mode: Some(pb::auto_os_calls::SleepMode::SandboxSleep(pb::SandboxSleep::default())),
+        ..Default::default()
+    };
+    assert_eq!(AutoOsCalls::try_from(sandbox).unwrap(), AutoOsCalls::default());
 }
 
 #[test]
@@ -628,14 +634,6 @@ fn malformed_auto_os_calls_are_rejected() {
     assert_snapshot!(
         AutoOsCalls::try_from(fixed).unwrap_err().to_string(),
         @"invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
-    );
-    let sleep = pb::AutoOsCalls {
-        sleep: 99,
-        ..Default::default()
-    };
-    assert_snapshot!(
-        AutoOsCalls::try_from(sleep).unwrap_err().to_string(),
-        @"invalid value for AutoOsCalls.sleep: unknown sleep mode 99"
     );
     let seed = pb::AutoOsCalls {
         random_start: Some(pb::auto_os_calls::RandomStart::Seed(pb::RandomSeed {

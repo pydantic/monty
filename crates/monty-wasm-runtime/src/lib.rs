@@ -340,10 +340,12 @@ fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
             local_offset_seconds: fixed.local_offset_seconds,
         }),
     });
-    let sleep = calls.sleep.map_or(pb::SleepMode::Unspecified, |mode| match mode {
-        SleepMode::CallHost => pb::SleepMode::CallHost,
-        SleepMode::Zero => pb::SleepMode::Zero,
-        SleepMode::SandboxSleep => pb::SleepMode::SandboxSleep,
+    let sleep_mode = calls.sleep.map(|mode| match mode {
+        SleepMode::CallHost => pb::auto_os_calls::SleepMode::SleepCallHost(pb::Unit {}),
+        SleepMode::Zero => pb::auto_os_calls::SleepMode::SleepZero(pb::Unit {}),
+        SleepMode::SandboxSleep(clamp_micros) => {
+            pb::auto_os_calls::SleepMode::SandboxSleep(pb::SandboxSleep { clamp_micros })
+        }
     });
     let random_start = calls.random_start.map(|start| match start {
         RandomStart::Random => pb::auto_os_calls::RandomStart::Random(pb::Unit {}),
@@ -358,8 +360,7 @@ fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
     });
     pb::AutoOsCalls {
         datetime,
-        sleep: i32::from(sleep),
-        sandbox_sleep_clamp_micros: calls.sandbox_sleep_clamp_micros,
+        sleep_mode,
         random_start,
     }
 }

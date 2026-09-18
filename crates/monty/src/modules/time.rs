@@ -68,7 +68,7 @@ fn time(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `time.sleep(seconds)` — wait as the session's `SleepMode` says.
 ///
-/// A sandbox wait is cut to `sandbox_sleep_clamp` and runs off the execution
+/// A sandbox wait is cut to the mode's clamp and runs off the execution
 /// clock, so it counts against neither `max_feed_duration` nor `max_suspensions`.
 /// Under `CallHost` the wait is the host's to perform, and
 /// [`PostConversionEffect::DiscardResult`] makes the call evaluate to `None`
@@ -88,15 +88,14 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     });
     seconds.drop_with(vm.heap);
     let duration = result?;
-    let calls = vm.env.auto_os_calls;
-    Ok(match calls.sleep {
+    Ok(match vm.env.auto_os_calls.sleep {
         SleepMode::CallHost => CallResult::OsCallWithEffect {
             call: OsFunctionCall::Sleep(duration),
             effect: PostConversionEffect::DiscardResult.into(),
         },
         SleepMode::Zero => CallResult::Value(Value::None),
-        SleepMode::SandboxSleep => {
-            vm.heap.tracker.sandbox_sleep(duration.min(calls.sandbox_sleep_clamp));
+        SleepMode::SandboxSleep(clamp) => {
+            vm.heap.tracker.sandbox_sleep(duration.min(clamp));
             CallResult::Value(Value::None)
         }
     })

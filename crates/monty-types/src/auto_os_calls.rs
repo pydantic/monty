@@ -19,16 +19,8 @@ pub struct AutoOsCalls {
     pub datetime: DateTimeSource,
     /// What `time.sleep()` and `asyncio.sleep()` do.
     pub sleep: SleepMode,
-    /// Longest wait [`SleepMode::SandboxSleep`] performs for one call; a longer
-    /// request is cut short, not refused.
-    pub sandbox_sleep_clamp: Duration,
     /// Where an unseeded `random` generator gets its first state.
     pub random_start: RandomStart,
-}
-
-impl AutoOsCalls {
-    /// [`sandbox_sleep_clamp`](Self::sandbox_sleep_clamp) unless a host says otherwise.
-    pub const DEFAULT_SANDBOX_SLEEP_CLAMP: Duration = Duration::from_secs(10);
 }
 
 impl Default for AutoOsCalls {
@@ -37,8 +29,7 @@ impl Default for AutoOsCalls {
     fn default() -> Self {
         Self {
             datetime: DateTimeSource::System,
-            sleep: SleepMode::SandboxSleep,
-            sandbox_sleep_clamp: Self::DEFAULT_SANDBOX_SLEEP_CLAMP,
+            sleep: SleepMode::default(),
             random_start: RandomStart::Random,
         }
     }
@@ -134,18 +125,29 @@ impl DateTimeReading {
 }
 
 /// What the sleep calls do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SleepMode {
     /// Suspend to the host, which performs (or declines) the wait.
     CallHost,
     /// Return at once without waiting.
     Zero,
-    /// Wait in the sandbox, each call cut to
-    /// [`AutoOsCalls::sandbox_sleep_clamp`]. The wait is not execution time
+    /// Wait in the sandbox, each call cut to the clamp given (a longer
+    /// request is cut short, not refused). The wait is not execution time
     /// and not a suspension, so only the host's turn deadline bounds a loop
     /// of them.
-    #[default]
-    SandboxSleep,
+    SandboxSleep(Duration),
+}
+
+impl SleepMode {
+    /// The clamp [`SandboxSleep`](Self::SandboxSleep) starts with.
+    pub const DEFAULT_CLAMP: Duration = Duration::from_secs(10);
+}
+
+impl Default for SleepMode {
+    /// Sleeps performed in the sandbox for at most [`DEFAULT_CLAMP`](Self::DEFAULT_CLAMP) each.
+    fn default() -> Self {
+        Self::SandboxSleep(Self::DEFAULT_CLAMP)
+    }
 }
 
 /// Where an unseeded `random` generator gets its first state.
