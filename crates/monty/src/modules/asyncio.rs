@@ -3,10 +3,12 @@
 //! Provides a minimal implementation of Python's `asyncio` module with:
 //! - `run(coro)`: Runs a coroutine to completion, equivalent to `await coro`
 //! - `gather(*awaitables)`: Collects coroutines for concurrent execution
-//! - `sleep(delay, result=None)`: Asks the host to wait, as an awaitable
+//! - `sleep(delay, result=None)`: Waits as the session's `SleepMode` says, as an awaitable
 //!
 //! Other asyncio functions (`create_task`, `wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
+
+use std::time::Duration;
 
 use monty_types::{OsFunctionCall, SleepMode, sleep_duration_saturating};
 use num_traits::ToPrimitive;
@@ -93,24 +95,33 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     };
     let (result, vm) = result_guard.into_parts();
     Ok(match vm.env.auto_os_calls.sleep {
-        SleepMode::System(max) => {
-            let delay = delay.min(max);
-            if delay.is_zero() {
-                CallResult::Value(vm.settled_awaitable(result))
-            } else if vm.allow_eager_await() {
-                // Awaited at once with nothing else to run: waiting here is
-                // indistinguishable from a timer and skips the bookkeeping.
-                vm.heap.tracker.sandbox_sleep(delay);
-                CallResult::Value(vm.settled_awaitable(result))
-            } else {
-                CallResult::Value(vm.add_sandbox_timer(delay, result))
-            }
-        }
+        SleepMode::System(max) => CallResult::Value(sandbox_sleep_awaitable(vm, delay.min(max), result)?),
         SleepMode::CallHost => CallResult::OsCallWithEffect {
             call: OsFunctionCall::AsyncSleep(delay),
             effect: PostConversionEffect::SleepResult { result }.into(),
         },
         SleepMode::Zero => CallResult::Value(vm.settled_awaitable(result)),
+    })
+}
+
+/// The awaitable for an `asyncio.sleep` the sandbox answers itself: settled
+/// at once for a zero delay, waited inline when awaited at once with nothing
+/// else to run (indistinguishable from a timer, minus the bookkeeping), else
+/// a scheduler timer. The whole delay is charged to the sleep budget here,
+/// timer or not; `result` is released if the budget refuses it.
+fn sandbox_sleep_awaitable(vm: &mut VM<'_>, delay: Duration, result: Value) -> RunResult<Value> {
+    let mut result_guard = DropGuard::new(result, vm);
+    let (_, vm) = result_guard.as_parts_mut();
+    vm.heap.tracker.charge_sleep(delay)?;
+    let eager = !delay.is_zero() && vm.allow_eager_await();
+    if eager {
+        vm.heap.tracker.sandbox_sleep(delay);
+    }
+    let (result, vm) = result_guard.into_parts();
+    Ok(if delay.is_zero() || eager {
+        vm.settled_awaitable(result)
+    } else {
+        vm.add_sandbox_timer(delay, result)
     })
 }
 

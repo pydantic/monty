@@ -240,6 +240,7 @@ export interface ResourceLimits {
   gcInterval?: bigint
   maxRecursionDepth?: bigint
   maxSuspensions?: bigint
+  maxTotalSleepMicros?: bigint
 }
 export interface FixedDatetime {
   unixSeconds: bigint

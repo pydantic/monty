@@ -54,18 +54,19 @@ Monty enforces hard limits on memory, execution time and recursion depth, config
 | `max_recursion_depth`    | Maximum function call stack depth (default 1000)                                                                      |
 | `gc_interval`            | Run garbage collection every N allocations                                                                            |
 | `max_suspensions`        | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000) |
+| `max_total_sleep_secs`   | Maximum cumulative time the sandbox spends waiting out `time.sleep()` and `asyncio.sleep()` itself, in seconds        |
 
 Every key is optional.
-Omit `max_memory` or either duration key, or set them to `None`, to disable that limit.
+Omit `max_memory`, either duration key or `max_total_sleep_secs`, or set them to `None`, to disable that limit.
 `max_recursion_depth` and `max_suspensions` cannot be disabled: omitting either, or passing `None`, leaves its 1000
 default.
 `gc_interval` omitted or `None` uses the built-in schedule of every 100,000 allocations; collection cannot be turned
 off.
 
 In JavaScript the same fields are `maxMemory`, `maxFeedDurationSecs`, `maxTurnDurationSecs`,
-`maxRecursionDepth`, `gcInterval` and `maxSuspensions`, passed as `limits` to `pool.checkout()`.
+`maxRecursionDepth`, `gcInterval`, `maxSuspensions` and `maxTotalSleepSecs`, passed as `limits` to `pool.checkout()`.
 In Rust they are the fields of [`monty_types::ResourceLimits`](api/rust/monty-types.md#resourcelimits), where the
-durations are `Duration`s named `max_feed_duration` and `max_turn_duration`.
+durations are `Duration`s named `max_feed_duration`, `max_turn_duration` and `max_total_sleep`.
 
 ## Memory
 
@@ -104,8 +105,9 @@ Both duration limits count **execution time**, not wall clock:
 - The clock runs only while the interpreter executes bytecode.
 - It is paused while execution is suspended waiting on the host — a [host function](host-functions.md) that takes a
     minute costs nothing — and while the sandbox waits out a `time.sleep()` or `asyncio.sleep()` itself.
-    A sandbox sleep is not a suspension either, so a loop of them is bounded only by the pool's `request_timeout`,
-    reached after at most `sleep_system_max` (10 seconds by default) per iteration; see
+    Those sandbox sleeps are charged to `max_total_sleep_secs` instead, which refuses a sleep that would take the
+    total over with an uncatchable `TimeoutError`; without it a sleeping loop is bounded only by the pool's
+    `request_timeout`, reached after at most `sleep_system_max` (10 seconds by default) per iteration. See
     [security](security.md#waiting).
 - There is no way for sandboxed code to observe a budget or the time remaining.
 

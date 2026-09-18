@@ -83,6 +83,9 @@ pub enum ResourceError {
     Memory { limit: usize, used: usize },
     /// Maximum recursion depth exceeded.
     Recursion { limit: usize, depth: usize },
+    /// Maximum cumulative sandbox sleep exceeded: `total` is what the sleeps
+    /// so far plus the one refused would have come to.
+    Sleep { limit: Duration, total: Duration },
 }
 
 /// Which of the two nested execution-time budgets a [`ResourceError::Time`]
@@ -121,6 +124,7 @@ impl fmt::Display for ResourceError {
             Self::Recursion { .. } => {
                 write!(f, "maximum recursion depth exceeded")
             }
+            Self::Sleep { limit, total } => write!(f, "sleep limit exceeded: {total:?} > {limit:?}"),
         }
     }
 }
@@ -167,6 +171,11 @@ pub struct ResourceLimits {
     /// [`DEFAULT_MAX_SUSPENSIONS`]; always bounded, like recursion depth).
     /// The interpreter only stores this limit; hosts must enforce it.
     pub max_suspensions: usize,
+    /// Maximum cumulative time the sandbox may spend waiting out
+    /// `time.sleep()` and `asyncio.sleep()` itself. Sleeps run off the
+    /// `max_duration` clock, so without this a sleeping loop is bounded only
+    /// by a host deadline.
+    pub max_total_sleep: Option<Duration>,
 }
 
 /// Recommended maximum recursion depth if not otherwise specified.
@@ -188,6 +197,7 @@ impl Default for ResourceLimits {
             gc_interval: None,
             max_recursion_depth: DEFAULT_MAX_RECURSION_DEPTH,
             max_suspensions: DEFAULT_MAX_SUSPENSIONS,
+            max_total_sleep: None,
         }
     }
 }
@@ -235,6 +245,13 @@ impl ResourceLimits {
     #[must_use]
     pub fn max_suspensions(mut self, limit: usize) -> Self {
         self.max_suspensions = limit;
+        self
+    }
+
+    /// Sets the maximum cumulative time the sandbox may sleep itself.
+    #[must_use]
+    pub fn max_total_sleep(mut self, limit: Duration) -> Self {
+        self.max_total_sleep = Some(limit);
         self
     }
 }
@@ -295,6 +312,11 @@ pub struct ResourceTracker {
     /// existed (`#[serde(default)]` gives back the `None` fallback case).
     #[serde(default)]
     recursion_limit_override: Cell<Option<usize>>,
+    /// Time spent in sleeps the sandbox answered itself, checked against
+    /// `limits.max_total_sleep`. Serialized like the execution time, so a
+    /// restored session resumes its sleep budget too.
+    #[serde(default)]
+    total_sleep: Cell<Duration>,
 }
 
 impl Default for ResourceTracker {
@@ -321,6 +343,7 @@ impl ResourceTracker {
             turn_execution_time: Cell::new(Duration::ZERO),
             running_since: Cell::new(None),
             recursion_limit_override: Cell::new(None),
+            total_sleep: Cell::new(Duration::ZERO),
         }
     }
 
@@ -394,6 +417,18 @@ impl ResourceTracker {
     #[must_use]
     pub fn max_suspensions(&self) -> usize {
         self.limits.max_suspensions
+    }
+
+    /// Returns the configured maximum cumulative sandbox sleep, if any.
+    #[must_use]
+    pub fn max_total_sleep(&self) -> Option<Duration> {
+        self.limits.max_total_sleep
+    }
+
+    /// Time spent so far in sleeps the sandbox answered itself.
+    #[must_use]
+    pub fn total_sleep(&self) -> Duration {
+        self.total_sleep.get()
     }
 
     /// Returns whether the VM has a memory or time limit configured.
@@ -678,11 +713,28 @@ impl ResourceTracker {
         self.turn_execution_time.set(Duration::ZERO);
     }
 
+    /// Charges a sleep the sandbox is about to answer itself to
+    /// `max_total_sleep`, refusing it up front — before anything waits — once
+    /// the total would go over. Called at the sleep call for the delay asked,
+    /// so an `asyncio.sleep` timer is charged when it is created, not when it
+    /// fires, and the check is deterministic.
+    pub fn charge_sleep(&self, duration: Duration) -> Result<(), ResourceError> {
+        let total = self.total_sleep.get().saturating_add(duration);
+        if let Some(limit) = self.limits.max_total_sleep
+            && total > limit
+        {
+            return Err(ResourceError::Sleep { limit, total });
+        }
+        self.total_sleep.set(total);
+        Ok(())
+    }
+
     /// Blocks for `duration` with the execution clock stopped: a sleep the
     /// sandbox serves itself (`time.sleep`, a sandbox `asyncio.sleep` timer)
-    /// counts against neither `max_feed_duration` nor the host's suspension budget,
-    /// exactly as a host-performed one would not. The clock restarts only if
-    /// it was running, so this is safe outside an execution window too.
+    /// costs nothing against `max_feed_duration`, exactly as a host-performed one
+    /// would not. Its budget is [`charge_sleep`](Self::charge_sleep), taken
+    /// by the caller first. The clock restarts only if it was running, so
+    /// this is safe outside an execution window too.
     ///
     /// The one place the interpreter waits, so a platform without a blocking
     /// sleep has a single function to adapt (see [`block_for`]).

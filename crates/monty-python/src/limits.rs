@@ -13,6 +13,7 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 /// - `gc_interval`: Run garbage collection every N allocations (int)
 /// - `max_recursion_depth`: Maximum function call stack depth (int, default: 1000)
 /// - `max_suspensions`: Maximum host round trips the pool will service (int, default: 1000)
+/// - `max_total_sleep_secs`: Maximum cumulative time the sandbox sleeps itself, in seconds (float)
 ///
 /// If a key is missing or set to `None`, that limit is not applied
 /// (except `max_recursion_depth` and `max_suspensions`, which default to 1000).
@@ -40,6 +41,11 @@ pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty_types::Resourc
             LimitKey::GcInterval => limits.gc_interval(value.extract()?),
             LimitKey::MaxRecursionDepth => limits.max_recursion_depth(value.extract()?),
             LimitKey::MaxSuspensions => limits.max_suspensions(value.extract()?),
+            LimitKey::MaxTotalSleepSecs => {
+                let d = Duration::try_from_secs_f64(value.extract()?)
+                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                limits.max_total_sleep(d)
+            }
         };
     }
     Ok(limits)
@@ -61,6 +67,7 @@ enum LimitKey {
     GcInterval,
     MaxRecursionDepth,
     MaxSuspensions,
+    MaxTotalSleepSecs,
 }
 
 impl<'a, 'py> FromPyObject<'a, 'py> for LimitKey {
@@ -74,6 +81,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for LimitKey {
             "gc_interval" => Ok(Self::GcInterval),
             "max_recursion_depth" => Ok(Self::MaxRecursionDepth),
             "max_suspensions" => Ok(Self::MaxSuspensions),
+            "max_total_sleep_secs" => Ok(Self::MaxTotalSleepSecs),
             _ => {
                 // `repr()` runs user `__repr__`, which may itself raise — fall
                 // back so the promised `ValueError` is raised for every unknown key.
@@ -83,7 +91,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for LimitKey {
                 Err(PyValueError::new_err(format!(
                     "unknown limits key {key_repr}; accepted keys are \
                      'max_feed_duration_secs', 'max_turn_duration_secs', 'max_memory', \
-                     'gc_interval', 'max_recursion_depth', 'max_suspensions'"
+                     'gc_interval', 'max_recursion_depth', 'max_suspensions', 'max_total_sleep_secs'"
                 )))
             }
         }

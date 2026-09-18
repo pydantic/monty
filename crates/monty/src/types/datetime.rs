@@ -289,10 +289,16 @@ pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
     let NowArgs { tz } = NowArgs::from_args(args, vm)?;
     defer_drop!(tz, vm);
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
+    // `None` here means only "the host's to answer": an instant the sandbox
+    // owns but cannot represent in the requested zone raises instead, so a
+    // fixed clock never falls back to the host's.
     let local = match (sandbox_instant(vm)?, &tz) {
-        (Some(utc), Some(tz)) => from_utc_naive_with_timezone_parts(utc, tz.offset_seconds, tz.name.clone()),
+        (Some(utc), Some(tz)) => Some(
+            from_utc_naive_with_timezone_parts(utc, tz.offset_seconds, tz.name.clone())
+                .ok_or_else(date_out_of_range)?,
+        ),
         (Some(utc), None) => match sandbox_local_wall_clock(vm, utc)? {
-            Some(local) => from_local_naive(local),
+            Some(local) => Some(from_local_naive(local).ok_or_else(date_out_of_range)?),
             None => None,
         },
         (None, _) => None,

@@ -211,6 +211,25 @@ fn unrepresentable_fixed_instant_raises() {
     );
 }
 
+/// An instant the sandbox owns but cannot represent in the requested zone
+/// raises too, rather than falling back to the host's clock: the last second
+/// of year 9999 UTC is year 10000 one hour east.
+#[test]
+fn unrepresentable_fixed_instant_in_a_timezone_raises() {
+    let last_second = with_datetime(DateTimeSource::Fixed {
+        unix_seconds: 253_402_300_799,
+        microsecond: 0,
+    });
+    assert_eq!(
+        run(
+            "from datetime import datetime, timedelta, timezone\ndatetime.now(timezone(timedelta(hours=1)))",
+            last_second
+        )
+        .unwrap_err(),
+        "OverflowError: date value out of range"
+    );
+}
+
 #[test]
 fn out_of_range_microsecond_raises() {
     let overflowing = with_datetime(DateTimeSource::Fixed {
@@ -423,6 +442,29 @@ fn the_system_maximum_cuts_a_long_sleep_short() {
     let (result, elapsed) = timed_run(code, with_sleep(SleepMode::System(Duration::from_millis(20))));
     assert_eq!(result, MontyObject::string("woken"));
     assert!(elapsed < Duration::from_secs(1), "took {elapsed:?}");
+}
+
+/// Sandbox sleeps are charged to `max_total_sleep`, which `max_duration`
+/// cannot see: the sleep that would take the total over is refused before it
+/// waits, uncatchably, for `time.sleep` and a sandbox `asyncio.sleep` alike.
+#[test]
+fn sandbox_sleeps_are_bounded_by_max_total_sleep() {
+    // exact binary fractions, so the reported total is exact too
+    let code = "import asyncio, time\n\
+        time.sleep(0.125)\n\
+        try:\n    asyncio.run(asyncio.sleep(0.5))\n\
+        except TimeoutError:\n    pass\n";
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_total_sleep(Duration::from_millis(150)));
+    let started = Instant::now();
+    let err = runner(code, AutoOsCalls::default())
+        .run(vec![], tracker, PrintWriter::Disabled)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap(),
+        "TimeoutError: sleep limit exceeded: 625ms > 150ms"
+    );
+    // refused up front: the 500 ms sleep never ran
+    assert!(started.elapsed() < Duration::from_millis(500));
 }
 
 /// Under `CallHost` neither sleep is served in-process; standard execution

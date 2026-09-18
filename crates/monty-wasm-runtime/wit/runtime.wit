@@ -177,6 +177,8 @@ interface worker {
         gc-interval: option<u64>,
         max-recursion-depth: option<u64>,
         max-suspensions: option<u64>,
+        /// Cumulative time the sandbox may spend waiting out sleeps itself.
+        max-total-sleep-micros: option<u64>,
     }
 
     /// A frozen clock reading (see `auto-os-calls`).

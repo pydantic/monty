@@ -888,6 +888,7 @@ impl<'h> VM<'h> {
                 SleepMode::CallHost | SleepMode::Zero => Duration::MAX,
             };
             let wait = Duration::from_micros(remaining).min(max);
+            // Budgeted when the timer was created, for its full delay.
             self.heap.tracker.sandbox_sleep(wait);
             let now = unix_micros_now().max(earliest.deadline_unix_micros);
             for call_id in self.scheduler.take_due_timers(now) {

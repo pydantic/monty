@@ -475,8 +475,8 @@ By default the sandbox answers these itself, with no `os` callback involved:
 `sleepSystemMax` (10 seconds), with gathered `asyncio.sleep()` calls
 overlapping; and an unseeded `random` seeds itself from the worker's OS
 entropy. A sandbox wait costs nothing against `maxDurationSecs` and is not a
-suspension, so `requestTimeout` is what bounds a sleeping loop. The
-per-session `autoOsCalls` option changes that:
+suspension: the `maxTotalSleepSecs` limit and `requestTimeout` are what bound a
+sleeping loop. The per-session `autoOsCalls` option changes that:
 
 ```ts
 const fixed = await pool.checkout({

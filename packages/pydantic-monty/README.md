@@ -286,9 +286,9 @@ By default the sandbox answers these itself, with no `os=` handler involved:
 `sleep_system_max` (10 seconds), with gathered `asyncio.sleep()` calls
 overlapping; and an unseeded `random` seeds itself from the worker's OS
 entropy. A sandbox wait costs nothing against `max_duration_secs` and is not a
-suspension, so `request_timeout` is what bounds a sleeping loop. The
-`auto_os_calls` argument of `checkout()` changes that, for the life of the
-session:
+suspension: the `max_total_sleep_secs` limit and `request_timeout` are what
+bound a sleeping loop. The `auto_os_calls` argument of `checkout()` changes
+that, for the life of the session:
 
 ```python
 from datetime import datetime

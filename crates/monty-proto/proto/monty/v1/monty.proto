@@ -375,6 +375,8 @@ message ResourceLimits {
   // resets at each feed, the turn budget at each feed and each resume.
   optional uint64 max_feed_duration_micros = 6;
   optional uint64 max_turn_duration_micros = 7;
+  // Cumulative time the sandbox may spend waiting out sleeps itself.
+  optional uint64 max_total_sleep_micros = 8;
 }
 
 // Mirrors monty's `AutoOsCalls`: which OS calls the sandbox answers itself.

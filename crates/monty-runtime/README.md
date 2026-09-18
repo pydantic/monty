@@ -45,6 +45,8 @@ monty --help
   `--max-suspensions` — sandbox resource limits
 - `--max-sleep 10` — longest wait a `time.sleep()` / `asyncio.sleep()` performs
   inside the sandbox, in seconds; longer sleeps are cut short (`inf` for no limit)
+- `--max-total-sleep 60` — maximum cumulative time the sandbox spends in those
+  sleeps, in seconds; a sleep that would go over is refused
 
 `date.today()` and `datetime.now()` read this machine's clock and local
 timezone, and `time.time()` its clock as Unix epoch seconds; `time.sleep()` and

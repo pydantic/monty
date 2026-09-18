@@ -96,6 +96,11 @@ pub(crate) struct Cli {
     #[arg(long)]
     max_suspensions: Option<usize>,
 
+    /// Maximum cumulative time the sandbox spends in `time.sleep()` and
+    /// `asyncio.sleep()`, in seconds; a sleep that would go over is refused.
+    #[arg(long)]
+    max_total_sleep: Option<f64>,
+
     /// Longest wait a `time.sleep()` or `asyncio.sleep()` performs inside the
     /// sandbox, in seconds; longer sleeps are cut short (defaults to 10, `inf`
     /// for no limit).
@@ -154,6 +159,7 @@ impl Cli {
             || self.gc_interval.is_some()
             || self.max_recursion_depth.is_some()
             || self.max_suspensions.is_some()
+            || self.max_total_sleep.is_some()
     }
 
     /// Builds `ResourceLimits` from the parsed CLI arguments.
@@ -181,6 +187,13 @@ impl Cli {
         }
         if let Some(max) = self.max_suspensions {
             limits = limits.max_suspensions(max);
+        }
+        if let Some(secs) = self.max_total_sleep {
+            limits = limits.max_total_sleep(
+                #[expect(clippy::absolute_paths)]
+                std::time::Duration::try_from_secs_f64(secs)
+                    .map_err(|err| format!("invalid --max-total-sleep: {err}"))?,
+            );
         }
         Ok(limits)
     }

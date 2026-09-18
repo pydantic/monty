@@ -189,6 +189,8 @@ impl From<ResourceError> for RunError {
             ResourceError::Memory { .. } => (ExcType::MemoryError, false),
             ResourceError::Time { .. } => (ExcType::TimeoutError, false),
             ResourceError::Recursion { .. } => (ExcType::RecursionError, true),
+            // A spent sleep budget ends the run as a spent time budget does.
+            ResourceError::Sleep { .. } => (ExcType::TimeoutError, false),
         };
         let exc = SimpleException::new_msg(exc_type, err).into();
         if catchable {

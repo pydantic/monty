@@ -108,8 +108,8 @@ export interface CheckoutOptions {
    * the clock and its zone, the sleeps and `random`'s first state — and how
    * (see `AutoOsCalls`). Omitted: the worker's clock and local zone, sleeps
    * of at most ten seconds each, `random` seeded from its entropy. A sandbox
-   * wait costs nothing against `maxDurationSecs` and is not a suspension, so
-   * `requestTimeout` is what bounds a sleeping loop.
+   * wait costs nothing against `maxDurationSecs` and is not a suspension:
+   * `maxTotalSleepSecs` and `requestTimeout` are what bound a sleeping loop.
    */
   autoOsCalls?: AutoOsCalls
 }
@@ -141,6 +141,13 @@ export interface ResourceLimits {
   gcInterval?: number
   maxRecursionDepth?: number
   maxSuspensions?: number
+  /**
+   * Maximum cumulative time the sandbox may spend waiting out `time.sleep()`
+   * and `asyncio.sleep()` itself, in seconds. Sandbox sleeps run off the
+   * `maxDurationSecs` clock, so this is what bounds a sleeping loop; a sleep
+   * that would go over is refused with an uncatchable `TimeoutError`.
+   */
+  maxTotalSleepSecs?: number
 }
 
 /**

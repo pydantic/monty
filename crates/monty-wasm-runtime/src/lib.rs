@@ -312,6 +312,7 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
             gc_interval: limits.gc_interval,
             max_recursion_depth: limits.max_recursion_depth,
             max_suspensions: limits.max_suspensions,
+            max_total_sleep_micros: limits.max_total_sleep_micros,
         }),
         type_check: request.type_check,
         type_check_stubs: request.type_check_stubs,

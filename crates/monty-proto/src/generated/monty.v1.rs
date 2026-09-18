@@ -446,6 +446,9 @@ pub struct ResourceLimits {
     pub max_feed_duration_micros: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "7")]
     pub max_turn_duration_micros: ::core::option::Option<u64>,
+    /// Cumulative time the sandbox may spend waiting out sleeps itself.
+    #[prost(uint64, optional, tag = "8")]
+    pub max_total_sleep_micros: ::core::option::Option<u64>,
 }
 /// Mirrors monty's `AutoOsCalls`: which OS calls the sandbox answers itself.
 /// Each unset arm means that field's default.

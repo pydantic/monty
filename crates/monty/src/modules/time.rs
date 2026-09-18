@@ -69,8 +69,8 @@ fn time(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `time.sleep(seconds)` — wait as the session's `SleepMode` says.
 ///
 /// A sandbox wait is cut to the mode's maximum and runs off the execution
-/// clock, so it counts against neither `max_feed_duration` nor `max_suspensions`.
-/// Under `CallHost` the wait is the host's to perform, and
+/// clock, charged to `max_total_sleep` instead. Under `CallHost` the wait is
+/// the host's to perform, and
 /// [`PostConversionEffect::DiscardResult`] makes the call evaluate to `None`
 /// whatever the host answered with. The argument is validated identically in
 /// every mode, so the CPython errors do not depend on the mode.
@@ -90,7 +90,9 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let duration = result?;
     Ok(match vm.env.auto_os_calls.sleep {
         SleepMode::System(max) => {
-            vm.heap.tracker.sandbox_sleep(duration.min(max));
+            let duration = duration.min(max);
+            vm.heap.tracker.charge_sleep(duration)?;
+            vm.heap.tracker.sandbox_sleep(duration);
             CallResult::Value(Value::None)
         }
         SleepMode::CallHost => CallResult::OsCallWithEffect {

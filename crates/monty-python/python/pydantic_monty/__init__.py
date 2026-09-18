@@ -163,6 +163,12 @@ class ResourceLimits(TypedDict, total=False):
     The pool aborts an over-budget feed with an uncatchable `RuntimeError`; the
     session remains usable. Restoring a dump resets the count."""
 
+    max_total_sleep_secs: float | None
+    """Maximum cumulative time the sandbox may spend waiting out `time.sleep()` and `asyncio.sleep()` itself.
+
+    Sandbox sleeps run off the `max_duration_secs` clock, so this is what bounds a sleeping loop; a sleep that
+    would go over is refused with an uncatchable `TimeoutError` before it waits."""
+
 
 class TimeZone(TypedDict):
     """A fixed offset from UTC, as `datetime.timezone(offset, name)` carries it: not an IANA zone."""
@@ -211,8 +217,8 @@ class AutoOSCalls(TypedDict, total=False):
     sleep_system_max: float
     """Longest wait a `'system'` performs per call, in seconds (default 10; `inf` for no cap).
 
-    A wait costs nothing against `max_duration_secs` and is not a suspension, so `request_timeout` is what bounds a
-    sleeping loop."""
+    A wait costs nothing against `max_duration_secs` and is not a suspension: `max_total_sleep_secs` and
+    `request_timeout` are what bound a sleeping loop."""
 
     random_start: Literal['system', 'call_host'] | RandomSeed
     """Where an unseeded `random` generator gets its first state.

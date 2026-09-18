@@ -16,8 +16,9 @@ The `asyncio` module exposes exactly three functions:
     where CPython raises
     `TypeError: gather() got an unexpected keyword argument 'X'` because
     `return_exceptions` is a real kwarg there.
-- `asyncio.sleep(delay, result=None)` — asks the host to wait, then produces
-    `result`. See [below](#asynciosleep-waits-at-the-call-not-at-the-await).
+- `asyncio.sleep(delay, result=None)` — waits as the session's `sleep` setting
+    says, then produces `result`. See
+    [below](#asynciosleep-waits-at-the-call-not-at-the-await).
 
 Not implemented (raise `AttributeError`):
 
@@ -69,8 +70,13 @@ session's `sleep` setting (see [time.md](time.md)):
     that waits inline — the sync `Monty`, a sync callback — runs gathered
     sleeps one after another. Either way the results are the same.
 - `'zero'`: the awaitable is settled immediately; nothing waits and no other
-    task runs meanwhile, so `sleep(0)` does not yield as CPython's does. That
-    is true of a zero delay in every mode.
+    task runs meanwhile, so `sleep(0)` does not yield as CPython's does. A zero
+    delay under `'system'` is settled the same way; under `'call_host'` it is
+    the host's answer that decides, and one answering with a pending future
+    lets sibling tasks run.
+
+A sandbox-served sleep is charged to `max_total_sleep` rather than to
+`max_duration` or `max_suspensions` (see [time.md](time.md)).
 
 What follows from waiting at the call:
 

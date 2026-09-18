@@ -46,11 +46,13 @@ What `time.sleep()` does is the session's `sleep` setting:
 
 `max_feed_duration` and `max_turn_duration` measure execution time, and the clock stops while the sandbox waits — in
 the sandbox or on the host — so a sleep costs nothing against them, however long it lasts.
-A sandbox sleep is not a suspension either, so `max_suspensions` does not count it; what bounds a sandbox that sleeps
-in a loop is the host's own turn deadline (`request_timeout` for the pools), reached after at most
-`sleep_system_max` per iteration.
+A sandbox sleep is not a suspension either, so `max_suspensions` does not count it; it is charged to
+`max_total_sleep` instead, the cumulative time the sandbox may sleep itself, and a sleep that would take the total
+over is refused before it waits with an uncatchable `TimeoutError: sleep limit exceeded: <total> > <limit>` — the
+Rust `Duration` debug renderings, e.g. `1.5s > 1s`. Without that limit a sandbox that sleeps in a loop ends on the
+host's own turn deadline (`request_timeout` for the pools), reached after at most `sleep_system_max` per iteration.
 Under `call_host` each sleep is one suspension (two when an `asyncio.sleep()` answered with a future is awaited
-later), so `max_suspensions` (default 1000) bounds it as well.
+later), so `max_suspensions` (default 1000) bounds it as well, and `max_total_sleep` does not apply.
 See [resource_limits.md](resource_limits.md).
 
 ## `time.sleep()` arguments

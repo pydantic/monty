@@ -36,6 +36,7 @@ hello world
 | `--gc-interval`         | Run garbage collection every N allocations                                                                                                               |
 | `--max-suspensions`     | Maximum suspensions serviced, per run or across a whole interactive session (default 1000); [what counts](resource-limits.md#suspensions)                |
 | `--max-sleep`           | Longest wait a `time.sleep()` or `asyncio.sleep()` performs inside the sandbox, in seconds; longer sleeps are cut short (default 10, `inf` for no limit) |
+| `--max-total-sleep`     | Maximum cumulative time the sandbox spends in those sleeps, in seconds; a sleep that would go over is refused                                            |
 | `--version`             | Print the version                                                                                                                                        |
 
 See [resource limits](resource-limits.md) for what the limits actually bound.

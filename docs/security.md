@@ -318,8 +318,10 @@ See [random](limitations/random.md).
 Gathered `asyncio.sleep()` calls overlap: the sandbox's scheduler runs the other tasks while a sleep is pending.
 
 A wait costs nothing against the duration limits, which measure execution time and stop while the sandbox waits,
-and a sandbox wait is not a suspension either, so what bounds a session that sleeps in a loop is your own turn
-deadline (`request_timeout` for the pools), reached after at most `sleep_system_max` per iteration.
+and a sandbox wait is not a suspension either: what bounds a session that sleeps in a loop is `max_total_sleep_secs`,
+the cumulative time the sandbox may sleep itself (a sleep that would go over is refused with an uncatchable
+`TimeoutError`), and your own turn deadline (`request_timeout` for the pools), reached after at most
+`sleep_system_max` per iteration.
 See [resource limits](resource-limits.md).
 
 The session's `sleep` setting chooses otherwise: `'call_host'` sends both calls to your `os=` handler, which decides

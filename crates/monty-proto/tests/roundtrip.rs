@@ -565,10 +565,12 @@ fn resource_limits_round_trip() {
         gc_interval: Some(100),
         max_recursion_depth: 50,
         max_suspensions: 7,
+        max_total_sleep: Some(Duration::from_secs(30)),
     };
     let back = ResourceLimits::from(pb::ResourceLimits::from(&limits));
     assert_eq!(back.max_feed_duration, limits.max_feed_duration);
     assert_eq!(back.max_turn_duration, limits.max_turn_duration);
+    assert_eq!(back.max_total_sleep, limits.max_total_sleep);
     assert_eq!(back.max_memory, limits.max_memory);
     assert_eq!(back.gc_interval, limits.gc_interval);
     assert_eq!(back.max_recursion_depth, limits.max_recursion_depth);

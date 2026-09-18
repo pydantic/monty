@@ -127,9 +127,8 @@ pub fn unix_seconds(utc: NaiveDateTime) -> f64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SleepMode {
     /// Wait in the sandbox, each call cut to the maximum given (a longer
-    /// request is cut short, not refused). The wait is not execution time
-    /// and not a suspension, so only the host's turn deadline bounds a loop
-    /// of them.
+    /// request is cut short, not refused). The wait is not execution time;
+    /// `ResourceLimits::max_total_sleep` bounds the sum of them.
     System(Duration),
     /// Suspend to the host, which performs (or declines) the wait.
     CallHost,
