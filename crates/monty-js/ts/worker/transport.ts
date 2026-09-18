@@ -47,6 +47,13 @@ function flushIntervalMs(interval: number): number {
 
 /** Resource limits mirrored from the napi pool; the transport enforces `maxSuspensions`. */
 export interface ResourceLimits {
+  /**
+   * @deprecated Removed: it capped a whole session, which neither replacement
+   * does, so there is no value to carry over. Pick `maxFeedDurationSecs` or
+   * `maxTurnDurationSecs`. Declared `never` so a stale key still fails to
+   * compile rather than being silently dropped at the boundary.
+   */
+  maxDurationSecs?: never
   maxFeedDurationSecs?: number
   maxTurnDurationSecs?: number
   maxMemory?: number
