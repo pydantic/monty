@@ -117,6 +117,8 @@ Both put host values in front of the sandbox, but they differ in *when*:
 | Missing name | not applicable                   | `NameError` in the sandbox    |
 
 A name present in both is served by the eager `inputs` binding.
+Lookup only runs for undefined names; it does not override builtins.
+See [host-function proxies](limitations/host-values.md#host-function-proxies) for caching and rebinding rules.
 
 Pass host functions through `external_lookup`.
 A callable in `inputs` binds only a reference carrying the callable's `__name__`, and calling it resolves *that* name
@@ -166,25 +168,9 @@ Return values must be types Monty can represent — the same set `inputs` and `e
 Arguments come the other way, out of the sandbox.
 A sandbox-defined class instance arrives as a read-only [`MontyClassProxy`][pydantic_monty.MontyClassProxy]; see
 [host objects](host-objects.md#sandbox-instances).
-A sandbox value with no host equivalent arrives silently as a *string* rather than raising: the repr of a sandbox
-class object, function or compiled `re` pattern, or the bare name of a host function handed back in.
-A host function cannot tell it from a sandbox `str` of the same text.
-
-A return value Monty cannot represent does not raise [`MontyConversionError`][pydantic_monty.MontyConversionError].
-It is delivered into the sandbox as `TypeError: Cannot convert X to Monty value`, which sandboxed code can catch;
-uncaught, it reaches you as [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError].
-The same is true of an `os=` callback's return value.
-`MontyConversionError` is for host values you hand over up front, in `inputs` or `external_lookup`.
-
-A wire frame, the value plus its envelope, is capped at 256 MiB; exceeding it fails the call without crashing the
-worker.
-The wire imposes no nesting limit, but a sandbox value nested deeper than the interpreter's recursion limit arrives
-truncated; see
-[values crossing the process boundary](limitations/pool-architecture.md#values-crossing-the-process-boundary).
-An object referenced twice (`f(x, x)`, or a returned `[x, x]`) reaches the other side as one object twice, as it would
-in CPython.
-A cyclic value cannot cross: returning one from a host function raises `Circular reference detected` in the sandbox,
-a `ValueError` from Python and a `TypeError` from JavaScript.
+Not every value crosses unchanged: unsupported sandbox values become strings, and cycles and deeply nested values
+are truncated.
+See [host-value limitations](limitations/host-values.md) for conversion failures, identity rules and size caps.
 
 ## Raising into the sandbox
 
@@ -242,6 +228,8 @@ sandbox, so sandboxed code can catch it:
 If the sandbox does not catch it, `feed_run` raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] with the sandbox traceback.
 Only [the exception types Monty implements](limitations/index.md) can cross; the type name is what carries over, not your
 exception class.
+JavaScript uses `error.name`; an unrecognised name becomes `RuntimeError`.
+Host tracebacks are not preserved.
 
 ## Async host functions
 

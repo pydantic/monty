@@ -404,7 +404,8 @@ Two more properties of the worker boundary matter:
     Wire decoding validates values and enforces allocation budgets before growing decoded buffers.
     Generated repeated fields, including empty traceback entries and print segments, share the value decoder's budget.
     A worker that violates the protocol is discarded.
-    See the [wire limits](limitations/pool-architecture.md) for what the per-frame budget counts and excludes.
+    See the [protocol allocation budget](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted)
+    for what the per-frame budget counts and excludes.
 
 From Rust, this is why [`monty-pool`](quickstart/rust.md) is the recommended entry point rather than the in-process
 `monty` crate.

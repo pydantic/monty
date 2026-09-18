@@ -84,7 +84,11 @@ Instead of driving a snippet to completion it hands control back at every suspen
 
 In JavaScript those are separate methods: `resume(value)`, `resumeError(err)` and `resumeFuture()`.
 
-Each snapshot resumes at most once.
+A snapshot refers to the worker's current suspension; it does not own an independent copy of the execution state.
+Only one suspension is live per session.
+Resuming twice or feeding while suspended raises `RuntimeError` in Python.
+JavaScript throws `Error` for a second resume and `ProtocolError` when feeding while suspended.
+To branch execution, dump the snapshot and restore it into separate sessions.
 
 ### Tracing manual handlers
 
@@ -93,7 +97,9 @@ Python snapshots expose [`trace_context()`][pydantic_monty.FunctionSnapshot.trac
 Both return a standard OpenTelemetry `Context`, preserving baggage and other entries captured at feed/load entry and
 replacing its span with the suspension's span when Monty tracing is enabled.
 The returned context does not depend on which thread or task later calls the method.
-Without Monty tracing the methods return the captured context unchanged.
+Without Monty tracing, including on Browser/WASM, the methods return the captured context unchanged.
+If JavaScript context composition fails, `traceContext()` returns the captured context and reports the error through
+OpenTelemetry's `diag.warn`; disabled tracing does not produce a warning.
 Python's method requires `opentelemetry-api` and raises `ImportError` if it is not installed.
 
 Activate the returned context through OTel to nest host tracing under the suspension:
@@ -185,13 +191,14 @@ along the way:
     console.log(snapshot.output) // hello Ada!
     ```
 
-`external_lookup` and `os` passed to `feed_start` are captured **for `resume_auto()` only**.
-The initial drive still surfaces every external call and name lookup as a snapshot, and a plain `resume(...)` ignores
-them.
+`external_lookup`, `os` and mounts are fixed for the feed and used only by `resume_auto()`.
+`feed_start` still returns each suspension; plain `resume(...)` answers it without consulting those handlers.
 
 ## Storing and restoring
 
 `snapshot.dump()` serializes the paused worker.
+If the serialized state exceeds the 256 MiB message cap, `dump()` raises `RuntimeError` without changing the session;
+a suspended session remains resumable.
 A fresh session's `load_snapshot` restores it and returns the snapshot to resume:
 
 === "Python"
@@ -280,6 +287,10 @@ feeding:
     }
     ```
 
+Once restoration is attempted, a failure, including using the wrong loader for a dump's kind, discards the worker.
+Check out a fresh session rather than retrying on the failed one.
+Calling a loader after a feed or a previous load is rejected before restoration, leaving the existing session usable.
+
 ## What restoring does and does not carry
 
 - **The dump carries its own configuration.** `script_name`, resource limits and type-check state come from the dump,
@@ -288,13 +299,15 @@ feeding:
     come back as [`MontyClassProxy`][pydantic_monty.MontyClassProxy] (a host class, `type(x)` included, as [`MontyClassTypeProxy`][pydantic_monty.MontyClassTypeProxy] in Python and as a plain
     `{ __monty_type__: 'Type', ... }` marker in JavaScript), method calls on them
     raise `RuntimeError`, lazy attributes raise `AttributeError`, and [`ClassType`][pydantic_monty.ClassType] construction raises `RuntimeError`.
-    See [`limitations/pool-architecture.md`](limitations/pool-architecture.md#host-api-behaviour-notes).
+    See [host objects](host-objects.md#snapshots).
 - **The accumulated time budget travels with the dump**, so a restored session resumes where it left off rather than
     getting a fresh budget.
 - **Only the suspension limit travels.** A restored session keeps `max_suspensions`, but the pool resets its count to
     zero, and a `max_suspensions` set on the restoring `checkout()` caps the dump's.
 - **Mounts do not travel.** Host paths are never part of a dump.
-    Pass the same `mount=` to `load_snapshot`, or the restored feed's filesystem calls degrade into unhandled OS calls.
+    Pass the same `mount=` to `load_snapshot`; Monty cannot check whether mounts were omitted or changed.
+    Uncovered calls fall through to `os=` or the sandbox's no-handler error.
+    A dump suspended on an OS call re-announces that call, so a newly supplied mount can answer it.
     Any `'overlay'` writes made before the dump are gone — the restored overlay starts empty.
 - **A restored [`FutureSnapshot`][pydantic_monty.FutureSnapshot] cannot be driven with `resume_auto()`.** Its pending coroutines lived in the previous
     process.

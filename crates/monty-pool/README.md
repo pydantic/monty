@@ -100,12 +100,22 @@ Invalid snapshots have no correctness or availability guarantees.
   ([`monty-alloc`](https://crates.io/crates/monty-alloc)) plus 4 MB of headroom (32 MB with
   type checking), rather than letting a worker grow the host until the OOM killer
   intervenes. Exceeding it, or a refused allocation, exits the worker with a dedicated code
-  so it is reported as `PoolError::Runtime`/`MemoryError` instead of an unclassifiable
-  abort — the one `Runtime` error whose worker does not survive.
+  so it is reported as `PoolError::Runtime`/`MemoryError` instead of an unclassifiable abort.
+  The worker is already dead when the host receives this error.
 
-Runtime errors inside the sandbox (`PoolError::Runtime`) are not crashes: the worker and its
-session remain alive and usable — the one exception being the `MemoryError` above, raised for
-a worker that has already exited.
+Ordinary sandbox exceptions leave the session usable.
+After a soft memory or time limit, the worker survives but the heap has no correctness guarantees.
+A spent cumulative `max_duration` budget makes later feeds fail; after a soft memory limit, later feeds may succeed.
+Discard the session in either case.
+A failed restore also discards the worker.
+
+Timeouts kill the single worker PID, not a process group; the Monty sandbox must never spawn subprocesses.
+A remote CPython worker needs deployment-level process teardown instead.
+The duration backstop trusts the worker's reported execution time: under-reporting can stretch each turn to the
+full budget plus grace, but `request_timeout` applies independently.
+Both deadlines are polled, so decoding a large reply can delay enforcement.
+Host mount I/O runs between turns and is not covered by either deadline; see
+[filesystem timeouts](https://github.com/pydantic/monty/blob/main/docs/filesystem.md#io-timeouts-and-cancellation).
 
 ## Observability
 
@@ -183,6 +193,13 @@ input so adapters that do not support metrics continue to work.
   `User-Agent: monty-pool/<version>`, and with the `telemetry` feature the `traceparent`
   (and `tracestate`) of `CheckoutOptions::telemetry`, so server-side spans join the
   caller's trace; a `connect_headers` entry of the same name replaces either.
+
+A WebSocket connection lost mid-session reports `PoolError::Disconnected`; it cannot distinguish a worker crash
+from a server policy drop.
+A draining server can instead return `PoolError::Shutdown` with an optional session dump.
+The interrupted request did not run, but restoring a suspended dump repeats its host call, which may already have
+had side effects; callbacks used this way should be idempotent.
+A local subprocess claiming shutdown is a protocol violation.
 
 ## Monty crates
 

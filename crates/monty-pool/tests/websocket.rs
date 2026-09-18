@@ -927,10 +927,9 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
 /// serviced inside the turn, so a worker that simply runs too long before
 /// announcing it is killed by the deadline exactly as without mounts.
 ///
-/// Servicing a covered call is now a separate turn with its own deadline (see
-/// "Mount I/O is not covered by `request_timeout`" in
-/// limitations/pool-architecture.md), so a *loop* of covered calls is bounded
-/// by `max_duration`, not by `request_timeout`.
+/// Each resume starts a new deadline; `max_duration` bounds cumulative worker
+/// time across a loop of calls. Neither limit covers the host I/O itself; see
+/// docs/filesystem.md#io-timeouts-and-cancellation.
 #[tokio::test]
 async fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
     let dir = tempfile::tempdir().unwrap();

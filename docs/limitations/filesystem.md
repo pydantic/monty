@@ -31,9 +31,9 @@ Each mount is configured by the host as one of:
 
 Reading, writing, appending to, or `open()`ing a path that resolves to an
 existing **non-regular file** (FIFO/named pipe, socket, device node) raises
-`PermissionError`. CPython would block until a peer appears; mount I/O runs on
-the host thread driving the sandbox, so it must never block on
-sandbox-reachable input. Directories raise `IsADirectoryError` as in CPython.
+`PermissionError`. CPython can open these files and may block waiting for a peer.
+Mount I/O must not wait for a peer controlled by sandbox code.
+Directories raise `IsADirectoryError` as in CPython.
 Existence checks (`exists`, `is_file`, `is_dir`, `is_symlink`) and `stat()`
 still work on special files.
 
@@ -62,6 +62,8 @@ Consequences of the shared budget that have no CPython analogue:
     the budget is exhausted.
 - The `monty` CLI's `-m` mounts always use the default limit; there is no CLI
     flag to change it.
+- Raising the budget above 256 MiB can hit the [message size cap](host-values.md#message-size):
+    a mounted read whose result is too large raises `RuntimeError` inside the sandbox.
 
 ## Write limits
 
@@ -213,7 +215,8 @@ the attempt fails with `ERROR_SHARING_VIOLATION`. Unix is unaffected. The
 window is the mount's lifetime, which for `pydantic_monty` and
 `@pydantic/monty` is the lifetime of the mount object, not one feed. Close it
 ([`MountDir.close()`][pydantic_monty.MountDir.close], or the `with` / `using` block) to release the directory
-before the host touches it (see [pool-architecture.md](pool-architecture.md)).
+before the host touches it.
+An in-flight feed retains its own reference until it ends.
 
 ### A mount follows its directory, not its path
 
@@ -285,6 +288,6 @@ escapes. That matches CPython, and reveals nothing about the target.
 
 `open()` and pathlib I/O do not keep an OS handle alive between calls; each
 `read`/`write` is a separate one-shot host operation. This is what makes
-subprocess dump/load safe (see [pool-architecture.md](pool-architecture.md)), and it means
+[snapshots](../snapshots.md) possible, and it means
 external processes can observe partial state between writes. See the design
 note in [open.md](open.md).

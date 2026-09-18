@@ -121,6 +121,8 @@ Two host-side backstops cover that:
 
 Set `max_duration_secs` for untrusted code that may suspend repeatedly; `request_timeout` alone does not bound the
 overall call.
+These deadlines are polled: synchronous host telemetry callbacks and decoding a large reply can delay enforcement.
+Neither deadline covers [host mount I/O](filesystem.md#io-timeouts-and-cancellation).
 
 ## Recursion
 
@@ -160,7 +162,7 @@ caps the dump's, so a worker cannot report a looser one.
     a 1,024-copy cap on `finally` expansion that raises `SyntaxError`).
     A host accepting untrusted source should still isolate compilation, as the subprocess and WebAssembly runtimes do.
 - **Protocol decoding.** Protobuf frames have a separate cumulative allocation budget, covering generated messages
-    and decoded values before allocation; see [wire limits](limitations/pool-architecture.md).
+    and decoded values before allocation; see [message limits](limitations/host-values.md#message-size).
     It applies per frame, not to total host memory or subsequent host conversions.
 - **Print collectors.** [`CollectString`][pydantic_monty.CollectString] and [`CollectStreams`][pydantic_monty.CollectStreams] live in the host process, so their 10 MiB default cap is
     separate from `max_memory`.

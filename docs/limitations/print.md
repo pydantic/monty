@@ -82,6 +82,14 @@ What the setting still decides there is how that output is *split* — one print
 callback per frame, and a collector charges its cap per frame — so a snippet
 that hangs or is killed yields nothing either way.
 
+## Callback failures
+
+In the Python and JavaScript pool APIs, a print callback that raises aborts the feed after the current protocol turn,
+not at the offending `print()`.
+Sandboxed code cannot catch the callback's exception.
+If the turn suspended, both bindings discard the session; later feeds on it fail.
+Check out a fresh session before running more code.
+
 ## CollectString / CollectStreams caps
 
 `CollectString` and `CollectStreams` (Rust `PrintWriter` variants and the

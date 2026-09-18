@@ -38,7 +38,9 @@ for the schema and the protocol rules documented alongside it.
   Versioned independently of the monty package: peers on different releases
   interoperate as long as their protocol versions overlap. There is no in-band
   negotiation, so a child rejecting a version reports its range in the
-  `FatalError` for the parent to downgrade to.
+  `FatalError` for the parent to downgrade to, then exits non-zero.
+  Version `0` is always rejected; `monty_version` is diagnostic metadata, not a compatibility check.
+  Snapshot compatibility is checked separately using the dump-format version.
 - `python` (cargo feature, off by default) — the `python` module: PyO3-based
   conversions between live Python objects and `MontyObject`/`MontyException`,
   used by the `pydantic-monty-client` extension module. The feature pulls in `pyo3` (but never its
@@ -69,9 +71,31 @@ untrusted input: conversions from proto to Rust are fallible by design,
 decoding enforces a per-frame decode budget and validates every arena index,
 and nothing in this crate panics on malformed wire data.
 
-Decode protocol types through `decode_frame` or `FrameReader::read`, which manage the per-frame allocation budget automatically.
-Raw `Message::decode` calls fail if they attempt an allocation without a frame budget.
-See [wire limits](https://github.com/pydantic/monty/blob/main/docs/limitations/pool-architecture.md) for the budget's scope.
+Decode protocol types through `decode_frame` or `FrameReader::read`.
+These functions manage the per-frame allocation budget automatically.
+Direct `Message::decode` calls on these types fail if they allocate payload storage without a frame budget.
+
+Frames are capped at 256 MiB, with a separate fixed 1 GiB budget for cumulative decoded allocation requests.
+This budget is independent of the session's `max_memory`.
+Compact messages can require much more memory when decoded.
+The budget covers arena slots, repeated-field capacity, strings, byte buffers, boxed payloads and BigInt storage.
+Temporary protobuf buffers and conversions into domain nodes share this budget.
+Child references include an allowance for host container storage; shared sub-objects are encoded once.
+Growth charges the full replacement allocation, with no refunds for discarded payloads.
+A frame can therefore exceed the budget even if its final decoded value occupies less than 1 GiB.
+The receiver checks the budget before allocating payload storage.
+
+The wire buffer, bounded stack and error storage, allocator metadata and subsequent host conversions are not counted.
+Each concurrent decode has its own budget; this is not a process-memory limit.
+See `DEFAULT_MAX_DECODE_BYTES` in `src/frame.rs` for the accounting contract.
+The browser component uses separate decoded-value estimates for WIT arenas, with the same 1 GiB ceiling.
+Those checks do not account for all allocations made by the component ABI or JavaScript conversion.
+
+Invalid dates, timedeltas, exception names and other semantic values are rejected after parsing each protobuf node.
+The browser component validates semantic values while converting WIT arenas.
+A parent receiving an invalid frame discards the worker with a protocol error.
+A worker receiving such a malformed request reports `RuntimeError("protocol violation: malformed request: ...")`
+and keeps the session.
 
 ## Worker state machine
 
