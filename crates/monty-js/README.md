@@ -259,6 +259,32 @@ while (!(snap instanceof MontyComplete)) {
 console.log(snap.output) // 'hello Ada!'
 ```
 
+For manual handlers, all three snapshot types expose `traceContext()`, returning an OpenTelemetry `Context`.
+Use the standard OTel API to nest host tracing under the suspension:
+
+```ts
+import { context } from '@opentelemetry/api'
+import { FunctionSnapshot, Monty, MontyComplete } from '@pydantic/monty'
+
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+const snapshot = await session.feedStart('greet(name)', { inputs: { name: 'Ada' } })
+if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
+const result = await context.with(snapshot.traceContext(), async () => `hello ${snapshot.args[0]}`)
+const done = await snapshot.resume(result)
+if (!(done instanceof MontyComplete)) throw new Error('expected completion')
+console.log(done.output) // hello Ada
+```
+
+With [Monty instrumentation](#observability) enabled, the method adds the suspension's span to the context captured at
+`feedStart` / `loadSnapshot`, preserving baggage and other entries.
+Without Monty tracing, including on Browser/WASM, it returns that captured context unchanged.
+Context is not serialized: restoring captures the restoring caller's context instead.
+Use an SDK-configured OTel context manager to propagate context across awaits.
+The method does not activate the context, resume execution, or own the span's lifetime.
+Calling it after resume throws; contexts retrieved earlier remain usable, but resuming still ends the suspension span.
+`resumeAuto()` already activates the suspension span around callbacks.
+
 Calls and lookups routed to a wrapped host object carry the receiver's id:
 `FunctionSnapshot.objectId` is set for a method call on a `ClassInstance`
 (or a static method / `__call__` construction on a `ClassType`), and
@@ -373,6 +399,11 @@ await session.feedRun('import os\nos.getenv("HOME")', {
   os: (name, args) => (name === 'os.getenv' && args[0] === 'HOME' ? '/home/user' : NOT_HANDLED),
 })
 ```
+
+An `async` callback works too. Its answer to `asyncio.sleep` is registered as a
+future, so the sandbox's other tasks run while it waits (or, when there are
+none, is awaited in place like an eager host function); its answer to any other
+OS call is awaited before that session resumes.
 
 Callback-backed virtual files return a `MontyFileHandle` marker from the
 open-time call. Paths are virtual POSIX sandbox paths and `position` defaults

@@ -283,16 +283,20 @@ def test_abstract_os_dispatch_not_handled():
             raise NotImplementedError
 
     fs = PartialOS()
-    result = fs('Path.exists', (PurePosixPath('/tmp'),), {})
+    result = fs(name='Path.exists', args=(PurePosixPath('/tmp'),), kwargs={}, is_async=False)
 
     assert result is NOT_HANDLED
 
 
 def test_abstract_os_dispatch_not_handled_falls_back_in_run(monty_run: RunMonty):
-    """Returning NOT_HANDLED from dispatch() uses Monty's default fallback error."""
+    """Returning NOT_HANDLED from dispatch() uses Monty's default fallback error.
+
+    The override keeps the three-argument signature `dispatch` had before
+    `is_async`, which must go on working.
+    """
 
     class PartialOS(TestOS):
-        def dispatch(
+        def dispatch(  # pyright: ignore[reportIncompatibleMethodOverride]
             self,
             function_name: pydantic_monty.OsFunction,
             args: tuple[object, ...],

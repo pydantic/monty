@@ -7,11 +7,11 @@ use monty_proto::{
     named_values_to_proto, os_call_from_proto, os_call_to_proto, pb,
 };
 use monty_types::{
-    CodeLoc, CompileOptions, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs, MontyDate,
-    MontyDateTime, MontyException, MontyFileHandle, MontyGraph, MontyNode, MontyObject, MontyPath, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues, NodeId, OpenCallArgs,
-    OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame,
-    UnicodeErrorData, UrandomArgs,
+    CodeLoc, CompileOptions, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MAX_SLEEP_SECONDS,
+    MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyGraph, MontyNode, MontyObject,
+    MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues, NodeId,
+    OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame,
+    UnicodeErrorData, UrandomArgs, sleep_duration, sleep_duration_saturating,
 };
 use num_bigint::BigInt;
 use prost::Message;
@@ -767,7 +767,7 @@ fn invalid_arenas_are_rejected() {
 #[track_caller]
 fn assert_os_call_round_trip(call: OsFunctionCall) {
     let expected = format!("{call:?}");
-    let bytes = os_call_to_proto(3, call).encode_to_vec();
+    let bytes = os_call_to_proto(3, call, false).encode_to_vec();
     let decoded = decode_frame::<pb::OsCall>(bytes.as_slice()).expect("wire bytes -> OsCall failed");
     let (call_id, back) = os_call_from_proto(decoded).expect("wire call -> OsFunctionCall failed");
     assert_eq!(call_id, 3);
@@ -831,6 +831,15 @@ fn os_calls_round_trip_all_variants() {
             name: Some("CET".to_owned()),
         })),
         OsFunctionCall::Urandom(UrandomArgs { size: 2496 }),
+        OsFunctionCall::Time,
+        OsFunctionCall::Sleep(Duration::ZERO),
+        OsFunctionCall::Sleep(Duration::from_nanos(1)),
+        OsFunctionCall::Sleep(Duration::from_millis(1_500)),
+        OsFunctionCall::AsyncSleep(Duration::ZERO),
+        OsFunctionCall::AsyncSleep(Duration::from_secs_f64(0.25)),
+        // the longest length either sleep accepts survives the f64 seconds on the wire
+        OsFunctionCall::Sleep(sleep_duration(MAX_SLEEP_SECONDS).unwrap()),
+        OsFunctionCall::AsyncSleep(sleep_duration_saturating(f64::INFINITY).unwrap()),
     ] {
         assert_os_call_round_trip(call);
     }
@@ -850,6 +859,37 @@ fn os_call_urandom_size_above_i64_converts_exactly() {
     assert_eq!(args.kwargs().count(), 0);
     let args = OsFunctionCall::Urandom(UrandomArgs { size: 2496 }).to_args();
     assert_eq!(args.arg(0).unwrap(), MontyObject::int(2496));
+}
+
+/// A child that lies about a sleep length is refused rather than handed on: a
+/// host would convert these to its own duration type, and the obvious
+/// conversions panic on all three.
+#[test]
+fn os_call_conversion_rejects_impossible_sleep_lengths() {
+    for seconds in [f64::NAN, -1.0, f64::INFINITY, 1e18] {
+        let sleep = pb::os_call::Call::Sleep(pb::os_call::Sleep { seconds });
+        assert!(
+            matches!(
+                OsFunctionCall::try_from(sleep),
+                Err(ProtoConvertError::InvalidValue {
+                    field: "Sleep.seconds",
+                    ..
+                })
+            ),
+            "{seconds} should not decode as a sleep length"
+        );
+        let async_sleep = pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep { delay: seconds });
+        assert!(
+            matches!(
+                OsFunctionCall::try_from(async_sleep),
+                Err(ProtoConvertError::InvalidValue {
+                    field: "AsyncSleep.delay",
+                    ..
+                })
+            ),
+            "{seconds} should not decode as an async sleep delay"
+        );
+    }
 }
 
 #[test]
@@ -880,6 +920,7 @@ fn os_call_conversion_rejects_invalid_payloads() {
     let getenv = |values| pb::OsCall {
         call_id: 1,
         values,
+        allow_eager_await: false,
         call: Some(pb::os_call::Call::Getenv(pb::os_call::Getenv {
             key: "HOME".to_owned(),
             default: 1,

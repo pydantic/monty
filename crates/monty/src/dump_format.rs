@@ -10,6 +10,7 @@
 use std::{error::Error, fmt, mem::size_of};
 
 use monty_types::TypeCheckState;
+use postcard::ser_flavors::Flavor;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -22,14 +23,22 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 
 /// Version of the dump's postcard schema.
 ///
-/// Bump this whenever a serialized discriminant can shift, so older dumps are
+/// Bump this for every release where a serialized discriminant can shift, so older dumps are
 /// rejected instead of decoding as their neighbour. That covers the
 /// interpreter's own types *and* everything reachable from [`Dump`] — notably
 /// [`TypeCheckingConfig`](monty_types::TypeCheckingConfig) in `monty-types`.
+///
+/// Before bumping, check there's already been a bump since the last release - multiple bumps
+/// between releases is unnecessary and can lead to confusion.
 pub const DUMP_VERSION: u16 = 11;
 
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
+
+/// Initial payload capacity for [`dump`]. A fresh idle session dumps to ~130
+/// bytes and one suspended on a host call to ~480, so this never over-allocates
+/// meaningfully and skips the first few `Vec` doublings.
+const MIN_PAYLOAD_CAPACITY: usize = 200;
 
 /// Serializes a live session and its metadata into a versioned dump, readable
 /// by [`Dump::load`].
@@ -52,16 +61,41 @@ pub fn dump(
         state: SessionRef<'a>,
     }
 
-    let payload = postcard::to_allocvec(&DumpRef {
+    let mut bytes = Vec::with_capacity(HEADER_LEN + MIN_PAYLOAD_CAPACITY);
+    bytes.extend_from_slice(MAGIC);
+    bytes.extend_from_slice(&DUMP_VERSION.to_le_bytes());
+    // the payload is written after the header in place: no second buffer to copy it into
+    let dump = DumpRef {
         script_name,
         type_check,
         state,
-    })?;
-    let mut bytes = Vec::with_capacity(HEADER_LEN + payload.len());
-    bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&DUMP_VERSION.to_le_bytes());
-    bytes.extend_from_slice(&payload);
-    Ok(bytes)
+    };
+    postcard::serialize_with_flavor(&dump, PrefixedVec(bytes))
+}
+
+/// Postcard output flavor appending to a `Vec` that already holds the dump
+/// header. `postcard::to_extend` does the same through `Extend`, which
+/// benchmarks ~10% slower than `Vec::push`/`extend_from_slice`.
+struct PrefixedVec(Vec<u8>);
+
+impl Flavor for PrefixedVec {
+    type Output = Vec<u8>;
+
+    #[inline]
+    fn try_extend(&mut self, data: &[u8]) -> postcard::Result<()> {
+        self.0.extend_from_slice(data);
+        Ok(())
+    }
+
+    #[inline]
+    fn try_push(&mut self, data: u8) -> postcard::Result<()> {
+        self.0.push(data);
+        Ok(())
+    }
+
+    fn finalize(self) -> postcard::Result<Self::Output> {
+        Ok(self.0)
+    }
 }
 
 /// A complete REPL session snapshot: the interpreter state plus the

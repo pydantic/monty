@@ -86,6 +86,63 @@ In JavaScript those are separate methods: `resume(value)`, `resumeError(err)` an
 
 Each snapshot resumes at most once.
 
+### Tracing manual handlers
+
+Python snapshots expose [`trace_context()`][pydantic_monty.FunctionSnapshot.trace_context]; JavaScript snapshots expose
+`traceContext()`.
+Both return a standard OpenTelemetry `Context`, preserving baggage and other entries captured at feed/load entry and
+replacing its span with the suspension's span when Monty tracing is enabled.
+The returned context does not depend on which thread or task later calls the method.
+Without Monty tracing the methods return the captured context unchanged.
+Python's method requires `opentelemetry-api` and raises `ImportError` if it is not installed.
+
+Activate the returned context through OTel to nest host tracing under the suspension:
+
+=== "Python"
+
+    ```python
+    from opentelemetry import context
+
+    from pydantic_monty import FunctionSnapshot, Monty, MontyComplete
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            snapshot = session.feed_start('greet(name)', inputs={'name': 'Ada'})
+            assert isinstance(snapshot, FunctionSnapshot)
+            token = context.attach(snapshot.trace_context())
+            try:
+                greeting = f'hello {snapshot.args[0]}'
+            finally:
+                context.detach(token)
+            result = snapshot.resume({'return_value': greeting})
+            assert isinstance(result, MontyComplete)
+            print(result.output)
+            #> hello Ada
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { context } from '@opentelemetry/api'
+    import { FunctionSnapshot, Monty, MontyComplete } from '@pydantic/monty'
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    const snapshot = await session.feedStart('greet(name)', { inputs: { name: 'Ada' } })
+    if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
+    const result = await context.with(snapshot.traceContext(), async () => `hello ${snapshot.args[0]}`)
+    const done = await snapshot.resume(result)
+    if (!(done instanceof MontyComplete)) throw new Error('expected completion')
+    console.log(done.output) // hello Ada
+    ```
+
+Python's `attach` / `detach` must run in the same thread or async task; an `await` between them is supported.
+JavaScript requires an SDK-configured context manager to propagate context across awaits.
+The methods do not activate the context or resume execution.
+Calling them after resume raises; contexts retrieved earlier remain usable but do not keep the suspension span open.
+Context is not serialized: restoring captures the restoring caller's context instead.
+`resume_auto()` / `resumeAuto()` already activate the suspension span around callbacks.
+
 ### Driving automatically
 
 To iterate to completion without answering each suspension by hand, pass an `external_lookup` (and an `os=` handler if
@@ -251,7 +308,8 @@ feeding:
 
 [`AsyncMonty`][pydantic_monty.AsyncMonty] sessions expose the same `feed_start`, `load_session`, `load_snapshot` and `dump`, with awaitable
 `resume(...)` and `resume_auto()`.
-A coroutine host function answered by `resume_auto()` is awaited directly when the snapshot's `allow_eager_await` is true,
+A coroutine host function, or a coroutine answer to `asyncio.sleep()`, is awaited directly by `resume_auto()` when the
+snapshot's `allow_eager_await` is true,
 which it is for a call that is awaited immediately while no other sandbox task can run and no external future is pending.
 Otherwise it is awaited concurrently: `resume_auto()` yields an [`AsyncFutureSnapshot`][pydantic_monty.AsyncFutureSnapshot] whose
 `resume_auto()` settles the pending coroutines.

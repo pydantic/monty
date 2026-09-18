@@ -101,7 +101,7 @@ A few integer operations carry their own caps regardless of `max_memory`:
 
 - The clock runs only while the interpreter executes bytecode.
 - It is paused while execution is suspended waiting on the host — a [host function](host-functions.md) that takes a
-    minute costs nothing.
+    minute costs nothing, and neither does a `time.sleep()` your `os=` handler waited out.
 - It accumulates across `feed_run` calls for the life of the session.
 - It is serialized into [snapshots](snapshots.md), so a restored session resumes its budget rather than restarting from
     zero.
@@ -138,7 +138,7 @@ could abort the process.
 ## Suspensions
 
 `max_suspensions` counts external calls, host-object method calls and construction, lazy attribute lookups, `os`
-callbacks, name lookups and future-resolution events.
+callbacks (the sleeps among them), name lookups and future-resolution events.
 These host round trips are outside `max_memory`; each [`ClassType`](host-objects.md) construction with `init=True` also
 adds an instance-store entry.
 Because `max_duration_secs` pauses during suspensions, a snippet could otherwise retry rejected calls indefinitely.

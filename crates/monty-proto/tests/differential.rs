@@ -530,10 +530,12 @@ fn hand_call_payloads_match_generated_encoding() {
             key: "HOME".to_owned(),
             default: default.clone(),
         }),
+        false,
     );
     let generated_os = oracle::OsCall {
         call_id: 7,
         values: Some(to_oracle(&default.graph)),
+        allow_eager_await: false,
         call: Some(oracle::os_call::Call::Getenv(oracle::os_call::Getenv {
             key: "HOME".to_owned(),
             default: default.root.0,
@@ -550,6 +552,7 @@ fn hand_call_payloads_match_generated_encoding() {
     let hand_now = pb::OsCall {
         call_id: 9,
         values: None,
+        allow_eager_await: false,
         call: Some(pb::os_call::Call::DateTimeNow(pb::os_call::DateTimeNow {
             tz: Some(pb::TimeZone {
                 offset_seconds: 3600,
@@ -560,6 +563,7 @@ fn hand_call_payloads_match_generated_encoding() {
     let generated_now = oracle::OsCall {
         call_id: 9,
         values: None,
+        allow_eager_await: false,
         call: Some(oracle::os_call::Call::DateTimeNow(oracle::os_call::DateTimeNow {
             tz: Some(oracle::TimeZone {
                 offset_seconds: 3600,

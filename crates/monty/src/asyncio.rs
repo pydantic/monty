@@ -138,6 +138,10 @@ pub(crate) struct ExternalFuture {
     pub call_id: CallId,
     /// Current state.
     pub state: ExternalFutureState,
+    /// `asyncio.sleep(delay, result)`: the value to resolve with in place of
+    /// the host's, which is only the wake-up signal. Owned; taken on
+    /// resolution and released on failure or when the entry is freed.
+    pub sleep_result: Option<Value>,
 }
 
 /// State machine for [`ExternalFuture`].
@@ -155,10 +159,11 @@ pub(crate) enum ExternalFutureState {
 
 impl ExternalFuture {
     /// Creates a new `ExternalFuture` in the `Pending` state with no awaiter.
-    pub fn new_pending(call_id: CallId) -> Self {
+    pub fn new_pending(call_id: CallId, sleep_result: Option<Value>) -> Self {
         Self {
             call_id,
             state: ExternalFutureState::Pending { awaiter: None },
+            sleep_result,
         }
     }
 }

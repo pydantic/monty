@@ -316,7 +316,8 @@ properties that real CPython does not provide, per the caveat above.
     `request_timeout` every iteration, exactly like a loop of external calls.
     `max_duration` still bounds such a feed's worker execution, but nothing
     bounds its wall clock.
-- **`os=` fallback** receives `(function_name, args, kwargs)`. On the
+- **`os=` fallback** is called with keyword arguments (`name`, `args`, `kwargs`, `is_async`) in Python;
+    the JavaScript client calls it positionally as `os(functionName, args, kwargs)`, with no `is_async`. On the
     automatic path (`feed_run`, `resume_auto`) mounts get first refusal, so
     mount-covered filesystem calls never reach the callback. Under `feed_start`
     the callback is consulted only by `resume_auto()`; it is never invoked
@@ -384,8 +385,20 @@ properties that real CPython does not provide, per the caveat above.
     snapshot may be resumed at most once (a second resume raises
     `RuntimeError`), and feeding while suspended raises. This differs from the
     pre-subprocess in-process API, where a snapshot owned freely-copyable state.
-- **Coroutine calls do not always produce a future snapshot.** When a call is immediately awaited and no other
-    sandbox task is runnable or external future is pending, `allow_eager_await` is true (`allowEagerAwait` in JavaScript).
+- **Manual snapshot handlers do not inherit the suspension's tracing context automatically.**
+    In Python, [`snapshot.trace_context()`][pydantic_monty.FunctionSnapshot.trace_context] returns an OpenTelemetry
+    `Context` for `context.attach()` / `detach()`, not a context manager.
+    It requires `opentelemetry-api`; calling it without that package raises `ImportError`.
+    In JavaScript, pass `snapshot.traceContext()` to OpenTelemetry's `context.with()`.
+    Both methods preserve context entries captured at feed/load entry, not those of the later handler.
+    Context is not serialized; restoring captures the restoring caller's context instead.
+    Calls after resume raise, but previously returned contexts remain usable without keeping the span open.
+    Without Monty tracing, including on Browser/WASM, the methods return the captured context unchanged.
+    If JavaScript context composition fails, `traceContext()` returns the captured context and reports the error
+    through OpenTelemetry's `diag.warn`; disabled tracing does not produce a warning.
+- **Coroutine calls do not always produce a future snapshot.** When a call (a host function, or `asyncio.sleep`) is
+    immediately awaited and no other sandbox task is runnable or external future is pending, `allow_eager_await` is true
+    (`allowEagerAwait` in JavaScript).
     Async `resume_auto()` / `resumeAuto()` then awaits the host coroutine and returns the next call or completion
     directly, without an intermediate future snapshot.
     Telemetry records eager results on the original function-call span, with the same `value` or `error` metric outcome

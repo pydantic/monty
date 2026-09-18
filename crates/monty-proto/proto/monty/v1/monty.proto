@@ -705,6 +705,9 @@ message FunctionCall {
 // `ExtFunctionResult.not_handled`: the child raises the call's own default
 // (PermissionError naming the path for filesystem calls, RuntimeError for
 // the rest — monty's `OsFunctionCall::on_no_handler`).
+//
+// Tags 2-49 are reserved for `call` arms and the other message-level fields
+// start at 50, as in `ChildEvent`, so a new call never has to jump the numbering.
 message OsCall {
   uint32 call_id = 1;
 
@@ -740,10 +743,17 @@ message OsCall {
     DateTimeNow date_time_now = 24;
     // os.urandom(size), also how `random` seeds an unseeded generator.
     Urandom urandom = 25;
+    Unit time = 26; // time.time()
+    Sleep sleep = 27; // time.sleep(seconds)
+    AsyncSleep async_sleep = 28; // asyncio.sleep(delay)
   }
 
   // The arena any value-typed argument (`Getenv.default`) indexes.
-  Arena values = 26;
+  Arena values = 50;
+  // As on `FunctionCall`: the parent may await a coroutine and answer with
+  // `ResumeFutures` for `call_id`. Only ever set on `async_sleep`, the one
+  // call a future may answer at all.
+  bool allow_eager_await = 51;
 
   message TextWrite {
     string path = 1;
@@ -784,6 +794,24 @@ message OsCall {
   // a negative count cannot be expressed on the wire.
   message Urandom {
     uint64 size = 1;
+  }
+  // time.sleep(seconds) — the parent waits, then answers (the sandbox
+  // evaluates the call to None whatever the answer carried). Answering with a
+  // future is refused: the call is a block by definition.
+  message Sleep {
+    // How long to wait. Always finite, non-negative, and small enough to be a
+    // duration of nanoseconds in an int64; a frame breaking that is rejected.
+    double seconds = 1;
+  }
+  // asyncio.sleep(delay) — the awaitable form. A parent running an event
+  // loop should answer `ExtFunctionResult.future` and resolve it once the
+  // delay elapses, so the sandbox's other tasks keep running; answering
+  // directly is equivalent to a wait that blocks them. The answer's value is
+  // ignored: the sandbox keeps the `result` argument itself and produces it
+  // from the `await`.
+  message AsyncSleep {
+    // How long to wait, under the same constraints as `Sleep.seconds`.
+    double delay = 1;
   }
 }
 

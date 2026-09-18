@@ -199,8 +199,9 @@ and [`limitations/open.md`](limitations/open.md).
 
 ## The `os` callback
 
-Operations no mount covers fall through to the `os=` handler.
-It is called as `(function_name, args, kwargs)` and its return value is handed back to the sandbox:
+Operations no mount covers fall through to the `os=` handler, an [`OsHandler`][pydantic_monty.OsHandler].
+It is called with keyword arguments, `name`, `args`, `kwargs` and `is_async`, and its return value is handed back to the sandbox.
+Absorb the arguments you do not use with `**_future_kwargs`, so a later version can pass more:
 
 === "Python"
 
@@ -208,8 +209,8 @@ It is called as `(function_name, args, kwargs)` and its return value is handed b
     from pydantic_monty import NOT_HANDLED, Monty
 
 
-    def handle_os(function_name, args, kwargs):
-        if function_name == 'os.getenv' and args[0] == 'STAGE':
+    def handle_os(*, name, args, **_future_kwargs):
+        if name == 'os.getenv' and args[0] == 'STAGE':
             return 'production'
         return NOT_HANDLED
 
@@ -241,7 +242,7 @@ handler at all.
 The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`, `open`,
 `Path.read_text`, `Path.read_bytes`, `Path.write_text`, `Path.write_bytes`, `Path.append_text`, `Path.append_bytes`,
 `Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.stat`, `Path.rename`, `Path.resolve`, `Path.absolute`,
-`os.getenv`, `os.environ`, `date.today`, `datetime.now` and `os.urandom`.
+`os.getenv`, `os.environ`, `date.today`, `datetime.now`, `os.urandom`, `time.time`, `time.sleep` and `asyncio.sleep`.
 `os.urandom` also arrives, for 2496 bytes, the first time an unseeded `random` generator draws a value
 (see [random](limitations/random.md)).
 
@@ -316,7 +317,8 @@ you wrote.
 
 For anything more specific, subclass `OSAccess` and override the methods you want to change, or implement every
 abstract method of `AbstractOS` yourself; the optional hooks (`path_open`, the append methods, `date_today`,
-`datetime_now`) report [`NOT_HANDLED`][pydantic_monty.NOT_HANDLED] to Monty if you make them raise `NotImplementedError`.
+`datetime_now`, `time`, `sleep`, `async_sleep`) report [`NOT_HANDLED`][pydantic_monty.NOT_HANDLED] to Monty if you make
+them raise `NotImplementedError`.
 
 ## Rust
 

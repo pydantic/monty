@@ -3,6 +3,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Literal, NoReturn, final
 
+from opentelemetry.context import Context
 from typing_extensions import Self
 
 from . import (
@@ -15,7 +16,7 @@ from . import (
     SyncSnapshot,
     TypeCheckFormat,
 )
-from .os_access import AbstractOS, OsFunction
+from .os_access import OsFunction
 
 __all__ = [
     '__version__',
@@ -601,7 +602,7 @@ class MontySession:
         | None = None,
         mount: MountDir | list[MountDir] | None = None,
         cwd: str | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
+        os: OsHandler | None = None,
         skip_type_check: bool = False,
     ) -> Any:
         """
@@ -641,8 +642,8 @@ class MontySession:
                 `os.getcwd()` reports it and relative paths resolve against
                 it before reaching a mount or the `os` handler.
             os: Fallback handler for OS calls (e.g. filesystem access) not
-                covered by a mount, invoked as `(function_name, args, kwargs)`,
-                or an `AbstractOS` instance.
+                covered by a mount — an `OsHandler` such as an `AbstractOS`
+                instance, called with keyword arguments.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
 
@@ -709,10 +710,10 @@ class MontySession:
             cwd: The sandbox's working directory for the whole feed (there is
                 no `cwd=` on `resume`); see `feed_run`. A dump taken mid-feed
                 carries it, so `load_snapshot` needs none.
-            os: Fallback handler for OS calls not covered by a mount, invoked
-                as `(function_name, args, kwargs)`, or an `AbstractOS` instance.
-                Consulted only by `resume_auto()` — `feed_start` always surfaces
-                OS calls as snapshots.
+            os: Fallback handler for OS calls not covered by a mount — an
+                `OsHandler` such as an `AbstractOS` instance. Consulted only by
+                `resume_auto()` — `feed_start` always surfaces OS calls as
+                snapshots.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
         """
@@ -974,7 +975,7 @@ class AsyncMontySession:
         | None = None,
         mount: MountDir | list[MountDir] | None = None,
         cwd: str | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
+        os: OsHandler | None = None,
         skip_type_check: bool = False,
     ) -> Any:
         """
@@ -1019,8 +1020,8 @@ class AsyncMontySession:
                 `os.getcwd()` reports it and relative paths resolve against
                 it before reaching a mount or the `os` handler.
             os: Fallback handler for OS calls (e.g. filesystem access) not
-                covered by a mount, invoked as `(function_name, args, kwargs)`,
-                or an `AbstractOS` instance.
+                covered by a mount — an `OsHandler` such as an `AbstractOS`
+                instance, called with keyword arguments.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
         """
@@ -1072,10 +1073,10 @@ class AsyncMontySession:
             cwd: The sandbox's working directory for the whole feed (there is
                 no `cwd=` on `resume`); see `feed_run`. A dump taken mid-feed
                 carries it, so `load_snapshot` needs none.
-            os: Fallback handler for OS calls not covered by a mount, invoked
-                as `(function_name, args, kwargs)`, or an `AbstractOS` instance.
-                Consulted only by `resume_auto()` — `feed_start` always surfaces
-                OS calls as snapshots.
+            os: Fallback handler for OS calls not covered by a mount — an
+                `OsHandler` such as an `AbstractOS` instance. Consulted only by
+                `resume_auto()` — `feed_start` always surfaces OS calls as
+                snapshots.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
         """
@@ -1156,7 +1157,12 @@ class FunctionSnapshot:
 
     @property
     def allow_eager_await(self) -> bool:
-        """Whether the worker permits eager coroutine resolution at this call."""
+        """Whether the worker permits eager coroutine resolution at this call.
+
+        True for a host function or `asyncio.sleep` awaited at once while no other
+        sandbox task can run, so a coroutine answer is awaited in place rather than
+        surfacing as a future snapshot.
+        """
 
     @property
     def script_name(self) -> str: ...
@@ -1178,6 +1184,14 @@ class FunctionSnapshot:
     def args(self) -> tuple[Any, ...]: ...
     @property
     def kwargs(self) -> dict[str, Any]: ...
+    def trace_context(self) -> Context:
+        """Return the suspension's OTel context, without activating it or resuming.
+
+        Preserves context entries captured at `feed_start` / `load_snapshot`; without Monty tracing,
+        returns that captured context unchanged. Raises `ImportError` without `opentelemetry-api`
+        or `RuntimeError` after resume. Previously returned contexts do not keep the span open.
+        """
+
     def resume(self, result: ExternalResult) -> SyncSnapshot:
         """Resume with the call's result; resumes at most once.
 
@@ -1220,6 +1234,9 @@ class NameLookupSnapshot:
         """Session uuid of the receiver for a lazy attribute lookup; `None`
         for a plain undefined-name lookup. An omitted-`value` resume raises
         `AttributeError` (not `NameError`) for attribute lookups."""
+    def trace_context(self) -> Context:
+        """As `FunctionSnapshot.trace_context`, for this name lookup."""
+
     def resume(self, *, value: Any = ...) -> SyncSnapshot:
         """Resume by binding the name to `value` (any value, including `None`), or
         omit `value` to leave the name undefined — the sandbox then raises
@@ -1248,6 +1265,9 @@ class FutureSnapshot:
     def script_name(self) -> str: ...
     @property
     def pending_call_ids(self) -> list[int]: ...
+    def trace_context(self) -> Context:
+        """As `FunctionSnapshot.trace_context`, for this future-resolution suspension."""
+
     def resume(self, results: dict[int, ExternalSettledResult]) -> SyncSnapshot:
         """Resume with settled results for one or more pending futures (by
         `call_id`); a future cannot resolve to another `future`."""
@@ -1286,6 +1306,9 @@ class AsyncFunctionSnapshot:
     def args(self) -> tuple[Any, ...]: ...
     @property
     def kwargs(self) -> dict[str, Any]: ...
+    def trace_context(self) -> Context:
+        """As `FunctionSnapshot.trace_context`; returns a context, not an awaitable."""
+
     async def resume(self, result: ExternalResult) -> AsyncSnapshot: ...
     async def resume_not_handled(self) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
@@ -1307,6 +1330,9 @@ class AsyncNameLookupSnapshot:
     def object_id(self) -> uuid.UUID | None:
         """As `NameLookupSnapshot.object_id`: the host object a lazy attribute is read from."""
 
+    def trace_context(self) -> Context:
+        """As `FunctionSnapshot.trace_context`; returns a context, not an awaitable."""
+
     async def resume(self, *, value: Any = ...) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
         """Async sibling of `NameLookupSnapshot.resume_auto`."""
@@ -1322,6 +1348,9 @@ class AsyncFutureSnapshot:
     def script_name(self) -> str: ...
     @property
     def pending_call_ids(self) -> list[int]: ...
+    def trace_context(self) -> Context:
+        """As `FunctionSnapshot.trace_context`; returns a context, not an awaitable."""
+
     async def resume(self, results: dict[int, ExternalSettledResult]) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
         """Wait for one or more coroutine externals spawned by earlier

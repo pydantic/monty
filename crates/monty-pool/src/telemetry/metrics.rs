@@ -811,6 +811,9 @@ fn os_call(call: Option<&Call>) -> &'static str {
         Some(Call::DateToday(_)) => "date_today",
         Some(Call::DateTimeNow(_)) => "date_time_now",
         Some(Call::Urandom(_)) => "urandom",
+        Some(Call::Time(_)) => "time",
+        Some(Call::Sleep(_)) => "sleep",
+        Some(Call::AsyncSleep(_)) => "async_sleep",
         None => "unknown",
     }
 }
@@ -1267,6 +1270,7 @@ mod tests {
         metrics.event(&event(pb::child_event::Kind::OsCall(pb::OsCall {
             call_id: 1,
             values: None,
+            allow_eager_await: false,
             call: Some(Call::ReadText("/mnt/f.txt".to_owned())),
         })));
         metrics.begin_turn(&resume_return(MontyObject::string("hello".to_owned())));

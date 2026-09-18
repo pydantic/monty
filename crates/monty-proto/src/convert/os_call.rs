@@ -3,9 +3,11 @@
 //! paths) *move* between the wire and the call — never clone. The one
 //! value-typed argument (`Getenv.default`) indexes the message's arena.
 
+use std::time::Duration;
+
 use monty_types::{
     GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
-    PathStringDataArgs, RenameCallArgs, UrandomArgs,
+    PathStringDataArgs, RenameCallArgs, UrandomArgs, sleep_duration,
 };
 
 use crate::{
@@ -17,15 +19,16 @@ use crate::{
     wire::WireArena,
 };
 
-/// Builds the `OsCall` envelope: call id, typed arm and, for `Getenv`, the
-/// arena its default indexes.
+/// Builds the `OsCall` envelope: call id, typed arm, the eager-await hint and,
+/// for `Getenv`, the arena its default indexes.
 #[must_use]
-pub fn os_call_to_proto(call_id: u32, call: OsFunctionCall) -> pb::OsCall {
+pub fn os_call_to_proto(call_id: u32, call: OsFunctionCall, allow_eager_await: bool) -> pb::OsCall {
     let (call, values) = call_to_proto(call);
     pb::OsCall {
         call_id,
         values,
         call: Some(call),
+        allow_eager_await,
     }
 }
 
@@ -93,6 +96,13 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
             }),
         }),
         OsFunctionCall::Urandom(a) => Call::Urandom(os_call::Urandom { size: a.size }),
+        OsFunctionCall::Time => Call::Time(Unit {}),
+        OsFunctionCall::Sleep(delay) => Call::Sleep(os_call::Sleep {
+            seconds: delay.as_secs_f64(),
+        }),
+        OsFunctionCall::AsyncSleep(delay) => Call::AsyncSleep(os_call::AsyncSleep {
+            delay: delay.as_secs_f64(),
+        }),
     };
     (call, values)
 }
@@ -148,8 +158,23 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
                 name: tz.name,
             })),
             os_call::Call::Urandom(u) => Self::Urandom(UrandomArgs { size: u.size }),
+            os_call::Call::Time(_) => Self::Time,
+            os_call::Call::Sleep(s) => Self::Sleep(field_sleep_duration(s.seconds, "Sleep.seconds")?),
+            os_call::Call::AsyncSleep(s) => Self::AsyncSleep(field_sleep_duration(s.delay, "AsyncSleep.delay")?),
         })
     }
+}
+
+/// Validates wire seconds into a `Duration`.
+///
+/// A child may be compromised, so a NaN, negative or unrepresentable delay is
+/// refused here rather than reaching a host that would convert it — and panic
+/// doing so.
+fn field_sleep_duration(seconds: f64, field: &'static str) -> Result<Duration, ProtoConvertError> {
+    sleep_duration(seconds).map_err(|_| ProtoConvertError::InvalidValue {
+        field,
+        reason: format!("sleep length {seconds} is not a finite, non-negative number of seconds"),
+    })
 }
 
 /// `PathStringDataArgs` → wire `TextWrite`, moving the text payload.

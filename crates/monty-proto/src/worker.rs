@@ -670,6 +670,10 @@ impl Child {
                 Ok(result) => FuturesReply::Eager(result),
                 Err(message) => return protocol_violation(message),
             },
+            ReplProgress::OsCall(call) if call.allow_eager_await => match eager_result(results, call.call_id) {
+                Ok(result) => FuturesReply::Eager(result),
+                Err(message) => return protocol_violation(message),
+            },
             ReplProgress::ResolveFutures(_) => FuturesReply::Batch(results),
             _ => return protocol_violation("ResumeFutures without suspended futures"),
         };
@@ -679,6 +683,9 @@ impl Child {
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let outcome = match (*progress, reply) {
             (ReplProgress::FunctionCall(call), FuturesReply::Eager(result)) => {
+                call.resume_eager(result, PrintWriter::Callback(&mut print))
+            }
+            (ReplProgress::OsCall(call), FuturesReply::Eager(result)) => {
                 call.resume_eager(result, PrintWriter::Callback(&mut print))
             }
             (ReplProgress::ResolveFutures(state), FuturesReply::Batch(results)) => {
@@ -983,6 +990,7 @@ fn suspension_event_os_call(call: &mut monty::ReplOsCall) -> pb::ChildEvent {
     event(pb::child_event::Kind::OsCall(os_call_to_proto(
         call.call_id,
         function_call,
+        call.allow_eager_await,
     )))
 }
 
@@ -1011,7 +1019,7 @@ fn suspension_event(progress: &mut ReplProgress) -> pb::ChildEvent {
 
 /// A validated `ResumeFutures` body, shaped for the suspension it answers.
 enum FuturesReply {
-    /// One settled coroutine for a function call with `allow_eager_await`.
+    /// One settled coroutine for a call with `allow_eager_await`.
     Eager(Result<MontyObject, MontyException>),
     /// Results for a `ResolveFutures` suspension.
     Batch(Vec<(u32, ExtFunctionResult)>),
