@@ -8,6 +8,7 @@
 
 use std::fmt::Write;
 
+use insta::assert_snapshot;
 use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, MontyException, MontyObject, MontyType, NameLookupResult, PrintWriter, ResourceTracker,
@@ -619,6 +620,48 @@ ns['result']
         let result = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
         assert_eq!(result.into_complete().unwrap(), MontyObject::int(1041));
     }
+}
+
+/// Rejected snippet locations survive suspension and reuse of their discarded source IDs.
+#[test]
+fn run_progress_round_trip_with_rejected_snippet() {
+    let mut errors = Vec::new();
+    for source in ["\nglobal __name__\n__name__ = 'changed'", "\n\nfrom . import missing"] {
+        let runner = MontyRun::new(
+            format!(
+                r"import asyncio
+async def fail():
+    exec({source:?})
+gathered = asyncio.gather(fail())
+try:
+    await gathered
+except Exception:
+    pass
+ext()
+exec('accepted = 1')
+await gathered"
+            ),
+            "test.py",
+            vec![],
+            CompileOptions::default(),
+        )
+        .unwrap();
+        let progress = runner
+            .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap();
+        let progress = resolve_name_lookups(progress).unwrap();
+        let loaded = round_trip_progress(&progress);
+        let [original, loaded] = [progress, loaded].map(|progress| {
+            let call = progress.into_function_call().expect("expected function call");
+            assert_eq!(call.function_name, "ext");
+            let error = call.resume(MontyObject::none(), PrintWriter::Stdout).unwrap_err();
+            assert_eq!(error.traceback().last().unwrap().start.line, 3);
+            error
+        });
+        assert_eq!(original, loaded);
+        errors.push(original.to_string());
+    }
+    assert_snapshot!("rejected_snippet_after_resume", errors.join("\n\n"));
 }
 
 /// A suspended snippet retains its source locations when restored.

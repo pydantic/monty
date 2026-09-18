@@ -20,6 +20,28 @@ fn repeat_exec() {
     assert_eq!(int_value, 3);
 }
 
+/// Shared module code must remain usable as clones independently append runtime functions and literals.
+#[test]
+fn cloned_runners_compile_independently() {
+    let mut runner = MontyRun::new(
+        "exec(source)\nresult()".to_owned(),
+        "test.py",
+        vec!["source".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    for _ in 0..2 {
+        let mut cloned = runner.clone();
+        for (runner, text) in [(&mut runner, "original"), (&mut cloned, "cloned")] {
+            let source = format!("def result():\n    return {text:?}");
+            assert_eq!(
+                runner.run_no_limits(vec![MontyObject::string(source)]).unwrap(),
+                MontyObject::string(text.to_owned())
+            );
+        }
+    }
+}
+
 #[test]
 fn test_get_interned_string() {
     let mut ex = MontyRun::new("'foobar'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();

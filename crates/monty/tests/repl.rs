@@ -2041,6 +2041,26 @@ fn repl_failed_exec_locals_snapshot_releases_globals() {
     }
 }
 
+/// Rejected snippets retain diagnostic locations without committing their source or intern IDs.
+#[test]
+fn repl_rejected_snippet_locations() {
+    let (mut repl, _) = init_repl("pass");
+    let mut errors = Vec::new();
+    for source in [
+        "\n\nfrom . import missing",
+        "\n\nfrom math import *",
+        "\n\ndel missing",
+        "\n\n__name__ = 'changed'",
+    ] {
+        let error = feed_run_print(&mut repl, &format!("exec({source:?})")).unwrap_err();
+        assert_eq!(error.traceback().last().unwrap().start.line, 3);
+        errors.push(error.to_string());
+        let state = to_value(&repl).unwrap();
+        assert_eq!(state["interns"]["eval_sources"].as_array().unwrap().len(), 0);
+    }
+    assert_snapshot!("rejected_snippet_locations", errors.join("\n\n"));
+}
+
 /// Equal displayed filenames retain distinct source locations after loading a session.
 #[test]
 fn repl_snippet_sources_survive_round_trip() {

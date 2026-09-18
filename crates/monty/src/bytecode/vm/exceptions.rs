@@ -104,6 +104,7 @@ impl VM<'_> {
         RunError::Exc(ExceptionRaise {
             exc: simple_exc,
             frame: Some(frame),
+            snippet_frame: None,
             hide_caret: false,
         })
     }
@@ -222,6 +223,7 @@ impl VM<'_> {
         RunError::Exc(ExceptionRaise {
             exc: SimpleException::new(ExcType::AssertionError, msg),
             frame: Some(frame),
+            snippet_frame: None,
             hide_caret: false,
         })
     }

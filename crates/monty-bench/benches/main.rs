@@ -501,6 +501,13 @@ fn parse_1k_assigns(bench: &mut Bencher) {
     });
 }
 
+/// Clones a large module without function definitions, isolating module-code sharing
+/// from the independently cloned intern and name tables.
+fn clone_module(bench: &mut Bencher) {
+    let runner = MontyRun::new("x = 1\n".repeat(10_000), "test.py", vec![], CompileOptions::default()).unwrap();
+    bench.iter(|| black_box(runner.clone()));
+}
+
 /// Feeds a trivial snippet into a REPL session that has already run 2,000
 /// snippets (a mix of function definitions and assignments, so the intern,
 /// function and name tables are all large). Guards against per-feed cost
@@ -594,6 +601,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     c.bench_function("end_to_end__monty", end_to_end_monty);
     c.bench_function("parse_1k_assigns__monty", parse_1k_assigns);
+    c.bench_function("clone_module__monty", clone_module);
     c.bench_function("repl_feed_after_2k_snippets__monty", repl_feed_after_2k_snippets);
     c.bench_function("session_dump__monty", session_dump);
     c.bench_function("session_load__monty", session_load);

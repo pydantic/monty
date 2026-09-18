@@ -25,6 +25,7 @@ The snippet can call host functions and raise into the caller; top-level `await`
     CPython resolves them through the `builtins` module, so `exec('print(__name__)', {})` prints `builtins`.
     Without a `globals` dict the snippet uses Monty's read-only [module-level dunders](language.md#module-level-dunder-variables),
     so assigning to them, including through a `global` declaration, raises `NotImplementedError`.
+    The assignment is rejected before any snippet statement runs; its traceback points to the assignment's line.
     This restriction does not apply to explicit globals dictionaries.
 - **A host-served name first read inside a snippet is cached as a module global**, as for any other read of an undefined
     global; see [name lookups](../host-functions.md).

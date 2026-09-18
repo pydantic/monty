@@ -251,8 +251,8 @@ pub(crate) struct SessionTables {
 /// Separate from [`SessionTables`] so global names can grow without moving the module's code.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Program {
-    /// Compiled bytecode for the module, shared with the module frame.
-    pub(crate) module_code: Code,
+    /// Immutable module bytecode, shared by runner clones and borrowed by module frames.
+    pub(crate) module_code: Arc<Code>,
     /// Source code for error reporting (extracting preview lines for
     /// tracebacks). Shared with the REPL's per-snippet source table rather
     /// than copied, since a snippet's text is the largest thing a feed carries.
@@ -374,7 +374,7 @@ impl Executor {
                 interns,
             },
             program: Program {
-                module_code,
+                module_code: Arc::new(module_code),
                 code: Arc::from(code),
                 input_slots: Vec::new(),
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
@@ -436,7 +436,7 @@ impl Executor {
                 interns: interns.take(),
             },
             program: Program {
-                module_code,
+                module_code: Arc::new(module_code),
                 code,
                 input_slots,
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
@@ -518,7 +518,7 @@ impl Executor {
         Ok(Self {
             tables,
             program: Program {
-                module_code,
+                module_code: Arc::new(module_code),
                 code: Arc::from(code),
                 input_slots: vec![args_slot],
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
@@ -701,7 +701,7 @@ impl Program {
     #[cfg(test)]
     pub(crate) fn for_tests() -> Self {
         Self {
-            module_code: Code::empty(),
+            module_code: Arc::new(Code::empty()),
             code: Arc::from(""),
             input_slots: Vec::new(),
             assert_repr_max_bytes: AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),

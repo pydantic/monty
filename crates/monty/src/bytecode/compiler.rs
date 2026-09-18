@@ -3951,15 +3951,16 @@ impl CompileError {
     pub(crate) fn into_run_error(self, source: &str) -> RunError {
         match self.exc_type {
             ExcType::SyntaxError => syntax_error_in_snippet(&self.message, self.position, source),
-            exc_type => SimpleException::new_msg(exc_type, self.message).into(),
+            exc_type => SimpleException::new_msg(exc_type, self.message)
+                .with_snippet_position(self.position, source)
+                .into(),
         }
     }
 
     /// Converts this compile error into a Python exception.
     ///
-    /// Uses the stored exception type (SyntaxError or ModuleNotFoundError).
-    /// - SyntaxError: hides the `, in <module>` part (CPython's format)
-    /// - ModuleNotFoundError: hides caret markers (CPython doesn't show them)
+    /// Syntax errors omit the frame name; unsupported constructs report a
+    /// runtime-style location with the stored exception type and message.
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
         let mut source_map = SourceMap::new(source);
         let mut frame = if self.exc_type == ExcType::SyntaxError {

@@ -2482,15 +2482,22 @@ impl ParseError {
     /// Converts to the exception an `eval()` / `exec()` call raises for its
     /// snippet: the same type and message as [`into_python_exc`](Self::into_python_exc),
     /// with a `SyntaxError` carrying CPython's `(<string>, line N)` suffix.
-    /// The traceback is the caller's, added as the error propagates.
+    /// Non-syntax errors keep a resolved snippet location, independent of the
+    /// rejected compilation's intern IDs; propagation adds the caller's frames.
     pub(crate) fn into_run_error(self, source: &str) -> RunError {
         match self {
             Self::Syntax { msg, position } => syntax_error_in_snippet(&msg, position, source),
-            Self::NotImplemented { msg, .. } => {
-                ExcType::not_implemented(format!("The monty syntax parser does not yet support {msg}")).into()
+            Self::NotImplemented { msg, position } => {
+                ExcType::not_implemented(format!("The monty syntax parser does not yet support {msg}"))
+                    .with_snippet_position(position, source)
+                    .into()
             }
-            Self::NotSupported { msg, .. } => ExcType::not_implemented(msg).into(),
-            Self::Import { msg, .. } => SimpleException::new_msg(ExcType::ImportError, msg).into(),
+            Self::NotSupported { msg, position } => ExcType::not_implemented(msg)
+                .with_snippet_position(position, source)
+                .into(),
+            Self::Import { msg, position } => SimpleException::new_msg(ExcType::ImportError, msg)
+                .with_snippet_position(position, source)
+                .into(),
         }
     }
 

@@ -224,7 +224,8 @@ Its `usize` instruction pointer, source locations and exception handlers all use
 
 Committed functions have stable addresses and their code is immutable, so runtime compilation can publish new
 functions without invalidating active frames.
-Module code is borrowed from the running `Program`; `eval()` / `exec()` bodies are stored as functions in `Interns`.
+Module code is held in an `Arc<Code>` so runner clones share it; frames borrow it from the running `Program`.
+`eval()` / `exec()` bodies are stored as functions in `Interns`.
 Snapshots store function IDs and offsets, rebuilding code borrows on restore.
 
 ### Compilation overlays and stable intern entries
