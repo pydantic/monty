@@ -29,7 +29,7 @@ MAX_SNAPSHOT = 512 * 1024
 MAX_CALLS = 16
 MAX_SOURCE = 32 * 1024
 OUTPUT_ENTRY_OVERHEAD = 64
-LIMITS: ResourceLimits = {'max_memory': 64 * 1024 * 1024, 'max_duration_secs': 2, 'max_suspensions': MAX_CALLS}
+LIMITS: ResourceLimits = {'max_memory': 64 * 1024 * 1024, 'max_feed_duration_secs': 2, 'max_suspensions': MAX_CALLS}
 
 
 class ReplayError(ValueError):
