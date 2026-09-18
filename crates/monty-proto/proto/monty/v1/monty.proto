@@ -16,12 +16,11 @@
 // (`MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION` in `monty-proto`).
 // Prefer additive changes (fresh tag numbers, `reserved` removals) so a
 // separately-deployed parent has a migration window; a change an older peer
-// could mis-read needs a `PROTOCOL_VERSION` bump instead. A field the child
-// must act on counts as mis-read: an older child ignores it and the parent
-// never learns, so `max_feed_duration_micros` and `max_turn_duration_micros`
-// took version 4 despite being additive. Removing `max_duration_micros` took
-// version 5 for the mirror-image reason: a parent still sending it would have
-// its budget silently dropped.
+// could mis-read needs a `PROTOCOL_VERSION` bump instead. A field the peer must
+// act on counts as mis-read even when the change is additive, in both
+// directions: an older child ignores a limit the parent set and the parent
+// never learns, and an older parent keeps sending a limit this build no longer
+// reads. Version 5 covers both for the duration budgets.
 
 syntax = "proto3";
 
@@ -70,7 +69,7 @@ message MontyNode {
     bytes bytes = 9;
     // A uuid.UUID value. Declared so the tag is settled, but NOT YET
     // IMPLEMENTED: monty has no uuid module, so neither end produces or
-    // accepts this arm (it decodes like any unknown kind — rejected).
+    // accepts this arm (conversion to a domain node rejects it).
     Uuid uuid = 10;
     Indexes list = 11;
     Indexes tuple = 12;

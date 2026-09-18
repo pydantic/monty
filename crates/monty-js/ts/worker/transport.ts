@@ -438,8 +438,15 @@ function encodeLimits(limits: ResourceLimits): ComponentResourceLimits {
  * The WIT field is a `u64`, so a negative or non-finite value would either
  * throw an opaque `RangeError` out of `BigInt` or encode as a nonsense budget.
  * Reject it here instead, as the napi pool's `js_number_to_duration` does.
+ *
+ * `key` is the field union rather than `string`: every WIT limit is optional,
+ * so a misspelled key would be dropped silently instead of failing to compile.
  */
-function micros(key: string, option: string, seconds: number | undefined): Record<string, bigint> {
+function micros(
+  key: 'maxFeedDurationMicros' | 'maxTurnDurationMicros',
+  option: string,
+  seconds: number | undefined,
+): Partial<ComponentResourceLimits> {
   if (seconds === undefined) {
     return {}
   }

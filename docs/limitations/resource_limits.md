@@ -246,15 +246,11 @@ indistinguishable from a stack overflow.
     Ascii85 digit and so reaches `ignorechars`. Each of those bytes is one
     `in` test against the container, so a large explicit `ignorechars`
     overshoots its duration budget in proportion to its length.
-- The budget covers cumulative **execution time**, not wall-clock time:
-    the clock runs only while the interpreter executes bytecode, and is
-    paused while execution is suspended waiting on the host (external
-    function calls, OS callbacks) and between REPL feeds. It accumulates
-    across feeds for the life of the session.
-- The accumulated time is serialized into dumps/snapshots, so a restored
-    session resumes its budget where it left off rather than restarting
-    from zero.
-- There is no in-sandbox way to observe the budget or remaining time.
+- Both budgets cover **execution time**, not wall-clock time: the clock runs
+    only while the interpreter executes bytecode, and is paused while execution
+    is suspended waiting on the host (external function calls, OS callbacks)
+    and between REPL feeds.
+- There is no in-sandbox way to observe either budget or the time left in it.
 - `max_feed_duration` and `max_turn_duration` bound one clock over two scopes,
     differing only in when it restarts: at each feed, and at each feed or
     answered suspension respectively.

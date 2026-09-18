@@ -132,7 +132,10 @@ Neither bounds how long a host callback itself may take: the clock is paused for
 to bound its own waiting wants `request_timeout`.
 
 Exceeding either raises `TimeoutError` in the sandbox.
-The session survives the trip, because the next feed resets both clocks.
+The next feed resets both clocks, so the worker keeps serving the session — but a time limit stops the sandbox
+mid-operation, leaving no guarantees about its heap.
+Discard the session rather than feeding it again; see
+[after a terminal resource error](limitations/resource_limits.md#after-a-terminal-resource-error).
 
 ### Host-side backstops
 
@@ -197,6 +200,9 @@ caps the dump's, so a worker cannot report a looser one.
     Source compiled at runtime by `eval()` / `exec()` is charged against the duration budget.
     Once a snippet starts executing, its compilation products stay allocated for the rest of the session;
     snippets rejected before execution retain none of them (see [eval_exec.md](limitations/eval_exec.md)).
+- **Protocol decoding.** Protobuf frames have a separate cumulative allocation budget, covering generated messages
+    and decoded values before allocation; see [message limits](limitations/host-values.md#message-size).
+    It applies per frame, not to total host memory or subsequent host conversions.
 - **Print collectors.** [`CollectString`][pydantic_monty.CollectString] and [`CollectStreams`][pydantic_monty.CollectStreams] live in the host process, so their 10 MiB default cap is
     separate from `max_memory`.
 - **Mount memory.** Each [mount](filesystem.md) has its own `memory_usage_limit`, defaulting to 100 MB, shared between

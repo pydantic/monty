@@ -22,7 +22,10 @@ mod type_checking;
 
 use std::{error, fmt};
 
-use monty_types::{MontyGraph, MontyObject, NamedValues, NodeId};
+use monty_types::{
+    MontyObject, NamedValues,
+    unstable::{self, MontyGraph, NodeId},
+};
 pub use os_call::{os_call_from_proto, os_call_to_proto};
 pub use resume::{
     ext_result_from_proto, ext_result_to_proto, future_results_from_proto, future_results_to_proto,
@@ -30,7 +33,7 @@ pub use resume::{
 };
 
 use crate::{
-    pb,
+    BudgetVec, pb,
     wire::{WireArena, graph_error},
 };
 
@@ -77,9 +80,10 @@ impl error::Error for ProtoConvertError {}
 
 impl From<MontyObject> for pb::Complete {
     fn from(value: MontyObject) -> Self {
+        let (graph, root) = unstable::into_graph_parts(value);
         Self {
-            value: value.root.0,
-            values: Some(WireArena::new(value.graph)),
+            value: root.0,
+            values: Some(WireArena::new(graph)),
         }
     }
 }
@@ -94,29 +98,26 @@ impl TryFrom<pb::Complete> for MontyObject {
 
 /// Splits named inputs into `NamedRef`s and the arena they index.
 #[must_use]
-pub fn named_values_to_proto(inputs: NamedValues) -> (Vec<pb::NamedRef>, WireArena) {
-    let refs = inputs
-        .names
+pub fn named_values_to_proto(inputs: NamedValues) -> (BudgetVec<pb::NamedRef>, WireArena) {
+    let (graph, names) = unstable::into_named_values_parts(inputs);
+    let refs = names
         .into_iter()
         .map(|(name, id)| pb::NamedRef { name, value: id.0 })
         .collect();
-    (refs, WireArena::new(inputs.graph))
+    (refs, WireArena::new(graph))
 }
 
 /// Validates decoded named inputs against their arena.
 pub fn named_values_from_proto(
-    inputs: Vec<pb::NamedRef>,
+    inputs: impl IntoIterator<Item = pb::NamedRef>,
     values: Option<WireArena>,
 ) -> Result<NamedValues, ProtoConvertError> {
-    let named = NamedValues {
-        graph: graph_or_empty(values)?,
-        names: inputs
-            .into_iter()
-            .map(|input| (input.name, NodeId(input.value)))
-            .collect(),
-    };
-    named.check_roots().map_err(|err| graph_error(&err))?;
-    Ok(named)
+    let graph = graph_or_empty(values)?;
+    let names = inputs
+        .into_iter()
+        .map(|input| (input.name, NodeId(input.value)))
+        .collect();
+    unstable::named_values_from_parts(graph, names).map_err(|err| graph_error(&err))
 }
 
 /// Pairs a message's arena with the root it names, rejecting an absent arena
@@ -127,7 +128,7 @@ pub(crate) fn root_object(
     field: &'static str,
 ) -> Result<MontyObject, ProtoConvertError> {
     let graph = values.ok_or(ProtoConvertError::MissingField(field))?.into_graph()?;
-    MontyObject::new(graph, NodeId(root)).map_err(|err| graph_error(&err))
+    unstable::object_from_graph(graph, NodeId(root)).map_err(|err| graph_error(&err))
 }
 
 /// A message's arena, or an empty one when the field is absent (a message

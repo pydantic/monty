@@ -2,7 +2,11 @@
 
 use std::{ops::RangeInclusive, time::Duration};
 
+mod budget_vec;
+#[doc(hidden)]
+pub mod budgeted_prost;
 mod convert;
+mod decode_budget;
 mod frame;
 mod generated;
 // Python ↔ MontyObject value conversion; opt-in because it links pyo3, which
@@ -10,6 +14,9 @@ mod generated;
 #[cfg(feature = "python")]
 pub mod python;
 mod requirement;
+#[cfg(feature = "test-util")]
+#[doc(hidden)]
+pub mod test_util;
 mod wire;
 #[cfg(feature = "worker")]
 pub mod worker;
@@ -76,14 +83,18 @@ pub fn check_protocol_version(version: u32) -> Result<(), String> {
     }
 }
 
+pub use budget_vec::BudgetVec;
 pub use convert::{
     ProtoConvertError, ext_result_from_proto, ext_result_to_proto, future_results_from_proto, future_results_to_proto,
     named_values_from_proto, named_values_to_proto, os_call_from_proto, os_call_to_proto, resume_call_from_proto,
 };
+#[cfg(feature = "test-util")]
+#[doc(hidden)]
+pub use decode_budget::{decode_budget_remaining, with_decode_budget};
 pub use frame::{
     DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_framed_into,
     encode_to_capped_vec, exceeds_max_frame_len, write_frame,
 };
 pub use generated::pb;
 pub use requirement::validate_requirement;
-pub use wire::{WireArena, WireFunctionCall, reset_decode_budget};
+pub use wire::{WireArena, WireFunctionCall, WireIndexes, WireNamedTuple, WireNodePairs};

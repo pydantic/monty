@@ -12,12 +12,13 @@
 use std::{borrow::Cow, fmt, ops::Deref, time::Duration};
 
 use crate::{
-    args::{PushValue, ToArgs},
+    args::ToArgs,
     exceptions::{ExcType, MontyException},
     file_mode::FileMode,
     format::StringRepr,
     graph::{MontyGraph, MontyNode, NodeId},
     object::{CallArgs, MontyObject, MontyTimeZone},
+    unstable::{self, PushValue},
     virtual_path::normalize_virtual_path,
 };
 // =============================================================================
@@ -119,7 +120,7 @@ pub enum OsFunctionCall {
     #[strum(serialize = "os.urandom")]
     Urandom(UrandomArgs),
     /// Read the host clock as `time.time()` does: seconds since the Unix
-    /// epoch, answered with a [`MontyNode::Float`].
+    /// epoch, answered with [`MontyObject::float`].
     #[strum(serialize = "time.time")]
     Time,
     /// `time.sleep(seconds)` — the host waits, then answers with any value
@@ -382,7 +383,7 @@ impl fmt::Display for OsFunctionCall {
 /// A call with one positional argument.
 fn single_arg(value: impl PushValue) -> CallArgs {
     let mut call = CallArgs::new();
-    call.push_arg(value);
+    unstable::push_arg(&mut call, value);
     call
 }
 
@@ -409,9 +410,7 @@ pub struct PathBytesDataArgs {
     pub data: Vec<u8>,
 }
 
-/// `open(path, mode)` shape. The mode is parsed into [`FileMode`] before
-/// construction so the fs/ backend doesn't re-parse; [`ToArgs`](crate::args::ToArgs) re-serialises
-/// it back to a [`MontyNode::String`] for the host.
+/// Arguments to `open()`: a virtual path and a parsed file mode.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct OpenCallArgs {
     pub path: MontyPath,
@@ -513,8 +512,7 @@ pub fn sleep_duration_saturating(seconds: f64) -> Result<Duration, SleepError> {
 /// Owned virtual (sandbox) path carried by OS-call args.
 ///
 /// Preserves the supplied string, including invalid components, for host validation.
-/// Derefs to `&str` for routing; [`PushValue`](crate::args::PushValue)
-/// projects it back to a [`MontyNode::Path`] at the host boundary.
+/// Derefs to `&str` for routing.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MontyPath(String);
 

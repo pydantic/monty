@@ -59,9 +59,9 @@ If arguments make a suspension announcement too large, the feed ends with a host
 that sandboxed code cannot catch.
 [Session dumps](../snapshots.md#storing-and-restoring) have the same size cap.
 
-There is also a fixed 1 GiB budget for decoded values per frame, independent of the encoded size.
-A value can fit the wire cap but exceed this budget; a parent receiving such a frame discards the worker
-with a protocol error.
-The browser component applies the same decoded-value budget to its WIT arenas.
+On protobuf transports, the receiver also limits cumulative decoded allocation requests to 1 GiB per frame.
+A message can exceed this budget even if its final decoded values occupy less than 1 GiB.
+A parent receiving such a frame discards the worker with a protocol error.
+The browser component separately limits its WIT value arenas to an estimated 1 GiB.
 Protocol validation and accounting are described in the
 [`monty-proto` README](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted).

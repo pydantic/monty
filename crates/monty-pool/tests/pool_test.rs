@@ -32,8 +32,9 @@ use monty_pool::{
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
 use monty_types::{
-    CallArgs, ExcType, MontyException, MontyNode, MontyObject, NameLookupResult, PrintStream, ResourceLimits,
-    TypeCheckingConfig, TypeCheckingFormat,
+    CallArgs, ExcType, MontyException, MontyObject, NameLookupResult, PrintStream, ResourceLimits, TypeCheckingConfig,
+    TypeCheckingFormat,
+    unstable::{self, MontyNode},
 };
 use tokio::time::sleep;
 #[cfg(unix)]
@@ -324,7 +325,7 @@ async fn cyclic_return_value_decodes_and_keeps_the_worker_alive() {
     };
     assert_eq!(pairs.len(), 1);
     assert_eq!(pairs[0].0, MontyObject::string("self".to_owned()));
-    assert!(matches!(pairs[0].1.node(), MontyNode::Cycle(placeholder) if placeholder == "{...}"));
+    assert!(matches!(unstable::node(pairs[0].1), MontyNode::Cycle(placeholder) if placeholder == "{...}"));
     // the session must still be usable on the same worker
     let event = session
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
@@ -1623,7 +1624,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
     replies.extend(framed(&child_event(pb::child_event::Kind::Shutdown(
         pb::ShutdownDump {
-            dump: Some(b"a dump the child minted itself".to_vec()),
+            dump: Some(b"a dump the child minted itself".to_vec().into()),
         },
     ))));
     let replies_path = dir.path().join("replies.bin");
@@ -1644,7 +1645,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1688,7 +1689,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1736,7 +1737,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -2551,7 +2552,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "x".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -2622,7 +2623,7 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "x".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),

@@ -400,9 +400,12 @@ Two more properties of the worker boundary matter:
 
 - **Workers spawn with an empty environment** (Windows keeps only `SystemRoot`), so host secrets are never in a worker's
     memory to begin with.
-- **The parent treats every frame from a worker as untrusted input.** A worker could in principle be compromised, so
-    wire decoding validates everything, enforces size budgets, and never panics on malformed data.
+- **The parent treats every frame from a worker as untrusted input.** A worker could in principle be compromised.
+    Wire decoding validates values and enforces allocation budgets before growing decoded buffers.
+    Generated repeated fields, including empty traceback entries and print segments, share the value decoder's budget.
     A worker that violates the protocol is discarded.
+    See the [protocol allocation budget](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted)
+    for what the per-frame budget counts and excludes.
 
 From Rust, this is why [`monty-pool`](quickstart/rust.md) is the recommended entry point rather than the in-process
 `monty` crate.

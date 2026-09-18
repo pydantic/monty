@@ -10,8 +10,9 @@ use std::{fmt, fs, io::ErrorKind};
 
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use monty_types::{
-    ExcType, FileMode, MkdirCallArgs, MontyNode, MontyObject, MontyPath, OpenCallArgs, OsFunctionCall,
-    PathBytesDataArgs, PathStringDataArgs, RenameCallArgs,
+    ExcType, FileMode, MkdirCallArgs, MontyObject, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
+    PathStringDataArgs, RenameCallArgs,
+    unstable::{self, MontyNode},
 };
 use tempfile::TempDir;
 
@@ -1572,7 +1573,7 @@ mod hard_link_tests {
         if let Some(entries) = result.as_ref().items() {
             let names: Vec<String> = entries
                 .iter()
-                .filter_map(|e| match e.node() {
+                .filter_map(|e| match unstable::node(*e) {
                     MontyNode::Path(p) => p.rsplit('/').next().map(ToOwned::to_owned),
                     _ => None,
                 })
@@ -1707,7 +1708,7 @@ fn sorted_names_from_list(obj: &MontyObject) -> Vec<String> {
         Some(entries) => {
             let mut names: Vec<String> = entries
                 .iter()
-                .filter_map(|entry| match entry.node() {
+                .filter_map(|entry| match unstable::node(*entry) {
                     MontyNode::Path(path) => path.rsplit('/').next().map(ToOwned::to_owned),
                     _ => None,
                 })
@@ -2036,7 +2037,7 @@ fn rename_symlink_escape_overlay_read_bytes() {
         let read_result = call(&mut mt, PathOp::ReadBytes, "/mnt/renamed");
         match read_result {
             Some(Ok(value)) => {
-                let MontyNode::Bytes(content) = value.root_node() else {
+                let MontyNode::Bytes(content) = unstable::root_node(&value) else {
                     panic!("read_bytes returns bytes, got {value:?}");
                 };
                 assert_ne!(
@@ -2110,7 +2111,7 @@ fn assert_refused_before_io(mt: &mut MountTable, op: PathOp, path: &str, mode_na
 fn outcome_class(result: Option<&Result<MontyObject, MountError>>) -> String {
     match result {
         None => "NotHandled".to_owned(),
-        Some(Ok(value)) => format!("Ok({:?})", value.root_node()),
+        Some(Ok(value)) => format!("Ok({:?})", unstable::root_node(value)),
         Some(Err(MountError::PathEscape { .. })) => "PathEscape".to_owned(),
         Some(Err(MountError::NoMountPoint(_))) => "NoMountPoint".to_owned(),
         Some(Err(MountError::Io(err, _))) => format!("Io({:?})", err.kind()),

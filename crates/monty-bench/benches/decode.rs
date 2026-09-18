@@ -1,14 +1,17 @@
 //! Benchmarks for host-side decoding of child frames: how long one frame can
-//! occupy a thread in `Worker::recv`. Two payload shapes bracket the per-byte
-//! cost — one big string (bulk copy + UTF-8 validation) and a list of row
-//! dicts (allocation-heavy, the realistic tool-result shape).
+//! occupy a thread in `Worker::recv`. Three payload shapes exercise bulk copy
+//! and UTF-8 validation (one big string), mixed values (row dicts), and shared
+//! references (a DAG of small lists).
 
 #[cfg(codspeed)]
 use codspeed_criterion_compat::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use monty_proto::{decode_frame, encode_to_capped_vec, pb};
-use monty_types::{MontyGraph, MontyNode, MontyObject};
+use monty_types::{
+    MontyObject,
+    unstable::{self, MontyGraph, MontyNode},
+};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 
@@ -79,7 +82,7 @@ fn dag(levels: usize) -> MontyObject {
     for _ in 0..levels {
         root = graph.push(MontyNode::List(vec![root, root]));
     }
-    MontyObject::new(graph, root).expect("the last node pushed is the root")
+    unstable::object_from_graph(graph, root).expect("the last node pushed is the root")
 }
 
 /// A list of `n` dicts shaped like a SQL tool reply (short string keys,

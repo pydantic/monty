@@ -2,9 +2,9 @@
 //!
 //! - `#[derive(FromArgs)]` — `ArgValues` → typed struct (positional/kwarg
 //!   dispatch, defaults, type coercion via `FromValue`, refcount cleanup).
-//! - `#[derive(ToArgs)]` — typed struct → `CallArgs` (an arena plus arg ids).
+//! - `#[derive(ToArgs)]` — typed struct → host call arguments.
 //!
-//! Generated code emits `crate::...` paths and only compiles inside `monty`.
+//! Generated code is internal to `monty` (`FromArgs`) and `monty-types` (`ToArgs`).
 //! See the crate `README.md` for usage and the docstrings on `StructAttrs` /
 //! `FieldKind` in `from_args.rs` for the full attribute surface.
 
@@ -33,11 +33,8 @@ pub fn derive_from_args(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Derive `ToArgs::to_args` — projects a struct into a `CallArgs` (one
-/// value arena plus positional and keyword ids). Reuses the
-/// `#[from_args(...)]` field attributes (`pos_only`, `kw_only`, `varargs`)
-/// so a struct that derives both stays consistent in both directions. Each
-/// field type must implement `monty_types::args::PushValue`.
+/// Projects a struct into host call arguments using `#[from_args(...)]` attributes.
+/// `varargs` fields contribute one positional argument per element.
 #[proc_macro_derive(ToArgs, attributes(from_args))]
 pub fn derive_to_args(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);

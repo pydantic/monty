@@ -5,7 +5,7 @@ use std::{
     mem,
 };
 
-use monty_types::{ClassTypeNode, MontyUuid};
+use monty_types::{MontyUuid, unstable::ClassTypeNode};
 
 use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value, str::allocate_string};
 use crate::{

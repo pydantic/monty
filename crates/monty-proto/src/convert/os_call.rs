@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use monty_types::{
     GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
-    PathStringDataArgs, RenameCallArgs, UrandomArgs, sleep_duration,
+    PathStringDataArgs, RenameCallArgs, UrandomArgs, sleep_duration, unstable,
 };
 
 use crate::{
@@ -81,10 +81,11 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
             dst: a.dst.into_string(),
         }),
         OsFunctionCall::Getenv(a) => {
-            values = Some(WireArena::new(a.default.graph));
+            let (graph, root) = unstable::into_graph_parts(a.default);
+            values = Some(WireArena::new(graph));
             Call::Getenv(os_call::Getenv {
                 key: a.key,
-                default: a.default.root.0,
+                default: root.0,
             })
         }
         OsFunctionCall::GetEnviron => Call::GetEnviron(Unit {}),
@@ -189,7 +190,7 @@ fn text_write(args: PathStringDataArgs) -> os_call::TextWrite {
 fn bytes_write(args: PathBytesDataArgs) -> os_call::BytesWrite {
     os_call::BytesWrite {
         path: args.path.into_string(),
-        data: args.data,
+        data: args.data.into(),
     }
 }
 
@@ -205,6 +206,6 @@ fn text_args(wire: os_call::TextWrite) -> PathStringDataArgs {
 fn bytes_args(wire: os_call::BytesWrite) -> PathBytesDataArgs {
     PathBytesDataArgs {
         path: MontyPath::new(wire.path),
-        data: wire.data,
+        data: wire.data.into_inner(),
     }
 }

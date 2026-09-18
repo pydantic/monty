@@ -15,7 +15,10 @@ use std::fmt::{self, Write};
 
 use logfire::{Logfire, set_local_logfire};
 use monty_proto::{WireArena, WireFunctionCall, pb, pb::os_call::Call};
-use monty_types::{MontyNode, MontyUuid, NodeId, bytes_repr};
+use monty_types::{
+    MontyUuid, bytes_repr,
+    unstable::{MontyNode, NodeId},
+};
 use opentelemetry::Value as OtelValue;
 use tracing::{Span, field::Empty};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -393,7 +396,7 @@ impl Recorder {
                 logfire::info!(
                     parent: self.context_span(),
                     "shutdown",
-                    state_bytes = s.dump.as_ref().map(Vec::len),
+                    state_bytes = s.dump.as_ref().map(|bytes| bytes.len()),
                     total_execution_micros = micros,
                     max_feed_duration_micros = max_feed_duration,
                 );
@@ -1060,7 +1063,7 @@ mod tests {
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::Feed(pb::Feed {
             code: "double(2)".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1164,7 +1167,9 @@ mod tests {
         let _guard = set_local_logfire(logfire);
         let mut recorder = Recorder::new(None);
 
-        recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![0; 8] })));
+        recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![0; 8].into(),
+        })));
         recorder.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 42,
@@ -1176,7 +1181,7 @@ mod tests {
         });
         recorder.begin_turn(&request(pb::parent_request::Kind::Dump(pb::Dump {})));
         recorder.event(&event(pb::child_event::Kind::DumpResult(pb::DumpResult {
-            state: vec![0; 16],
+            state: vec![0; 16].into(),
         })));
 
         let spans = spans.get_finished_spans().unwrap();
@@ -1214,7 +1219,9 @@ mod tests {
             ..Default::default()
         })));
         recorder.event(&event(pb::child_event::Kind::Ok(pb::Ok {})));
-        recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![] })));
+        recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![].into(),
+        })));
         recorder.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 42,
@@ -1226,7 +1233,7 @@ mod tests {
         });
         recorder.begin_turn(&request(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1250,7 +1257,9 @@ mod tests {
         let _guard = set_local_logfire(logfire);
         let mut recorder = Recorder::new(None);
 
-        recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![] })));
+        recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![].into(),
+        })));
         recorder.event(&event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "value".to_owned(),
             object_id: None,
@@ -1307,7 +1316,7 @@ mod tests {
             kind: Some(pb::ext_function_result::Kind::Error(pb::RaisedException {
                 exc_type: "ValueError".to_owned(),
                 message: Some(long.clone()),
-                traceback: vec![],
+                traceback: vec![].into(),
                 data: None,
             })),
         };
@@ -1343,7 +1352,7 @@ mod tests {
             exception: Some(pb::RaisedException {
                 exc_type: "UnicodeDecodeError".to_owned(),
                 message: None,
-                traceback: vec![],
+                traceback: vec![].into(),
                 data: Some(pb::ExcData {
                     kind: Some(pb::exc_data::Kind::Unicode(pb::UnicodeErrorData {
                         encoding: "u".repeat(ATTR_SIZE_LIMIT * 2),

@@ -1,5 +1,10 @@
+use std::mem;
+
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyNode, MontyObject, MontyUuid};
+use monty_types::{
+    CompileOptions, ExcType, MontyObject, MontyUuid,
+    unstable::{self, MontyNode},
+};
 
 /// Test we can reuse exec without borrow checker issues.
 #[test]
@@ -385,13 +390,15 @@ fn evil_instance() -> MontyObject {
 /// Replaces the worker-generated (random) class/instance uuids in `obj` with the
 /// deterministic ids [`evil_instance`] uses, so structural comparison works.
 fn normalize_instance_uuids(obj: &mut MontyObject) {
-    for node in obj.graph.nodes_mut() {
+    let (mut graph, root) = unstable::into_graph_parts(mem::replace(obj, MontyObject::none()));
+    for node in graph.nodes_mut() {
         match node {
             MontyNode::ClassType(class) => class.id = MontyUuid::from_u128(0xE0),
             MontyNode::ClassInstance { instance_id, .. } => *instance_id = MontyUuid::from_u128(0xE1),
             _ => {}
         }
     }
+    *obj = unstable::object_from_graph(graph, root).unwrap();
 }
 
 #[test]

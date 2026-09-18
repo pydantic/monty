@@ -3,15 +3,16 @@ use std::time::Duration;
 use insta::assert_snapshot;
 use monty::MontyRun;
 use monty_proto::{
-    ProtoConvertError, WireArena, ext_result_from_proto, ext_result_to_proto, named_values_from_proto,
+    ProtoConvertError, WireArena, decode_frame, ext_result_from_proto, ext_result_to_proto, named_values_from_proto,
     named_values_to_proto, os_call_from_proto, os_call_to_proto, pb,
 };
 use monty_types::{
     CodeLoc, CompileOptions, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MAX_SLEEP_SECONDS,
-    MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyGraph, MontyNode, MontyObject,
-    MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues, NodeId,
-    OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame,
-    UnicodeErrorData, UrandomArgs, sleep_duration, sleep_duration_saturating,
+    MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTime,
+    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues, OpenCallArgs, OsFunctionCall,
+    PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData, UrandomArgs,
+    sleep_duration, sleep_duration_saturating,
+    unstable::{self, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
 use prost::Message;
@@ -21,7 +22,7 @@ use prost::Message;
 #[track_caller]
 fn assert_graph_round_trip(graph: &MontyGraph) {
     let bytes = WireArena::new(graph.clone()).encode_to_vec();
-    let back = WireArena::decode(bytes.as_slice())
+    let back = decode_frame::<WireArena>(bytes.as_slice())
         .expect("wire bytes -> WireArena failed")
         .into_graph()
         .expect("decoded arena is invalid");
@@ -31,7 +32,7 @@ fn assert_graph_round_trip(graph: &MontyGraph) {
 /// Asserts `obj` survives the wire as the arena its tree converts to.
 #[track_caller]
 fn assert_value_round_trip(obj: &MontyObject) {
-    assert_graph_round_trip(&obj.graph);
+    assert_graph_round_trip(unstable::graph_parts(obj).0);
 }
 
 #[test]
@@ -177,7 +178,7 @@ fn timezone_names_are_charged_to_the_decode_budget() {
                 name,
             }),
         ]
-        .map(|obj| obj.root_node().decoded_size())
+        .map(|obj| unstable::root_node(&obj).decoded_size())
     };
     let named = sizes(Some(name.clone()));
     let unnamed = sizes(None);
@@ -222,7 +223,7 @@ fn exception_and_type_values_round_trip() {
         MontyObject::builtin_function_from_name("object.__setattr__").expect("object.__setattr__ is a builtin");
     assert_value_round_trip(&dotted);
     assert_eq!(
-        serde_json::to_string(dotted.root_node()).expect("serializes"),
+        serde_json::to_string(unstable::root_node(&dotted)).expect("serializes"),
         r#"{"BuiltinFunction":"object.__setattr__"}"#
     );
 }
@@ -297,7 +298,9 @@ fn repr_and_cycle_round_trip() {
     .unwrap();
     let cyclic = run.run_no_limits(vec![]).unwrap();
     assert_value_round_trip(&cyclic);
-    assert!(matches!(cyclic.as_ref().items().as_deref(), Some([first]) if matches!(first.node(), MontyNode::Cycle(_))));
+    assert!(
+        matches!(cyclic.as_ref().items().as_deref(), Some([first]) if matches!(unstable::node(*first), MontyNode::Cycle(_)))
+    );
 }
 
 // NOTE: rejection of semantically invalid wire values (bad dates, unknown
@@ -427,11 +430,11 @@ fn unicode_exception(encoding: String, object: Vec<u8>, start: u64, end: u64, re
     pb::RaisedException {
         exc_type: "UnicodeDecodeError".to_owned(),
         message: Some("boom".to_owned()),
-        traceback: vec![],
+        traceback: vec![].into(),
         data: Some(pb::ExcData {
             kind: Some(pb::exc_data::Kind::Unicode(pb::UnicodeErrorData {
                 encoding,
-                object: Some(pb::unicode_error_data::Object::ObjectBytes(object)),
+                object: Some(pb::unicode_error_data::Object::ObjectBytes(object.into())),
                 start,
                 end,
                 reason,
@@ -508,7 +511,7 @@ fn json_exception(msg: String, doc: Option<String>, pos: u64, lineno: u64, colno
     pb::RaisedException {
         exc_type: "json.JSONDecodeError".to_owned(),
         message: Some("boom".to_owned()),
-        traceback: vec![],
+        traceback: vec![].into(),
         data: Some(pb::ExcData {
             kind: Some(pb::exc_data::Kind::Json(pb::JsonErrorData {
                 msg,
@@ -618,7 +621,7 @@ fn name_lookup_results_convert() {
     ));
     // the root must index the arena the message carries
     let out_of_range = pb::ResumeNameLookup {
-        values: Some(WireArena::new(MontyObject::int(1).graph)),
+        values: Some(WireArena::new(unstable::into_graph_parts(MontyObject::int(1)).0)),
         kind: Some(pb::resume_name_lookup::Kind::Value(1)),
     };
     assert!(matches!(
@@ -651,7 +654,7 @@ fn name_lookup_results_convert() {
         kind: Some(pb::resume_name_lookup::Kind::Error(pb::RaisedException {
             exc_type: "NotARealError".to_owned(),
             message: None,
-            traceback: vec![],
+            traceback: vec![].into(),
             data: None,
         })),
     };
@@ -673,7 +676,7 @@ fn deep_values_cross_the_wire() {
     }
     assert_graph_round_trip(&graph);
     let mut inputs = NamedValues::new();
-    inputs.push("v", MontyObject::new(graph, id).unwrap());
+    inputs.push("v", unstable::object_from_graph(graph, id).unwrap());
     let (refs, values) = named_values_to_proto(inputs.clone());
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
@@ -685,7 +688,7 @@ fn deep_values_cross_the_wire() {
         })),
         trace_parent: None,
     };
-    let back = pb::ParentRequest::decode(request.encode_to_vec().as_slice()).expect("deep feed decodes");
+    let back = decode_frame::<pb::ParentRequest>(request.encode_to_vec().as_slice()).expect("deep feed decodes");
     let Some(pb::parent_request::Kind::Feed(feed)) = back.kind else {
         panic!("expected a feed");
     };
@@ -718,8 +721,8 @@ fn shared_nodes_stay_shared_on_the_wire() {
 #[test]
 fn invalid_arenas_are_rejected() {
     let decode = |nodes: Vec<MontyNode>| {
-        let bytes = WireArena(nodes).encode_to_vec();
-        WireArena::decode(bytes.as_slice())
+        let bytes = WireArena(nodes.into()).encode_to_vec();
+        decode_frame::<WireArena>(bytes.as_slice())
             .expect("structurally valid")
             .into_graph()
             .map_err(|err| err.to_string())
@@ -771,7 +774,7 @@ fn invalid_arenas_are_rejected() {
 fn assert_os_call_round_trip(call: OsFunctionCall) {
     let expected = format!("{call:?}");
     let bytes = os_call_to_proto(3, call, false).encode_to_vec();
-    let decoded = pb::OsCall::decode(bytes.as_slice()).expect("wire bytes -> OsCall failed");
+    let decoded = decode_frame::<pb::OsCall>(bytes.as_slice()).expect("wire bytes -> OsCall failed");
     let (call_id, back) = os_call_from_proto(decoded).expect("wire call -> OsFunctionCall failed");
     assert_eq!(call_id, 3);
     assert_eq!(format!("{back:?}"), expected);
@@ -933,7 +936,7 @@ fn os_call_conversion_rejects_invalid_payloads() {
         os_call_from_proto(getenv(None)),
         Err(ProtoConvertError::MissingField("OsCall.values"))
     ));
-    let one_node = WireArena::new(MontyObject::none().graph);
+    let one_node = WireArena::new(unstable::into_graph_parts(MontyObject::none()).0);
     assert!(matches!(
         os_call_from_proto(getenv(Some(one_node))),
         Err(ProtoConvertError::InvalidValue { field: "Arena", .. })
@@ -944,17 +947,17 @@ fn os_call_conversion_rejects_invalid_payloads() {
 fn shutdown_event_round_trips() {
     let event = pb::ChildEvent {
         kind: Some(pb::child_event::Kind::Shutdown(pb::ShutdownDump {
-            dump: Some(vec![1, 2, 3]),
+            dump: Some(vec![1, 2, 3].into()),
         })),
         ..Default::default()
     };
-    let back = pb::ChildEvent::decode(event.encode_to_vec().as_slice()).expect("ShutdownDump event decodes");
+    let back = decode_frame::<pb::ChildEvent>(event.encode_to_vec().as_slice()).expect("ShutdownDump event decodes");
     assert_eq!(back, event);
     // a shutdown with nothing to dump (no session yet) also round-trips
     let bare = pb::ChildEvent {
         kind: Some(pb::child_event::Kind::Shutdown(pb::ShutdownDump { dump: None })),
         ..Default::default()
     };
-    let back = pb::ChildEvent::decode(bare.encode_to_vec().as_slice()).expect("bare ShutdownDump decodes");
+    let back = decode_frame::<pb::ChildEvent>(bare.encode_to_vec().as_slice()).expect("bare ShutdownDump decodes");
     assert_eq!(back, bare);
 }

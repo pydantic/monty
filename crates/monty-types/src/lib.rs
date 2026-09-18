@@ -29,7 +29,6 @@ pub use crate::{
     },
     file_mode::FileMode,
     format::{FormatFloat, StringRepr, bytes_repr, bytes_repr_fmt, string_repr_fmt, utf8_error_reason},
-    graph::{ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
     io::{
         COLLECT_STREAMS_ENTRY_OVERHEAD, CollectedStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES, PrintStream, PrintWriter,
         PrintWriterCallback, check_print_collect_limit,
@@ -37,7 +36,7 @@ pub use crate::{
     object::{
         CallArgs, ConversionError, InvalidInputError, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
         MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
-        NamedValues, ObjectRef,
+        NamedValues, ObjectRef, unstable,
     },
     os::{
         GetenvArgs, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,

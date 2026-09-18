@@ -35,8 +35,9 @@ use monty_pool::{
     ResumeValue, TurnEvent,
 };
 use monty_types::{
-    AssertMessageAnnotations, ExcType, MontyException, MontyNode, MontyObject, NameLookupResult, NamedValues, NodeId,
-    PrintStream, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
+    unstable::{self, NodeId},
+    AssertMessageAnnotations, ExcType, MontyException, MontyObject, NameLookupResult, NamedValues, PrintStream,
+    StackFrame, TypeCheckingConfig, TypeCheckingFormat,
 };
 use napi::{
     bindgen_prelude::{
@@ -531,7 +532,7 @@ impl NativeSession {
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let resolved = match value {
             Some(wrapper) => Some(name_lookup_value(env, &wrapper)?),
-            None => function_name.map(|name| MontyObject::leaf(MontyNode::Function { name, docstring: None })),
+            None => function_name.map(|name| MontyObject::function(name, None)),
         };
         self.run_turn(
             env,
@@ -879,9 +880,10 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("kind", "functionCall")?;
             obj.set("allowEagerAwait", allow_eager_await)?;
             obj.set("functionName", function_name)?;
-            let arena = DecodedArena::new(&args.graph, env)?;
-            obj.set("args", values_to_js(env, &arena, &args.arg_ids)?)?;
-            obj.set("kwargs", pairs_to_js(env, &arena, &args.kwarg_ids)?)?;
+            let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&args);
+            let arena = DecodedArena::new(graph, env)?;
+            obj.set("args", values_to_js(env, &arena, arg_ids)?)?;
+            obj.set("kwargs", pairs_to_js(env, &arena, kwarg_ids)?)?;
             obj.set("callId", call_id)?;
             // the routed receiver uuid as a canonical string
             obj.set("objectId", object_id.map(|uuid| uuid.to_string()))?;
@@ -894,9 +896,10 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
         }) => {
             obj.set("kind", "osCall")?;
             obj.set("functionName", function_name)?;
-            let arena = DecodedArena::new(&args.graph, env)?;
-            obj.set("args", values_to_js(env, &arena, &args.arg_ids)?)?;
-            obj.set("kwargs", pairs_to_js(env, &arena, &args.kwarg_ids)?)?;
+            let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&args);
+            let arena = DecodedArena::new(graph, env)?;
+            obj.set("args", values_to_js(env, &arena, arg_ids)?)?;
+            obj.set("kwargs", pairs_to_js(env, &arena, kwarg_ids)?)?;
             obj.set("callId", call_id)?;
             obj.set("allowEagerAwait", allow_eager_await)?;
         }
@@ -1025,10 +1028,7 @@ fn convert_inputs<'env>(env: &'env Env, inputs: Option<Object<'env>>) -> Result<
             Ok((name, encoder.push(value)?))
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(NamedValues {
-        graph: encoder.finish(),
-        names,
-    })
+    Ok(unstable::named_values_from_parts(encoder.finish(), names).expect("encoded roots are valid"))
 }
 
 /// Converts a non-callable `externalLookup` entry — carried inside a

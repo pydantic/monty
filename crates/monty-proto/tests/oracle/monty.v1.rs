@@ -68,7 +68,7 @@ pub mod monty_node {
         Bytes(::prost::alloc::vec::Vec<u8>),
         /// A uuid.UUID value. Declared so the tag is settled, but NOT YET
         /// IMPLEMENTED: monty has no uuid module, so neither end produces or
-        /// accepts this arm (it decodes like any unknown kind — rejected).
+        /// accepts this arm (conversion to a domain node rejects it).
         #[prost(message, tag = "10")]
         Uuid(super::Uuid),
         #[prost(message, tag = "11")]

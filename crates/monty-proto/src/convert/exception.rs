@@ -116,7 +116,7 @@ fn sanitize_json_data(data: pb::JsonErrorData) -> Option<Box<JsonErrorData>> {
 impl From<&UnicodeErrorData> for pb::UnicodeErrorData {
     fn from(data: &UnicodeErrorData) -> Self {
         let object = match &data.object {
-            UnicodeErrorObject::Bytes(bytes) => pb::unicode_error_data::Object::ObjectBytes(bytes.clone()),
+            UnicodeErrorObject::Bytes(bytes) => pb::unicode_error_data::Object::ObjectBytes(bytes.clone().into()),
             UnicodeErrorObject::Str(s) => pb::unicode_error_data::Object::ObjectStr(s.clone()),
         };
         Self {
@@ -151,7 +151,7 @@ fn sanitize_unicode_data(data: pb::UnicodeErrorData) -> Option<Box<UnicodeErrorD
                 return None;
             }
             let len = bytes.len();
-            (UnicodeErrorObject::Bytes(bytes), len)
+            (UnicodeErrorObject::Bytes(bytes.into_inner()), len)
         }
         pb::unicode_error_data::Object::ObjectStr(s) => {
             if s.len() > UnicodeErrorData::MAX_OBJECT_LEN {

@@ -13,7 +13,10 @@ use std::{
 };
 
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
-use monty_types::{MontyNode, MontyObject, OsFunctionCall, PathStringDataArgs, RenameCallArgs};
+use monty_types::{
+    MontyObject, OsFunctionCall, PathStringDataArgs, RenameCallArgs,
+    unstable::{self, MontyNode},
+};
 use tempfile::TempDir;
 
 mod common;
@@ -95,7 +98,7 @@ impl StaleRef {
     fn assert_rejected(&mut self, call: OsFunctionCall) {
         let outcome = dispatch(&mut self.mounts, call);
         let leaked = match &outcome {
-            Ok(value) => match value.root_node() {
+            Ok(value) => match unstable::root_node(value) {
                 MontyNode::String(s) => s.contains(SECRET),
                 MontyNode::Bytes(b) => b.windows(SECRET.len()).any(|w| w == SECRET.as_bytes()),
                 _ => false,

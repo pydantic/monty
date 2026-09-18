@@ -675,7 +675,7 @@ async fn duration_backstop_arms_on_the_raw_path() {
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "while True:\n    pass".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -734,14 +734,16 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
         .expect("checkout");
     let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
     let load = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: vec![1, 2, 3] })),
+        kind: Some(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![1, 2, 3].into(),
+        })),
         ..pb::ParentRequest::default()
     };
     checkout.turn_raw(&load, &mut on_event).await.expect("load");
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "while True:\n    pass".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -800,7 +802,7 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -847,7 +849,7 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
     let load = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Load(pb::Load {
-            state: vec![0; MAX_FRAME_LEN as usize + 1],
+            state: vec![0; MAX_FRAME_LEN as usize + 1].into(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -856,7 +858,7 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "while True:\n    pass".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -890,7 +892,7 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
         send_event(
             &mut socket,
             &event_kind(pb::child_event::Kind::Shutdown(pb::ShutdownDump {
-                dump: Some(b"relay-signed state".to_vec()),
+                dump: Some(b"relay-signed state".to_vec().into()),
             })),
         );
     });
@@ -900,7 +902,7 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1221,7 +1223,7 @@ async fn suspension_limit_is_enforced_on_the_raw_path() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "fetch()".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1282,7 +1284,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
                     exception: Some(pb::RaisedException {
                         exc_type: "RuntimeError".to_owned(),
                         message: Some("protocol violation: Load requires a session that has not started".to_owned()),
-                        traceback: vec![],
+                        traceback: vec![].into(),
                         data: None,
                     }),
                 })),
@@ -1321,7 +1323,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "fetch()".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1331,7 +1333,9 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
     let event = checkout.turn_raw(&feed, &mut on_event).await.expect("feed");
     assert!(matches!(event.kind, Some(pb::child_event::Kind::FunctionCall(_))));
     let load = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: vec![1, 2, 3] })),
+        kind: Some(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![1, 2, 3].into(),
+        })),
         ..pb::ParentRequest::default()
     };
     let event = checkout.turn_raw(&load, &mut on_event).await.expect("refused load");
@@ -1516,7 +1520,9 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
         .expect("checkout");
     let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
     let load = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: vec![1, 2, 3] })),
+        kind: Some(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![1, 2, 3].into(),
+        })),
         ..pb::ParentRequest::default()
     };
     let event = checkout.turn_raw(&load, &mut on_event).await.expect("aborted restore");
@@ -1527,7 +1533,7 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "fetch()".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1626,7 +1632,7 @@ fn ok_event() -> pb::child_event::Kind {
 /// Builds a `ShutdownDump` turn-ender.
 fn shutdown(dump: Option<&[u8]>) -> pb::child_event::Kind {
     pb::child_event::Kind::Shutdown(pb::ShutdownDump {
-        dump: dump.map(<[u8]>::to_vec),
+        dump: dump.map(|bytes| bytes.to_vec().into()),
     })
 }
 
