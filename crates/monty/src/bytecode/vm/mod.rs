@@ -2233,11 +2233,11 @@ impl<'h> VM<'h> {
     }
 
     /// Pushes a frame, releasing its state if the recursion limit rejects it.
-    pub(super) fn push_frame(&mut self, mut frame: CallFrame<'h>) -> RunResult<()> {
+    pub(super) fn push_frame(&mut self, frame: CallFrame<'h>) -> RunResult<()> {
         if !self.current_frame.is_parked
             && let Err(e) = self.incr_recursion()
         {
-            self.cleanup_frame_state(&mut frame);
+            self.cleanup_frame_state(frame);
             return Err(e.into());
         }
         self.push_admitted_frame(frame);
@@ -2259,20 +2259,21 @@ impl<'h> VM<'h> {
     /// Returns `true` if this frame indicated evaluation should stop when popped.
     pub(super) fn pop_frame(&mut self) -> bool {
         let caller = self.suspended_frames.pop().expect("cannot pop the root frame");
-        let mut frame = mem::replace(&mut self.current_frame, caller);
-        self.cleanup_frame_state(&mut frame);
+        let frame = mem::replace(&mut self.current_frame, caller);
+        let should_return = frame.should_return;
+        self.cleanup_frame_state(frame);
         // Sync instruction_ip to the restored caller so exception table lookups
         // target the correct frame after returning from a nested run() call.
         self.instruction_ip = self.current_frame.ip;
         if !self.current_frame.is_parked {
             self.decr_recursion();
         }
-        frame.should_return
+        should_return
     }
 
     /// Releases what a finished frame owns: its stack region and namespace.
     #[inline]
-    fn cleanup_frame_state(&mut self, frame: &mut CallFrame<'_>) {
+    fn cleanup_frame_state(&mut self, frame: CallFrame<'_>) {
         // Clean up frame's stack region (locals + operand stack, which now
         // includes any in-flight comprehension variables — the operand-stack
         // drain naturally covers them).
@@ -2280,7 +2281,7 @@ impl<'h> VM<'h> {
             .drain(frame.stack_base()..)
             .for_each(|value| value.drop_with(&mut *self.heap));
         // Almost every frame has no namespace; skip the release call for those.
-        if let Some(namespace) = frame.namespace.take() {
+        if let Some(namespace) = frame.namespace {
             namespace.drop_with(self.heap);
         }
     }

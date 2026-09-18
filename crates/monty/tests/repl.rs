@@ -607,6 +607,30 @@ fn repl_rejected_compilation_keeps_no_products() {
     assert_eq!(feed_run_print(&mut repl, "accepted()").unwrap(), MontyObject::int(42));
 }
 
+/// Static tags, owned strings and reserved IDs stay canonical across feeds and snapshots.
+#[test]
+fn repl_interns_deduplicate_static_and_owned_strings() {
+    let source = "def keepends(custom_parameter='owned-name'):\n    return (custom_parameter.splitlines(keepends=False)[0], 'keepends', 'κ', 'x', '')\nkeepends(custom_parameter='owned-name')";
+    let runtime_source = format!("exec({source:?})\nkeepends()");
+    let (mut repl, _) = init_repl("");
+    let expected =
+        MontyObject::tuple(["owned-name", "keepends", "κ", "x", ""].map(|text| MontyObject::string(text.to_owned())));
+
+    for code in [source, source, &runtime_source] {
+        assert_eq!(feed_run_print(&mut repl, code).unwrap(), expected);
+        let state = to_value(&repl).unwrap();
+        let strings = state["interns"]["strings"].as_array().unwrap();
+        for text in ["keepends", "custom_parameter", "owned-name", "κ"] {
+            assert_eq!(strings.iter().filter(|value| value.as_str() == Some(text)).count(), 1);
+        }
+        for text in ["", "x"] {
+            assert_eq!(strings.iter().filter(|value| value.as_str() == Some(text)).count(), 0);
+        }
+        repl = round_trip_repl(&repl);
+        assert_eq!(feed_run_print(&mut repl, "keepends()").unwrap(), expected);
+    }
+}
+
 /// Frame admission must reject runtime compilation before publishing any code or names.
 #[test]
 fn repl_rejected_snippet_admission_keeps_no_products() {

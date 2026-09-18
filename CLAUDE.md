@@ -231,7 +231,9 @@ Snapshots store function IDs and offsets, rebuilding code borrows on restore.
 
 The VM holds `&Interns`, never `&mut Interns`.
 Committed strings, literals and functions have stable addresses in append-only storage.
-`CompileInterns` owns each compilation's pending entries and deduplicates strings against both tables.
+For REPL feeds and runtime compilation, `CompileInterns` owns pending entries and deduplicates strings against both tables.
+Fresh programs use `CompileInterns::direct(&mut Interns)` and discard the entire interner if compilation fails.
+Do not use direct mode for an existing session: only the overlay supports rejection without retaining products.
 New IDs start at the committed table lengths, so bytecode uses final IDs without relocation.
 An active overlay blocks runtime interning and other compilations from consuming those IDs.
 

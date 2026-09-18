@@ -2166,7 +2166,7 @@ fn get_static_string(strings: &Entries<InternedString>, id: StringId) -> Option<
 }
 
 /// Committed strings, literals, functions and snippet sources.
-/// Entries never move or disappear; a compilation publishes its private overlay on success.
+/// Entries never move or disappear; existing sessions publish private compilation overlays on success.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "InternsWire")]
 pub(crate) struct Interns {

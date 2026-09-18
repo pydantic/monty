@@ -54,6 +54,28 @@ fn monty_run_round_trip_simple() {
     assert_eq!(result, MontyObject::int(3));
 }
 
+/// Directly compiled tables and later overlays share canonical names after loading and reuse.
+#[test]
+fn monty_run_round_trip_with_runtime_interns() {
+    let code = r#"
+def keepends(custom_parameter='owned-name'):
+    return custom_parameter.splitlines(keepends=False)[0]
+exec("def snippet():\n    return (keepends(), 'κ', b'literal', 123456789012345678901234567890 % 10)")
+snippet()
+"#;
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let expected = MontyObject::tuple([
+        MontyObject::string("owned-name".to_owned()),
+        MontyObject::string("κ".to_owned()),
+        MontyObject::bytes(b"literal".to_vec()),
+        MontyObject::int(0),
+    ]);
+    for _ in 0..2 {
+        runner = round_trip(&runner);
+        assert_eq!(runner.run_no_limits(vec![]).unwrap(), expected);
+    }
+}
+
 #[test]
 fn monty_run_round_trip_with_inputs() {
     // Test that input names are preserved across a round-trip

@@ -245,14 +245,14 @@ fn too_many_call_args(count: usize, kind: &'static str, position: CodeRange) -> 
 /// `CodeBuilder`. It handles variable scoping, control flow, and expression
 /// evaluation order following Python semantics.
 ///
-/// Functions are compiled recursively into a private [`CompileInterns`] overlay.
+/// Functions are compiled recursively through [`CompileInterns`].
 /// Each function's body is compiled before registering it, so nested functions
 /// receive lower IDs. Those IDs become MakeFunction/MakeClosure operands.
 pub struct Compiler<'a, 'i> {
     /// Current code being built.
     code: CodeBuilder,
 
-    /// Private strings, literals and functions, published only after compilation succeeds.
+    /// Compilation tables: private overlay for an existing session, direct insertion for a fresh program.
     interns: &'a mut CompileInterns<'i>,
 
     /// Enclosing control blocks whose cleanup is emitted by non-local exits.
@@ -528,7 +528,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     }
 
     /// Compiles module-level statements, returning the last expression or None.
-    /// The caller must discard the private intern overlay on failure.
+    /// On failure the caller discards the overlay, or the whole interner in direct mode.
     pub fn compile_module(
         nodes: &[PreparedNode],
         interns: &mut CompileInterns<'_>,

@@ -356,9 +356,16 @@ impl Executor {
         options: CompileOptions,
     ) -> Result<Self, MontyException> {
         check_identifier(&input_names)?;
-        let interns = Interns::new(&code);
+        let mut interns = Interns::new(&code);
         let mut globals = NameMap::new();
-        let (module_code, _) = compile_repl_snippet(&code, script_name, &mut globals, &interns, input_names, options)?;
+        let (module_code, _) = compile_module_source(
+            &code,
+            script_name,
+            &mut globals,
+            CompileInterns::direct(&mut interns),
+            input_names,
+            options,
+        )?;
         let namespace_size = globals.len();
 
         Ok(Self {
@@ -410,7 +417,14 @@ impl Executor {
 
         // Preparation assigns provisional global slots alongside the private intern IDs.
         let globals_len = globals.len();
-        let compiled = compile_repl_snippet(&code, script_name, globals, interns, input_names, options);
+        let compiled = compile_module_source(
+            &code,
+            script_name,
+            globals,
+            CompileInterns::new(interns),
+            input_names,
+            options,
+        );
         if compiled.is_err() {
             globals.truncate(globals_len);
         }
@@ -870,33 +884,32 @@ pub struct RefCountOutput {
     pub allocations_since_gc: u32,
 }
 
-/// Compiles a feed against existing IDs, publishing its intern and code buffers on success.
-/// The caller restores provisional global slots on failure.
-fn compile_repl_snippet(
+/// Compiles module source through the supplied tables, committing any overlay on success.
+/// On failure the caller restores provisional global slots or discards a fresh program's tables.
+fn compile_module_source(
     code: &str,
     script_name: &str,
     globals: &mut NameMap,
-    interns: &Interns,
+    mut interns: CompileInterns<'_>,
     input_names: impl IntoIterator<Item = impl AsRef<str>>,
     options: CompileOptions,
 ) -> Result<(Code, Vec<NamespaceId>), MontyException> {
-    let mut overlay = CompileInterns::new(interns);
     let input_names = input_names.into_iter();
     let mut input_slots = Vec::with_capacity(input_names.size_hint().0);
     for name in input_names {
-        let name_id = overlay.intern(name.as_ref());
+        let name_id = interns.intern(name.as_ref());
         let slot = globals
             .ensure_slot(name_id, CodeRange::default())
             .map_err(|e| e.into_python_exc(script_name, code))?;
         input_slots.push(slot);
     }
     let nodes =
-        parse_with_interner(code, script_name, &mut overlay).map_err(|e| e.into_python_exc(script_name, code))?;
+        parse_with_interner(code, script_name, &mut interns).map_err(|e| e.into_python_exc(script_name, code))?;
     let nodes =
-        prepare_with_existing_names(nodes, &overlay, globals).map_err(|e| e.into_python_exc(script_name, code))?;
-    let module_code = Compiler::compile_module(&nodes, &mut overlay, globals, options)
+        prepare_with_existing_names(nodes, &interns, globals).map_err(|e| e.into_python_exc(script_name, code))?;
+    let module_code = Compiler::compile_module(&nodes, &mut interns, globals, options)
         .map_err(|e| e.into_python_exc(script_name, code))?;
-    overlay.commit();
+    interns.commit();
     Ok((module_code, input_slots))
 }
 

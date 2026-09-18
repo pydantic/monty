@@ -121,7 +121,7 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
     }
 }
 
-impl VM<'_> {
+impl<'h> VM<'h> {
     // ========================================================================
     // Call Opcode Executors
     // ========================================================================
@@ -815,10 +815,10 @@ impl VM<'_> {
         let func = self.interns.get_function(func_id);
         match func.exact_positional_call() {
             Some(ExactPositionalCall::Sync(count)) if count == arg_count => {
-                Some(self.call_exact_sync_function(func_id, callable_index))
+                Some(self.call_exact_sync_function(func_id, func, callable_index))
             }
             Some(ExactPositionalCall::Async(count)) if count == arg_count => {
-                Some(Ok(self.create_exact_coroutine(func_id, callable_index)))
+                Some(Ok(self.create_exact_coroutine(func_id, func, callable_index)))
             }
             _ => None,
         }
@@ -828,9 +828,13 @@ impl VM<'_> {
     ///
     /// Removing the immediate callable shifts its arguments into the parameter
     /// slots, avoiding argument wrappers, binding, scratch storage, and a copy.
-    fn call_exact_sync_function(&mut self, func_id: FunctionId, callable_index: usize) -> Result<CallResult, RunError> {
+    fn call_exact_sync_function(
+        &mut self,
+        func_id: FunctionId,
+        func: &'h Function,
+        callable_index: usize,
+    ) -> Result<CallResult, RunError> {
         let call_offset = self.current_offset();
-        let func = self.interns.get_function(func_id);
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
         let code = &func.code;
@@ -855,8 +859,7 @@ impl VM<'_> {
     }
 
     /// Creates a coroutine by moving exact positional arguments into its namespace.
-    fn create_exact_coroutine(&mut self, func_id: FunctionId, callable_index: usize) -> CallResult {
-        let func = self.interns.get_function(func_id);
+    fn create_exact_coroutine(&mut self, func_id: FunctionId, func: &Function, callable_index: usize) -> CallResult {
         let mut namespace = self.stack.split_off(callable_index + 1);
         namespace.reserve(func.namespace_size - namespace.len());
         self.install_closure_cells(func, &[], &mut namespace);
@@ -888,9 +891,9 @@ impl VM<'_> {
         let func = self.interns.get_function(func_id);
 
         if func.is_async {
-            self.create_coroutine(func_id, cells, defaults, globals, args)
+            self.create_coroutine(func_id, func, cells, defaults, globals, args)
         } else {
-            self.call_sync_function(func_id, cells, defaults, globals, args)
+            self.call_sync_function(func_id, func, cells, defaults, globals, args)
         }
     }
 
@@ -900,13 +903,12 @@ impl VM<'_> {
     fn create_coroutine(
         &mut self,
         func_id: FunctionId,
+        func: &Function,
         cells: &[HeapId],
         defaults: &[Value],
         globals: Option<HeapId>,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
-        let func = self.interns.get_function(func_id);
-
         // 1. Create namespace for the coroutine with bound arguments and captured cells.
         let namespace = Vec::with_capacity(func.namespace_size);
         let mut namespace_guard = DropGuard::new(namespace, self);
@@ -976,6 +978,7 @@ impl VM<'_> {
     fn call_sync_function(
         &mut self,
         func_id: FunctionId,
+        func: &'h Function,
         cells: &[HeapId],
         defaults: &[Value],
         globals: Option<HeapId>,
@@ -984,7 +987,6 @@ impl VM<'_> {
         let call_offset = self.current_offset();
         let stack_base = self.stack.len();
 
-        let func = self.interns.get_function(func_id);
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 

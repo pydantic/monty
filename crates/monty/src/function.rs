@@ -80,7 +80,7 @@ pub(crate) struct Function {
     /// than merely checked.
     #[serde(skip)]
     exact_positional_call: OnceCell<Option<ExactPositionalCall>>,
-    /// Immutable metadata for this function's code; frames retain arena offsets.
+    /// Compiled body borrowed by active frames, which track body-relative instruction offsets.
     pub code: Code,
 }
 
