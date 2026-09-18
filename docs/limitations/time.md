@@ -41,11 +41,11 @@ the machine's clock, need not advance between calls, and is not guaranteed to
 move forward at all. It is a `float` of seconds since the Unix epoch, as in
 CPython.
 
-## Sleeping does not consume the execution-time limit
+## Sleeping does not consume the execution-time limits
 
-`max_duration` measures execution time, and the clock stops while the sandbox is
-suspended — so a sleep costs nothing against it, however long it lasts. What
-bounds sleeping instead:
+`max_feed_duration` and `max_turn_duration` measure execution time, and the clock
+stops while the sandbox is suspended — so a sleep costs nothing against them,
+however long it lasts. What bounds sleeping instead:
 
 - `max_suspensions` (default 1000), since each sleep is one suspension (two
     when an `asyncio.sleep()` answered with a future is awaited later). The

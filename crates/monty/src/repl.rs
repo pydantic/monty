@@ -233,6 +233,7 @@ impl MontyRepl {
 
         this.ensure_globals_size(executor.namespace_size());
 
+        this.heap.tracker.on_feed_start();
         match HeapReader::with(&mut this.heap, &mut (&executor, print), |reader, (executor, print)| {
             let mut vm = VM::new(
                 mem::take(&mut this.globals),
@@ -317,6 +318,7 @@ impl MontyRepl {
 
         self.ensure_globals_size(executor.namespace_size());
 
+        self.heap.tracker.on_feed_start();
         let result = HeapReader::with(&mut self.heap, &mut (&executor, print), |reader, (executor, print)| {
             let mut vm = VM::new(
                 mem::take(&mut self.globals),
@@ -408,6 +410,8 @@ impl MontyRepl {
 
         let original_globals_len = self.globals.len();
         self.ensure_globals_size(executor.namespace_size());
+        // A host-driven call is its own unit of work, so it opens a fresh feed.
+        self.heap.tracker.on_feed_start();
         let result = HeapReader::with(&mut self.heap, &mut (&executor, print), |reader, (executor, print)| {
             let vm = &mut VM::new(
                 mem::take(&mut self.globals),
@@ -650,8 +654,8 @@ impl ReplProgress {
     /// Returns the session's resource tracker, whatever the progress state.
     ///
     /// Lets hosts read resource accounting — e.g. cumulative execution time
-    /// for `max_duration` budgeting — at any suspension point without
-    /// consuming the progress.
+    /// to report as telemetry — at any suspension point without consuming the
+    /// progress.
     pub fn tracker(&self) -> &ResourceTracker {
         match self {
             Self::FunctionCall(call) => call.snapshot.repl.tracker(),
@@ -866,6 +870,7 @@ impl ReplNameLookup {
             vm_state,
         } = snapshot;
 
+        repl.heap.tracker.on_turn_start();
         let (converted, vm_state) =
             HeapReader::with(&mut repl.heap, &mut (&executor, print), |reader, (executor, print)| {
                 // Restore the VM first, then convert inside its lifetime
@@ -984,6 +989,7 @@ impl ReplResolveFutures {
             .find(|(call_id, _)| !pending_call_ids.contains(call_id))
             .map(|(call_id, _)| *call_id);
 
+        repl.heap.tracker.on_turn_start();
         match HeapReader::with(&mut repl.heap, &mut (&executor, print), |reader, (executor, print)| {
             let mut vm = VM::restore(
                 vm_state,
@@ -1119,6 +1125,7 @@ fn abort_restored(
     exc: MontyException,
     print: PrintWriter<'_>,
 ) -> Result<ReplProgress, Box<ReplStartError>> {
+    repl.heap.tracker.on_turn_start();
     let converted = HeapReader::with(&mut repl.heap, &mut (&executor, print), |reader, (executor, print)| {
         let mut vm = VM::restore(
             vm_state,
@@ -1205,6 +1212,7 @@ impl ReplSnapshot {
             vm_state,
         } = self;
 
+        repl.heap.tracker.on_turn_start();
         let (converted, vm_state) =
             HeapReader::with(&mut repl.heap, &mut (&executor, print), |reader, (executor, print)| {
                 let mut vm = VM::restore(

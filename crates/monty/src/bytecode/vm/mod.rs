@@ -1092,7 +1092,7 @@ impl<'h> VM<'h> {
     }
 
     /// Runs the VM from a host boundary, bracketing the loop with the
-    /// tracker's execution-clock hooks so `max_duration` measures cumulative
+    /// tracker's execution-clock hooks so the time limits measure
     /// *execution* time only — the clock stops whenever this returns
     /// (completion, error, or suspension at an external call).
     ///
@@ -1193,7 +1193,7 @@ impl<'h> VM<'h> {
         /// checkpoint at all and must poll the tracker itself.
         const CHECK_INTERVAL: u8 = u8::MAX;
 
-        // Limits cannot change mid-run (`set_max_duration` needs `&mut` at the
+        // Limits cannot change mid-run (`set_max_feed_duration` needs `&mut` at the
         // host boundary), so with none configured the whole checkpoint reduces
         // to this one hoisted, well-predicted branch per instruction.
         let check_limits = self.heap.tracker.has_memory_time_limit();

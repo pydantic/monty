@@ -29,7 +29,8 @@ hello world
 | `--type-check-format`   | Diagnostic format: `full` (default), `concise`, `json`, `github` and the other ty formats                                                 |
 | `-m`, `--mount`         | Mount a host directory into the sandbox (see below)                                                                                       |
 | `--cwd`                 | The sandbox's virtual working directory (default: the first mount, else `/`)                                                              |
-| `--max-duration`        | Maximum execution time in seconds, e.g. `0.5`                                                                                             |
+| `--max-feed-duration`   | Maximum execution time per feed, in seconds, e.g. `0.5`; only the REPL feeds more than once                                               |
+| `--max-turn-duration`   | Maximum execution time between host round trips, in seconds                                                                               |
 | `--max-memory`          | Maximum heap memory, e.g. `1024`, `512KB`, `10MB`, `1GB`                                                                                  |
 | `--max-recursion-depth` | Maximum call-stack depth (default 1000)                                                                                                   |
 | `--gc-interval`         | Run garbage collection every N allocations                                                                                                |

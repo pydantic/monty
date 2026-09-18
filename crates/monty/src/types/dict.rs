@@ -1398,8 +1398,8 @@ impl<'h> HeapRead<'h, Dict> {
     /// Preflights the slot bytes so an over-budget clone raises a graceful
     /// `MemoryError` instead of bursting past the allocator's hard limit.
     /// Polls the clock as it goes: this is one half of a dict copy and the
-    /// fill half already polls, so leaving it out let a wide dict outrun
-    /// `max_duration` by however long the snapshot took.
+    /// fill half already polls, so leaving it out let a wide dict outrun its
+    /// time limit by however long the snapshot took.
     pub(crate) fn clone_all_pairs(&self, vm: &mut VM<'h>) -> RunResult<Vec<(Value, Value)>> {
         let len = self.get(vm.heap).len();
         vm.heap.tracker.check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;

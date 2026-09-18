@@ -48,6 +48,11 @@ impl MontyTransport {
     }
 }
 
+/// Default grace on each of the two duration backstops: how long the parent
+/// waits past a sandbox time limit for the worker to raise `TimeoutError`
+/// itself before killing it.
+pub const DEFAULT_DURATION_LIMIT_GRACE: Duration = Duration::from_secs(1);
+
 /// Configuration for a [`Pool`].
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
@@ -68,15 +73,24 @@ pub struct PoolConfig {
     /// that hangs in ways the sandbox limits cannot see. Synchronous host
     /// telemetry callbacks prevent the timer from being polled while they run.
     pub request_timeout: Option<Duration>,
-    /// Grace period for the automatic `max_duration` backstop.
+    /// Grace period for the automatic `ResourceLimits::max_feed_duration`
+    /// backstop.
     ///
-    /// When a session has a `ResourceLimits::max_duration` budget, the worker
-    /// reports its cumulative execution time on every turn-ending event (the
-    /// sandbox clock is the single source of truth: it runs only while the
-    /// interpreter executes, never during suspensions waiting on the host or
-    /// between feeds), and the parent bounds each execution turn by the
-    /// remaining budget plus this grace.
-    pub duration_limit_grace: Option<Duration>,
+    /// When a session has a feed budget, the worker reports the running feed's
+    /// execution time on every turn-ending event (the sandbox clock is the
+    /// single source of truth: it runs only while the interpreter executes,
+    /// never during suspensions waiting on the host or between feeds), and the
+    /// parent bounds each turn by what that budget has left plus this grace.
+    ///
+    /// The grace is the window in which the sandbox may raise `TimeoutError`
+    /// itself and keep the session alive; a worker that misses it is killed and
+    /// the call fails with [`PoolError::Timeout`], so too short a grace costs
+    /// workers that would have recovered.
+    pub feed_duration_limit_grace: Option<Duration>,
+    /// [`feed_duration_limit_grace`](Self::feed_duration_limit_grace) for the
+    /// `ResourceLimits::max_turn_duration` backstop: each turn is bounded by
+    /// that whole limit plus this, the turn clock starting at zero.
+    pub turn_duration_limit_grace: Option<Duration>,
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child.
     pub max_checkouts_per_worker: Option<u32>,
@@ -91,8 +105,8 @@ pub struct PoolConfig {
 
 impl PoolConfig {
     /// Creates a subprocess-transport config with defaults: `min_processes = 1`,
-    /// `max_processes =` available parallelism, no timeouts, a 1s
-    /// `duration_limit_grace`, no recycling.
+    /// `max_processes =` available parallelism, no timeouts, a 1s grace on
+    /// each of the three duration backstops, no recycling.
     pub fn subprocess(binary_path: impl Into<PathBuf>) -> Self {
         Self::with_transport(MontyTransport::Subprocess(binary_path.into()))
     }
@@ -113,7 +127,8 @@ impl PoolConfig {
             transport,
             checkout_timeout: None,
             request_timeout: None,
-            duration_limit_grace: Some(Duration::from_secs(1)),
+            feed_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
+            turn_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             max_checkouts_per_worker: None,
             #[cfg(feature = "telemetry")]
             metrics: None,
@@ -135,7 +150,7 @@ pub enum PoolError {
         cause: CrashCause,
     },
     /// The worker was killed after its turn outlived `request_timeout` (or
-    /// the `max_duration` backstop deadline).
+    /// one of the session/feed/turn duration backstop deadlines).
     Timeout {
         /// The configured timeout that expired.
         timeout: Duration,

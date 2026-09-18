@@ -201,7 +201,8 @@ and [`limitations/open.md`](limitations/open.md).
 
 ## I/O timeouts and cancellation
 
-Mount I/O has no timeout: it runs on the host between protocol turns, outside `request_timeout` and `max_duration_secs`.
+Mount I/O has no timeout: it runs on the host between protocol turns, outside `request_timeout` and the sandbox
+duration limits, whose clock is paused while the host works.
 A stalled NFS or FUSE volume can block a feed indefinitely.
 The pool uses blocking threads for filesystem operations, so a stalled call does not block other sessions' timers.
 

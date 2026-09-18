@@ -727,7 +727,7 @@ fn child_enforces_time_limit() {
     child.create_repl_with(pb::Configure {
         script_name: "main.py".to_owned(),
         limits: Some(pb::ResourceLimits {
-            max_duration_micros: Some(100_000), // 100ms
+            max_feed_duration_micros: Some(100_000), // 100ms
             ..Default::default()
         }),
         type_check: false,
@@ -740,10 +740,10 @@ fn child_enforces_time_limit() {
     let (_, event) = child.feed("while True:\n    pass");
     let error = expect_error(event);
     assert_eq!(error.exc_type, "TimeoutError");
-    // resource exhaustion is terminal for the SESSION (the tracker stays
-    // exhausted) but not for the child process: Reset + Configure reuses it
-    let (_, event) = child.feed("1 + 1");
-    assert_eq!(expect_error(event).exc_type, "TimeoutError");
+    // the feed clock restarts, so the next feed gets the whole budget back —
+    // the heap it runs against is what a host should not trust, not the budget
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    // the child process is reusable too: Reset + Configure starts a session over
     child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
     let pb::child_event::Kind::Ok(_) = child.recv() else {
         panic!("expected Ok for Reset");
@@ -2288,6 +2288,23 @@ fn undeclared_protocol_version_is_a_fatal_error() {
         message.contains("try updating to a newer client version"),
         "message should tell the client to update: {message}"
     );
+}
+
+/// The oldest served version still works: the point of a bump is to refuse a
+/// peer that would silently drop a field, not to close the migration window on
+/// parents that never send one.
+#[test]
+fn oldest_supported_protocol_version_is_accepted() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+        MIN_SUPPORTED_PROTOCOL_VERSION,
+        env!("CARGO_PKG_VERSION"),
+    )));
+    assert!(
+        matches!(child.recv(), pb::child_event::Kind::Ok(_)),
+        "a parent one version behind must still be served"
+    );
+    child.shutdown();
 }
 
 /// The package version is informational: a parent from a different build is

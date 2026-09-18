@@ -605,14 +605,14 @@ async fn malformed_os_call_is_a_protocol_error() {
     join_server(server).await;
 }
 
-/// The parent-side `max_duration` backstop (remaining budget + grace) kills a
-/// worker that never answers a feed — the case where the child's own time
-/// enforcement has failed. No `request_timeout` is configured, so the
+/// The parent-side `max_feed_duration` backstop (remaining budget + grace)
+/// kills a worker that never answers a feed — the case where the child's own
+/// time enforcement has failed. No `request_timeout` is configured, so the
 /// backstop is the only armed deadline.
 #[tokio::test]
 async fn duration_backstop_kills_an_unresponsive_worker() {
     let (listener, mut config) = ws_pool_config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -628,7 +628,7 @@ async fn duration_backstop_kills_an_unresponsive_worker() {
     let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .await
@@ -647,11 +647,11 @@ async fn duration_backstop_kills_an_unresponsive_worker() {
 
 /// The same backstop arms on the raw path, which a relay drives instead of
 /// `feed`. `turn_raw` used to arm `request_timeout` alone, so a session whose
-/// only bound was `max_duration` had no parent-side deadline at all.
+/// only bound was `max_feed_duration` had no parent-side deadline at all.
 #[tokio::test]
 async fn duration_backstop_arms_on_the_raw_path() {
     let (listener, mut config) = ws_pool_config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -667,7 +667,7 @@ async fn duration_backstop_arms_on_the_raw_path() {
     let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .await
@@ -697,7 +697,7 @@ async fn duration_backstop_arms_on_the_raw_path() {
 #[tokio::test]
 async fn a_raw_load_adopts_the_dumps_duration_budget() {
     let (listener, mut config) = ws_pool_config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -711,9 +711,11 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
             &mut socket,
             &pb::ChildEvent {
                 total_execution_micros: 0,
-                max_duration_micros: Some(100_000),
                 max_suspensions: None,
                 restored_script_name: None,
+                feed_execution_micros: 0,
+                max_feed_duration_micros: Some(100_000),
+                max_turn_duration_micros: None,
                 kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             },
         );
@@ -725,7 +727,7 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
     let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_secs(5))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_secs(5))),
             ..ReplConfig::default()
         })
         .await
@@ -820,7 +822,7 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
 #[tokio::test]
 async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let (listener, mut config) = ws_pool_config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -837,7 +839,7 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .await
@@ -925,9 +927,9 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
 /// serviced inside the turn, so a worker that simply runs too long before
 /// announcing it is killed by the deadline exactly as without mounts.
 ///
-/// Each resume starts a new deadline; `max_duration` bounds cumulative worker
-/// time across a loop of calls. Neither limit covers the host I/O itself; see
-/// docs/filesystem.md#io-timeouts-and-cancellation.
+/// Each resume starts a new deadline; `max_feed_duration` bounds worker time
+/// across a loop of calls within one feed. Neither limit covers the host I/O
+/// itself; see docs/filesystem.md#io-timeouts-and-cancellation.
 #[tokio::test]
 async fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
     let dir = tempfile::tempdir().unwrap();
@@ -966,13 +968,13 @@ async fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
     join_server(server).await;
 }
 
-/// A restored session re-adopts its `max_duration` budget from the timing
+/// A restored session re-adopts its `max_feed_duration` budget from the timing
 /// fields the worker stamps on the `Load` reply, re-arming the parent-side
 /// backstop without the parent ever seeing the original `ReplConfig`.
 #[tokio::test]
 async fn restored_session_rearms_the_duration_backstop() {
     let (listener, mut config) = ws_pool_config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -988,8 +990,10 @@ async fn restored_session_rearms_the_duration_backstop() {
                 kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
                 restored_script_name: Some("restored.py".to_owned()),
                 total_execution_micros: 0,
-                max_duration_micros: Some(100_000),
                 max_suspensions: None,
+                feed_execution_micros: 0,
+                max_feed_duration_micros: Some(100_000),
+                max_turn_duration_micros: None,
             },
         );
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));

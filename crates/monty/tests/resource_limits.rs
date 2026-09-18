@@ -355,7 +355,7 @@ x
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     // Set a short time limit
-    let limits = ResourceLimits::default().max_duration(Duration::from_millis(50));
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
     let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
 
     // Should fail due to time limit
@@ -375,7 +375,7 @@ fn time_limit_not_exceeded() {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     // Set a generous time limit
-    let limits = ResourceLimits::default().max_duration(Duration::from_secs(5));
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_secs(5));
     let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
 
     // Should succeed
@@ -468,7 +468,7 @@ result
 }
 
 // === Timeout enforcement in builtin iteration loops ===
-// These tests verify that `max_duration_secs` is enforced inside Rust-side loops
+// These tests verify that the time limits are enforced inside Rust-side loops
 // within builtin functions. Builtins like sum(), sorted(), min(), max() run Rust
 // loops entirely within a single bytecode instruction, so they would otherwise
 // bypass the VM's dispatch checkpoint entirely. Python iterator advancement and
@@ -479,7 +479,7 @@ result
 fn assert_timeout_in_builtin(code: &str, label: &str) {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
-    let limits = ResourceLimits::default().max_duration(Duration::from_millis(100));
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(100));
     let start = Instant::now();
     let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
     let elapsed = start.elapsed();
@@ -568,7 +568,7 @@ template.format(value)
 ";
     let mut call = pause_at_interrupt(code);
 
-    call.tracker_mut().set_max_duration(traversal_budget);
+    call.tracker_mut().set_max_feed_duration(traversal_budget);
     let started = Instant::now();
     let result = call.resume(MontyObject::none(), PrintWriter::Stdout);
     let elapsed = started.elapsed();
@@ -661,7 +661,7 @@ fn bytes_search_is_not_quadratic() {
 fn timeout_in_bytes_search() {
     for expr in BYTES_SEARCH_EXPRS {
         let (haystack, needle) = near_match_inputs(64 * 1024 * 1024, 4096);
-        let limits = ResourceLimits::default().max_duration(Duration::from_millis(1));
+        let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(1));
         let outcome = run_bytes_search(expr, haystack, needle, limits);
 
         let exc = outcome
@@ -948,7 +948,7 @@ fn timeout_in_str_format_parser() {
     });
 
     let elapsed = fastest_of_attempts(|| {
-        repl.tracker_mut().set_max_duration(full_scan / 10);
+        repl.tracker_mut().set_max_feed_duration(full_scan / 10);
         let start = Instant::now();
         let exc = repl
             .feed_run("template.format()", vec![], PrintWriter::Stdout)
@@ -972,23 +972,23 @@ fn timeout_in_str_format_receiver_snapshot() {
     repl.feed_run("template = '{missing}' + 'x' * 20_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
 
+    // The feed clock restarts at each feed, so it already reports one feed's
+    // execution time on its own — no need to difference the cumulative clock.
     let full_snapshot = fastest_of_attempts(|| {
-        let before = repl.tracker().elapsed();
         let exc = repl
             .feed_run("template.format()", vec![], PrintWriter::Stdout)
             .expect_err("the missing field must fail after snapshotting the receiver");
         assert_eq!(exc.exc_type(), ExcType::KeyError);
-        repl.tracker().elapsed().saturating_sub(before)
+        repl.tracker().feed_elapsed()
     });
 
     let elapsed = fastest_of_attempts(|| {
-        // resets the execution clock, so the next feed's elapsed time starts at zero
-        repl.tracker_mut().set_max_duration(full_snapshot / 10);
+        repl.tracker_mut().set_max_feed_duration(full_snapshot / 10);
         let exc = repl
             .feed_run("template.format()", vec![], PrintWriter::Stdout)
             .expect_err("the receiver snapshot must hit the time limit before field lookup");
         assert_eq!(exc.exc_type(), ExcType::TimeoutError);
-        repl.tracker().elapsed()
+        repl.tracker().feed_elapsed()
     });
 
     assert!(
@@ -1010,7 +1010,7 @@ fn timeout_in_str_format_escaped_braces() {
     });
 
     let elapsed = fastest_of_attempts(|| {
-        repl.tracker_mut().set_max_duration(full_scan / 10);
+        repl.tracker_mut().set_max_feed_duration(full_scan / 10);
         let start = Instant::now();
         let exc = repl
             .feed_run("template.format()", vec![], PrintWriter::Stdout)
@@ -1034,7 +1034,7 @@ fn fastest_of_attempts(mut measure: impl FnMut() -> Duration) -> Duration {
 
 #[test]
 fn timeout_in_str_format_grouped_padding() {
-    let tracker = ResourceTracker::new(ResourceLimits::default().max_duration(Duration::from_millis(10)));
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::from_millis(10)));
     let mut repl = MontyRepl::new("test.py", tracker, CompileOptions::default());
     let start = Instant::now();
     let exc = repl
@@ -1057,7 +1057,7 @@ fn timeout_in_str_format_large_str_field() {
     repl.feed_run("s = 'x' * 20_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
 
-    repl.tracker_mut().set_max_duration(Duration::from_millis(5));
+    repl.tracker_mut().set_max_feed_duration(Duration::from_millis(5));
     let start = Instant::now();
     let exc = repl
         .feed_run("'{0:<1}'.format(s)", vec![], PrintWriter::Stdout)
@@ -1094,16 +1094,16 @@ s.splitlines()
 // built with NO time limit, then execution pauses at `interrupt()`. A short time
 // limit is set before resuming, so only the `repr()` call is timed.
 
-/// The `max_duration` clock measures cumulative *execution* time only: time
-/// spent suspended at an external call must not consume the budget. Here the
-/// host stays away for 3× the entire budget while the sandbox is suspended,
+/// The execution clock measures *execution* time only: time spent suspended at
+/// an external call must not consume the budget. Here the host stays away for
+/// 3× the entire budget while the sandbox is suspended,
 /// and execution still completes — under the old wall-clock-since-creation
 /// accounting this raised TimeoutError on resume.
 #[test]
-fn suspension_time_does_not_count_toward_max_duration() {
+fn suspension_time_does_not_count_toward_the_feed_budget() {
     let code = "interrupt()\nsum(range(100))";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let limits = ResourceLimits::default().max_duration(Duration::from_millis(100));
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(100));
     let progress = run
         .start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
         .unwrap();
@@ -1122,12 +1122,12 @@ fn suspension_time_does_not_count_toward_max_duration() {
 }
 
 /// `MontyRepl::call_function` is a host boundary like `feed_run`: it must
-/// open an execution window so the cumulative `max_duration` clock advances
+/// open an execution window so the execution clock advances
 /// during the call. With the window left closed, `elapsed()` is frozen and an
 /// infinite loop in the called function would run forever.
 #[test]
-fn call_function_enforces_max_duration() {
-    let limits = ResourceLimits::default().max_duration(Duration::from_millis(50));
+fn call_function_enforces_the_feed_budget() {
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
     let mut repl = MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default());
     repl.feed_run(
         "def spin():\n    while True:\n        pass",
@@ -1154,7 +1154,7 @@ fn timeout_in_sort_key_loop() {
         PrintWriter::Stdout,
     )
     .unwrap();
-    repl.tracker_mut().set_max_duration(Duration::from_millis(50));
+    repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
     let start = Instant::now();
     let exc = repl
         .feed_run("x.sort(key=f)", vec![], PrintWriter::Stdout)
@@ -1177,7 +1177,7 @@ fn timeout_in_deepcopy_fill_loop() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run("import copy\nx = [[0]] * 4_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
-    repl.tracker_mut().set_max_duration(Duration::from_millis(50));
+    repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
     let start = Instant::now();
     let exc = repl
         .feed_run("copy.deepcopy(x)", vec![], PrintWriter::Stdout)
@@ -1220,7 +1220,7 @@ fn timeout_in_shallow_copy_fill_loop() {
     .unwrap();
 
     for budget in [50, 600] {
-        repl.tracker_mut().set_max_duration(Duration::from_millis(budget));
+        repl.tracker_mut().set_max_feed_duration(Duration::from_millis(budget));
         let start = Instant::now();
         let exc = repl
             .feed_run("copy.copy(x)", vec![], PrintWriter::Stdout)
@@ -1271,7 +1271,7 @@ fn call_function_rechecks_limits_at_exit() {
     .unwrap();
     // Arm a budget only for the call: repr of 100K strings blows it mid-format
     // and truncates, so only the exit re-check can surface the timeout.
-    repl.tracker_mut().set_max_duration(Duration::from_millis(10));
+    repl.tracker_mut().set_max_feed_duration(Duration::from_millis(10));
     let exc = repl
         .call_function("f", vec![], PrintWriter::Stdout)
         .expect_err("over-budget repr must fail the call even though it truncates");
@@ -1293,7 +1293,7 @@ fn erroring_turns_still_hit_limits_at_exit() {
     .unwrap();
     // The over-budget repr truncates (swallowing the timeout), then the raise
     // ends the turn before any dispatch checkpoint can fire.
-    repl.tracker_mut().set_max_duration(Duration::from_millis(10));
+    repl.tracker_mut().set_max_feed_duration(Duration::from_millis(10));
     let exc = repl
         .call_function("f", vec![], PrintWriter::Stdout)
         .expect_err("the call must fail");
@@ -1340,7 +1340,7 @@ fn assert_timeout_promptly(code: &str, label: &str) {
     assert_eq!(call.function_name, "interrupt");
 
     // Phase 2: set a short time limit and resume — repr() should timeout
-    call.tracker_mut().set_max_duration(Duration::from_millis(10));
+    call.tracker_mut().set_max_feed_duration(Duration::from_millis(10));
 
     let start = Instant::now();
     let result = call.resume(MontyObject::none(), PrintWriter::Stdout);
@@ -1353,7 +1353,7 @@ fn assert_timeout_promptly(code: &str, label: &str) {
         "{label}: expected TimeoutError, got: {exc}"
     );
     let msg = exc.message().unwrap();
-    assert!(msg.starts_with("time limit exceeded:"));
+    assert!(msg.starts_with("feed time limit exceeded:"));
     assert!(msg.ends_with("ms > 10ms"));
     assert!(
         elapsed < Duration::from_millis(200),
@@ -1645,7 +1645,7 @@ const ITERTOOLS_INFINITE_LOOPS: &[&str] = &[
 ///
 /// These loops sit inside one bytecode instruction and drive native sources, so
 /// nothing returns to the dispatch checkpoint; each must poll the tracker
-/// itself or `max_duration` is unenforceable.
+/// itself or the time limits are unenforceable.
 #[test]
 fn timeout_in_itertools_adaptor_loops() {
     for expr in ITERTOOLS_INFINITE_LOOPS {
@@ -1687,4 +1687,144 @@ fn a_refused_unpacked_call_releases_its_kwargs() {
         .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
         .expect_err("the *args clone should be refused");
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+// ---------------------------------------------------------------------------
+// Per-feed and per-turn duration limits
+// ---------------------------------------------------------------------------
+
+/// Builds a REPL whose only time limit is a per-feed one.
+fn feed_limited_repl(limit: Duration) -> MontyRepl {
+    let limits = ResourceLimits::default().max_feed_duration(limit);
+    MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default())
+}
+
+/// The feed clock restarts at each feed, so a session may run indefinitely in
+/// short snippets, each bounded on its own.
+///
+/// Each round spends the whole budget on purpose instead of timing a feed to
+/// eat part of it: a feed clock only grows within its scope, so without the
+/// reset the next feed would start already over budget. That is the same
+/// assertion, off the wall clock.
+#[test]
+fn max_feed_duration_restarts_each_feed() {
+    let mut repl = feed_limited_repl(Duration::from_millis(50));
+    for _ in 0..3 {
+        let exc = repl
+            .feed_run("while True:\n    pass", vec![], PrintWriter::Stdout)
+            .expect_err("the runaway feed must exhaust its budget");
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+        assert!(
+            exc.message()
+                .is_some_and(|m| m.starts_with("feed time limit exceeded:")),
+            "the scope must be named, got {exc}"
+        );
+        assert_eq!(
+            repl.feed_run("sum(range(1_000))", vec![], PrintWriter::Stdout)
+                .expect("the next feed gets the whole budget back"),
+            MontyObject::int(499_500)
+        );
+    }
+}
+
+/// The feed budget out-ranks the turn budget when a single check blows both,
+/// because a new turn cannot recover from it.
+#[test]
+fn feed_limit_outranks_turn_limit() {
+    let limits = ResourceLimits::default()
+        .max_feed_duration(Duration::from_millis(50))
+        .max_turn_duration(Duration::from_millis(50));
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default());
+    let exc = repl
+        .feed_run("while True:\n    pass", vec![], PrintWriter::Stdout)
+        .expect_err("both budgets are exceeded");
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.starts_with("feed time limit exceeded:")),
+        "the feed limit should be reported, got {exc}"
+    );
+}
+
+/// The turn clock restarts at each resume, so work split across host round
+/// trips stays inside a per-turn budget that its total would blow.
+///
+/// The loop runs until the cumulative execution clock — the same clock the
+/// turn budget reads — has passed several budgets' worth, which a cumulative
+/// turn budget could not survive. A faster machine takes more turns to get there rather
+/// than reaching the assertion on less work, so nothing here rides on
+/// wall-clock speed.
+#[test]
+fn max_turn_duration_restarts_each_resume() {
+    let budget = Duration::from_millis(50);
+    // `interrupt` is resolved once, so the drive loop below is resumes only:
+    // a repeated name lookup would restart the turn clock by itself.
+    let code = "
+pause = interrupt
+total = 0
+while True:
+    total += sum(range(1_000))
+    pause()
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_turn_duration(budget);
+    let mut call = resolve_name_lookups(
+        run.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+            .unwrap(),
+    )
+    .unwrap()
+    .into_function_call()
+    .expect("the first iteration suspends");
+    while call.tracker().elapsed() < budget * 3 {
+        call = call
+            .resume(MontyObject::none(), PrintWriter::Stdout)
+            .expect("the turn budget must not accumulate across resumes")
+            .into_function_call()
+            .expect("every iteration suspends");
+    }
+    // The sandbox loop never ends on its own, so close the run through the
+    // host's teardown path: dropping a live suspension leaves the roots its
+    // snapshot holds unreleased.
+    call.abort(
+        MontyException::new(ExcType::RuntimeError, Some("enough turns".to_owned())),
+        PrintWriter::Stdout,
+    )
+    .unwrap_err();
+}
+
+/// A turn that runs away is caught even though the feed has no budget at all.
+#[test]
+fn max_turn_duration_is_enforced_alone() {
+    let limits = ResourceLimits::default().max_turn_duration(Duration::from_millis(50));
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::new(limits), CompileOptions::default());
+    let exc = repl
+        .feed_run("while True:\n    pass", vec![], PrintWriter::Stdout)
+        .expect_err("the runaway turn must be caught");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.starts_with("turn time limit exceeded:")),
+        "the scope must be named, got {exc}"
+    );
+}
+
+/// `call_function` is its own unit of work: it opens a fresh feed, so a
+/// session that has already spent one still gets the full per-feed budget.
+///
+/// The spent feed overruns rather than being timed to eat part of the budget,
+/// so the test does not depend on wall-clock timing.
+#[test]
+fn call_function_starts_a_fresh_feed_budget() {
+    let mut repl = feed_limited_repl(Duration::from_millis(50));
+    repl.feed_run(
+        "def work():\n    return sum(range(10_000))",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    repl.feed_run("while True:\n    pass", vec![], PrintWriter::Stdout)
+        .expect_err("the runaway feed must exhaust its budget");
+    let value = repl
+        .call_function("work", vec![], PrintWriter::Stdout)
+        .expect("the call gets its own budget");
+    assert_eq!(value, MontyObject::int(49_995_000));
 }

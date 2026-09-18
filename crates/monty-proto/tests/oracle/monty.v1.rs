@@ -447,8 +447,6 @@ pub struct StackFrame {
 /// `ChildEvent`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResourceLimits {
-    #[prost(uint64, optional, tag = "1")]
-    pub max_duration_micros: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "2")]
     pub max_memory_bytes: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "3")]
@@ -457,6 +455,12 @@ pub struct ResourceLimits {
     pub max_recursion_depth: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "5")]
     pub max_suspensions: ::core::option::Option<u64>,
+    /// Per-feed and per-turn execution budgets on one clock: the feed budget
+    /// resets at each feed, the turn budget at each feed and each resume.
+    #[prost(uint64, optional, tag = "6")]
+    pub max_feed_duration_micros: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "7")]
+    pub max_turn_duration_micros: ::core::option::Option<u64>,
 }
 /// Outcome of an external function / OS call, decided by the parent. Mirrors
 /// monty's `ExtFunctionResult`, plus `not_handled` (which only the child can
@@ -742,20 +746,29 @@ pub struct ChildEvent {
     /// executing bytecode — never while suspended waiting on the parent or idle
     /// between feeds — and survives Dump/Load. Set on every turn-ending event
     /// while a session exists (zero on Print events and outside a session) so
-    /// the parent can mirror the `max_duration` budget, e.g. to arm a watchdog
-    /// backstop, without keeping a second clock.
+    /// the parent can report how much sandbox time a session has used without
+    /// keeping a second clock. Bounds nothing: the budgets are per-feed and
+    /// per-turn.
     #[prost(uint64, tag = "20")]
     pub total_execution_micros: u64,
-    /// The session's `max_duration` limit in microseconds, when one is
-    /// configured. Reported alongside `total_execution_micros` so a parent that
-    /// restored a session via `Load` (where the limits travel inside the opaque
-    /// state bytes) still learns the budget.
-    #[prost(uint64, optional, tag = "21")]
-    pub max_duration_micros: ::core::option::Option<u64>,
     /// Echoes the parent-enforced budget so a host restoring an opaque dump can
     /// recover it.
     #[prost(uint64, optional, tag = "22")]
     pub max_suspensions: ::core::option::Option<u64>,
+    /// Execution time consumed by the feed in progress, in microseconds — the
+    /// `total_execution_micros` clock restarted at the feed that is running.
+    /// Lets the parent backstop `max_feed_duration_micros` without tracking feed
+    /// boundaries against a clock it cannot see. Zero outside a session.
+    #[prost(uint64, tag = "24")]
+    pub feed_execution_micros: u64,
+    /// The session's `max_feed_duration` and `max_turn_duration` limits in
+    /// microseconds, when configured. Reported so a parent that restored a
+    /// session via `Load` (where the limits travel inside the opaque state
+    /// bytes) still learns its budgets.
+    #[prost(uint64, optional, tag = "25")]
+    pub max_feed_duration_micros: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "26")]
+    pub max_turn_duration_micros: ::core::option::Option<u64>,
     /// The session's script name, surfaced on a `Load` reply so a parent that
     /// restored a session (whose script name, like the limits above, travels
     /// inside the opaque dump bytes) learns it without parsing the dump. Set only

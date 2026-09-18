@@ -59,7 +59,7 @@ Learn more in the [comparison to alternatives](alternatives.md).
     later on another machine.
     There are no file descriptors, sockets or threads inside the sandbox, so nothing has to be reconstructed.
     See [snapshots](snapshots.md).
-1. **Strict resource limits** `max_memory`, `max_duration_secs` and `max_recursion_depth` are enforced by the VM
+1. **Strict resource limits** `max_memory`, `max_feed_duration_secs` and `max_recursion_depth` are enforced by the VM
     itself, and `max_suspensions` by the pool; `'x' * 10**12` raises `MemoryError` before the allocation is
     attempted.
     See [resource limits](resource-limits.md).

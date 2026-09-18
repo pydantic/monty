@@ -23,7 +23,8 @@ hello world
   before executing
 - `-m` / `--mount /host/path::/virtual/path[::mode[::write_limit_bytes]]` —
   mount a host directory into the sandbox (`ro`, `rw`, or `overlay`)
-- `--max-memory 10MB`, `--max-duration 0.5`, `--max-recursion-depth`,
+- `--max-memory 10MB`, `--max-feed-duration 0.5`, `--max-turn-duration`,
+  `--max-recursion-depth`,
   `--gc-interval`, `--max-suspensions` — sandbox resource limits
 
 ## Features

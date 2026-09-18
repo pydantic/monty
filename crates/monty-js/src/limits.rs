@@ -18,8 +18,10 @@ use napi_derive::napi;
 #[napi(object, js_name = "ResourceLimits")]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JsResourceLimits {
-    /// Maximum execution time in seconds.
-    pub max_duration_secs: Option<f64>,
+    /// Maximum execution time for a single feed, in seconds.
+    pub max_feed_duration_secs: Option<f64>,
+    /// Maximum execution time for a single host turn, in seconds.
+    pub max_turn_duration_secs: Option<f64>,
     /// Maximum heap memory in bytes.
     pub max_memory: Option<f64>,
     /// Run garbage collection every N allocations.
@@ -49,10 +51,11 @@ pub fn extract_limits(js_limits: JsResourceLimits) -> Result<ResourceLimits> {
         limits = limits.max_recursion_depth(max_recursion_depth);
     }
 
-    if let Some(secs) = js_limits.max_duration_secs {
-        limits = limits.max_duration(
-            Duration::try_from_secs_f64(secs).map_err(|err| Error::new(Status::InvalidArg, err.to_string()))?,
-        );
+    if let Some(secs) = js_limits.max_feed_duration_secs {
+        limits = limits.max_feed_duration(js_number_to_duration(secs)?);
+    }
+    if let Some(secs) = js_limits.max_turn_duration_secs {
+        limits = limits.max_turn_duration(js_number_to_duration(secs)?);
     }
     if let Some(max) = js_limits.max_memory {
         limits = limits.max_memory(js_number_to_usize(max, "maxMemory")?);
@@ -73,6 +76,13 @@ impl TryFrom<JsResourceLimits> for ResourceLimits {
     fn try_from(js_limits: JsResourceLimits) -> Result<Self> {
         extract_limits(js_limits)
     }
+}
+
+/// Converts a JavaScript `number` of seconds into a `Duration`.
+///
+/// Returns `Err` for non-finite, negative, or out-of-range inputs.
+fn js_number_to_duration(secs: f64) -> Result<Duration> {
+    Duration::try_from_secs_f64(secs).map_err(|err| Error::new(Status::InvalidArg, err.to_string()))
 }
 
 /// Converts a JavaScript `number` used for a size/count limit into `usize`.
