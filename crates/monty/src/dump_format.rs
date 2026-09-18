@@ -32,6 +32,19 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// between releases is unnecessary and can lead to confusion.
 pub const DUMP_VERSION: u16 = 11;
 
+/// Oldest [`DUMP_VERSION`] this build can load, mirroring `monty-proto`'s
+/// `MIN_SUPPORTED_PROTOCOL_VERSION`.
+///
+/// Defined as [`DUMP_VERSION`] rather than a literal so a bump refuses older
+/// dumps by default — nothing can decode them until migration code exists.
+/// Replacing it with a literal is what opts a release into reading older dumps,
+/// and is sound only once every layout changed since that version is migrated.
+pub const MIN_SUPPORTED_DUMP_VERSION: u16 = DUMP_VERSION;
+
+// The supported range must be non-empty, and must exclude zero
+const _: () = assert!(MIN_SUPPORTED_DUMP_VERSION >= 1);
+const _: () = assert!(MIN_SUPPORTED_DUMP_VERSION <= DUMP_VERSION);
+
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
 
@@ -125,6 +138,9 @@ impl Dump {
     /// Successful decoding does not authenticate or fully validate a snapshot.
     /// The same contract applies to direct serde deserialization.
     ///
+    /// Accepts [`MIN_SUPPORTED_DUMP_VERSION`]`..=`[`DUMP_VERSION`], which is one
+    /// version wide until a compatibility mechanism lowers the floor.
+    ///
     /// # Errors
     /// Returns [`DumpError`] for a dump this build cannot read. The version
     /// variants name the bound the dump missed, so a host can tell a stale
@@ -133,15 +149,13 @@ impl Dump {
         let Some(header) = bytes.get(..HEADER_LEN) else {
             return Err(DumpError::NotADump);
         };
-        // the two bounds below coincide because this build reads exactly the
-        // version it writes; they separate if a read range is ever introduced
         let version = u16::from_le_bytes([header[MAGIC.len()], header[MAGIC.len() + 1]]);
         if &header[..MAGIC.len()] != MAGIC {
             Err(DumpError::NotADump)
-        } else if version < DUMP_VERSION {
+        } else if version < MIN_SUPPORTED_DUMP_VERSION {
             Err(DumpError::VersionTooOld {
                 found: version,
-                min_supported: DUMP_VERSION,
+                min_supported: MIN_SUPPORTED_DUMP_VERSION,
             })
         } else if version > DUMP_VERSION {
             Err(DumpError::VersionTooNew {

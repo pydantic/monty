@@ -5,7 +5,7 @@
 //! `Child` state machine over the message-based transport without any wasm
 //! toolchain.
 
-use monty::{DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
+use monty::{MIN_SUPPORTED_DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
 use monty_proto::{
     FrameReader, PROTOCOL_VERSION, WireArena, WireFunctionCall, named_values_to_proto, pb,
     worker::{Child, HandleOutcome, dispatch_frame},
@@ -414,14 +414,14 @@ fn shutdown_request_reports_shutdown() {
     );
 }
 
-/// A dump written by an older `DUMP_VERSION` is rejected, and the error names
+/// A dump below `MIN_SUPPORTED_DUMP_VERSION` is rejected, and the error names
 /// the bound it missed so a host can tell a stale snapshot from a corrupt one.
 #[test]
 fn load_rejects_old_dump_version() {
     // a real dump rewound to the previous version, so only the version is wrong
     let repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
     let mut state = dump("main.py", None, SessionRef::Idle(&repl)).expect("dumping an idle repl succeeds");
-    state[6..8].copy_from_slice(&(DUMP_VERSION - 1).to_le_bytes());
+    state[6..8].copy_from_slice(&(MIN_SUPPORTED_DUMP_VERSION - 1).to_le_bytes());
 
     let mut child = Child::default();
     create_repl(&mut child);
@@ -436,8 +436,8 @@ fn load_rejects_old_dump_version() {
         error.exception.unwrap().message.unwrap(),
         format!(
             "protocol violation: failed to load session: dump format version {} is older than \
-             {DUMP_VERSION}, the oldest this build reads",
-            DUMP_VERSION - 1
+             {MIN_SUPPORTED_DUMP_VERSION}, the oldest this build reads",
+            MIN_SUPPORTED_DUMP_VERSION - 1
         )
     );
 }

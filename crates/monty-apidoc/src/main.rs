@@ -56,6 +56,7 @@ const CRATES: &[CrateConfig] = &[
             "Dump",
             "DumpError",
             "DUMP_VERSION",
+            "MIN_SUPPORTED_DUMP_VERSION",
         ],
         features: &[],
     },

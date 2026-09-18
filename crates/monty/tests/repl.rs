@@ -7,8 +7,8 @@ use std::fmt::Write;
 
 use insta::assert_snapshot;
 use monty::{
-    DUMP_VERSION, Dump, DumpError, MontyRepl, ReplContinuationMode, ReplProgress, ReplStartError, Session, SessionRef,
-    detect_repl_continuation_mode, dump,
+    DUMP_VERSION, Dump, DumpError, MIN_SUPPORTED_DUMP_VERSION, MontyRepl, ReplContinuationMode, ReplProgress,
+    ReplStartError, Session, SessionRef, detect_repl_continuation_mode, dump,
 };
 use monty_types::{
     CallArgs, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyNode, MontyObject, MontyUuid,
@@ -90,14 +90,14 @@ fn dump_header_rejects_incompatible_data() {
     wrong_magic[0] = b'X';
     assert_eq!(Dump::load(&wrong_magic).unwrap_err(), DumpError::NotADump);
 
-    let previous_version = DUMP_VERSION - 1;
+    let previous_version = MIN_SUPPORTED_DUMP_VERSION - 1;
     let mut wrong_version = bytes.clone();
     wrong_version[6..8].copy_from_slice(&previous_version.to_le_bytes());
     assert_eq!(
         Dump::load(&wrong_version).unwrap_err(),
         DumpError::VersionTooOld {
             found: previous_version,
-            min_supported: DUMP_VERSION
+            min_supported: MIN_SUPPORTED_DUMP_VERSION
         }
     );
 
