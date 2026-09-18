@@ -1360,17 +1360,8 @@ impl MontyType {
         }
     }
 
-    /// Parses a name produced by [`Display`](fmt::Display)/[`name`](Self::name)
-    /// back to the [`MontyType`] — the wire-protocol decode path for builtin
-    /// type names. A non-builtin class name returns `None` (a class crosses
-    /// as its own arena node instead), and `"object"` parses to the builtin
-    /// [`Object`](Self::Object).
-    ///
-    /// `EnumString` parses via the same strum `serialize` attributes that
-    /// `IntoStaticStr` renders with, so the two stay in lockstep by
-    /// construction. Exception types display as their exception name
-    /// ("ValueError", "json.JSONDecodeError", ...) — fall back to the
-    /// [`ExcType`](crate::ExcType) parser.
+    /// Parses builtin and exception type names produced by [`Display`](fmt::Display)/[`name`](Self::name).
+    /// Unrecognized names return `None`; `"object"` parses to [`Object`](Self::Object).
     #[must_use]
     pub fn from_type_name(name: &str) -> Option<Self> {
         name.parse::<Self>()

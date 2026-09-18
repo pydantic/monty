@@ -17,11 +17,6 @@ implementation**.
   Both carriers and the `MontyObject` / `ObjectRef` types keep their fields private.
 - `unstable` — graph representation APIs for bindings and transport adapters, with no API compatibility guarantee.
   They may change or disappear in any release; prefer value constructors and typed accessors when possible.
-  `MontyGraph`, `MontyNode`, `NodeId`, `ClassTypeNode`, `GraphError` and `PushValue` are exported only here.
-  `graph_parts` / `into_graph_parts` borrow or take an object's arena and root without copying;
-  `call_args_parts` / `into_call_args_parts` and `named_values_parts` / `into_named_values_parts` do the same for carriers.
-  Rebuild storage with `object_from_graph`, `call_args_from_parts` or `named_values_from_parts`, which check the roots.
-  The flat post-order graph preserves sharing: a shared sub-object is one node however many times it is referenced.
 - `MontyException` / `ExcType` — exceptions with tracebacks (`StackFrame`,
   `CodeLoc`) and structured payloads (`ExcData`).
 - `OsFunctionCall` — the typed OS-call payloads sandboxed code suspends with
