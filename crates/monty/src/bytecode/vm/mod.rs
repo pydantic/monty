@@ -42,12 +42,15 @@ use crate::{
     modules::{StandardLib, json::JsonStringCache, random::apply_seed_random, re::RePatternCache},
     name_map::NameMap,
     object_bridge::MontyObjectExt,
-    os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect, resolve_call_paths},
+    os_dispatch::{
+        PendingEffect, PostConversionEffect, release_pending_effect, resolve_call_paths, urandom_reply_error,
+    },
     parse::CodeRange,
     run::{Program, SessionTables, VmEnv},
     types::{
         Dict, LongInt, PyTrait, SessionRandom,
         file::{apply_buffer_store, apply_open_name, apply_write_position},
+        random::SEED_BYTES,
         str::allocate_string,
     },
     value::{EitherStr, Value},
@@ -2092,17 +2095,33 @@ impl<'h> VM<'h> {
                 obj
             }
         };
+        // An entropy reply that cannot be imported at all (an output-only
+        // value) gets the `os.urandom` contract's error, raised at the draw
+        // like any other non-`bytes` reply, rather than the generic one.
+        let seeding = matches!(
+            self.pending_effect,
+            Some(PendingEffect::Post(PostConversionEffect::SeedRandom { .. }))
+        );
+        let reply_type = seeding.then(|| obj.as_ref().type_name().to_owned());
         // Surface resource-exhaustion failures from `to_value` (e.g. a host
         // string whose `heap.allocate` trips `max_memory`) as the same
         // `RunError::Resource` that pure-Monty allocations produce, so the
         // user sees `MemoryError` instead of `RuntimeError: invalid return
         // type`. Other input errors stay as `RuntimeError`.
-        let value = obj.to_value(self).map_err(|e| match e {
-            InvalidInputError::Resource(err) => RunError::from(err),
-            other @ InvalidInputError::InvalidType(_) => {
-                SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {other}"))).into()
+        let value = match obj.to_value(self) {
+            Ok(value) => value,
+            Err(InvalidInputError::Resource(err)) => return Err(RunError::from(err)),
+            Err(InvalidInputError::InvalidType(_)) if let Some(type_name) = reply_type => {
+                let effect = self.pending_effect.take();
+                release_pending_effect(effect, self.heap);
+                return self.resume_with_exception(urandom_reply_error(Err(&type_name), SEED_BYTES));
             }
-        })?;
+            Err(other @ InvalidInputError::InvalidType(_)) => {
+                return Err(
+                    SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {other}"))).into(),
+                );
+            }
+        };
         let result = match self.pending_effect.take() {
             Some(PendingEffect::Post(PostConversionEffect::BufferStore { file_id })) => {
                 apply_buffer_store(file_id, value, self)

@@ -265,6 +265,19 @@ fn call_host_rejects_a_wrong_sized_reply() {
         ~~~~~~~~~~~~~~~
     RuntimeError: 'os.urandom' must return bytes, not str
     "#);
+
+    // an output-only value cannot be imported at all; the contract's error still names it
+    let call = expect_entropy_call(start_call_host("import random\nrandom.random()"));
+    let err = call
+        .resume(MontyObject::repr("<thing>"), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        random.random()
+        ~~~~~~~~~~~~~~~
+    RuntimeError: 'os.urandom' must return bytes, not repr
+    "#);
 }
 
 #[test]
