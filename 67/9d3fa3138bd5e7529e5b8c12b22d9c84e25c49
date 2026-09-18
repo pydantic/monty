@@ -1,0 +1,119 @@
+docs/resource-limits.md
+  s_3173e621b32649::t_53d3bcf13f50a4 59
+  s_3173e621b32649::t_c9cc3ba3e6449a 47
+  s_3173e621b32649::t_0a81aa64329bb9 49-56
+  s_3173e621b32649::t_f779eab4a00af0 65-67
+  s_3173e621b32649::t_e00d355825540f 106-108
+crates/monty/src/resource_checks.rs
+  s_3173e621b32649::t_d6522b47c6b90d 192-193
+crates/monty-wasm-runtime/src/lib.rs
+  s_3173e621b32649::t_53cf6b1a2e289e 312
+crates/monty-wasm-runtime/wit/runtime.wit
+  s_3173e621b32649::t_8db639062bdb1d 179-180
+crates/monty/src/modules/time.rs
+  s_3173e621b32649::t_b9e159fda86571 72-73
+  s_3173e621b32649::t_3ceb4802fe3425 93-95
+crates/monty-pool/README.md
+  s_3173e621b32649::t_9b85168ea05db2 69,71-74
+docs/security.md
+  s_3173e621b32649::t_2ab3940236c6aa 320-324
+docs/limitations/asyncio.md
+  s_3173e621b32649::t_12a2d589512ede 78-79
+  s_3173e621b32649::t_bc778187e4e870 19-21
+  s_3173e621b32649::t_9c6ad0170aa3fa 73-77
+crates/monty-js/ts/worker/transport.ts
+  s_3173e621b32649::t_2b11eb7da41292 478-480
+  s_3173e621b32649::t_236fe8f14db5a9 62
+docs/cli.md
+  s_3173e621b32649::t_0a81aa64329bb9 38
+crates/monty/src/modules/asyncio.rs
+  s_3173e621b32649::t_db40d679235ca2 98,107-109,112-114,116-117,119-124
+  s_3173e621b32649::t_86662ecd12284e 110-111,115,118
+  s_3173e621b32649::t_dcc31409199d20 6,11
+crates/monty/src/types/datetime.rs
+  s_3173e621b32649::t_ce119d56aaa399 297-298
+  s_3173e621b32649::t_718e1c0962c0e6 292-294,296,299,301
+packages/pydantic-monty/README.md
+  s_3173e621b32649::t_d332e26e0d2de7 286-288
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_3173e621b32649::t_bf0e2fde4fdf51 368-369
+crates/monty-proto/src/generated/monty.v1.rs
+  s_3173e621b32649::t_481985bb2bd3ec 437-439
+crates/monty-proto/src/convert/limits.rs
+  s_3173e621b32649::t_58fac8c41ed642 26-28
+  s_3173e621b32649::t_5b208ce73bd9e8 41
+crates/monty-python/python/pydantic_monty/__init__.py
+  s_3173e621b32649::t_3374d93dfd839f 207-208
+  s_3173e621b32649::t_db3dd9978ff0ff 153-158
+crates/monty-js/README.md
+  s_3173e621b32649::t_425314237c5ee9 473-474
+crates/monty-runtime/README.md
+  s_3173e621b32649::t_e758d84d2d561c 47-48
+docs/limitations/time.md
+  s_3173e621b32649::t_5a206bfa396222 49-53,55
+crates/monty/tests/auto_os_calls.rs
+  s_3173e621b32649::t_2d82146c3f0d06 450,453,468-469
+  s_3173e621b32649::t_0d8a5c46be87fe 452,454-455,457,464,466-467
+  s_3173e621b32649::t_b2b25b73a26810 214-232
+  s_3173e621b32649::t_4cfdc0661818c6 447-449,451,456,458-463,465
+crates/monty-python/tests/test_limits.py
+  s_3173e621b32649::t_24cad5096fe85e 170
+  s_3173e621b32649::t_824eb29848f6cb 194
+  s_3173e621b32649::t_9eb3c59550f9bd 84-91
+  s_3173e621b32649::t_afc6a79d2c7d4e 180
+crates/monty-proto/tests/roundtrip.rs
+  s_3173e621b32649::t_d59f1d6e5c0ac9 564,568
+crates/monty-runtime/src/main.rs
+  s_3173e621b32649::t_cdba1297e199fb 86-90
+  s_3173e621b32649::t_6b0f7d87cb3c9a 148
+  s_3173e621b32649::t_f2e516b9bfaa7a 177-183
+crates/monty-types/src/resource.rs
+  s_3173e621b32649::t_68a946b3b3b575 131-135
+  s_3173e621b32649::t_93118a7dbbb28d 281
+  s_3173e621b32649::t_670b2f7f68a544 82-84
+  s_3173e621b32649::t_246d59de58487b 199-205
+  s_3173e621b32649::t_e15a51b038cc26 324-335
+  s_3173e621b32649::t_ff54845058df4a 563-568,576-578,581-584
+  s_3173e621b32649::t_d077e2da7cb5a0 569-575
+  s_3173e621b32649::t_e80ec93e5d384a 156
+  s_3173e621b32649::t_72dfb3e9128602 252-256
+  s_3173e621b32649::t_b3ee524f504710 99
+docs/limitations/resource_limits.md
+  s_3173e621b32649::t_0d0f634cd052af 194-204,209-212
+  s_3173e621b32649::t_d614dd2781e866 205-208
+  s_3173e621b32649::t_9fb990346e057c 3
+crates/monty-js/src/limits.rs
+  s_3173e621b32649::t_b26eccc4a578fd 68-72
+  s_3173e621b32649::t_ba0e642c2e19a5 31-32
+crates/monty-types/src/auto_os_calls.rs
+  s_3173e621b32649::t_cd6888545f1efa 130-131
+crates/monty-python/src/limits.rs
+  s_3173e621b32649::t_f30d20d09da356 15
+  s_3173e621b32649::t_5afd142b4fc53d 78
+  s_3173e621b32649::t_27e72d9a6826b0 46-50
+  s_3173e621b32649::t_52ec255f865ab6 87-88
+  s_3173e621b32649::t_41d14964498c92 65
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_3173e621b32649::t_481985bb2bd3ec 460-462
+crates/monty-js/ts/pool.ts
+  s_3173e621b32649::t_fbf2d7b6c22177 105-106
+  s_3173e621b32649::t_499fe945c7e222 123-129
+crates/monty/src/bytecode/vm/async_exec.rs
+  s_3173e621b32649::t_bde9e336140569 891
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "679d3fa3138bd5e7529e5b8c12b22d9c84e25c49",
+  "prompts": {},
+  "sessions": {
+    "s_3173e621b32649": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e5fe4119-039c-4be7-b91c-08854486546b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
