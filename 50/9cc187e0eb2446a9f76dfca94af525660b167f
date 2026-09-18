@@ -1,0 +1,65 @@
+crates/monty/src/bytecode/vm/async_exec.rs
+  s_3173e621b32649::t_d5a2f628f7dd53 870-871,873-874
+docs/limitations/time.md
+  s_3173e621b32649::t_1fdaafabe53c35 36-38
+crates/monty/src/bytecode/vm/scheduler.rs
+  s_3173e621b32649::t_8734901cf8c87b 117-121
+docs/cli.md
+  s_3173e621b32649::t_b9b9d69e4f1ec3 38
+  s_3173e621b32649::t_0f3a99007257be 73-74
+crates/monty-types/src/auto_os_calls.rs
+  s_3173e621b32649::t_a2e8054315ab3f 9-11,13
+docs/security.md
+  s_3173e621b32649::t_f918775bc8e627 318
+crates/monty/src/modules/time.rs
+  s_3173e621b32649::t_e289e003679893 69-73
+crates/monty-js/ts/options.ts
+  s_3173e621b32649::t_f5d03418fcf784 120-124
+  s_3173e621b32649::t_a6366f7698b090 187-190
+crates/monty-runtime/src/main.rs
+  s_3173e621b32649::t_a741b4be4999be 87-88
+  s_3173e621b32649::t_e272e67d51558d 159
+  s_3173e621b32649::t_343eb7511db3dd 179-182
+  s_3173e621b32649::t_013a7474e8e484 154-155
+crates/monty-python/src/auto_os_calls.rs
+  s_3173e621b32649::t_389d7ef7538b25 73-87
+docs/limitations/random.md
+  s_3173e621b32649::t_bfacd366d86a1a 23-25
+crates/monty-python/tests/test_os_calls.py
+  s_3173e621b32649::t_e72952005356e8 955-961
+crates/monty-types/src/resource.rs
+  s_3173e621b32649::t_48e2efd772a2ee 630-633
+crates/monty-runtime/README.md
+  s_3173e621b32649::t_c2bff810258af0 47-48
+crates/monty/src/modules/random.rs
+  s_3173e621b32649::t_8048133c5f9360 313
+  s_3173e621b32649::t_cecf5564e1b82e 156-161
+crates/monty/src/types/random.rs
+  s_3173e621b32649::t_435bafe8ec8085 24
+  s_3173e621b32649::t_4aa476e321c999 65-67,69,76-78,80-81,90
+  s_3173e621b32649::t_dd08456ea04bfc 464-468,470-475
+crates/monty/src/modules/asyncio.rs
+  s_3173e621b32649::t_16ec64e3fb41a5 73-77
+crates/monty/src/types/datetime.rs
+  s_3173e621b32649::t_25092d8be5341a 280-284
+crates/monty-js/__test__/auto_os_calls.spec.ts
+  s_3173e621b32649::t_4c343dcfe286a6 161-165
+crates/monty-python/python/pydantic_monty/__init__.py
+  s_3173e621b32649::t_40d7570cda38ab 207-208
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "509cc187e0eb2446a9f76dfca94af525660b167f",
+  "prompts": {},
+  "sessions": {
+    "s_3173e621b32649": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e5fe4119-039c-4be7-b91c-08854486546b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
