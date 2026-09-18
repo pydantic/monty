@@ -1,0 +1,59 @@
+crates/monty-js/ts/worker/component/interfaces/pydantic-monty-worker.d.ts
+  s_e62d84b7400bbb::t_64586dae263e8e 259-269
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_e62d84b7400bbb::t_38aca3a93a5514 382-391,395,397,401-404
+crates/monty-wasm-runtime/wit/runtime.wit
+  s_e62d84b7400bbb::t_161e0a196cea67 202,206-208
+crates/monty/README.md
+  s_e62d84b7400bbb::t_39b5d02874ceff 127
+docs/quickstart/rust.md
+  s_e62d84b7400bbb::t_39b5d02874ceff 210
+crates/monty-js/src/auto_os_calls.rs
+  s_e62d84b7400bbb::t_3244b680653e23 43-48,50
+crates/monty/src/bytecode/vm/async_exec.rs
+  s_e62d84b7400bbb::t_5abdae025fe8c5 15,874,884-890
+crates/monty-types/src/auto_os_calls.rs
+  s_e62d84b7400bbb::t_5abdae025fe8c5 32,128,134-135,138-150
+crates/monty-proto/src/generated/monty.v1.rs
+  s_e62d84b7400bbb::t_38aca3a93a5514 445-448,450,468-481,486,489,493-498
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_e62d84b7400bbb::t_38aca3a93a5514 468-471,473,491-504,509,512,516-521
+crates/monty-python/src/auto_os_calls.rs
+  s_e62d84b7400bbb::t_3244b680653e23 27,34-37,40,115-116,128,145
+crates/monty/src/modules/time.rs
+  s_e62d84b7400bbb::t_5abdae025fe8c5 71,91,97-98
+crates/monty/tests/auto_os_calls.rs
+  s_e62d84b7400bbb::t_5abdae025fe8c5 361
+crates/monty-proto/tests/roundtrip.rs
+  s_e62d84b7400bbb::t_161e0a196cea67 589,595-602,610-616
+crates/monty-wasm-runtime/src/lib.rs
+  s_e62d84b7400bbb::t_161e0a196cea67 340-345,360
+crates/monty/src/modules/asyncio.rs
+  s_e62d84b7400bbb::t_5abdae025fe8c5 78,95,101-102
+crates/monty-runtime/src/run.rs
+  s_e62d84b7400bbb::t_7433e8e16e7643 27-28
+  s_e62d84b7400bbb::t_5abdae025fe8c5 625
+crates/monty-proto/src/convert/auto_os_calls.rs
+  s_e62d84b7400bbb::t_161e0a196cea67 6,17,41-47,50,79-82
+  s_e62d84b7400bbb::t_7433e8e16e7643 83-87
+crates/monty-js/ts/worker/transport.ts
+  s_e62d84b7400bbb::t_7433e8e16e7643 438,444
+  s_e62d84b7400bbb::t_5138e2170ab3f3 439-443
+  s_e62d84b7400bbb::t_3244b680653e23 432-437
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "06d2994b262df8c8c743c6089ae9575ea8a1b231",
+  "prompts": {},
+  "sessions": {
+    "s_e62d84b7400bbb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a31e62c3-967d-4409-83d0-9596867791f8",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
