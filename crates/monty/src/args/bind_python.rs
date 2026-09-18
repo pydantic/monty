@@ -622,10 +622,9 @@ impl Signature {
         self.kwargs.as_ref().map_or(0, Vec::len)
     }
 
-    /// Returns an iterator over all parameter names in namespace slot order.
-    ///
-    /// Order: pos_args, args, var_args (if present), kwargs, var_kwargs (if present)
-    fn param_names(&self) -> impl Iterator<Item = StringId> + '_ {
+    /// Returns parameter names in the slot order filled by `bind`:
+    /// positional-only, positional-or-keyword, `*args`, keyword-only, `**kwargs`.
+    pub(crate) fn param_names(&self) -> impl Iterator<Item = StringId> + '_ {
         let pos_args = self.pos_args.iter().flat_map(|v| v.iter().copied());
         let args = self.args.iter().flat_map(|v| v.iter().copied());
         let var_args = self.var_args.iter().copied();

@@ -1904,6 +1904,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                     on_child(*id);
                 }
             }
+            if let Some(globals) = closure.globals {
+                on_child(globals);
+            }
         }
         HeapData::FunctionDefaults(fd) => {
             // Add default values that are heap references
@@ -1911,6 +1914,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 if let Value::Ref(id) = default {
                     on_child(*id);
                 }
+            }
+            if let Some(globals) = fd.globals {
+                on_child(globals);
             }
         }
         HeapData::Cell(cell) => {
@@ -2030,6 +2036,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                     on_child(*id);
                 }
             }
+            if let Some(globals) = coro.globals {
+                on_child(globals);
+            }
         }
         HeapData::GatherFuture(gather) => {
             // Add inc_ref'd item HeapIds. Both coroutines and external
@@ -2131,12 +2140,14 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             for default in &mut closure.defaults {
                 default.py_dec_ref_ids(stack);
             }
+            stack.extend(closure.globals);
         }
         HeapData::FunctionDefaults(fd) => {
             // Decrement ref count for default values that are heap references
             for default in &mut fd.defaults {
                 default.py_dec_ref_ids(stack);
             }
+            stack.extend(fd.globals);
         }
         HeapData::Cell(cell) => cell.0.py_dec_ref_ids(stack),
         HeapData::HostClass(dc) => dc.py_dec_ref_ids(stack),
@@ -2167,6 +2178,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             for value in &mut coro.namespace {
                 value.py_dec_ref_ids(stack);
             }
+            stack.extend(coro.globals);
         }
         HeapData::GatherFuture(gather) => {
             // Decrement ref count for owned item HeapIds (coroutines and

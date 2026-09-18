@@ -15,6 +15,7 @@ use monty_types::{
     PrintWriter, ResourceLimits, ResourceTracker,
     unstable::{self, MontyNode},
 };
+use serde_json::to_value;
 
 #[test]
 fn repl_executes_only_new_code() {
@@ -626,6 +627,108 @@ fn repl_failed_snippets_keep_session_tables() {
     assert_eq!(err.error.exc_type(), ExcType::SyntaxError);
     let mut repl = err.repl;
     assert_eq!(feed_run_print(&mut repl, "h()").unwrap(), MontyObject::int(2));
+}
+
+/// Rejection at any compiler stage leaves all committed tables unchanged.
+#[test]
+fn repl_rejected_compilation_keeps_no_products() {
+    let (mut repl, _) = init_repl("def existing():\n    return 'retained'");
+    let before = to_value(&repl).unwrap();
+    let mut errors = Vec::new();
+    for code in [
+        "def broken(:",
+        "def pending():\n    nonlocal absent",
+        "def pending():\n    return ('uncommitted', b'uncommitted', 123456789012345678901234567890)\n__name__ = 'rejected'",
+    ] {
+        errors.push(feed_run_print(&mut repl, code).unwrap_err().to_string());
+        let after = to_value(&repl).unwrap();
+        assert_eq!(after["interns"], before["interns"]);
+        assert_eq!(after["global_names"], before["global_names"]);
+    }
+    assert_snapshot!("rejected_compilation_errors", errors.join("\n\n"));
+    let mut repl = round_trip_repl(&repl);
+    assert_eq!(
+        feed_run_print(&mut repl, "existing()").unwrap(),
+        MontyObject::string("retained".to_owned())
+    );
+    feed_run_print(&mut repl, "exec('def accepted():\\n    return 42')").unwrap();
+    let mut repl = round_trip_repl(&repl);
+    assert_eq!(feed_run_print(&mut repl, "accepted()").unwrap(), MontyObject::int(42));
+}
+
+/// Static tags, owned strings and reserved IDs stay canonical across feeds and snapshots.
+#[test]
+fn repl_interns_deduplicate_static_and_owned_strings() {
+    let source = "def keepends(custom_parameter='owned-name'):\n    return (custom_parameter.splitlines(keepends=False)[0], 'keepends', 'κ', 'x', '')\nkeepends(custom_parameter='owned-name')";
+    let runtime_source = format!("exec({source:?})\nkeepends()");
+    let (mut repl, _) = init_repl("");
+    let expected =
+        MontyObject::tuple(["owned-name", "keepends", "κ", "x", ""].map(|text| MontyObject::string(text.to_owned())));
+
+    for code in [source, source, &runtime_source] {
+        assert_eq!(feed_run_print(&mut repl, code).unwrap(), expected);
+        let state = to_value(&repl).unwrap();
+        let strings = state["interns"]["strings"].as_array().unwrap();
+        for text in ["keepends", "custom_parameter", "owned-name", "κ"] {
+            assert_eq!(strings.iter().filter(|value| value.as_str() == Some(text)).count(), 1);
+        }
+        for text in ["", "x"] {
+            assert_eq!(strings.iter().filter(|value| value.as_str() == Some(text)).count(), 0);
+        }
+        repl = round_trip_repl(&repl);
+        assert_eq!(feed_run_print(&mut repl, "keepends()").unwrap(), expected);
+    }
+}
+
+/// Frame admission must reject runtime compilation before publishing any code or names.
+#[test]
+fn repl_rejected_snippet_admission_keeps_no_products() {
+    for (builtin, source) in [
+        (
+            "exec",
+            "def pending():\n    return ('uncommitted', b'uncommitted')\nglobal newly_bound\nnewly_bound = pending",
+        ),
+        (
+            "eval",
+            "lambda: ('uncommitted', b'uncommitted', 123456789012345678901234567890)",
+        ),
+    ] {
+        for namespace in ["", ", ns"] {
+            let (mut repl, _) = init_repl(&format!(
+                "ns = {{}}\nsource = {source:?}\ndef attempt():\n    try:\n        {builtin}(source{namespace})\n    except RecursionError as exc:\n        return str(exc)"
+            ));
+            *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(1));
+
+            // Warm the host-call wrapper's argument slot before comparing tables.
+            let result = repl.call_function("attempt", vec![], PrintWriter::Stdout).unwrap();
+            assert_eq!(
+                result,
+                MontyObject::string("maximum recursion depth exceeded".to_owned())
+            );
+            let mut expected = to_value(&repl).unwrap();
+            for snippet in 2..5 {
+                assert_eq!(
+                    repl.call_function("attempt", vec![], PrintWriter::Stdout).unwrap(),
+                    result
+                );
+                // Each host call interns its filename, but none of the rejected snippet's entries.
+                expected["interns"]["strings"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(format!("<python-input-{snippet}>").into());
+                let after = to_value(&repl).unwrap();
+                assert_eq!(after["interns"], expected["interns"]);
+                assert_eq!(after["global_names"], expected["global_names"]);
+            }
+
+            *repl.tracker_mut() = ResourceTracker::default();
+            let mut repl = round_trip_repl(&repl);
+            assert_eq!(
+                repl.call_function("attempt", vec![], PrintWriter::Stdout).unwrap(),
+                MontyObject::none()
+            );
+        }
+    }
 }
 
 /// A snippet rejected at compile time, after prepare has allocated its
@@ -1489,6 +1592,19 @@ fn call_function_survives_repl_round_trip() {
     );
 }
 
+/// A module global first bound by `exec()` inside the called function outlives
+/// the call, while the slot that carried the call's arguments stays hidden.
+#[test]
+fn call_function_keeps_globals_the_call_added() {
+    let mut repl = repl_with_code("def define():\n    exec('global added\\nadded = 41')");
+    assert_eq!(
+        repl.call_function("define", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::none()
+    );
+    assert_eq!(feed_run_print(&mut repl, "added + 1").unwrap(), MontyObject::int(42));
+    assert_eq!(repl.function_names(), vec!["define"]);
+}
+
 #[test]
 fn call_function_with_list() {
     let mut s = repl_with_code("def length(lst): return len(lst)");
@@ -1923,4 +2039,89 @@ fn call_function_rejects_keyword_arguments() {
         err.to_string(),
         "TypeError: call_function() takes positional arguments only"
     );
+}
+
+#[test]
+fn repl_eval_suspends_at_external_call() {
+    let (repl, _) = init_repl("");
+
+    // The snippet compiles against the session tables, so an external
+    // function is reached exactly as from compiled code.
+    let progress = repl
+        .feed_start("eval('ext_fn(41) + 1')", vec![], PrintWriter::Stdout)
+        .unwrap();
+    let call = progress.into_function_call().expect("expected function call");
+    assert_eq!(call.function_name, "ext_fn");
+    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(41)]);
+
+    let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
+    let (mut repl, value) = progress.into_complete().expect("expected completion");
+    assert_eq!(value, MontyObject::int(42));
+
+    // What an exec'd snippet defines outlives the feed.
+    assert_eq!(
+        feed_run_print(&mut repl, "exec('def double(n):\\n    return n * 2')").unwrap(),
+        MontyObject::none()
+    );
+    assert_eq!(feed_run_print(&mut repl, "double(21)").unwrap(), MontyObject::int(42));
+}
+
+/// A refused locals snapshot must not retain the function's globals namespace.
+#[cfg(feature = "ref-count-return")]
+#[test]
+fn repl_failed_exec_locals_snapshot_releases_globals() {
+    for builtin in ["eval", "exec"] {
+        let (mut repl, _) = init_repl("import gc");
+        let baseline = repl.heap_entry_count();
+        feed_run_print(
+            &mut repl,
+            &format!("ns = {{}}\nexec('def f(x):\\n    return {builtin}(\"0\")', ns)"),
+        )
+        .unwrap();
+
+        // Refuse the snapshot dict's first growth, independently of allocator usage.
+        *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(0));
+        let error = feed_run_print(&mut repl, "ns['f'](1)").unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::MemoryError);
+        *repl.tracker_mut() = ResourceTracker::default();
+
+        feed_run_print(&mut repl, "ns = None\ngc.collect()").unwrap();
+        assert_eq!(repl.heap_entry_count(), baseline);
+    }
+}
+
+/// Rejected snippets retain diagnostic locations without committing their source or intern IDs.
+#[test]
+fn repl_rejected_snippet_locations() {
+    let (mut repl, _) = init_repl("pass");
+    let mut errors = Vec::new();
+    for source in [
+        "\n\nfrom . import missing",
+        "\n\nfrom math import *",
+        "\n\ndel missing",
+        "\n\n__name__ = 'changed'",
+    ] {
+        let error = feed_run_print(&mut repl, &format!("exec({source:?})")).unwrap_err();
+        assert_eq!(error.traceback().last().unwrap().start.line, 3);
+        errors.push(error.to_string());
+        let state = to_value(&repl).unwrap();
+        assert_eq!(state["interns"]["eval_sources"].as_array().unwrap().len(), 0);
+    }
+    assert_snapshot!("rejected_snippet_locations", errors.join("\n\n"));
+}
+
+/// Equal displayed filenames retain distinct source locations after loading a session.
+#[test]
+fn repl_snippet_sources_survive_round_trip() {
+    let (repl, _) = init_repl(
+        "filename = '<string>'\nexec('def first():\\n    raise ValueError')\nexec('\\n\\ndef second():\\n    raise ValueError')",
+    );
+    let mut repl = round_trip_repl(&repl);
+    assert_eq!(
+        feed_run_print(&mut repl, "filename == eval(\"'<string>'\")").unwrap(),
+        MontyObject::bool(true)
+    );
+    let first = feed_run_print(&mut repl, "first()").unwrap_err();
+    let second = feed_run_print(&mut repl, "second()").unwrap_err();
+    assert_snapshot!("snippet_sources", format!("{first}\n\n{second}"));
 }

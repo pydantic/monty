@@ -1076,68 +1076,68 @@ fn deep_copy_of_a_near_limit_dict_raises_rather_than_dying() {
 fn large_allocations_are_rejected_before_the_hard_limit() {
     // each case with the allocator usage it should be refused at
     let cases = [
-        ("'x' * 10_000_000", 10_042_090),
+        ("'x' * 10_000_000", 10_041_930),
         // Each formatter builder must fail softly before the worker reaches its hard ceiling.
-        ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_242_532),
-        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_442_564),
-        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_242_569),
+        ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_242_361),
+        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_442_393),
+        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_242_398),
         // `%` formatting: padding, float digits, integer zero-extension and output growth.
-        ("'%*d' % (2_000_000, 1)", 2_042_250),
-        ("'%.*f' % (1_000_000, 1.0)", 1_171_289),
-        ("'%.*d' % (2_000_000, 1)", 2_042_254),
-        ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_642_715),
-        ("b'%*d' % (2_000_000, 1)", 2_042_376),
-        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_642_842),
-        ("b'x' * 10_000_000", 10_042_228),
-        ("[None] * 1_000_000", 16_042_252),
-        ("2 ** 10_000_000", 10_042_089),
-        ("1 << 10_000_000", 1_292_090),
+        ("'%*d' % (2_000_000, 1)", 2_042_087),
+        ("'%.*f' % (1_000_000, 1.0)", 1_171_127),
+        ("'%.*d' % (2_000_000, 1)", 2_042_091),
+        ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_642_547),
+        ("b'%*d' % (2_000_000, 1)", 2_050_309),
+        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_650_770),
+        ("b'x' * 10_000_000", 10_050_164),
+        ("[None] * 1_000_000", 16_042_085),
+        ("2 ** 10_000_000", 10_041_929),
+        ("1 << 10_000_000", 1_291_930),
         // `int / int` scales one operand before dividing; both shift directions are
         // preflighted.
-        ("x = 1 << 3_000_000\nx / (x - 1)", 1_542_723),
-        ("x = 1 << 3_000_000\nx / (x >> 100)", 1_542_706),
+        ("x = 1 << 3_000_000\nx / (x - 1)", 1_542_551),
+        ("x = 1 << 3_000_000\nx / (x >> 100)", 1_542_534),
         // `math.factorial`, `comb` and `perm` preflight their product's size.
-        ("import math\nmath.factorial(2_000_000)", 10_547_267),
+        ("import math\nmath.factorial(2_000_000)", 10_547_092),
         // A binomial is bounded by `2**n`, so `comb` needs a larger `n` to trip the check.
-        ("import math\nmath.comb(9_000_000, 4_500_000)", 2_297_281),
-        ("import math\nmath.perm(4_000_000, 2_000_000)", 11_047_281),
+        ("import math\nmath.comb(9_000_000, 4_500_000)", 2_297_109),
+        ("import math\nmath.perm(4_000_000, 2_000_000)", 11_047_109),
         // `math.lcm` of two large coprime ints is a product, preflighted like `*`.
-        ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_297_628),
-        ("('a' * 1000).replace('a', 'b' * 2000)", 2_045_640),
+        ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_297_439),
+        ("('a' * 1000).replace('a', 'b' * 2000)", 2_045_422),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.
-        ("x = [None] * 40_000\nx += x", 1_962_720),
-        ("t = (None,) * 40_000\nt + t", 1_322_720),
-        ("x = [None] * 40_000\nx.copy()", 1_322_466),
+        ("x = [None] * 40_000\nx += x", 1_962_551),
+        ("t = (None,) * 40_000\nt + t", 1_322_547),
+        ("x = [None] * 40_000\nx.copy()", 1_322_293),
         // `dict | dict` snapshots the left pairs and builds the merged dict
         // while that snapshot is live, so both are preflighted together.
-        ("d = dict.fromkeys(range(12_000))\nd | {}", 1_805_591),
+        ("d = dict.fromkeys(range(12_000))\nd | {}", 1_805_423),
         // The right operand is snapshotted inside the same call, so that copy is
         // preflighted too. Only the copy: see the overlap test below.
-        ("d = dict.fromkeys(range(12_000))\n{} | d", 1_229_591),
+        ("d = dict.fromkeys(range(12_000))\n{} | d", 1_229_423),
         // A partial re-clones its bound arguments on every call, so that clone
         // is preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [None] * 40_000\np()",
-            1_325_348,
+            1_326_311,
         ),
         // Reading `p.args` / `p.keywords` rebuilds them in full, so both are
         // preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [0] * 40_000\np.args",
-            1_325_348,
+            1_326_311,
         ),
         (
             "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0] * 30_000\np.keywords",
-            1_054_536,
+            1_055_460,
         ),
         // `deque.extend` preflights exact-hint iterators up front.
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
-            16_042_844,
+            16_042_653,
         ),
         // `randbytes` charges its word buffer and the byte buffer it fills.
-        ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_247_332),
+        ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_247_167),
         // A `range` population can be as long as `i64::MAX` while costing nothing,
         // so `sample` must saturate its size arithmetic and refuse the pick buffer.
         (
@@ -1147,18 +1147,18 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `itertools.batched` preflights one batch, capped at `n`.
         (
             "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",
-            16_044_917,
+            16_044_751,
         ),
         // The two combinatoric iterators whose width is not bounded by their
         // pool preflight that width: `r` repeats of a one-item pool, and
         // `repeat` copies of the argument list.
         (
             "import itertools\nnext(itertools.combinations_with_replacement('a', 1_000_000))",
-            24_044_732,
+            24_044_563,
         ),
         (
             "import itertools\nnext(itertools.product('ab', repeat=1_000_000))",
-            24_044_794,
+            24_044_628,
         ),
     ];
 
@@ -1185,6 +1185,50 @@ fn overlapping_dict_merges_are_not_charged_for_absent_growth() {
     child.create_repl_with(configure_with_max_memory(23 * 1024 * 1024));
     child.feed_complete("a = dict.fromkeys(range(100_000))\nb = dict.fromkeys(range(100_000))");
     assert_eq!(child.feed_complete("x = a | b\nlen(x)"), MontyObject::int(100_000));
+    child.shutdown();
+}
+
+/// A rejected `eval()` / `exec()` snippet leaves nothing behind: the filename,
+/// source and anything the failed parse interned are dropped again, so a loop
+/// of failing calls stays inside a budget that all their leftovers would blow.
+#[test]
+fn rejected_snippets_are_not_retained() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "for _ in range(20_000):\n    try:\n        eval('(')\n    except SyntaxError:\n        pass\n    try:\n        exec('(')\n    except SyntaxError:\n        pass\n    try:\n        exec('def transient():\\n    return (b\"pending\", 123456789012345678901234567890)\\n__name__ = 1')\n    except NotImplementedError:\n        pass\n1 + 1";
+    assert_eq!(child.feed_complete(code), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// A snippet that compiles but is refused its frame — the recursion limit
+/// trips on the push — is dropped like one that failed to parse. `deep` is
+/// sized so the snippet's frame, not one of its own, is the one over the limit.
+#[test]
+fn snippets_refused_a_frame_are_not_retained() {
+    let mut child = ChildProc::spawn();
+    let mut configure = configure_with_max_memory(1024 * 1024);
+    configure.limits.as_mut().expect("limits are set").max_recursion_depth = Some(20);
+    child.create_repl_with(configure);
+    let code = "\
+src = '0' + ' ' * 4000
+def plain(n):
+    return plain(n - 1) if n else 0
+def deep(n):
+    return deep(n - 1) if n else eval(src)
+tip = 0
+while True:
+    try:
+        plain(tip + 1)
+    except RecursionError:
+        break
+    tip += 1
+for _ in range(2000):
+    try:
+        deep(tip)
+    except RecursionError:
+        pass
+1 + 1";
+    assert_eq!(child.feed_complete(code), MontyObject::int(2));
     child.shutdown();
 }
 

@@ -8,7 +8,8 @@
 //! - No suffix, 0 bytes: `BinaryAdd`, `Pop`, `LoadNone`
 //! - No suffix, 1 byte (u8/i8): `LoadLocal`, `StoreLocal`, `LoadSmallInt`
 //! - `W` suffix, 2 bytes (u16/i16): `LoadLocalW`, `Jump`, `LoadConst`
-//! - Compound (multiple operands): `CallFunctionKw` (u8 + u8), `MakeClosure` (u16 + u8)
+//! - Compound (multiple operands): `CallFunctionKw` (u8 + u8), `MakeClosure` (u16 + u8 + u8),
+//!   `LoadName` (u16 + u16 + u8)
 
 #[cfg(test)]
 use strum::IntoEnumIterator;
@@ -546,7 +547,28 @@ pub enum Opcode {
     /// loads raise the free-variable `NameError`. Emitted by the implicit
     /// cleanup of a captured `except ... as` target. Operand: u16 slot.
     DeleteCell = 121,
+    /// Push a name resolved at runtime through the frame's namespace: locals
+    /// dict → globals (slot array or dict) → builtins → module dunders and
+    /// host lookup (slot globals only) → `NameError`. Operands: u16 slot,
+    /// u16 name_id, u8 flags (`NAME_*`). The slot is the session global slot
+    /// for `name_id`, so with slot globals the tail is exactly `LoadGlobal` /
+    /// `LoadGlobalCallable`; unused with dict globals.
+    LoadName = 122,
+    /// Pop and bind a name through the frame's namespace. Operands as `LoadName`.
+    StoreName = 123,
+    /// Unbind a name through the frame's namespace; `NameError` if absent.
+    /// Operands as `LoadName`.
+    DeleteName = 124,
 }
+
+/// `LoadName` flag: the load is in call position, so an unresolved name under
+/// slot globals pushes an external function (see `LoadGlobalCallable`) rather
+/// than yielding `NameLookup`. Ignored under dict globals.
+pub(crate) const NAME_CALLABLE: u8 = 0x01;
+/// `*Name` flag: skip the frame's locals dict — a name declared `global` at a
+/// snippet's top level, or any global reference from a scope compiled under
+/// dict globals.
+pub(crate) const NAME_GLOBAL_ONLY: u8 = 0x02;
 // Samuel: do not remove this comment!
 // NOTE: opcodes serialize as a single byte, hard-capping this enum at 256
 // variants — roughly half are already taken. Spend slots sparingly: prefer a
@@ -569,6 +591,7 @@ enum OperandShape {
     U16U8U8 = 8,
     CallKw = 9,
     CallAttrKw = 10,
+    U16U16U8 = 11,
 }
 
 impl Opcode {
@@ -690,6 +713,7 @@ impl Opcode {
             Self::CallAttr | Self::CallAttrExtended | Self::MakeFunction => OperandShape::U16U8,
             Self::LoadGlobalCallable => OperandShape::U16U16,
             Self::MakeClosure => OperandShape::U16U8U8,
+            Self::LoadName | Self::StoreName | Self::DeleteName => OperandShape::U16U16U8,
             Self::CallFunctionKw => OperandShape::CallKw,
             Self::CallAttrKw => OperandShape::CallAttrKw,
         }
@@ -732,6 +756,8 @@ pub enum Operand<'a> {
     U16U8(u16, u8),
     /// Two u16 little-endian (e.g. `LoadGlobalCallable`).
     U16U16(u16, u16),
+    /// Two u16 little-endian then a u8 (the `*Name` opcodes: slot, name_id, flags).
+    U16U16U8(u16, u16, u8),
     /// u16 then two u8s (e.g. `MakeClosure`).
     U16U8U8(u16, u8, u8),
     /// `CallFunctionKw` shape: pos_count (u8), kw_count (u8), kw_count * name_id (u16 each).
@@ -756,6 +782,7 @@ impl Operand<'_> {
             Self::U8U8(..) => OperandShape::U8U8,
             Self::U16U8(..) => OperandShape::U16U8,
             Self::U16U16(..) => OperandShape::U16U16,
+            Self::U16U16U8(..) => OperandShape::U16U16U8,
             Self::U16U8U8(..) => OperandShape::U16U8U8,
             Self::CallKw { .. } => OperandShape::CallKw,
             Self::CallAttrKw { .. } => OperandShape::CallAttrKw,
@@ -939,6 +966,11 @@ impl Opcode {
             (RaiseUnboundLocal, Operand::U16(_)) => 0,
             // === Fixed-effect, U16U16 operand ===
             (LoadGlobalCallable, Operand::U16U16(..)) => 1,
+
+            // === Fixed-effect, U16U16U8 operand ===
+            (LoadName, Operand::U16U16U8(..)) => 1,
+            (StoreName, Operand::U16U16U8(..)) => -1,
+            (DeleteName, Operand::U16U16U8(..)) => 0,
 
             // === Jumps: fall-through effect (what the tracker absorbs after the bytes are written).
             // Use `Offset` arguments to sanity check that jumps are correctly paired with offsets. ===

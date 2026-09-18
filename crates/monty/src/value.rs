@@ -2193,7 +2193,27 @@ impl Value {
     /// proper reference counting. Using `.clone()` directly will bypass reference counting
     /// and cause memory leaks or double-frees.
     #[must_use]
+    #[inline]
     pub fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
+        if let Self::Ref(id) = self {
+            heap.heap().inc_ref(*id);
+            Self::Ref(*id)
+        } else {
+            self.copy_immediate()
+        }
+    }
+
+    /// Copies a value that holds no heap reference, for contexts with no heap
+    /// to count against — the compiler's constant arena, which only ever holds
+    /// literals and interned ids.
+    ///
+    /// # Panics
+    ///
+    /// Panics on `Ref`, which must go through
+    /// [`clone_with_heap`](Self::clone_with_heap) to stay refcounted.
+    #[must_use]
+    #[inline]
+    pub fn copy_immediate(&self) -> Self {
         match self {
             Self::Undefined => Self::Undefined,
             Self::Ellipsis => Self::Ellipsis,
@@ -2210,10 +2230,7 @@ impl Value {
             Self::InternLongInt(bi) => Self::InternLongInt(*bi),
             Self::Marker(m) => Self::Marker(*m),
             Self::Property(p) => Self::Property(*p),
-            Self::Ref(id) => {
-                heap.heap().inc_ref(*id);
-                Self::Ref(*id)
-            }
+            Self::Ref(_) => panic!("heap reference copied without refcounting"),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot copy Dereferenced object"),
         }
@@ -2759,7 +2776,10 @@ mod tests {
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::{bytecode::Code, heap::HeapReader, run::VmEnv};
+    use crate::{
+        heap::HeapReader,
+        run::{Program, SessionTables},
+    };
 
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///
@@ -2772,11 +2792,6 @@ mod tests {
         (heap, heap_id)
     }
 
-    /// Creates a minimal Interns for testing.
-    fn create_test_interns() -> Interns {
-        Interns::default()
-    }
-
     /// Tests that `as_index()` correctly handles a LongInt containing an i64-fitting value.
     ///
     /// This tests a defensive code path that's normally unreachable because
@@ -2787,17 +2802,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(42));
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_index(&mut vm, Type::List)
         });
         assert_eq!(result.unwrap(), 42);
@@ -2810,17 +2818,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(-100));
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_index(&mut vm, Type::List)
         });
         assert_eq!(result.unwrap(), -100);
@@ -2835,17 +2836,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_index(&mut vm, Type::List)
         });
         assert!(result.is_err());
@@ -2860,17 +2854,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(12345));
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_int(&mut vm)
         });
         assert_eq!(result.unwrap(), 12345);
@@ -2884,17 +2871,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_int(&mut vm)
         });
         assert!(result.is_err());
@@ -2907,17 +2887,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(i64::MAX));
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_index(&mut vm, Type::List)
         });
         assert_eq!(result.unwrap(), i64::MAX);
@@ -2930,17 +2903,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(i64::MIN));
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_index(&mut vm, Type::List)
         });
         assert_eq!(result.unwrap(), i64::MIN);
@@ -2954,17 +2920,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_index(&mut vm, Type::List)
         });
         assert!(result.is_err());
@@ -2978,17 +2937,10 @@ mod tests {
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
         let value = Value::Ref(heap_id);
 
-        let mut interns = create_test_interns();
-        let code = Code::empty();
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             value.as_index(&mut vm, Type::List)
         });
         assert!(result.is_err());

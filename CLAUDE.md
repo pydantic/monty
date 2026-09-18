@@ -216,6 +216,40 @@ prefer a flags/operand encoding on one opcode (e.g. `Assert`/`FormatValue`) over
 of near-identical opcodes, unless the instruction is hot enough that decoding the
 discriminating operand would cost measurable dispatch time.
 
+### Code owns its instruction and constant buffers
+
+Each `Code` (`crates/monty/src/bytecode/code.rs`) owns its bytecode, constants and metadata.
+A `CallFrame` borrows the `Code` and caches its bytecode slice so instruction fetches avoid an extra dereference.
+Its `usize` instruction pointer, source locations and exception handlers all use body-relative offsets.
+
+Committed functions have stable addresses and their code is immutable, so runtime compilation can publish new
+functions without invalidating active frames.
+Module code is held in an `Arc<Code>` so runner clones share it; frames borrow it from the running `Program`.
+`eval()` / `exec()` bodies are stored as functions in `Interns`.
+Snapshots store function IDs and offsets, rebuilding code borrows on restore.
+
+### Compilation overlays and stable intern entries
+
+The VM holds `&Interns`, never `&mut Interns`.
+Committed strings, literals and functions have stable addresses in append-only storage.
+For REPL feeds and runtime compilation, `CompileInterns` owns pending entries and deduplicates strings against both tables.
+Fresh programs use `CompileInterns::direct(&mut Interns)` and discard the entire interner if compilation fails.
+Do not use direct mode for an existing session: only the overlay supports rejection without retaining products.
+New IDs start at the committed table lengths, so bytecode uses final IDs without relocation.
+An active overlay blocks runtime interning and other compilations from consuming those IDs.
+
+Compiled function bodies remain owned by the overlay until publication.
+Only an admitted snippet publishes its intern entries and code; dropping a rejected overlay frees its products.
+For `eval()` / `exec()`, reserve the frame's recursion level before publication, then construct its frame from the
+committed code.
+No fallible operation or Python execution may intervene between admission and installing the frame.
+Preparation's provisional global slots are restored on rejection.
+Never roll back a snippet after execution starts: its definitions may already be reachable from globals.
+
+Snippet source IDs occupy a separate range from canonical string IDs.
+They display as `<string>` without allowing duplicate entries in the string-deduplication maps.
+Resolve filenames with `Interns::get_filename`; ordinary `get_str` only accepts canonical string IDs.
+
 ### HeapReader API — Safe Heap Access
 
 All heap-allocated Python objects (lists, dicts, strings, etc.) are stored in a paged arena (`Heap`). The `HeapReader` API provides **compile-time safe** access to heap data. This is the primary mechanism for reading and mutating heap objects throughout the codebase.

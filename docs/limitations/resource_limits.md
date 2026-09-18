@@ -18,6 +18,11 @@ requiring more than 1,024 emitted copies of `finally` bodies is rejected with
 isolate compilation when accepting untrusted source, as the subprocess and
 WebAssembly runtimes do.
 
+Code compiled at runtime by `eval()` / `exec()` is the exception: it is parsed and compiled inside the VM,
+so that work is charged against `max_feed_duration` and `max_turn_duration`.
+Once a snippet starts executing, its source and bytecode stay allocated for the rest of the session.
+Snippets rejected before execution retain none of their compilation products (see [eval_exec.md](eval_exec.md)).
+
 ## Memory / size limits
 
 - Memory usage is measured by the worker's process-global allocator, while the

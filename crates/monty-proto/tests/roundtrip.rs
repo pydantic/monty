@@ -290,7 +290,7 @@ fn repr_and_cycle_round_trip() {
     // Cycles appear in worker outputs (e.g. a returned cyclic list), so the
     // parent must decode them; produce one via execution and round-trip it.
     // Using one as an *execution input* is rejected by `MontyObject::to_value`.
-    let run = MontyRun::new(
+    let mut run = MontyRun::new(
         "a = []\na.append(a)\na".to_owned(),
         "test.py",
         vec![],

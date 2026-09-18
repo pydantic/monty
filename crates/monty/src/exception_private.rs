@@ -51,6 +51,7 @@ pub(crate) trait ExcTypeExt: Sized {
         RunError::Exc(ExceptionRaise {
             exc,
             frame: None,
+            snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
         })
     }
@@ -82,6 +83,7 @@ pub(crate) trait ExcTypeExt: Sized {
         RunError::Exc(ExceptionRaise {
             exc,
             frame: None,
+            snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
         })
     }
@@ -111,6 +113,7 @@ pub(crate) trait ExcTypeExt: Sized {
         RunError::Exc(ExceptionRaise {
             exc,
             frame: None,
+            snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
         })
     }
@@ -1434,6 +1437,7 @@ pub(crate) trait ExcTypeExt: Sized {
         RunError::Exc(ExceptionRaise {
             exc,
             frame: None,
+            snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for module not found errors
         })
     }
@@ -1504,6 +1508,7 @@ pub(crate) trait ExcTypeExt: Sized {
         RunError::Exc(ExceptionRaise {
             exc,
             frame: None,
+            snippet_frame: None,
             hide_caret: true,
         })
     }
@@ -2400,11 +2405,25 @@ impl SimpleException {
         f.write_char(')')
     }
 
+    /// Records a position in committed code; propagation supplies the frame name.
     pub(crate) fn with_position(self, position: CodeRange) -> ExceptionRaise {
         ExceptionRaise {
             exc: self,
             frame: Some(RawStackFrame::from_position(position)),
+            snippet_frame: None,
             hide_caret: false,
+        }
+    }
+
+    /// Resolves a rejected snippet's location before its provisional intern IDs are discarded.
+    /// Caller frames are still collected from the VM as the error propagates.
+    pub(crate) fn with_snippet_position(self, position: CodeRange, source: &str) -> ExceptionRaise {
+        let mut frame = StackFrame::from_position(position, "<string>", &mut SourceMap::new(source));
+        frame.preview_line = None;
+        frame.hide_caret = matches!(self.exc_type, ExcType::ImportError | ExcType::ModuleNotFoundError);
+        ExceptionRaise {
+            snippet_frame: Some(Box::new(frame)),
+            ..self.into()
         }
     }
 }
@@ -2438,8 +2457,10 @@ impl<'h> HeapRead<'h, SimpleException> {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExceptionRaise {
     pub exc: SimpleException,
-    /// The stack frame where the exception was raised (first in vec is closest "bottom" frame).
+    /// Innermost executed frame, with callers linked as parents.
     pub frame: Option<RawStackFrame>,
+    /// Resolved innermost location of a rejected snippet, independent of its discarded intern IDs.
+    pub snippet_frame: Option<Box<StackFrame>>,
     /// Whether to hide the caret marker when creating the stack frame.
     ///
     /// CPython doesn't show carets for attribute GET errors, but does show them
@@ -2454,6 +2475,7 @@ impl From<SimpleException> for ExceptionRaise {
         Self {
             exc,
             frame: None,
+            snippet_frame: None,
             hide_caret: false,
         }
     }
@@ -2464,6 +2486,7 @@ impl From<MontyException> for ExceptionRaise {
         Self {
             exc: exc.into(),
             frame: None,
+            snippet_frame: None,
             hide_caret: false,
         }
     }
@@ -2529,29 +2552,37 @@ impl ExceptionRaise {
     #[must_use]
     pub fn into_python_exception<'s>(
         self,
-        interns: &Interns,
+        interns: &'s Interns,
         source_for: impl Fn(&str) -> Option<&'s str>,
     ) -> MontyException {
         // Per-filename SourceMap cache. Typical tracebacks touch 1-3 unique
         // filenames so a tiny `Vec` beats a HashMap on both allocations and
         // lookup cost.
         let mut cache: Vec<(StringId, SourceMap<'s>)> = Vec::new();
-        let traceback = self
+        let mut traceback = self
             .frame
             .map(|frame| {
                 let mut frames = Vec::new();
                 let mut current = Some(&frame);
                 while let Some(f) = current {
                     let fname_id = f.position.filename;
+                    // An `eval()` / `exec()` snippet resolves against its own
+                    // recorded source, never the host's, and prints no source
+                    // line: CPython has nothing to read back for `<string>`.
+                    let eval_source = interns.eval_source(fname_id);
                     let sm_idx = if let Some(i) = cache.iter().position(|(k, _)| *k == fname_id) {
                         i
                     } else {
-                        let fname = interns.get_str(fname_id);
-                        let src = source_for(fname).unwrap_or("");
+                        let src =
+                            eval_source.unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
                         cache.push((fname_id, SourceMap::new(src)));
                         cache.len() - 1
                     };
-                    frames.push(StackFrame::from_raw(f, interns, &mut cache[sm_idx].1));
+                    let mut stack_frame = StackFrame::from_raw(f, interns, &mut cache[sm_idx].1);
+                    if eval_source.is_some() {
+                        stack_frame.preview_line = None;
+                    }
+                    frames.push(stack_frame);
                     current = f.parent.as_deref();
                 }
                 // Reverse so outermost frame is first (Python's "most recent call last" ordering)
@@ -2559,6 +2590,9 @@ impl ExceptionRaise {
                 frames
             })
             .unwrap_or_default();
+        if let Some(frame) = self.snippet_frame {
+            traceback.push(*frame);
+        }
 
         MontyException::with_traceback(self.exc.exc_type, self.exc.arg, traceback).with_data(self.exc.data)
     }
@@ -2699,7 +2733,7 @@ impl RunError {
     #[must_use]
     pub fn into_python_exception<'s>(
         self,
-        interns: &Interns,
+        interns: &'s Interns,
         source_for: impl Fn(&str) -> Option<&'s str>,
     ) -> MontyException {
         match self {

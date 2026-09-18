@@ -13,7 +13,7 @@ use monty_types::{CompileOptions, ExcType, MontyObject};
 
 /// Evaluate a Python snippet under Monty and return its final value.
 fn eval(code: &str) -> MontyObject {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     ex.run_no_limits(vec![]).unwrap()
 }
 

@@ -421,7 +421,7 @@ impl NameLookup {
 
         let Snapshot {
             mut heap,
-            executor,
+            mut executor,
             vm_state: snapshot_vm_state,
         } = self.snapshot;
         let scope = self.scope;
@@ -429,15 +429,14 @@ impl NameLookup {
 
         heap.tracker.on_turn_start();
         let (converted, vm_state) =
-            HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
+            HeapReader::with(&mut heap, &mut (&mut executor, print), |reader, (executor, print)| {
                 // Restore the VM first, then convert inside its lifetime
                 let mut vm = VM::restore(
                     snapshot_vm_state,
-                    &executor.module_code,
+                    &mut executor.tables,
+                    &executor.program,
                     reader,
-                    &executor.interns,
                     print.reborrow(),
-                    executor.vm_env(),
                 );
 
                 // Resolve the name lookup result with the VM alive
@@ -666,20 +665,19 @@ impl ResolveFutures {
     #[must_use]
     pub fn __force_gc_for_tests(self) -> Self {
         let Self {
-            executor,
+            mut executor,
             vm_state,
             mut heap,
             pending_call_ids,
         } = self;
 
-        let vm_state = HeapReader::with(&mut heap, &mut &executor, |reader, executor| {
+        let vm_state = HeapReader::with(&mut heap, &mut &mut executor, |reader, executor| {
             let mut vm = VM::restore(
                 vm_state,
-                &executor.module_code,
+                &mut executor.tables,
+                &executor.program,
                 reader,
-                &executor.interns,
                 PrintWriter::Stdout,
-                executor.vm_env(),
             );
             vm.__force_gc_for_tests();
             vm.snapshot()
@@ -721,7 +719,7 @@ impl ResolveFutures {
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
         let Self {
-            executor,
+            mut executor,
             vm_state,
             mut heap,
             pending_call_ids,
@@ -735,15 +733,14 @@ impl ResolveFutures {
 
         heap.tracker.on_turn_start();
         let (converted, vm_state) =
-            HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
+            HeapReader::with(&mut heap, &mut (&mut executor, print), |reader, (executor, print)| {
                 // Restore the VM from the snapshot (must happen before any error return to clean up properly).
                 let mut vm = VM::restore(
                     vm_state,
-                    &executor.module_code,
+                    &mut executor.tables,
+                    &executor.program,
                     reader,
-                    &executor.interns,
                     print.reborrow(),
-                    executor.vm_env(),
                 );
 
                 // Now check for invalid call_ids after VM is restored.
@@ -802,21 +799,20 @@ impl Snapshot {
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
         let Self {
-            executor,
+            mut executor,
             vm_state,
             mut heap,
         } = self;
 
         heap.tracker.on_turn_start();
         let (converted, vm_state) =
-            HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
+            HeapReader::with(&mut heap, &mut (&mut executor, print), |reader, (executor, print)| {
                 let mut vm = VM::restore(
                     vm_state,
-                    &executor.module_code,
+                    &mut executor.tables,
+                    &executor.program,
                     reader,
-                    &executor.interns,
                     print.reborrow(),
-                    executor.vm_env(),
                 );
 
                 let vm_result = resume_with_result(&mut vm, ext_result, eager_call_id);
@@ -907,27 +903,27 @@ pub(crate) fn resume_with_result(
 
 /// Restores the VM and aborts uncatchably, rolling back any armed OS effect.
 fn abort_restored(
-    executor: Executor,
+    mut executor: Executor,
     vm_state: VMSnapshot,
     mut heap: Heap,
     exc: MontyException,
     print: PrintWriter<'_>,
 ) -> Result<RunProgress, MontyException> {
     heap.tracker.on_turn_start();
-    let (converted, vm_state) = HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
-        let mut vm = VM::restore(
-            vm_state,
-            &executor.module_code,
-            reader,
-            &executor.interns,
-            print.reborrow(),
-            executor.vm_env(),
-        );
-        let vm_result = vm.abort(exc);
-        let converted = convert_frame_exit(vm_result, &mut vm);
-        let vm_state = check_snapshot_from_converted(&converted, vm);
-        (converted, vm_state)
-    });
+    let (converted, vm_state) =
+        HeapReader::with(&mut heap, &mut (&mut executor, print), |reader, (executor, print)| {
+            let mut vm = VM::restore(
+                vm_state,
+                &mut executor.tables,
+                &executor.program,
+                reader,
+                print.reborrow(),
+            );
+            let vm_result = vm.abort(exc);
+            let converted = convert_frame_exit(vm_result, &mut vm);
+            let vm_state = check_snapshot_from_converted(&converted, vm);
+            (converted, vm_state)
+        });
     build_run_progress(converted, vm_state, executor, heap)
 }
 
@@ -1159,6 +1155,8 @@ pub(crate) fn build_run_progress(
         ConvertedExit::NameLookup { name, scope } => {
             Ok(RunProgress::NameLookup(NameLookup::new(name, scope, new_snapshot!())))
         }
-        ConvertedExit::Error(err) => Err(err.into_python_exception(&executor.interns, |_| Some(&*executor.code))),
+        ConvertedExit::Error(err) => {
+            Err(err.into_python_exception(&executor.tables.interns, |_| Some(&*executor.program.code)))
+        }
     }
 }

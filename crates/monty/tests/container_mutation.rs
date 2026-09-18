@@ -140,6 +140,6 @@ fn run_repr(preamble: &str, expr: &str) -> String {
 /// Compiles and runs `preamble` followed by `expr` with no resource limits.
 fn run(preamble: &str, expr: &str) -> Result<MontyObject, MontyException> {
     let code = format!("{preamble}{expr}\n");
-    let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
     run.run_no_limits(vec![])
 }

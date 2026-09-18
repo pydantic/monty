@@ -192,6 +192,9 @@ the flag is `--type-check-format`.
 - **Type checking is static only.** The `typing` module inside the sandbox provides markers, not runtime enforcement —
     no annotation is ever checked at runtime, and class annotations are stored in stringized form.
     See [`limitations/typing.md`](limitations/typing.md).
+- **Code compiled at runtime is not checked.** `eval()` and `exec()` compile their source strings inside the sandbox,
+    where no checker runs.
+    See [`limitations/eval_exec.md`](limitations/eval_exec.md).
 - **Passing the type check does not mean the code runs.** Parser-rejected constructs (`match`, `yield`) are not
     modelled.
     Five stub-only modules (`abc`, `types`, `typing_extensions`, `_collections_abc`, `_typeshed`) resolve during checking

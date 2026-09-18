@@ -24,7 +24,7 @@ fn fuzz_limits() -> ResourceTracker {
 
 fuzz_target!(|code: String| {
     // Try to parse the code
-    let Ok(runner) = MontyRun::new(
+    let Ok(mut runner) = MontyRun::new(
         code.to_owned(),
         "fuzz.py",
         vec![], // no inputs

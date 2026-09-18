@@ -23,7 +23,7 @@ class Point:
 /// Runs `POINT` followed by `expr` and returns the string it evaluates to.
 fn eval_str(expr: &str) -> String {
     let code = format!("{POINT}\n{expr}\n");
-    let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("code should compile");
+    let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("code should compile");
     let value = run.run_no_limits(vec![]).expect("code should run");
     let Some(s) = value.as_ref().as_str() else {
         panic!("expected a string, got {value:?}");
@@ -36,7 +36,7 @@ fn eval_str(expr: &str) -> String {
 /// than panicking with its type and traceback lost.
 fn expect_error(expr: &str) -> String {
     let code = format!("{POINT}\n{expr}\n");
-    let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("code should compile");
+    let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("code should compile");
     match run.run_no_limits(vec![]) {
         Ok(value) => panic!("expected an exception, got {value:?}"),
         Err(err) => err.message().map_or_else(|| err.to_string(), ToOwned::to_owned),

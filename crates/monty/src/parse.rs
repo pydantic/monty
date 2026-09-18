@@ -10,18 +10,18 @@ use ruff_python_ast::{
     token::TokenKind,
     visitor::{Visitor, walk_expr},
 };
-use ruff_python_parser::parse_module;
+use ruff_python_parser::{parse_expression, parse_module};
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
-    exception_private::ExcType,
+    exception_private::{ExcType, ExcTypeExt, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
         Node, Operator, SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
-    intern::{Interns, StringId},
+    intern::{CompileInterns, StringId},
     source_map::{SourceMap, StackFrameExt},
     stringize::stringize_annotation,
     types::long_int::INT_MAX_STR_DIGITS,
@@ -169,17 +169,11 @@ pub struct ExceptHandler<N> {
     pub body: Vec<N>,
 }
 
-/// Result of parsing: the AST nodes and the string interner with all interned names.
-#[derive(Debug)]
-pub struct ParseResult {
-    pub nodes: Vec<ParseNode>,
-    pub interner: Interns,
-}
-
-pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseError> {
-    let mut interner = Interns::new(code);
-    let nodes = parse_with_interner(code, filename, &mut interner)?;
-    Ok(ParseResult { nodes, interner })
+/// The `SyntaxError` an `eval()` / `exec()` snippet raises at runtime:
+/// `msg (<string>, line N)`, as CPython's `SyntaxError.__str__` renders it.
+pub(crate) fn syntax_error_in_snippet(msg: &str, position: CodeRange, source: &str) -> RunError {
+    let (start, _, _) = SourceMap::new(source).resolve_range(position);
+    SimpleException::new_msg(ExcType::SyntaxError, format!("{msg} (<string>, line {})", start.line)).into()
 }
 
 /// Builds a [`CodeRange`] from an interned filename and a ruff range.
@@ -194,19 +188,26 @@ fn code_range(filename: StringId, range: TextRange) -> CodeRange {
     }
 }
 
-/// Parses code, interning names into the caller's `interner`.
-///
-/// The interner is borrowed rather than consumed so incremental flows (the
-/// REPL) keep their table — ids appended by a snippet that then fails to parse
-/// are stable and harmless, so nothing needs rolling back.
+/// Parses code into a private interner overlay, discarded if any compilation stage fails.
 pub(crate) fn parse_with_interner(
     code: &str,
     filename: &str,
-    interner: &mut Interns,
+    interner: &mut CompileInterns<'_>,
 ) -> Result<Vec<ParseNode>, ParseError> {
     // Interned up front so a syntax error can be located without a `Parser`,
     // leaving the parser to be built once, fully populated, after parsing.
     let filename_id = interner.intern(filename);
+    parse_module_with_filename_id(code, filename_id, interner)
+}
+
+/// [`parse_with_interner`] for a filename already interned — an `exec()`
+/// snippet, whose `<string>` id is fresh per call so tracebacks can tell the
+/// snippets apart.
+pub(crate) fn parse_module_with_filename_id(
+    code: &str,
+    filename_id: StringId,
+    interner: &mut CompileInterns<'_>,
+) -> Result<Vec<ParseNode>, ParseError> {
     let parsed =
         parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
     // Harvested before `into_syntax` drops the token stream.
@@ -220,16 +221,32 @@ pub(crate) fn parse_with_interner(
     parser.parse_statements(parsed.into_syntax().body)
 }
 
+/// Parses `code` as a single expression, as `eval()` does.
+///
+/// `filename_id` is the snippet's fresh `<string>` id (see
+/// [`parse_module_with_filename_id`]).
+pub(crate) fn parse_expression_with_interner(
+    code: &str,
+    filename_id: StringId,
+    interner: &mut CompileInterns<'_>,
+) -> Result<ExprLoc, ParseError> {
+    let parsed = parse_expression(code)
+        .map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
+    // No `class` keywords can occur in a bare expression.
+    let mut parser = Parser::new(code, filename_id, interner, Vec::new());
+    parser.parse_expression(*parsed.into_syntax().body)
+}
+
 /// Parser for converting ruff AST to Monty's intermediate ParseNode representation.
 ///
 /// Holds references to the source code and the caller's string interner for names.
 /// The filename is interned once at construction and reused for all CodeRanges.
-pub struct Parser<'a> {
+pub struct Parser<'a, 'i> {
     code: &'a str,
     /// Interned filename ID, used for all CodeRanges created by this parser.
     filename_id: StringId,
-    /// String interner for names (variables, functions, etc).
-    interner: &'a mut Interns,
+    /// Intern table for names (variables, functions, etc).
+    interner: &'a mut CompileInterns<'i>,
     /// Remaining nesting depth budget for recursive structures.
     /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
     /// When it reaches zero, we return a "Source is too deeply nested" syntax error.
@@ -244,11 +261,11 @@ pub struct Parser<'a> {
     class_keyword_offsets: Vec<TextSize>,
 }
 
-impl<'a> Parser<'a> {
+impl<'a, 'i> Parser<'a, 'i> {
     fn new(
         code: &'a str,
         filename_id: StringId,
-        interner: &'a mut Interns,
+        interner: &'a mut CompileInterns<'i>,
         class_keyword_offsets: Vec<TextSize>,
     ) -> Self {
         Self {
@@ -2373,7 +2390,7 @@ fn describe_expr_kind(expr: &AstExpr) -> &'static str {
 /// on the relevant line only) at diagnostic time.
 #[derive(Clone, Copy, Default, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CodeRange {
-    /// Interned filename ID - look up in Interns to get the actual string.
+    /// Filename identity, resolved by `Interns::get_filename`.
     pub filename: StringId,
     /// Byte offset of the range start within the source text.
     pub start_byte: u32,
@@ -2419,6 +2436,19 @@ pub enum ParseError {
 }
 
 impl ParseError {
+    /// Moves the error `bytes` later in the source, for a parse of a suffix
+    /// of the caller's text (`eval()` trims leading whitespace) so the line
+    /// number is counted from the start of what the caller passed.
+    pub(crate) fn shifted(mut self, bytes: u32) -> Self {
+        let (Self::Syntax { position, .. }
+        | Self::NotImplemented { position, .. }
+        | Self::NotSupported { position, .. }
+        | Self::Import { position, .. }) = &mut self;
+        position.start_byte = position.start_byte.saturating_add(bytes);
+        position.end_byte = position.end_byte.saturating_add(bytes);
+        self
+    }
+
     pub(crate) fn not_implemented(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
         Self::NotImplemented {
             msg: msg.into(),
@@ -2449,6 +2479,28 @@ impl ParseError {
 }
 
 impl ParseError {
+    /// Converts to the exception an `eval()` / `exec()` call raises for its
+    /// snippet: the same type and message as [`into_python_exc`](Self::into_python_exc),
+    /// with a `SyntaxError` carrying CPython's `(<string>, line N)` suffix.
+    /// Non-syntax errors keep a resolved snippet location, independent of the
+    /// rejected compilation's intern IDs; propagation adds the caller's frames.
+    pub(crate) fn into_run_error(self, source: &str) -> RunError {
+        match self {
+            Self::Syntax { msg, position } => syntax_error_in_snippet(&msg, position, source),
+            Self::NotImplemented { msg, position } => {
+                ExcType::not_implemented(format!("The monty syntax parser does not yet support {msg}"))
+                    .with_snippet_position(position, source)
+                    .into()
+            }
+            Self::NotSupported { msg, position } => ExcType::not_implemented(msg)
+                .with_snippet_position(position, source)
+                .into(),
+            Self::Import { msg, position } => SimpleException::new_msg(ExcType::ImportError, msg)
+                .with_snippet_position(position, source)
+                .into(),
+        }
+    }
+
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
         let mut source_map = SourceMap::new(source);
         match self {

@@ -1302,7 +1302,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
     #[cfg(feature = "ref-count-return")]
     if let Expectation::RefCounts(expected) = expectation {
         match new_monty_run(code, &test_name) {
-            Ok(ex) => {
+            Ok(mut ex) => {
                 let result = ex.run_ref_counts(vec![]);
                 match result {
                     Ok(monty::RefCountOutput {
@@ -1351,7 +1351,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
     }
 
     match new_monty_run(code, &test_name) {
-        Ok(ex) => {
+        Ok(mut ex) => {
             let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
             match result {
                 Ok(obj) => match expectation {

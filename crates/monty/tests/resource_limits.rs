@@ -55,7 +55,7 @@ for i in range(200001):
 result = 'done'
 result
 ";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let output = ex.run_ref_counts(vec![]).expect("should succeed");
 
@@ -92,7 +92,7 @@ for i in range(100001):
 result = [1, 2, 3]
 len(result)
 ";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let output = ex.run_ref_counts(vec![]).expect("should succeed");
 
@@ -121,7 +121,7 @@ for i in range(100001):
 result = [1, 2, 3]
 len(result)
 ";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let output = ex.run_ref_counts(vec![]).expect("should succeed");
 
@@ -163,7 +163,7 @@ for i in range(2000):
 result = 'done'
 result
 ";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let tracker = ResourceTracker::new(ResourceLimits::default().gc_interval(500));
     let output = ex.run_ref_counts_with_tracker(vec![], tracker).expect("should succeed");
@@ -194,7 +194,7 @@ except ValueError:
 result = 'done'
 result
 ";
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
     let output = run.run_ref_counts(vec![]).expect("should run");
 
     assert_eq!(output.unreachable, Vec::<String>::new());
@@ -224,7 +224,7 @@ except ValueError:
 result = 'done'
 result
 ";
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
     let output = run.run_ref_counts(vec![]).expect("should run");
 
     assert_eq!(output.unreachable, Vec::<String>::new());
@@ -254,7 +254,7 @@ except ValueError:
 result = 'done'
 result
 ";
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
     let output = run.run_ref_counts(vec![]).expect("should run");
 
     assert_eq!(output.unreachable, Vec::<String>::new());
@@ -272,7 +272,7 @@ def combine(a, b, c):
 result = map(combine, [[1], [4]], [[2], [5]], [[3]])
 result
 ";
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
     let output = run.run_ref_counts(vec![]).expect("should run");
 
     assert_eq!(output.value, MontyObject::list([MontyObject::int(6)]));
@@ -307,7 +307,7 @@ for i in range(200001):
 result = [1, 2, 3]
 len(result)
 ";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let output = ex.run_ref_counts(vec![]).expect("should succeed");
 
@@ -352,7 +352,7 @@ for i in range(100000000):
     x = x + 1
 x
 ";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     // Set a short time limit
     let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
@@ -372,7 +372,7 @@ x
 fn time_limit_not_exceeded() {
     // Simple code that runs quickly
     let code = "x = 1 + 2\nx";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     // Set a generous time limit
     let limits = ResourceLimits::default().max_feed_duration(Duration::from_secs(5));
@@ -391,7 +391,7 @@ for i in range(100):
     result.append(str(i))
 len(result)
 ";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     // Standard run should succeed
     let result = ex.run_no_limits(vec![]);
@@ -412,7 +412,7 @@ for i in range(210000):
     a.append(a)
 result
 ";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let output = ex
         .run_ref_counts(vec![])
@@ -446,7 +446,7 @@ for i in range(25):
 result = 'done'
 result
 ";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let limits = ResourceLimits::default().gc_interval(10);
     let output = ex
@@ -477,7 +477,7 @@ result
 
 /// Helper: runs code with a short time limit and asserts it produces a TimeoutError promptly.
 fn assert_timeout_in_builtin(code: &str, label: &str) {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(100));
     let start = Instant::now();
@@ -597,7 +597,7 @@ const BYTES_SEARCH_EXPRS: &[&str] = &[
 
 /// Runs `expr` with `haystack`/`needle` bound, under `limits`.
 fn run_bytes_search(expr: &str, haystack: Vec<u8>, needle: Vec<u8>, limits: ResourceLimits) -> BytesSearchOutcome {
-    let run = MontyRun::new(
+    let mut run = MontyRun::new(
         expr.to_owned(),
         "test.py",
         vec!["haystack".to_owned(), "needle".to_owned()],
@@ -1467,7 +1467,7 @@ fn re_sub_backtracking_limit_raises_pattern_error() {
 import re
 re.sub('(a+)+\\1b', 'X', 'a' * 30 + 'c')
 ";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let result = ex.run_no_limits(vec![]);
 
@@ -1503,7 +1503,7 @@ for _ in range(100):
 next(source)
 "
         );
-        let ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let mut ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
 
         let limits = ResourceLimits::default().max_recursion_depth(10);
         let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
@@ -1525,7 +1525,7 @@ for _ in range(150):
     source = itertools.islice(source, 0, None)
 list(source)
 ";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let limits = ResourceLimits::default().max_recursion_depth(200);
     let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
@@ -1561,7 +1561,7 @@ for _ in range(20):
 next(source)
 "
         );
-        let ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let mut ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
         (1..=64)
             .find(|&depth| {
                 let limits = ResourceLimits::default().max_recursion_depth(depth);
@@ -1609,7 +1609,7 @@ NT = namedtuple('NT', ['x'])
 a < b
 "
         );
-        let ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let mut ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
 
         let limits = ResourceLimits::default().max_recursion_depth(10);
         let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
@@ -1680,7 +1680,7 @@ fn timeout_in_a85decode_ignorechars() {
 #[test]
 fn a_refused_unpacked_call_releases_its_kwargs() {
     let code = "def f(*a, **k):\n    return len(a)\nt = tuple(range(10_000))\nf(*t, **{'a': [1, 2, 3]})";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let limits = ResourceLimits::default().max_memory(10_000 * 16 + 8);
     let exc = ex

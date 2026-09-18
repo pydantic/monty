@@ -1,7 +1,6 @@
 use std::{
     cell::OnceCell,
     fmt::{self, Write},
-    sync::Arc,
 };
 
 use crate::{args::Signature, bytecode::Code, expressions::Identifier, intern::Interns, namespace::NamespaceId};
@@ -17,10 +16,8 @@ pub(crate) enum ExactPositionalCall {
 
 /// A defined function once compiled and ready for execution.
 ///
-/// This is created during the compilation phase from a `PreparedFunctionDef`.
-/// Contains everything needed to execute a user-defined function: compiled bytecode,
-/// metadata, and closure information. Functions are stored on the heap and
-/// referenced via HeapId.
+/// Contains compiled code, parameter metadata and closure layout.
+/// Committed functions have stable addresses in `Interns` and are referenced by `FunctionId`.
 ///
 /// # Namespace Layout
 ///
@@ -83,8 +80,8 @@ pub(crate) struct Function {
     /// than merely checked.
     #[serde(skip)]
     exact_positional_call: OnceCell<Option<ExactPositionalCall>>,
-    /// Compiled bytecode for this function body. Wrapped in `Arc` to avoid deep clone.
-    pub code: Arc<Code>,
+    /// Compiled body borrowed by active frames, which track body-relative instruction offsets.
+    pub code: Code,
 }
 
 impl Function {
@@ -127,7 +124,7 @@ impl Function {
             defaults_count,
             is_async,
             exact_positional_call: OnceCell::new(),
-            code: Arc::new(code),
+            code,
         }
     }
 

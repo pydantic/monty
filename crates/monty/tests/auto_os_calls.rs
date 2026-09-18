@@ -110,7 +110,7 @@ fn timed_run(code: &str, calls: AutoOsCalls) -> (MontyObject, Duration) {
 #[test]
 fn the_system_clock_is_the_default() {
     let code = "from datetime import date, datetime\n(date.today().year, datetime.now().year)";
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let value = runner.run_no_limits(vec![]).unwrap();
     let Some(years) = value.as_ref().items() else {
         panic!("expected a tuple of years");

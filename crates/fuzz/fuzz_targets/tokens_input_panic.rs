@@ -543,7 +543,7 @@ fuzz_target!(|tokens: Tokens| {
     let code = tokens.to_code();
 
     // Try to parse the code
-    let Ok(runner) = MontyRun::new(code, "fuzz.py", vec![], CompileOptions::default()) else {
+    let Ok(mut runner) = MontyRun::new(code, "fuzz.py", vec![], CompileOptions::default()) else {
         return; // Parse errors are expected
     };
 

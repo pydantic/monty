@@ -11,10 +11,10 @@ use crate::{
         NameScope, Node, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
-    intern::{Interns, StringId},
+    intern::{CompileInterns, StringId},
     name_map::{NameMap, namespace_overflow},
     namespace::NamespaceId,
-    parse::{CodeRange, ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, RawFunctionDef, Try},
+    parse::{CodeRange, ExceptHandler, ParseError, ParseNode, ParsedSignature, RawFunctionDef, Try},
 };
 
 /// Mutable handle to the module's global [`NameMap`], threaded through
@@ -43,47 +43,6 @@ impl GlobalsRef<'_> {
     }
 }
 
-/// Result of the prepare phase, containing everything needed to compile and execute code.
-///
-/// This struct holds the outputs of name resolution and AST transformation:
-/// - The module-level globals [`NameMap`] (slot ↔ name in both directions)
-/// - The transformed AST nodes with all names resolved, ready for compilation
-/// - The string interner containing all interned identifiers and filenames
-pub struct PrepareResult {
-    /// The module's global namespace.
-    ///
-    /// At module level, every name binding lives in this map; `globals.len()`
-    /// is the size of the global namespace and also the slot id that would
-    /// be allocated to the next new name. The reverse map (slot → name) is
-    /// what the VM uses to label a `NameError` thrown by `LoadGlobal` /
-    /// `DeleteGlobal` with the actual variable name.
-    ///
-    /// Consumers:
-    /// - ref-count tests look up slots by name to inspect variable values
-    /// - REPL incremental compilation hands this back to `prepare_with_existing_names` so old slots stay stable
-    pub globals: NameMap,
-    /// The prepared AST nodes with all names resolved to namespace indices.
-    /// Function definitions are inline as `PreparedFunctionDef` variants.
-    pub nodes: Vec<PreparedNode>,
-    /// The string interner containing all interned identifiers and filenames.
-    pub interner: Interns,
-}
-
-/// Prepares parsed nodes for compilation by resolving names and building the initial namespace.
-///
-/// The namespace will be converted to runtime Objects when execution begins and the heap is available.
-/// At module level, the local namespace IS the global namespace.
-pub(crate) fn prepare(parse_result: ParseResult, input_names: Vec<String>) -> Result<PrepareResult, ParseError> {
-    let ParseResult { nodes, mut interner } = parse_result;
-    let mut globals = build_initial_globals(input_names, &mut interner)?;
-    let nodes = prepare_with_existing_names(nodes, &interner, &mut globals)?;
-    Ok(PrepareResult {
-        globals,
-        nodes,
-        interner,
-    })
-}
-
 /// Prepares parsed nodes for REPL-style incremental compilation using an existing global namespace.
 ///
 /// Existing bindings keep their original namespace slots; any new names are appended with new slots.
@@ -92,7 +51,7 @@ pub(crate) fn prepare(parse_result: ParseResult, input_names: Vec<String>) -> Re
 /// (plus any slots already appended, which are stable and harmless).
 pub(crate) fn prepare_with_existing_names(
     nodes: Vec<ParseNode>,
-    interner: &Interns,
+    interner: &CompileInterns<'_>,
     globals: &mut NameMap,
 ) -> Result<Vec<PreparedNode>, ParseError> {
     let mut prepared_nodes = Prepare::new_module(globals, interner).prepare_nodes(nodes)?;
@@ -111,22 +70,50 @@ pub(crate) fn prepare_with_existing_names(
     Ok(prepared_nodes)
 }
 
-/// Builds the module's initial `NameMap` from the embedder-supplied `input_names`.
+/// How the top-level names of an `eval()` / `exec()` snippet bind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SnippetNames {
+    /// An ordinary module compile against the session `NameMap` (`LoadGlobal`):
+    /// the implicit form at module scope.
+    Slots,
+    /// Top level by name, nested scopes by slot: the implicit form inside a
+    /// function or class body (slot globals plus a locals snapshot), or
+    /// `eval(src, None, locals)`.
+    NameOverSlots,
+    /// Everything by name against an explicit globals dict.
+    NameOverDict,
+}
+
+/// Prepares an `eval()` / `exec()` snippet for [`Compiler::compile_snippet`](crate::bytecode::Compiler::compile_snippet).
 ///
-/// Input names are interned and added in order so they own the first
-/// contiguous block of namespace slots — the runtime relies on this to map
-/// positional `inputs[i]` values straight to `globals[i]`.
-///
-/// Returns a `ParseError` if more than `u16::MAX + 1` input names are
-/// supplied. Practically only reachable via misuse by the embedder, since
-/// `input_names` is supplied programmatically, not from user source.
-fn build_initial_globals(input_names: Vec<String>, interner: &mut Interns) -> Result<NameMap, ParseError> {
-    let mut globals = NameMap::with_capacity(input_names.len());
-    for name in input_names {
-        let name_id = interner.intern(&name);
-        globals.ensure_slot(name_id, CodeRange::default())?;
+/// Unlike [`prepare_with_existing_names`] there is no implicit return of a
+/// trailing expression: `exec` returns `None` and `eval` parses one expression
+/// it returns itself. `globals` is the session map for the slot modes and a
+/// scratch map under [`SnippetNames::NameOverDict`], so names that only exist
+/// inside a dict-namespaced snippet never consume session slots.
+pub(crate) fn prepare_snippet(
+    nodes: Vec<ParseNode>,
+    interner: &CompileInterns<'_>,
+    globals: &mut NameMap,
+    names: SnippetNames,
+) -> Result<Vec<PreparedNode>, ParseError> {
+    let mut prepare = Prepare::new_module(globals, interner);
+    if names != SnippetNames::Slots {
+        prepare.top_level_by_name = true;
+        // `global x` at the top level binds in the globals (CPython emits
+        // `STORE_GLOBAL` there), so those names keep slot resolution.
+        let (mut nonlocals, mut assigned) = (AHashSet::new(), AHashSet::new());
+        for node in &nodes {
+            collect_scope_info_from_node(
+                node,
+                &mut prepare.module_global_names,
+                &mut nonlocals,
+                &mut assigned,
+                interner,
+            );
+        }
     }
-    Ok(globals)
+    prepare.prepare_nodes(nodes)
 }
 
 /// State machine for the preparation phase that transforms parsed AST nodes into a prepared form.
@@ -141,7 +128,7 @@ fn build_initial_globals(input_names: Vec<String>, interner: &mut Interns) -> Re
 /// allocated during prepare.
 struct Prepare<'i, 'g> {
     /// String interner for resolving names in error messages.
-    interner: &'i Interns,
+    interner: &'i CompileInterns<'i>,
     /// Live mutable handle to the module's global [`NameMap`].
     ///
     /// At module scope this points to the same `NameMap` that PrepareState
@@ -193,6 +180,14 @@ struct Prepare<'i, 'g> {
     /// variables by bare name. [`Self::child_enclosing_locals`] honours this by
     /// excluding our own (class-member) locals when this flag is set.
     is_class_scope: bool,
+    /// True when preparing the top level of an `eval()` / `exec()` snippet
+    /// whose names resolve at runtime (see [`SnippetNames`]): module-level
+    /// names become [`NameScope::Name`] and builtins are never substituted at
+    /// compile time, since a namespace dict may shadow them.
+    top_level_by_name: bool,
+    /// Names declared `global` at a by-name snippet's top level; they keep
+    /// slot resolution. Empty otherwise.
+    module_global_names: AHashSet<StringId>,
     /// Class members whose binding statement has already been prepared, in
     /// source order (only populated when `is_class_scope`).
     ///
@@ -506,13 +501,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
         })
     }
 
-    /// Constructs the module-scope preparer.
-    ///
-    /// The caller owns the globals `NameMap` (it survives prepare for use
-    /// in `PrepareResult.globals`); the preparer borrows it via
-    /// `GlobalsRef` so every nested function preparer can extend it
-    /// in-place when new globals are discovered.
-    fn new_module(globals: &'g mut NameMap, interner: &'i Interns) -> Self {
+    /// Borrows the caller's global slots so nested functions can assign new ones.
+    /// The caller restores those provisional slots if compilation fails.
+    fn new_module(globals: &'g mut NameMap, interner: &'i CompileInterns<'i>) -> Self {
         Self {
             interner,
             globals: GlobalsRef { globals },
@@ -521,6 +512,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
             names_used: AHashSet::new(),
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
+            top_level_by_name: false,
+            module_global_names: AHashSet::new(),
             is_class_scope: false,
             bound_class_members: AHashSet::new(),
         }
@@ -553,7 +546,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         globals: GlobalsRef<'g>,
         enclosing_locals: AHashSet<StringId>,
         cell_var_names: &AHashSet<StringId>,
-        interner: &'i Interns,
+        interner: &'i CompileInterns<'i>,
     ) -> Result<Self, ParseError> {
         // Reject duplicate parameter names while building `locals`.
         // Ruff's parser accepts `def f(x, x)` that CPython rejects at
@@ -632,6 +625,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
             names_used: AHashSet::new(),
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
+            top_level_by_name: false,
+            module_global_names: AHashSet::new(),
             is_class_scope: false,
             bound_class_members: AHashSet::new(),
         })
@@ -1255,7 +1250,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // followed later by `def sum(...)`), and in REPL the rebinding can happen in a
         // future snippet that the current compile can't see. So at function scope we
         // always go through `get_id` and defer the builtin check to runtime.
-        if self.is_module_scope() {
+        //
+        // A by-name snippet top level never has it either: its namespace dict
+        // may shadow the builtin, so the read is deferred to runtime too.
+        if self.is_module_scope() && !self.top_level_by_name {
             let name_str = self.interner.get_str(name.name_id);
             let already_bound =
                 self.names_assigned_in_order.contains(&name.name_id) || self.globals.globals.contains(name.name_id);
@@ -1712,6 +1710,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
             signature,
             body: prepared_body,
             namespace_size,
+            free_var_names: free_var_slots
+                .iter()
+                .map(|slot| inner_locals.names()[slot.index()])
+                .collect(),
             free_var_enclosing_slots,
             free_var_slots,
             cell_var_slots,
@@ -1862,6 +1864,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
             signature: Signature::default(),
             body: prepared_body,
             namespace_size,
+            free_var_names: free_var_slots
+                .iter()
+                .map(|slot| inner_locals.names()[slot.index()])
+                .collect(),
             free_var_enclosing_slots,
             free_var_slots,
             cell_var_slots,
@@ -2022,6 +2028,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
             signature,
             body: prepared_body,
             namespace_size,
+            free_var_names: free_var_slots
+                .iter()
+                .map(|slot| inner_locals.names()[slot.index()])
+                .collect(),
             free_var_enclosing_slots,
             free_var_slots,
             cell_var_slots,
@@ -2143,7 +2153,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let fn_state = match &mut self.state {
             PrepareState::Module => {
                 let slot = self.globals.ensure_slot(name_id, position)?;
-                return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Global));
+                let scope = if self.top_level_by_name && !self.module_global_names.contains(&name_id) {
+                    NameScope::Name
+                } else {
+                    NameScope::Global
+                };
+                return Ok(Identifier::new_with_scope(name_id, position, slot, scope));
             }
             PrepareState::Function(state) => state,
         };
@@ -2305,7 +2320,11 @@ fn build_cell_slots(
 ///
 /// This information is used to determine whether each name reference should resolve
 /// to the local namespace, global namespace, or an enclosing scope via cells.
-fn collect_function_scope_info(nodes: &[ParseNode], params: &[StringId], interner: &Interns) -> FunctionScopeInfo {
+fn collect_function_scope_info(
+    nodes: &[ParseNode],
+    params: &[StringId],
+    interner: &CompileInterns<'_>,
+) -> FunctionScopeInfo {
     let mut global_names = AHashSet::new();
     let mut nonlocal_names = AHashSet::new();
     let mut assigned_names = AHashSet::new();
@@ -2372,7 +2391,7 @@ fn collect_scope_info_from_node(
     global_names: &mut AHashSet<StringId>,
     nonlocal_names: &mut AHashSet<StringId>,
     assigned_names: &mut AHashSet<StringId>,
-    interner: &Interns,
+    interner: &CompileInterns<'_>,
 ) {
     match node {
         Node::Global { names, .. } => {
@@ -2569,7 +2588,11 @@ fn collect_scope_info_from_node(
 /// Per PEP 572, walrus operator targets are assignments in the enclosing scope.
 /// This function recursively scans expressions to find all `Named` expression targets.
 /// It does NOT recurse into lambda bodies as those have their own scope.
-fn collect_assigned_names_from_expr(expr: &ExprLoc, assigned_names: &mut AHashSet<StringId>, interner: &Interns) {
+fn collect_assigned_names_from_expr(
+    expr: &ExprLoc,
+    assigned_names: &mut AHashSet<StringId>,
+    interner: &CompileInterns<'_>,
+) {
     match &expr.expr {
         Expr::Named { target, value } => {
             // The target of a walrus operator is assigned in this scope
@@ -2685,7 +2708,11 @@ fn collect_assigned_names_from_expr(expr: &ExprLoc, assigned_names: &mut AHashSe
 }
 
 /// Helper to collect assigned names from argument expressions.
-fn collect_assigned_names_from_args(args: &ArgExprs, assigned_names: &mut AHashSet<StringId>, interner: &Interns) {
+fn collect_assigned_names_from_args(
+    args: &ArgExprs,
+    assigned_names: &mut AHashSet<StringId>,
+    interner: &CompileInterns<'_>,
+) {
     match args {
         ArgExprs::Empty => {}
         ArgExprs::One(arg) => collect_assigned_names_from_expr(arg, assigned_names, interner),
@@ -2757,7 +2784,7 @@ fn collect_cell_vars_from_node(
     node: &ParseNode,
     our_locals: &AHashSet<StringId>,
     cell_vars: &mut AHashSet<StringId>,
-    interner: &Interns,
+    interner: &CompileInterns<'_>,
 ) {
     match node {
         Node::FunctionDef {
@@ -2916,7 +2943,7 @@ fn collect_cell_vars_from_function(
     body: &[ParseNode],
     our_locals: &AHashSet<StringId>,
     cell_vars: &mut AHashSet<StringId>,
-    interner: &Interns,
+    interner: &CompileInterns<'_>,
 ) {
     // This nested function's *default* expressions are evaluated in OUR
     // scope at definition time, not inside the nested function — so any
@@ -3021,7 +3048,7 @@ fn collect_cell_vars_from_expr(
     expr: &ExprLoc,
     our_locals: &AHashSet<StringId>,
     cell_vars: &mut AHashSet<StringId>,
-    interner: &Interns,
+    interner: &CompileInterns<'_>,
 ) {
     use crate::expressions::Expr;
     match &expr.expr {
@@ -3171,7 +3198,7 @@ fn collect_cell_vars_from_args(
     args: &ArgExprs,
     our_locals: &AHashSet<StringId>,
     cell_vars: &mut AHashSet<StringId>,
-    interner: &Interns,
+    interner: &CompileInterns<'_>,
 ) {
     match args {
         ArgExprs::Empty => {}
@@ -3238,7 +3265,11 @@ fn collect_cell_vars_from_args(
 /// Collects all names referenced (read) in a node and its descendants.
 ///
 /// This is used to find what names a nested function references from enclosing scopes.
-fn collect_referenced_names_from_node(node: &ParseNode, referenced: &mut AHashSet<StringId>, interner: &Interns) {
+fn collect_referenced_names_from_node(
+    node: &ParseNode,
+    referenced: &mut AHashSet<StringId>,
+    interner: &CompileInterns<'_>,
+) {
     match node {
         Node::Expr(expr) | Node::Return(Some(expr)) | Node::Raise(Some(expr)) => {
             collect_referenced_names_from_expr(expr, referenced, interner);
@@ -3404,7 +3435,7 @@ fn collect_nested_function_references(
     signature: &ParsedSignature,
     body: &[ParseNode],
     referenced: &mut AHashSet<StringId>,
-    interner: &Interns,
+    interner: &CompileInterns<'_>,
 ) {
     // First collect everything the nested function references — this recurses
     // into still-deeper FunctionDefs via the same path, so the transitive
@@ -3432,7 +3463,11 @@ fn collect_nested_function_references(
     }
 }
 
-fn collect_referenced_names_from_expr(expr: &ExprLoc, referenced: &mut AHashSet<StringId>, interner: &Interns) {
+fn collect_referenced_names_from_expr(
+    expr: &ExprLoc,
+    referenced: &mut AHashSet<StringId>,
+    interner: &CompileInterns<'_>,
+) {
     match &expr.expr {
         Expr::Name(ident) => {
             referenced.insert(ident.name_id);
@@ -3578,7 +3613,7 @@ fn collect_referenced_names_from_comprehension(
     elt: Option<&ExprLoc>,
     key_value: Option<(&ExprLoc, &ExprLoc)>,
     referenced: &mut AHashSet<StringId>,
-    interner: &Interns,
+    interner: &CompileInterns<'_>,
 ) {
     // Track loop variable names (these are local to the comprehension)
     let mut comp_locals: AHashSet<StringId> = AHashSet::new();
@@ -3627,7 +3662,11 @@ fn collect_referenced_names_from_comprehension(
 }
 
 /// Collects referenced names from argument expressions.
-fn collect_referenced_names_from_args(args: &ArgExprs, referenced: &mut AHashSet<StringId>, interner: &Interns) {
+fn collect_referenced_names_from_args(
+    args: &ArgExprs,
+    referenced: &mut AHashSet<StringId>,
+    interner: &CompileInterns<'_>,
+) {
     match args {
         ArgExprs::Empty => {}
         ArgExprs::One(e) => collect_referenced_names_from_expr(e, referenced, interner),
@@ -3694,7 +3733,7 @@ fn collect_referenced_names_from_args(args: &ArgExprs, referenced: &mut AHashSet
 fn collect_referenced_names_from_fstring_parts(
     parts: &[FStringPart],
     referenced: &mut AHashSet<StringId>,
-    interner: &Interns,
+    interner: &CompileInterns<'_>,
 ) {
     for part in parts {
         if let FStringPart::Interpolation { expr, format_spec, .. } = part {
@@ -3712,7 +3751,11 @@ fn collect_referenced_names_from_fstring_parts(
 /// Recursively traverses nested tuples to find all identifier names. Attribute
 /// and subscript targets bind no name; like their [`AssignTarget`] counterparts
 /// they are scanned for walrus assignments instead.
-fn collect_names_from_unpack_target(target: &UnpackTarget, names: &mut AHashSet<StringId>, interner: &Interns) {
+fn collect_names_from_unpack_target(
+    target: &UnpackTarget,
+    names: &mut AHashSet<StringId>,
+    interner: &CompileInterns<'_>,
+) {
     match target {
         UnpackTarget::Name(ident) => {
             names.insert(ident.name_id);
@@ -3740,7 +3783,7 @@ fn collect_names_from_unpack_target(target: &UnpackTarget, names: &mut AHashSet<
 fn collect_referenced_names_from_unpack_target(
     target: &UnpackTarget,
     referenced: &mut AHashSet<StringId>,
-    interner: &Interns,
+    interner: &CompileInterns<'_>,
 ) {
     match target {
         UnpackTarget::Name(_) => {}
@@ -3763,7 +3806,7 @@ fn collect_cell_vars_from_unpack_target(
     target: &UnpackTarget,
     our_locals: &AHashSet<StringId>,
     cell_vars: &mut AHashSet<StringId>,
-    interner: &Interns,
+    interner: &CompileInterns<'_>,
 ) {
     match target {
         UnpackTarget::Name(_) => {}
@@ -3790,7 +3833,7 @@ fn collect_cell_vars_from_unpack_target(
 fn collect_assigned_names_from_assign_target(
     target: &AssignTarget,
     assigned_names: &mut AHashSet<StringId>,
-    interner: &Interns,
+    interner: &CompileInterns<'_>,
 ) {
     match target {
         AssignTarget::Name(ident) => {
@@ -3820,7 +3863,7 @@ fn collect_cell_vars_from_assign_target(
     target: &AssignTarget,
     our_locals: &AHashSet<StringId>,
     cell_vars: &mut AHashSet<StringId>,
-    interner: &Interns,
+    interner: &CompileInterns<'_>,
 ) {
     match target {
         AssignTarget::Subscript { target, index, .. } => {
@@ -3847,7 +3890,7 @@ fn collect_cell_vars_from_assign_target(
 fn collect_referenced_names_from_assign_target(
     target: &AssignTarget,
     referenced: &mut AHashSet<StringId>,
-    interner: &Interns,
+    interner: &CompileInterns<'_>,
 ) {
     match target {
         AssignTarget::Subscript { target, index, .. } => {

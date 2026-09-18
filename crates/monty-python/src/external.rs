@@ -144,7 +144,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     /// (or absent dict) yields `None` → the sandbox raises `NameError`.
     ///
     /// [`py_to_monty_value`] decides callable-vs-other (notably a type object
-    /// Monty models converts to `MontyObject::Type`, not a proxy); a function
+    /// Monty models converts to `MontyNode::Type`, not a proxy); a function
     /// proxy is renamed to the lookup *key* (not the callable's `__name__`) so
     /// the `FunctionCall` hits the same dict entry. An unconvertible value
     /// rejects the turn via [`MontyConversionError::value_conversion_err`] —

@@ -10,22 +10,33 @@
 //! StringIds are laid out as follows:
 //! * 0 to 127 - single character strings for all 128 ASCII characters
 //! * 128 - the empty string
-//! * 129+ - strings interned per executor
+//! * 129 to 2³¹-1 - strings interned per executor
+//! * 2³¹ and above - snippet filename identities, never Python string values
 //!
 //! Other static strings occupy ordinary executor-local slots. Their interner entries
 //! retain a [`StaticStrings`] tag for dispatch, while snapshots serialize only
 //! their text so another build can load an unknown static string as owned text.
 
-use std::{cell::RefCell, mem, ops::Index, slice::from_ref, str::FromStr, sync::LazyLock};
+mod compile;
+mod storage;
 
-use ahash::AHashMap;
+use std::{
+    cell::{Cell, RefCell},
+    mem,
+    slice::from_ref,
+    str::FromStr,
+    sync::{Arc, LazyLock},
+};
+
+use ahash::{AHashMap, AHashSet};
+pub(crate) use compile::CompileInterns;
 use num_bigint::BigInt;
+use storage::Entries;
 use strum::{EnumString, FromRepr, IntoStaticStr};
 
 use crate::{
     function::Function,
     hash::{HashValue, RESERVED_STRING_HASHES, WithHash, hash_python_str},
-    heap::{HeapId, StableHeap},
 };
 
 /// Index into the string interner's storage.
@@ -697,6 +708,8 @@ pub enum StaticStrings {
     Closed,
     /// Kwarg name `closefd` — `open(closefd=...)`.
     Closefd,
+    /// `closure` parameter of exec.
+    Closure,
     /// The class parameter of the decorator `@dataclass(...)` returns, which
     /// CPython spells `def wrap(cls)` and so accepts by keyword.
     Cls,
@@ -1047,6 +1060,8 @@ pub enum StaticStrings {
     Getrandbits,
     /// `random.getstate()` function.
     Getstate,
+    /// `globals` parameter of eval/exec.
+    Globals,
     /// `match.group()` method
     Group,
     /// `itertools.groupby()` function.
@@ -1239,6 +1254,8 @@ pub enum StaticStrings {
     Ljust,
     /// `json.loads()` function.
     Loads,
+    /// `locals` parameter of eval/exec.
+    Locals,
     /// `math.log()` function.
     Log,
     /// `math.log10()` function.
@@ -2075,102 +2092,10 @@ static CORE_ENTRIES: LazyLock<Vec<InternedString>> = LazyLock::new(|| {
         .collect()
 });
 
-/// Append-only storage: existing references remain valid across insertion.
-/// No API exposes the underlying arena's removal or mutation operations.
-#[derive(Debug)]
-struct StringEntries(StableHeap<InternedString>);
-
-impl StringEntries {
-    /// Reserves stable slots for a new interner.
-    fn with_capacity(capacity: usize) -> Self {
-        Self(StableHeap::with_capacity(capacity))
-    }
-
-    /// Returns the number of assigned executor-local slots.
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    /// Appends an immutable entry without invalidating borrowed text.
-    fn push(&self, entry: InternedString) {
-        self.0.allocate(entry);
-    }
-
-    /// Looks up an existing slot without exposing arena IDs to callers.
-    fn get(&self, index: usize) -> Option<&InternedString> {
-        (index < self.len()).then(|| self.0.get(HeapId::from_index(index)))
-    }
-
-    /// Visits entries in ID order for cloning and snapshots.
-    fn iter(&self) -> impl Iterator<Item = &InternedString> {
-        (0..self.len()).map(|index| &self[index])
-    }
-}
-
-impl Index<usize> for StringEntries {
-    type Output = InternedString;
-    fn index(&self, index: usize) -> &Self::Output {
-        self.get(index).expect("invalid string slot")
-    }
-}
-
-impl Clone for StringEntries {
-    fn clone(&self) -> Self {
-        let entries = Self::with_capacity(self.len());
-        for entry in self.iter() {
-            entries.push(entry.clone());
-        }
-        entries
-    }
-}
-
-impl serde::Serialize for StringEntries {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq(self.iter())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for StringEntries {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let values = <Vec<InternedString> as serde::Deserialize>::deserialize(deserializer)?;
-        let entries = Self::with_capacity(values.len());
-        for value in values {
-            entries.push(value);
-        }
-        Ok(entries)
-    }
-}
-
-/// Interns `s` into the executor-local string table.
-///
-/// ASCII and empty strings remain globally addressable; other strings receive an ordinary
-/// dense interner slot. Static text retains a tag in that slot rather than
-/// encoding the tag in its `StringId`.
-fn intern_str(
-    string_map: &mut AHashMap<String, StringId>,
-    static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
-    strings: &StringEntries,
-    s: &str,
-) -> StringId {
-    if s.is_empty() {
-        StringId::EMPTY
-    } else if s.len() == 1 {
-        StringId::from_ascii(s.as_bytes()[0])
-    } else if let Ok(value) = StaticStrings::from_str(s) {
-        intern_static(static_string_ids, strings, value)
-    } else {
-        *string_map.entry(s.to_owned()).or_insert_with(|| {
-            let id = next_string_id(strings.len());
-            strings.push(InternedString::owned(s.to_owned()));
-            id
-        })
-    }
-}
-
 /// Interns a static tag into an append-only executor-local table.
 fn intern_static(
     static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
-    strings: &StringEntries,
+    strings: &Entries<InternedString>,
     value: StaticStrings,
 ) -> StringId {
     let text: &'static str = value.into();
@@ -2194,6 +2119,7 @@ fn intern_static(
 /// Returns the next dense executor-local string ID.
 fn next_string_id(strings_len: usize) -> StringId {
     let index = strings_len + INTERN_STRING_ID_OFFSET;
+    assert!(index < SOURCE_ID_BASE, "StringId overflow");
     StringId(index.try_into().expect("StringId overflow"))
 }
 
@@ -2219,7 +2145,7 @@ fn get_string_id_by_name(
 /// # Panics
 ///
 /// Panics if the ID is neither reserved nor a slot in this interner.
-fn get_str(strings: &StringEntries, id: StringId) -> &str {
+fn get_str(strings: &Entries<InternedString>, id: StringId) -> &str {
     if let Some(text) = RESERVED_STRS.get(id.index()) {
         text
     } else {
@@ -2229,7 +2155,7 @@ fn get_str(strings: &StringEntries, id: StringId) -> &str {
 
 /// Returns the static tag stored at `id`, if any.
 #[inline]
-fn get_static_string(strings: &StringEntries, id: StringId) -> Option<StaticStrings> {
+fn get_static_string(strings: &Entries<InternedString>, id: StringId) -> Option<StaticStrings> {
     if id == StringId::EMPTY {
         Some(StaticStrings::EmptyString)
     } else if id.index() < INTERN_STRING_ID_OFFSET {
@@ -2239,47 +2165,24 @@ fn get_static_string(strings: &StringEntries, id: StringId) -> Option<StaticStri
     }
 }
 
-/// Storage for interned strings, bytes, long integers and compiled functions.
-///
-/// One table serves parsing, preparation, compilation and execution. Strings
-/// are deduplicated; bytes and long integers are not (large literals are rare).
-/// The table is single-threaded, with static strings appendable through `&self`.
-///
-/// # Append-only ownership in the REPL
-///
-/// Snippets extend the session's table in place, keeping existing IDs stable.
-/// Failed compilation rolls back appended functions; interned literals remain.
-/// Execution takes ownership of the table and hands it back afterwards.
-///
-/// # Hash tables
-///
-/// String entries wrap either a static tag or owned text in [`WithHash`]; bytes
-/// and long integers use `WithHash` directly. Hashes are populated eagerly at
-/// intern/load time, making the runtime hash methods plain index lookups.
-///
-/// # Reverse string lookup
-///
-/// [`get_string_id_by_name`](Self::get_string_id_by_name) returns the
-/// `StringId` for a host-supplied `&str`. Owned text uses an in-memory reverse
-/// map; static tags use a sparse reverse map. Both are rebuilt
-/// deterministically after deserialization. REPL hot paths
-/// such as [`MontyRepl::call_function`](crate::MontyRepl::call_function)
-/// and [`MontyRepl::has_function`](crate::MontyRepl::has_function) call this
-/// per host-supplied name, so the lookup must be O(1) — not the previous
-/// linear scan over `strings`.
+/// Committed strings, literals, functions and snippet sources.
+/// Entries never move or disappear; existing sessions publish private compilation overlays on success.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "InternsWire")]
 pub(crate) struct Interns {
-    strings: StringEntries,
-    bytes: Vec<WithHash<Vec<u8>>>,
-    long_ints: Vec<WithHash<BigInt>>,
-    functions: Vec<Function>,
-    /// Owned-text reverse lookup for [`Self::get_string_id_by_name`].
+    strings: Entries<InternedString>,
+    bytes: Entries<WithHash<Vec<u8>>>,
+    long_ints: Entries<WithHash<BigInt>>,
+    /// Boxes keep a mostly empty storage page from reserving hundreds of function bodies.
+    functions: Entries<Box<Function>>,
+    eval_sources: Entries<Arc<str>>,
     #[serde(skip)]
-    string_id_by_name: AHashMap<String, StringId>,
-    /// Static-tag reverse lookup, rebuilt from `strings` after loading.
+    string_id_by_name: RefCell<AHashMap<String, StringId>>,
     #[serde(skip)]
     static_string_ids: RefCell<AHashMap<StaticStrings, StringId>>,
+    /// Prevents runtime insertion or a second compiler from consuming provisional IDs.
+    #[serde(skip)]
+    compiling: Cell<bool>,
 }
 
 impl Default for Interns {
@@ -2288,102 +2191,84 @@ impl Default for Interns {
     }
 }
 
-/// Serialized form of [`Interns`]
+/// Serialized tables without the derived lookup maps or compilation lock.
 #[derive(serde::Deserialize)]
 struct InternsWire {
-    strings: StringEntries,
-    bytes: Vec<WithHash<Vec<u8>>>,
-    long_ints: Vec<WithHash<BigInt>>,
-    functions: Vec<Function>,
-}
-
-impl From<Interns> for InternsWire {
-    fn from(interns: Interns) -> Self {
-        Self {
-            strings: interns.strings,
-            bytes: interns.bytes,
-            long_ints: interns.long_ints,
-            functions: interns.functions,
-        }
-    }
+    strings: Entries<InternedString>,
+    bytes: Entries<WithHash<Vec<u8>>>,
+    long_ints: Entries<WithHash<BigInt>>,
+    functions: Entries<Box<Function>>,
+    eval_sources: Entries<Arc<str>>,
 }
 
 impl TryFrom<InternsWire> for Interns {
     type Error = String;
 
     fn try_from(wire: InternsWire) -> Result<Self, Self::Error> {
-        let (string_id_by_name, static_string_ids) = build_string_maps(&wire.strings)?;
-        let interns = Self {
+        let mut string_id_by_name = AHashMap::new();
+        let mut static_string_ids = AHashMap::new();
+        let mut seen = AHashSet::new();
+        for (index, entry) in wire.strings.iter().enumerate() {
+            let text = entry.as_str();
+            if text.is_empty() || text.len() == 1 || !seen.insert(text) {
+                return Err(format!("duplicate or reserved interned string {text:?}"));
+            }
+            let id = next_string_id(index);
+            if let Some(value) = entry.static_value() {
+                static_string_ids.insert(value, id);
+            } else {
+                string_id_by_name.insert(text.to_owned(), id);
+            }
+        }
+        Ok(Self {
             strings: wire.strings,
             bytes: wire.bytes,
             long_ints: wire.long_ints,
             functions: wire.functions,
-            string_id_by_name,
-            static_string_ids,
-        };
-        Ok(interns)
+            eval_sources: wire.eval_sources,
+            string_id_by_name: RefCell::new(string_id_by_name),
+            static_string_ids: RefCell::new(static_string_ids),
+            compiling: Cell::new(false),
+        })
     }
 }
 
-/// Reverse maps rebuilt from the serialized ordered string table.
-type StringMaps = (AHashMap<String, StringId>, RefCell<AHashMap<StaticStrings, StringId>>);
-
-/// Rebuilds both reverse maps from the canonical ordered string table.
-///
-/// Duplicate text is rejected because distinct IDs for equal interned strings
-/// would invalidate the ID-equality fast path used by Python string equality.
-fn build_string_maps(strings: &StringEntries) -> Result<StringMaps, String> {
-    let mut seen = AHashMap::with_capacity(strings.len());
-    let mut string_id_by_name = AHashMap::new();
-    let static_string_ids = RefCell::new(AHashMap::new());
-    for (index, entry) in strings.iter().enumerate() {
-        let id = next_string_id(index);
-        if seen.insert(entry.as_str(), id).is_some() {
-            return Err(format!("duplicate interned string {:?}", entry.as_str()));
-        }
-        if let Some(value) = entry.static_value() {
-            static_string_ids.borrow_mut().insert(value, id);
-        } else {
-            string_id_by_name.insert(entry.as_str().to_owned(), id);
-        }
-    }
-    Ok((string_id_by_name, static_string_ids))
-}
+/// Filename-only IDs are separate from canonical Python strings.
+/// Each snippet has distinct source identity but the same displayed filename.
+const SOURCE_ID_BASE: usize = 1 << 31;
 
 impl Interns {
-    /// Moves this table out while leaving a cheap, intentionally unusable placeholder.
-    ///
-    /// Transferring the table between a REPL session and its executor avoids
-    /// full interner initialization on every feed.
+    /// Moves session ownership without initializing another interner.
     pub(crate) fn take(&mut self) -> Self {
         mem::replace(self, Self::placeholder())
     }
 
-    /// Creates the temporary value used only while an interner is moved out.
+    /// Empty replacement used while the executor owns the session's tables.
     fn placeholder() -> Self {
         Self {
-            strings: StringEntries::with_capacity(0),
-            bytes: Vec::new(),
-            long_ints: Vec::new(),
-            functions: Vec::new(),
-            string_id_by_name: AHashMap::new(),
-            static_string_ids: RefCell::new(AHashMap::new()),
+            strings: Entries::default(),
+            bytes: Entries::default(),
+            long_ints: Entries::default(),
+            functions: Entries::default(),
+            eval_sources: Entries::default(),
+            string_id_by_name: RefCell::default(),
+            static_string_ids: RefCell::default(),
+            compiling: Cell::new(false),
         }
     }
 
-    /// Creates a table containing the core strings any execution may materialize.
-    /// Other static strings are interned on demand; `code` supplies a rough
-    /// capacity estimate for source literals.
+    /// Initializes the core static strings; other entries are appended on demand.
     pub fn new(code: &str) -> Self {
-        // Rough guess: count quotes and divide by 2 (open+close per string).
         let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
         let interns = Self {
-            strings: StringEntries::with_capacity(capacity + CORE_STATIC_STRINGS.len()),
-            bytes: Vec::new(),
-            long_ints: Vec::new(),
-            functions: Vec::new(),
-            string_id_by_name: AHashMap::with_capacity(capacity),
+            strings: Entries::with_capacity(capacity + CORE_STATIC_STRINGS.len()),
+            bytes: Entries::default(),
+            long_ints: Entries::default(),
+            functions: Entries::default(),
+            eval_sources: Entries::default(),
+            string_id_by_name: RefCell::new(AHashMap::with_capacity(capacity)),
             static_string_ids: RefCell::new(AHashMap::with_capacity(CORE_STATIC_STRINGS.len())),
+            compiling: Cell::new(false),
         };
         for entry in CORE_ENTRIES.iter() {
             let value = entry.static_value().expect("core entries are static");
@@ -2394,105 +2279,64 @@ impl Interns {
         interns
     }
 
-    /// Interns bytes without deduplication, since bytes literals are rare.
-    pub fn intern_bytes(&mut self, b: &[u8]) -> BytesId {
-        let id = BytesId(self.bytes.len().try_into().expect("BytesId overflow"));
-        self.bytes.push(WithHash::for_bytes(b.to_vec()));
-        id
-    }
-
-    /// Interns a big integer without deduplication, since literals exceeding i64 are rare.
-    pub fn intern_long_int(&mut self, bi: BigInt) -> LongIntId {
-        let id = LongIntId(self.long_ints.len().try_into().expect("LongIntId overflow"));
-        self.long_ints.push(WithHash::for_long_int(bi));
-        id
-    }
-
-    /// Appends a compiled function, returning its index for bytecode operands.
-    pub(crate) fn push_function(&mut self, function: Function) -> usize {
-        let index = self.functions.len();
-        self.functions.push(function);
-        index
-    }
-
-    /// Records the function count before compilation so failures can roll back.
-    pub(crate) fn functions_len(&self) -> usize {
-        self.functions.len()
-    }
-
-    /// Removes functions appended by a rejected compilation.
-    pub(crate) fn truncate_functions(&mut self, len: usize) {
-        self.functions.truncate(len);
-    }
-
-    /// Interns source or host-supplied text, deduplicating it against existing entries.
-    /// ASCII and empty strings use reserved IDs; others receive stable session-local IDs.
-    pub(crate) fn intern(&mut self, s: &str) -> StringId {
-        intern_str(&mut self.string_id_by_name, &self.static_string_ids, &self.strings, s)
-    }
-
-    /// Interns compile-time-known text directly into the append-only table.
+    /// Interns runtime static text without invalidating existing string borrows.
     pub(crate) fn intern_static(&self, value: StaticStrings) -> StringId {
+        assert!(!self.compiling.get(), "runtime interning during compilation");
         intern_static(&self.static_string_ids, &self.strings, value)
     }
 
-    /// Looks up a string by its `StringId`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `StringId` is invalid.
+    /// Looks up a Python string; filename identities use `get_filename` instead.
     #[inline]
     pub fn get_str(&self, id: StringId) -> &str {
         get_str(&self.strings, id)
     }
 
-    /// Returns the static tag stored in an executor-local string slot.
+    /// Resolves a traceback filename, displaying each snippet's source identity as `<string>`.
+    pub(crate) fn get_filename(&self, id: StringId) -> &str {
+        if id.index() >= SOURCE_ID_BASE {
+            assert!(
+                id.index() - SOURCE_ID_BASE < self.eval_sources.len(),
+                "invalid snippet source ID"
+            );
+            "<string>"
+        } else {
+            get_str(&self.strings, id)
+        }
+    }
+
+    /// Returns dispatch metadata independent of the executor-local ID.
     pub(crate) fn static_string(&self, id: StringId) -> Option<StaticStrings> {
         get_static_string(&self.strings, id)
     }
 
-    /// Looks up bytes by their `BytesId`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `BytesId` is invalid.
+    /// Borrows a committed bytes literal.
     #[inline]
     pub fn get_bytes(&self, id: BytesId) -> &[u8] {
         self.bytes[id.index()].value()
     }
 
-    /// Looks up a long integer by its `LongIntId`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `LongIntId` is invalid.
+    /// Borrows a committed integer literal.
     #[inline]
     pub fn get_long_int(&self, id: LongIntId) -> &BigInt {
         self.long_ints[id.index()].value()
     }
 
-    /// Lookup a function by its `FunctionId`
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `FunctionId` is invalid.
+    /// Borrows a function; later compilation cannot invalidate this reference.
     #[inline]
     pub fn get_function(&self, id: FunctionId) -> &Function {
-        self.functions.get(id.index()).expect("Function not found")
+        &self.functions[id.index()]
     }
 
-    /// Returns the Python hash for an interned string.
-    ///
-    /// Reserved-string hashes remain globally lazy. Every executor-local entry, static
-    /// or owned, computes and stores its hash once when interned or loaded.
-    ///
-    /// All three paths must agree with [`hash_python_str`] applied to the
-    /// underlying `&str` — interned and heap strings with equal contents
-    /// must hash identically.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `StringId` is invalid (same as [`Self::get_str`]).
+    /// Looks up source by its filename-only ID, never by the displayed text.
+    pub(crate) fn eval_source(&self, filename: StringId) -> Option<&str> {
+        filename
+            .index()
+            .checked_sub(SOURCE_ID_BASE)
+            .and_then(|index| self.eval_sources.get(index))
+            .map(AsRef::as_ref)
+    }
+
+    /// Returns the same hash as an equal heap string.
     #[inline]
     pub fn str_hash(&self, id: StringId) -> HashValue {
         if id.index() < RESERVED_STRS.len() {
@@ -2502,52 +2346,20 @@ impl Interns {
         }
     }
 
-    /// Returns the Python hash for interned bytes.
-    ///
-    /// Reads the [`HashValue`] from the corresponding [`WithHash`] entry
-    /// (populated at intern time). Must agree with [`hash_python_bytes`]
-    /// applied to the underlying `&[u8]`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `BytesId` is invalid.
+    /// Returns the cached Python hash of a bytes literal.
     #[inline]
     pub fn bytes_hash(&self, id: BytesId) -> HashValue {
         self.bytes[id.index()].hash()
     }
 
-    /// Returns the Python hash for an interned long integer.
-    ///
-    /// Reads the [`HashValue`] from the corresponding [`WithHash`] entry
-    /// (populated at intern time). Must agree with [`hash_python_long_int`].
-    /// Note that interned long ints are only created for values that don't
-    /// fit in `i64` (see `parse.rs`), so the `to_i64()` fast path inside
-    /// `hash_python_long_int` is a defensive consistency guarantee rather
-    /// than a hot path.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `LongIntId` is invalid.
+    /// Returns the cached Python hash of an integer literal.
     #[inline]
     pub fn long_int_hash(&self, id: LongIntId) -> HashValue {
         self.long_ints[id.index()].hash()
     }
 
-    /// Looks up the executor-local `StringId` for previously interned text.
-    ///
-    /// This is the reverse of [`Self::get_str`]: given a string, find its
-    /// `StringId`. The interned-string branch is O(1) via the
-    /// `string_id_by_name` reverse map (built once at construction /
-    /// deserialization), so the entire lookup stays O(1) regardless of how
-    /// many strings have been interned.
-    ///
-    /// Used when the host provides a name (e.g., from a `NameLookup` response,
-    /// [`MontyRepl::call_function`](crate::MontyRepl::call_function),
-    /// [`MontyRepl::has_function`](crate::MontyRepl::has_function), or input
-    /// injection) that was previously interned during preparation.
-    ///
-    /// Returns `None` if the string was never interned.
+    /// Finds canonical text already interned, excluding snippet filename IDs.
     pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
-        get_string_id_by_name(&self.string_id_by_name, &self.static_string_ids, s)
+        get_string_id_by_name(&self.string_id_by_name.borrow(), &self.static_string_ids, s)
     }
 }
