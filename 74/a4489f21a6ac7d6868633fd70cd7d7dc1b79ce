@@ -1,0 +1,95 @@
+crates/monty/tests/auto_os_calls.rs
+  s_440a7ea0ee4e52::t_89cb7a3e75389c 538-540,542,546,549-561
+crates/monty-types/src/resource.rs
+  s_440a7ea0ee4e52::t_e15295dbb7c825 171-175,415-416,706
+crates/monty-runtime/tests/mounts.rs
+  s_440a7ea0ee4e52::t_24e30375247d2d 109,112-113
+  s_440a7ea0ee4e52::t_7c468acdbcdfc3 94-99,102-108,110-111,114-115
+  s_440a7ea0ee4e52::t_f5c33bc7d37bf8 100-101
+docs/security.md
+  s_440a7ea0ee4e52::t_ee623b726998cb 329-330
+crates/monty-js/ts/worker/component/interfaces/pydantic-monty-worker.d.ts
+  s_440a7ea0ee4e52::t_985bdb4290f2a3 581
+crates/monty-python/python/pydantic_monty/__init__.py
+  s_440a7ea0ee4e52::t_5215762d6c8ce7 167
+  s_440a7ea0ee4e52::t_bf31116cf7ed19 169-171
+crates/monty-runtime/src/main.rs
+  s_440a7ea0ee4e52::t_7c468acdbcdfc3 99-101,169,192-195
+crates/monty-pool/tests/websocket.rs
+  s_440a7ea0ee4e52::t_2f8ebad6072ed4 719,1000
+crates/monty-wasm-runtime/src/lib.rs
+  s_440a7ea0ee4e52::t_bf31116cf7ed19 58-60,70,89,100,125
+crates/monty-proto/src/worker.rs
+  s_440a7ea0ee4e52::t_bf31116cf7ed19 173-175,356-360,374
+  s_440a7ea0ee4e52::t_e15295dbb7c825 971
+crates/monty/src/modules/time.rs
+  s_440a7ea0ee4e52::t_e15295dbb7c825 91,101-105,107-109
+docs/resource-limits.md
+  s_440a7ea0ee4e52::t_bf31116cf7ed19 108
+crates/monty-js/__test__/limits.spec.ts
+  s_440a7ea0ee4e52::t_ee623b726998cb 177-184
+docs/limitations/time.md
+  s_440a7ea0ee4e52::t_bf31116cf7ed19 57-58,60-62
+crates/monty-python/src/limits.rs
+  s_440a7ea0ee4e52::t_5215762d6c8ce7 16
+crates/monty-pool/src/checkout.rs
+  s_440a7ea0ee4e52::t_4fd6a351288cdb 407-410,429-433,446-447,460-461,481-483,503-531,610-620,873-875,1199-1200,1224-1233,1244
+crates/monty-types/src/auto_os_calls.rs
+  s_440a7ea0ee4e52::t_e15295dbb7c825 130-133
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_440a7ea0ee4e52::t_e15295dbb7c825 753-755
+downloads_bump.md
+  s_6528ca46087267::t_1c58015bbb15fa 1-108
+crates/monty-bench/benches/decode.rs
+  s_440a7ea0ee4e52::t_7c325aca1f1423 52
+crates/monty-runtime/src/run.rs
+  s_440a7ea0ee4e52::t_7c468acdbcdfc3 127-131,485-494,566-570,576-607,651-652,657-658,662-663,665,670-672,680-685,687-688
+  s_440a7ea0ee4e52::t_842b983800e756 686
+crates/monty-runtime/README.md
+  s_440a7ea0ee4e52::t_bf31116cf7ed19 49
+docs/limitations/resource_limits.md
+  s_440a7ea0ee4e52::t_ee623b726998cb 206-209,211,214-215
+crates/monty-pool/src/telemetry/tracing.rs
+  s_440a7ea0ee4e52::t_2f8ebad6072ed4 1043,1182,1235
+crates/monty-js/__test__/wasm_auto_os_calls.spec.ts
+  s_440a7ea0ee4e52::t_ee623b726998cb 7,12-18,20-26
+  s_440a7ea0ee4e52::t_985bdb4290f2a3 19
+crates/monty-js/ts/worker/transport.ts
+  s_440a7ea0ee4e52::t_bf31116cf7ed19 57,117-122,132-134,302,329,332-336,340-343,350-383,403-404,658-662,667-671
+  s_440a7ea0ee4e52::t_985bdb4290f2a3 14,19,663-666
+crates/monty/src/modules/asyncio.rs
+  s_440a7ea0ee4e52::t_e15295dbb7c825 88
+crates/monty-js/ts/pool.ts
+  s_440a7ea0ee4e52::t_ee623b726998cb 147-151
+crates/monty-wasm-runtime/wit/runtime.wit
+  s_440a7ea0ee4e52::t_bf31116cf7ed19 460-462
+docs/cli.md
+  s_440a7ea0ee4e52::t_bf31116cf7ed19 39,74-75
+  s_440a7ea0ee4e52::t_f878b8154970e2 25-38,40
+crates/monty-pool/src/telemetry/metrics.rs
+  s_440a7ea0ee4e52::t_2f8ebad6072ed4 1080,1306,1402,1413,1443,1465
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "74a4489f21a6ac7d6868633fd70cd7d7dc1b79ce",
+  "prompts": {},
+  "sessions": {
+    "s_440a7ea0ee4e52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a9754f7-13d8-42d0-a0e4-9657814a0b0c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_6528ca46087267": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc685d68-770b-4a6b-aa02-78a5d1a6b20b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
