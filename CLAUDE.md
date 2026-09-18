@@ -182,8 +182,9 @@ subprocesses:
     of workers (`with Monty() as pool: with pool.checkout() as session: session.feed_run(...)`, and the `async with` / `await feed_run` equivalents).
 
 The contract for crash detection: a child that exits or EOFs *without* a
-`FatalError` event crashed hard; the parent discards it and replaces it. See
-`limitations/pool-architecture.md` for host-API divergences from in-process execution.
+`FatalError` event crashed hard; the parent discards it and replaces it.
+Pool and protocol design belong in their crate READMEs; host-API contracts belong in the relevant
+`docs/` topic and binding reference. Value-conversion divergences belong in `limitations/host-values.md`.
 
 ## Bytecode VM Architecture
 
@@ -1090,12 +1091,13 @@ Limitations section of the docs site (`docs/limitations/index.md` is the subset 
 `limitations/<file>.md` path in this file, the skills and the agents keeps working.
 The contributor rules below are also in `docs/limitations/AGENTS.md`, which is excluded from the build.
 
-Every pull request that adds, changes, or removes user-visible behavior MUST
-land (or update) a markdown document under `./limitations/` describing how
-the feature DIVERGES from CPython and what subset of the CPython surface
-area Monty actually implements. The directory is the single source of truth
-for "what does Monty *not* do that CPython does" — module-level docstrings
-and inline comments are not sufficient on their own.
+Every pull request that changes a CPython divergence MUST update the owning page under `./limitations/`.
+The directory records what Monty does not implement or does differently; docstrings and inline comments alone
+are not sufficient.
+Host-API contracts belong in the relevant `docs/` topic and binding reference, and implementation rationale in
+crate READMEs or code comments.
+Do not add migration history or a general architecture page here.
+Before adding a caveat, check its topic page: update the existing explanation and link to it rather than duplicating it.
 
 **NOTE**: `./limitations/` SHOULD **ONLY** INCLUDE INFORMATION ABOUT BEHAVIOR DIVERGENCES FROM CPython, not points that describe behavior that matches CPython's behavior.
 

@@ -152,7 +152,7 @@ chosen per value (deliberately nothing inherits another wrapper's policies).
 Each wrapper the hook creates is held by the session's instance store until
 the session closes, so a method returning a fresh object per call grows host
 memory by one entry per call; see
-[`limitations/pool-architecture.md`](https://github.com/pydantic/monty/blob/main/limitations/pool-architecture.md#host-api-behaviour-notes).
+[host-object retention](https://github.com/pydantic/monty/blob/main/docs/host-objects.md#values-returned-by-methods).
 
 One more option: `name` overrides the class name the sandbox sees (default
 the class name). It is a class-level property: on a `ClassInstance` it names
@@ -607,4 +607,4 @@ A self-referential sandbox value arrives with its placeholder string (`'[...]'`,
 
 The wire imposes no nesting limit, but a sandbox value nested deeper than `maxRecursionDepth` (1000 by default) arrives
 with the part below that depth replaced by the string `'<deeply nested>'`; see
-[`limitations/pool-architecture.md`](https://github.com/pydantic/monty/blob/main/limitations/pool-architecture.md#values-crossing-the-process-boundary).
+[host-value limitations](https://github.com/pydantic/monty/blob/main/docs/limitations/host-values.md).

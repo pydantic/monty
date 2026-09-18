@@ -377,6 +377,6 @@ dumps and restores are recorded by size only. Instrumentation is disabled until
 `instrument_telemetry` is called, and enabled instrumentation truncates large
 values at the telemetry attribute size limit.
 
-See `limitations/pool-architecture.md` in the repository for the behavioural
-details of subprocess execution (host-side mounts, buffered print callbacks,
-session dumps).
+See the documentation for [filesystem mounts](https://github.com/pydantic/monty/blob/main/docs/filesystem.md),
+[print buffering](https://github.com/pydantic/monty/blob/main/docs/limitations/print.md), and
+[session snapshots](https://github.com/pydantic/monty/blob/main/docs/snapshots.md).

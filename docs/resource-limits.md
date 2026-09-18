@@ -121,6 +121,8 @@ Two host-side backstops cover that:
 
 Set `max_duration_secs` for untrusted code that may suspend repeatedly; `request_timeout` alone does not bound the
 overall call.
+These deadlines are polled: synchronous host telemetry callbacks and decoding a large reply can delay enforcement.
+Neither deadline covers [host mount I/O](filesystem.md#io-timeouts-and-cancellation).
 
 ## Recursion
 

@@ -98,7 +98,7 @@ without one is unlimited.
     and replaced rather than allowed to grow indefinitely.
 - **Restoring a dump is bounded by the checkout it lands in.** `load_session` /
     `load_snapshot` restore the dump's own limits (see
-    [pool-architecture.md](pool-architecture.md)), and the cap is re-derived from
+    [snapshot configuration](../snapshots.md#what-restoring-does-and-does-not-carry)), and the cap is re-derived from
     them once the session exists, but the load *itself* runs under the limit the
     `checkout()` config applied. Restoring a large dump into a checkout with a
     much smaller `max_memory` can therefore exceed it while loading; pass a
