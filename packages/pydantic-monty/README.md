@@ -286,8 +286,9 @@ By default the sandbox answers these itself, with no `os=` handler involved:
 `sandbox_sleep_clamp` (10 seconds), with gathered `asyncio.sleep()` calls
 overlapping; and an unseeded `random` seeds itself from the worker's OS
 entropy. A sandbox wait costs nothing against `max_duration_secs` and is not a
-suspension, so `request_timeout` is what bounds a sleeping loop. Four
-`checkout()` arguments change that, for the life of the session:
+suspension, so `request_timeout` is what bounds a sleeping loop. The
+`auto_os_calls` argument of `checkout()` changes that, for the life of the
+session:
 
 ```python
 from datetime import datetime
@@ -302,28 +303,35 @@ f'{datetime.now():%Y-%m-%d %H:%M} {random.random():.4f}'
 """
 
 # datetime: 'system' (default), 'call_host' or a datetime
+# timezone: 'system' (default), 'call_host' or {'offset_seconds': int, 'name': str}
 # sleep: 'sandbox_sleep' (default), 'zero' or 'call_host'
 # sandbox_sleep_clamp: seconds per sandbox sleep; float('inf') for no cap
-# random_start: 'random' (default) or {'seed': int | float | str | bytes}
+# random_start: 'random' (default), 'call_host' or {'seed': int | float | str | bytes}
 with Monty() as pool:
     with pool.checkout(
-        datetime=datetime(2026, 1, 1, 9, 30),
-        sleep='zero',
-        sandbox_sleep_clamp=0.5,
-        random_start={'seed': 42},
+        auto_os_calls={
+            'datetime': datetime(2026, 1, 1, 9, 30),
+            'timezone': {'offset_seconds': 3600, 'name': 'CET'},
+            'sleep': 'zero',
+            'sandbox_sleep_clamp': 0.5,
+            'random_start': {'seed': 42},
+        }
     ) as session:
         print(session.feed_run(code))
-        #> 2026-01-01 09:30 0.6394
+        #> 2026-01-01 10:30 0.6394
 ```
 
-A naive `datetime` freezes the clock at that wall time in UTC (an aware one
-sets the sandbox's local zone to its `utcoffset()`). `'zero'` makes both
-sleeps return at once. `{'seed': s}` starts the module-level `random`
-generator exactly as `random.seed(s)` would (unseeded `random.Random()`
-instances take deterministic states derived from it); `random.seed()` in the
-sandbox still applies afterwards. `'call_host'` on `datetime` or `sleep` sends
-those calls to the `os=` handler instead — `OSAccess` answers them from the
-host process, capping each wait at its `max_sleep` — and explicit
+A `datetime` freezes the clock at that instant and, unless `timezone` is
+given, sets the zone too — its `utcoffset()` and `tzname()`, or UTC when
+naive — so `datetime.now()` returns it exactly; `timezone` is the zone naive
+`datetime.now()` and `date.today()` read in, a fixed offset rather than an
+IANA zone. `'zero'` makes both sleeps return at once. `{'seed': s}` starts
+the module-level `random` generator exactly as `random.seed(s)` would
+(unseeded `random.Random()` instances take deterministic states derived from
+it); `random.seed()` in the sandbox still applies afterwards. `'call_host'`
+on any key sends those calls to the `os=` handler instead — `OSAccess`
+answers the clock and the waits from the host process, capping each wait at
+its `max_sleep`, and `os.urandom` from the host's entropy — and explicit
 `os.urandom()` calls always reach the handler.
 
 ### Type checking

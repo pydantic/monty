@@ -223,24 +223,24 @@ let year = runner.run(vec![], ResourceTracker::default(), PrintWriter::Stdout).u
 assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
 ```
 
-`with_auto_os_calls` changes that, per call: `DateTimeSource::Fixed` freezes the clock and `RandomStart::Seed`
-seeds `random` as `random.seed()` would, for runs that have to be reproducible; `SleepMode::Zero` skips the waits
-and `SleepMode::SandboxSleep(clamp)` bounds them; and `CallHost` on `datetime` or `sleep` hands those calls to the host
-instead — under `start` they pause as `RunProgress::OsCall`, and under `run`, which has no host, they raise
-`NotImplementedError`:
+`with_auto_os_calls` changes that, per call: `DateTimeSource::Fixed` freezes the clock, `SandboxTimeZone::Fixed`
+pins the zone naive calls read in, and `RandomStart::Seed` seeds `random` as `random.seed()` would, for runs that
+have to be reproducible; `SleepMode::Zero` skips the waits and `SleepMode::SandboxSleep(clamp)` bounds them; and
+`CallHost` on any field hands those calls to the host instead — under `start` they pause as
+`RunProgress::OsCall`, and under `run`, which has no host, they raise `NotImplementedError`:
 
 ```rust
 use monty::MontyRun;
 use monty_types::{
     AutoOsCalls, CompileOptions, DateTimeSource, MontyObject, PrintWriter, RandomSeed, RandomStart, ResourceTracker,
-    SleepMode,
+    SandboxTimeZone, SleepMode,
 };
 
 let calls = AutoOsCalls {
-    datetime: DateTimeSource::Fixed { unix_seconds: 1_700_000_000, microsecond: 0, local_offset_seconds: 0 },
+    datetime: DateTimeSource::Fixed { unix_seconds: 1_700_000_000, microsecond: 0 },
+    timezone: SandboxTimeZone::Fixed { offset_seconds: 0, name: Some("UTC".to_owned()) },
     sleep: SleepMode::Zero,
     random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
-    ..AutoOsCalls::default()
 };
 let code = "import random, time\nfrom datetime import date\ntime.sleep(3600)\n(date.today().year, random.random())";
 let runner = MontyRun::new(code.to_owned(), "fixed.py", vec![], CompileOptions::default())

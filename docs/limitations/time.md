@@ -2,7 +2,7 @@
 
 Monty implements two functions from `time`: `time.time()` and `time.sleep()`.
 Both are answered by the sandbox itself by default, or handed to the host, as the session's `AutoOsCalls` say
-(`datetime=` and `sleep=` on `checkout()` in the bindings, `AutoOsCalls` in Rust).
+(`auto_os_calls` on `checkout()` in the bindings, `AutoOsCalls` in Rust).
 
 `asyncio.sleep()` is documented in [asyncio.md](asyncio.md); it shares
 `time.sleep()`'s handling of the delay argument and its sleep mode.
@@ -19,7 +19,7 @@ forms), `time_ns`, `struct_time`, `localtime`, `gmtime`, `mktime`, `strftime`,
 
 `time.time()` reads the same source as `date.today()` and `datetime.now()` (see
 [datetime.md](datetime.md#reading-the-clock)): the machine's clock by default, a frozen instant under a fixed
-`datetime`, or the host under `datetime='call_host'`.
+`datetime`, or the host under `datetime='call_host'`; the session's `timezone` does not apply to it.
 A frozen instant never advances, so `time.time()` returns the same value on every call, and under `call_host` it
 returns whatever the host answered with — a `float` of seconds since the Unix epoch, as in CPython, but with no
 guarantee it agrees with the machine's clock or moves forward at all.

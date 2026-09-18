@@ -16,9 +16,8 @@ platform (see the note on floats below).
 
 ## Entropy
 
-An unseeded generator seeds itself on its first draw, in the sandbox, from the session's `random_start`
-(`random_start=` on `checkout()` in the bindings, `AutoOsCalls::random_start` in Rust); nothing suspends to the host,
-and the host's `os.urandom` handler is never involved.
+An unseeded generator seeds itself on its first draw from the session's `random_start`
+(`auto_os_calls` on `checkout()` in the bindings, `AutoOsCalls::random_start` in Rust):
 
 - `'random'`, the default, reads 2496 bytes of OS entropy — the 624 32-bit words of one MT19937 state vector, what
     CPython's `seed(None)` reads — so unseeded draws are unpredictable, as in CPython.
@@ -27,8 +26,15 @@ and the host's `os.urandom` handler is never involved.
     seed. An unseeded `random.Random()` instance takes a state derived from the seed instead — deterministic from run
     to run, but distinct from the module generator's and from other instances' — where CPython would read fresh
     entropy for each. `random.seed()` and `random.seed(None)` take the next such derived state rather than entropy.
+- `'call_host'` suspends the first draw with an `os.urandom` host call for the 2496 bytes, and the reply seeds the
+    generator as CPython's `seed(None)` does from the same bytes. `random.seed()` and `random.seed(None)` make the
+    same call. A host that answers with fixed bytes makes unseeded runs reproducible; a reply of any other length,
+    or one that is not `bytes`, raises `RuntimeError`. Where nothing answers the call — a pool session without an
+    `os=` handler, or one whose handler returns `NOT_HANDLED` — the first unseeded draw raises
+    `RuntimeError: 'os.urandom' is not supported in this environment`; under Rust's non-suspending `MontyRun::run`
+    it raises `NotImplementedError`, as every unanswered OS call does there.
 
-Code that seeds explicitly behaves the same under either start.
+Code that seeds explicitly behaves the same under every start.
 `getstate()` on a never-seeded generator seeds it first, since there is no state to report until then.
 
 The module-level generator is session state like the globals: a seed set in one `feed_run` applies to the next, and

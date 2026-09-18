@@ -225,7 +225,9 @@ The clock here is frozen by the session itself, with no handler involved:
     """
 
     with Monty() as pool:
-        with pool.checkout(datetime=datetime(2026, 1, 1, 9, 30)) as session:
+        with pool.checkout(
+            auto_os_calls={'datetime': datetime(2026, 1, 1, 9, 30)}
+        ) as session:
             print(session.feed_run(code, os=fs))
             #> test test 09:30
     ```
@@ -252,7 +254,7 @@ The clock here is frozen by the session itself, with no handler involved:
     `
 
     await using pool = await Monty.create()
-    await using session = await pool.checkout({ datetime: new Date('2026-01-01T09:30:00Z') })
+    await using session = await pool.checkout({ autoOsCalls: { datetime: new Date('2026-01-01T09:30:00Z') } })
     console.log(await session.feedRun(code, { os: fs })) // test test 09:30
     ```
 
@@ -279,17 +281,18 @@ resolved inside the sandbox and reaches a mount as an absolute virtual path.
 `date.today()`, `datetime.now()` and `time.time()` are the only calls that read a clock.
 By default the sandbox reads this machine's clock and local timezone, in every session and every embedding —
 the pools, the CLI and an in-process Rust run alike.
-The session's `datetime` setting ([`Monty.checkout`][pydantic_monty.Monty.checkout] in Python, `checkout()` in
-JavaScript, `AutoOsCalls::datetime` in Rust) chooses otherwise:
+The session's `auto_os_calls` ([`AutoOSCalls`][pydantic_monty.AutoOSCalls] on
+[`Monty.checkout`][pydantic_monty.Monty.checkout] in Python, `autoOsCalls` on `checkout()` in JavaScript,
+`AutoOsCalls` in Rust) choose otherwise, for the instant (`datetime`) and the zone (`timezone`) separately:
 
 - a fixed instant — a `datetime.datetime`, a `Date`, `DateTimeSource::Fixed` — freezes the clock, for runs that
-    have to be reproducible;
+    have to be reproducible, and a fixed `timezone` (an offset and a name) pins the zone naive calls read in;
 - `'call_host'` sends each call to your `os=` handler as an OS call like any other, so you decide what the sandbox
     sees, and a handler that answers none of them makes all three raise.
 
 Wall-clock time is a weak capability, but it is one — it is what makes elapsed time measurable from inside the sandbox,
 and a naive `datetime.now()` is read in the host's local zone, which discloses its UTC offset.
-A fixed instant gives away neither.
+A fixed instant and a fixed zone give away neither.
 See [datetime](limitations/datetime.md#reading-the-clock).
 
 ### Entropy
@@ -301,11 +304,11 @@ Python's default `AbstractOS.urandom()` raises `MemoryError` before allocating w
 `max_urandom_bytes`, 1 MiB by default; `OSAccess(max_urandom_bytes=...)` sets the cap.
 A custom handler allocates in the host process, outside the worker's memory limit, so it must apply its own cap.
 
-The `random` module never makes that call.
-An unseeded generator seeds itself inside the sandbox from the worker's own OS entropy, or, when the session sets
-`random_start` (`{'seed': ...}` in Python, `{ seed }` in JavaScript, `RandomStart::Seed` in Rust), exactly as
-`random.seed(...)` would — the way to make a run reproducible.
-Seeded code (`random.seed(42)`) behaves the same either way.
+The `random` module makes that call only when the session's `random_start` is `'call_host'`.
+Otherwise an unseeded generator seeds itself inside the sandbox, from the worker's own OS entropy, or, when
+`random_start` gives a seed (`{'seed': ...}` in Python, `{ seed }` in JavaScript, `RandomStart::Seed` in Rust),
+exactly as `random.seed(...)` would — the way to make a run reproducible.
+Seeded code (`random.seed(42)`) behaves the same whatever the start.
 See [random](limitations/random.md).
 
 ### Waiting
@@ -349,7 +352,7 @@ The handler's `is_async` argument says which pool is calling, and
 
 
     with Monty() as pool:
-        with pool.checkout(sleep='call_host') as session:
+        with pool.checkout(auto_os_calls={'sleep': 'call_host'}) as session:
             print(session.feed_run('import time\ntime.sleep(30)\n"awake"', os=host_os))
             #> awake
     ```
@@ -367,7 +370,7 @@ The handler's `is_async` argument says which pool is calling, and
     }
 
     await using pool = await Monty.create()
-    await using session = await pool.checkout({ sleep: 'call_host' })
+    await using session = await pool.checkout({ autoOsCalls: { sleep: 'call_host' } })
     console.log(await session.feedRun('import time\ntime.sleep(30)\n"awake"', { os: hostOs })) // awake
     ```
 

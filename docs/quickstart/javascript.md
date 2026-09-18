@@ -234,8 +234,8 @@ See [resource limits](../resource-limits.md) and [type checking](../type-checkin
 
 The clock, the sleeps and `random`'s seed are session options too.
 By default the sandbox reads the worker's clock, waits out `time.sleep()` itself (ten seconds at most per call) and
-seeds `random` from the worker's entropy; `datetime`, `sleep`, `sandboxSleepClamp` and `randomStart` change that, so
-a run can be made reproducible:
+seeds `random` from the worker's entropy; `autoOsCalls` (`datetime`, `timezone`, `sleep`, `sandboxSleepClamp` and
+`randomStart`) changes that, so a run can be made reproducible:
 
 ```ts
 import { Monty } from '@pydantic/monty'
@@ -249,9 +249,7 @@ f'{datetime.now():%Y-%m-%d %H:%M} {random.random():.4f}'
 
 await using pool = await Monty.create()
 await using session = await pool.checkout({
-  datetime: new Date('2026-01-01T09:30:00Z'),
-  sleep: 'zero',
-  randomStart: { seed: 42 },
+  autoOsCalls: { datetime: new Date('2026-01-01T09:30:00Z'), sleep: 'zero', randomStart: { seed: 42 } },
 })
 console.log(await session.feedRun(code)) // 2026-01-01 09:30 0.6394
 ```

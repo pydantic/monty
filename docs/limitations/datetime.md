@@ -114,20 +114,23 @@ in Monty raises `TypeError: replace expected at most 0 arguments, got N`.
 ## Reading the clock
 
 `date.today()` and `datetime.now()` read the session's clock, chosen by its `AutoOsCalls`
-(`datetime=` on `checkout()` in the bindings, `AutoOsCalls::datetime` in Rust) and the same
-source `time.time()` reads (see [time.md](time.md)):
+(`auto_os_calls` on `checkout()` in the bindings, `AutoOsCalls` in Rust): the instant is
+`datetime`, the same source `time.time()` reads (see [time.md](time.md)), and the zone a
+naive result is read in is `timezone`.
 
-- `'system'`, the default everywhere — pool sessions included — reads this machine's clock
-    and local timezone, so it matches CPython. In the wasm worker the local zone is UTC.
+`datetime`:
+
+- `'system'`, the default everywhere — pool sessions included — reads this machine's clock,
+    so it matches CPython.
 - A fixed instant (a `datetime.datetime` in Python, a `Date` in JavaScript,
     `DateTimeSource::Fixed` in Rust) answers every call with that one instant, so
     `datetime.now() == datetime.now()` is `True`, a loop polling `datetime.now()` never sees it
-    move, and `(datetime.now() - start)` is always a zero `timedelta`. A naive Python
-    `datetime` and a JavaScript `Date` are read as UTC with a local offset of zero, so
-    `datetime.now()` returns the value given; an aware `datetime` makes its `utcoffset()` the
-    sandbox's local zone. A Rust `Fixed` instant outside `datetime`'s 1..=9999 years raises
-    `OverflowError: date value out of range` from all three calls rather than failing some
-    other way.
+    move, and `(datetime.now() - start)` is always a zero `timedelta`. In the bindings a fixed
+    instant also sets `timezone` unless it is given explicitly: a naive Python `datetime` and a
+    JavaScript `Date` are read as UTC, so `datetime.now()` returns the value given, and an aware
+    `datetime` makes its `utcoffset()` and `tzname()` the zone. A Rust `Fixed` instant outside
+    `datetime`'s 1..=9999 years raises `OverflowError: date value out of range` from all three
+    calls rather than failing some other way.
 - `'call_host'` suspends each call to the host. Through the pool it reaches the `os=` handler
     (`OSAccess.date_today()` / `datetime_now()` in `pydantic_monty`), and a host that answers
     neither makes them raise `RuntimeError: 'date.today' is not supported in this environment`
@@ -137,6 +140,19 @@ source `time.time()` reads (see [time.md](time.md)):
     the message is `OS function 'datetime.now' not implemented with standard execution`;
     through `call_function` it is
     `MontyRepl::call_function: OS function 'datetime.now' is not yet supported in this context`.
+
+`timezone`:
+
+- `'system'`, the default, is this machine's local zone at the instant read (so a fixed
+    instant in January is read at the winter offset). In the wasm worker the local zone is UTC.
+- A fixed zone (`{'offset_seconds': ..., 'name': ...}` in Python, `{ offsetSeconds, name }` in
+    JavaScript, `SandboxTimeZone::Fixed` in Rust) is a fixed offset from UTC, as
+    `datetime.timezone(offset, name)` carries — not an IANA zone, so it has no DST rules. The
+    name is stored for the calls that will report it (`astimezone()`, `time.tzname`, `%Z`),
+    none of which exist yet.
+- `'call_host'` suspends only the calls that need the zone — `date.today()` and a naive
+    `datetime.now()` — to the host; `time.time()` and `datetime.now(tz)` are still answered
+    from the sandbox's clock.
 
 Whatever answers them, both calls read local wall time for `date.today()`
 and a naive `datetime.now()`, and convert into the argument for
