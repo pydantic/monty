@@ -1,8 +1,14 @@
 //! The prost runtime path used by generated messages and the wire decoder.
 //!
-//! Only non-allocating decode primitives are re-exported. Generated vectors
-//! use `BudgetVec`, whose growing operations are fallible. Maps, groups, `Bytes`,
-//! generated boxes and repeated-enum accessors remain unsupported.
+//! The generator selects this module via `prost_path`. Only non-allocating
+//! decode primitives are re-exported; generated vectors and byte buffers use
+//! `BudgetVec`, whose growth is fallible. Payload allocations share the cumulative
+//! frame budget with hand-written decoders, including their boxed payloads.
+//!
+//! Codegen rejects maps, groups, `Bytes`, generated boxes and repeated enums
+//! (prost's enum accessors require infallible `push`). Supporting a new allocation
+//! form requires extending this adapter and its allocation-budget tests.
+//! Integration tests enable `test-util` for smaller budgets and accounting checks.
 
 pub use prost::{DecodeError, Enumeration, Message, Oneof, UnknownEnumValue};
 
