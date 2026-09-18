@@ -1904,10 +1904,10 @@ async fn auto_os_calls_are_answered_in_the_worker() {
                 datetime: DateTimeSource::Fixed {
                     unix_seconds: 1_700_000_000,
                     microsecond: 0,
-                    local_offset_seconds: 0,
                 },
                 sleep: SleepMode::Zero,
                 random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
+                ..AutoOsCalls::default()
             },
             ..ReplConfig::default()
         })

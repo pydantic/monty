@@ -11,8 +11,8 @@ use monty_types::{
     JsonErrorData, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
     MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult,
     NamedValues, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RandomSeed, RandomStart,
-    RenameCallArgs, ResourceLimits, SleepMode, StackFrame, UnicodeErrorData, UrandomArgs, sleep_duration,
-    sleep_duration_saturating,
+    RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, StackFrame, UnicodeErrorData, UrandomArgs,
+    sleep_duration, sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
@@ -589,7 +589,10 @@ fn auto_os_calls_round_trip() {
             datetime: DateTimeSource::Fixed {
                 unix_seconds: 1_700_000_000,
                 microsecond: 999_999,
-                local_offset_seconds: -3_600,
+            },
+            timezone: SandboxTimeZone::Fixed {
+                offset_seconds: -3_600,
+                name: Some("EST".to_owned()),
             },
             sleep: SleepMode::SandboxSleep(Duration::from_millis(250)),
             random_start: RandomStart::Seed(seed),
@@ -600,8 +603,9 @@ fn auto_os_calls_round_trip() {
     for sleep in [SleepMode::CallHost, SleepMode::Zero] {
         let calls = AutoOsCalls {
             datetime: DateTimeSource::CallHost,
+            timezone: SandboxTimeZone::CallHost,
             sleep,
-            ..AutoOsCalls::default()
+            random_start: RandomStart::CallHost,
         };
         assert_eq!(AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap(), calls);
     }
@@ -627,7 +631,6 @@ fn malformed_auto_os_calls_are_rejected() {
         datetime: Some(pb::auto_os_calls::Datetime::Fixed(pb::FixedDateTime {
             unix_seconds: 0,
             microsecond: 1_000_000,
-            local_offset_seconds: 0,
         })),
         ..Default::default()
     };

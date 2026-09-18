@@ -380,15 +380,18 @@ message ResourceLimits {
 // Mirrors monty's `AutoOsCalls`: which OS calls the sandbox answers itself.
 // Each unset arm means that field's default.
 message AutoOsCalls {
-  // What `date.today()`, `datetime.now()` and `time.time()` read.
+  // The instant `date.today()`, `datetime.now()` and `time.time()` read.
   oneof datetime {
     // Suspend to the parent, as every other OS call does.
     Unit call_host = 1;
-    // The child's clock and local timezone.
+    // The child's clock.
     Unit system = 2;
     // One frozen instant, for reproducible runs.
     FixedDateTime fixed = 3;
   }
+  // The local zone naive `datetime.now()` and `date.today()` read in.
+  // Absent (or with no arm set) = the child's local zone.
+  SandboxTimeZone timezone = 9;
   // What `time.sleep()` and `asyncio.sleep()` do; unset = a sandbox sleep
   // with the default clamp.
   oneof sleep_mode {
@@ -405,6 +408,20 @@ message AutoOsCalls {
     Unit random = 7;
     // As `random.seed(seed)` would, for reproducible runs.
     RandomSeed seed = 8;
+    // Suspend the first draw with an `os.urandom` call for 2496 bytes.
+    Unit random_call_host = 10;
+  }
+}
+
+// Mirrors monty's `SandboxTimeZone`.
+message SandboxTimeZone {
+  oneof zone {
+    // Suspend the calls that need the zone to the parent.
+    Unit call_host = 1;
+    // The child's local zone.
+    Unit system = 2;
+    // A fixed offset from UTC, with a name if it has one.
+    TimeZone fixed = 3;
   }
 }
 
@@ -420,9 +437,6 @@ message FixedDateTime {
   int64 unix_seconds = 1;
   // 0..=999999; anything larger is rejected.
   uint32 microsecond = 2;
-  // UTC offset of the clock's local zone, in seconds; naive `datetime.now()`
-  // and `date.today()` are read in it.
-  int32 local_offset_seconds = 3;
 }
 
 // A `random.seed()` argument: the types CPython accepts.

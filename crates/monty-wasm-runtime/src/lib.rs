@@ -31,7 +31,7 @@ mod value;
 use bindings::exports::pydantic::monty::worker::{
     AutoOsCalls, CallResult, CompleteEvent, ConfigureRequest, DatetimeSource, DispatchResult, Event, FunctionCallEvent,
     Guest, NameLookupEvent, NameLookupResult, OsCallEvent, PrintEvent, RaisedError, RaisedException, RandomSeed,
-    RandomStart, Request, SleepMode, StackFrame, Status, TypeCheckFormat,
+    RandomStart, Request, SleepMode, StackFrame, Status, TimeZone, TypeCheckFormat,
 };
 
 thread_local! {
@@ -337,7 +337,16 @@ fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
         DatetimeSource::Fixed(fixed) => pb::auto_os_calls::Datetime::Fixed(pb::FixedDateTime {
             unix_seconds: fixed.unix_seconds,
             microsecond: fixed.microsecond,
-            local_offset_seconds: fixed.local_offset_seconds,
+        }),
+    });
+    let timezone = calls.timezone.map(|zone| pb::SandboxTimeZone {
+        zone: Some(match zone {
+            TimeZone::CallHost => pb::sandbox_time_zone::Zone::CallHost(pb::Unit {}),
+            TimeZone::System => pb::sandbox_time_zone::Zone::System(pb::Unit {}),
+            TimeZone::Fixed(fixed) => pb::sandbox_time_zone::Zone::Fixed(pb::TimeZone {
+                offset_seconds: fixed.offset_seconds,
+                name: fixed.name,
+            }),
         }),
     });
     let sleep_mode = calls.sleep.map(|mode| match mode {
@@ -348,6 +357,7 @@ fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
         }
     });
     let random_start = calls.random_start.map(|start| match start {
+        RandomStart::CallHost => pb::auto_os_calls::RandomStart::RandomCallHost(pb::Unit {}),
         RandomStart::Random => pb::auto_os_calls::RandomStart::Random(pb::Unit {}),
         RandomStart::Seed(seed) => pb::auto_os_calls::RandomStart::Seed(pb::RandomSeed {
             value: Some(match seed {
@@ -360,6 +370,7 @@ fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
     });
     pb::AutoOsCalls {
         datetime,
+        timezone,
         sleep_mode,
         random_start,
     }

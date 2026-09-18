@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use monty_types::{AutoOsCalls, DateTimeSource, RandomSeed, RandomStart, SleepMode};
+use monty_types::{AutoOsCalls, DateTimeSource, RandomSeed, RandomStart, SandboxTimeZone, SleepMode};
 use num_bigint::BigInt;
 
 use crate::{
@@ -16,6 +16,7 @@ use crate::{
         self,
         auto_os_calls::{Datetime, RandomStart as WireRandomStart, SleepMode as WireSleepMode},
         random_seed::Value,
+        sandbox_time_zone::Zone,
     },
 };
 
@@ -27,14 +28,21 @@ impl From<&AutoOsCalls> for pb::AutoOsCalls {
             DateTimeSource::Fixed {
                 unix_seconds,
                 microsecond,
-                local_offset_seconds,
             } => Datetime::Fixed(pb::FixedDateTime {
                 unix_seconds,
                 microsecond,
-                local_offset_seconds,
+            }),
+        };
+        let zone = match &calls.timezone {
+            SandboxTimeZone::CallHost => Zone::CallHost(pb::Unit {}),
+            SandboxTimeZone::System => Zone::System(pb::Unit {}),
+            SandboxTimeZone::Fixed { offset_seconds, name } => Zone::Fixed(pb::TimeZone {
+                offset_seconds: *offset_seconds,
+                name: name.clone(),
             }),
         };
         let random_start = match &calls.random_start {
+            RandomStart::CallHost => WireRandomStart::RandomCallHost(pb::Unit {}),
             RandomStart::Random => WireRandomStart::Random(pb::Unit {}),
             RandomStart::Seed(seed) => WireRandomStart::Seed(seed.into()),
         };
@@ -47,6 +55,7 @@ impl From<&AutoOsCalls> for pb::AutoOsCalls {
         };
         Self {
             datetime: Some(datetime),
+            timezone: Some(pb::SandboxTimeZone { zone: Some(zone) }),
             sleep_mode: Some(sleep_mode),
             random_start: Some(random_start),
         }
@@ -72,9 +81,17 @@ impl TryFrom<pb::AutoOsCalls> for AutoOsCalls {
                 DateTimeSource::Fixed {
                     unix_seconds: fixed.unix_seconds,
                     microsecond: fixed.microsecond,
-                    local_offset_seconds: fixed.local_offset_seconds,
                 }
             }
+        };
+        let timezone = match calls.timezone.and_then(|timezone| timezone.zone) {
+            None => defaults.timezone,
+            Some(Zone::CallHost(_)) => SandboxTimeZone::CallHost,
+            Some(Zone::System(_)) => SandboxTimeZone::System,
+            Some(Zone::Fixed(fixed)) => SandboxTimeZone::Fixed {
+                offset_seconds: fixed.offset_seconds,
+                name: fixed.name,
+            },
         };
         let sleep = match calls.sleep_mode {
             None => defaults.sleep,
@@ -88,11 +105,13 @@ impl TryFrom<pb::AutoOsCalls> for AutoOsCalls {
         };
         let random_start = match calls.random_start {
             None => defaults.random_start,
+            Some(WireRandomStart::RandomCallHost(_)) => RandomStart::CallHost,
             Some(WireRandomStart::Random(_)) => RandomStart::Random,
             Some(WireRandomStart::Seed(seed)) => RandomStart::Seed(seed.try_into()?),
         };
         Ok(Self {
             datetime,
+            timezone,
             sleep,
             random_start,
         })

@@ -17,7 +17,7 @@ use monty_proto::{
 };
 use monty_types::{
     AutoOsCalls, CallArgs, DateTimeSource, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult,
-    NamedValues, RandomSeed, RandomStart, SleepMode,
+    NamedValues, RandomSeed, RandomStart, SandboxTimeZone, SleepMode,
     unstable::{self, MontyNode},
 };
 
@@ -583,7 +583,10 @@ fn fixed_clock_and_seed_are_answered_in_the_worker() {
         datetime: DateTimeSource::Fixed {
             unix_seconds: 1_700_000_000,
             microsecond: 123_456,
-            local_offset_seconds: 7_200,
+        },
+        timezone: SandboxTimeZone::Fixed {
+            offset_seconds: 7_200,
+            name: None,
         },
         random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
         ..AutoOsCalls::default()
@@ -621,7 +624,6 @@ fn invalid_auto_os_calls_is_rejected_on_configure() {
             datetime: Some(pb::auto_os_calls::Datetime::Fixed(pb::FixedDateTime {
                 unix_seconds: 0,
                 microsecond: 1_000_000,
-                local_offset_seconds: 0,
             })),
             ..Default::default()
         }),

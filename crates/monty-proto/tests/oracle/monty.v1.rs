@@ -466,7 +466,11 @@ pub struct ResourceLimits {
 /// Each unset arm means that field's default.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AutoOsCalls {
-    /// What `date.today()`, `datetime.now()` and `time.time()` read.
+    /// The local zone naive `datetime.now()` and `date.today()` read in.
+    /// Absent (or with no arm set) = the child's local zone.
+    #[prost(message, optional, tag = "9")]
+    pub timezone: ::core::option::Option<SandboxTimeZone>,
+    /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
     #[prost(oneof = "auto_os_calls::Datetime", tags = "1, 2, 3")]
     pub datetime: ::core::option::Option<auto_os_calls::Datetime>,
     /// What `time.sleep()` and `asyncio.sleep()` do; unset = a sandbox sleep
@@ -474,18 +478,18 @@ pub struct AutoOsCalls {
     #[prost(oneof = "auto_os_calls::SleepMode", tags = "4, 5, 6")]
     pub sleep_mode: ::core::option::Option<auto_os_calls::SleepMode>,
     /// Where an unseeded `random` generator gets its first state.
-    #[prost(oneof = "auto_os_calls::RandomStart", tags = "7, 8")]
+    #[prost(oneof = "auto_os_calls::RandomStart", tags = "7, 8, 10")]
     pub random_start: ::core::option::Option<auto_os_calls::RandomStart>,
 }
 /// Nested message and enum types in `AutoOsCalls`.
 pub mod auto_os_calls {
-    /// What `date.today()`, `datetime.now()` and `time.time()` read.
+    /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Datetime {
         /// Suspend to the parent, as every other OS call does.
         #[prost(message, tag = "1")]
         CallHost(super::Unit),
-        /// The child's clock and local timezone.
+        /// The child's clock.
         #[prost(message, tag = "2")]
         System(super::Unit),
         /// One frozen instant, for reproducible runs.
@@ -515,6 +519,30 @@ pub mod auto_os_calls {
         /// As `random.seed(seed)` would, for reproducible runs.
         #[prost(message, tag = "8")]
         Seed(super::RandomSeed),
+        /// Suspend the first draw with an `os.urandom` call for 2496 bytes.
+        #[prost(message, tag = "10")]
+        RandomCallHost(super::Unit),
+    }
+}
+/// Mirrors monty's `SandboxTimeZone`.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SandboxTimeZone {
+    #[prost(oneof = "sandbox_time_zone::Zone", tags = "1, 2, 3")]
+    pub zone: ::core::option::Option<sandbox_time_zone::Zone>,
+}
+/// Nested message and enum types in `SandboxTimeZone`.
+pub mod sandbox_time_zone {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Zone {
+        /// Suspend the calls that need the zone to the parent.
+        #[prost(message, tag = "1")]
+        CallHost(super::Unit),
+        /// The child's local zone.
+        #[prost(message, tag = "2")]
+        System(super::Unit),
+        /// A fixed offset from UTC, with a name if it has one.
+        #[prost(message, tag = "3")]
+        Fixed(super::TimeZone),
     }
 }
 /// A sleep the child performs itself.
@@ -533,10 +561,6 @@ pub struct FixedDateTime {
     /// 0..=999999; anything larger is rejected.
     #[prost(uint32, tag = "2")]
     pub microsecond: u32,
-    /// UTC offset of the clock's local zone, in seconds; naive `datetime.now()`
-    /// and `date.today()` are read in it.
-    #[prost(int32, tag = "3")]
-    pub local_offset_seconds: i32,
 }
 /// A `random.seed()` argument: the types CPython accepts.
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -185,8 +185,21 @@ interface worker {
         unix-seconds: s64,
         /// 0..=999999.
         microsecond: u32,
-        /// UTC offset of the clock's local zone, in seconds.
-        local-offset-seconds: s32,
+    }
+
+    /// A fixed offset from UTC, with a name if it has one.
+    record fixed-time-zone {
+        offset-seconds: s32,
+        name: option<string>,
+    }
+
+    /// The local zone naive `datetime.now()` and `date.today()` read in.
+    variant time-zone {
+        /// Suspend the calls that need the zone to the host.
+        call-host,
+        /// The worker's local zone.
+        system,
+        fixed(fixed-time-zone),
     }
 
     /// What `date.today()`, `datetime.now()` and `time.time()` read.
@@ -221,6 +234,8 @@ interface worker {
 
     /// Where an unseeded `random` generator gets its first state.
     variant random-start {
+        /// Suspend the first draw with an `os.urandom` call for the host.
+        call-host,
         /// The worker's own OS entropy.
         random,
         /// As `random.seed(seed)` would.
@@ -231,6 +246,7 @@ interface worker {
     /// defaults (system clock, sandbox sleeps capped at 10s, entropy).
     record auto-os-calls {
         datetime: option<datetime-source>,
+        timezone: option<time-zone>,
         sleep: option<sleep-mode>,
         random-start: option<random-start>,
     }
