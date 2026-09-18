@@ -234,7 +234,8 @@ export interface NamedValue {
   value: number
 }
 export interface ResourceLimits {
-  maxDurationMicros?: bigint
+  maxFeedDurationMicros?: bigint
+  maxTurnDurationMicros?: bigint
   maxMemoryBytes?: bigint
   gcInterval?: bigint
   maxRecursionDepth?: bigint

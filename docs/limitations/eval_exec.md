@@ -57,7 +57,7 @@ runtime, where no checker runs, so a call a host function stub would reject is o
 
 ## Resource use
 
-Parsing and compilation count against `max_duration`.
+Parsing and compilation count against `max_feed_duration` and `max_turn_duration`.
 Once a snippet starts executing, its source, literals, functions and bytecode remain allocated for the rest of the
 session, counted against `max_memory`, even if execution raises an exception.
 A snippet rejected before execution, including one refused by the recursion limit, retains none of its compilation

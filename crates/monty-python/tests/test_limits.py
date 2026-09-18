@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 
 import pytest
 from conftest import RunMonty
@@ -13,13 +14,13 @@ from pydantic_monty import Monty, MontyRuntimeError, ResourceLimits
 
 def test_resource_limits_typed_dict():
     limits = ResourceLimits(
-        max_duration_secs=5.0,
+        max_feed_duration_secs=5.0,
         max_memory=1024,
         gc_interval=10,
         max_recursion_depth=500,
         max_suspensions=20,
     )
-    assert limits.get('max_duration_secs') == snapshot(5.0)
+    assert limits.get('max_feed_duration_secs') == snapshot(5.0)
     assert limits.get('max_memory') == snapshot(1024)
     assert limits.get('gc_interval') == snapshot(10)
     assert limits.get('max_recursion_depth') == snapshot(500)
@@ -27,12 +28,12 @@ def test_resource_limits_typed_dict():
 
 
 def test_resource_limits_repr():
-    limits = ResourceLimits(max_duration_secs=1.0)
-    assert repr(limits) == snapshot("{'max_duration_secs': 1.0}")
+    limits = ResourceLimits(max_feed_duration_secs=1.0)
+    assert repr(limits) == snapshot("{'max_feed_duration_secs': 1.0}")
 
 
 def test_run_with_limits(monty_run: RunMonty):
-    assert monty_run('1 + 1', limits={'max_duration_secs': 5.0}) == snapshot(2)
+    assert monty_run('1 + 1', limits={'max_feed_duration_secs': 5.0}) == snapshot(2)
 
 
 def test_recursion_limit(monty_run: RunMonty):
@@ -75,26 +76,23 @@ len(result)
 
 def test_timeout_limit(monty_run: RunMonty):
     with pytest.raises(MontyRuntimeError) as exc_info:
-        monty_run('while True:\n    pass', limits={'max_duration_secs': 0.1})
+        monty_run('while True:\n    pass', limits={'max_feed_duration_secs': 0.1})
     inner = exc_info.value.exception()
     assert isinstance(inner, TimeoutError)
-    assert exc_info.value.display(format='type-msg').startswith('TimeoutError: time limit exceeded')
+    assert exc_info.value.display(format='type-msg').startswith('TimeoutError: feed time limit exceeded')
 
 
-def test_session_exhausted_after_resource_error_but_worker_reusable(pool: Monty):
-    """A spent `max_duration_secs` budget is cumulative, so later feeds keep failing,
-    but the worker is reusable once the session exits.
+def test_worker_reusable_after_resource_error(pool: Monty):
+    """A sandbox resource error ends the feed, not the worker: the next checkout
+    gets the same process back.
 
-    This is specific to the duration limit. A `max_memory` trip is not cumulative, so
-    later feeds on the same checkout may succeed — against a heap with no guarantees.
+    A `max_memory` trip leaves the heap with no guarantees, so it is the checkout
+    boundary — not the feed — that makes the worker safe to reuse.
     See `limitations/resource_limits.md#after-a-terminal-resource-error`."""
-    with pool.checkout(limits={'max_duration_secs': 0.1}) as session:
+    with pool.checkout(limits={'max_memory': 100}) as session:
         with pytest.raises(MontyRuntimeError) as exc_info:
-            session.feed_run('while True:\n    pass')
-        assert isinstance(exc_info.value.exception(), TimeoutError)
-        # the session stays exhausted after a resource error
-        with pytest.raises(MontyRuntimeError):
-            session.feed_run('1 + 1')
+            session.feed_run('x = [0] * 10_000_000')
+        assert isinstance(exc_info.value.exception(), MemoryError)
     # a new session reuses the worker without issue
     with pool.checkout() as session:
         assert session.feed_run('1 + 1') == snapshot(2)
@@ -144,7 +142,7 @@ while True:
 
 
 def test_limits_with_inputs(monty_run: RunMonty):
-    assert monty_run('x * 2', inputs={'x': 21}, limits={'max_duration_secs': 5.0}) == snapshot(42)
+    assert monty_run('x * 2', inputs={'x': 21}, limits={'max_feed_duration_secs': 5.0}) == snapshot(42)
 
 
 def test_limits_wrong_type_raises_error(pool: Monty):
@@ -158,7 +156,8 @@ def test_limits_unknown_key_raises_error(pool: Monty):
         with pool.checkout(limits={'max_memroy': 10_000_000}):  # pyright: ignore[reportArgumentType]
             pass
     assert exc_info.value.args[0] == snapshot(
-        "unknown limits key 'max_memroy'; accepted keys are 'max_duration_secs', 'max_memory', "
+        "unknown limits key 'max_memroy'; accepted keys are "
+        "'max_feed_duration_secs', 'max_turn_duration_secs', 'max_memory', "
         "'gc_interval', 'max_recursion_depth', 'max_suspensions'"
     )
 
@@ -168,7 +167,8 @@ def test_limits_non_string_key_raises_error(pool: Monty):
         with pool.checkout(limits={1: 100}):  # pyright: ignore[reportArgumentType]
             pass
     assert exc_info.value.args[0] == snapshot(
-        "unknown limits key 1; accepted keys are 'max_duration_secs', 'max_memory', "
+        'unknown limits key 1; accepted keys are '
+        "'max_feed_duration_secs', 'max_turn_duration_secs', 'max_memory', "
         "'gc_interval', 'max_recursion_depth', 'max_suspensions'"
     )
 
@@ -182,7 +182,8 @@ def test_limits_unprintable_key_still_raises_value_error(pool: Monty):
         with pool.checkout(limits={BadRepr(): 1}):  # pyright: ignore[reportArgumentType]
             pass
     assert exc_info.value.args[0] == snapshot(
-        "unknown limits key <unprintable key>; accepted keys are 'max_duration_secs', 'max_memory', "
+        'unknown limits key <unprintable key>; accepted keys are '
+        "'max_feed_duration_secs', 'max_turn_duration_secs', 'max_memory', "
         "'gc_interval', 'max_recursion_depth', 'max_suspensions'"
     )
 
@@ -257,8 +258,68 @@ def test_timeout_enforced_in_builtin_loops(monty_run: RunMonty, code: str):
     """
     start = time.monotonic()
     with pytest.raises(MontyRuntimeError) as exc_info:
-        monty_run(code, limits={'max_duration_secs': 0.1})
+        monty_run(code, limits={'max_feed_duration_secs': 0.1})
     elapsed = time.monotonic() - start
     assert isinstance(exc_info.value.exception(), TimeoutError)
     # Should terminate promptly - well under 2 seconds
     assert elapsed < 2.0
+
+
+def test_feed_duration_limit_restarts_each_feed(pool: Monty):
+    """The per-feed budget restarts at each feed, so the session stays usable
+    after one over-long feed."""
+    with pool.checkout(limits={'max_feed_duration_secs': 0.1}) as session:
+        for _ in range(3):
+            assert session.feed_run('1 + 1') == snapshot(2)
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('while True:\n    pass')
+        assert isinstance(exc_info.value.exception(), TimeoutError)
+        assert exc_info.value.display(format='type-msg').startswith('TimeoutError: feed time limit exceeded')
+        # the budget restarted, so the session is still good
+        assert session.feed_run('2 + 2') == snapshot(4)
+
+
+def test_turn_duration_limit(pool: Monty):
+    with pool.checkout(limits={'max_turn_duration_secs': 0.1}) as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('while True:\n    pass')
+        assert isinstance(exc_info.value.exception(), TimeoutError)
+        assert exc_info.value.display(format='type-msg').startswith('TimeoutError: turn time limit exceeded')
+        assert session.feed_run('2 + 2') == snapshot(4)
+
+
+@pytest.mark.parametrize(
+    ('disable_one_grace', 'limits'),
+    [
+        pytest.param(
+            lambda: Monty(feed_duration_limit_grace=None),
+            ResourceLimits(max_feed_duration_secs=0.1),
+            id='feed_duration_limit_grace',
+        ),
+        pytest.param(
+            lambda: Monty(turn_duration_limit_grace=None),
+            ResourceLimits(max_turn_duration_secs=0.1),
+            id='turn_duration_limit_grace',
+        ),
+    ],
+)
+def test_backstop_grace_can_be_disabled(disable_one_grace: Callable[[], Monty], limits: ResourceLimits):
+    """`None` turns a backstop off, leaving the in-sandbox limit to end the feed on its
+    own — which it still does, and the session survives.
+
+    Each case pairs the disabled grace with the budget it backs, since a grace only
+    ever fires for a limit the session set."""
+    with disable_one_grace() as pool:
+        with pool.checkout(limits=limits) as session:
+            with pytest.raises(MontyRuntimeError) as exc_info:
+                session.feed_run('while True:\n    pass')
+            assert isinstance(exc_info.value.exception(), TimeoutError)
+            assert session.feed_run('1 + 1') == snapshot(2)
+
+
+def test_negative_grace_is_rejected():
+    with pytest.raises(ValueError) as exc_info:
+        Monty(turn_duration_limit_grace=-1.0)
+    assert exc_info.value.args[0] == snapshot(
+        'invalid turn_duration_limit_grace: cannot convert float seconds to Duration: value is negative'
+    )

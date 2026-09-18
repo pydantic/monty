@@ -79,8 +79,8 @@ These raise `NameError`:
     re-compares the other candidates from scratch — extra `__eq__` calls CPython
     would not make (CPython restarts and re-compares too, but only after a resize
     or when that entry's own slot changed). An `__eq__` that adds a colliding key
-    on *every* comparison never finishes in either engine; under `max_duration`
-    Monty raises `TimeoutError`. No mutation pattern can panic or corrupt either
+    on *every* comparison never finishes in either engine; under a duration
+    limit Monty raises `TimeoutError`. No mutation pattern can panic or corrupt either
     engine.
 - **Set algebra under a mutating `__eq__`** — `-`, `&`, `^` and their method
     forms walk one of the two sets while user `__eq__` code can run. Monty

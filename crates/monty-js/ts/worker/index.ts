@@ -26,7 +26,9 @@ export interface WasmPoolOptions {
   /** Hard per-turn deadline in seconds; on expiry the worker is terminated. */
   requestTimeout?: number
   /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
-  durationLimitGrace?: number | null
+  feedDurationLimitGrace?: number | null
+  /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
+  turnDurationLimitGrace?: number | null
   /** Recycle a worker after serving this many sessions. */
   maxCheckoutsPerWorker?: number
   /** Overrides the worker entry URL used by the browser backend. */

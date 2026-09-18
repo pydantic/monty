@@ -569,8 +569,8 @@ impl<C: ContainsHeap> DropWithContext<C> for Memo {
 ///
 /// Polls the clock as the deep-copy loops do: a shallow copy of a large
 /// container reaches no instruction checkpoint between entering `copy.copy`
-/// and returning, so without this the whole walk is invisible to
-/// `max_duration`. The clones are guarded because that poll can now cut the
+/// and returning, so without this the whole walk is invisible to the time
+/// limits. The clones are guarded because that poll can now cut the
 /// loop short with items already taken.
 pub(crate) fn clone_items<'h>(
     len: usize,

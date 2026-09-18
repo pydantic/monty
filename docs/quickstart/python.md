@@ -144,7 +144,7 @@ denied
 
 with Monty() as pool:
     with pool.checkout(
-        limits={'max_memory': 10_000_000, 'max_duration_secs': 1.0}
+        limits={'max_memory': 10_000_000, 'max_feed_duration_secs': 1.0}
     ) as session:
         print(session.feed_run(code))
         #> Permission denied: '/etc/passwd'
@@ -155,7 +155,7 @@ with Monty() as pool:
             #> MemoryError
 ```
 
-An infinite loop hits `max_duration_secs` the same way, raising a [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] whose `exception()` is a
+An infinite loop hits `max_feed_duration_secs` the same way, raising a [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] whose `exception()` is a
 `TimeoutError`.
 Type checking is also configured on `checkout()`:
 
@@ -312,8 +312,8 @@ A `MontyRuntimeError` carrying `TimeoutError`, or a `MemoryError` from the sandb
 limit](../resource-limits.md#after-a-limit-fires) rather than ordinary sandbox code raising.
 The pool leaves the checkout open, but the heap behind it is no longer trustworthy, so discard it rather than feeding it
 again.
-A spent `max_duration_secs` budget is cumulative, so later feeds re-raise `TimeoutError` anyway; after a `max_memory`
-trip they may quietly succeed.
+The duration budgets restart at the next feed, and after a `max_memory` trip a later feed may quietly succeed, so
+neither failure stops you from feeding a heap you should have discarded.
 `max_suspensions` limits host calls and raises a pool-generated `RuntimeError` such as `suspension limit 1000 exceeded`.
 The feed ends cleanly; later code runs until it suspends again.
 
@@ -386,7 +386,7 @@ pool = Monty(
 `request_timeout` is a per-turn host-side backstop: a worker that exceeds it is killed and the call raises
 [`MontyCrashedError`][pydantic_monty.MontyCrashedError] with `timed_out=True`.
 It catches hangs the in-sandbox limits cannot see, because those are only checked at interpreter checkpoints.
-A loop of quick host calls resets it each turn; set [`max_duration_secs`](../resource-limits.md) as well.
+A loop of quick host calls resets it each turn; set [`max_feed_duration_secs`](../resource-limits.md) as well.
 
 [`AsyncMonty`][pydantic_monty.AsyncMonty] takes the same arguments.
 

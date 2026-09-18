@@ -113,7 +113,8 @@ see [snapshot security](../security.md#deserializing-snapshots).
     the pool discards the worker and spawns a replacement.
 - **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds `request_timeout`
     ([`PoolError::Timeout`](../api/rust/monty-pool.md#poolerror)), catching hangs the in-sandbox limits cannot see.
-    With a `max_duration` budget the deadline also enforces that from outside the child, plus `duration_limit_grace`.
+    With a `max_feed_duration` or `max_turn_duration` budget the deadline also enforces that from
+    outside the child, each plus its own grace (`feed_duration_limit_grace`, `turn_duration_limit_grace`).
     [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) sets neither `request_timeout` nor `checkout_timeout` by default; set `request_timeout`
     yourself for untrusted code.
 - **Suspension limits** — the pool counts external calls, OS calls, name lookups and future-resolution turns against
@@ -127,7 +128,8 @@ Runtime errors inside the sandbox ([`PoolError::Runtime`](../api/rust/monty-pool
 usable.
 Memory and time limits return `PoolError::Runtime` with a `MemoryError` or `TimeoutError`, but
 [no guarantees hold about heap state afterwards](../resource-limits.md#after-a-limit-fires).
-A spent `max_duration` rejects every later `feed`.
+`max_feed_duration` and `max_turn_duration` both restart, so a later feed runs against a heap you can no longer
+trust.
 Finish the checkout and take a fresh one.
 
 `max_suspensions` also returns `PoolError::Runtime`, but leaves the session consistent.
@@ -180,13 +182,13 @@ use monty_types::{CompileOptions, PrintWriter, ResourceLimits, ResourceTracker};
 
 let limits = ResourceLimits {
     max_memory: Some(10 * 1024 * 1024),
-    max_duration: Some(Duration::from_millis(20)),
+    max_feed_duration: Some(Duration::from_millis(20)),
     ..ResourceLimits::default()
 };
 
 let mut runner = MontyRun::new("while True: pass".to_owned(), "spin.py", vec![], CompileOptions::default()).unwrap();
 let err = runner.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout).unwrap_err();
-assert!(err.to_string().contains("time limit exceeded"));
+assert!(err.to_string().contains("feed time limit exceeded"));
 ```
 
 ### Reading the clock

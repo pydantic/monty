@@ -47,7 +47,15 @@ function flushIntervalMs(interval: number): number {
 
 /** Resource limits mirrored from the napi pool; the transport enforces `maxSuspensions`. */
 export interface ResourceLimits {
-  maxDurationSecs?: number
+  /**
+   * @deprecated Removed: it capped a whole session, which neither replacement
+   * does, so there is no value to carry over. Pick `maxFeedDurationSecs` or
+   * `maxTurnDurationSecs`. Declared `never` so a stale key still fails to
+   * compile rather than being silently dropped at the boundary.
+   */
+  maxDurationSecs?: never
+  maxFeedDurationSecs?: number
+  maxTurnDurationSecs?: number
   maxMemory?: number
   gcInterval?: number
   maxRecursionDepth?: number
@@ -415,14 +423,30 @@ function componentTypeCheckFormat(format: TypeCheckFormat): ComponentTypeCheckFo
 /** Converts JavaScript-facing limits to canonical WIT integer fields. */
 function encodeLimits(limits: ResourceLimits): ComponentResourceLimits {
   return {
-    ...(limits.maxDurationSecs === undefined
-      ? {}
-      : { maxDurationMicros: BigInt(Math.round(limits.maxDurationSecs * 1_000_000)) }),
+    ...micros('maxFeedDurationMicros', 'maxFeedDurationSecs', limits.maxFeedDurationSecs),
+    ...micros('maxTurnDurationMicros', 'maxTurnDurationSecs', limits.maxTurnDurationSecs),
     ...(limits.maxMemory === undefined ? {} : { maxMemoryBytes: BigInt(limits.maxMemory) }),
     ...(limits.gcInterval === undefined ? {} : { gcInterval: BigInt(limits.gcInterval) }),
     ...(limits.maxRecursionDepth === undefined ? {} : { maxRecursionDepth: BigInt(limits.maxRecursionDepth) }),
     ...(limits.maxSuspensions === undefined ? {} : { maxSuspensions: BigInt(limits.maxSuspensions) }),
   }
+}
+
+/**
+ * Renders one optional duration limit as its canonical WIT microsecond field.
+ *
+ * The WIT field is a `u64`, so a negative or non-finite value would either
+ * throw an opaque `RangeError` out of `BigInt` or encode as a nonsense budget.
+ * Reject it here instead, as the napi pool's `js_number_to_duration` does.
+ */
+function micros(key: string, option: string, seconds: number | undefined): Record<string, bigint> {
+  if (seconds === undefined) {
+    return {}
+  }
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    throw new TypeError(`invalid ${option}: expected a non-negative number of seconds, got ${seconds}`)
+  }
+  return { [key]: BigInt(Math.round(seconds * 1_000_000)) }
 }
 
 /** Identifies turns that consume the host-side suspension budget. */

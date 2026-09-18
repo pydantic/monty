@@ -66,7 +66,7 @@ fn run_monty_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i6
 fn run_monty_limits(bench: &mut Bencher, code: &str, expected: i64) {
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let limits = ResourceLimits::default()
-        .max_duration(Duration::from_mins(10))
+        .max_feed_duration(Duration::from_mins(10))
         .max_memory(1 << 40);
     let mut run = |limits: &ResourceLimits| {
         let r = ex

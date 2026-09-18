@@ -31,7 +31,7 @@ use tokio::{task::spawn_blocking, time::timeout};
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::outcome};
 use crate::{
-    CrashCause, PoolError,
+    CrashCause, PoolConfig, PoolError,
     pool::{CapacityGuard, PoolInner},
     worker::Worker,
 };
@@ -397,11 +397,17 @@ pub struct Checkout {
 /// never loosens what this checkout was configured with.
 #[derive(Clone, Copy)]
 struct SessionBudget {
-    /// The session's `max_duration`, when configured.
-    duration_budget: Option<Duration>,
-    /// Monotonic worker-reported sandbox time, preventing a compromised worker
-    /// from rewinding the parent's view.
-    reported_execution: Duration,
+    /// The session's `max_feed_duration`, when configured.
+    feed_budget: Option<Duration>,
+    /// The session's `max_turn_duration`, when configured.
+    turn_budget: Option<Duration>,
+    /// Worker-reported sandbox time consumed by the feed in progress, and
+    /// monotonic, so a compromised worker cannot rewind the parent's view of
+    /// how much of the feed budget is spent. The legitimate drop to zero is
+    /// [`begin_feed`](Self::begin_feed), driven by the `Feed` request going
+    /// out, so a worker reporting less than it did mid-feed cannot loosen its
+    /// own feed backstop.
+    reported_feed_execution: Duration,
     /// The session's `max_suspensions` in force (the configured one, else
     /// [`DEFAULT_MAX_SUSPENSIONS`]).
     suspension_limit: u64,
@@ -414,8 +420,9 @@ impl SessionBudget {
     fn from_config(repl: &ReplConfig) -> Self {
         let limits = repl.limits.as_ref();
         Self {
-            duration_budget: limits.and_then(|limits| limits.max_duration),
-            reported_execution: Duration::ZERO,
+            feed_budget: limits.and_then(|limits| limits.max_feed_duration),
+            turn_budget: limits.and_then(|limits| limits.max_turn_duration),
+            reported_feed_execution: Duration::ZERO,
             suspension_limit: limits.map_or(DEFAULT_MAX_SUSPENSIONS as u64, |limits| limits.max_suspensions as u64),
             suspensions_seen: 0,
         }
@@ -425,8 +432,9 @@ impl SessionBudget {
     /// suspension limit stays: it is the ceiling on the dump's.
     fn forget(&mut self) {
         *self = Self {
-            duration_budget: None,
-            reported_execution: Duration::ZERO,
+            feed_budget: None,
+            turn_budget: None,
+            reported_feed_execution: Duration::ZERO,
             suspension_limit: self.suspension_limit,
             suspensions_seen: 0,
         };
@@ -439,11 +447,14 @@ impl SessionBudget {
     /// ordinary reply echoes it; a `Load` reply carries the dump's). Suspension
     /// events increment the parent-owned count.
     fn update_from(&mut self, event: &pb::ChildEvent) {
-        self.reported_execution = self
-            .reported_execution
-            .max(Duration::from_micros(event.total_execution_micros));
-        if self.duration_budget.is_none() {
-            self.duration_budget = event.max_duration_micros.map(Duration::from_micros);
+        self.reported_feed_execution = self
+            .reported_feed_execution
+            .max(Duration::from_micros(event.feed_execution_micros));
+        if self.feed_budget.is_none() {
+            self.feed_budget = event.max_feed_duration_micros.map(Duration::from_micros);
+        }
+        if self.turn_budget.is_none() {
+            self.turn_budget = event.max_turn_duration_micros.map(Duration::from_micros);
         }
         if let Some(reported) = event.max_suspensions {
             self.suspension_limit = self.suspension_limit.min(reported);
@@ -453,22 +464,61 @@ impl SessionBudget {
         }
     }
 
+    /// Clears the feed clock as a feed request goes out; see
+    /// [`reported_feed_execution`](Self::reported_feed_execution).
+    fn begin_feed(&mut self) {
+        self.reported_feed_execution = Duration::ZERO;
+    }
+
     /// Reports when this event exceeds the suspension limit.
     fn over_suspension_limit(&self, event: &pb::ChildEvent) -> Option<u64> {
         (is_suspension(event) && self.suspensions_seen > self.suspension_limit).then_some(self.suspension_limit)
     }
 
-    /// Returns the remaining `max_duration` plus grace.
+    /// Returns the tighter of the two duration backstops: what each configured
+    /// budget has left, plus that budget's grace. The turn budget has all of
+    /// its limit left, since the child resets that clock on the request being
+    /// sent.
     ///
-    /// The child normally raises `TimeoutError`; this catches one that stops
-    /// checking its clock.
-    fn backstop_deadline(&self, grace: Option<Duration>) -> Option<Duration> {
-        Some(
-            self.duration_budget?
-                .saturating_sub(self.reported_execution)
-                .saturating_add(grace?),
-        )
+    /// The child normally raises `TimeoutError` inside the grace; this catches
+    /// one that stops checking its clock. A `None` grace means no backstop —
+    /// the host would rather wait than lose the worker.
+    fn backstop_deadline(&self, graces: DurationGraces) -> Option<Duration> {
+        [
+            remaining_deadline(self.feed_budget, self.reported_feed_execution, graces.feed),
+            remaining_deadline(self.turn_budget, Duration::ZERO, graces.turn),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
+}
+
+/// The grace period configured for each of the two duration backstops.
+///
+/// Bundled so [`SessionBudget::backstop_deadline`] takes one argument rather
+/// than two same-typed `Option<Duration>`s in an order nothing enforces.
+#[derive(Clone, Copy)]
+struct DurationGraces {
+    feed: Option<Duration>,
+    turn: Option<Duration>,
+}
+
+impl DurationGraces {
+    /// Reads both graces off a pool config.
+    fn from_config(config: &PoolConfig) -> Self {
+        Self {
+            feed: config.feed_duration_limit_grace,
+            turn: config.turn_duration_limit_grace,
+        }
+    }
+}
+
+/// One budget's backstop deadline: what it has left, plus its grace. `None`
+/// when the budget or its grace is unset — either way there is nothing to
+/// backstop.
+fn remaining_deadline(budget: Option<Duration>, consumed: Duration, grace: Option<Duration>) -> Option<Duration> {
+    Some(budget?.saturating_sub(consumed).saturating_add(grace?))
 }
 
 /// Recognizes turn-ending events that await a host answer.
@@ -687,6 +737,9 @@ impl Checkout {
         };
         self.feed_mounts = Self::build_feed_mounts(mounts);
         let (inputs, values) = named_values_to_proto(inputs.into());
+        // The child resets its feed clock on this request, so the last feed's
+        // reported total must not shorten this feed's backstop.
+        self.budget.begin_feed();
         let request = request(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.into(),
             inputs,
@@ -1029,9 +1082,10 @@ impl Checkout {
         }
     }
 
-    /// The `max_duration` backstop deadline; see [`SessionBudget::backstop_deadline`].
+    /// The duration backstop deadline; see [`SessionBudget::backstop_deadline`].
     fn backstop_deadline(&self) -> Option<Duration> {
-        self.budget.backstop_deadline(self.pool.config.duration_limit_grace)
+        self.budget
+            .backstop_deadline(DurationGraces::from_config(&self.pool.config))
     }
 
     /// Snapshots the budget and forgets it ahead of a `Load`, so the reply can
@@ -1153,7 +1207,7 @@ impl Checkout {
     ///
     /// # Errors
     /// As [`Checkout::feed`]: a dead worker, a protocol violation, or a turn
-    /// that outlived `request_timeout` or the remaining `max_duration` budget.
+    /// that outlived `request_timeout` or the remaining feed/turn budget.
     pub async fn turn_raw(
         &mut self,
         request: &pb::ParentRequest,
@@ -1181,9 +1235,15 @@ impl Checkout {
         if is_load {
             self.begin_load();
         }
+        // A raw `Feed` restarts the child's feed clock exactly as `feed` does,
+        // so the parent's must follow it rather than carry the last feed's
+        // total into this feed's backstop.
+        if matches!(request.kind, Some(pb::parent_request::Kind::Feed(_))) {
+            self.budget.begin_feed();
+        }
         self.turn_in_flight = true;
-        // as `expect_turn`: `request_timeout` alone would drop the `max_duration`
-        // backstop, leaving a wedged child bounded by a timeout that may be unset
+        // as `expect_turn`: `request_timeout` alone would drop the duration
+        // backstops, leaving a wedged child bounded by a timeout that may be unset
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
         self.armed_deadline = deadline;
         let outcome = match deadline {

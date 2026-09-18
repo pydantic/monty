@@ -88,8 +88,8 @@ where
 }
 
 /// Pool construction options. Timeouts are pre-normalised to milliseconds by
-/// the TypeScript layer (which also applies the `durationLimitGrace` default
-/// and resolves the binary path).
+/// the TypeScript layer (which also applies the grace defaults and resolves the
+/// binary path).
 #[napi(object, js_name = "NativePoolOptions")]
 pub struct NativePoolOptions {
     /// Resolved path to the `monty` binary.
@@ -102,9 +102,12 @@ pub struct NativePoolOptions {
     pub checkout_timeout_ms: Option<f64>,
     /// Parent-side hard deadline per protocol turn (ms).
     pub request_timeout_ms: Option<f64>,
-    /// Grace for the automatic `maxDurationSecs` backstop (ms). Absent:
+    /// Grace for the automatic `maxFeedDurationSecs` backstop (ms). Absent:
     /// backstop disabled.
-    pub duration_limit_grace_ms: Option<f64>,
+    pub feed_duration_limit_grace_ms: Option<f64>,
+    /// Grace for the automatic `maxTurnDurationSecs` backstop (ms). Absent:
+    /// backstop disabled.
+    pub turn_duration_limit_grace_ms: Option<f64>,
     /// Recycle a worker after serving this many checkouts.
     pub max_checkouts_per_worker: Option<u32>,
 }
@@ -218,9 +221,13 @@ impl NativePool {
             .request_timeout_ms
             .map(|ms| duration_from_ms("requestTimeout", ms))
             .transpose()?;
-        config.duration_limit_grace = options
-            .duration_limit_grace_ms
-            .map(|ms| duration_from_ms("durationLimitGrace", ms))
+        config.feed_duration_limit_grace = options
+            .feed_duration_limit_grace_ms
+            .map(|ms| duration_from_ms("feedDurationLimitGrace", ms))
+            .transpose()?;
+        config.turn_duration_limit_grace = options
+            .turn_duration_limit_grace_ms
+            .map(|ms| duration_from_ms("turnDurationLimitGrace", ms))
             .transpose()?;
         config.max_checkouts_per_worker = options.max_checkouts_per_worker;
         config.metrics = configured_adapter().map(TelemetryAdapterHandle::metrics);

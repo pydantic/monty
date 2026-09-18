@@ -21,13 +21,18 @@ pub mod worker;
 /// or repurposing a field, changing a field's meaning, or adding one the child
 /// requires. Purely additive changes an older peer can ignore do not need a
 /// bump.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///
-/// Version 3 is not served: it carried values as recursive `MontyObject`
-/// trees, where this build carries one flat `Arena` per message.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 4;
+/// Version 4 and below are not served. Version 3 carried values as recursive
+/// `MontyObject` trees, where this build carries one flat `Arena` per message.
+/// Version 4 both lacked `max_feed_duration`/`max_turn_duration` and had the
+/// per-session `max_duration` this build dropped: a version 4 parent would
+/// send a budget nothing enforces, and a version 4 child would accept the new
+/// budgets and ignore them. Neither side can be told apart from a working one,
+/// so both are refused.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 5;
 
 /// How long the child holds buffered `print()` output before emitting it as a
 /// `Print` event, when [`pb::Configure::print_flush_interval_ms`] says nothing.

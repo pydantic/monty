@@ -126,10 +126,21 @@ class ResourceLimits(TypedDict, total=False):
     to disable that limit, with two exceptions: `max_recursion_depth` and
     `max_suspensions` cannot be disabled, and omitting either leaves its
     1000 default in place.
+
+    Both duration limits share one clock, which runs only while sandboxed
+    code executes, never while suspended waiting on the host; they differ in
+    when it restarts: at each feed, at each host round trip. Exceeding either
+    raises `TimeoutError` in the sandbox, and the session stays usable
+    afterwards, since the next feed resets both clocks.
     """
 
-    max_duration_secs: float | None
-    """Maximum execution time in seconds."""
+    max_feed_duration_secs: float | None
+    """Maximum execution time for a single feed (`feed_run` or `feed_start`), in seconds."""
+
+    max_turn_duration_secs: float | None
+    """Maximum execution time between host round trips, in seconds.
+
+    A snippet that calls out to the host may run longer than this in total."""
 
     max_memory: int | None
     """Maximum heap memory in bytes."""

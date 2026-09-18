@@ -252,12 +252,12 @@ test('special files in mounts are rejected without blocking', async (ctx) => {
 
 test('suspension time does not consume the duration budget', async (ctx) => {
   skipIfBrowser(ctx)
-  // maxDurationSecs measures cumulative sandbox execution time; the worker
-  // reports it on every turn and its clock is paused while suspended. The
-  // host taking twice the entire budget to answer an external call must
-  // therefore not time the session out.
+  // maxFeedDurationSecs measures sandbox execution time; the worker reports
+  // it on every turn and its clock is paused while suspended. The host taking
+  // twice the entire budget to answer an external call must therefore not
+  // time the feed out.
   await using pool = await Monty.create()
-  await using session = await pool.checkout({ limits: { maxDurationSecs: 0.3 } })
+  await using session = await pool.checkout({ limits: { maxFeedDurationSecs: 0.3 } })
   const result = await session.feedRun("await fetch_data('u') + '!'", {
     externalLookup: {
       fetch_data: async () => {
