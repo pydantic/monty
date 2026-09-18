@@ -1,0 +1,204 @@
+crates/monty/src/bytecode/vm/exceptions.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 107,226,296-297,300,303-306
+crates/monty/src/run_progress.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 424,432,436-437,668,674,677-678,722,736,740-741,802,809,812-813,906,913-926,1158-1159
+crates/monty/tests/parse_large_literals.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 45,57,68,78,89,101,115,124,133,144
+docs/limitations/eval_exec.md
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1-66
+mkdocs.yml
+  s_440a7ea0ee4e52::t_f644d8c888bd27 47
+crates/monty/tests/print_writer.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 20,111,125,151,243,295
+crates/monty-proto/tests/roundtrip.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 293
+crates/monty/tests/binary_serde.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 11,52,58-79,90,103,127,151,173,192-195,198,222,248,282,284,299,571-691
+crates/monty/src/builtins/locals.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1-14
+crates/monty/src/function.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 19-20,83-84,127
+crates/monty-python/src/external.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 147
+crates/monty/src/builtins/mod.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 13,23,174-177
+docs/type-checking.md
+  s_440a7ea0ee4e52::t_f644d8c888bd27 195-197
+CLAUDE.md
+  s_440a7ea0ee4e52::t_f644d8c888bd27 219-252
+crates/monty/tests/datetime_format.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 17,26
+crates/monty/tests/heap_reader_compile_fail_cases/smuggle_and_swap_reader.stderr
+  s_440a7ea0ee4e52::t_f644d8c888bd27 2,4,9
+crates/monty/tests/math_module.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 6
+crates/monty/test_cases/builtin__exec_import_traceback.py
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1-17
+crates/monty/tests/asyncio.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1426,1451,1486,1579
+crates/monty/tests/inputs.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 13,26,39,52,65,78,91,106,121,136,149,164,182,205,225,240,255,271,291,298,316,329,344,365,380,402,422,435,454,599,622,643,672,693,716,739,760,781,801
+crates/monty/tests/regex.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 17
+crates/monty/tests/external_function_identity.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 10,13,65,88,92
+crates/monty/src/bytecode/code.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 15,18-19,45,54,74-75,77-78,122-131
+crates/monty/src/bytecode/mod.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 26-29
+crates/monty/test_cases/builtin__exec_namespaces.py
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1-86
+crates/fuzz/fuzz_targets/string_input_panic.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 27
+docs/snapshots.md
+  s_440a7ea0ee4e52::t_f644d8c888bd27 315-317
+crates/monty/tests/repl.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 18,632-733,1595-1607,2043-2126
+crates/monty/tests/auto_os_calls.rs
+  s_440a7ea0ee4e52::t_b46348b6a5f1bd 113
+crates/monty/tests/resource_limits.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 58,95,124,166,197,227,257,275,310,355,375,394,415,449,480,600,1470,1506,1528,1564,1612,1683
+crates/monty/test_cases/ext_call__eval_exec.py
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1-19
+crates/monty/tests/dataclass_fields.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 26,39
+crates/monty/src/intern/compile.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1-244
+crates/monty/tests/try_from.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 12,20,29,38,46,54,62,76,84,98,106,114,122,130,138,146,154,162,170
+crates/fuzz/fuzz_targets/tokens_input_panic.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 546
+crates/monty/tests/heap_reader_compile_fail_cases/smuggle_vm.stderr
+  s_440a7ea0ee4e52::t_f644d8c888bd27 2,4-8
+docs/quickstart/rust.md
+  s_440a7ea0ee4e52::t_9c0346deae2ea3 248
+  s_440a7ea0ee4e52::t_f644d8c888bd27 182,205,223
+crates/monty/README.md
+  s_440a7ea0ee4e52::t_f644d8c888bd27 40,63
+crates/monty/src/builtins/eval_exec.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1-274
+crates/monty/test_cases/refcount__exec_locals_snapshot.py
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1-18
+crates/monty/tests/dataclass_rejections.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 14,100,127
+crates/monty/src/bytecode/compiler.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 19,24,31,34,248,251,255-256,289-295,298-304,511,515,526,530-531,534,538,541-554,557,560,562,566-571,582,585,591-592,594,599-617,623,859,861,875-877,882,895,1010,1019,1041,1043,1045,1072,1377-1379,1467-1470,1478-1481,1506,1508-1516,1550-1562,1565-1566,1588-1589,3407,3888-3891,3895-3897,3949-3959,3962-3963
+crates/monty/src/bytecode/vm/async_exec.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 14,37-38,93,105,377-382,384,393,395,401,511,513,516,519-520,524,526,529,585-586,592,594,599,646,660,667,669,675
+crates/monty/src/heap/mod.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1907-1909,1918-1920,2039-2041,2143,2150,2181
+docs/limitations/resource_limits.md
+  s_440a7ea0ee4e52::t_f644d8c888bd27 21-25
+crates/monty/src/bytecode/vm/namespace.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1-407
+crates/monty-datatest/src/main.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1305,1354
+crates/monty-types/src/builtins.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 115-120
+crates/monty/src/exception_private.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 54,86,116,1440,1511,2408,2413,2417-2428,2460,2462-2463,2478,2489,2555,2562,2569-2572,2576-2577,2581-2585,2593-2595,2736
+crates/monty/src/args/from_value.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 146-147
+crates/monty/tests/error_locations.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 14,29,52
+crates/monty/src/bytecode/builder.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 7,372-379,439,441-443,446,538-542,793,803,813,829,853,880
+crates/monty/src/bytecode/vm/call.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 11,124,563-564,818,821,831-836,855,862,870,888,894,896,906,909,923,925-928,981,984,1021,1023,1029
+crates/monty/src/intern/storage.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1-79
+crates/monty-apidoc/src/symbols.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 54
+docs/security.md
+  s_440a7ea0ee4e52::t_f644d8c888bd27 445
+crates/monty/src/value.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 2196,2198-2216,2233,2779-2782,2805-2808,2821-2824,2839-2842,2857-2860,2874-2877,2890-2893,2906-2909,2923-2926,2940-2943
+crates/monty/tests/json_serde.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 16
+crates/monty/tests/bytecode_limits.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 109,124,136,148,164,196,281,366,376,404,424
+crates/monty/src/parse.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 13,18,24,172-176,191,195,200-210,224-239,244,248-249,264,268,2393,2439-2451,2482-2503
+crates/monty-bench/benches/main.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 29,44,67,71,479,504-510,604
+crates/monty/test_cases/builtin__exec_traceback.py
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1-11
+crates/monty/tests/assert_messages.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 14,117,133,151,165,246,255,273,286,337,382,390
+crates/monty/tests/parse_errors.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 585-586,678
+crates/monty/tests/collections.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 23,30,105,138,151
+crates/monty/src/prepare.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 14,17,54,73-87,89-116,131,183-190,504-506,515-516,549,628-629,1253-1256,1713-1716,1867-1870,2031-2034,2156-2161,2323-2327,2394,2591-2595,2711-2715,2787,2946,3051,3201,3268-3272,3438,3466-3470,3616,3665-3669,3736,3754-3758,3786,3809,3836,3866,3893
+crates/monty/src/types/list.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1160,1185-1186,1192-1193,1219-1220,1226-1227,1250-1251,1257-1258
+crates/monty/src/bytecode/vm/scheduler.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 13,67-69,84,103-104
+crates/monty/src/asyncio.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 102-104,112-113,118
+crates/monty-python/src/lib.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 82
+crates/monty/test_cases/refcount__exec_namespace.py
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1-17
+crates/monty/tests/heap_reader_compile_fail_cases/cases.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 153-157,160-161
+crates/monty/tests/main.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 12,23-44,47,62,89,136,153,177,202,227,257,291,315,351,372,389,436,455,479,526,550
+crates/monty/src/types/file.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 256,583
+crates/monty/src/expressions.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 45-50,828-830
+crates/monty/src/intern.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 13-14,20-21,23-32,34,711-712,1063-1064,1257-1258,2098,2122,2148,2158,2168-2169,2173-2178,2180,2183-2185,2194,2197-2201,2208-2223,2228-2232,2236-2238,2241,2246,2249-2256,2260,2264-2269,2271,2282,2284,2288,2294-2307,2312,2318,2324,2327,2330-2339,2349,2355,2361,2363
+crates/monty/src/args/bind_python.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 625-627
+docs/limitations/index.md
+  s_440a7ea0ee4e52::t_f644d8c888bd27 62-63
+crates/monty/src/dump_format.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 33,278,311
+crates/monty/src/source_map.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 200
+crates/monty/src/types/instance.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 526
+crates/monty-typeshed/update.py
+  s_440a7ea0ee4e52::t_f644d8c888bd27 26-27,34
+docs/limitations/builtins.md
+  s_440a7ea0ee4e52::t_f644d8c888bd27 9,11,13,25-26
+crates/monty/src/builtins/open.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 6
+crates/monty/src/bytecode/op.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 11-12,550-561,563-571,594,716,759-760,785,970-973
+crates/monty/src/heap_data.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 360-363,368-371,373-376,379-380,382-384,391-393,410,420,433,438,479,481,519-522,551
+crates/monty-runtime/tests/subprocess.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1081-1083,1085-1094,1097-1098,1100,1102-1103,1105-1106,1109-1111,1114,1117,1122,1128,1132,1137,1140,1150,1157,1161,1191-1226
+crates/monty/test_cases/builtin__eval_exec.py
+  s_440a7ea0ee4e52::t_f644d8c888bd27 1-326
+crates/monty/test_cases/class__type_errors.py
+  s_440a7ea0ee4e52::t_f644d8c888bd27 225-251
+crates/monty/tests/copy_module.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 151
+crates/monty/tests/name_lookup.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 14-15,209,611,615-639
+crates/monty/tests/print_collect_limits.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 33,63,90,121,150,167,183,204,229
+crates/monty/tests/container_mutation.rs
+  s_440a7ea0ee4e52::t_f644d8c888bd27 143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "cd3114e0b88e913d0d8113306e8fc5de42a798c8",
+  "prompts": {},
+  "sessions": {
+    "s_440a7ea0ee4e52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a9754f7-13d8-42d0-a0e4-9657814a0b0c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
