@@ -278,6 +278,54 @@ with Monty(request_timeout=10) as pool:
             #> TimeoutError
 ```
 
+### Clock, sleeping and entropy
+
+By default the sandbox answers these itself, with no `os=` handler involved:
+`date.today()`, `datetime.now()` and `time.time()` read the worker's clock;
+`time.sleep()` and `asyncio.sleep()` wait inside the worker, each call cut to
+`sandbox_sleep_clamp` (10 seconds), with gathered `asyncio.sleep()` calls
+overlapping; and an unseeded `random` seeds itself from the worker's OS
+entropy. A sandbox wait costs nothing against `max_duration_secs` and is not a
+suspension, so `request_timeout` is what bounds a sleeping loop. Four
+`checkout()` arguments change that, for the life of the session:
+
+```python
+from datetime import datetime
+
+from pydantic_monty import Monty
+
+code = """
+import random, time
+from datetime import datetime
+time.sleep(3600)
+f'{datetime.now():%Y-%m-%d %H:%M} {random.random():.4f}'
+"""
+
+# datetime: 'system' (default), 'call_host' or a datetime
+# sleep: 'sandbox_sleep' (default), 'zero' or 'call_host'
+# sandbox_sleep_clamp: seconds per sandbox sleep; float('inf') for no cap
+# random_start: 'random' (default) or {'seed': int | float | str | bytes}
+with Monty() as pool:
+    with pool.checkout(
+        datetime=datetime(2026, 1, 1, 9, 30),
+        sleep='zero',
+        sandbox_sleep_clamp=0.5,
+        random_start={'seed': 42},
+    ) as session:
+        print(session.feed_run(code))
+        #> 2026-01-01 09:30 0.6394
+```
+
+A naive `datetime` freezes the clock at that wall time in UTC (an aware one
+sets the sandbox's local zone to its `utcoffset()`). `'zero'` makes both
+sleeps return at once. `{'seed': s}` starts the module-level `random`
+generator exactly as `random.seed(s)` would (unseeded `random.Random()`
+instances take deterministic states derived from it); `random.seed()` in the
+sandbox still applies afterwards. `'call_host'` on `datetime` or `sleep` sends
+those calls to the `os=` handler instead — `OSAccess` answers them from the
+host process, capping each wait at its `max_sleep` — and explicit
+`os.urandom()` calls always reach the handler.
+
 ### Type checking
 
 Monty bundles [ty](https://docs.astral.sh/ty/): each fed snippet can be

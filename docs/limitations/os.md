@@ -23,7 +23,7 @@ whether each call is permitted.
     Sandboxed code chooses `size`, so a host handler that allocates must cap it.
     Python's `AbstractOS.urandom()` raises `MemoryError` before allocating when `size` exceeds `max_urandom_bytes`,
     1 MiB by default; `OSAccess(max_urandom_bytes=...)` sets it, and zero rejects every nonempty request.
-    The `random` module makes the same call, for 2496 bytes, to seed an unseeded generator (see
+    The `random` module never makes this call: an unseeded generator seeds itself inside the sandbox (see
     [random.md](random.md)).
 - `os.fspath(path)` — pure, no host involvement.
 - `os.getcwd()` — pure: the sandbox's virtual working directory.

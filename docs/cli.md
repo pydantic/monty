@@ -22,21 +22,21 @@ hello world
 
 ## Flags
 
-| Flag                    | Meaning                                                                                                                                   |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `-i`, `--interactive`   | Run the file or `-c` program, then drop into a REPL, like `python -i`                                                                     |
-| `-t`, `--type-check`    | [Type check](type-checking.md) before executing                                                                                           |
-| `--type-check-format`   | Diagnostic format: `full` (default), `concise`, `json`, `github` and the other ty formats                                                 |
-| `-m`, `--mount`         | Mount a host directory into the sandbox (see below)                                                                                       |
-| `--cwd`                 | The sandbox's virtual working directory (default: the first mount, else `/`)                                                              |
-| `--max-feed-duration`   | Maximum execution time per feed, in seconds, e.g. `0.5`; only the REPL feeds more than once                                               |
-| `--max-turn-duration`   | Maximum execution time between host round trips, in seconds                                                                               |
-| `--max-memory`          | Maximum heap memory, e.g. `1024`, `512KB`, `10MB`, `1GB`                                                                                  |
-| `--max-recursion-depth` | Maximum call-stack depth (default 1000)                                                                                                   |
-| `--gc-interval`         | Run garbage collection every N allocations                                                                                                |
-| `--max-suspensions`     | Maximum suspensions serviced, per run or across a whole interactive session (default 1000); [what counts](resource-limits.md#suspensions) |
-| `--max-sleep`           | Longest wait a `time.sleep()` or `asyncio.sleep()` performs, in seconds; longer sleeps are cut short (default 10, `inf` for no limit)     |
-| `--version`             | Print the version                                                                                                                         |
+| Flag                    | Meaning                                                                                                                                                  |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-i`, `--interactive`   | Run the file or `-c` program, then drop into a REPL, like `python -i`                                                                                    |
+| `-t`, `--type-check`    | [Type check](type-checking.md) before executing                                                                                                          |
+| `--type-check-format`   | Diagnostic format: `full` (default), `concise`, `json`, `github` and the other ty formats                                                                |
+| `-m`, `--mount`         | Mount a host directory into the sandbox (see below)                                                                                                      |
+| `--cwd`                 | The sandbox's virtual working directory (default: the first mount, else `/`)                                                                             |
+| `--max-feed-duration`   | Maximum execution time per feed, in seconds, e.g. `0.5`; only the REPL feeds more than once                                                              |
+| `--max-turn-duration`   | Maximum execution time between host round trips, in seconds                                                                                              |
+| `--max-memory`          | Maximum heap memory, e.g. `1024`, `512KB`, `10MB`, `1GB`                                                                                                 |
+| `--max-recursion-depth` | Maximum call-stack depth (default 1000)                                                                                                                  |
+| `--gc-interval`         | Run garbage collection every N allocations                                                                                                               |
+| `--max-suspensions`     | Maximum suspensions serviced, per run or across a whole interactive session (default 1000); [what counts](resource-limits.md#suspensions)                |
+| `--max-sleep`           | Longest wait a `time.sleep()` or `asyncio.sleep()` performs inside the sandbox, in seconds; longer sleeps are cut short (default 10, `inf` for no limit) |
+| `--version`             | Print the version                                                                                                                                        |
 
 See [resource limits](resource-limits.md) for what the limits actually bound.
 
@@ -66,31 +66,28 @@ picks another absolute virtual path.
 Only the file argument's name is used, so `monty ./scripts/run.py` and `monty /abs/run.py` both give
 `__file__ == '/data/run.py'`; the host directory never reaches the sandbox.
 
-## The clock
+## The clock, sleeping and entropy
 
 `date.today()` and `datetime.now()` read the machine's clock and local timezone; `time.time()` reads the machine's clock as Unix epoch seconds.
-Nothing answers `os.urandom()` in the CLI, so it and any unseeded `random` draw fail.
-Without `--mount` the script runs in-process and the call raises
-`NotImplementedError: OS function 'os.urandom' not implemented with standard execution`; with a mount it goes
-through the host loop and raises `RuntimeError: 'os.urandom' is not supported in this environment`.
-Seed explicitly first, `random.seed(0)` for example: `random.seed()` with no argument also asks for entropy.
+`time.sleep()` and `asyncio.sleep()` wait inside the sandbox, each call cut short at `--max-sleep` (10 seconds unless
+changed, `inf` for no cap), in every run — script, `-c` and REPL, with or without a mount.
+An unseeded `random` draw seeds the generator from the machine's entropy, as CPython does.
+These are the defaults every embedding gets; the CLI has no flag to freeze the clock, skip the sleeps or seed
+`random` — `MontyRun::with_auto_os_calls` is how a Rust embedder chooses otherwise, and `checkout()` how the pools do
+(see [the clock](security.md#the-clock)).
 
 ```console
 $ monty -c "from datetime import datetime; print(datetime.now())"
 2026-09-03 21:02:32.871568
 ```
 
-An in-process Rust run reads the same clock; `MontyRun::with_host_clock` is how an embedder chooses otherwise, and the
-CLI has no flag for it.
-A sandbox driven through the pool is different: there the clock calls reach your `os=` handler (see
-[the clock](security.md#the-clock)).
-See [`limitations/datetime.md`](https://github.com/pydantic/monty/blob/main/limitations/datetime.md).
-
-`time.sleep()` and `asyncio.sleep()` wait on the thread running the script, but only when the CLI drives suspensions,
-which it does when at least one `-m` mount is given.
-Without a mount every run — script, `-c` and REPL alike — takes the in-process path, where the sandbox has no host to
-wait for it and both raise `NotImplementedError`.
-See [`limitations/time.md`](https://github.com/pydantic/monty/blob/main/limitations/time.md).
+Nothing answers `os.urandom()` in the CLI, so it fails.
+Without `--mount` the script runs in-process and the call raises
+`NotImplementedError: OS function 'os.urandom' not implemented with standard execution`; with a mount it goes
+through the host loop and raises `RuntimeError: 'os.urandom' is not supported in this environment`.
+See [`limitations/datetime.md`](https://github.com/pydantic/monty/blob/main/limitations/datetime.md),
+[`limitations/time.md`](https://github.com/pydantic/monty/blob/main/limitations/time.md) and
+[`limitations/random.md`](https://github.com/pydantic/monty/blob/main/limitations/random.md).
 
 ## Worker mode
 

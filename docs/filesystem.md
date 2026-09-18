@@ -256,8 +256,10 @@ handler at all.
 The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`, `open`,
 `Path.read_text`, `Path.read_bytes`, `Path.write_text`, `Path.write_bytes`, `Path.append_text`, `Path.append_bytes`,
 `Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.stat`, `Path.rename`, `Path.resolve`, `Path.absolute`,
-`os.getenv`, `os.environ`, `date.today`, `datetime.now`, `os.urandom`, `time.time`, `time.sleep` and `asyncio.sleep`.
-`os.urandom` also arrives, for 2496 bytes, the first time an unseeded `random` generator draws a value
+`os.getenv`, `os.environ` and `os.urandom`, plus — only when the session was checked out with
+`datetime='call_host'` or `sleep='call_host'` — `date.today`, `datetime.now`, `time.time`, `time.sleep` and
+`asyncio.sleep` (see [the clock](security.md#the-clock)).
+An unseeded `random` generator never calls `os.urandom`: it seeds itself inside the sandbox
 (see [random](limitations/random.md)).
 
 `os` callbacks run in your process with your process's authority.

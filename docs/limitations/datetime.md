@@ -113,41 +113,35 @@ in Monty raises `TypeError: replace expected at most 0 arguments, got N`.
 
 ## Reading the clock
 
-`date.today()` and `datetime.now()` are the only two calls that read a
-clock, and Monty has none of its own. What answers them depends on how the
-sandbox is driven.
+`date.today()` and `datetime.now()` read the session's clock, chosen by its `AutoOsCalls`
+(`datetime=` on `checkout()` in the bindings, `AutoOsCalls::datetime` in Rust) and the same
+source `time.time()` reads (see [time.md](time.md)):
 
-Under the suspend/resume path — every pool session (`pydantic_monty`,
-`@pydantic/monty`, `monty-pool`) and `MontyRun::start` — both reach the host.
-A host that answers neither makes them raise
-`RuntimeError: 'date.today' is not supported in this environment`
-(`'datetime.now'` likewise), where CPython would return a time.
-
-Standard (non-suspending) execution — `MontyRun::run`, `MontyRepl::feed_run`
-and `MontyRepl::call_function` in Rust — has no host to ask and reads this
-machine's clock, so it matches CPython. The `monty` CLI reads the same clock,
-though there it is the host answering: it serves both calls itself rather than
-passing them on.
-`MontyRun::with_host_clock` / `MontyRepl::with_host_clock` choose otherwise:
-
-- `HostClock::Denied` makes both raise `NotImplementedError` — a different
-    exception from the suspend path's `RuntimeError` for the same refusal.
-    Through `MontyRun::run` and `MontyRepl::feed_run` the message is
-    `OS function 'datetime.now' not implemented with standard execution`;
-    through `MontyRepl::call_function` it is
+- `'system'`, the default everywhere — pool sessions included — reads this machine's clock
+    and local timezone, so it matches CPython. In the wasm worker the local zone is UTC.
+- A fixed instant (a `datetime.datetime` in Python, a `Date` in JavaScript,
+    `DateTimeSource::Fixed` in Rust) answers every call with that one instant, so
+    `datetime.now() == datetime.now()` is `True`, a loop polling `datetime.now()` never sees it
+    move, and `(datetime.now() - start)` is always a zero `timedelta`. A naive Python
+    `datetime` and a JavaScript `Date` are read as UTC with a local offset of zero, so
+    `datetime.now()` returns the value given; an aware `datetime` makes its `utcoffset()` the
+    sandbox's local zone. A Rust `Fixed` instant outside `datetime`'s 1..=9999 years raises
+    `OverflowError: date value out of range` from all three calls rather than failing some
+    other way.
+- `'call_host'` suspends each call to the host. Through the pool it reaches the `os=` handler
+    (`OSAccess.date_today()` / `datetime_now()` in `pydantic_monty`), and a host that answers
+    neither makes them raise `RuntimeError: 'date.today' is not supported in this environment`
+    (`'datetime.now'` likewise), where CPython would return a time. Standard (non-suspending)
+    Rust execution — `MontyRun::run`, `MontyRepl::feed_run` and `MontyRepl::call_function` —
+    has no host to ask and raises `NotImplementedError` instead: through `run` and `feed_run`
+    the message is `OS function 'datetime.now' not implemented with standard execution`;
+    through `call_function` it is
     `MontyRepl::call_function: OS function 'datetime.now' is not yet supported in this context`.
-- `HostClock::Fixed` answers every call with one frozen instant, so
-    `datetime.now() == datetime.now()` is `True`, a loop polling
-    `datetime.now()` never sees it move, and `(datetime.now() - start)` is
-    always a zero `timedelta`. An instant outside `datetime`'s 1..=9999 years
-    reads as `Denied` rather than failing some other way.
 
 Whatever answers them, both calls read local wall time for `date.today()`
 and a naive `datetime.now()`, and convert into the argument for
-`datetime.now(tz)`, matching CPython.
-
-`time.time()` has no equivalent — the `time` module is not importable at
-all (see ./modules.md).
+`datetime.now(tz)`, matching CPython. When the sandbox answers, `datetime.now(tz).tzinfo is tz`
+holds as in CPython; a host answer is a new object.
 
 ## `time`
 

@@ -90,7 +90,7 @@ recursion notes in [resource_limits.md](resource_limits.md).
 
 A generator copies to a second generator at the same point in the same
 sequence, as CPython's does. One that has never been seeded is the exception:
-Monty seeds from host entropy on the first draw rather than at construction, so
+Monty seeds on the first draw rather than at construction, so
 copying an unseeded generator gives two that go on to draw *different*
 sequences, where CPython's copies agree. Seed it, and the copies agree here
 too. See [random.md](random.md).

@@ -51,30 +51,41 @@ time (see [language.md](language.md)).
 ## `asyncio.sleep()` waits at the call, not at the `await`
 
 CPython's `asyncio.sleep()` returns a coroutine that does nothing until it is
-awaited. Monty's suspends to the host at the call itself — the wait belongs to
-the host, which is also the only side that can run anything else meanwhile — and
-the `await` then produces `result` once the host has answered. What follows from that:
+awaited. Monty's starts the wait at the call itself, and the `await` then
+produces `result` once the wait is over. What the wait is depends on the
+session's `sleep` setting (see [time.md](time.md)):
 
-- `asyncio.sleep(...)` whose result is never awaited has still asked the host to
+- `'sandbox_sleep'`, the default: a timer the sandbox's own scheduler serves.
+    The delay is cut to `sandbox_sleep_clamp` (10 seconds unless changed).
+    Sibling tasks run while it is pending, so gathered sleeps overlap —
+    `gather(sleep(1), sleep(1))` takes one second — and the scheduler only
+    hands control to the host once no timer is pending: a host future that
+    resolves while a timer is still running is delivered after the timer fires.
+    A sleep awaited at once with nothing else to run is waited inline instead.
+- `'zero'`: the awaitable is settled immediately; nothing waits and no other
+    task runs meanwhile, so `sleep(0)` does not yield as CPython's does. That
+    is true of a zero delay in every mode.
+- `'call_host'`: the call suspends to the host, which performs the wait. A
+    host that answers with a pending future lets sibling tasks run while the
+    delay elapses: `AsyncMonty` and `@pydantic/monty` do this when the `os`
+    callback is async (`OSAccess` is, by default, under `AsyncMonty`). A host
+    that waits inline — the sync `Monty`, a sync callback — runs gathered
+    sleeps one after another. Either way the results are the same.
+
+What follows from waiting at the call:
+
+- `asyncio.sleep(...)` whose result is never awaited has still started the
     wait, where CPython runs nothing and warns that the coroutine was never
     awaited.
 - A bad `delay` raises at the call rather than at the `await`. The error is the
     one CPython's `delay <= 0` produces —
     `TypeError: '<=' not supported between instances of 'str' and 'int'` — but it
     surfaces one step earlier.
-- The value is a host future rather than a coroutine, though `type(...).__name__`
+- The value is a future rather than a coroutine, though `type(...).__name__`
     is `coroutine` either way. Its `repr()` is `<coroutine external_future(N)>`,
     not CPython's `<coroutine object sleep at 0x...>`, and awaiting it a second
     time replays the same result where CPython raises
     `RuntimeError: cannot reuse already awaited coroutine`.
-
-How much concurrency a gathered sleep gets is the host's choice. A host that
-answers the call with a pending future lets sibling tasks run while the delay
-elapses: `AsyncMonty` and `@pydantic/monty` do this when the `os` callback is
-async (`OSAccess` is, by default, under `AsyncMonty`). A host that waits inline
-— the sync `Monty`, a sync callback, or the `monty` CLI — runs gathered sleeps
-one after another, so `gather(sleep(1), sleep(1))` takes two seconds rather
-than one. Either way the results are the same.
 
 `delay` accepts only real numbers, matching CPython's `delay <= 0`: an
 `__index__`-able class is rejected here although `time.sleep()` accepts it.

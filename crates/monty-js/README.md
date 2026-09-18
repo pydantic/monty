@@ -400,10 +400,11 @@ await session.feedRun('import os\nos.getenv("HOME")', {
 })
 ```
 
-An `async` callback works too. Its answer to `asyncio.sleep` is registered as a
-future, so the sandbox's other tasks run while it waits (or, when there are
-none, is awaited in place like an eager host function); its answer to any other
-OS call is awaited before that session resumes.
+An `async` callback works too. Under `sleep: 'call_host'` its answer to
+`asyncio.sleep` is registered as a future, so the sandbox's other tasks run
+while it waits (or, when there are none, is awaited in place like an eager
+host function); its answer to any other OS call is awaited before that
+session resumes.
 
 Callback-backed virtual files return a `MontyFileHandle` marker from the
 open-time call. Paths are virtual POSIX sandbox paths and `position` defaults
@@ -465,6 +466,35 @@ backstop.
 `maxSuspensions` limits the host round trips the pool services per checkout
 (default 1000; it cannot be disabled). Exceeding it ends the feed with an
 uncatchable `RuntimeError`.
+
+## Clock, sleeping and entropy
+
+By default the sandbox answers these itself, with no `os` callback involved:
+`date.today()`, `datetime.now()` and `time.time()` read the worker's clock;
+`time.sleep()` and `asyncio.sleep()` wait inside the worker, each call cut to
+`sandboxSleepClamp` (10 seconds), with gathered `asyncio.sleep()` calls
+overlapping; and an unseeded `random` seeds itself from the worker's OS
+entropy. A sandbox wait costs nothing against `maxDurationSecs` and is not a
+suspension, so `requestTimeout` is what bounds a sleeping loop. Four
+per-session options change that:
+
+```ts
+const fixed = await pool.checkout({
+  datetime: new Date('2026-01-01T09:30:00Z'), // 'system' (default) | 'call_host' | Date
+  sleep: 'zero', // 'sandbox_sleep' (default) | 'zero' | 'call_host'
+  sandboxSleepClamp: 0.5, // seconds per sandbox sleep; Infinity for no cap
+  randomStart: { seed: 42 }, // 'random' (default) | { seed: number | bigint | string | Uint8Array }
+})
+```
+
+A `Date` freezes the clock at that instant, read as UTC. `'zero'` makes both
+sleeps return at once. `{ seed }` starts the module-level `random` generator
+exactly as `random.seed(seed)` would (unseeded `random.Random()` instances
+take deterministic states derived from it); `random.seed()` in the sandbox
+still applies afterwards. `'call_host'` on `datetime` or `sleep` sends those
+calls to the `os` callback instead, which then decides what the sandbox sees
+and how long a wait it performs. Explicit `os.urandom()` calls always reach
+the `os` callback.
 
 ## Assert message annotations
 

@@ -1,10 +1,11 @@
 # `time` module
 
-Monty implements two functions from `time`, both answered by the host rather
-than by the interpreter: `time.time()` and `time.sleep()`.
+Monty implements two functions from `time`: `time.time()` and `time.sleep()`.
+Both are answered by the sandbox itself by default, or handed to the host, as the session's `AutoOsCalls` say
+(`datetime=` and `sleep=` on `checkout()` in the bindings, `AutoOsCalls` in Rust).
 
 `asyncio.sleep()` is documented in [asyncio.md](asyncio.md); it shares
-`time.sleep()`'s handling of the delay argument.
+`time.sleep()`'s handling of the delay argument and its sleep mode.
 
 ## Module surface
 
@@ -14,62 +15,47 @@ forms), `time_ns`, `struct_time`, `localtime`, `gmtime`, `mktime`, `strftime`,
 `strptime`, `asctime`, `ctime`, `tzset`, `timezone`, `altzone`, `daylight`,
 `tzname` — raises `AttributeError` rather than being stubbed.
 
-## Both functions need a host
+## `time.time()`
 
-`time.time()` and `time.sleep()` suspend the sandbox with an OS call, the way
-`date.today()` and `datetime.now()` do. A host that answers neither leaves them
-raising:
+`time.time()` reads the same source as `date.today()` and `datetime.now()` (see
+[datetime.md](datetime.md#reading-the-clock)): the machine's clock by default, a frozen instant under a fixed
+`datetime`, or the host under `datetime='call_host'`.
+A frozen instant never advances, so `time.time()` returns the same value on every call, and under `call_host` it
+returns whatever the host answered with — a `float` of seconds since the Unix epoch, as in CPython, but with no
+guarantee it agrees with the machine's clock or moves forward at all.
+Where nothing answers a `call_host` call it raises: through the bindings with no `os=` handler,
+`RuntimeError: 'time.time' is not supported in this environment`; under standard (non-suspending) Rust execution,
+`NotImplementedError: OS function 'time.time' not implemented with standard execution`.
 
-- Through the bindings (`pydantic_monty`, `@pydantic/monty`) they reach the
-    `os=` handler. With no handler, `RuntimeError: 'time.time' is not supported in this environment`.
-    A Rust `monty-pool` caller has no `os=` handler: each call arrives as a
-    `TurnEvent::OsCall` to answer with `resume`.
-- Under standard (non-suspending) execution — `MontyRun::run`, and so the
-    `monty` CLI running a file without mounts — `time.time()` is answered from
-    the runner's `HostClock` (the machine's clock by default, `HostClock::Denied`
-    raising `NotImplementedError`), but `time.sleep()` always raises
-    `NotImplementedError: OS function 'time.sleep' not implemented with standard execution`. Nothing waits inside the interpreter: a wait has to happen where
-    a deadline can be enforced.
+## `time.sleep()`
 
-Since the host performs the wait, how long `time.sleep()` actually sleeps is the
-host's choice. A host may cap it, ignore it, or refuse it.
+What `time.sleep()` does is the session's `sleep` setting:
 
-## The clock is the host's
-
-`time.time()` returns whatever the host answered with, so it need not agree with
-the machine's clock, need not advance between calls, and is not guaranteed to
-move forward at all. It is a `float` of seconds since the Unix epoch, as in
-CPython.
+- `'sandbox_sleep'` (the default): the sandbox waits, each call cut to `sandbox_sleep_clamp` (10 seconds unless
+    changed; the CLI's `--max-sleep`). A longer request returns early with no error, where CPython would have waited,
+    so `time.time()` advances by less than the sleep asked for.
+- `'zero'`: returns at once without waiting.
+- `'call_host'`: the call suspends and the host performs the wait, so how long it actually sleeps is the host's
+    choice: `pydantic_monty`'s [`OSAccess`][pydantic_monty.OSAccess] caps it at `max_sleep` (default 10 seconds,
+    `None` for no cap). A host may answer with any value, which is discarded: `time.sleep()` always evaluates to
+    `None`. A host answering it with a future gets
+    `RuntimeError: time.sleep cannot be answered with a future` in the sandbox — the call is a wait, so there is
+    nothing to resume into. Where nothing answers the call it raises as `time.time()` does above.
 
 ## Sleeping does not consume the execution-time limits
 
-`max_feed_duration` and `max_turn_duration` measure execution time, and the clock
-stops while the sandbox is suspended — so a sleep costs nothing against them,
-however long it lasts. What bounds sleeping instead:
-
-- `max_suspensions` (default 1000), since each sleep is one suspension (two
-    when an `asyncio.sleep()` answered with a future is awaited later). The
-    pools and the CLI enforce it; a direct Rust host counts suspensions itself.
-- The host's own turn deadline (`request_timeout` for the pools).
-
-A sandbox that sleeps in a loop therefore ends its turn on the host's deadline
-rather than on `MemoryError`/time limits. See
-[resource_limits.md](resource_limits.md).
+`max_feed_duration` and `max_turn_duration` measure execution time, and the clock stops while the sandbox waits — in
+the sandbox or on the host — so a sleep costs nothing against them, however long it lasts.
+A sandbox sleep is not a suspension either, so `max_suspensions` does not count it; what bounds a sandbox that sleeps
+in a loop is the host's own turn deadline (`request_timeout` for the pools), reached after at most
+`sandbox_sleep_clamp` per iteration.
+Under `call_host` each sleep is one suspension (two when an `asyncio.sleep()` answered with a future is awaited
+later), so `max_suspensions` (default 1000) bounds it as well.
+See [resource_limits.md](resource_limits.md).
 
 ## `time.sleep()` arguments
 
+The argument is validated the same way in every sleep mode, before any wait.
 The `OverflowError` past ~9223372036.85 seconds is CPython's,
 `timestamp out of range for C PyTime_t`. What does not happen is the `OSError: [Errno 22] Invalid argument` CPython's platform sleep
-raises for a delay just *under* that boundary: Monty accepts it and passes it
-to the host, where it becomes a wait that outlives any turn deadline.
-
-The hosts Monty ships cut long sleeps short rather than wait them out:
-`pydantic_monty`'s [`OSAccess`][pydantic_monty.OSAccess] at its `max_sleep` (default 10 seconds, `None`
-for no cap) and the `monty` CLI at `--max-sleep` (default 10). Sandboxed code
-sees the call return early with no error, where CPython would have waited, so
-`time.time()` advances by less than the sleep asked for.
-
-A host may answer `time.sleep()` with a value, and it is discarded:
-`time.sleep()` always evaluates to `None`. A host answering it with a future
-instead gets `RuntimeError: time.sleep cannot be answered with a future` in the
-sandbox — the call is a wait, so there is nothing to resume into.
+raises for a delay just *under* that boundary: Monty accepts it, and the clamp (or the host) cuts it short.

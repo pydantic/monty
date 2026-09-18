@@ -232,6 +232,32 @@ The pool enforces `maxSuspensions`: the first suspension over the budget ends th
 `typeCheckFormat` picks a ty diagnostic format and `typeCheckColor` colours it with ANSI escapes.
 See [resource limits](../resource-limits.md) and [type checking](../type-checking.md).
 
+The clock, the sleeps and `random`'s seed are session options too.
+By default the sandbox reads the worker's clock, waits out `time.sleep()` itself (ten seconds at most per call) and
+seeds `random` from the worker's entropy; `datetime`, `sleep`, `sandboxSleepClamp` and `randomStart` change that, so
+a run can be made reproducible:
+
+```ts
+import { Monty } from '@pydantic/monty'
+
+const code = `
+import random, time
+from datetime import datetime
+time.sleep(3600)
+f'{datetime.now():%Y-%m-%d %H:%M} {random.random():.4f}'
+`
+
+await using pool = await Monty.create()
+await using session = await pool.checkout({
+  datetime: new Date('2026-01-01T09:30:00Z'),
+  sleep: 'zero',
+  randomStart: { seed: 42 },
+})
+console.log(await session.feedRun(code)) // 2026-01-01 09:30 0.6394
+```
+
+See [the clock](../security.md#the-clock).
+
 ## Filesystem mounts
 
 `MountDir` is exported from the Node subpath, because mounts need a host filesystem:

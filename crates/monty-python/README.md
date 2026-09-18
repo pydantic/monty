@@ -136,7 +136,12 @@ Setting `cwd` does not grant filesystem access; provide `mount=` or `os=` to han
 
 `OSAccess(max_urandom_bytes=...)` sets the largest `os.urandom()` request the default handler serves, 1 MiB by default.
 Larger requests raise `MemoryError` before allocating.
-Zero rejects every nonempty request, including the 2496 bytes an unseeded `random` generator requests.
+An unseeded `random` generator never makes that request: it seeds itself inside the worker, from OS entropy or from
+the `random_start` seed given to `checkout()`.
+
+The clock (`date.today()`, `datetime.now()`, `time.time()`) and the sleeps (`time.sleep()`, `asyncio.sleep()`) are
+answered inside the worker by default; `checkout(datetime='call_host')` and `checkout(sleep='call_host')` send them to
+the `os=` handler instead, where `OSAccess` answers them from the host process and caps each wait at its `max_sleep`.
 
 A `random.Random` instance or the `random.Random` class returned from the sandbox converts to its repr string.
 Return the generated values or `rng.getstate()` instead.

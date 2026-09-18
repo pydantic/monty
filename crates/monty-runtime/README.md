@@ -44,17 +44,15 @@ monty --help
   `--max-turn-duration`, `--max-recursion-depth`, `--gc-interval`,
   `--max-suspensions` — sandbox resource limits
 - `--max-sleep 10` — longest wait a `time.sleep()` / `asyncio.sleep()` performs
-  in seconds; longer sleeps are cut short (`inf` for no limit)
+  inside the sandbox, in seconds; longer sleeps are cut short (`inf` for no limit)
 
 `date.today()` and `datetime.now()` read this machine's clock and local
-timezone, and `time.time()` its clock as Unix epoch seconds, as they do for any
-in-process run. `MontyRun::with_host_clock` is
-how an embedder chooses otherwise; the CLI has no flag for it. `time.sleep()` and
-`asyncio.sleep()` wait on the running thread, but only where the CLI drives
-suspensions, which is a run with at least one `-m` mount. Nothing answers
-`os.urandom()`, so it and any unseeded `random` draw raise `NotImplementedError`
-(or `RuntimeError` under `--mount`). Seed with an explicit value first, e.g.
-`random.seed(0)`: `random.seed()` with no argument also needs entropy.
+timezone, and `time.time()` its clock as Unix epoch seconds; `time.sleep()` and
+`asyncio.sleep()` wait inside the sandbox, capped by `--max-sleep`; an unseeded
+`random` draw seeds from the machine's entropy — the defaults of every
+embedding. `MontyRun::with_auto_os_calls` is how a Rust embedder chooses
+otherwise; the CLI has no flag for it. Nothing answers `os.urandom()`, so it
+raises `NotImplementedError` (or `RuntimeError` under `--mount`).
 
 ## Worker mode
 
