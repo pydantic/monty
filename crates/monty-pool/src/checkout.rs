@@ -508,8 +508,8 @@ impl DurationGraces {
     /// Reads both graces off a pool config.
     fn from_config(config: &PoolConfig) -> Self {
         Self {
-            feed: config.feed_limit_grace,
-            turn: config.turn_limit_grace,
+            feed: config.feed_duration_limit_grace,
+            turn: config.turn_duration_limit_grace,
         }
     }
 }

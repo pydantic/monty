@@ -422,7 +422,7 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     the host's job.
 - The in-sandbox time check only runs at interpreter checkpoints.
     Host-side backstops cover a wedged worker: `request_timeout` (a per-turn deadline; a loop of quick host calls
-    resets it), and one grace per duration limit — `feed_limit_grace` and `turn_limit_grace` — each firing only if the
+    resets it), and one grace per duration limit — `feed_duration_limit_grace` and `turn_duration_limit_grace` — each firing only if the
     session also set the limit it backs.
     Set `request_timeout` and at least one duration limit for untrusted code.
     `max_turn_duration_secs` does not close the gap named above: its clock also restarts at each host answer, so a loop

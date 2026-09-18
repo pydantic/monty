@@ -123,8 +123,8 @@ impl PyMonty {
         checkout_timeout = None,
         request_timeout = None,
         max_checkouts_per_worker = None,
-        feed_limit_grace = 1.0,
-        turn_limit_grace = 1.0,
+        feed_duration_limit_grace = 1.0,
+        turn_duration_limit_grace = 1.0,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -135,8 +135,8 @@ impl PyMonty {
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
         max_checkouts_per_worker: Option<u32>,
-        feed_limit_grace: Option<f64>,
-        turn_limit_grace: Option<f64>,
+        feed_duration_limit_grace: Option<f64>,
+        turn_duration_limit_grace: Option<f64>,
     ) -> PyResult<Self> {
         Ok(Self {
             config: parse_pool_config(
@@ -148,8 +148,8 @@ impl PyMonty {
                 request_timeout,
                 max_checkouts_per_worker,
                 GraceArgs {
-                    feed: feed_limit_grace,
-                    turn: turn_limit_grace,
+                    feed: feed_duration_limit_grace,
+                    turn: turn_duration_limit_grace,
                 },
             )?,
             pool: Arc::new(Mutex::new(None)),
@@ -508,8 +508,8 @@ impl PyAsyncMonty {
         checkout_timeout = None,
         request_timeout = None,
         max_checkouts_per_worker = None,
-        feed_limit_grace = 1.0,
-        turn_limit_grace = 1.0,
+        feed_duration_limit_grace = 1.0,
+        turn_duration_limit_grace = 1.0,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -520,8 +520,8 @@ impl PyAsyncMonty {
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
         max_checkouts_per_worker: Option<u32>,
-        feed_limit_grace: Option<f64>,
-        turn_limit_grace: Option<f64>,
+        feed_duration_limit_grace: Option<f64>,
+        turn_duration_limit_grace: Option<f64>,
     ) -> PyResult<Self> {
         Ok(Self {
             config: parse_pool_config(
@@ -533,8 +533,8 @@ impl PyAsyncMonty {
                 request_timeout,
                 max_checkouts_per_worker,
                 GraceArgs {
-                    feed: feed_limit_grace,
-                    turn: turn_limit_grace,
+                    feed: feed_duration_limit_grace,
+                    turn: turn_duration_limit_grace,
                 },
             )?,
             pool: Arc::new(Mutex::new(None)),
@@ -655,8 +655,8 @@ impl PyAsyncMontyWebsocket {
         checkout_timeout = None,
         request_timeout = 10.0,
         connect_headers = None,
-        feed_limit_grace = 1.0,
-        turn_limit_grace = 1.0,
+        feed_duration_limit_grace = 1.0,
+        turn_duration_limit_grace = 1.0,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -666,8 +666,8 @@ impl PyAsyncMontyWebsocket {
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
         connect_headers: Option<Py<PyAny>>,
-        feed_limit_grace: Option<f64>,
-        turn_limit_grace: Option<f64>,
+        feed_duration_limit_grace: Option<f64>,
+        turn_duration_limit_grace: Option<f64>,
     ) -> PyResult<Self> {
         check_callable(py, connect_headers.as_ref())?;
         Ok(Self {
@@ -677,8 +677,8 @@ impl PyAsyncMontyWebsocket {
                 checkout_timeout,
                 request_timeout,
                 GraceArgs {
-                    feed: feed_limit_grace,
-                    turn: turn_limit_grace,
+                    feed: feed_duration_limit_grace,
+                    turn: turn_duration_limit_grace,
                 },
             )?,
             pool: Arc::new(Mutex::new(None)),
@@ -1196,8 +1196,16 @@ impl GraceArgs {
     /// valid duration.
     fn apply(self, config: &mut PoolConfig) -> PyResult<()> {
         for (secs, name, slot) in [
-            (self.feed, "feed_limit_grace", &mut config.feed_limit_grace),
-            (self.turn, "turn_limit_grace", &mut config.turn_limit_grace),
+            (
+                self.feed,
+                "feed_duration_limit_grace",
+                &mut config.feed_duration_limit_grace,
+            ),
+            (
+                self.turn,
+                "turn_duration_limit_grace",
+                &mut config.turn_duration_limit_grace,
+            ),
         ] {
             *slot = secs.map(|secs| duration_from_secs(name, secs)).transpose()?;
         }

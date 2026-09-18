@@ -86,11 +86,11 @@ pub struct PoolConfig {
     /// itself and keep the session alive; a worker that misses it is killed and
     /// the call fails with [`PoolError::Timeout`], so too short a grace costs
     /// workers that would have recovered.
-    pub feed_limit_grace: Option<Duration>,
-    /// [`feed_limit_grace`](Self::feed_limit_grace) for the
+    pub feed_duration_limit_grace: Option<Duration>,
+    /// [`feed_duration_limit_grace`](Self::feed_duration_limit_grace) for the
     /// `ResourceLimits::max_turn_duration` backstop: each turn is bounded by
     /// that whole limit plus this, the turn clock starting at zero.
-    pub turn_limit_grace: Option<Duration>,
+    pub turn_duration_limit_grace: Option<Duration>,
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child.
     pub max_checkouts_per_worker: Option<u32>,
@@ -127,8 +127,8 @@ impl PoolConfig {
             transport,
             checkout_timeout: None,
             request_timeout: None,
-            feed_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
-            turn_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
+            feed_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
+            turn_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             max_checkouts_per_worker: None,
             #[cfg(feature = "telemetry")]
             metrics: None,

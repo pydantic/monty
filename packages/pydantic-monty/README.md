@@ -261,7 +261,7 @@ host's job. The worker reports its consumed time on every protocol turn, and
 each budget is additionally backstopped by killing the worker a grace period
 after it expires, covering hangs the in-sandbox limit cannot catch (its check
 only runs at interpreter checkpoints). The graces are the pool's
-`feed_limit_grace` and `turn_limit_grace` (1s each;
+`feed_duration_limit_grace` and `turn_duration_limit_grace` (1s each;
 `None` disables that backstop). `max_suspensions`
 limits the host round trips the pool services per checkout; exceeding it ends
 the feed with an uncatchable `RuntimeError`.

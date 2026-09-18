@@ -504,8 +504,8 @@ class Monty:
         checkout_timeout: float | None = None,
         request_timeout: float | None = None,
         max_checkouts_per_worker: int | None = None,
-        feed_limit_grace: float | None = 1.0,
-        turn_limit_grace: float | None = 1.0,
+        feed_duration_limit_grace: float | None = 1.0,
+        turn_duration_limit_grace: float | None = 1.0,
     ) -> Self:
         """
         Configure a worker pool; the workers are spawned by `with`.
@@ -525,12 +525,12 @@ class Monty:
                 with `timed_out=True`. Trusted synchronous span and log callbacks
                 delay enforcement while they run. Backstops sandbox `limits`.
             max_checkouts_per_worker: Recycle a worker after this many sessions.
-            feed_limit_grace: Seconds the parent waits past a feed's
+            feed_duration_limit_grace: Seconds the parent waits past a feed's
                 `max_feed_duration_secs` before killing the worker, giving the
                 sandbox time to raise `TimeoutError` itself and keep the
                 session — its clock restarts at the next feed. `None` disables
                 this backstop.
-            turn_limit_grace: The same, for `max_turn_duration_secs`.
+            turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
         """
 
     def __enter__(self) -> Self: ...
@@ -838,8 +838,8 @@ class AsyncMonty:
         checkout_timeout: float | None = None,
         request_timeout: float | None = None,
         max_checkouts_per_worker: int | None = None,
-        feed_limit_grace: float | None = 1.0,
-        turn_limit_grace: float | None = 1.0,
+        feed_duration_limit_grace: float | None = 1.0,
+        turn_duration_limit_grace: float | None = 1.0,
     ) -> Self:
         """
         Configure a worker pool; the workers are spawned by `async with`.
@@ -904,8 +904,8 @@ class AsyncMontyWebsocket:
         checkout_timeout: float | None = None,
         request_timeout: float | None = 10.0,
         connect_headers: Callable[[], Mapping[str, str]] | None = None,
-        feed_limit_grace: float | None = 1.0,
-        turn_limit_grace: float | None = 1.0,
+        feed_duration_limit_grace: float | None = 1.0,
+        turn_duration_limit_grace: float | None = 1.0,
     ) -> Self:
         """
         Configure a remote worker pool; connections are made by `async with` and
@@ -940,12 +940,12 @@ class AsyncMontyWebsocket:
                 `user-agent` and the `traceparent` the Logfire integration
                 adds, and a malformed name or value raises `RuntimeError` as
                 the session is entered.
-            feed_limit_grace: Seconds the parent waits past a feed's
+            feed_duration_limit_grace: Seconds the parent waits past a feed's
                 `max_feed_duration_secs` before killing the worker, giving the
                 sandbox time to raise `TimeoutError` itself and keep the
                 session — its clock restarts at the next feed. `None` disables
                 this backstop.
-            turn_limit_grace: The same, for `max_turn_duration_secs`.
+            turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
         """
 
     async def __aenter__(self) -> Self: ...

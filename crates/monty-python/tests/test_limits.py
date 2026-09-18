@@ -292,14 +292,14 @@ def test_turn_duration_limit(pool: Monty):
     ('disable_one_grace', 'limits'),
     [
         pytest.param(
-            lambda: Monty(feed_limit_grace=None),
+            lambda: Monty(feed_duration_limit_grace=None),
             ResourceLimits(max_feed_duration_secs=0.1),
-            id='feed_limit_grace',
+            id='feed_duration_limit_grace',
         ),
         pytest.param(
-            lambda: Monty(turn_limit_grace=None),
+            lambda: Monty(turn_duration_limit_grace=None),
             ResourceLimits(max_turn_duration_secs=0.1),
-            id='turn_limit_grace',
+            id='turn_duration_limit_grace',
         ),
     ],
 )
@@ -319,7 +319,7 @@ def test_backstop_grace_can_be_disabled(disable_one_grace: Callable[[], Monty], 
 
 def test_negative_grace_is_rejected():
     with pytest.raises(ValueError) as exc_info:
-        Monty(turn_limit_grace=-1.0)
+        Monty(turn_duration_limit_grace=-1.0)
     assert exc_info.value.args[0] == snapshot(
-        'invalid turn_limit_grace: cannot convert float seconds to Duration: value is negative'
+        'invalid turn_duration_limit_grace: cannot convert float seconds to Duration: value is negative'
     )

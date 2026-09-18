@@ -42,13 +42,13 @@ export interface MontyOptions {
    * check only runs at interpreter checkpoints). Surfaces as `MontyCrashedError`
    * (`timedOut: true`), losing the session. `requestTimeout` is independent.
    */
-  feedLimitGrace?: number | null
+  feedDurationLimitGrace?: number | null
   /**
-   * As `feedLimitGrace`, but for `maxTurnDurationSecs`: the host kills the
+   * As `feedDurationLimitGrace`, but for `maxTurnDurationSecs`: the host kills the
    * worker this long after the current turn's budget expires (default 1,
    * `null` disables).
    */
-  turnLimitGrace?: number | null
+  turnDurationLimitGrace?: number | null
   /** Recycle a worker (kill and replace) after serving this many sessions. */
   maxCheckoutsPerWorker?: number
 }
@@ -148,8 +148,8 @@ export class Monty {
       ...(options.checkoutTimeout !== undefined ? { checkoutTimeoutMs: options.checkoutTimeout * 1000 } : {}),
       ...(options.requestTimeout !== undefined ? { requestTimeoutMs: options.requestTimeout * 1000 } : {}),
       // `null` disables a backstop; omitted means the 1s default
-      ...graceMs('feedLimitGraceMs', options.feedLimitGrace),
-      ...graceMs('turnLimitGraceMs', options.turnLimitGrace),
+      ...graceMs('feedDurationLimitGraceMs', options.feedDurationLimitGrace),
+      ...graceMs('turnDurationLimitGraceMs', options.turnDurationLimitGrace),
       ...(options.maxCheckoutsPerWorker !== undefined ? { maxCheckoutsPerWorker: options.maxCheckoutsPerWorker } : {}),
     })
     await native.start()

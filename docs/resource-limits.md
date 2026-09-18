@@ -148,8 +148,8 @@ Host-side deadlines cover that:
 
 The grace is what the sandbox gets to raise `TimeoutError` itself and keep the session alive; missing it costs the
 session, so set it well above how long a checkpoint may be away.
-Each grace defaults to 1 second and is a pool option: `feed_limit_grace` and `turn_limit_grace`
-in Python, `feedLimitGrace` and `turnLimitGrace` in JavaScript.
+Each grace defaults to 1 second and is a pool option: `feed_duration_limit_grace` and `turn_duration_limit_grace`
+in Python, `feedDurationLimitGrace` and `turnDurationLimitGrace` in JavaScript.
 `None` (`null` in JavaScript) disables that backstop, leaving only the in-sandbox check and `request_timeout`.
 
 Set a duration limit for untrusted code that may suspend repeatedly; `request_timeout` alone does not bound the

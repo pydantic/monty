@@ -612,7 +612,7 @@ async fn malformed_os_call_is_a_protocol_error() {
 #[tokio::test]
 async fn duration_backstop_kills_an_unresponsive_worker() {
     let (listener, mut config) = ws_pool_config();
-    config.feed_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -651,7 +651,7 @@ async fn duration_backstop_kills_an_unresponsive_worker() {
 #[tokio::test]
 async fn duration_backstop_arms_on_the_raw_path() {
     let (listener, mut config) = ws_pool_config();
-    config.feed_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -697,7 +697,7 @@ async fn duration_backstop_arms_on_the_raw_path() {
 #[tokio::test]
 async fn a_raw_load_adopts_the_dumps_duration_budget() {
     let (listener, mut config) = ws_pool_config();
-    config.feed_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -822,7 +822,7 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
 #[tokio::test]
 async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let (listener, mut config) = ws_pool_config();
-    config.feed_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -974,7 +974,7 @@ async fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
 #[tokio::test]
 async fn restored_session_rearms_the_duration_backstop() {
     let (listener, mut config) = ws_pool_config();
-    config.feed_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(

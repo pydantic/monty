@@ -458,8 +458,8 @@ lifetime; bounding that is the host's job.
 Both also get an automatic backstop: the worker reports its consumed time on
 every protocol turn and the host kills it a grace period after the budget
 expires, covering cases where the in-sandbox limit cannot fire (its check only
-runs at interpreter checkpoints). The graces are `feedLimitGrace` and
-`turnLimitGrace` (default 1s each); set one to `null` to disable that
+runs at interpreter checkpoints). The graces are `feedDurationLimitGrace` and
+`turnDurationLimitGrace` (default 1s each); set one to `null` to disable that
 backstop.
 
 `maxSuspensions` limits the host round trips the pool services per checkout
@@ -534,8 +534,8 @@ const pool = await Monty.create({
   maxProcesses: 8, // cap; checkouts beyond it wait (default: CPU count)
   checkoutTimeout: 10, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline (seconds)
-  feedLimitGrace: 1, // maxFeedDurationSecs backstop grace (seconds, null disables)
-  turnLimitGrace: 1, // maxTurnDurationSecs backstop grace
+  feedDurationLimitGrace: 1, // maxFeedDurationSecs backstop grace (seconds, null disables)
+  turnDurationLimitGrace: 1, // maxTurnDurationSecs backstop grace
   maxCheckoutsPerWorker: 100, // recycle workers after this many sessions
   binaryPath: '/path/to/monty', // explicit binary (default: auto-resolved)
 })

@@ -272,8 +272,8 @@ await using pool = await Monty.create({
   maxProcesses: 8, // cap on live workers; defaults to the CPU count
   checkoutTimeout: 5, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline; kills the worker
-  feedLimitGrace: 1, // grace before the maxFeedDurationSecs backstop fires; null disables
-  turnLimitGrace: 1, // the same, for maxTurnDurationSecs
+  feedDurationLimitGrace: 1, // grace before the maxFeedDurationSecs backstop fires; null disables
+  turnDurationLimitGrace: 1, // the same, for maxTurnDurationSecs
   maxCheckoutsPerWorker: 100, // recycle a worker after N sessions
 })
 ```

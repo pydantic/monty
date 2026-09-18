@@ -2421,7 +2421,7 @@ async fn worker_environment_is_empty() {
 
 /// The per-feed budget restarts at each feed, so a session survives any number
 /// of short feeds and the worker is never killed — the sandbox raises
-/// `TimeoutError` well inside `feed_limit_grace`.
+/// `TimeoutError` well inside `feed_duration_limit_grace`.
 #[tokio::test]
 async fn max_feed_duration_bounds_each_feed_without_killing_the_worker() {
     let pool = Pool::new(config()).await.unwrap();
@@ -2536,7 +2536,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
 
     let grace = Duration::from_millis(100);
     let mut config = PoolConfig::subprocess(&fake);
-    config.feed_limit_grace = Some(grace);
+    config.feed_duration_limit_grace = Some(grace);
     // The feed backstop must be what fires, not a blanket per-turn deadline.
     config.request_timeout = None;
     let pool = Pool::new(config).await.unwrap();
@@ -2608,7 +2608,7 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
     );
 
     let mut config = PoolConfig::subprocess(&fake);
-    config.feed_limit_grace = Some(grace);
+    config.feed_duration_limit_grace = Some(grace);
     config.request_timeout = None;
     let pool = Pool::new(config).await.unwrap();
     let mut checkout = pool
@@ -2647,8 +2647,8 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
 #[tokio::test]
 async fn a_disabled_grace_leaves_the_sandbox_limit_in_charge() {
     let mut pool_config = config();
-    pool_config.feed_limit_grace = None;
-    pool_config.turn_limit_grace = None;
+    pool_config.feed_duration_limit_grace = None;
+    pool_config.turn_duration_limit_grace = None;
     let pool = Pool::new(pool_config).await.unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
