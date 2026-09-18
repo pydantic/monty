@@ -1,6 +1,6 @@
 // Node supplies suspension spans; browser transports preserve the captured context.
 
-import { trace, type Context, type Span } from '@opentelemetry/api'
+import { diag, trace, type Context, type Span } from '@opentelemetry/api'
 
 type NativePrintCallback = (stream: 'stdout' | 'stderr', text: string, parent?: string | null) => void
 
@@ -25,7 +25,8 @@ export function getCallbackContext(parent: string | undefined, captured: Context
   try {
     const span = handlers?.span(parent)
     return span === undefined ? captured : trace.setSpan(captured, span)
-  } catch {
+  } catch (error) {
+    diag.warn('Monty could not compose the snapshot trace context; using the captured context', error)
     return captured
   }
 }

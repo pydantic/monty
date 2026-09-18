@@ -1,5 +1,5 @@
-import { context } from '@opentelemetry/api'
-import { test } from 'vitest'
+import { ROOT_CONTEXT, context, createContextKey, propagation } from '@opentelemetry/api'
+import { test, vi } from 'vitest'
 import { t } from './assertions.js'
 
 import { FunctionSnapshot, FutureSnapshot, MontyComplete, MontyRuntimeError, NameLookupSnapshot } from '@pydantic/monty'
@@ -41,21 +41,52 @@ test('feedStart surfaces a name lookup', async () => {
 })
 
 test('snapshot trace contexts preserve the captured context without Monty tracing', async () => {
+  const key = createContextKey('snapshot context')
+  const [feedContext, loadContext, callerContext] = ['feed', 'load', 'caller'].map((value) =>
+    propagation.setBaggage(ROOT_CONTEXT, propagation.createBaggage({ request: { value } })).setValue(key, value),
+  )
   const session = await pool().checkout()
+  // Control the active context without a Node-only async context manager.
+  const active = vi.spyOn(context, 'active').mockReturnValue(feedContext)
   try {
-    const name = (await session.feedStart('missing')) as NameLookupSnapshot
-    t.is(name.traceContext(), context.active())
+    const pendingName = session.feedStart('missing')
+    active.mockReturnValue(callerContext)
+    const name = (await pendingName) as NameLookupSnapshot
+    t.is(name.traceContext(), feedContext)
+    t.is(name.traceContext().getValue(key), 'feed')
+    t.deepEqual(propagation.getBaggage(name.traceContext())?.getEntry('request'), { value: 'feed' })
+    t.is(context.active(), callerContext)
+    const dump = await name.dump()
     await name.resumeValue(42)
     t.throws(() => name.traceContext(), { message: 'snapshot has already been resumed' })
 
-    const call = (await session.feedStart('await callback()')) as FunctionSnapshot
-    t.is(call.traceContext(), context.active())
+    active.mockReturnValue(feedContext)
+    const pendingCall = session.feedStart('await callback()')
+    active.mockReturnValue(callerContext)
+    const call = (await pendingCall) as FunctionSnapshot
+    t.is(call.traceContext(), feedContext)
     const futures = (await call.resumeFuture()) as FutureSnapshot
     t.throws(() => call.traceContext(), { message: 'snapshot has already been resumed' })
-    t.is(futures.traceContext(), context.active())
+    t.is(futures.traceContext(), feedContext)
     await futures.resume([{ callId: call.callId, value: 42 }])
     t.throws(() => futures.traceContext(), { message: 'snapshot has already been resumed' })
+
+    const restoredSession = await pool().checkout()
+    try {
+      active.mockReturnValue(loadContext)
+      const pendingRestore = restoredSession.loadSnapshot(dump)
+      active.mockReturnValue(callerContext)
+      const restored = (await pendingRestore) as NameLookupSnapshot
+      t.is(restored.traceContext(), loadContext)
+      t.is(restored.traceContext().getValue(key), 'load')
+      t.deepEqual(propagation.getBaggage(restored.traceContext())?.getEntry('request'), { value: 'load' })
+      t.is(context.active(), callerContext)
+      await restored.resumeValue(42)
+    } finally {
+      await restoredSession.close()
+    }
   } finally {
+    active.mockRestore()
     await session.close()
   }
 })

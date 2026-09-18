@@ -11,7 +11,7 @@ function runChild(source: string): void {
       `
     import assert from 'node:assert/strict'
     import { AsyncLocalStorage } from 'node:async_hooks'
-    import { context, trace, propagation, createContextKey } from '@opentelemetry/api'
+    import { context, trace, propagation, createContextKey, diag } from '@opentelemetry/api'
     import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks'
     import { AlwaysOffSampler, BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
     import { Monty, MontyComplete, FunctionSnapshot, NameLookupSnapshot, FutureSnapshot, instrumentTelemetry, flushTelemetry } from ${JSON.stringify(new URL('../dist/node.js', import.meta.url).href)}
@@ -285,6 +285,12 @@ test.each(['disabled', 'broken-tracer', 'broken-context', 'sampled-out'])('snaps
     const mode = ${JSON.stringify(mode)}
     const offProvider = new BasicTracerProvider({ sampler: new AlwaysOffSampler() })
     const offTracer = offProvider.getTracer('not-recording')
+    const warnings = []
+    diag.setLogger({
+      warn: (...args) => warnings.push(args),
+      error() {}, info() {}, debug() {}, verbose() {},
+    })
+    const contextError = new Error('context failed')
     let callSpan
     if (mode !== 'disabled') instrumentTelemetry({ tracer: {
       startSpan(name, ...args) {
@@ -300,9 +306,12 @@ test.each(['disabled', 'broken-tracer', 'broken-context', 'sampled-out'])('snaps
       const originalSetSpan = trace.setSpan
       try {
         const paused = await session.feedStart('callback()')
-        if (mode === 'broken-context') trace.setSpan = () => { throw new Error('context failed') }
+        if (mode === 'broken-context') trace.setSpan = () => { throw contextError }
         const key = createContextKey('after feed')
         const saved = context.with(context.active().setValue(key, 'caller'), () => paused.traceContext())
+        assert.deepEqual(warnings, mode === 'broken-context' ? [[
+          'Monty could not compose the snapshot trace context; using the captured context', contextError,
+        ]] : [])
         assert.equal(saved.getValue(key), undefined)
         assert.equal(trace.getSpan(saved), mode === 'sampled-out' ? callSpan : host)
         assert.equal(trace.getSpan(context.active()), host)
@@ -316,6 +325,7 @@ test.each(['disabled', 'broken-tracer', 'broken-context', 'sampled-out'])('snaps
         assert.equal((await paused.resume(42)).output, 42)
       } finally {
         trace.setSpan = originalSetSpan
+        diag.disable()
         await session.close()
         await pool.close()
         host.end()

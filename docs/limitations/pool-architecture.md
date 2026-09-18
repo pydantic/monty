@@ -396,6 +396,8 @@ properties that real CPython does not provide, per the caveat above.
     Context is not serialized; restoring captures the restoring caller's context instead.
     Calls after resume raise, but previously returned contexts remain usable without keeping the span open.
     Without Monty tracing, including on Browser/WASM, the methods return the captured context unchanged.
+    If JavaScript context composition fails, `traceContext()` returns the captured context and reports the error
+    through OpenTelemetry's `diag.warn`; disabled tracing does not produce a warning.
 - **Coroutine calls do not always produce a future snapshot.** When a call is immediately awaited and no other
     sandbox task is runnable or external future is pending, `allow_eager_await` is true (`allowEagerAwait` in JavaScript).
     Async `resume_auto()` / `resumeAuto()` then awaits the host coroutine and returns the next call or completion
