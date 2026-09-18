@@ -1,0 +1,44 @@
+crates/monty-wasm-runtime/src/lib.rs
+  s_e62d84b7400bbb::t_47ae38b414cf37 340,344-346
+  s_e62d84b7400bbb::t_5dd17ae7f3ff11 33,357,370
+  s_e62d84b7400bbb::t_58ff109158082c 339,341-343
+crates/monty-wasm-runtime/wit/runtime.wit
+  s_e62d84b7400bbb::t_f1f53dbaa7617a 189-201,236-237,248
+crates/monty-pool/tests/pool_test.rs
+  s_e62d84b7400bbb::t_5dd17ae7f3ff11 1926
+crates/monty-runtime/tests/subprocess.rs
+  s_e62d84b7400bbb::t_5dd17ae7f3ff11 20,585-588
+crates/monty-proto/tests/roundtrip.rs
+  s_e62d84b7400bbb::t_cd621b5ec70b3e 14-15
+  s_e62d84b7400bbb::t_5dd17ae7f3ff11 588-590,601,603
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_e62d84b7400bbb::t_f1f53dbaa7617a 373,377,382,401
+  s_e62d84b7400bbb::t_58ff109158082c 384,407,413-414
+  s_e62d84b7400bbb::t_47ae38b414cf37 383,402-406,408-412
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_e62d84b7400bbb::t_f1f53dbaa7617a 469,482,488,518,520-522,524
+  s_e62d84b7400bbb::t_58ff109158082c 465-468,477,519,523,525-541
+crates/monty-proto/src/generated/monty.v1.rs
+  s_e62d84b7400bbb::t_58ff109158082c 442-445,454,496,500,502-518
+  s_e62d84b7400bbb::t_f1f53dbaa7617a 446,459,465,495,497-499,501
+crates/monty-proto/src/convert/auto_os_calls.rs
+  s_e62d84b7400bbb::t_47ae38b414cf37 36-38,87,89-91
+  s_e62d84b7400bbb::t_1102906fde5621 10,40-41,45,88,92-95,108,114
+  s_e62d84b7400bbb::t_58ff109158082c 19,39,58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e4736704fe0fc702ccee701d7dd7f2b973848ced",
+  "prompts": {},
+  "sessions": {
+    "s_e62d84b7400bbb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a31e62c3-967d-4409-83d0-9596867791f8",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
