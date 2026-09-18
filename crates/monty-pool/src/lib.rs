@@ -106,7 +106,7 @@ pub struct PoolConfig {
 impl PoolConfig {
     /// Creates a subprocess-transport config with defaults: `min_processes = 1`,
     /// `max_processes =` available parallelism, no timeouts, a 1s grace on
-    /// each of the three duration backstops, no recycling.
+    /// each of the two duration backstops, no recycling.
     pub fn subprocess(binary_path: impl Into<PathBuf>) -> Self {
         Self::with_transport(MontyTransport::Subprocess(binary_path.into()))
     }
@@ -150,7 +150,7 @@ pub enum PoolError {
         cause: CrashCause,
     },
     /// The worker was killed after its turn outlived `request_timeout` (or
-    /// one of the session/feed/turn duration backstop deadlines).
+    /// one of the feed/turn duration backstop deadlines).
     Timeout {
         /// The configured timeout that expired.
         timeout: Duration,

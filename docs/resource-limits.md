@@ -132,7 +132,10 @@ Neither bounds how long a host callback itself may take: the clock is paused for
 to bound its own waiting wants `request_timeout`.
 
 Exceeding either raises `TimeoutError` in the sandbox.
-The session survives the trip, because the next feed resets both clocks.
+The next feed resets both clocks, so the worker keeps serving the session — but a time limit stops the sandbox
+mid-operation, leaving no guarantees about its heap.
+Discard the session rather than feeding it again; see
+[after a terminal resource error](limitations/resource_limits.md#after-a-terminal-resource-error).
 
 ### Host-side backstops
 

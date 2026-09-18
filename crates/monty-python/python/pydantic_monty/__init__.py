@@ -130,8 +130,10 @@ class ResourceLimits(TypedDict, total=False):
     Both duration limits share one clock, which runs only while sandboxed
     code executes, never while suspended waiting on the host; they differ in
     when it restarts: at each feed, at each host round trip. Exceeding either
-    raises `TimeoutError` in the sandbox, and the session stays usable
-    afterwards, since the next feed resets both clocks.
+    raises `TimeoutError` in the sandbox. The next feed resets both clocks, so
+    the worker keeps serving the session, but a time limit stops the sandbox
+    mid-operation and leaves no guarantees about its heap: discard the session
+    rather than feeding it again.
     """
 
     max_feed_duration_secs: float | None
