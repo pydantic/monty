@@ -12,8 +12,10 @@ use num_bigint::BigInt;
 /// for the life of the session. Each field either names an in-sandbox answer
 /// or `CallHost`, which suspends the call to the host as any other OS call
 /// (under standard execution, where there is no host, such a call raises
-/// `NotImplementedError`).
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+/// `NotImplementedError`). The default answers everything in the sandbox:
+/// the system clock, sleeps of at most ten seconds each, and `random` seeded
+/// from OS entropy.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct AutoOsCalls {
     /// What `date.today()`, `datetime.now()` and `time.time()` read.
     pub datetime: DateTimeSource,
@@ -21,18 +23,6 @@ pub struct AutoOsCalls {
     pub sleep: SleepMode,
     /// Where an unseeded `random` generator gets its first state.
     pub random_start: RandomStart,
-}
-
-impl Default for AutoOsCalls {
-    /// The system clock, sleeps performed in the sandbox for at most ten
-    /// seconds each, and `random` seeded from OS entropy.
-    fn default() -> Self {
-        Self {
-            datetime: DateTimeSource::System,
-            sleep: SleepMode::default(),
-            random_start: RandomStart::Random,
-        }
-    }
 }
 
 /// Where the clock calls read the time.
