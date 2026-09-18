@@ -1,6 +1,10 @@
 //! Resource limits: the [`ResourceTracker`] used by the interpreter heap/VM
 //! and its [`ResourceLimits`] configuration.
 
+#[cfg(target_arch = "wasm32")]
+use std::hint;
+#[cfg(not(target_arch = "wasm32"))]
+use std::thread;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
 use std::{
@@ -674,6 +678,23 @@ impl ResourceTracker {
         self.turn_execution_time.set(Duration::ZERO);
     }
 
+    /// Blocks for `duration` with the execution clock stopped: a sleep the
+    /// sandbox serves itself (`time.sleep`, a sandbox `asyncio.sleep` timer)
+    /// counts against neither `max_duration` nor the host's suspension budget,
+    /// exactly as a host-performed one would not. The clock restarts only if
+    /// it was running, so this is safe outside an execution window too.
+    ///
+    /// The one place the interpreter waits, so a platform without a blocking
+    /// sleep has a single function to adapt (see [`block_for`]).
+    pub fn sandbox_sleep(&self, duration: Duration) {
+        let was_running = self.running_since.get().is_some();
+        self.on_execution_stop();
+        block_for(duration);
+        if was_running {
+            self.on_execution_start();
+        }
+    }
+
     /// Lowers the live recursion ceiling to `new_limit`, refusing to raise it.
     ///
     /// Exposed under the `test-hooks` feature so `sys.setrecursionlimit` can
@@ -708,4 +729,24 @@ fn probe_memory() -> usize {
     LIVE_MEMORY
         .load(Ordering::Relaxed)
         .saturating_sub(BASELINE_MEMORY.load(Ordering::Relaxed))
+}
+
+/// Blocks the calling thread for `duration`.
+#[cfg(not(target_arch = "wasm32"))]
+fn block_for(duration: Duration) {
+    thread::sleep(duration);
+}
+
+/// Blocks for `duration` on wasm, where `std::thread::sleep` needs
+/// `wasi:io/poll` and a browser host can only serve that asynchronously — a
+/// synchronous component call cannot wait on it. The monotonic clock is
+/// served synchronously everywhere, so the wait spins on it instead; the
+/// worker is idle during a sleep anyway, and the cap on each sleep bounds the
+/// spin.
+#[cfg(target_arch = "wasm32")]
+fn block_for(duration: Duration) {
+    let started = Instant::now();
+    while started.elapsed() < duration {
+        hint::spin_loop();
+    }
 }

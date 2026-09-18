@@ -4,8 +4,8 @@
 pub const MONTY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod args;
+mod auto_os_calls;
 mod builtins;
-mod clock;
 mod exceptions;
 mod file_mode;
 pub mod format;
@@ -21,8 +21,8 @@ mod uuid;
 mod virtual_path;
 
 pub use crate::{
+    auto_os_calls::{AutoOsCalls, DateTimeReading, DateTimeSource, RandomSeed, RandomStart, SleepMode},
     builtins::BuiltinsFunctions,
-    clock::HostClock,
     exceptions::{
         CodeLoc, ExcData, ExcType, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject,
         unicode_decode_error_msg,
