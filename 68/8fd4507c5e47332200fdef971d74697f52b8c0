@@ -1,0 +1,43 @@
+crates/monty-proto/src/convert/auto_os_calls.rs
+  ai_agent 1-146
+crates/monty-proto/src/generated/monty.v1.rs
+  s_e62d84b7400bbb::t_411e7a81d8e27f 438-518,618,672-678,1211-1240
+crates/monty-wasm-runtime/wit/runtime.wit
+  s_e62d84b7400bbb::t_411e7a81d8e27f 181-237,263-264
+crates/monty-proto/src/worker.rs
+  s_e62d84b7400bbb::t_411e7a81d8e27f 28-30,212-214,225,445-450,490-491,507-509,796-798,891
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_e62d84b7400bbb::t_411e7a81d8e27f 461-541,641,695-701,1265-1294
+crates/monty-runtime/tests/subprocess.rs
+  s_e62d84b7400bbb::t_411e7a81d8e27f 19-20,28-50,117-122,124-125,545-546,548,552-646,693-695,697,699
+crates/monty-runtime/tests/mounts.rs
+  s_e62d84b7400bbb::t_411e7a81d8e27f 94-107
+crates/monty-wasm-runtime/src/lib.rs
+  s_e62d84b7400bbb::t_411e7a81d8e27f 31-33,324-360
+crates/monty-pool/tests/pool_test.rs
+  s_e62d84b7400bbb::t_411e7a81d8e27f 35-36,1895-1985
+crates/monty-proto/src/convert/mod.rs
+  s_e62d84b7400bbb::t_411e7a81d8e27f 17
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_e62d84b7400bbb::t_411e7a81d8e27f 370-428,547-552
+crates/monty-pool/src/checkout.rs
+  s_e62d84b7400bbb::t_411e7a81d8e27f 23-25,74-79,92,552
+crates/monty-proto/tests/roundtrip.rs
+  s_e62d84b7400bbb::t_411e7a81d8e27f 10-15,573-652
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "688fd4507c5e47332200fdef971d74697f52b8c0",
+  "prompts": {},
+  "sessions": {
+    "s_e62d84b7400bbb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a31e62c3-967d-4409-83d0-9596867791f8",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
