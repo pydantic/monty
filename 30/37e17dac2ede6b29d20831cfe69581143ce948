@@ -1,0 +1,31 @@
+crates/monty/tests/auto_os_calls.rs
+  s_6528ca46087267::t_b87610ab84f279 447
+packages/pydantic-monty/README.md
+  s_6528ca46087267::t_b87610ab84f279 288
+docs/limitations/asyncio.md
+  s_6528ca46087267::t_b87610ab84f279 82-83
+crates/monty-js/ts/options.ts
+  s_6528ca46087267::t_b87610ab84f279 161-163,182
+crates/monty/src/bytecode/vm/async_exec.rs
+  s_6528ca46087267::t_b87610ab84f279 937
+crates/monty-python/python/pydantic_monty/__init__.py
+  s_6528ca46087267::t_b87610ab84f279 169,222
+crates/monty-python/src/pool.rs
+  s_6528ca46087267::t_b87610ab84f279 31,1407-1408,1449,1469-1477,1482-1485
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3037e17dac2ede6b29d20831cfe69581143ce948",
+  "prompts": {},
+  "sessions": {
+    "s_6528ca46087267": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc685d68-770b-4a6b-aa02-78a5d1a6b20b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
