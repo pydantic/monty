@@ -76,7 +76,7 @@ nav:
       - open() and file objects: 'limitations/open.md'
       - Filesystem and sandbox boundary: 'limitations/filesystem.md'
       - Resource limits: 'limitations/resource_limits.md'
-      - Worker execution: 'limitations/pool-architecture.md'
+      - Host values: 'limitations/host-values.md'
   - API Docs:
       - Python:
           - Pools: 'api/python/pools.md'

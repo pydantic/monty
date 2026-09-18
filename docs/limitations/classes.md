@@ -292,8 +292,9 @@ value). Divergences from real CPython objects:
     wrapper sent (nested ones included), each `init=True` construction and each
     `convert_value` wrap adds an entry to the host-side instance store that
     `max_memory` does not count; re-sending a wrapper with the same id
-    overwrites its entry rather than adding one. See the class-instance store
-    note in [pool-architecture.md](pool-architecture.md).
+    overwrites its entry rather than adding one, with the last wrapper's policy winning.
+    Wrappers registered before a conversion failure remain retained too.
+    There is no entry cap; bound the objects exposed or recycle long-lived sessions.
 
 ## Host classes (`ClassType` wrapper)
 

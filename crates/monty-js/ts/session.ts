@@ -9,8 +9,10 @@
 // external future so other sandbox tasks keep executing, and results are
 // delivered when the worker reports everything is blocked (`resolveFutures`).
 
+import { context as ContextAPI, type Context } from '@opentelemetry/api'
+
 import type { NativeSession } from '../native-addon.js'
-import { bindPrintCallback, runWithCallbackContext } from './callbackContext.js'
+import { bindPrintCallback, getCallbackContext, runWithCallbackContext } from './callbackContext.js'
 import {
   AttrNotExposed,
   attributeErrorMessage,
@@ -832,6 +834,9 @@ class PrintTarget {
  * produces, so they all answer the same worker with the same print sink.
  */
 class SnapshotDriver {
+  /** Captured before the first feed/load await and shared by the snapshot chain, never serialized. */
+  readonly traceBaseContext = ContextAPI.active()
+
   /** Exposed so the session's first turn can stream prints through it. */
   get onPrint(): PrintCallback {
     return bindPrintCallback(this.printTarget.write.bind(this.printTarget))
@@ -962,14 +967,38 @@ class SnapshotDriver {
   }
 }
 
-/** Marks a snapshot single-use: each may be resumed at most once. */
+/** Shares tracing context access and the single-resume check across snapshot kinds. */
 class SingleUse {
   private used = false
+
+  /** Retains the suspension's telemetry parent until the snapshot is resumed. */
+  protected constructor(
+    private readonly callbackSpanKey: string | undefined,
+    private readonly traceBaseContext: Context,
+  ) {}
+
+  /**
+   * Returns the suspension's OTel context without activating it or resuming execution.
+   * Preserves context entries captured at `feedStart` / `loadSnapshot`; without Monty tracing,
+   * returns that captured context unchanged. Access after resume throws; previously returned
+   * contexts remain usable but do not keep the suspension span open.
+   */
+  traceContext(): Context {
+    this.ensureUnused()
+    return getCallbackContext(this.callbackSpanKey, this.traceBaseContext)
+  }
+
+  /** Consumes the snapshot's single resume, independently of its tracing context. */
   protected claim(): void {
+    this.ensureUnused()
+    this.used = true
+  }
+
+  /** Rejects operations on a suspension the caller has already answered. */
+  private ensureUnused(): void {
     if (this.used) {
       throw new Error('snapshot has already been resumed')
     }
-    this.used = true
   }
 }
 
@@ -999,7 +1028,7 @@ export class FunctionSnapshot extends SingleUse {
     private readonly turn: FunctionCallTurn | OsCallTurn,
     isOsFunction: boolean,
   ) {
-    super()
+    super(turn.callbackSpanKey, driver.traceBaseContext)
     this.functionName = turn.functionName
     const [args, kwargs] = restoreCallArgs(turn, driver.instances)
     this.args = args
@@ -1075,7 +1104,7 @@ export class NameLookupSnapshot extends SingleUse {
     private readonly driver: SnapshotDriver,
     private readonly turn: NameLookupTurn,
   ) {
-    super()
+    super(turn.callbackSpanKey, driver.traceBaseContext)
     this.variableName = turn.name
     this.objectId = turn.objectId ?? null
   }
@@ -1122,7 +1151,7 @@ export class FutureSnapshot extends SingleUse {
     private readonly driver: SnapshotDriver,
     private readonly turn: ResolveFuturesTurn,
   ) {
-    super()
+    super(turn.callbackSpanKey, driver.traceBaseContext)
     this.pendingCallIds = turn.pendingCallIds
   }
 

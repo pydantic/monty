@@ -87,7 +87,7 @@ def test_session_exhausted_after_resource_error_but_worker_reusable(pool: Monty)
 
     This is specific to the duration limit. A `max_memory` trip is not cumulative, so
     later feeds on the same checkout may succeed — against a heap with no guarantees.
-    See `limitations/pool-architecture.md`."""
+    See `limitations/resource_limits.md#after-a-terminal-resource-error`."""
     with pool.checkout(limits={'max_duration_secs': 0.1}) as session:
         with pytest.raises(MontyRuntimeError) as exc_info:
             session.feed_run('while True:\n    pass')

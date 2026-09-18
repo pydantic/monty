@@ -38,7 +38,9 @@ for the schema and the protocol rules documented alongside it.
   Versioned independently of the monty package: peers on different releases
   interoperate as long as their protocol versions overlap. There is no in-band
   negotiation, so a child rejecting a version reports its range in the
-  `FatalError` for the parent to downgrade to.
+  `FatalError` for the parent to downgrade to, then exits non-zero.
+  Version `0` is always rejected; `monty_version` is diagnostic metadata, not a compatibility check.
+  Snapshot compatibility is checked separately using the dump-format version.
 - `python` (cargo feature, off by default) — the `python` module: PyO3-based
   conversions between live Python objects and `MontyObject`/`MontyException`,
   used by the `pydantic-monty-client` extension module. The feature pulls in `pyo3` (but never its
@@ -62,6 +64,18 @@ A parent must treat every frame from a (possibly compromised) child as
 untrusted input: conversions from proto to Rust are fallible by design,
 decoding enforces a per-frame decode budget and validates every arena index,
 and nothing in this crate panics on malformed wire data.
+
+Frames are capped at 256 MiB, with a separate fixed 1 GiB budget for resident decoded values.
+Compact nodes can expand considerably on decode, so the wire cap alone cannot bound allocation.
+The decoder charges arena capacity, child indexes and payloads as it builds them; shared nodes are charged once.
+The frame buffer and transient decoding allocations are additional memory, and each concurrent worker has its own budget.
+See `DEFAULT_MAX_DECODE_BYTES` in `src/frame.rs` for the accounting details.
+The browser component applies the same budget and semantic checks to WIT arenas.
+
+Invalid dates, timedeltas, exception names and other semantic values are rejected during decoding.
+A parent receiving an invalid frame discards the worker with a protocol error.
+A worker receiving such a malformed request reports `RuntimeError("protocol violation: malformed request: ...")`
+and keeps the session.
 
 ## Worker state machine
 

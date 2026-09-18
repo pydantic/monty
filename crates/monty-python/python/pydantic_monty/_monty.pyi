@@ -3,6 +3,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Literal, NoReturn, final
 
+from opentelemetry.context import Context
 from typing_extensions import Self
 
 from . import (
@@ -1183,6 +1184,14 @@ class FunctionSnapshot:
     def args(self) -> tuple[Any, ...]: ...
     @property
     def kwargs(self) -> dict[str, Any]: ...
+    def trace_context(self) -> Context:
+        """Return the suspension's OTel context, without activating it or resuming.
+
+        Preserves context entries captured at `feed_start` / `load_snapshot`; without Monty tracing,
+        returns that captured context unchanged. Raises `ImportError` without `opentelemetry-api`
+        or `RuntimeError` after resume. Previously returned contexts do not keep the span open.
+        """
+
     def resume(self, result: ExternalResult) -> SyncSnapshot:
         """Resume with the call's result; resumes at most once.
 
@@ -1225,6 +1234,9 @@ class NameLookupSnapshot:
         """Session uuid of the receiver for a lazy attribute lookup; `None`
         for a plain undefined-name lookup. An omitted-`value` resume raises
         `AttributeError` (not `NameError`) for attribute lookups."""
+    def trace_context(self) -> Context:
+        """As `FunctionSnapshot.trace_context`, for this name lookup."""
+
     def resume(self, *, value: Any = ...) -> SyncSnapshot:
         """Resume by binding the name to `value` (any value, including `None`), or
         omit `value` to leave the name undefined — the sandbox then raises
@@ -1253,6 +1265,9 @@ class FutureSnapshot:
     def script_name(self) -> str: ...
     @property
     def pending_call_ids(self) -> list[int]: ...
+    def trace_context(self) -> Context:
+        """As `FunctionSnapshot.trace_context`, for this future-resolution suspension."""
+
     def resume(self, results: dict[int, ExternalSettledResult]) -> SyncSnapshot:
         """Resume with settled results for one or more pending futures (by
         `call_id`); a future cannot resolve to another `future`."""
@@ -1291,6 +1306,9 @@ class AsyncFunctionSnapshot:
     def args(self) -> tuple[Any, ...]: ...
     @property
     def kwargs(self) -> dict[str, Any]: ...
+    def trace_context(self) -> Context:
+        """As `FunctionSnapshot.trace_context`; returns a context, not an awaitable."""
+
     async def resume(self, result: ExternalResult) -> AsyncSnapshot: ...
     async def resume_not_handled(self) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
@@ -1312,6 +1330,9 @@ class AsyncNameLookupSnapshot:
     def object_id(self) -> uuid.UUID | None:
         """As `NameLookupSnapshot.object_id`: the host object a lazy attribute is read from."""
 
+    def trace_context(self) -> Context:
+        """As `FunctionSnapshot.trace_context`; returns a context, not an awaitable."""
+
     async def resume(self, *, value: Any = ...) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
         """Async sibling of `NameLookupSnapshot.resume_auto`."""
@@ -1327,6 +1348,9 @@ class AsyncFutureSnapshot:
     def script_name(self) -> str: ...
     @property
     def pending_call_ids(self) -> list[int]: ...
+    def trace_context(self) -> Context:
+        """As `FunctionSnapshot.trace_context`; returns a context, not an awaitable."""
+
     async def resume(self, results: dict[int, ExternalSettledResult]) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
         """Wait for one or more coroutine externals spawned by earlier

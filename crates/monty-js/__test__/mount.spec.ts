@@ -809,10 +809,7 @@ test('session feed with mount read', async (ctx) => {
   }
 })
 
-// The mount table is rebuilt per feed on the host side of the pool (see
-// limitations/pool-architecture.md): overlay writes live for the duration of
-// one feed and are discarded when it ends, unlike the old in-process API
-// where overlay state persisted on the MountDir object.
+// Overlay state belongs to one feed, not the MountDir object; see docs/limitations/filesystem.md#mount-modes.
 
 test('session overlay write is discarded between feeds', async (ctx) => {
   skipIfBrowser(ctx)
