@@ -239,9 +239,11 @@ impl<'h> VM<'h> {
                     // Reject reuse up-front: either the coroutine is no longer
                     // `New`, or another gather already spawned it (`spawn`
                     // returns `Ok(None)`).
-                    if coro.get(self.heap).state != CoroutineState::New
-                        || self.scheduler.spawn(self.heap, item_id, Some(gather_id)).is_none()
-                    {
+                    if coro.get(self.heap).state != CoroutineState::New {
+                        return Err(ExcType::cannot_reuse_already_awaited_coroutine());
+                    }
+                    self.check_generator_async_suspend()?;
+                    if self.scheduler.spawn(self.heap, item_id, Some(gather_id)).is_none() {
                         return Err(ExcType::cannot_reuse_already_awaited_coroutine());
                     }
                     Poll::Pending
@@ -362,10 +364,23 @@ impl<'h> VM<'h> {
                 Err(SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited future").into())
             }
             ExternalFutureState::Pending { awaiter: None } => {
+                this.check_generator_async_suspend()?;
                 let awaiter = awaiter_guard.into_inner();
                 fut.get_mut(self.heap).state = ExternalFutureState::Pending { awaiter: Some(awaiter) };
                 Ok(Poll::Pending)
             }
+        }
+    }
+
+    /// Rejects async suspension before registering waiters or spawning tasks.
+    /// Active generator frames belong to a nested `run()` and cannot be saved as task state.
+    fn check_generator_async_suspend(&self) -> RunResult<()> {
+        if self.current_frame.generator_id.is_some()
+            || self.suspended_frames.iter().any(|frame| frame.generator_id.is_some())
+        {
+            Err(ExcType::async_futures_not_supported("generator expression").into())
+        } else {
+            Ok(())
         }
     }
 

@@ -53,6 +53,32 @@ fn comprehension_walrus_cannot_rebind_iteration_variable() {
 }
 
 #[test]
+fn comprehension_iterables_reject_walrus_expressions() {
+    insta::allow_duplicates! {
+        for iterable in [
+            "(items := [1])",
+            "(lambda: (items := [1]))()",
+            "(lambda items=(bound := [1]): items)()",
+            "[(bound := item) for item in [1]]",
+            "(f'{1:{(width := 2)}}',)",
+        ] {
+            for clauses in [format!("x in {iterable}"), format!("_ in [0] for x in {iterable}")] {
+                for code in [
+                    format!("(x for {clauses})"),
+                    format!("[x for {clauses}]"),
+                    format!("{{x for {clauses}}}"),
+                    format!("{{x: x for {clauses}}}"),
+                ] {
+                    let err = get_parse_err(code);
+                    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+                    assert_snapshot!(err.message().unwrap(), @"assignment expression cannot be used in a comprehension iterable expression");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn simple_classes_compile_successfully() {
     // Simple classes are supported; only the advanced forms below are rejected.
     let result = MontyRun::new(

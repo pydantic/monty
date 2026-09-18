@@ -539,9 +539,7 @@ impl VM<'_> {
                 exit.drop_with(self);
                 return error;
             }
-            FrameExit::ResolveFutures(_) => ExcType::not_implemented(format!(
-                "{ctx}: resolving async futures is not yet supported in this context"
-            )),
+            FrameExit::ResolveFutures(_) => ExcType::async_futures_not_supported(ctx),
             FrameExit::NameLookup { name_id, .. } => ExcType::name_error(self.interns.get_str(*name_id)),
         };
         exit.drop_with(self);
