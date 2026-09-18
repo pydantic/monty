@@ -52,7 +52,7 @@ async fn main() -> Result<(), PoolError> {
     session.feed("x = 21", vec![], vec![], false, &mut on_print).await?;
     let event = session.feed("x * 2", vec![], vec![], false, &mut on_print).await?;
     match event {
-        TurnEvent::Complete(value) => println!("result: {value:?}"), // Int(42)
+        TurnEvent::Complete(value) => println!("result: {value}"), // 42
         // other events are suspensions (external function calls, OS calls,
         // name lookups, futures) answered with `resume` / `resume_name_lookup`
         // / `resume_futures` to continue the turn
@@ -72,6 +72,9 @@ restores line buffering, one event per completed line); `Checkout::feed` accepts
 per-feed filesystem mounts (`MountSpec`) and, through `Checkout::feed_with_cwd`, a switch of the
 sandbox's working directory (the first feed's first mount by default; it then persists across feeds). Sessions can be snapshotted with `Checkout::dump`
 and restored later — including on a different worker or machine — with `Checkout::restore`.
+The caller must establish that restored bytes are unmodified output from a trusted, compatible Monty producer.
+Neither the pool nor the interpreter authenticates snapshots; successful loading does not establish validity.
+Invalid snapshots have no correctness or availability guarantees.
 
 ## Protections over in-process execution
 
@@ -81,8 +84,10 @@ and restored later — including on a different worker or machine — with `Chec
 - **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds
   `request_timeout` (`PoolError::Timeout`), backstopping the sandbox's own resource limits
   and catching hangs those limits cannot see. Synchronous host telemetry processors delay
-  enforcement while they run because the timer cannot be polled. When a session has a `max_duration` budget,
-  the deadline also enforces it (plus `duration_limit_grace`) from outside the child.
+  enforcement while they run because the timer cannot be polled. When a session has a
+  `max_feed_duration` or `max_turn_duration` budget, the deadline also enforces it from outside the child,
+  each with its own grace (`feed_duration_limit_grace`, `turn_duration_limit_grace`, 1s by default;
+  `None` disables that backstop).
   A `max_suspensions` budget is enforced by the pool alone: it counts the suspensions it services
   and ends the feed past the budget with an uncatchable `RuntimeError` in the sandbox.
   `PoolConfig::subprocess` sets neither `request_timeout` nor `checkout_timeout` by
@@ -97,12 +102,23 @@ and restored later — including on a different worker or machine — with `Chec
   ([`monty-alloc`](https://crates.io/crates/monty-alloc)) plus 4 MB of headroom (32 MB with
   type checking), rather than letting a worker grow the host until the OOM killer
   intervenes. Exceeding it, or a refused allocation, exits the worker with a dedicated code
-  so it is reported as `PoolError::Runtime`/`MemoryError` instead of an unclassifiable
-  abort — the one `Runtime` error whose worker does not survive.
+  so it is reported as `PoolError::Runtime`/`MemoryError` instead of an unclassifiable abort.
+  The worker is already dead when the host receives this error.
 
-Runtime errors inside the sandbox (`PoolError::Runtime`) are not crashes: the worker and its
-session remain alive and usable — the one exception being the `MemoryError` above, raised for
-a worker that has already exited.
+Ordinary sandbox exceptions leave the session usable.
+After a soft memory or time limit, the worker survives but the heap has no correctness guarantees.
+Later feeds may still succeed: the duration budgets restart at the next feed, and a soft memory limit does not end
+the session either.
+Discard it yourself.
+A failed restore also discards the worker.
+
+Timeouts kill the single worker PID, not a process group; the Monty sandbox must never spawn subprocesses.
+A remote CPython worker needs deployment-level process teardown instead.
+The duration backstop trusts the worker's reported execution time: under-reporting can stretch each turn to the
+full budget plus grace, but `request_timeout` applies independently.
+Both deadlines are polled, so decoding a large reply can delay enforcement.
+Host mount I/O runs between turns and is not covered by either deadline; see
+[filesystem timeouts](https://github.com/pydantic/monty/blob/main/docs/filesystem.md#io-timeouts-and-cancellation).
 
 ## Observability
 
@@ -180,6 +196,13 @@ input so adapters that do not support metrics continue to work.
   `User-Agent: monty-pool/<version>`, and with the `telemetry` feature the `traceparent`
   (and `tracestate`) of `CheckoutOptions::telemetry`, so server-side spans join the
   caller's trace; a `connect_headers` entry of the same name replaces either.
+
+A WebSocket connection lost mid-session reports `PoolError::Disconnected`; it cannot distinguish a worker crash
+from a server policy drop.
+A draining server can instead return `PoolError::Shutdown` with an optional session dump.
+The interrupted request did not run, but restoring a suspended dump repeats its host call, which may already have
+had side effects; callbacks used this way should be idempotent.
+A local subprocess claiming shutdown is a protocol violation.
 
 ## Monty crates
 

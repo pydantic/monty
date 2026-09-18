@@ -15,10 +15,14 @@ use std::{
 };
 
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
-use monty_proto::{FrameError, PROTOCOL_VERSION, exceeds_max_value_depth, pb, validate_requirement};
+use monty_proto::{
+    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, named_values_to_proto,
+    os_call_from_proto, pb, validate_requirement,
+};
 use monty_types::{
-    AssertMessageAnnotations, DEFAULT_MAX_SUSPENSIONS, ExcType, MONTY_VERSION, MontyException, MontyObject, MontyUuid,
-    NameLookupResult, OsFunctionCall, PrintStream, ResourceLimits, TypeCheckingConfig, validate_cwd,
+    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION,
+    MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, PrintStream, ResourceLimits,
+    TypeCheckingConfig, validate_cwd,
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
@@ -27,7 +31,7 @@ use tokio::{task::spawn_blocking, time::timeout};
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::outcome};
 use crate::{
-    CrashCause, PoolError,
+    CrashCause, PoolConfig, PoolError,
     pool::{CapacityGuard, PoolInner},
     worker::Worker,
 };
@@ -224,8 +228,8 @@ pub enum TurnEvent {
     /// spelled `__call__`); the receiver is NOT included in `args`.
     FunctionCall {
         function_name: String,
-        args: Vec<MontyObject>,
-        kwargs: Vec<(MontyObject, MontyObject)>,
+        /// One arena holding every positional and keyword argument.
+        args: CallArgs,
         call_id: u32,
         object_id: Option<MontyUuid>,
         /// Coroutine results may be awaited and returned via [`Checkout::resume_futures`].
@@ -239,9 +243,13 @@ pub enum TurnEvent {
     /// no-handler default.
     OsCall {
         function_name: String,
-        args: Vec<MontyObject>,
-        kwargs: Vec<(MontyObject, MontyObject)>,
+        /// One arena holding every positional and keyword argument.
+        args: CallArgs,
         call_id: u32,
+        /// As on [`FunctionCall`](Self::FunctionCall): the caller may await
+        /// the wait and answer with [`Checkout::resume_futures`]. Only set on
+        /// a call `OsFunctionCall::accepts_future` allows a future for.
+        allow_eager_await: bool,
     },
     /// The sandbox read an undefined name, or — when `object_id` is set — a
     /// lazy attribute on the host-backed object with that uuid (a class
@@ -389,11 +397,17 @@ pub struct Checkout {
 /// never loosens what this checkout was configured with.
 #[derive(Clone, Copy)]
 struct SessionBudget {
-    /// The session's `max_duration`, when configured.
-    duration_budget: Option<Duration>,
-    /// Monotonic worker-reported sandbox time, preventing a compromised worker
-    /// from rewinding the parent's view.
-    reported_execution: Duration,
+    /// The session's `max_feed_duration`, when configured.
+    feed_budget: Option<Duration>,
+    /// The session's `max_turn_duration`, when configured.
+    turn_budget: Option<Duration>,
+    /// Worker-reported sandbox time consumed by the feed in progress, and
+    /// monotonic, so a compromised worker cannot rewind the parent's view of
+    /// how much of the feed budget is spent. The legitimate drop to zero is
+    /// [`begin_feed`](Self::begin_feed), driven by the `Feed` request going
+    /// out, so a worker reporting less than it did mid-feed cannot loosen its
+    /// own feed backstop.
+    reported_feed_execution: Duration,
     /// The session's `max_suspensions` in force (the configured one, else
     /// [`DEFAULT_MAX_SUSPENSIONS`]).
     suspension_limit: u64,
@@ -406,8 +420,9 @@ impl SessionBudget {
     fn from_config(repl: &ReplConfig) -> Self {
         let limits = repl.limits.as_ref();
         Self {
-            duration_budget: limits.and_then(|limits| limits.max_duration),
-            reported_execution: Duration::ZERO,
+            feed_budget: limits.and_then(|limits| limits.max_feed_duration),
+            turn_budget: limits.and_then(|limits| limits.max_turn_duration),
+            reported_feed_execution: Duration::ZERO,
             suspension_limit: limits.map_or(DEFAULT_MAX_SUSPENSIONS as u64, |limits| limits.max_suspensions as u64),
             suspensions_seen: 0,
         }
@@ -417,8 +432,9 @@ impl SessionBudget {
     /// suspension limit stays: it is the ceiling on the dump's.
     fn forget(&mut self) {
         *self = Self {
-            duration_budget: None,
-            reported_execution: Duration::ZERO,
+            feed_budget: None,
+            turn_budget: None,
+            reported_feed_execution: Duration::ZERO,
             suspension_limit: self.suspension_limit,
             suspensions_seen: 0,
         };
@@ -431,11 +447,14 @@ impl SessionBudget {
     /// ordinary reply echoes it; a `Load` reply carries the dump's). Suspension
     /// events increment the parent-owned count.
     fn update_from(&mut self, event: &pb::ChildEvent) {
-        self.reported_execution = self
-            .reported_execution
-            .max(Duration::from_micros(event.total_execution_micros));
-        if self.duration_budget.is_none() {
-            self.duration_budget = event.max_duration_micros.map(Duration::from_micros);
+        self.reported_feed_execution = self
+            .reported_feed_execution
+            .max(Duration::from_micros(event.feed_execution_micros));
+        if self.feed_budget.is_none() {
+            self.feed_budget = event.max_feed_duration_micros.map(Duration::from_micros);
+        }
+        if self.turn_budget.is_none() {
+            self.turn_budget = event.max_turn_duration_micros.map(Duration::from_micros);
         }
         if let Some(reported) = event.max_suspensions {
             self.suspension_limit = self.suspension_limit.min(reported);
@@ -445,22 +464,61 @@ impl SessionBudget {
         }
     }
 
+    /// Clears the feed clock as a feed request goes out; see
+    /// [`reported_feed_execution`](Self::reported_feed_execution).
+    fn begin_feed(&mut self) {
+        self.reported_feed_execution = Duration::ZERO;
+    }
+
     /// Reports when this event exceeds the suspension limit.
     fn over_suspension_limit(&self, event: &pb::ChildEvent) -> Option<u64> {
         (is_suspension(event) && self.suspensions_seen > self.suspension_limit).then_some(self.suspension_limit)
     }
 
-    /// Returns the remaining `max_duration` plus grace.
+    /// Returns the tighter of the two duration backstops: what each configured
+    /// budget has left, plus that budget's grace. The turn budget has all of
+    /// its limit left, since the child resets that clock on the request being
+    /// sent.
     ///
-    /// The child normally raises `TimeoutError`; this catches one that stops
-    /// checking its clock.
-    fn backstop_deadline(&self, grace: Option<Duration>) -> Option<Duration> {
-        Some(
-            self.duration_budget?
-                .saturating_sub(self.reported_execution)
-                .saturating_add(grace?),
-        )
+    /// The child normally raises `TimeoutError` inside the grace; this catches
+    /// one that stops checking its clock. A `None` grace means no backstop —
+    /// the host would rather wait than lose the worker.
+    fn backstop_deadline(&self, graces: DurationGraces) -> Option<Duration> {
+        [
+            remaining_deadline(self.feed_budget, self.reported_feed_execution, graces.feed),
+            remaining_deadline(self.turn_budget, Duration::ZERO, graces.turn),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
+}
+
+/// The grace period configured for each of the two duration backstops.
+///
+/// Bundled so [`SessionBudget::backstop_deadline`] takes one argument rather
+/// than two same-typed `Option<Duration>`s in an order nothing enforces.
+#[derive(Clone, Copy)]
+struct DurationGraces {
+    feed: Option<Duration>,
+    turn: Option<Duration>,
+}
+
+impl DurationGraces {
+    /// Reads both graces off a pool config.
+    fn from_config(config: &PoolConfig) -> Self {
+        Self {
+            feed: config.feed_duration_limit_grace,
+            turn: config.turn_duration_limit_grace,
+        }
+    }
+}
+
+/// One budget's backstop deadline: what it has left, plus its grace. `None`
+/// when the budget or its grace is unset — either way there is nothing to
+/// backstop.
+fn remaining_deadline(budget: Option<Duration>, consumed: Duration, grace: Option<Duration>) -> Option<Duration> {
+    Some(budget?.saturating_sub(consumed).saturating_add(grace?))
 }
 
 /// Recognizes turn-ending events that await a host answer.
@@ -583,6 +641,11 @@ impl Checkout {
     /// Returns the re-announced suspension (`Some` — a suspended dump) or `None`
     /// (an idle dump), paired with the worker's adopted script name (the dump's,
     /// not the `Configure` one), which the parent surfaces in restored snapshots.
+    ///
+    /// # Snapshot trust
+    /// The caller must verify the dump's provenance and integrity before restoring it.
+    /// Invalid snapshots have no correctness or availability guarantees.
+    /// Successful loading is not authentication or validation.
     pub async fn restore(
         &mut self,
         state: Vec<u8>,
@@ -598,7 +661,7 @@ impl Checkout {
         self.begin_load();
         self.restored_script_name = None;
         self.feed_mounts = feed_mounts;
-        let request = request(pb::parent_request::Kind::Load(pb::Load { state }));
+        let request = request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
         let outcome = self
             .request_turn(&request, self.pool.config.request_timeout, on_print)
             .await;
@@ -631,7 +694,7 @@ impl Checkout {
     pub async fn feed(
         &mut self,
         code: impl Into<String>,
-        inputs: Vec<(String, MontyObject)>,
+        inputs: impl Into<NamedValues>,
         mounts: Vec<MountSpec>,
         skip_type_check: bool,
         on_print: OnPrint<'_>,
@@ -652,7 +715,7 @@ impl Checkout {
     pub async fn feed_with_cwd(
         &mut self,
         code: impl Into<String>,
-        inputs: Vec<(String, MontyObject)>,
+        inputs: impl Into<NamedValues>,
         mounts: Vec<MountSpec>,
         cwd: Option<&str>,
         skip_type_check: bool,
@@ -664,7 +727,6 @@ impl Checkout {
                 "feed called while a suspension is awaiting an answer".into(),
             ));
         }
-        ensure_sendable(inputs.iter().map(|(_, value)| value))?;
         let cwd = match cwd {
             Some(cwd) => checked_cwd(cwd)?,
             // An empty wire cwd keeps the worker's current directory.
@@ -674,15 +736,14 @@ impl Checkout {
                 .map_or_else(|| "/".to_owned(), |mount| mount.virtual_path().to_owned()),
         };
         self.feed_mounts = Self::build_feed_mounts(mounts);
+        let (inputs, values) = named_values_to_proto(inputs.into());
+        // The child resets its feed clock on this request, so the last feed's
+        // reported total must not shorten this feed's backstop.
+        self.budget.begin_feed();
         let request = request(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.into(),
-            inputs: inputs
-                .into_iter()
-                .map(|(name, value)| pb::NamedValue {
-                    name,
-                    value: Some(value.into()),
-                })
-                .collect(),
+            inputs,
+            values: Some(values),
             skip_type_check,
             cwd,
         }));
@@ -715,19 +776,22 @@ impl Checkout {
                 "NotHandled is only valid answering an OS call".into(),
             ));
         }
-        if let ResumeValue::Return(obj) = &value {
-            ensure_sendable([obj])?;
-        }
-        let result = match value {
-            ResumeValue::Return(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
-            ResumeValue::Error(exc) => pb::ext_function_result::Kind::Error((&exc).into()),
-            ResumeValue::Future => pb::ext_function_result::Kind::Future(call_id),
-            ResumeValue::NotFound => pb::ext_function_result::Kind::NotFound(function_name),
-            ResumeValue::NotHandled => pb::ext_function_result::Kind::NotHandled(pb::Unit {}),
+        let (result, values) = match value {
+            ResumeValue::Return(value) => ext_result_to_proto(ExtFunctionResult::Return(value)),
+            ResumeValue::Error(exc) => ext_result_to_proto(ExtFunctionResult::Error(exc)),
+            ResumeValue::Future => ext_result_to_proto(ExtFunctionResult::Future(call_id)),
+            ResumeValue::NotFound => ext_result_to_proto(ExtFunctionResult::NotFound(function_name)),
+            ResumeValue::NotHandled => (
+                pb::ExtFunctionResult {
+                    kind: Some(pb::ext_function_result::Kind::NotHandled(pb::Unit {})),
+                },
+                None,
+            ),
         };
         let request = request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id,
-            result: Some(pb::ExtFunctionResult { kind: Some(result) }),
+            result: Some(result),
+            values,
         }));
         // `pending` is deliberately NOT cleared here: an oversize answer is
         // rejected by `Worker::send` before any bytes reach the child, and
@@ -833,17 +897,7 @@ impl Checkout {
         if !matches!(self.pending, Some(Pending::NameLookup)) {
             return Err(PoolError::Protocol("no suspended name lookup to resume".into()));
         }
-        let kind = match result.into() {
-            NameLookupResult::Value(obj) => {
-                ensure_sendable([&obj])?;
-                pb::resume_name_lookup::Kind::Value(obj.into())
-            }
-            NameLookupResult::Undefined => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
-            NameLookupResult::Error(exc) => pb::resume_name_lookup::Kind::Error((&exc).into()),
-        };
-        let request = request(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
-            kind: Some(kind),
-        }));
+        let request = request(pb::parent_request::Kind::ResumeNameLookup(result.into().into()));
         // `pending` left set — see the comment in [`Self::resume`]
         self.expect_turn(&request, on_print).await
     }
@@ -876,25 +930,21 @@ impl Checkout {
         let results = results
             .into_iter()
             .map(|(call_id, value)| {
-                if let ResumeValue::Return(obj) = &value {
-                    ensure_sendable([obj])?;
-                }
-                let kind = match value {
-                    ResumeValue::Return(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
-                    ResumeValue::Error(exc) => pb::ext_function_result::Kind::Error((&exc).into()),
+                let result = match value {
+                    ResumeValue::Return(value) => ExtFunctionResult::Return(value),
+                    ResumeValue::Error(exc) => ExtFunctionResult::Error(exc),
                     ResumeValue::Future | ResumeValue::NotFound | ResumeValue::NotHandled => {
                         return Err(PoolError::Protocol(
                             format!("future {call_id} must resolve to Return or Error").into(),
                         ));
                     }
                 };
-                Ok(pb::FutureResult {
-                    call_id,
-                    result: Some(pb::ExtFunctionResult { kind: Some(kind) }),
-                })
+                Ok((call_id, result))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let request = request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results }));
+        let request = request(pb::parent_request::Kind::ResumeFutures(future_results_to_proto(
+            results,
+        )));
         // `pending` left set — see the comment in [`Self::resume`]
         self.expect_turn(&request, on_print).await
     }
@@ -929,7 +979,7 @@ impl Checkout {
             validate_requirement(requirement).map_err(invalid_requirement)?;
         }
         let request = request(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
-            requirements,
+            requirements: requirements.into(),
         }));
         let mut no_print = on_print_sync(|_, _| {});
         let deadline = self.pool.config.request_timeout;
@@ -1032,9 +1082,10 @@ impl Checkout {
         }
     }
 
-    /// The `max_duration` backstop deadline; see [`SessionBudget::backstop_deadline`].
+    /// The duration backstop deadline; see [`SessionBudget::backstop_deadline`].
     fn backstop_deadline(&self) -> Option<Duration> {
-        self.budget.backstop_deadline(self.pool.config.duration_limit_grace)
+        self.budget
+            .backstop_deadline(DurationGraces::from_config(&self.pool.config))
     }
 
     /// Snapshots the budget and forgets it ahead of a `Load`, so the reply can
@@ -1064,7 +1115,7 @@ impl Checkout {
     /// with another suspension would otherwise be aborted again forever, and
     /// a suspension whose payload the typed path would reject is a protocol
     /// violation, not a feed to abort.
-    async fn abort_if_over_budget(&mut self, event: &pb::ChildEvent) -> Result<bool, PoolError> {
+    async fn abort_if_over_budget(&mut self, event: &mut pb::ChildEvent) -> Result<bool, PoolError> {
         let is_print = matches!(event.kind, Some(pb::child_event::Kind::Print(_)));
         if !is_print && mem::take(&mut self.abort_in_flight) && !is_abort_reply(event) {
             return Err(self.protocol_violation("worker answered AbortFeed with something other than an Error"));
@@ -1079,15 +1130,12 @@ impl Checkout {
         let Some(limit) = self.budget.over_suspension_limit(event) else {
             return Ok(false);
         };
-        if let Some(pb::child_event::Kind::OsCall(call)) = &event.kind {
-            match &call.call {
-                None => return Err(self.protocol_violation("OsCall event with no call")),
-                Some(kind) => {
-                    if let Err(err) = OsFunctionCall::try_from(kind.clone()) {
-                        return Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
-                    }
-                }
-            }
+        // an aborted event is dropped by the caller, so validation consumes the
+        // call rather than cloning a worker-sized arena
+        if let Some(pb::child_event::Kind::OsCall(call)) = &mut event.kind
+            && let Err(err) = os_call_from_proto(mem::take(call))
+        {
+            return Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
         }
         let abort = request(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
             exception: Some((&suspension_limit_exceeded(limit)).into()),
@@ -1159,7 +1207,7 @@ impl Checkout {
     ///
     /// # Errors
     /// As [`Checkout::feed`]: a dead worker, a protocol violation, or a turn
-    /// that outlived `request_timeout` or the remaining `max_duration` budget.
+    /// that outlived `request_timeout` or the remaining feed/turn budget.
     pub async fn turn_raw(
         &mut self,
         request: &pb::ParentRequest,
@@ -1187,9 +1235,15 @@ impl Checkout {
         if is_load {
             self.begin_load();
         }
+        // A raw `Feed` restarts the child's feed clock exactly as `feed` does,
+        // so the parent's must follow it rather than carry the last feed's
+        // total into this feed's backstop.
+        if matches!(request.kind, Some(pb::parent_request::Kind::Feed(_))) {
+            self.budget.begin_feed();
+        }
         self.turn_in_flight = true;
-        // as `expect_turn`: `request_timeout` alone would drop the `max_duration`
-        // backstop, leaving a wedged child bounded by a timeout that may be unset
+        // as `expect_turn`: `request_timeout` alone would drop the duration
+        // backstops, leaving a wedged child bounded by a timeout that may be unset
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
         self.armed_deadline = deadline;
         let outcome = match deadline {
@@ -1218,14 +1272,14 @@ impl Checkout {
     ) -> Result<pb::ChildEvent, PoolError> {
         self.send_request(request).await?;
         loop {
-            let event = match self.worker.as_mut().expect("checked by send_request").recv().await {
+            let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
                 Ok(event) => event,
                 Err(FrameError::Decode(err)) => {
                     return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
-            if self.abort_if_over_budget(&event).await? {
+            if self.abort_if_over_budget(&mut event).await? {
                 continue;
             }
             // strict alternation: zero or more `Print`s, then exactly one
@@ -1294,7 +1348,7 @@ impl Checkout {
     async fn turn_io(&mut self, request: &pb::ParentRequest, on_print: OnPrint<'_>) -> Result<ControlEvent, PoolError> {
         self.send_request(request).await?;
         loop {
-            let event = match self.worker.as_mut().expect("checked by send_request").recv().await {
+            let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
                 Ok(event) => event,
                 // a decode failure means the frame arrived intact but its
                 // payload was garbage (including values that fail semantic
@@ -1307,7 +1361,7 @@ impl Checkout {
             };
             // a suspension past `max_suspensions` is aborted here and never
             // reaches the caller; the abort's reply is the next event
-            if self.abort_if_over_budget(&event).await? {
+            if self.abort_if_over_budget(&mut event).await? {
                 continue;
             }
             // Only a `Load` reply carries this; it lets `restore` report the
@@ -1350,46 +1404,45 @@ impl Checkout {
                     });
                     return self.convert_turn(|| {
                         Ok(TurnEvent::FunctionCall {
-                            function_name: call.function_name,
-                            args: call.args,
-                            kwargs: call.kwargs,
+                            function_name: call.function_name.clone(),
                             call_id: call.call_id,
                             object_id: call.object_id,
                             allow_eager_await: call.allow_eager_await,
+                            args: call.into_call_args()?,
                         })
                     });
                 }
                 Some(pb::child_event::Kind::OsCall(call)) => {
-                    let call_id = call.call_id;
                     // Every announcement (fresh or re-announced after
                     // `restore`) decodes into a typed `OsFunctionCall`; a
                     // payload the child could never legitimately produce is a
                     // protocol violation.
-                    let function_call = match call.call {
-                        None => return Err(self.protocol_violation("OsCall event with no call")),
-                        Some(kind) => match OsFunctionCall::try_from(kind) {
-                            Ok(function_call) => function_call,
-                            Err(err) => {
-                                return Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
-                            }
-                        },
+                    let mut allow_eager_await = call.allow_eager_await;
+                    let (call_id, function_call) = match os_call_from_proto(call) {
+                        Ok(call) => call,
+                        Err(err) => {
+                            return Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
+                        }
                     };
                     // The caller can answer any OS call or use `resume_from_mounts`.
                     // Retain the raw typed call for mount validation; `to_args`
                     // normalizes only the clone presented to callbacks.
                     let function_name = function_call.name().to_owned();
-                    let (args, kwargs) = function_call.clone().to_args();
+                    // The child is untrusted: an eager bit on a call no future
+                    // may answer is dropped rather than exposed.
+                    allow_eager_await = allow_eager_await && OsFunctionCall::accepts_future(function_call.name());
+                    let args = function_call.clone().to_args();
                     self.pending = Some(Pending::Call {
                         call_id,
                         function_name: function_name.clone(),
                         os_call: Some(Box::new(function_call)),
-                        allow_eager_await: false,
+                        allow_eager_await,
                     });
                     return Ok(ControlEvent::Turn(TurnEvent::OsCall {
                         function_name,
                         args,
-                        kwargs,
                         call_id,
+                        allow_eager_await,
                     }));
                 }
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {
@@ -1413,7 +1466,7 @@ impl Checkout {
                 Some(pb::child_event::Kind::ResolveFutures(futures)) => {
                     self.pending = Some(Pending::Futures);
                     return Ok(ControlEvent::Turn(TurnEvent::ResolveFutures {
-                        pending_call_ids: futures.pending_call_ids,
+                        pending_call_ids: futures.pending_call_ids.into_inner(),
                     }));
                 }
                 Some(pb::child_event::Kind::Complete(complete)) => {
@@ -1421,12 +1474,7 @@ impl Checkout {
                     // the feed is over — drop its mounts so overlay writes
                     // cannot leak into the next feed
                     self.feed_mounts = None;
-                    return self.convert_turn(|| {
-                        let value = complete
-                            .value
-                            .ok_or(monty_proto::ProtoConvertError::MissingField("Complete.value"))?;
-                        Ok(TurnEvent::Complete(value.into_object()?))
-                    });
+                    return self.convert_turn(|| Ok(TurnEvent::Complete(MontyObject::try_from(complete)?)));
                 }
                 Some(pb::child_event::Kind::Error(error)) => {
                     // an error reply to `Dump` (e.g. an oversize dump) does not
@@ -1450,7 +1498,9 @@ impl Checkout {
                     return Err(PoolError::Typing(typing.diagnostics));
                 }
                 Some(pb::child_event::Kind::Ok(_)) => return Ok(ControlEvent::Ok),
-                Some(pb::child_event::Kind::DumpResult(dump)) => return Ok(ControlEvent::Dump(dump.state)),
+                Some(pb::child_event::Kind::DumpResult(dump)) => {
+                    return Ok(ControlEvent::Dump(dump.state.into_inner()));
+                }
                 Some(pb::child_event::Kind::FatalError(fatal)) => {
                     return Err(self.fatal_error(&fatal.message).await);
                 }
@@ -1471,7 +1521,9 @@ impl Checkout {
                     // host-side dump signing lands it must pass the same
                     // verification there as any other dump.
                     self.discard_worker();
-                    return Err(PoolError::Shutdown { dump: shutdown.dump });
+                    return Err(PoolError::Shutdown {
+                        dump: shutdown.dump.map(Into::into),
+                    });
                 }
                 None => {
                     return Err(self.protocol_violation("unexpected event"));
@@ -1739,20 +1791,6 @@ pub(crate) fn request(kind: pb::parent_request::Kind) -> pb::ParentRequest {
     pb::ParentRequest {
         kind: Some(kind),
         trace_parent: None,
-    }
-}
-
-/// Rejects values too deeply nested for the wire (see
-/// `monty_proto::MAX_VALUE_DEPTH`) with a session-preserving runtime error —
-/// sending them would produce a frame the worker cannot decode.
-fn ensure_sendable<'a>(values: impl IntoIterator<Item = &'a MontyObject>) -> Result<(), PoolError> {
-    if values.into_iter().any(exceeds_max_value_depth) {
-        Err(PoolError::Runtime(MontyException::new(
-            ExcType::RuntimeError,
-            Some("Max input depth exceeded".to_owned()),
-        )))
-    } else {
-        Ok(())
     }
 }
 

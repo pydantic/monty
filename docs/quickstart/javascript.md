@@ -21,7 +21,7 @@ For browsers, or anywhere subprocesses are impossible, the same package exposes 
 import { Monty } from '@pydantic/monty'
 
 await using pool = await Monty.create()
-await using session = await pool.checkout({ limits: { maxMemory: 10_000_000, maxDurationSecs: 1 } })
+await using session = await pool.checkout({ limits: { maxMemory: 10_000_000, maxFeedDurationSecs: 1 } })
 
 const result = await session.feedRun('double(x) + y', {
   inputs: { x: 5, y: 1 },
@@ -214,7 +214,7 @@ import { Monty } from '@pydantic/monty'
 
 await using pool = await Monty.create()
 await using session = await pool.checkout({
-  limits: { maxMemory: 10_000_000, maxDurationSecs: 1, maxRecursionDepth: 100 },
+  limits: { maxMemory: 10_000_000, maxFeedDurationSecs: 1, maxRecursionDepth: 100 },
   typeCheck: true,
   typeCheckStubs: 'def fetch_data() -> str: ...',
 })
@@ -222,7 +222,9 @@ await using session = await pool.checkout({
 console.log(await session.feedRun('fetch_data()', { externalLookup: { fetch_data: () => 'data' } })) // data
 ```
 
-Omitted `maxMemory` / `maxDurationSecs` means unlimited.
+Omitted `maxMemory` / `maxFeedDurationSecs` means unlimited.
+`maxFeedDurationSecs` and `maxTurnDurationSecs` bound one execution clock over one feed
+(`feedRun` or `feedStart`) and one stretch of code between host round trips; each is unlimited when omitted.
 `maxRecursionDepth` and `maxSuspensions` default to 1000 and cannot be disabled.
 `gcInterval` defaults to every 100,000 allocations.
 The pool enforces `maxSuspensions`: the first suspension over the budget ends the feed with an uncatchable
@@ -270,7 +272,8 @@ await using pool = await Monty.create({
   maxProcesses: 8, // cap on live workers; defaults to the CPU count
   checkoutTimeout: 5, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline; kills the worker
-  durationLimitGrace: 1, // grace before the maxDurationSecs backstop fires; null disables
+  feedDurationLimitGrace: 1, // grace before the maxFeedDurationSecs backstop fires; null disables
+  turnDurationLimitGrace: 1, // the same, for maxTurnDurationSecs
   maxCheckoutsPerWorker: 100, // recycle a worker after N sessions
 })
 ```
@@ -288,8 +291,36 @@ A promise-returning external is awaited directly by `resumeAuto()` when the snap
 otherwise concurrently, surfacing as an intermediate `FutureSnapshot`, exactly as under `feedRun`.
 `snapshot.dump()` serializes a paused worker and `session.loadSnapshot(blob)` restores it; `session.dump()` and
 `session.loadSession(blob)` do the same for an idle session between feeds.
+Only restore unmodified snapshots from a trusted, compatible producer; the caller must establish provenance and integrity.
+See [snapshot security](../security.md#deserializing-snapshots) before accepting bytes through an untrusted channel.
 
-See [snapshots](../snapshots.md) for the model, which is identical to Python's.
+When answering a suspension manually, use `snapshot.traceContext()` with OpenTelemetry's `context.with()`:
+
+```ts
+import { context } from '@opentelemetry/api'
+import { FunctionSnapshot, Monty, MontyComplete } from '@pydantic/monty'
+
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+const snapshot = await session.feedStart('greet(name)', { inputs: { name: 'Ada' } })
+if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
+const result = await context.with(snapshot.traceContext(), async () => `hello ${snapshot.args[0]}`)
+const done = await snapshot.resume(result)
+if (!(done instanceof MontyComplete)) throw new Error('expected completion')
+console.log(done.output) // hello Ada
+```
+
+All three snapshot types expose an OTel `Context`, preserving baggage and other entries captured at `feedStart` /
+`loadSnapshot`.
+With [Monty instrumentation](#opentelemetry-instrumentation) enabled, host tracing inside the callback belongs to the
+suspension span; without it, the method returns that captured context unchanged.
+Context is not serialized: restoring captures the restoring caller's context instead.
+Use an SDK-configured OTel context manager to propagate context across awaits.
+Calling the method does not activate the context or resume execution.
+Calling it after resume throws; contexts retrieved earlier remain usable but do not keep the suspension span open.
+`resumeAuto()` already activates the suspension span around callbacks.
+
+See [snapshots](../snapshots.md) for the full model.
 
 ## Browsers and WebAssembly
 
@@ -303,7 +334,11 @@ import { Monty } from '@pydantic/monty/wasm'
 await using pool = await Monty.create()
 ```
 
+`Monty.create()` is `createWorkerPool(await loadModule())`, and both halves are exported: `loadModule()` fetches and
+compiles the wasm modules, and `createWorkerPool(modules)` starts the workers, so an app can load the wasm ahead of time.
 A bundler resolving the `browser` condition on the main entry point gets this build automatically.
+[`examples/antigravity`](https://github.com/pydantic/monty/tree/main/examples/antigravity) is a worked browser example,
+built with Vite.
 
 Differences from the native path:
 
@@ -315,9 +350,9 @@ Differences from the native path:
     Where one does not, the same API degrades to in-process execution: no crash isolation and no preemption, so a runaway
     turn cannot be interrupted.
 - **`maxProcesses` defaults to 4**, not the CPU count.
-- **`checkoutTimeout`, `durationLimitGrace` and `binaryPath` are accepted and ignored.** A checkout on an exhausted pool
-    waits forever rather than failing, nothing backs up `maxDurationSecs` from outside the worker, and the bundled wasm
-    asset is always used.
+- **`checkoutTimeout`, the three duration graces and `binaryPath` are accepted and ignored.** A checkout on an exhausted
+    pool waits forever rather than failing, nothing backs up the duration limits from outside the worker, and the
+    bundled wasm asset is always used.
     `requestTimeout` does apply, wherever a real `Worker` exists.
 - **Prints are buffered per turn** rather than streamed live.
 

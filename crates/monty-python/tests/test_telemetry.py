@@ -5,13 +5,15 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from threading import Barrier
 from typing import Any
 
 import pytest
 from inline_snapshot import snapshot
-from opentelemetry import trace
+from opentelemetry import baggage, context, trace
 from opentelemetry._logs import SeverityNumber
+from opentelemetry.context import Context
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter, SimpleLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
@@ -21,7 +23,19 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import NonRecordingSpan, SpanContext, StatusCode, TraceFlags, use_span
 
-from pydantic_monty import AsyncMonty, Monty, MontyRuntimeError, instrument_telemetry
+from pydantic_monty import (
+    AsyncFunctionSnapshot,
+    AsyncFutureSnapshot,
+    AsyncMonty,
+    AsyncNameLookupSnapshot,
+    FunctionSnapshot,
+    FutureSnapshot,
+    Monty,
+    MontyComplete,
+    MontyRuntimeError,
+    NameLookupSnapshot,
+    instrument_telemetry,
+)
 
 
 class RecordingTracer:
@@ -164,7 +178,7 @@ def test_standard_components_receive_session_tree():
             'logfire.json_schema': '{"type":"object","properties":{"stream":{},"text":{},"length_limit_exceeded":{}}}',
             'thread.id': 1,
             'code.file.path': 'crates/monty-pool/src/telemetry/tracing.rs',
-            'code.line.number': 285,
+            'code.line.number': 289,
             'code.module.name': 'monty_pool::telemetry::tracing',
             'logfire.null_args': ('length_limit_exceeded',),
         }
@@ -348,6 +362,293 @@ async def test_deferred_coroutine_keeps_future_resolution_telemetry():
     assert log.log_record.body == 'future results'
     assert waiting.context is not None
     assert log.log_record.span_id == waiting.context.span_id
+
+
+@pytest.mark.parametrize('kind', ['function', 'os', 'name', 'future'])
+def test_snapshot_trace_context(kind: str):
+    install_telemetry()
+    tracer = _tracer_provider.get_tracer('manual-snapshot')
+    code = {
+        'function': 'callback()',
+        'os': "from pathlib import Path\nPath('/file').exists()",
+        'name': 'missing',
+        'future': 'await callback()',
+    }[kind]
+    marker = ContextVar('marker', default='caller')
+
+    with tracer.start_as_current_span('host') as host, Monty() as pool:
+        with pool.checkout() as session:
+            feed_context = context.set_value('custom_entry', 'feed value', baggage.set_baggage('request', 'feed'))
+            token = context.attach(feed_context)
+            try:
+                paused = session.feed_start(code)
+            finally:
+                context.detach(token)
+            if kind == 'future':
+                assert isinstance(paused, FunctionSnapshot)
+                paused = paused.resume({'future': ...})
+            assert not isinstance(paused, MontyComplete)
+            saved = paused.trace_context()
+            assert isinstance(saved, Context)
+            assert (trace.get_current_span() is host) == snapshot(True)
+            assert baggage.get_baggage('request', saved) == snapshot('feed')
+            assert context.get_value('custom_entry', saved) == snapshot('feed value')
+            assert baggage.get_baggage('request') == snapshot(None)
+            suspension = trace.get_current_span(saved)
+            assert (suspension is host) == snapshot(False)
+            token = context.attach(saved)
+            try:
+                assert (trace.get_current_span() is suspension) == snapshot(True)
+                assert marker.get() == snapshot('caller')
+                marker.set('handler')
+                with tracer.start_as_current_span('handler'):
+                    pass
+            finally:
+                context.detach(token)
+            assert (trace.get_current_span() is host) == snapshot(True)
+            assert marker.get() == snapshot('handler')
+            assert suspension.is_recording() == snapshot(True)
+            with pytest.raises(ValueError) as exc_info:
+                token = context.attach(saved)
+                try:
+                    raise ValueError('handler failed')
+                finally:
+                    context.detach(token)
+            assert str(exc_info.value) == snapshot('handler failed')
+            assert (trace.get_current_span() is host) == snapshot(True)
+            assert suspension.is_recording() == snapshot(True)
+            if isinstance(paused, FunctionSnapshot):
+                result = paused.resume({'return_value': 42})
+            elif isinstance(paused, NameLookupSnapshot):
+                result = paused.resume(value=42)
+            else:
+                assert isinstance(paused, FutureSnapshot)
+                result = paused.resume({paused.pending_call_ids[0]: {'return_value': 42}})
+            assert isinstance(result, MontyComplete)
+            assert result.output == snapshot(42)
+            assert suspension.is_recording() == snapshot(False)
+            with pytest.raises(RuntimeError) as exc_info:
+                paused.trace_context()
+            assert str(exc_info.value) == snapshot('snapshot has already been resumed')
+            token = context.attach(saved)
+            try:
+                assert (trace.get_current_span() is suspension) == snapshot(True)
+            finally:
+                context.detach(token)
+            assert (trace.get_current_span() is host) == snapshot(True)
+
+    spans = _span_exporter.get_finished_spans()
+    handler = next(span for span in spans if span.name == 'handler')
+    assert handler.parent is not None
+    assert (handler.parent == suspension.get_span_context()) == snapshot(True)
+    parent = next(span for span in spans if span.context == handler.parent)
+    assert (
+        parent.name
+        == {
+            'function': 'call {function_name}',
+            'os': 'os call {function}',
+            'name': 'name lookup {name}',
+            'future': 'resolve futures',
+        }[kind]
+    )
+
+
+@pytest.mark.parametrize('kind', ['function', 'name', 'future'])
+async def test_async_snapshot_trace_context(kind: str):
+    install_telemetry()
+    tracer = _tracer_provider.get_tracer('manual-snapshot')
+    code = {'function': 'callback()', 'name': 'missing', 'future': 'await callback()'}[kind]
+    ready = asyncio.Event()
+    entered_count = 0
+
+    async def handle(index: int):
+        nonlocal entered_count
+        with tracer.start_as_current_span(f'host {index}') as host:
+            async with pool.checkout() as session:
+                token = context.attach(baggage.set_baggage('request', str(index)))
+                try:
+                    started = session.feed_start(code)
+                finally:
+                    context.detach(token)
+                paused = await started
+                if kind == 'future':
+                    assert isinstance(paused, AsyncFunctionSnapshot)
+                    paused = await paused.resume({'future': ...})
+                assert not isinstance(paused, MontyComplete)
+                saved = paused.trace_context()
+                assert (baggage.get_baggage('request', saved) == str(index)) == snapshot(True)
+                assert baggage.get_baggage('request') == snapshot(None)
+                token = context.attach(saved)
+                try:
+                    suspension = trace.get_current_span()
+                    entered_count += 1
+                    if entered_count == 2:
+                        ready.set()
+                    await ready.wait()
+                    await asyncio.sleep(0)
+                    assert (trace.get_current_span() is suspension) == snapshot(True)
+                    assert (baggage.get_baggage('request') == str(index)) == snapshot(True)
+                    with tracer.start_as_current_span(f'handler {index}'):
+                        await asyncio.sleep(0)
+                finally:
+                    context.detach(token)
+                assert (trace.get_current_span() is host) == snapshot(True)
+                assert suspension.is_recording() == snapshot(True)
+                if isinstance(paused, AsyncFunctionSnapshot):
+                    result = await paused.resume({'return_value': index})
+                elif isinstance(paused, AsyncNameLookupSnapshot):
+                    result = await paused.resume(value=index)
+                else:
+                    assert isinstance(paused, AsyncFutureSnapshot)
+                    result = await paused.resume({paused.pending_call_ids[0]: {'return_value': index}})
+                assert isinstance(result, MontyComplete)
+                assert (result.output == index) == snapshot(True)
+                with pytest.raises(RuntimeError) as exc_info:
+                    paused.trace_context()
+                assert str(exc_info.value) == snapshot('snapshot has already been resumed')
+                assert (trace.get_current_span() is host) == snapshot(True)
+                return suspension.get_span_context()
+
+    async with AsyncMonty(min_processes=2, max_processes=2) as pool:
+        parents = await asyncio.gather(handle(1), handle(2))
+    spans = _span_exporter.get_finished_spans()
+    for index, parent in enumerate(parents, 1):
+        handler = next(span for span in spans if span.name == f'handler {index}')
+        assert (handler.parent == parent) == snapshot(True)
+    assert (parents[0] != parents[1]) == snapshot(True)
+
+
+def test_restored_snapshot_trace_context():
+    install_telemetry()
+    tracer = _tracer_provider.get_tracer('manual-snapshot')
+    with Monty() as pool:
+        with pool.checkout() as session:
+            token = context.attach(baggage.set_baggage('request', 'original'))
+            try:
+                paused = session.feed_start('callback()')
+            finally:
+                context.detach(token)
+            assert isinstance(paused, FunctionSnapshot)
+            original = trace.get_current_span(paused.trace_context()).get_span_context()
+            state = paused.dump()
+        with pool.checkout() as session:
+            token = context.attach(baggage.set_baggage('request', 'restored'))
+            try:
+                paused = session.load_snapshot(state)
+            finally:
+                context.detach(token)
+            assert isinstance(paused, FunctionSnapshot)
+            saved = paused.trace_context()
+            assert baggage.get_baggage('request', saved) == snapshot('restored')
+            restored = trace.get_current_span(saved).get_span_context()
+            token = context.attach(saved)
+            try:
+                with tracer.start_as_current_span('restored handler'):
+                    pass
+            finally:
+                context.detach(token)
+            result = paused.resume({'return_value': 42})
+            assert isinstance(result, MontyComplete)
+            assert result.output == snapshot(42)
+    handler = next(span for span in _span_exporter.get_finished_spans() if span.name == 'restored handler')
+    assert (handler.parent == restored) == snapshot(True)
+    assert (restored != original) == snapshot(True)
+
+
+async def test_async_restored_snapshot_trace_context():
+    install_telemetry()
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            token = context.attach(baggage.set_baggage('request', 'original'))
+            try:
+                started = session.feed_start('callback()')
+            finally:
+                context.detach(token)
+            paused = await started
+            assert isinstance(paused, AsyncFunctionSnapshot)
+            state = paused.dump()
+        async with pool.checkout() as session:
+            token = context.attach(baggage.set_baggage('request', 'restored'))
+            try:
+                loading = session.load_snapshot(state)
+            finally:
+                context.detach(token)
+            paused = await loading
+            assert isinstance(paused, AsyncFunctionSnapshot)
+            saved = paused.trace_context()
+            assert baggage.get_baggage('request', saved) == snapshot('restored')
+            assert baggage.get_baggage('request') == snapshot(None)
+            result = await paused.resume({'return_value': 42})
+            assert isinstance(result, MontyComplete)
+            assert result.output == snapshot(42)
+
+
+@pytest.mark.parametrize('mode', ['disabled', 'missing', 'sampled-out', 'broken-context'])
+def test_snapshot_trace_context_telemetry_fallback(mode: str):
+    subprocess.run(
+        [
+            sys.executable,
+            '-c',
+            """
+import sys
+
+mode = sys.argv[1]
+if mode == 'missing':
+    sys.modules['opentelemetry'] = None
+
+from pydantic_monty import FunctionSnapshot, Monty, instrument_telemetry
+
+if mode != 'missing':
+    from opentelemetry import context, trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
+    provider = TracerProvider(sampler=ALWAYS_OFF)
+    tracer = provider.get_tracer('manual-snapshot')
+    host = trace.NonRecordingSpan(trace.SpanContext(1, 2, False, trace.TraceFlags(1)))
+    token = context.attach(trace.set_span_in_context(host))
+    if mode != 'disabled':
+        instrument_telemetry(tracer=tracer)
+
+with Monty() as pool:
+    with pool.checkout() as session:
+        paused = session.feed_start('callback()')
+        assert isinstance(paused, FunctionSnapshot)
+        if mode == 'missing':
+            try:
+                paused.trace_context()
+            except ImportError as exc:
+                assert str(exc) == 'trace_context() requires opentelemetry-api; install it with pip install opentelemetry-api'
+            else:
+                raise AssertionError('expected ImportError')
+        else:
+            captured = context.get_current()
+            caller_token = context.attach(context.set_value('after feed', 'caller'))
+            original_set_span = trace.set_span_in_context
+            if mode == 'broken-context':
+                def broken_set_span(*args):
+                    raise RuntimeError('context failed')
+                trace.set_span_in_context = broken_set_span
+            saved = paused.trace_context()
+            trace.set_span_in_context = original_set_span
+            assert context.get_value('after feed', saved) is None
+            assert isinstance(saved, context.Context)
+            assert trace.get_current_span() is host
+            span = trace.get_current_span(saved)
+            if mode == 'sampled-out':
+                assert span is not host
+                assert not span.is_recording()
+            else:
+                assert saved is captured
+            context.detach(caller_token)
+        assert paused.resume({'return_value': 42}).output == 42
+if mode != 'missing':
+    context.detach(token)
+""",
+            mode,
+        ],
+        check=True,
+        timeout=30,
+    )
 
 
 def test_logger_failure_does_not_disable_spans():

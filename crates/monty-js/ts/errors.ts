@@ -181,7 +181,7 @@ export class MontyTypingError extends MontyError {
 /**
  * Raised when a worker process died: a hard crash (segfault, allocator abort
  * — the failure mode subprocess isolation exists to contain) or a watchdog
- * kill for exceeding `requestTimeout` / the `maxDurationSecs` backstop. The
+ * kill for exceeding `requestTimeout` / the `maxFeedDurationSecs` backstop. The
  * session is lost; the pool replaces the worker, so other sessions and future
  * checkouts are unaffected.
  */

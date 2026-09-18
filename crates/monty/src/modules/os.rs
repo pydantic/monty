@@ -16,7 +16,7 @@
 //! parity but rejected with the `NotImplementedError` CPython raises on
 //! platforms without them — Monty never supports fd-relative paths.
 
-use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs};
+use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs, UrandomArgs};
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
@@ -51,6 +51,7 @@ pub(crate) enum OsFunctions {
     Getcwd,
     Getcwdb,
     Chdir,
+    Urandom,
 }
 
 /// Creates the `os` module and allocates it on the heap.
@@ -58,9 +59,6 @@ pub(crate) enum OsFunctions {
 /// Functions yield to the host via `OsFunction` callbacks (except the pure
 /// `fspath`); constants are fixed POSIX values since the sandbox path model
 /// is always POSIX.
-///
-/// # Panics
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     /// Shorthand for the function-attribute entries in the table below.
     fn function(f: OsFunctions) -> Value {
@@ -82,6 +80,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         (StaticStrings::Getcwd, function(OsFunctions::Getcwd)),
         (StaticStrings::Getcwdb, function(OsFunctions::Getcwdb)),
         (StaticStrings::Chdir, function(OsFunctions::Chdir)),
+        (StaticStrings::Urandom, function(OsFunctions::Urandom)),
         (StaticStrings::OsFspath, function(OsFunctions::Fspath)),
         // os.environ — property that yields the host environment as a dict.
         (
@@ -93,13 +92,22 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         (StaticStrings::Altsep, Value::None),
         (StaticStrings::Extsep, Value::InternString(StringId::from_ascii(b'.'))),
         (StaticStrings::Curdir, Value::InternString(StringId::from_ascii(b'.'))),
-        (StaticStrings::Pardir, StaticStrings::ParentDirString.into()),
+        (
+            StaticStrings::Pardir,
+            Value::InternString(vm.interns.intern_static(StaticStrings::ParentDirString)),
+        ),
         (StaticStrings::Linesep, Value::InternString(StringId::from_ascii(b'\n'))),
-        (StaticStrings::Name, StaticStrings::Posix.into()),
-        (StaticStrings::Devnull, StaticStrings::DevNullString.into()),
+        (
+            StaticStrings::Name,
+            Value::InternString(vm.interns.intern_static(StaticStrings::Posix)),
+        ),
+        (
+            StaticStrings::Devnull,
+            Value::InternString(vm.interns.intern_static(StaticStrings::DevNullString)),
+        ),
     ];
 
-    let mut module = Module::new(StaticStrings::Os);
+    let mut module = Module::new(StaticStrings::Os, vm.interns);
     for (attr, value) in attrs {
         module.set_attr(attr, value, vm);
     }
@@ -126,7 +134,38 @@ pub(super) fn call(vm: &mut VM<'_>, functions: OsFunctions, args: ArgValues) -> 
         OsFunctions::Getcwd => getcwd(vm, args),
         OsFunctions::Getcwdb => getcwdb(vm, args),
         OsFunctions::Chdir => chdir(vm, args),
+        OsFunctions::Urandom => urandom(vm, args),
     }
+}
+
+/// `os.urandom(size, /)` argument shape: clinic-parsed, positional-only.
+#[derive(FromArgs)]
+#[from_args(name = "urandom")]
+struct UrandomFnArgs {
+    #[from_args(pos_only)]
+    size: Value,
+}
+
+/// Implementation of `os.urandom(size)`: asks the host for `size` bytes of
+/// entropy. `size` is checked here so a negative count never reaches a
+/// handler, and checked against the memory limit before the call so an
+/// oversized request never leaves the sandbox when a limit is set (hosts
+/// still cap it themselves). The reply must be exactly `size` bytes,
+/// enforced by [`PreConversionEffect::UrandomLength`] before it is converted.
+fn urandom(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let UrandomFnArgs { size } = UrandomFnArgs::from_args(args, vm)?;
+    defer_drop!(size, vm);
+    let size = size.as_int_with_overflow(vm, ExcType::overflow_c_ssize_t)?;
+    if size < 0 {
+        return Err(ExcType::value_error("negative argument not allowed"));
+    }
+    // `ssize_t` is the platform's word, so a 32-bit target rejects here as CPython does.
+    let len = usize::try_from(size).map_err(|_| ExcType::overflow_c_ssize_t())?;
+    vm.heap.tracker.check_allocation(len)?;
+    Ok(CallResult::OsCallWithEffect {
+        call: OsFunctionCall::Urandom(UrandomArgs { size: len as u64 }),
+        effect: PreConversionEffect::UrandomLength { size: len }.into(),
+    })
 }
 
 /// Implementation of `os.getcwd()` — the sandbox's virtual working
@@ -198,7 +237,7 @@ fn getenv(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         key_value.drop_with(vm.heap);
         Ok(CallResult::OsCall(OsFunctionCall::Getenv(GetenvArgs {
             key: key.into_string(vm.interns),
-            default: MontyObject::new(default_value.unwrap_or(Value::None), vm),
+            default: MontyObject::export(default_value.unwrap_or(Value::None), vm),
         })))
     } else {
         let type_name = key_value.py_type_name_heap(vm.heap, vm.interns);

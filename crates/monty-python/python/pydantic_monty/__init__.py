@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import EllipsisType
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Protocol
 
 from typing_extensions import NotRequired, TypeAlias, TypedDict
 
@@ -126,10 +126,23 @@ class ResourceLimits(TypedDict, total=False):
     to disable that limit, with two exceptions: `max_recursion_depth` and
     `max_suspensions` cannot be disabled, and omitting either leaves its
     1000 default in place.
+
+    Both duration limits share one clock, which runs only while sandboxed
+    code executes, never while suspended waiting on the host; they differ in
+    when it restarts: at each feed, at each host round trip. Exceeding either
+    raises `TimeoutError` in the sandbox. The next feed resets both clocks, so
+    the worker keeps serving the session, but a time limit stops the sandbox
+    mid-operation and leaves no guarantees about its heap: discard the session
+    rather than feeding it again.
     """
 
-    max_duration_secs: float | None
-    """Maximum execution time in seconds."""
+    max_feed_duration_secs: float | None
+    """Maximum execution time for a single feed (`feed_run` or `feed_start`), in seconds."""
+
+    max_turn_duration_secs: float | None
+    """Maximum execution time between host round trips, in seconds.
+
+    A snippet that calls out to the host may run longer than this in total."""
 
     max_memory: int | None
     """Maximum heap memory in bytes."""
@@ -250,11 +263,35 @@ Picked by `checkout(type_check_format=...)`, not on the raised error: the type
 checker runs inside the worker and its structured diagnostics never leave it,
 so only the already-rendered text crosses the wire."""
 
-OsHandler: TypeAlias = Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS
-"""OS-call handler shared by `feed_run` / `feed_start`."""
-
 SyncSnapshot: TypeAlias = FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete
 """What `MontySession.feed_start` (and each sync `resume` / `resume_auto`) yields."""
 
 AsyncSnapshot: TypeAlias = AsyncFunctionSnapshot | AsyncNameLookupSnapshot | AsyncFutureSnapshot | MontyComplete
 """What `AsyncMontySession.feed_start` (and each async `resume` / `resume_auto`) yields."""
+
+
+class OsHandler(Protocol):
+    def __call__(
+        self,
+        *,
+        name: OsFunction,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        is_async: bool,
+        **_future_kwargs: Any,
+    ) -> Any:
+        """What `os=` accepts: a callable answering the OS calls no mount covers.
+
+        Return `NOT_HANDLED` to leave the call to Monty's default error.
+
+        Args:
+            name: The OS function name
+            args: Positional arguments
+            kwargs: Keyword arguments
+            is_async: True under `AsyncMonty`, where the handler
+                may return a coroutine. `Monty` has no event loop and rejects a coroutine.
+            _future_kwargs: Absorbs future keyword arguments
+
+        Returns:
+            The result of the OS call, or `NOT_HANDLED` to leave it to Monty's default error.
+        """

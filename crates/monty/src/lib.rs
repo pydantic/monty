@@ -40,13 +40,10 @@ mod types;
 mod value;
 mod virtual_path;
 
-#[cfg(feature = "test-hooks")]
-#[doc(hidden)]
-pub use crate::function::FunctionMetadataFault;
 #[cfg(feature = "ref-count-return")]
 pub use crate::run::RefCountOutput;
 pub use crate::{
-    dump_format::{DUMP_VERSION, Dump, DumpError, Session, SessionRef, dump},
+    dump_format::{DUMP_VERSION, Dump, DumpError, MIN_SUPPORTED_DUMP_VERSION, Session, SessionRef, dump},
     repl::{
         MontyRepl, ReplContinuationMode, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress,
         ReplResolveFutures, ReplStartError, detect_repl_continuation_mode,

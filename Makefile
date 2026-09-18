@@ -232,6 +232,14 @@ testcov: ## Run Rust tests with coverage, print table, and generate HTML report
 complete-tests: ## Fill in incomplete test expectations using CPython
 	uv run scripts/complete_tests.py
 
+.PHONY: generate-unicode-type
+generate-unicode-type: ## Regenerate the str character-property tables from the current CPython
+	uv run scripts/gen_unicode_type.py
+
+.PHONY: check-unicode-type
+check-unicode-type: generate-unicode-type ## Verify the checked-in str character-property tables match the current CPython
+	git diff --exit-code crates/monty/src/types/unicode_type_data.rs
+
 .PHONY: update-typeshed
 update-typeshed: ## Update vendored typeshed from upstream
 	uv run crates/monty-typeshed/update.py

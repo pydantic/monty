@@ -18,6 +18,13 @@ whether each call is permitted.
 - `os.mkdir(path, mode=0o777)`, `os.makedirs(name, mode=0o777, exist_ok=False)`
 - `os.remove(path)`, `os.unlink(path)`, `os.rmdir(path)`
 - `os.rename(src, dst)`, `os.replace(src, dst)`
+- `os.urandom(size)` — yields to the host, which must return exactly `size` bytes; any other length, or a
+    non-`bytes` value, raises `RuntimeError`.
+    Sandboxed code chooses `size`, so a host handler that allocates must cap it.
+    Python's `AbstractOS.urandom()` raises `MemoryError` before allocating when `size` exceeds `max_urandom_bytes`,
+    1 MiB by default; `OSAccess(max_urandom_bytes=...)` sets it, and zero rejects every nonempty request.
+    The `random` module makes the same call, for 2496 bytes, to seed an unseeded generator (see
+    [random.md](random.md)).
 - `os.fspath(path)` — pure, no host involvement.
 - `os.getcwd()` — pure: the sandbox's virtual working directory.
 - `os.getcwdb()` — pure: the same directory as UTF-8 bytes (virtual paths
@@ -116,7 +123,7 @@ Everything else, including but not limited to: `os.path.*` (use
 `os.readlink`, `os.link`, `os.chmod`, `os.chown`, `os.umask`, `os.truncate`,
 `os.utime`, `os.system`, `os.popen`, `os.fork`, `os.exec*`, `os.spawn*`,
 `os.kill`, `os.pipe`, `os.read`, `os.write`, `os.open`, `os.close`,
-`os.dup`, `os.fsync`, `os.urandom`, `os.cpu_count`, `os.getpid`,
+`os.dup`, `os.fsync`, `os.cpu_count`, `os.getpid`,
 `os.getuid`, `os.getgid`, `os.uname`, `os.terminal_size`, `os.get_terminal_size`.
 
 `subprocess`, `signal`, `socket`, `threading`, `multiprocessing` are not

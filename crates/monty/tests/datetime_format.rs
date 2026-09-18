@@ -14,7 +14,7 @@ use monty_types::{CompileOptions, MontyObject};
 
 /// Runs a snippet and returns its result as a `String`.
 fn run_str(code: &str) -> String {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let obj: MontyObject = ex.run_no_limits(vec![]).unwrap();
     (&obj).try_into().unwrap()
 }
@@ -23,7 +23,7 @@ fn run_str(code: &str) -> String {
 /// `unwrap_err()` would itself panic if the snippet panicked the interpreter,
 /// so reaching the assert proves "no host panic".
 fn run_err(code: &str) -> String {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     ex.run_no_limits(vec![]).unwrap_err().to_string()
 }
 
@@ -82,6 +82,33 @@ fn time_strptime_is_not_implemented() {
       File "test.py", line 2, in <module>
         time.strptime('12:30', '%H:%M')
     AttributeError: type object 'datetime.time' has no attribute 'strptime'
+    "#
+    );
+}
+
+/// `date.strptime` is CPython 3.14's other new `strptime`, also unimplemented —
+/// and `datetime.strptime` is not a substitute for a time-only format, since it
+/// requires the string to carry a date. Both are one-sided, so neither can live
+/// in `test_cases/`. See limitations/datetime.md.
+#[test]
+fn strptime_gaps_on_date_and_datetime() {
+    assert_snapshot!(
+        run_err("from datetime import date\ndate.strptime('2020-01-01', '%Y-%m-%d')"),
+        @r#"
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        date.strptime('2020-01-01', '%Y-%m-%d')
+    AttributeError: type object 'datetime.date' has no attribute 'strptime'
+    "#
+    );
+    assert_snapshot!(
+        run_err("from datetime import datetime\ndatetime.strptime('12:30', '%H:%M')"),
+        @r#"
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        datetime.strptime('12:30', '%H:%M')
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ValueError: time data '12:30' does not match format '%H:%M'
     "#
     );
 }

@@ -144,7 +144,7 @@ denied
 
 with Monty() as pool:
     with pool.checkout(
-        limits={'max_memory': 10_000_000, 'max_duration_secs': 1.0}
+        limits={'max_memory': 10_000_000, 'max_feed_duration_secs': 1.0}
     ) as session:
         print(session.feed_run(code))
         #> Permission denied: '/etc/passwd'
@@ -155,7 +155,7 @@ with Monty() as pool:
             #> MemoryError
 ```
 
-An infinite loop hits `max_duration_secs` the same way, raising a [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] whose `exception()` is a
+An infinite loop hits `max_feed_duration_secs` the same way, raising a [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] whose `exception()` is a
 `TimeoutError`.
 Type checking is also configured on `checkout()`:
 
@@ -205,10 +205,20 @@ asyncio.run(main())
 ```
 
 There is no event loop inside the sandbox — the host is the loop.
-Sandboxed `async def` and `await` work, and `asyncio` exposes exactly `run` and `gather`, the latter running host calls
-concurrently.
-`asyncio.create_task`, `asyncio.sleep` and everything else in the module do not exist.
-See [`limitations/asyncio.md`](../limitations/asyncio.md).
+Sandboxed `async def` and `await` work;
+see [`limitations/asyncio.md`](../limitations/asyncio.md) for the supported module functions.
+
+Cancelling an in-flight session call loses the session; check out a new one before running more code.
+The worker is discarded immediately, or by the next call if another call holds the session lock.
+Cancellation while queued behind another call leaves the session usable because that request never reached the worker.
+Cancellation does not undo host-function side effects or stop
+[in-flight mount I/O](../filesystem.md#io-timeouts-and-cancellation).
+The pool remains usable.
+
+Synchronous `Monty` calls block the calling thread; Ctrl-C cannot interrupt a turn waiting on the worker.
+Independent nested sync pools or sessions are supported from async host callbacks, but calling back into the same
+session from its own callback deadlocks.
+When embedded in a current-thread Tokio runtime, sync methods raise `RuntimeError` instead of blocking that runtime.
 
 ## Pausing at host calls
 
@@ -302,8 +312,8 @@ A `MontyRuntimeError` carrying `TimeoutError`, or a `MemoryError` from the sandb
 limit](../resource-limits.md#after-a-limit-fires) rather than ordinary sandbox code raising.
 The pool leaves the checkout open, but the heap behind it is no longer trustworthy, so discard it rather than feeding it
 again.
-A spent `max_duration_secs` budget is cumulative, so later feeds re-raise `TimeoutError` anyway; after a `max_memory`
-trip they may quietly succeed.
+The duration budgets restart at the next feed, and after a `max_memory` trip a later feed may quietly succeed, so
+neither failure stops you from feeding a heap you should have discarded.
 `max_suspensions` limits host calls and raises a pool-generated `RuntimeError` such as `suspension limit 1000 exceeded`.
 The feed ends cleanly; later code runs until it suspends again.
 
@@ -339,8 +349,11 @@ with Monty() as pool:
 `display()` also takes `'traceback'` (the default, a full CPython-style traceback) and `'msg'`.
 `exc.exception()` returns the inner exception as a native Python exception object.
 
-`MontyCrashedError` is the one that loses the session.
-The pool has already replaced the worker by the time you catch it, so retrying on a fresh checkout is safe:
+After `MontyCrashedError`, use a fresh checkout; the pool replaces the worker.
+The error includes the worker's fatal message and exit status when available.
+Other failures can also lose the session, including a hard memory-limit breach and a
+[failed snapshot load](../snapshots.md#storing-and-restoring).
+Retry only if any host side effects from the failed feed can safely repeat:
 
 ```python test="skip"
 from pydantic_monty import Monty, MontyCrashedError
@@ -373,7 +386,7 @@ pool = Monty(
 `request_timeout` is a per-turn host-side backstop: a worker that exceeds it is killed and the call raises
 [`MontyCrashedError`][pydantic_monty.MontyCrashedError] with `timed_out=True`.
 It catches hangs the in-sandbox limits cannot see, because those are only checked at interpreter checkpoints.
-A loop of quick host calls resets it each turn; set [`max_duration_secs`](../resource-limits.md) as well.
+A loop of quick host calls resets it each turn; set [`max_feed_duration_secs`](../resource-limits.md) as well.
 
 [`AsyncMonty`][pydantic_monty.AsyncMonty] takes the same arguments.
 

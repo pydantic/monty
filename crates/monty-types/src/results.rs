@@ -58,6 +58,7 @@ pub enum ExtFunctionResult {
     /// The function was not found, should result in a `NameError` exception.
     NotFound(String),
 }
+
 impl From<MontyObject> for ExtFunctionResult {
     fn from(value: MontyObject) -> Self {
         Self::Return(value)

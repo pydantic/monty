@@ -200,7 +200,8 @@ anything.
     ```
 
 A separate `os=` callback handles operations no mount covers: the remaining `pathlib` operations, `os.getenv`,
-`os.environ`, `date.today()` and `datetime.now()`.
+`os.environ`, the clock (`date.today()`, `datetime.now()`, `time.time()`), the waits (`time.sleep()`,
+`asyncio.sleep()`) and `os.urandom()`.
 [`AbstractOS`][pydantic_monty.AbstractOS] is the typed form of that callback; [`OSAccess`][pydantic_monty.OSAccess] implements it over in-memory files and an `environ` mapping
 you supply, and overriding one of its methods replaces one operation.
 JavaScript has only the callback form, so the TypeScript tab answers the same three operations by hand:
@@ -291,12 +292,12 @@ resolved inside the sandbox and reaches a mount as an absolute virtual path.
 
 ### The clock
 
-`date.today()` and `datetime.now()` are the only two calls that read a clock, and what answers them depends on how you
-run the sandbox.
+`date.today()`, `datetime.now()` and `time.time()` are the only calls that read a clock, and what answers them depends
+on how you run the sandbox.
 
 Through the pool — `pydantic_monty`, `@pydantic/monty`, or `monty-pool` — they reach your `os=` handler as OS calls like
-any other, so the sandbox reads no clock until you write a handler that gives it one, and a handler that answers neither
-makes both raise.
+any other, so the sandbox reads no clock until you write a handler that gives it one, and a handler that answers none of
+them makes all three raise.
 
 In-process Rust runs have no host loop to ask, so they read this machine's clock, as the `monty` CLI does.
 `MontyRun::with_host_clock` changes that: `HostClock::Denied` if sandboxed code should not read your wall time at all,
@@ -304,6 +305,80 @@ In-process Rust runs have no host loop to ask, so they read this machine's clock
 
 Wall-clock time is a weak capability, but it is one — it is what makes elapsed time measurable from inside the sandbox,
 and a naive `datetime.now()` is read in the host's local zone, which discloses its UTC offset.
+
+### Entropy
+
+`os.urandom()` is the only call that reads entropy.
+The `random` module uses the same call: an unseeded generator requests 2496 bytes from the host on its first draw.
+Through the pool the request reaches your `os=` handler like any other OS call.
+With no handler, an unseeded `random.random()` raises `RuntimeError`.
+Answer with fixed bytes when a run has to be reproducible.
+Seeded code (`random.seed(42)`) never makes the call.
+Python's default `AbstractOS.urandom()` raises `MemoryError` before allocating when a request exceeds
+`max_urandom_bytes`, 1 MiB by default; `OSAccess(max_urandom_bytes=...)` sets the cap.
+A custom handler allocates in the host process, outside the worker's memory limit, so it must apply its own cap.
+See [random](limitations/random.md).
+
+### Waiting
+
+`time.sleep()` and `asyncio.sleep()` are calls too: the sandbox cannot block, it can only ask the host to wait for it.
+A handler that answers them decides how long a wait it is willing to perform — cap it, scale it, or refuse it — and one
+that answers neither leaves both raising.
+[`OSAccess`][pydantic_monty.OSAccess] caps every wait at its `max_sleep`, ten seconds unless you say otherwise, and the
+CLI at `--max-sleep`.
+
+A wait costs nothing against the duration limits, which measure execution time and stop while the sandbox is suspended,
+so what bounds a sleeping session is `max_suspensions` (one per sleep, two when an `asyncio.sleep()` answered with a
+future is awaited later) and your own turn deadline.
+See [resource limits](resource-limits.md).
+
+Under [`AsyncMonty`][pydantic_monty.AsyncMonty] and in JavaScript the handler may be `async`.
+Its answer to `asyncio.sleep()` then runs alongside the sandbox's other tasks, so gathered sleeps overlap;
+its answer to any other call is awaited before that session resumes, holding up nothing else.
+The handler's `is_async` argument says which pool is calling, and
+[`AbstractOS.async_sleep()`][pydantic_monty.AbstractOS.async_sleep] uses it to do this by default.
+
+=== "Python"
+
+    ```python
+    import time
+    from typing import Any
+
+    from pydantic_monty import NOT_HANDLED, Monty
+
+
+    def host_os(*, name: str, args: tuple[Any, ...], **_future_kwargs: Any) -> Any:
+        if name == 'time.sleep':
+            time.sleep(min(args[0], 0.05))  # never wait longer than 50ms
+            return None
+        return NOT_HANDLED
+
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            print(session.feed_run('import time\ntime.sleep(30)\n"awake"', os=host_os))
+            #> awake
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty, NOT_HANDLED } from '@pydantic/monty'
+
+    async function hostOs(name: string, args: unknown[]) {
+      if (name !== 'time.sleep') return NOT_HANDLED
+      const seconds = Math.min(args[0] as number, 0.05) // never wait longer than 50ms
+      await new Promise((resolve) => setTimeout(resolve, seconds * 1000))
+      return null
+    }
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    console.log(await session.feedRun('import time\ntime.sleep(30)\n"awake"', { os: hostOs })) // awake
+    ```
+
+`asyncio.sleep` arrives the same way, with the delay as its only argument.
+Its return value is ignored: the sandbox itself produces the `result` argument of `asyncio.sleep()` from the `await`.
 
 ## Crash isolation
 
@@ -325,9 +400,12 @@ Two more properties of the worker boundary matter:
 
 - **Workers spawn with an empty environment** (Windows keeps only `SystemRoot`), so host secrets are never in a worker's
     memory to begin with.
-- **The parent treats every frame from a worker as untrusted input.** A worker could in principle be compromised, so
-    wire decoding validates everything, enforces depth and size budgets, and never panics on malformed data.
+- **The parent treats every frame from a worker as untrusted input.** A worker could in principle be compromised.
+    Wire decoding validates values and enforces allocation budgets before growing decoded buffers.
+    Generated repeated fields, including empty traceback entries and print segments, share the value decoder's budget.
     A worker that violates the protocol is discarded.
+    See the [protocol allocation budget](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted)
+    for what the per-frame budget counts and excludes.
 
 From Rust, this is why [`monty-pool`](quickstart/rust.md) is the recommended entry point rather than the in-process
 `monty` crate.
@@ -340,25 +418,35 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
 - `max_memory` budgets the bytes a worker requests from its global allocator, not process RSS.
     Per-allocation overhead, fragmentation, and memory obtained without the allocator sit outside the count.
     Size the limit with headroom, and keep the worker-level backstop.
-- `max_duration_secs` counts **cumulative execution time**, not wall clock.
+- `max_feed_duration_secs` counts **execution time**, not wall clock.
     The clock is paused while the sandbox waits on a host function, so a slow host function does not consume the budget.
-    It accumulates across feeds for the life of the session.
+    `max_turn_duration_secs` bounds the same clock over one host round trip.
+    Neither accumulates across feeds — there is no session-lifetime budget, so bounding what a session costs in total is
+    the host's job.
 - The in-sandbox time check only runs at interpreter checkpoints.
-    Two host-side backstops cover a wedged worker: `request_timeout` (a per-turn deadline; a loop of quick host calls
-    resets it) and `duration_limit_grace` (fires only if the session also set `max_duration_secs`).
-    Set both `request_timeout` and `max_duration_secs` for untrusted code.
+    Host-side backstops cover a wedged worker: `request_timeout` (a per-turn deadline; a loop of quick host calls
+    resets it), and one grace per duration limit — `feed_duration_limit_grace` and `turn_duration_limit_grace` — each firing only if the
+    session also set the limit it backs.
+    Set `request_timeout` and at least one duration limit for untrusted code.
+    `max_turn_duration_secs` does not close the gap named above: its clock also restarts at each host answer, so a loop
+    of quick host calls resets it just as it resets `request_timeout`.
+    `max_feed_duration_secs` does bound such a loop, because its clock runs for the whole feed; `max_suspensions` bounds
+    the number of round trips.
+    Across feeds neither applies — every in-sandbox budget restarts at the next feed, so a session fed repeatedly is
+    bounded only by what the host counts and ends itself.
     Every local pool ([`Monty`][pydantic_monty.Monty], [`AsyncMonty`][pydantic_monty.AsyncMonty], JavaScript `Monty.create()`, [`PoolConfig::subprocess`](api/rust/monty-pool.md#poolconfig)) defaults
     `request_timeout` to no deadline; only [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket] sets one, at 10 seconds.
 - **After a memory or time limit fires, no guarantees are made about heap state or reference counts.** Discard the
     session rather than continuing to run code in it.
-    The pool does not do this for you, and the two limits do not even fail alike: a spent `max_duration_secs` budget is
-    cumulative, so every later feed fails with the same `TimeoutError`, while after a `max_memory` trip a later feed may
-    quietly succeed against a corrupted heap.
-- Compilation is not charged against the duration budget.
+    The pool does not do this for you, and neither limit stops you: the duration budgets restart at the next feed, and
+    after a `max_memory` trip a later feed may quietly succeed against a corrupted heap.
+- Compilation of the fed source is not charged against the duration budgets.
     It has its own structural caps (AST nesting, bytecode operand sizes, comprehension nesting, `finally` expansion), but
     a host accepting untrusted source should still isolate compilation — as the subprocess and WebAssembly runtimes do.
+    `eval()` and `exec()` compile inside the VM under the same caps, charged against the budget, and their code runs
+    under the limits and host boundary of the code that called them.
 - `max_suspensions` bounds suspension events per checkout.
-    A snippet can otherwise retry a rejected host call while `max_duration_secs` is paused.
+    A snippet can otherwise retry a rejected host call while the duration budgets are paused.
     Each allowed `ClassType(init=True)` construction adds an instance-store entry outside `max_memory`.
     The pool aborts the first suspension over the limit with an uncatchable `RuntimeError`.
 
@@ -396,15 +484,24 @@ sandbox.
 
 ### Deserializing snapshots
 
-[Snapshots](snapshots.md) are opaque bytes restored into a worker.
-Treat a snapshot from an untrusted source the way you would treat any untrusted serialized data: restore it into a
-worker you are willing to lose.
+[Snapshots](snapshots.md) must be unmodified output from a trusted, compatible Monty producer.
+The caller must establish their provenance and integrity before restoring them; Monty does not authenticate snapshots.
+Use trusted storage or verify a MAC/signature before loading bytes received through an untrusted channel.
+A checksum supplied alongside untrusted bytes is not authentication.
+
+Invalid snapshots have no correctness or availability guarantees: loading or using them may return incorrect results,
+panic, terminate the process, or fail to terminate.
+Successful decoding does not establish that a snapshot is valid.
+Worker isolation does not replace verification: restored state carries resource limits and can request host callbacks.
+These rules also apply to direct serde deserialization in Rust.
+Genuine snapshots produced while running untrusted Python remain supported; the trust requirement concerns the producer
+and serialized bytes, not the Python source.
 
 ## The parts that are most security-critical
 
-If you are reviewing or contributing to Monty, two files carry most of the weight:
+If you are reviewing or contributing to Monty, two areas carry most of the weight:
 
-- `crates/monty/src/heap.rs` — the heap and reference counting.
+- `crates/monty/src/heap/` — the heap arena, free list and reference counting.
 - `crates/monty-fs/src/mount_table.rs` — the mount boundary: the `Dir` descriptor every filesystem operation runs
     against, with `path_security.rs` beside it holding the virtual-path policy.
 

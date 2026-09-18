@@ -124,7 +124,7 @@ test('empty', async () => {
 
 test('with limits', async () => {
   const { output, callback } = makePrintCollector()
-  await run('print("with limits")', { printCallback: callback, limits: { maxDurationSecs: 5.0 } })
+  await run('print("with limits")', { printCallback: callback, limits: { maxFeedDurationSecs: 5.0 } })
   t.deepEqual(output, ['with limits\n'])
 })
 

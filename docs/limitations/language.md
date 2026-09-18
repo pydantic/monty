@@ -51,7 +51,8 @@ and correspondingly `__main__.C.m()`, `__main__.<lambda>()` or
 `__main__.outer.<locals>.inner()`. Monty has neither function `__qualname__`
 nor module-qualified names (see the class-name note in [collections.md](collections.md)), so
 it reports the generic form. Every other unpacking form matches CPython
-exactly.
+exactly, except for the comprehension target restriction in
+[comprehensions.md](comprehensions.md).
 
 ## Source nesting depth
 

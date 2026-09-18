@@ -252,14 +252,17 @@ expose the same `feed_start` / `load_session` / `load_snapshot`, with awaitable
 Limits are enforced inside the worker; the pool's `request_timeout` is a
 host-side backstop that kills a hung worker outright. Installed telemetry
 invokes trusted Python SDK callbacks synchronously; enforcement is
-delayed while such a callback runs. `max_duration_secs`
-limits cumulative *execution* time — the clock runs only while the
-interpreter executes, never while suspended waiting on the host, and
-accumulates across feeds. The worker reports its execution time on every
-protocol turn, and sessions with the limit are additionally killed
-`duration_limit_grace` (1s, not currently configurable from Python) after
-the remaining budget expires, covering hangs the in-sandbox limit cannot
-catch (its check only runs at interpreter checkpoints). `max_suspensions`
+delayed while such a callback runs. `max_feed_duration_secs` and
+`max_turn_duration_secs` limit *execution* time — the clock runs only while
+the interpreter executes, never while suspended waiting on the host — over one
+`feed_run` and one host round trip, restarting at each feed and at each host
+answer. Neither accumulates over a session's lifetime; bounding that is the
+host's job. The worker reports its consumed time on every protocol turn, and
+each budget is additionally backstopped by killing the worker a grace period
+after it expires, covering hangs the in-sandbox limit cannot catch (its check
+only runs at interpreter checkpoints). The graces are the pool's
+`feed_duration_limit_grace` and `turn_duration_limit_grace` (1s each;
+`None` disables that backstop). `max_suspensions`
 limits the host round trips the pool services per checkout; exceeding it ends
 the feed with an uncatchable `RuntimeError`.
 
@@ -267,7 +270,7 @@ the feed with an uncatchable `RuntimeError`.
 from pydantic_monty import Monty, MontyRuntimeError
 
 with Monty(request_timeout=10) as pool:
-    with pool.checkout(limits={'max_duration_secs': 0.1}) as session:
+    with pool.checkout(limits={'max_feed_duration_secs': 0.1}) as session:
         try:
             session.feed_run('while True:\n    pass')
         except MontyRuntimeError as exc:
@@ -377,6 +380,6 @@ dumps and restores are recorded by size only. Instrumentation is disabled until
 `instrument_telemetry` is called, and enabled instrumentation truncates large
 values at the telemetry attribute size limit.
 
-See `limitations/pool-architecture.md` in the repository for the behavioural
-details of subprocess execution (host-side mounts, buffered print callbacks,
-session dumps).
+See the documentation for [filesystem mounts](https://github.com/pydantic/monty/blob/main/docs/filesystem.md),
+[print buffering](https://github.com/pydantic/monty/blob/main/docs/limitations/print.md), and
+[session snapshots](https://github.com/pydantic/monty/blob/main/docs/snapshots.md).

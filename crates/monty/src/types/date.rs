@@ -4,12 +4,13 @@
 //! constructor validation and arithmetic behavior.
 
 use std::{
+    borrow::Cow,
     collections::hash_map::DefaultHasher,
     fmt::{self, Write},
     hash::{Hash, Hasher},
 };
 
-use chrono::{Datelike, NaiveDate, format::StrftimeItems};
+use chrono::{Datelike, NaiveDate, NaiveTime, format::StrftimeItems};
 use monty_types::OsFunctionCall;
 
 use crate::{
@@ -21,7 +22,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     types::{
-        AttrCallResult, CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type,
+        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,
     },
@@ -137,10 +138,10 @@ struct DateInitArgs {
 /// Classmethod implementation for `date.today()`.
 ///
 /// Issues a `DateToday` OS call with no arguments. The host should return
-/// `MontyObject::Date` directly.
-pub(crate) fn class_today(heap: &mut Heap, args: ArgValues) -> RunResult<AttrCallResult> {
+/// a value constructed with `MontyObject::date`.
+pub(crate) fn class_today(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("date.today", heap)?;
-    Ok(AttrCallResult::OsCall(OsFunctionCall::DateToday))
+    Ok(CallResult::OsCall(OsFunctionCall::DateToday))
 }
 
 /// Classmethod `date.fromisoformat(date_string)`.
@@ -164,6 +165,16 @@ pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &In
 fn parse_iso_date(s: &str) -> Option<Date> {
     let parsed = speedate::Date::parse_bytes(s.as_bytes()).ok()?;
     from_ymd(i32::from(parsed.year), i32::from(parsed.month), i32::from(parsed.day)).ok()
+}
+
+/// Allocates a `date` from already-in-range components.
+///
+/// For Rust-side construction where the values are known good (the `date.min` /
+/// `date.max` class constants); anything derived from user input must go
+/// through [`from_ymd`] so the components are validated.
+pub(crate) fn allocate_ymd(year: i32, month: i32, day: i32, heap: &Heap) -> Value {
+    let date = from_ymd(year, month, day).expect("caller guarantees in-range date components");
+    Value::Ref(heap.allocate(HeapData::Date(date)))
 }
 
 /// Extracts a string from a `Value` for use by classmethods.
@@ -244,8 +255,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let date = *self.get(vm.heap);
-        match attr.string_id() {
-            Some(id) if id == StaticStrings::Isoformat => {
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Isoformat) => {
                 args.check_zero_args("date.isoformat", vm.heap)?;
                 let (year, month, day) = to_ymd(date);
                 Ok(CallResult::Value(allocate_string_no_interning(
@@ -253,13 +264,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
                     vm.heap,
                 )))
             }
-            Some(id) if id == StaticStrings::Strftime => {
+            Some(StaticStrings::Strftime) => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
                 defer_drop!(format, vm);
                 let formatted = format_date_strftime(date, format.as_str(vm))?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
             }
-            Some(id) if id == StaticStrings::Replace => {
+            Some(StaticStrings::Replace) => {
                 let (year, month, day) = to_ymd(date);
                 let DateReplaceArgs {
                     year: new_year,
@@ -275,13 +286,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
                     vm.heap.allocate(HeapData::Date(new_date)),
                 )))
             }
-            Some(id) if id == StaticStrings::Weekday => {
+            Some(StaticStrings::Weekday) => {
                 args.check_zero_args("date.weekday", vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     date.0.weekday().num_days_from_monday(),
                 ))))
             }
-            Some(id) if id == StaticStrings::Isoweekday => {
+            Some(StaticStrings::Isoweekday) => {
                 args.check_zero_args("date.isoweekday", vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     date.0.weekday().number_from_monday(),
@@ -293,10 +304,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
-        match attr.string_id() {
-            Some(id) if id == StaticStrings::Year => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),
-            Some(id) if id == StaticStrings::Month => Ok(Some(CallResult::Value(Value::Int(i64::from(month))))),
-            Some(id) if id == StaticStrings::Day => Ok(Some(CallResult::Value(Value::Int(i64::from(day))))),
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Year) => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),
+            Some(StaticStrings::Month) => Ok(Some(CallResult::Value(Value::Int(i64::from(month))))),
+            Some(StaticStrings::Day) => Ok(Some(CallResult::Value(Value::Int(i64::from(day))))),
             _ => Ok(None),
         }
     }
@@ -336,7 +347,49 @@ pub(crate) fn py_sub_timedelta(date: Date, delta: TimeDelta, heap: &mut Heap) ->
 /// `ValueError` path remains for the rare directive that parses but can't be
 /// rendered (so [`render_strftime`] never has to panic).
 pub(crate) fn format_date_strftime(date: Date, format: &str) -> RunResult<String> {
-    render_strftime(date.0.format_with_items(StrftimeItems::new_lenient(format))).ok_or_else(invalid_strftime_error)
+    // Anchored at midnight so time directives render CPython's zeros
+    // (`date(2024, 6, 15).strftime('%H:%M')` is `'00:00'` on both) rather than
+    // failing for want of a time component.
+    let anchored = date.0.and_time(NaiveTime::MIN);
+    render_strftime(anchored.format_with_items(StrftimeItems::new_lenient(&rewrite_microsecond_directive(format))))
+        .ok_or_else(invalid_strftime_error)
+}
+
+/// Rewrites CPython's `%f` to chrono's `%6f` in a strftime format string.
+///
+/// Both mean "fractional seconds", but chrono's bare `%f` is 9-digit
+/// nanoseconds where CPython's is 6-digit microseconds; `%6f` is chrono's
+/// spelling for the latter. `%%` is an escaped percent, so the `f` after it is
+/// a literal and must not be rewritten.
+pub(crate) fn rewrite_microsecond_directive(format: &str) -> Cow<'_, str> {
+    if !format.contains("%f") {
+        return Cow::Borrowed(format);
+    }
+    let mut out = String::with_capacity(format.len() + 1);
+    let mut rest = format;
+    while let Some(percent) = rest.find('%') {
+        let (before, from_percent) = rest.split_at(percent);
+        out.push_str(before);
+        // Take the directive whole, so `%%f` consumes `%%` and leaves `f` as text.
+        let mut chars = from_percent.char_indices().skip(1);
+        match chars.next() {
+            Some((_, 'f')) => {
+                out.push_str("%6f");
+                rest = &from_percent[2..];
+            }
+            Some((_, c)) => {
+                out.push('%');
+                out.push(c);
+                rest = &from_percent[1 + c.len_utf8()..];
+            }
+            None => {
+                out.push('%');
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    Cow::Owned(out)
 }
 
 /// Renders a `chrono` strftime result without the panic that `.to_string()`

@@ -14,7 +14,8 @@ use crate::{
         HeapReader,
     },
     intern::StaticStrings,
-    resource_checks::check_repeat_size,
+    modules::copy::{Memo, PyDeepCopy, deep_copy},
+    resource_checks::{check_repeat_size, check_value_buffer_growth},
     sorting::parse_and_sort,
     types::{
         LazyHeapSet, Type,
@@ -131,15 +132,28 @@ impl<'h> HeapRead<'h, List> {
     /// The caller transfers ownership of `item` to the list. The item's refcount
     /// is NOT incremented here - the caller is responsible for ensuring the refcount
     /// was already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
-    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) {
+    ///
+    /// A push that would grow the buffer past the memory limit fails with
+    /// `MemoryError` and drops `item`, so the ownership transfer holds either way.
+    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
         // Track whether the list now contains heap refs so child-walk fast paths
         // can short-circuit; cycle-collector seeding is handled by `dec_ref`,
         // not at mutation time.
-        if matches!(item, Value::Ref(_)) {
-            self.get_mut(vm.heap).contains_refs = true;
+        let is_ref = matches!(item, Value::Ref(_));
+        let this = self.get_mut(vm.heap);
+        if is_ref {
+            this.contains_refs = true;
         }
         // Ownership transfer - refcount was already handled by caller
-        self.get_mut(vm.heap).items.push(item);
+        let (len, capacity) = (this.items.len(), this.items.capacity());
+        if len < capacity {
+            this.items.push(item);
+            Ok(())
+        } else {
+            let item = check_value_buffer_growth(vm, len, capacity, item)?;
+            self.get_mut(vm.heap).items.push(item);
+            Ok(())
+        }
     }
 
     /// Inserts an element at the specified index.
@@ -148,10 +162,20 @@ impl<'h> HeapRead<'h, List> {
     /// is NOT incremented here - the caller is responsible for ensuring the refcount
     /// was already incremented.
     ///
+    /// Like [`append`](Self::append), an insert that would grow the buffer past the
+    /// memory limit fails with `MemoryError` and drops `item`.
+    ///
     /// # Arguments
     /// * `index` - The position to insert at (0-based). If index >= len(),
     ///   the item is appended to the end (matching Python semantics).
-    pub fn insert(&mut self, vm: &mut VM<'h>, index: usize, item: Value) {
+    pub fn insert(&mut self, vm: &mut VM<'h>, index: usize, item: Value) -> RunResult<()> {
+        let items = &self.get(vm.heap).items;
+        let (len, capacity) = (items.len(), items.capacity());
+        let item = if len < capacity {
+            item
+        } else {
+            check_value_buffer_growth(vm, len, capacity, item)?
+        };
         // Track whether the list now contains heap refs so child-walk fast paths
         // can short-circuit; cycle-collector seeding is handled by `dec_ref`.
         if matches!(item, Value::Ref(_)) {
@@ -165,6 +189,7 @@ impl<'h> HeapRead<'h, List> {
         } else {
             this.items.insert(index, item);
         }
+        Ok(())
     }
 }
 
@@ -212,9 +237,10 @@ impl<'h> HeapRead<'h, List> {
 
     /// Clones the item at `index`, or `None` once the list has shrunk past it.
     ///
-    /// The comparison walks index the *other* list directly while a user
-    /// `__eq__` may be shrinking it, so its length cannot be trusted between
-    /// iterations.
+    /// For walks that run Python between steps and so cannot trust a length
+    /// read earlier: the comparison walks index the *other* list directly
+    /// while a user `__eq__` may be shrinking it, and `copy.deepcopy` runs a
+    /// `__deepcopy__` hook between items.
     pub(crate) fn try_clone_item(&self, index: usize, vm: &mut VM<'h>) -> Option<Value> {
         self.get(vm.heap)
             .items
@@ -598,12 +624,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
     /// Delegates methods to `call_list_method`.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string() == Some(StaticStrings::Sort) {
+        if attr.static_string(vm.interns) == Some(StaticStrings::Sort) {
             do_list_sort(self, args, vm)?;
             return Ok(CallResult::Value(Value::None));
         }
 
-        let Some(method) = attr.static_string() else {
+        let Some(method) = attr.static_string(vm.interns) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
         };
@@ -654,7 +680,7 @@ fn call_list_method<'h>(
     match method {
         StaticStrings::Append => {
             let item = args.get_one_arg("list.append", heap)?;
-            list.append(vm, item);
+            list.append(vm, item)?;
             Ok(Value::None)
         }
         StaticStrings::Insert => list_insert(list, args, vm),
@@ -706,7 +732,7 @@ fn list_insert<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'
         usize::try_from(index_i64).unwrap_or(len)
     };
     let (item, heap) = item_guard.into_parts();
-    list.insert(heap, index, item);
+    list.insert(heap, index, item)?;
     Ok(Value::None)
 }
 
@@ -1089,6 +1115,40 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ListIterator> {
     }
 }
 
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
+    /// Copies into a shell memoized before its items are, so a list holding
+    /// itself resolves to the shell rather than recursing forever.
+    #[inline(never)]
+    fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let copy_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
+        let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
+        let (copy, vm) = guard.as_parts_mut();
+        memo.insert(source, copy, vm)?;
+        let len = self.get(vm.heap).len();
+        vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        // The length is never cached across a step: copying an item runs Python
+        // (a `__deepcopy__` hook, or a `__hash__` reached while filling a nested
+        // dict), which can shrink the source. Reading it live also visits items
+        // appended mid-walk, which is what CPython's `for a in x` does.
+        for index in 0.. {
+            let (_, vm) = guard.as_parts_mut();
+            vm.heap.tracker.check_time_every(index)?;
+            let Some(item) = self.try_clone_item(index, vm) else {
+                break;
+            };
+            let copied = deep_copy(&item, memo, vm);
+            item.drop_with(vm);
+            let copied = copied?;
+            let HeapReadOutput::List(mut dest) = vm.heap.read(copy_id) else {
+                unreachable!("copy was allocated as a list")
+            };
+            dest.append(vm, copied)?;
+        }
+        let (copy, _) = guard.into_parts();
+        Ok(copy)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use monty_types::{PrintWriter, ResourceTracker};
@@ -1096,18 +1156,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        bytecode::Code,
         heap::{Heap, HeapReader},
-        intern::{InternerBuilder, Interns},
-        run::VmEnv,
+        run::{Program, SessionTables},
         types::LongInt,
     };
-
-    /// Creates a minimal Interns for testing.
-    fn create_test_interns() -> Interns {
-        let interner = InternerBuilder::new("");
-        Interns::new(interner, vec![])
-    }
 
     /// Creates a heap with a list and a LongInt index, bypassing into_value() demotion.
     ///
@@ -1130,22 +1182,15 @@ mod tests {
     fn py_setitem_longint_fits_in_i64() {
         let (mut heap, list_id, index_id) =
             create_heap_with_list_and_longint(vec![Value::Int(10), Value::Int(20), Value::Int(30)], BigInt::from(1));
-        let mut interns = create_test_interns();
-        let code = Code::empty();
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
 
         let key = Value::Ref(index_id);
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
             };
@@ -1171,22 +1216,15 @@ mod tests {
             vec![Value::Int(10), Value::Int(20), Value::Int(30)],
             BigInt::from(-1), // Last element
         );
-        let mut interns = create_test_interns();
-        let code = Code::empty();
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
 
         let key = Value::Ref(index_id);
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
             };
@@ -1209,22 +1247,15 @@ mod tests {
     fn py_setitem_longint_at_i64_max() {
         let (mut heap, list_id, index_id) =
             create_heap_with_list_and_longint(vec![Value::Int(10)], BigInt::from(i64::MAX));
-        let mut interns = create_test_interns();
-        let code = Code::empty();
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
 
         let key = Value::Ref(index_id);
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = HeapReader::with(&mut heap, &mut (&code, &mut interns), |reader, (code, interns)| {
-            let mut vm = VM::new(
-                Vec::new(),
-                code,
-                reader,
-                interns,
-                PrintWriter::Disabled,
-                VmEnv::default(),
-            );
+        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
             };

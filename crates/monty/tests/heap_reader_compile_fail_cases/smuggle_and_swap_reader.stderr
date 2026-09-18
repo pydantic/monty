@@ -1,12 +1,12 @@
 error[E0521]: borrowed data escapes outside of closure
-   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:194:13
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:189:13
     |
-190 |         HeapReader::with(heap_b, reader_a, |reader_b, smuggled| {
+185 |         HeapReader::with(heap_b, reader_a, |reader_b, smuggled| {
     |                                             --------  -------- `smuggled` declared here, outside of the closure body
     |                                             |
     |                                             `reader_b` is a reference that is only valid in the closure body
 ...
-194 |             std::mem::swap(reader_b, smuggled);
+189 |             std::mem::swap(reader_b, smuggled);
     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `reader_b` escapes the closure body here
     |
     = note: requirement occurs because of a mutable reference to `heap::HeapReader<'_>`

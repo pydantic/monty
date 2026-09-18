@@ -93,12 +93,6 @@ salsa = { version = "0.28.2", default-features = false, features = [
 # data, no unsafe; its Unicode version may lag CPython's, affecting only
 # recently (re)assigned code points.
 unicode-general-category = "1"
-# `unicodedata` module backing data. Both are pure generated tables, no unsafe;
-# `unicode_names2` backs `name()`/`lookup()`, `unicode-normalization` backs
-# `normalize()`/`is_normalized()`/`combining()`. Their Unicode versions may lag
-# or lead CPython's, affecting only recently (re)assigned code points.
-unicode_names2 = "1"
-unicode-normalization = "0.1"
 # Linear-time substring search over `[u8]`, which std only provides for `str`.
 # Already linked transitively via ruff/fancy-regex; this just names it directly.
 memchr = "2.7"

@@ -28,21 +28,27 @@ export interface MontyOptions {
    * Hard per-turn deadline in seconds: a worker that does not answer a
    * protocol request in time is killed and the session fails with
    * `MontyCrashedError` (`timedOut: true`). Off by default — prefer the
-   * in-sandbox `maxDurationSecs` limit; this is the backstop for code that
+   * in-sandbox `maxFeedDurationSecs` limit; this is the backstop for code that
    * wedges the interpreter itself.
    */
   requestTimeout?: number
   /**
-   * Grace period in seconds for the automatic `maxDurationSecs` backstop
-   * (default 1, `null` disables). For sessions with a `maxDurationSecs`
-   * limit, the worker reports cumulative execution time each turn (the
+   * Grace period in seconds for the automatic `maxFeedDurationSecs` backstop
+   * (default 1, `null` disables). For sessions with a `maxFeedDurationSecs`
+   * limit, the worker reports the running feed's execution time each turn (the
    * sandbox clock runs only while the interpreter executes, never while
    * suspended on the host) and the host kills the worker this long after the
    * budget expires — covering cases the in-sandbox limit cannot catch (its
    * check only runs at interpreter checkpoints). Surfaces as `MontyCrashedError`
    * (`timedOut: true`), losing the session. `requestTimeout` is independent.
    */
-  durationLimitGrace?: number | null
+  feedDurationLimitGrace?: number | null
+  /**
+   * As `feedDurationLimitGrace`, but for `maxTurnDurationSecs`: the host kills the
+   * worker this long after the current turn's budget expires (default 1,
+   * `null` disables).
+   */
+  turnDurationLimitGrace?: number | null
   /** Recycle a worker (kill and replace) after serving this many sessions. */
   maxCheckoutsPerWorker?: number
 }
@@ -97,9 +103,24 @@ export interface CheckoutOptions {
  * `maxRecursionDepth` and `maxSuspensions`, which keep their 1000 defaults.
  * The pool counts `maxSuspensions` per checkout and aborts an over-budget
  * feed with an uncatchable `RuntimeError`.
+ *
+ * Both duration limits share one clock, which runs only while sandboxed
+ * code executes, never while suspended on the host; they differ in when it
+ * restarts: at each feed, at each host round trip. Exceeding either raises
+ * `TimeoutError` in the sandbox.
  */
 export interface ResourceLimits {
-  maxDurationSecs?: number
+  /**
+   * @deprecated Removed: it capped a whole session, which neither replacement
+   * does, so there is no value to carry over. Pick `maxFeedDurationSecs` or
+   * `maxTurnDurationSecs`. Declared `never` so a stale key still fails to
+   * compile rather than being silently dropped at the boundary.
+   */
+  maxDurationSecs?: never
+  /** Maximum execution time for a single feed (`feedRun` or `feedStart`). */
+  maxFeedDurationSecs?: number
+  /** Maximum execution time between host round trips. */
+  maxTurnDurationSecs?: number
   maxMemory?: number
   gcInterval?: number
   maxRecursionDepth?: number
@@ -133,10 +154,9 @@ export class Monty {
       maxProcesses: options.maxProcesses ?? availableParallelism(),
       ...(options.checkoutTimeout !== undefined ? { checkoutTimeoutMs: options.checkoutTimeout * 1000 } : {}),
       ...(options.requestTimeout !== undefined ? { requestTimeoutMs: options.requestTimeout * 1000 } : {}),
-      // `null` disables the backstop; omitted means the 1s default
-      ...(options.durationLimitGrace !== null
-        ? { durationLimitGraceMs: (options.durationLimitGrace ?? 1) * 1000 }
-        : {}),
+      // `null` disables a backstop; omitted means the 1s default
+      ...graceMs('feedDurationLimitGraceMs', options.feedDurationLimitGrace),
+      ...graceMs('turnDurationLimitGraceMs', options.turnDurationLimitGrace),
       ...(options.maxCheckoutsPerWorker !== undefined ? { maxCheckoutsPerWorker: options.maxCheckoutsPerWorker } : {}),
     })
     await native.start()
@@ -183,4 +203,12 @@ export class Monty {
   async [Symbol.asyncDispose](): Promise<void> {
     await this.close()
   }
+}
+
+/**
+ * Renders one duration-backstop grace as the native option the pool takes:
+ * `null` yields no key at all, and an absent grace falls back to 1s.
+ */
+function graceMs(key: string, seconds: number | null | undefined): Record<string, number> {
+  return seconds === null ? {} : { [key]: (seconds ?? 1) * 1000 }
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -178,7 +179,7 @@ def test_os_call_surfaces_without_handler(session: MontySession):
 def test_os_handler_used_by_resume_auto(session: MontySession):
     """`feed_start` surfaces the OS call even with `os=`; `resume_auto` answers it."""
 
-    def handle_os(name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
+    def handle_os(*, name: OsFunction, args: tuple[Any, ...], **_: Any) -> str:
         assert name == 'Path.read_text'
         return 'file body'
 
@@ -653,6 +654,22 @@ def test_sync_resume_auto_coroutine_external_raises(pool: Monty):
             session.feed_run('1 + 1')
 
 
+def test_sync_resume_auto_coroutine_os_callback_raises(pool: Monty):
+    # as for a coroutine external: the sync session has no event loop to run it on
+    async def handle_os(**_: Any) -> str:
+        return 'file body'
+
+    with pool.checkout() as session:
+        snap = session.feed_start("from pathlib import Path\nPath('/data/x').read_text()", os=handle_os)
+        assert isinstance(snap, FunctionSnapshot)
+        with pytest.raises(RuntimeError) as exc_info:
+            snap.resume_auto()
+        assert str(exc_info.value) == snapshot('async os callbacks require AsyncMonty')
+        # the discarded checkout is not reusable
+        with pytest.raises(RuntimeError):
+            session.feed_run('1 + 1')
+
+
 def test_load_snapshot_resume_auto_with_external_lookup(pool: Monty):
     with pool.checkout() as session:
         snap = session.feed_start('y = fetch()\ny + 1')
@@ -690,6 +707,83 @@ async def test_async_resume_auto_coroutine_external():
             done = await snap.resume_auto()
             assert isinstance(done, MontyComplete)
             assert done.output == snapshot(99)
+
+
+async def test_async_resume_auto_awaits_asyncio_sleep_eagerly():
+    """An `asyncio.sleep` awaited at once is settled in place, with no future snapshot."""
+    waited: list[float] = []
+
+    async def handle_os(*, name: OsFunction, args: tuple[Any, ...], **_: Any) -> None:
+        waited.append(args[0])
+        await asyncio.sleep(args[0])
+
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap = await session.feed_start("import asyncio\nawait asyncio.sleep(0.001, 'woken')", os=handle_os)
+            assert isinstance(snap, AsyncFunctionSnapshot)
+            assert snap.is_os_function
+            assert snap.allow_eager_await
+            done = await snap.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot('woken')
+            assert waited == snapshot([0.001])
+
+
+async def test_async_resume_auto_sync_os_callback():
+    def handle_os(*, name: OsFunction, **_: Any) -> str:
+        assert name == 'Path.read_text'
+        return 'file body'
+
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap = await session.feed_start("from pathlib import Path\nPath('/data/x').read_text()", os=handle_os)
+            assert isinstance(snap, AsyncFunctionSnapshot)
+            assert snap.is_os_function
+            done = await snap.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot('file body')
+
+
+async def test_async_resume_auto_coroutine_os_callback_is_awaited_as_a_value():
+    """The sandbox does not await `Path.read_text`, so the coroutine settles before it resumes."""
+
+    async def handle_os(*, name: OsFunction, **_: Any) -> str:
+        assert name == 'Path.read_text'
+        await asyncio.sleep(0.001)
+        return 'file body'
+
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap = await session.feed_start("from pathlib import Path\nPath('/data/x').read_text()", os=handle_os)
+            assert isinstance(snap, AsyncFunctionSnapshot)
+            assert not snap.allow_eager_await
+            done = await snap.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot('file body')
+
+
+async def test_async_resume_auto_gathered_asyncio_sleeps_are_futures():
+    """With sibling tasks to run, each sleep is spawned and delivered by the future snapshot."""
+    started: list[float] = []
+
+    async def handle_os(*, name: OsFunction, args: tuple[Any, ...], **_: Any) -> None:
+        assert name == 'asyncio.sleep'
+        started.append(args[0])
+        await asyncio.sleep(args[0])
+
+    code = "import asyncio\nawait asyncio.gather(asyncio.sleep(0.002, 'a'), asyncio.sleep(0.001, 'b'))"
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap: Any = await session.feed_start(code, os=handle_os)
+            kinds: list[str] = []
+            while not isinstance(snap, MontyComplete):
+                kinds.append(type(snap).__name__)
+                assert not getattr(snap, 'allow_eager_await', False)
+                snap = await snap.resume_auto()
+            assert snap.output == snapshot(['a', 'b'])
+            assert started == snapshot([0.002, 0.001])
+            # one or two future snapshots follow, depending on whether the sleeps finish together
+            assert kinds[:3] == snapshot(['AsyncFunctionSnapshot', 'AsyncFunctionSnapshot', 'AsyncFutureSnapshot'])
 
 
 async def test_async_allow_eager_await_survives_snapshot_restore():

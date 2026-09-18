@@ -364,8 +364,8 @@ def test_unmounted_path_denied(monty_run: RunMonty, test_dir: Path):
 
 
 def test_fallback_for_getenv(monty_run: RunMonty, test_dir: Path):
-    def fallback(function_name: str, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
-        if function_name == 'os.getenv':
+    def fallback(*, name: str, args: tuple[object, ...], **_: object) -> object:
+        if name == 'os.getenv':
             return 'my_value' if args[0] == 'MY_VAR' else None
         return None
 
@@ -386,8 +386,8 @@ def test_mounted_calls_do_not_reach_os_callback(monty_run: RunMonty, test_dir: P
     never reach the `os=` callback."""
     calls: list[str] = []
 
-    def fallback(function_name: str, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
-        calls.append(function_name)
+    def fallback(*, name: str, args: tuple[object, ...], **_: object) -> object:
+        calls.append(name)
         return None
 
     md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
@@ -507,7 +507,7 @@ def test_os_callback_marshalling_error(monty_run: RunMonty, test_dir: Path):
     usable afterwards."""
     md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
 
-    def os_cb(func: object, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+    def os_cb(*, name: object, args: tuple[object, ...], **_: object) -> object:
         return object()  # unconvertible — surfaces inside Monty as TypeError
 
     # Path is outside the mount so it falls through to the os= fallback.
@@ -523,7 +523,7 @@ def test_os_callback_lone_surrogate_return_surfaces_inside_monty(monty_run: RunM
     as a catchable `ValueError` rather than escaping as a raw `UnicodeEncodeError`."""
     md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
 
-    def os_cb(func: object, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+    def os_cb(*, name: object, args: tuple[object, ...], **_: object) -> object:
         return '\ud83d'  # unconvertible UTF-8 — surfaces as ValueError inside Monty
 
     # Catching inside Monty proves the error arrives as an in-VM exception rather
@@ -545,7 +545,7 @@ def test_session_survives_os_callback_marshalling_error(pool: Monty, test_dir: P
     value — the error surfaces as MontyRuntimeError but the session survives."""
     md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
 
-    def os_cb(func: object, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+    def os_cb(*, name: object, args: tuple[object, ...], **_: object) -> object:
         return object()  # unconvertible — surfaces inside Monty as TypeError
 
     with pool.checkout() as session:
@@ -755,7 +755,7 @@ def test_paths_are_validated_before_normalization(
     md = MountDir(host_path=test_dir, virtual_path='/data', mode='read-write')
     path = ('/data/' if absolute else '') + prefix + target
 
-    def os_handler(*args: object) -> None:
+    def os_handler(**_: object) -> None:
         pytest.fail('invalid paths must be rejected before calling os=')
 
     with pytest.raises(MontyRuntimeError) as exc_info:
@@ -796,7 +796,7 @@ def test_path_length_limits_are_mount_policy(monty_run: RunMonty, test_dir: Path
     any mount rejects them first, even for paths outside every mount."""
     seen: list[object] = []
 
-    def os_handler(function_name: str, args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+    def os_handler(*, name: str, args: tuple[object, ...], **_: object) -> object:
         seen.append(args[0])
         return False
 

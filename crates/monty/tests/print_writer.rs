@@ -17,7 +17,7 @@ use monty_types::{CollectedStreams, CompileOptions, PrintStream, PrintWriter, Re
 /// about the captured output. `CollectString` keeps no stream labels, so
 /// stderr output lands in the same buffer; see `run_and_capture_streams`.
 fn run_and_capture(code: &str) -> String {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let mut output = String::new();
     ex.run(
         vec![],
@@ -108,7 +108,7 @@ fn collect_output_accessible_after_run() {
 fn writer_reuse_accumulates() {
     let mut output = String::new();
 
-    let ex1 = MontyRun::new(
+    let mut ex1 = MontyRun::new(
         "print('first')".to_owned(),
         "test.py",
         vec![],
@@ -122,7 +122,7 @@ fn writer_reuse_accumulates() {
     )
     .unwrap();
 
-    let ex2 = MontyRun::new(
+    let mut ex2 = MontyRun::new(
         "print('second')".to_owned(),
         "test.py",
         vec![],
@@ -148,7 +148,7 @@ fn disabled_suppresses_output() {
 for i in range(100):
     print('this should be suppressed', i)
 ";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     // Should complete without error, output is silently discarded
     let result = ex.run(vec![], ResourceTracker::default(), PrintWriter::Disabled);
     assert!(result.is_ok());
@@ -240,7 +240,7 @@ fn print_multiline_sep() {
 /// Run `code` and return the labelled fragments, so a test can tell which
 /// stream each one went to.
 fn run_and_capture_streams(code: &str) -> Vec<(PrintStream, String)> {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let mut streams = CollectedStreams::default();
     ex.run(
         vec![],
@@ -292,7 +292,7 @@ fn print_sep_and_end_follow_the_file() {
 
 #[test]
 fn print_file_other_than_a_sys_stream_raises() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "print('x', file=42)".to_owned(),
         "test.py",
         vec![],

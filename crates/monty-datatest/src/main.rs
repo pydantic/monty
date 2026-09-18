@@ -18,7 +18,7 @@ use std::{
         mpsc::{self, RecvTimeoutError},
     },
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use ahash::AHashMap;
@@ -29,9 +29,9 @@ use monty::{Dump, Session, SessionRef, dump};
 use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
-    CompileOptions, DictPairs, ExcType, ExtFunctionResult, FileMode, MontyClassInstance, MontyClassType, MontyDate,
-    MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyTimeZone, MontyUuid, NameLookupResult,
-    OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, dir_stat, file_stat,
+    CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime, MontyException,
+    MontyFileHandle, MontyObject, MontyTimeZone, MontyUuid, NameLookupResult, OsFunctionCall, PrintWriter,
+    ResourceLimits, ResourceTracker, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -441,19 +441,20 @@ enum DispatchResult {
 ///
 /// # Panics
 /// Panics if the function name is unknown or arguments are invalid types.
-fn dispatch_external_call(name: &str, args: Vec<MontyObject>, registry: &mut FixtureRegistry) -> DispatchResult {
+fn dispatch_external_call(name: &str, call: &CallArgs, registry: &mut FixtureRegistry) -> DispatchResult {
+    let args: Vec<MontyObject> = call.args().map(|arg| arg.to_owned()).collect();
     match name {
         "add_ints" => {
             assert!(args.len() == 2, "add_ints requires 2 arguments");
             let a = i64::try_from(&args[0]).expect("add_ints: first arg must be int");
             let b = i64::try_from(&args[1]).expect("add_ints: second arg must be int");
-            DispatchResult::Sync(MontyObject::Int(a + b).into())
+            DispatchResult::Sync(MontyObject::int(a + b).into())
         }
         "concat_strings" => {
             assert!(args.len() == 2, "concat_strings requires 2 arguments");
             let a = String::try_from(&args[0]).expect("concat_strings: first arg must be str");
             let b = String::try_from(&args[1]).expect("concat_strings: second arg must be str");
-            DispatchResult::Sync(MontyObject::String(a + &b).into())
+            DispatchResult::Sync(MontyObject::string(a + &b).into())
         }
         "return_value" => {
             assert!(args.len() == 1, "return_value requires 1 argument");
@@ -462,7 +463,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>, registry: &mut Fix
         "get_list" => {
             assert!(args.is_empty(), "get_list requires no arguments");
             DispatchResult::Sync(
-                MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2), MontyObject::Int(3)]).into(),
+                MontyObject::list([MontyObject::int(1), MontyObject::int(2), MontyObject::int(3)]).into(),
             )
         }
         "raise_error" => {
@@ -492,7 +493,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>, registry: &mut Fix
                     .register(Fixture {
                         class_name: "MutablePoint",
                         type_id: 2, // distinct per fixture class (real hosts pass the Python type id)
-                        attrs: vec![("x", MontyObject::Int(1)), ("y", MontyObject::Int(2))],
+                        attrs: vec![("x", MontyObject::int(1)), ("y", MontyObject::int(2))],
                     })
                     .into(),
             )
@@ -506,7 +507,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>, registry: &mut Fix
                     .register(Fixture {
                         class_name: "User",
                         type_id: 3, // distinct per fixture class (real hosts pass the Python type id)
-                        attrs: vec![("name", MontyObject::String(name)), ("active", MontyObject::Bool(true))],
+                        attrs: vec![("name", MontyObject::string(name)), ("active", MontyObject::bool(true))],
                     })
                     .into(),
             )
@@ -583,22 +584,21 @@ impl FixtureRegistry {
     fn register(&mut self, fixture: Fixture) -> MontyObject {
         let instance_id = MontyUuid::from_u128(0x1000 + self.next_id);
         self.next_id += 1;
-        let value = MontyObject::ClassInstance(Box::new(MontyClassInstance {
-            class_type: MontyClassType {
-                name: fixture.class_name.to_string(),
-                id: MontyUuid::from_u128(u128::from(fixture.type_id)),
-                host_defined: true,
-                is_dataclass: true,
-                attrs: DictPairs::default(),
-            },
+        let value = MontyObject::class_instance(
+            MontyObject::class_type(
+                fixture.class_name.to_string(),
+                MontyUuid::from_u128(u128::from(fixture.type_id)),
+                true,
+                true,
+                [],
+            ),
             instance_id,
-            attrs: fixture
+            fixture
                 .attrs
                 .iter()
-                .map(|(k, v)| (MontyObject::String((*k).to_string()), v.clone()))
-                .collect::<Vec<_>>()
-                .into(),
-        }));
+                .map(|(k, v)| (MontyObject::string((*k).to_string()), v.clone()))
+                .collect::<Vec<_>>(),
+        );
         self.instances.insert(instance_id, fixture);
         value
     }
@@ -608,7 +608,7 @@ impl FixtureRegistry {
         self.register(Fixture {
             class_name: "Point",
             type_id: 1, // distinct per fixture class (real hosts pass the Python type id)
-            attrs: vec![("x", MontyObject::Int(x)), ("y", MontyObject::Int(y))],
+            attrs: vec![("x", MontyObject::int(x)), ("y", MontyObject::int(y))],
         })
     }
 
@@ -637,10 +637,10 @@ impl Fixture {
 fn dispatch_method_call(
     method_name: &str,
     instance_id: MontyUuid,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    call: &CallArgs,
     registry: &mut FixtureRegistry,
 ) -> ExtFunctionResult {
+    let args: Vec<MontyObject> = call.args().map(|arg| arg.to_owned()).collect();
     let Some(fixture) = registry.get(instance_id) else {
         // Mirror a real host's store miss (e.g. a class-uuid receiver from
         // `type(point).m()` — the harness registers no class types) so test
@@ -652,7 +652,7 @@ fn dispatch_method_call(
 
     match (class_name, method_name) {
         // Point.sum(self) -> int
-        ("Point" | "MutablePoint", "sum") => MontyObject::Int(fixture.int_attr("x") + fixture.int_attr("y")).into(),
+        ("Point" | "MutablePoint", "sum") => MontyObject::int(fixture.int_attr("x") + fixture.int_attr("y")).into(),
         // Point.add(self, dx, dy) -> Point
         ("Point", "add") => {
             assert!(args.len() == 2, "Point.add requires dx, dy");
@@ -674,21 +674,24 @@ fn dispatch_method_call(
             // Check positional arg first, then kwargs, then default
             let label = if !args.is_empty() {
                 String::try_from(&args[0]).expect("label must be str")
-            } else if let Some(kw_label) = get_kwarg_str(kwargs, "label") {
+            } else if let Some(kw_label) = call
+                .kwarg("label")
+                .and_then(|label| label.as_str().map(ToOwned::to_owned))
+            {
                 kw_label
             } else {
                 "point".to_string()
             };
-            MontyObject::String(format!("{label}({x}, {y})")).into()
+            MontyObject::string(format!("{label}({x}, {y})")).into()
         }
         // MutablePoint.shift(self, dx, dy) -> None (mutates in-place via host)
         // Note: the mutation happens to the host-side object only; the
         // sandbox's eager-attr copy is a snapshot, so it does not see it.
-        ("MutablePoint", "shift") => MontyObject::None.into(),
+        ("MutablePoint", "shift") => MontyObject::none().into(),
         // User.greeting(self) -> str
         ("User", "greeting") => {
             let name = String::try_from(fixture.attr("name").expect("User has 'name'")).expect("name must be str");
-            MontyObject::String(format!("Hello, {name}!")).into()
+            MontyObject::string(format!("Hello, {name}!")).into()
         }
         // Unknown method — return AttributeError
         _ => {
@@ -707,25 +710,13 @@ fn dispatch_instance_attr(name: &str, instance_id: MontyUuid, registry: &Fixture
     };
     match (fixture.class_name, name) {
         // Class attribute mirrored by `dimensions = 2` on the Python fixtures
-        ("Point" | "MutablePoint", "dimensions") => NameLookupResult::Value(MontyObject::Int(2)),
+        ("Point" | "MutablePoint", "dimensions") => NameLookupResult::from(MontyObject::int(2)),
         // The `MutablePoint.boom` property raises KeyError('boom') on the
         // host; the sandbox raises it where the attribute was read
         ("MutablePoint", "boom") => MontyException::new(ExcType::KeyError, Some("boom".to_owned())).into(),
         // Anything else is genuinely absent -> AttributeError in the sandbox
         _ => NameLookupResult::Undefined,
     }
-}
-
-/// Extracts a string kwarg value by key name.
-fn get_kwarg_str(kwargs: &[(MontyObject, MontyObject)], name: &str) -> Option<String> {
-    for (key, value) in kwargs {
-        if let MontyObject::String(key_str) = key
-            && key_str == name
-        {
-            return Some(String::try_from(value).expect("kwarg value must be str"));
-        }
-    }
-    None
 }
 
 // =============================================================================
@@ -947,42 +938,60 @@ fn get_virtual_dir_entries(path: &str) -> Option<Vec<String>> {
 #[expect(clippy::cast_possible_wrap)] // Virtual file sizes are tiny, no wrap possible
 fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
     match call {
-        OsFunctionCall::DateToday => MontyObject::Date(MontyDate {
+        OsFunctionCall::DateToday => MontyObject::date(MontyDate {
             year: 2023,
             month: 11,
             day: 15,
         })
         .into(),
         OsFunctionCall::DateTimeNow(tz) => dispatch_datetime_now(tz.as_ref()).into(),
+        // Deterministic "entropy": a fixture can only assert invariants on
+        // unseeded draws anyway, since CPython's side reads real entropy.
+        OsFunctionCall::Urandom(args) => MontyObject::bytes(fixture_entropy(args.size)).into(),
+        // The clock calls above are frozen for reproducibility, but `time.time()`
+        // is only ever asserted against loosely (and CPython runs the same case
+        // against the real clock), so it reads the host's.
+        OsFunctionCall::Time => MontyObject::float(SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(
+            |before| -before.duration().as_secs_f64(),
+            |since_epoch| since_epoch.as_secs_f64(),
+        ))
+        .into(),
+        // Both sleeps wait here, so a gathered `asyncio.sleep` runs in series
+        // rather than concurrently — fine for fixtures, which sleep for
+        // milliseconds at most.
+        OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay) => {
+            thread::sleep(*delay);
+            MontyObject::none().into()
+        }
         OsFunctionCall::GetEnviron => {
             let env_dict = vec![
                 (
-                    MontyObject::String("VIRTUAL_HOME".to_owned()),
-                    MontyObject::String("/virtual/home".to_owned()),
+                    MontyObject::string("VIRTUAL_HOME".to_owned()),
+                    MontyObject::string("/virtual/home".to_owned()),
                 ),
                 (
-                    MontyObject::String("VIRTUAL_USER".to_owned()),
-                    MontyObject::String("testuser".to_owned()),
+                    MontyObject::string("VIRTUAL_USER".to_owned()),
+                    MontyObject::string("testuser".to_owned()),
                 ),
                 (
-                    MontyObject::String("VIRTUAL_EMPTY".to_owned()),
-                    MontyObject::String(String::new()),
+                    MontyObject::string("VIRTUAL_EMPTY".to_owned()),
+                    MontyObject::string(String::new()),
                 ),
             ];
-            MontyObject::Dict(env_dict.into()).into()
+            MontyObject::dict(env_dict).into()
         }
         OsFunctionCall::Exists(p) => {
             let path = p.as_str();
-            MontyObject::Bool(get_virtual_file(path).is_some() || is_virtual_dir(path)).into()
+            MontyObject::bool(get_virtual_file(path).is_some() || is_virtual_dir(path)).into()
         }
-        OsFunctionCall::IsFile(p) => MontyObject::Bool(get_virtual_file(p.as_str()).is_some()).into(),
-        OsFunctionCall::IsDir(p) => MontyObject::Bool(is_virtual_dir(p.as_str())).into(),
-        OsFunctionCall::IsSymlink(_) => MontyObject::Bool(false).into(),
+        OsFunctionCall::IsFile(p) => MontyObject::bool(get_virtual_file(p.as_str()).is_some()).into(),
+        OsFunctionCall::IsDir(p) => MontyObject::bool(is_virtual_dir(p.as_str())).into(),
+        OsFunctionCall::IsSymlink(_) => MontyObject::bool(false).into(),
         OsFunctionCall::ReadText(p) => {
             let path = p.as_str();
             if let Some(file) = get_virtual_file(path) {
                 match str::from_utf8(&file.content) {
-                    Ok(text) => MontyObject::String(text.to_owned()).into(),
+                    Ok(text) => MontyObject::string(text.to_owned()).into(),
                     Err(_) => MontyException::new(
                         ExcType::UnicodeDecodeError,
                         Some("'utf-8' codec can't decode bytes".to_owned()),
@@ -1000,7 +1009,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
         OsFunctionCall::ReadBytes(p) => {
             let path = p.as_str();
             if let Some(file) = get_virtual_file(path) {
-                MontyObject::Bytes(file.content).into()
+                MontyObject::bytes(file.content).into()
             } else {
                 MontyException::new(
                     ExcType::FileNotFoundError,
@@ -1026,8 +1035,8 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
         OsFunctionCall::Iterdir(p) => {
             let path = p.as_str();
             if let Some(entries) = get_virtual_dir_entries(path) {
-                let list: Vec<MontyObject> = entries.into_iter().map(MontyObject::Path).collect();
-                MontyObject::List(list).into()
+                let list: Vec<MontyObject> = entries.into_iter().map(MontyObject::path).collect();
+                MontyObject::list(list).into()
             } else {
                 MontyException::new(
                     ExcType::FileNotFoundError,
@@ -1036,7 +1045,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                 .into()
             }
         }
-        OsFunctionCall::Resolve(p) | OsFunctionCall::Absolute(p) => MontyObject::String(p.as_str().to_owned()).into(),
+        OsFunctionCall::Resolve(p) | OsFunctionCall::Absolute(p) => MontyObject::string(p.as_str().to_owned()).into(),
         OsFunctionCall::Open(args) => {
             let path = args.path.as_str().to_owned();
             let file_mode = args.mode;
@@ -1069,7 +1078,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                     vfs.deleted_files.remove(&path);
                 }),
             }
-            MontyObject::FileHandle(MontyFileHandle {
+            MontyObject::file_handle(MontyFileHandle {
                 path,
                 mode: file_mode,
                 position: 0,
@@ -1084,9 +1093,9 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                 _ => None,
             };
             if let Some(v) = value {
-                MontyObject::String(v.to_owned()).into()
-            } else if matches!(args.default, MontyObject::None) {
-                MontyObject::None.into()
+                MontyObject::string(v.to_owned()).into()
+            } else if args.default == MontyObject::none() {
+                MontyObject::none().into()
             } else {
                 args.default.clone().into()
             }
@@ -1100,7 +1109,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                 vfs.deleted_files.remove(&path);
             });
             let byte_count = MUTABLE_VFS.with(|vfs| vfs.borrow().files.get(&path).map_or(0, |(c, _)| c.len()));
-            MontyObject::Int(byte_count as i64).into()
+            MontyObject::int(byte_count as i64).into()
         }
         OsFunctionCall::WriteBytes(args) => {
             let path = args.path.as_str().to_owned();
@@ -1111,7 +1120,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                 vfs.files.insert(path.clone(), (bytes, 0o644));
                 vfs.deleted_files.remove(&path);
             });
-            MontyObject::Int(byte_count as i64).into()
+            MontyObject::int(byte_count as i64).into()
         }
         OsFunctionCall::AppendText(args) => {
             let path = args.path.as_str().to_owned();
@@ -1123,7 +1132,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                 entry.0.extend_from_slice(text.as_bytes());
                 vfs.deleted_files.remove(&path);
             });
-            MontyObject::Int(char_count as i64).into()
+            MontyObject::int(char_count as i64).into()
         }
         OsFunctionCall::AppendBytes(args) => {
             let path = args.path.as_str().to_owned();
@@ -1135,7 +1144,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                 entry.0.extend_from_slice(bytes);
                 vfs.deleted_files.remove(&path);
             });
-            MontyObject::Int(byte_count as i64).into()
+            MontyObject::int(byte_count as i64).into()
         }
         OsFunctionCall::Mkdir(args) => {
             let path = args.path.as_str().to_owned();
@@ -1144,7 +1153,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
 
             if is_virtual_dir(&path) {
                 if exist_ok {
-                    return MontyObject::None.into();
+                    return MontyObject::none().into();
                 }
                 return MontyException::new(
                     ExcType::FileExistsError,
@@ -1174,7 +1183,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                 vfs.deleted_dirs.remove(&path);
                 vfs.dirs.insert(path);
             });
-            MontyObject::None.into()
+            MontyObject::none().into()
         }
         OsFunctionCall::Unlink(p) => {
             let path = p.as_str().to_owned();
@@ -1184,7 +1193,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                     vfs.files.remove(&path);
                     vfs.deleted_files.insert(path);
                 });
-                MontyObject::None.into()
+                MontyObject::none().into()
             } else {
                 MontyException::new(
                     ExcType::FileNotFoundError,
@@ -1201,7 +1210,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                     vfs.dirs.remove(&path);
                     vfs.deleted_dirs.insert(path);
                 });
-                MontyObject::None.into()
+                MontyObject::none().into()
             } else {
                 MontyException::new(
                     ExcType::FileNotFoundError,
@@ -1220,7 +1229,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                     vfs.deleted_files.insert(path);
                     vfs.files.insert(dest, (file.content, file.mode));
                 });
-                MontyObject::None.into()
+                MontyObject::none().into()
             } else if is_virtual_dir(&path) {
                 MUTABLE_VFS.with(|vfs| {
                     let mut vfs = vfs.borrow_mut();
@@ -1228,7 +1237,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                     vfs.deleted_dirs.insert(path);
                     vfs.dirs.insert(dest);
                 });
-                MontyObject::None.into()
+                MontyObject::none().into()
             } else {
                 MontyException::new(
                     ExcType::FileNotFoundError,
@@ -1243,6 +1252,12 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
 /// Deterministic UTC timestamp for datetime test fixtures (2023-11-14 22:13:20 UTC).
 const DATETIME_FIXTURE_TIMESTAMP: i64 = 1_700_000_000;
 
+/// Answers `os.urandom(size)` with a fixed byte pattern of the requested length.
+fn fixture_entropy(size: u64) -> Vec<u8> {
+    #[expect(clippy::cast_possible_truncation)] // reduced mod 256 first
+    (0..size).map(|i| (i % 256) as u8).collect()
+}
+
 /// Dispatches a `DateTimeNow` OS call, returning a deterministic `MontyDateTime`.
 ///
 /// The `tz` argument determines whether a naive or aware datetime is returned.
@@ -1253,7 +1268,7 @@ fn dispatch_datetime_now(tz: Option<&MontyTimeZone>) -> MontyObject {
         None => {
             // Naive datetime: apply local offset to get local wall-clock time
             // 1_700_000_000 UTC + 7200 = 2023-11-15 00:13:20 local
-            MontyObject::DateTime(MontyDateTime {
+            MontyObject::datetime(MontyDateTime {
                 year: 2023,
                 month: 11,
                 day: 15,
@@ -1270,7 +1285,7 @@ fn dispatch_datetime_now(tz: Option<&MontyTimeZone>) -> MontyObject {
             let offset_delta = chrono::TimeDelta::try_seconds(i64::from(tz.offset_seconds)).expect("valid offset");
             let utc = chrono::DateTime::from_timestamp(DATETIME_FIXTURE_TIMESTAMP, 0).expect("valid timestamp");
             let local = (utc + offset_delta).naive_utc();
-            MontyObject::DateTime(MontyDateTime {
+            MontyObject::datetime(MontyDateTime {
                 year: local.year(),
                 month: u8::try_from(local.month()).expect("month fits u8"),
                 day: u8::try_from(local.day()).expect("day fits u8"),
@@ -1346,7 +1361,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
     #[cfg(feature = "ref-count-return")]
     if let Expectation::RefCounts(expected) = expectation {
         match new_monty_run(code, &test_name) {
-            Ok(ex) => {
+            Ok(mut ex) => {
                 let result = ex.run_ref_counts(vec![]);
                 match result {
                     Ok(monty::RefCountOutput {
@@ -1395,7 +1410,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
     }
 
     match new_monty_run(code, &test_name) {
-        Ok(ex) => {
+        Ok(mut ex) => {
             let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
             match result {
                 Ok(obj) => match expectation {
@@ -1780,7 +1795,7 @@ fn run_mount_fs_iter_loop(
             }
             RunProgress::NameLookup(lookup) => {
                 let result = match lookup.name.as_str() {
-                    "root" => NameLookupResult::Value(MontyObject::Path("/mnt".to_owned())),
+                    "root" => NameLookupResult::from(MontyObject::path("/mnt".to_owned())),
                     _ => NameLookupResult::Undefined,
                 };
                 progress = lookup.resume(result, PrintWriter::Stdout)?;
@@ -1839,12 +1854,11 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
                 // harness registers no class types) answers the documented
                 // store-miss RuntimeError like a real host.
                 if let Some(object_id) = call.object_id {
-                    let result =
-                        dispatch_method_call(&call.function_name, object_id, &call.args, &call.kwargs, &mut registry);
+                    let result = dispatch_method_call(&call.function_name, object_id, &call.args, &mut registry);
                     progress = call.resume(result, PrintWriter::Stdout)?;
                     continue;
                 }
-                let dispatch_result = dispatch_external_call(&call.function_name, call.args.clone(), &mut registry);
+                let dispatch_result = dispatch_external_call(&call.function_name, &call.args, &mut registry);
                 match dispatch_result {
                     DispatchResult::Sync(return_value) => {
                         progress = call.resume(return_value, PrintWriter::Stdout)?;
@@ -1896,23 +1910,20 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
                     // External functions — resolved as callable Function objects
                     "add_ints" | "concat_strings" | "return_value" | "get_list" | "raise_error" | "make_point"
                     | "make_mutable_point" | "make_user" | "make_empty" | "async_call" | "async_fail" => {
-                        NameLookupResult::Value(MontyObject::Function {
-                            name: lookup.name.clone(),
-                            docstring: None,
-                        })
+                        NameLookupResult::from(MontyObject::function(lookup.name.clone(), None))
                     }
                     // Non-function constants — resolved as plain values
-                    "CONST_INT" => NameLookupResult::Value(MontyObject::Int(42)),
-                    "CONST_STR" => NameLookupResult::Value(MontyObject::String("hello".to_string())),
+                    "CONST_INT" => NameLookupResult::from(MontyObject::int(42)),
+                    "CONST_STR" => NameLookupResult::from(MontyObject::string("hello".to_string())),
                     #[expect(clippy::approx_constant, reason = "3.14 is the intended test value")]
-                    "CONST_FLOAT" => NameLookupResult::Value(MontyObject::Float(3.14)),
-                    "CONST_BOOL" => NameLookupResult::Value(MontyObject::Bool(true)),
-                    "CONST_LIST" => NameLookupResult::Value(MontyObject::List(vec![
-                        MontyObject::Int(1),
-                        MontyObject::Int(2),
-                        MontyObject::Int(3),
+                    "CONST_FLOAT" => NameLookupResult::from(MontyObject::float(3.14)),
+                    "CONST_BOOL" => NameLookupResult::from(MontyObject::bool(true)),
+                    "CONST_LIST" => NameLookupResult::from(MontyObject::list([
+                        MontyObject::int(1),
+                        MontyObject::int(2),
+                        MontyObject::int(3),
                     ])),
-                    "CONST_NONE" => NameLookupResult::Value(MontyObject::None),
+                    "CONST_NONE" => NameLookupResult::from(MontyObject::none()),
                     // Unknown names → NameError
                     _ => NameLookupResult::Undefined,
                 };

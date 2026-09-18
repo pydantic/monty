@@ -10,6 +10,7 @@ mod bin;
 mod chr;
 mod divmod;
 mod enumerate;
+mod eval_exec;
 mod filter;
 mod format;
 mod getattr;
@@ -19,6 +20,7 @@ mod hex;
 mod id;
 mod isinstance;
 mod len;
+mod locals;
 mod map;
 mod min_max; // min and max share implementation
 mod next;
@@ -169,6 +171,10 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Sum => sum::builtin_sum(vm, args),
             Self::Type => type_::builtin_type(vm, args),
             Self::Zip => zip::builtin_zip(vm, args),
+            // `eval()` / `exec()` push the compiled snippet's frame.
+            Self::Eval => return eval_exec::builtin_eval(vm, args),
+            Self::Exec => return eval_exec::builtin_exec(vm, args),
+            Self::Locals => locals::builtin_locals(vm, args),
         };
         r.map(CallResult::Value)
     }

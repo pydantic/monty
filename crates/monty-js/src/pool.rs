@@ -30,14 +30,14 @@ use std::{
 };
 
 use monty_pool::{
-    exceeds_max_value_depth,
     telemetry::{TelemetryAdapterHandle, TelemetryContext},
     Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
     ResumeValue, TurnEvent,
 };
 use monty_types::{
-    AssertMessageAnnotations, ExcType, MontyException, MontyObject, NameLookupResult, PrintStream, StackFrame,
-    TypeCheckingConfig, TypeCheckingFormat,
+    unstable::{self, NodeId},
+    AssertMessageAnnotations, ExcType, MontyException, MontyObject, NameLookupResult, NamedValues, PrintStream,
+    StackFrame, TypeCheckingConfig, TypeCheckingFormat,
 };
 use napi::{
     bindgen_prelude::{
@@ -51,16 +51,10 @@ use opentelemetry::{trace::TraceContextExt, Context};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
-    convert::{js_to_monty, monty_to_js},
+    convert::{js_to_monty, monty_to_js, DecodedArena, GraphEncoder},
     limits::{extract_limits, JsResourceLimits},
     telemetry::{configured_adapter, configured_tracing_adapter},
 };
-
-/// Deepest *list-like* value nesting the wire protocol accepts (dicts and
-/// dataclasses cost more recursion budget per level, so nest less deeply).
-#[napi]
-#[expect(clippy::cast_possible_truncation, reason = "MAX_VALUE_DEPTH is 48")]
-pub const MAX_VALUE_DEPTH: u32 = monty_pool::MAX_VALUE_DEPTH as u32;
 
 /// The live pool, shared between the pool object and its sessions. `None`
 /// until `start()` and again after `close()`. A std mutex: only ever held to
@@ -95,8 +89,8 @@ where
 }
 
 /// Pool construction options. Timeouts are pre-normalised to milliseconds by
-/// the TypeScript layer (which also applies the `durationLimitGrace` default
-/// and resolves the binary path).
+/// the TypeScript layer (which also applies the grace defaults and resolves the
+/// binary path).
 #[napi(object, js_name = "NativePoolOptions")]
 pub struct NativePoolOptions {
     /// Resolved path to the `monty` binary.
@@ -109,9 +103,12 @@ pub struct NativePoolOptions {
     pub checkout_timeout_ms: Option<f64>,
     /// Parent-side hard deadline per protocol turn (ms).
     pub request_timeout_ms: Option<f64>,
-    /// Grace for the automatic `maxDurationSecs` backstop (ms). Absent:
+    /// Grace for the automatic `maxFeedDurationSecs` backstop (ms). Absent:
     /// backstop disabled.
-    pub duration_limit_grace_ms: Option<f64>,
+    pub feed_duration_limit_grace_ms: Option<f64>,
+    /// Grace for the automatic `maxTurnDurationSecs` backstop (ms). Absent:
+    /// backstop disabled.
+    pub turn_duration_limit_grace_ms: Option<f64>,
     /// Recycle a worker after serving this many checkouts.
     pub max_checkouts_per_worker: Option<u32>,
 }
@@ -225,9 +222,13 @@ impl NativePool {
             .request_timeout_ms
             .map(|ms| duration_from_ms("requestTimeout", ms))
             .transpose()?;
-        config.duration_limit_grace = options
-            .duration_limit_grace_ms
-            .map(|ms| duration_from_ms("durationLimitGrace", ms))
+        config.feed_duration_limit_grace = options
+            .feed_duration_limit_grace_ms
+            .map(|ms| duration_from_ms("feedDurationLimitGrace", ms))
+            .transpose()?;
+        config.turn_duration_limit_grace = options
+            .turn_duration_limit_grace_ms
+            .map(|ms| duration_from_ms("turnDurationLimitGrace", ms))
             .transpose()?;
         config.max_checkouts_per_worker = options.max_checkouts_per_worker;
         config.metrics = configured_adapter().map(TelemetryAdapterHandle::metrics);
@@ -531,7 +532,7 @@ impl NativeSession {
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let resolved = match value {
             Some(wrapper) => Some(name_lookup_value(env, &wrapper)?),
-            None => function_name.map(|name| MontyObject::Function { name, docstring: None }),
+            None => function_name.map(|name| MontyObject::function(name, None)),
         };
         self.run_turn(
             env,
@@ -602,7 +603,7 @@ impl NativeSession {
                 let value = if ok {
                     match result.get::<Unknown>("value")? {
                         Some(value) => sendable_resume(env, value),
-                        None => ResumeValue::Return(MontyObject::None),
+                        None => ResumeValue::Return(MontyObject::none()),
                     }
                 } else {
                     let exc_type: String = require(&result, "excType")?;
@@ -857,7 +858,8 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
 /// Converts a turn outcome into the JS turn object consumed by
 /// `ts/session.ts`. All keys are fixed strings; sandbox-controlled data only
 /// ever appears in *values* (kwargs cross as `[key, value]` pairs so the
-/// TypeScript layer can build a null-prototype record safely).
+/// TypeScript layer can build a null-prototype record safely). A call's
+/// arena is decoded once, so an object passed twice arrives as one JS object.
 fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> Result<Object<'_>> {
     let mut obj = Object::new(env)?;
     if let Some(context) = context {
@@ -871,7 +873,6 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
         TurnOutcome::Event(TurnEvent::FunctionCall {
             function_name,
             args,
-            kwargs,
             call_id,
             object_id,
             allow_eager_await,
@@ -879,8 +880,10 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("kind", "functionCall")?;
             obj.set("allowEagerAwait", allow_eager_await)?;
             obj.set("functionName", function_name)?;
-            obj.set("args", values_to_js(env, &args)?)?;
-            obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;
+            let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&args);
+            let arena = DecodedArena::new(graph, env)?;
+            obj.set("args", values_to_js(env, &arena, arg_ids)?)?;
+            obj.set("kwargs", pairs_to_js(env, &arena, kwarg_ids)?)?;
             obj.set("callId", call_id)?;
             // the routed receiver uuid as a canonical string
             obj.set("objectId", object_id.map(|uuid| uuid.to_string()))?;
@@ -888,14 +891,17 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
         TurnOutcome::Event(TurnEvent::OsCall {
             function_name,
             args,
-            kwargs,
             call_id,
+            allow_eager_await,
         }) => {
             obj.set("kind", "osCall")?;
             obj.set("functionName", function_name)?;
-            obj.set("args", values_to_js(env, &args)?)?;
-            obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;
+            let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&args);
+            let arena = DecodedArena::new(graph, env)?;
+            obj.set("args", values_to_js(env, &arena, arg_ids)?)?;
+            obj.set("kwargs", pairs_to_js(env, &arena, kwarg_ids)?)?;
             obj.set("callId", call_id)?;
+            obj.set("allowEagerAwait", allow_eager_await)?;
         }
         TurnOutcome::Event(TurnEvent::NameLookup { name, object_id }) => {
             obj.set("kind", "nameLookup")?;
@@ -945,10 +951,10 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
 }
 
 /// Converts positional call arguments for a turn object.
-fn values_to_js<'env>(env: &'env Env, values: &[MontyObject]) -> Result<Array<'env>> {
+fn values_to_js<'env>(env: &'env Env, arena: &DecodedArena<'env>, values: &[NodeId]) -> Result<Array<'env>> {
     let mut array = env.create_array(u32::try_from(values.len()).map_err(|_| invalid("too many arguments"))?)?;
     for (i, value) in (0u32..).zip(values.iter()) {
-        array.set(i, monty_to_js(value, env)?)?;
+        array.set(i, arena.get(*value))?;
     }
     Ok(array)
 }
@@ -956,12 +962,12 @@ fn values_to_js<'env>(env: &'env Env, values: &[MontyObject]) -> Result<Array<'e
 /// Converts kwargs as an array of `[key, value]` pairs. Keys cross as plain
 /// values — never as JS object property names — so a sandbox-chosen key like
 /// `__proto__` cannot touch any prototype here.
-fn pairs_to_js<'env>(env: &'env Env, pairs: &[(MontyObject, MontyObject)]) -> Result<Array<'env>> {
+fn pairs_to_js<'env>(env: &'env Env, arena: &DecodedArena<'env>, pairs: &[(NodeId, NodeId)]) -> Result<Array<'env>> {
     let mut array = env.create_array(u32::try_from(pairs.len()).map_err(|_| invalid("too many kwargs"))?)?;
     for (i, (key, value)) in (0u32..).zip(pairs.iter()) {
         let mut pair = env.create_array(2)?;
-        pair.set(0, monty_to_js(key, env)?)?;
-        pair.set(1, monty_to_js(value, env)?)?;
+        pair.set(0, arena.get(*key))?;
+        pair.set(1, arena.get(*value))?;
         array.set(i, pair)?;
     }
     Ok(array)
@@ -1004,26 +1010,25 @@ fn frame_to_js<'env>(env: &'env Env, frame: &StackFrame) -> Result<Object<'env>>
     Ok(obj)
 }
 
-/// Converts the `inputs` record into named wire values, rejecting values the
-/// wire cannot carry (the feed has not started, so failing here is safe).
-fn convert_inputs(env: &Env, inputs: Option<Object<'_>>) -> Result<Vec<(String, MontyObject)>> {
+/// Converts the `inputs` record into a feed's named values. One arena holds
+/// every input, so an object passed under two names is one sandbox object.
+/// An unconvertible value fails the call: the feed has not started, so
+/// failing here is safe.
+fn convert_inputs<'env>(env: &'env Env, inputs: Option<Object<'env>>) -> Result<NamedValues> {
     let Some(inputs) = inputs else {
-        return Ok(vec![]);
+        return Ok(NamedValues::new());
     };
-    Object::keys(&inputs)?
+    let mut encoder = GraphEncoder::new(env)?;
+    let names = Object::keys(&inputs)?
         .into_iter()
         .map(|name| {
-            let value = match inputs.get::<Unknown>(&name)? {
-                Some(value) => js_to_monty(value, *env)?,
-                None => MontyObject::None,
-            };
-            if exceeds_max_value_depth(&value) {
-                Err(invalid("Max input depth exceeded"))
-            } else {
-                Ok((name, value))
-            }
+            // `get_named_property` (not `get`) so an `undefined` input still
+            // converts (to `None`) instead of collapsing to absent
+            let value: Unknown = inputs.get_named_property(&name)?;
+            Ok((name, encoder.push(value)?))
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok(unstable::named_values_from_parts(encoder.finish(), names).expect("encoded roots are valid"))
 }
 
 /// Converts a non-callable `externalLookup` entry — carried inside a
@@ -1033,16 +1038,11 @@ fn convert_inputs(env: &Env, inputs: Option<Object<'_>>) -> Result<Vec<(String, 
 /// (which becomes a catchable in-sandbox error), the worker has not yet
 /// observed the name, so a bad value fails the turn cleanly — matching the
 /// Python resolver, which surfaces a conversion error rather than `NameError`.
-fn name_lookup_value(env: &Env, wrapper: &Object<'_>) -> Result<MontyObject> {
+fn name_lookup_value<'env>(env: &'env Env, wrapper: &Object<'env>) -> Result<MontyObject> {
     // `get_named_property` (not `get`) so an inner `undefined` still converts
     // (to `None`) instead of collapsing back to Option::None.
     let value: Unknown = wrapper.get_named_property("value")?;
-    let obj = js_to_monty(value, *env)?;
-    if exceeds_max_value_depth(&obj) {
-        Err(invalid("Max input depth exceeded"))
-    } else {
-        Ok(obj)
-    }
+    js_to_monty(value, env)
 }
 
 /// Reads a required field from a JS object argument.
@@ -1052,10 +1052,10 @@ fn require<T: FromNapiValue>(obj: &Object<'_>, field: &str) -> Result<T> {
 }
 
 /// Converts an external call's return value into a resume. Values that
-/// cannot cross the wire — unconvertible or too deeply nested — become a
-/// catchable in-sandbox error instead: the worker is suspended awaiting
-/// exactly one resume, so this must never fail.
-fn sendable_resume(env: &Env, value: Unknown<'_>) -> ResumeValue {
+/// cannot cross the wire — unconvertible or cyclic — become a catchable
+/// in-sandbox error instead: the worker is suspended awaiting exactly one
+/// resume, so this must never fail.
+fn sendable_resume<'env>(env: &'env Env, value: Unknown<'env>) -> ResumeValue {
     match sendable_value(env, value) {
         Ok(value) => ResumeValue::Return(value),
         Err(exc) => ResumeValue::Error(exc),
@@ -1063,17 +1063,9 @@ fn sendable_resume(env: &Env, value: Unknown<'_>) -> ResumeValue {
 }
 
 /// Converts a host value the sandbox has already asked for, mapping one the
-/// wire cannot carry to the exception raised in its place: `TypeError` for an
-/// unconvertible value, `RuntimeError` for excessive nesting.
-fn sendable_value(env: &Env, value: Unknown<'_>) -> StdResult<MontyObject, MontyException> {
-    match js_to_monty(value, *env) {
-        Ok(value) if exceeds_max_value_depth(&value) => Err(MontyException::new(
-            ExcType::RuntimeError,
-            Some("Max input depth exceeded".to_owned()),
-        )),
-        Ok(value) => Ok(value),
-        Err(err) => Err(MontyException::new(ExcType::TypeError, Some(err.reason.clone()))),
-    }
+/// wire cannot carry to the `TypeError` raised in its place.
+fn sendable_value<'env>(env: &'env Env, value: Unknown<'env>) -> StdResult<MontyObject, MontyException> {
+    js_to_monty(value, env).map_err(|err| MontyException::new(ExcType::TypeError, Some(err.reason)))
 }
 
 /// Builds a `MontyException` from the TypeScript error mapping (which only

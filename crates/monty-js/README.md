@@ -18,7 +18,8 @@ npm packages installed automatically (like esbuild). Browser builds use the
 package `browser` export and never import the napi loader; they run the sandbox
 in a Web Worker as a WIT-defined WASI 0.2 component with the same pool/session
 API. Advanced Node-only helpers are available from `@pydantic/monty/node`, and wasm-specific
-factories from `@pydantic/monty/wasm`.
+factories from `@pydantic/monty/wasm`: `Monty.create()` there is `createWorkerPool(await loadModule())`,
+and both are exported so an app can fetch and compile the wasm ahead of starting workers.
 
 ## Installation
 
@@ -151,7 +152,7 @@ chosen per value (deliberately nothing inherits another wrapper's policies).
 Each wrapper the hook creates is held by the session's instance store until
 the session closes, so a method returning a fresh object per call grows host
 memory by one entry per call; see
-[`limitations/pool-architecture.md`](https://github.com/pydantic/monty/blob/main/limitations/pool-architecture.md#host-api-behaviour-notes).
+[host-object retention](https://github.com/pydantic/monty/blob/main/docs/host-objects.md#values-returned-by-methods).
 
 One more option: `name` overrides the class name the sandbox sees (default
 the class name). It is a class-level property: on a `ClassInstance` it names
@@ -258,6 +259,32 @@ while (!(snap instanceof MontyComplete)) {
 console.log(snap.output) // 'hello Ada!'
 ```
 
+For manual handlers, all three snapshot types expose `traceContext()`, returning an OpenTelemetry `Context`.
+Use the standard OTel API to nest host tracing under the suspension:
+
+```ts
+import { context } from '@opentelemetry/api'
+import { FunctionSnapshot, Monty, MontyComplete } from '@pydantic/monty'
+
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+const snapshot = await session.feedStart('greet(name)', { inputs: { name: 'Ada' } })
+if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
+const result = await context.with(snapshot.traceContext(), async () => `hello ${snapshot.args[0]}`)
+const done = await snapshot.resume(result)
+if (!(done instanceof MontyComplete)) throw new Error('expected completion')
+console.log(done.output) // hello Ada
+```
+
+With [Monty instrumentation](#observability) enabled, the method adds the suspension's span to the context captured at
+`feedStart` / `loadSnapshot`, preserving baggage and other entries.
+Without Monty tracing, including on Browser/WASM, it returns that captured context unchanged.
+Context is not serialized: restoring captures the restoring caller's context instead.
+Use an SDK-configured OTel context manager to propagate context across awaits.
+The method does not activate the context, resume execution, or own the span's lifetime.
+Calling it after resume throws; contexts retrieved earlier remain usable, but resuming still ends the suspension span.
+`resumeAuto()` already activates the suspension span around callbacks.
+
 Calls and lookups routed to a wrapped host object carry the receiver's id:
 `FunctionSnapshot.objectId` is set for a method call on a `ClassInstance`
 (or a static method / `__call__` construction on a `ClassType`), and
@@ -268,6 +295,12 @@ from the session's wrappers. To answer a lazy lookup by hand, use
 any convertible value (`resume()` resolves a name to an external function
 only, and with no argument leaves the lookup unresolved: `NameError` for a
 plain name, `AttributeError` when `objectId` is set).
+
+Only restore unmodified session dumps and suspended snapshots from a trusted, compatible Monty producer.
+The caller must establish provenance and integrity before calling either `loadSession` or `loadSnapshot`;
+Monty does not authenticate the bytes.
+Invalid dumps and snapshots have no correctness or availability guarantees.
+Successful loading does not establish validity.
 
 `snapshot.dump()` serializes the paused worker to bytes; a fresh session's
 `loadSnapshot` restores it and returns the snapshot to resume. Re-supply the
@@ -367,6 +400,11 @@ await session.feedRun('import os\nos.getenv("HOME")', {
 })
 ```
 
+An `async` callback works too. Its answer to `asyncio.sleep` is registered as a
+future, so the sandbox's other tasks run while it waits (or, when there are
+none, is awaited in place like an eager host function); its answer to any other
+OS call is awaited before that session resumes.
+
 Callback-backed virtual files return a `MontyFileHandle` marker from the
 open-time call. Paths are virtual POSIX sandbox paths and `position` defaults
 to zero:
@@ -402,7 +440,7 @@ Enforced inside the worker, configured per session:
 
 ```ts
 const limited = await pool.checkout({
-  limits: { maxMemory: 100 * 1024 * 1024, maxDurationSecs: 5, maxRecursionDepth: 100 },
+  limits: { maxMemory: 100 * 1024 * 1024, maxFeedDurationSecs: 5, maxTurnDurationSecs: 1, maxRecursionDepth: 100 },
 })
 ```
 
@@ -410,14 +448,19 @@ const limited = await pool.checkout({
 interpreter itself: the worker is killed and the session fails with
 `MontyCrashedError` (`timedOut: true`).
 
-`maxDurationSecs` limits cumulative _execution_ time: the sandbox clock runs
-only while the interpreter executes, never while suspended waiting on an
-external function or between feeds. Sessions with the limit also get an
-automatic backstop: the worker reports its execution time on every protocol
-turn and the host kills it `durationLimitGrace` (default 1s) after the
-remaining budget expires, covering cases where the in-sandbox limit cannot
-fire (its check only runs at interpreter checkpoints). Set
-`durationLimitGrace: null` to disable it.
+`maxFeedDurationSecs` and `maxTurnDurationSecs` limit _execution_ time: the
+sandbox clock runs only while the interpreter executes, never while suspended
+waiting on an external function or between feeds. They bound one `feedRun` and
+one stretch of code between host round trips, by restarting the clock at each
+feed and at each host answer respectively. Neither accumulates over a session's
+lifetime; bounding that is the host's job.
+
+Both also get an automatic backstop: the worker reports its consumed time on
+every protocol turn and the host kills it a grace period after the budget
+expires, covering cases where the in-sandbox limit cannot fire (its check only
+runs at interpreter checkpoints). The graces are `feedDurationLimitGrace` and
+`turnDurationLimitGrace` (default 1s each); set one to `null` to disable that
+backstop.
 
 `maxSuspensions` limits the host round trips the pool services per checkout
 (default 1000; it cannot be disabled). Exceeding it ends the feed with an
@@ -491,7 +534,8 @@ const pool = await Monty.create({
   maxProcesses: 8, // cap; checkouts beyond it wait (default: CPU count)
   checkoutTimeout: 10, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline (seconds)
-  durationLimitGrace: 1, // maxDurationSecs backstop grace (seconds, null disables)
+  feedDurationLimitGrace: 1, // maxFeedDurationSecs backstop grace (seconds, null disables)
+  turnDurationLimitGrace: 1, // maxTurnDurationSecs backstop grace
   maxCheckoutsPerWorker: 100, // recycle workers after this many sessions
   binaryPath: '/path/to/monty', // explicit binary (default: auto-resolved)
 })
@@ -584,3 +628,15 @@ Browser/WASM does not yet implement this instrumentation path.
 | class instances   | `ClassInstance` wrappers / `MontyClassProxy` stand-ins |
 
 Plain objects are accepted as dict inputs (string keys).
+
+Object identity is kept within one message.
+A value the sandbox references twice (a returned `[x, x]`, or `f(x, x)` to a host function) arrives as one JavaScript
+object, and an object passed under two inputs is one sandbox object.
+Each separate feed or call gets its own copy.
+
+A cyclic input or return value is rejected with `TypeError: Circular reference detected`.
+A self-referential sandbox value arrives with its placeholder string (`'[...]'`, `'{...}'`) at the point of the cycle.
+
+The wire imposes no nesting limit, but a sandbox value nested deeper than `maxRecursionDepth` (1000 by default) arrives
+with the part below that depth replaced by the string `'<deeply nested>'`; see
+[host-value limitations](https://github.com/pydantic/monty/blob/main/docs/limitations/host-values.md).

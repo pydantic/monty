@@ -14,8 +14,11 @@
 use std::fmt::{self, Write};
 
 use logfire::{Logfire, set_local_logfire};
-use monty_proto::{WireFunctionCall, WireObject, pb, pb::os_call::Call};
-use monty_types::{MontyObject, MontyUuid, bytes_repr};
+use monty_proto::{WireArena, WireFunctionCall, pb, pb::os_call::Call};
+use monty_types::{
+    MontyUuid, bytes_repr,
+    unstable::{MontyNode, NodeId},
+};
 use opentelemetry::Value as OtelValue;
 use tracing::{Span, field::Empty};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -130,7 +133,8 @@ impl Recorder {
                     length_limit_exceeded =
                         (script_name_cut | monty_version_cut | type_check_stubs_cut).then_some(true),
                     assert_message_annotations = c.assert_message_annotations,
-                    max_duration_micros = limits.and_then(|l| l.max_duration_micros),
+                    max_feed_duration_micros = limits.and_then(|l| l.max_feed_duration_micros),
+                    max_turn_duration_micros = limits.and_then(|l| l.max_turn_duration_micros),
                     max_memory_bytes = limits.and_then(|l| l.max_memory_bytes),
                     gc_interval = limits.and_then(|l| l.gc_interval),
                     max_recursion_depth = limits.and_then(|l| l.max_recursion_depth),
@@ -177,7 +181,7 @@ impl Recorder {
             }
             Some(pb::parent_request::Kind::Feed(f)) => {
                 let (code, code_cut) = truncate_str(&f.code);
-                let (inputs, inputs_cut) = render_inputs(&f.inputs);
+                let (inputs, inputs_cut) = render_inputs(&f.inputs, f.values.as_ref());
                 // a feed while one is open is a checkout-level error the
                 // worker rejects; close the stale spans so nesting stays sane
                 self.pending = None;
@@ -195,7 +199,7 @@ impl Recorder {
                     // that closes this span
                     output = Empty,
                     total_execution_micros = Empty,
-                    max_duration_micros = Empty,
+                    max_feed_duration_micros = Empty,
                 ));
                 self.feed = Some(OpenSpan::new(span, cut));
             }
@@ -203,11 +207,11 @@ impl Recorder {
             // attribute of the suspension span it closes, so a round-trip
             // reads as one span rather than a span plus a child record
             Some(pb::parent_request::Kind::ResumeCall(r)) => {
-                let (result, cut) = render_ext_result(r.result.as_ref());
+                let (result, cut) = render_ext_result(r.result.as_ref(), r.values.as_ref());
                 self.close_pending("return_value", &result, cut);
             }
             Some(pb::parent_request::Kind::ResumeNameLookup(r)) => {
-                let (result, cut) = render_name_lookup(r.kind.as_ref());
+                let (result, cut) = render_name_lookup(r.kind.as_ref(), r.values.as_ref());
                 self.close_pending("value", &result, cut);
             }
             // An abort answers with the exception the sandbox will raise.
@@ -222,11 +226,11 @@ impl Recorder {
                         .as_ref()
                         .is_some_and(|pending| pending.eager_call_id == Some(result.call_id))
                 {
-                    let (value, cut) = render_ext_result(result.result.as_ref());
+                    let (value, cut) = render_ext_result(result.result.as_ref(), r.values.as_ref());
                     self.close_pending("return_value", &value, cut);
                 } else {
                     let pending = self.take_pending();
-                    let (results, cut) = render_future_results(&r.results);
+                    let (results, cut) = render_future_results(&r.results, r.values.as_ref());
                     logfire::info!(
                         parent: pending,
                         "future results",
@@ -243,7 +247,7 @@ impl Recorder {
                     // filled in by the `DumpResult` reply
                     state_bytes = Empty,
                     total_execution_micros = Empty,
-                    max_duration_micros = Empty,
+                    max_feed_duration_micros = Empty,
                 )));
             }
             // no span of its own: the session is normally already reset, and
@@ -266,7 +270,7 @@ impl Recorder {
         // the budget travels with the elapsed time so `Load`-restored sessions,
         // whose limits come from the dump, show what it is measured against
         let micros = event.total_execution_micros;
-        let max_duration = event.max_duration_micros;
+        let max_feed_duration = event.max_feed_duration_micros;
         // only a `Load` reply carries this: the session span already exists with
         // the `Configure` name, so the dump's name goes on the load span
         if let (Some(script_name), Some(load)) = (&event.restored_script_name, &self.turn) {
@@ -305,7 +309,7 @@ impl Recorder {
                     object_id = c.object_id.as_ref().map(MontyUuid::to_string),
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
-                    max_duration_micros = max_duration,
+                    max_feed_duration_micros = max_feed_duration,
                     // Filled by ResumeCall, an eager ResumeFutures, or AbortFeed.
                     return_value = Empty,
                     aborted_with = Empty,
@@ -315,7 +319,7 @@ impl Recorder {
                 self.pending = Some(pending);
             }
             Some(pb::child_event::Kind::OsCall(c)) => {
-                self.pending = Some(os_call_span(c, micros, max_duration, &self.context_span()));
+                self.pending = Some(os_call_span(c, micros, max_feed_duration, &self.context_span()));
             }
             Some(pb::child_event::Kind::NameLookup(n)) => {
                 let (name, cut) = truncate_str(&n.name);
@@ -324,7 +328,7 @@ impl Recorder {
                     "name lookup {name}",
                     name = name,
                     total_execution_micros = micros,
-                    max_duration_micros = max_duration,
+                    max_feed_duration_micros = max_feed_duration,
                     // filled in by the answering `ResumeNameLookup`, or an `AbortFeed`
                     value = Empty,
                     aborted_with = Empty,
@@ -340,19 +344,19 @@ impl Recorder {
                     pending_call_ids = pending_call_ids,
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
-                    max_duration_micros = max_duration,
+                    max_feed_duration_micros = max_feed_duration,
                     // filled in by an `AbortFeed`
                     aborted_with = Empty,
                 ));
                 self.pending = Some(OpenSpan::new(span, cut));
             }
             Some(pb::child_event::Kind::Complete(c)) => {
-                let (value, cut) = optional_attr(c.value.as_ref());
-                self.record_complete(value, cut, micros, max_duration);
+                let (value, cut) = attr_value(arena_nodes(c.values.as_ref()), NodeId(c.value));
+                self.record_complete(Some(value), cut, micros, max_feed_duration);
                 self.end_feed();
             }
             Some(pb::child_event::Kind::Error(e)) => {
-                record_error(e, micros, max_duration, &self.context_span());
+                record_error(e, micros, max_feed_duration, &self.context_span());
                 // an error reply to `Dump` leaves the feed suspended and
                 // resumable, so it closes only the dump span
                 if self.dump_turn {
@@ -369,7 +373,7 @@ impl Recorder {
                     diagnostics = diagnostics,
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
-                    max_duration_micros = max_duration,
+                    max_feed_duration_micros = max_feed_duration,
                 );
                 self.end_feed();
             }
@@ -378,8 +382,8 @@ impl Recorder {
                 if let Some(dump) = &self.turn {
                     dump.record("state_bytes", int_attr(d.state.len()));
                     dump.record("total_execution_micros", int_attr(micros));
-                    if let Some(max_duration) = max_duration {
-                        dump.record("max_duration_micros", int_attr(max_duration));
+                    if let Some(max_feed_duration) = max_feed_duration {
+                        dump.record("max_feed_duration_micros", int_attr(max_feed_duration));
                     }
                 }
                 self.turn = None;
@@ -392,9 +396,9 @@ impl Recorder {
                 logfire::info!(
                     parent: self.context_span(),
                     "shutdown",
-                    state_bytes = s.dump.as_ref().map(Vec::len),
+                    state_bytes = s.dump.as_ref().map(|bytes| bytes.len()),
                     total_execution_micros = micros,
-                    max_duration_micros = max_duration,
+                    max_feed_duration_micros = max_feed_duration,
                 );
             }
             // a bare acknowledgement ending a housekeeping turn; the turn
@@ -418,7 +422,7 @@ impl Recorder {
     ///
     /// A restored suspension has no feed span (its `Load` turn stands in for
     /// one), so its completion is recorded as an event instead.
-    fn record_complete(&mut self, value: Option<OtelValue>, cut: bool, micros: u64, max_duration: Option<u64>) {
+    fn record_complete(&mut self, value: Option<OtelValue>, cut: bool, micros: u64, max_feed_duration: Option<u64>) {
         // taking the span closes it here rather than in the `end_feed` the
         // caller runs next, which would close it a moment later anyway
         match self.feed.take() {
@@ -427,8 +431,9 @@ impl Recorder {
                     feed.record("output", &value, cut);
                 }
                 feed.span.record("total_execution_micros", int_attr(micros));
-                if let Some(max_duration) = max_duration {
-                    feed.span.record("max_duration_micros", int_attr(max_duration));
+                if let Some(max_feed_duration) = max_feed_duration {
+                    feed.span
+                        .record("max_feed_duration_micros", int_attr(max_feed_duration));
                 }
             }
             None => logfire::info!(
@@ -437,7 +442,7 @@ impl Recorder {
                 output = value,
                 length_limit_exceeded = cut.then_some(true),
                 total_execution_micros = micros,
-                max_duration_micros = max_duration,
+                max_feed_duration_micros = max_feed_duration,
             ),
         }
     }
@@ -524,40 +529,38 @@ impl OpenSpan {
 /// worker rejects such frames; telemetry still has to render something.
 const MISSING: &str = "<missing>";
 
+/// The nodes of a message's arena, empty when the frame carried none (every
+/// root then renders as [`MISSING`]).
+fn arena_nodes(values: Option<&WireArena>) -> &[MontyNode] {
+    values.map_or(&[], |arena| arena.0.as_slice())
+}
+
 /// Renders a feed's named inputs as one JSON object; the bool reports a cut at
-/// [`ATTR_SIZE_LIMIT`]. Values are borrowed, never cloned — inputs can be a
-/// large graph of which only the cap survives.
-fn render_inputs(inputs: &[pb::NamedValue]) -> (Option<String>, bool) {
+/// [`ATTR_SIZE_LIMIT`]. Values are rendered straight from the arena, never
+/// copied — inputs can be a large graph of which only the cap survives.
+fn render_inputs(inputs: &[pb::NamedRef], values: Option<&WireArena>) -> (Option<String>, bool) {
     if inputs.is_empty() {
         return (None, false);
     }
-    // One placeholder is borrowed by every value the frame left out. The
-    // cloneable iterator avoids allocating in proportion to all inputs.
-    let missing = MontyObject::Repr(MISSING.to_owned());
-    let pairs = inputs.iter().map(|input| {
-        let value = input
-            .value
-            .as_ref()
-            .and_then(|value| value.0.as_ref())
-            .unwrap_or(&missing);
-        (input.name.as_str(), value)
-    });
-    let (json, cut) = serialize_named_iter_capped(pairs, inputs.len(), ATTR_SIZE_LIMIT);
+    // The cloneable iterator avoids allocating in proportion to all inputs.
+    let pairs = inputs.iter().map(|input| (input.name.as_str(), NodeId(input.value)));
+    let (json, cut) = serialize_named_iter_capped(arena_nodes(values), pairs, inputs.len(), ATTR_SIZE_LIMIT);
     (Some(json), cut)
 }
 
 /// Renders a call's positional arguments as a JSON list and its keyword
-/// arguments as a JSON object, either absent when empty; borrowed for the
-/// reason given in [`render_inputs`].
+/// arguments as a JSON object, either absent when empty; rendered from the
+/// arena for the reason given in [`render_inputs`].
 fn render_call_arguments(call: &WireFunctionCall) -> (Option<String>, Option<String>, bool) {
     let mut any_cut = false;
+    let nodes = call.values.0.as_slice();
     let args = (!call.args.is_empty()).then(|| {
-        let (json, cut) = serialize_seq_capped(&call.args, ATTR_SIZE_LIMIT);
+        let (json, cut) = serialize_seq_capped(nodes, &call.args, ATTR_SIZE_LIMIT);
         any_cut |= cut;
         json
     });
     let kwargs = (!call.kwargs.is_empty()).then(|| {
-        let (json, cut) = serialize_dict_capped(&call.kwargs, ATTR_SIZE_LIMIT);
+        let (json, cut) = serialize_dict_capped(nodes, &call.kwargs, ATTR_SIZE_LIMIT);
         any_cut |= cut;
         json
     });
@@ -567,9 +570,9 @@ fn render_call_arguments(call: &WireFunctionCall) -> (Option<String>, Option<Str
 /// Renders the pool's answer to a `FunctionCall` / `OsCall` suspension: a
 /// returned value in its typed [`attr_value`] form, every other outcome
 /// descriptively. The bool reports a cut at [`ATTR_SIZE_LIMIT`].
-fn render_ext_result(result: Option<&pb::ExtFunctionResult>) -> (OtelValue, bool) {
+fn render_ext_result(result: Option<&pb::ExtFunctionResult>, values: Option<&WireArena>) -> (OtelValue, bool) {
     match result.and_then(|r| r.kind.as_ref()) {
-        Some(pb::ext_function_result::Kind::ReturnValue(v)) => attr_value(v),
+        Some(pb::ext_function_result::Kind::ReturnValue(v)) => attr_value(arena_nodes(values), NodeId(*v)),
         Some(pb::ext_function_result::Kind::Error(e)) => render_raised(e),
         Some(pb::ext_function_result::Kind::Future(id)) => (format!("future {id}").into(), false),
         Some(pb::ext_function_result::Kind::NotFound(name)) => {
@@ -583,9 +586,9 @@ fn render_ext_result(result: Option<&pb::ExtFunctionResult>) -> (OtelValue, bool
 
 /// Renders the pool's answer to a `NameLookup` suspension; the bool reports
 /// a cut at [`ATTR_SIZE_LIMIT`].
-fn render_name_lookup(kind: Option<&pb::resume_name_lookup::Kind>) -> (OtelValue, bool) {
+fn render_name_lookup(kind: Option<&pb::resume_name_lookup::Kind>, values: Option<&WireArena>) -> (OtelValue, bool) {
     match kind {
-        Some(pb::resume_name_lookup::Kind::Value(v)) => attr_value(v),
+        Some(pb::resume_name_lookup::Kind::Value(v)) => attr_value(arena_nodes(values), NodeId(*v)),
         Some(pb::resume_name_lookup::Kind::Undefined(_)) => ("undefined".into(), false),
         Some(pb::resume_name_lookup::Kind::Error(e)) => render_raised(e),
         None => (MISSING.into(), false),
@@ -607,7 +610,7 @@ fn render_raised(e: &pb::RaisedException) -> (OtelValue, bool) {
 
 /// Renders resolved futures as `call_id: result, ...`; the bool reports a cut
 /// of any result — or of the joined output — at [`ATTR_SIZE_LIMIT`].
-fn render_future_results(results: &[pb::FutureResult]) -> (Option<String>, bool) {
+fn render_future_results(results: &[pb::FutureResult], values: Option<&WireArena>) -> (Option<String>, bool) {
     if results.is_empty() {
         return (None, false);
     }
@@ -617,7 +620,7 @@ fn render_future_results(results: &[pb::FutureResult]) -> (Option<String>, bool)
             if index != 0 {
                 writer.write_str(", ")?;
             }
-            let (value, cut) = render_ext_result(result.result.as_ref());
+            let (value, cut) = render_ext_result(result.result.as_ref(), values);
             result_cut |= cut;
             write!(writer, "{}: {value}", result.call_id)?;
         }
@@ -643,7 +646,7 @@ fn render_call_ids(ids: &[u32]) -> (Option<String>, bool) {
 /// Each call shape gets its own macro invocation because the attribute set is
 /// baked into the span's `logfire.json_schema` at compile time — a union-shaped
 /// call would surface every unused argument as `null` in the UI.
-fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, parent: &Span) -> OpenSpan {
+fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64>, parent: &Span) -> OpenSpan {
     let call_id = os_call.call_id;
     // set by the arms whose arguments can be cut; recorded once below, so that
     // the answering `ResumeCall` can tell whether the flag is already there
@@ -658,7 +661,7 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, pa
                 $($($key).+ = $value,)*
                 call_id = call_id,
                 total_execution_micros = micros,
-                max_duration_micros = max_duration,
+                max_feed_duration_micros = max_feed_duration,
                 // filled in by the answering `ResumeCall`, or an `AbortFeed`
                 return_value = Empty,
                 aborted_with = Empty,
@@ -722,8 +725,8 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, pa
         // `os.getenv`; a span attribute cannot carry a dynamically typed
         // value, so the default is stringified
         Some(Call::Getenv(g)) => {
-            let (default, cut) = optional_attr(g.default.as_ref());
-            let default = default.map(|v| v.as_str().into_owned());
+            let (default, cut) = attr_value(arena_nodes(os_call.values.as_ref()), NodeId(g.default));
+            let default = default.as_str().into_owned();
             args_cut |= cut;
             os_call!("getenv", args.key = string_arg!(&g.key), args.default = default)
         }
@@ -741,6 +744,10 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, pa
                 os_call!("date_time_now")
             }
         }
+        Some(Call::Urandom(u)) => os_call!("urandom", args.size = u.size),
+        Some(Call::Time(_)) => os_call!("time"),
+        Some(Call::Sleep(s)) => os_call!("sleep", args.seconds = s.seconds),
+        Some(Call::AsyncSleep(s)) => os_call!("async_sleep", args.delay = s.delay),
         None => os_call!(MISSING),
     });
     if args_cut {
@@ -774,7 +781,7 @@ fn render_traceback(frames: &[pb::StackFrame]) -> (Option<String>, bool) {
 /// field of a structured payload as an `exc_data.*` attribute — including the
 /// offending input, the value being debugged. One macro invocation per payload
 /// shape, for the reason given in [`os_call_span`].
-fn record_error(error: &pb::Error, micros: u64, max_duration: Option<u64>, parent: &Span) {
+fn record_error(error: &pb::Error, micros: u64, max_feed_duration: Option<u64>, parent: &Span) {
     let exc = error.exception.as_ref();
     let (exc_type, exc_type_cut) = exc.map_or_else(
         || (MISSING.to_owned(), false),
@@ -797,7 +804,7 @@ fn record_error(error: &pb::Error, micros: u64, max_duration: Option<u64>, paren
                 $($($key).+ = $value,)*
                 length_limit_exceeded = ($cut).then_some(true),
                 total_execution_micros = micros,
-                max_duration_micros = max_duration,
+                max_feed_duration_micros = max_feed_duration,
             )
         };
     }
@@ -841,26 +848,27 @@ fn record_error(error: &pb::Error, micros: u64, max_duration: Option<u64>, paren
 /// record gets a `length_limit_exceeded` attribute saying so.
 const ATTR_SIZE_LIMIT: usize = 64 * 1024;
 
-/// Renders a wire value as a typed OTel attribute: scalars keep their native
-/// attribute type, everything else becomes logfire-style JSON text. The bool
-/// is true when [`ATTR_SIZE_LIMIT`] cut the output short.
-fn attr_value(value: &WireObject) -> (OtelValue, bool) {
-    match value.0.as_ref() {
-        Some(MontyObject::Bool(b)) => ((*b).into(), false),
-        Some(MontyObject::Int(i)) => ((*i).into(), false),
-        Some(MontyObject::Float(f)) if f.is_finite() => ((*f).into(), false),
+/// Renders the value rooted at `id` in `nodes` as a typed OTel attribute:
+/// scalars keep their native attribute type, everything else becomes
+/// logfire-style JSON text. The bool is true when [`ATTR_SIZE_LIMIT`] cut the
+/// output short. A root the arena does not hold renders as [`MISSING`].
+fn attr_value(nodes: &[MontyNode], id: NodeId) -> (OtelValue, bool) {
+    match nodes.get(id.index()) {
+        Some(MontyNode::Bool(b)) => ((*b).into(), false),
+        Some(MontyNode::Int(i)) => ((*i).into(), false),
+        Some(MontyNode::Float(f)) if f.is_finite() => ((*f).into(), false),
         // Python `str()` of the non-finite floats JSON cannot carry
-        Some(MontyObject::Float(f)) => (nonfinite_str(*f).into(), false),
-        Some(MontyObject::String(s)) => {
+        Some(MontyNode::Float(f)) => (nonfinite_str(*f).into(), false),
+        Some(MontyNode::String(s)) => {
             let (text, cut) = truncate_str(s);
             (text.into(), cut)
         }
-        Some(MontyObject::Bytes(b)) => {
+        Some(MontyNode::Bytes(b)) => {
             let (text, cut) = bytes_attr(b);
             (text.into(), cut)
         }
-        Some(other) => {
-            let (json, cut) = serialize_capped(other, ATTR_SIZE_LIMIT);
+        Some(_) => {
+            let (json, cut) = serialize_capped(nodes, id, ATTR_SIZE_LIMIT);
             (json.into(), cut)
         }
         None => (MISSING.into(), false),
@@ -884,12 +892,6 @@ fn record_attr(span: &Span, field: &'static str, value: &OtelValue) {
 /// since `tracing` has no u64 (one would land as a debug string instead).
 fn int_attr(count: impl TryInto<i64>) -> i64 {
     count.try_into().unwrap_or(i64::MAX)
-}
-
-/// [`attr_value`] for an optional field: an absent value renders as an absent
-/// attribute, not as [`MISSING`].
-fn optional_attr(value: Option<&WireObject>) -> (Option<OtelValue>, bool) {
-    unzip(value.map(attr_value))
 }
 
 /// Splits an optional `(value, cut)` pair into the optional value and the cut
@@ -984,7 +986,7 @@ mod tests {
 
     use logfire::{Logfire, config::AdvancedOptions, set_local_logfire};
     use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
-    use monty_types::MontyObject;
+    use monty_types::{CallArgs, MontyObject, NameLookupResult};
     use opentelemetry::{logs::AnyValue, trace::SpanId};
     use opentelemetry_sdk::{
         logs::{InMemoryLogExporter, SimpleLogProcessor},
@@ -1033,9 +1035,11 @@ mod tests {
         pb::ChildEvent {
             kind: Some(kind),
             total_execution_micros: 42,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: None,
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
         }
     }
 
@@ -1059,27 +1063,25 @@ mod tests {
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::Feed(pb::Feed {
             code: "double(2)".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
+            values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
         })));
-        recorder.event(&event(pb::child_event::Kind::FunctionCall(WireFunctionCall {
-            function_name: "double".to_owned(),
-            args: vec![MontyObject::Int(2)],
-            kwargs: vec![],
-            call_id: 1,
-            object_id: None,
-            allow_eager_await: false,
-        })));
+        recorder.event(&event(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+            "double".to_owned(),
+            CallArgs::from(vec![MontyObject::int(2)]),
+            1,
+            None,
+            false,
+        ))));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
-            result: Some(pb::ExtFunctionResult {
-                kind: Some(pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(4).into())),
-            }),
+            ..pb::ResumeCall::from(MontyObject::int(4))
         })));
-        recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete {
-            value: Some(MontyObject::Int(4).into()),
-        })));
+        recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
+            MontyObject::int(4),
+        ))));
         recorder.begin_turn(&request(pb::parent_request::Kind::Reset(pb::Reset {})));
 
         // spans are exported innermost-first as they close
@@ -1125,14 +1127,12 @@ mod tests {
             object_id: None,
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
-            pb::ResumeNameLookup {
-                kind: Some(pb::resume_name_lookup::Kind::Value(
-                    MontyObject::String("<function>".to_owned()).into(),
-                )),
-            },
+            NameLookupResult::from(MontyObject::string("<function>".to_owned())).into(),
         )));
         recorder.event(&event(pb::child_event::Kind::OsCall(pb::OsCall {
             call_id: 1,
+            values: None,
+            allow_eager_await: false,
             call: Some(Call::WriteText(pb::os_call::TextWrite {
                 path: "/mnt/data/f.txt".to_owned(),
                 data: long.clone(),
@@ -1140,11 +1140,7 @@ mod tests {
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
-            result: Some(pb::ExtFunctionResult {
-                kind: Some(pb::ext_function_result::Kind::ReturnValue(
-                    MontyObject::String(long).into(),
-                )),
-            }),
+            ..pb::ResumeCall::from(MontyObject::string(long))
         })));
 
         let spans = spans.get_finished_spans().unwrap();
@@ -1171,17 +1167,21 @@ mod tests {
         let _guard = set_local_logfire(logfire);
         let mut recorder = Recorder::new(None);
 
-        recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![0; 8] })));
+        recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![0; 8].into(),
+        })));
         recorder.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 42,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: Some("dumped.py".to_owned()),
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
         });
         recorder.begin_turn(&request(pb::parent_request::Kind::Dump(pb::Dump {})));
         recorder.event(&event(pb::child_event::Kind::DumpResult(pb::DumpResult {
-            state: vec![0; 16],
+            state: vec![0; 16].into(),
         })));
 
         let spans = spans.get_finished_spans().unwrap();
@@ -1219,23 +1219,28 @@ mod tests {
             ..Default::default()
         })));
         recorder.event(&event(pb::child_event::Kind::Ok(pb::Ok {})));
-        recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![] })));
+        recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![].into(),
+        })));
         recorder.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 42,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: Some("restored.py".to_owned()),
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
         });
         recorder.begin_turn(&request(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
+            values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
         })));
-        recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete {
-            value: Some(MontyObject::Int(1).into()),
-        })));
+        recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
+            MontyObject::int(1),
+        ))));
         recorder.begin_turn(&request(pb::parent_request::Kind::Reset(pb::Reset {})));
 
         let spans = spans.get_finished_spans().unwrap();
@@ -1252,19 +1257,19 @@ mod tests {
         let _guard = set_local_logfire(logfire);
         let mut recorder = Recorder::new(None);
 
-        recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![] })));
+        recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![].into(),
+        })));
         recorder.event(&event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "value".to_owned(),
             object_id: None,
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
-            pb::ResumeNameLookup {
-                kind: Some(pb::resume_name_lookup::Kind::Value(MontyObject::Int(1).into())),
-            },
+            NameLookupResult::from(MontyObject::int(1)).into(),
         )));
-        recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete {
-            value: Some(MontyObject::Int(1).into()),
-        })));
+        recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
+            MontyObject::int(1),
+        ))));
 
         let spans = spans.get_finished_spans().unwrap();
         let load = spans.iter().find(|span| span.name == "load").unwrap();
@@ -1288,9 +1293,9 @@ mod tests {
         let (logfire, _spans, logs) = test_logfire();
         let _guard = set_local_logfire(logfire);
         let mut recorder = Recorder::new(None);
-        recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete {
-            value: Some(MontyObject::Int(7).into()),
-        })));
+        recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
+            MontyObject::int(7),
+        ))));
 
         let logs = logs.get_emitted_logs().unwrap();
         let record = &logs.first().unwrap().record;
@@ -1311,17 +1316,20 @@ mod tests {
             kind: Some(pb::ext_function_result::Kind::Error(pb::RaisedException {
                 exc_type: "ValueError".to_owned(),
                 message: Some(long.clone()),
-                traceback: vec![],
+                traceback: vec![].into(),
                 data: None,
             })),
         };
-        let (value, cut) = render_ext_result(Some(&result));
+        let (value, cut) = render_ext_result(Some(&result), None);
         assert!(cut);
         assert_eq!(value.as_str().len(), ATTR_SIZE_LIMIT);
 
-        let (name, cut) = render_ext_result(Some(&pb::ExtFunctionResult {
-            kind: Some(pb::ext_function_result::Kind::NotFound(long)),
-        }));
+        let (name, cut) = render_ext_result(
+            Some(&pb::ExtFunctionResult {
+                kind: Some(pb::ext_function_result::Kind::NotFound(long)),
+            }),
+            None,
+        );
         assert!(cut);
         assert_eq!(name.as_str().len(), ATTR_SIZE_LIMIT);
 
@@ -1344,7 +1352,7 @@ mod tests {
             exception: Some(pb::RaisedException {
                 exc_type: "UnicodeDecodeError".to_owned(),
                 message: None,
-                traceback: vec![],
+                traceback: vec![].into(),
                 data: Some(pb::ExcData {
                     kind: Some(pb::exc_data::Kind::Unicode(pb::UnicodeErrorData {
                         encoding: "u".repeat(ATTR_SIZE_LIMIT * 2),

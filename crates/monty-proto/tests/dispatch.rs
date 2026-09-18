@@ -5,29 +5,23 @@
 //! `Child` state machine over the message-based transport without any wasm
 //! toolchain.
 
-use monty::{DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
+use monty::{MIN_SUPPORTED_DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
 use monty_proto::{
-    FrameReader, PROTOCOL_VERSION, WireFunctionCall, WireObject, pb,
+    FrameReader, PROTOCOL_VERSION, WireArena, WireFunctionCall, named_values_to_proto, pb,
     worker::{Child, HandleOutcome, dispatch_frame},
     write_frame,
 };
-use monty_types::{CompileOptions, MONTY_VERSION, MontyObject, PrintWriter, ResourceTracker};
+use monty_types::{CompileOptions, MONTY_VERSION, MontyObject, NamedValues, PrintWriter, ResourceTracker, unstable};
 
 /// Starts a feed with `f` already bound, leaving the worker at its first external call.
 fn start_external_call(child: &mut Child, code: &str) -> WireFunctionCall {
     create_repl(child);
+    let inputs = NamedValues::from(vec![("f".to_owned(), MontyObject::function("f".to_owned(), None))]);
+    let (inputs, values) = named_values_to_proto(inputs);
     let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: code.to_owned(),
-        inputs: vec![pb::NamedValue {
-            name: "f".to_owned(),
-            value: Some(
-                MontyObject::Function {
-                    name: "f".to_owned(),
-                    docstring: None,
-                }
-                .into(),
-            ),
-        }],
+        inputs,
+        values: Some(values),
         skip_type_check: false,
         cwd: "/".to_owned(),
     }));
@@ -47,6 +41,20 @@ fn future_reply(call_id: u32, kind: pb::ext_function_result::Kind) -> pb::Future
     }
 }
 
+/// A `ResumeFutures` whose arena holds `value` at index 0, the root every
+/// `ReturnValue(0)` reply names.
+fn resume_futures(results: Vec<pb::FutureResult>, value: MontyObject) -> pb::ResumeFutures {
+    pb::ResumeFutures {
+        results: results.into(),
+        values: Some(WireArena::new(unstable::into_graph_parts(value).0)),
+    }
+}
+
+/// A one-node arena holding `value` at index 0.
+fn arena(value: MontyObject) -> WireArena {
+    WireArena::new(unstable::into_graph_parts(value).0)
+}
+
 /// Each eager reply advances directly to the next call or completion.
 #[test]
 fn allow_eager_await_uses_one_reply_per_call() {
@@ -54,12 +62,13 @@ fn allow_eager_await_uses_one_reply_per_call() {
     let mut call = start_external_call(&mut child, "a = await f()\nb = await f()\na + b");
     for n in [10, 20] {
         assert!(call.allow_eager_await);
-        let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
-            results: vec![future_reply(
+        let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
+            vec![future_reply(
                 call.call_id,
-                pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(n).into()),
+                pb::ext_function_result::Kind::ReturnValue(0),
             )],
-        }));
+            MontyObject::int(n),
+        )));
         let (bytes, outcome) = dispatch_frame(&mut child, &request);
         assert_eq!(outcome, HandleOutcome::Continue);
         let (_, event) = split_turn(&bytes);
@@ -69,7 +78,7 @@ fn allow_eager_await_uses_one_reply_per_call() {
             };
             call = next;
         } else {
-            assert_eq!(expect_complete(event), MontyObject::Int(30));
+            assert_eq!(expect_complete(event), MontyObject::int(30));
         }
     }
 }
@@ -80,7 +89,7 @@ fn allow_eager_await_rejects_malformed_replies() {
     let mut child = Child::default();
     let call = start_external_call(&mut child, "await f()");
     assert!(call.allow_eager_await);
-    let value = pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(42).into());
+    let value = pb::ext_function_result::Kind::ReturnValue(0);
     for results in [
         vec![],
         vec![future_reply(call.call_id + 1, value.clone())],
@@ -101,16 +110,20 @@ fn allow_eager_await_rejects_malformed_replies() {
             result: None,
         }],
     ] {
-        let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results }));
+        let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
+            results,
+            MontyObject::int(42),
+        )));
         let (bytes, outcome) = dispatch_frame(&mut child, &request);
         assert_eq!(outcome, HandleOutcome::Continue);
         assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Error(_)));
     }
-    let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
-        results: vec![future_reply(call.call_id, value)],
-    }));
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
+        vec![future_reply(call.call_id, value)],
+        MontyObject::int(42),
+    )));
     let (bytes, _) = dispatch_frame(&mut child, &request);
-    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::Int(42));
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::int(42));
 }
 
 /// Older hosts can ignore the hint; calls without the hint reject the new reply sequence.
@@ -123,30 +136,34 @@ fn allow_eager_await_preserves_legacy_replies() {
         result: Some(pb::ExtFunctionResult {
             kind: Some(pb::ext_function_result::Kind::Future(call.call_id)),
         }),
+        values: None,
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::ResolveFutures(_)));
-    let value = pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(42).into());
-    let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
-        results: vec![future_reply(call.call_id, value.clone())],
-    }));
+    let value = pb::ext_function_result::Kind::ReturnValue(0);
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
+        vec![future_reply(call.call_id, value.clone())],
+        MontyObject::int(42),
+    )));
     let (bytes, _) = dispatch_frame(&mut child, &request);
-    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::Int(42));
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::int(42));
 
     let mut child = Child::default();
     let call = start_external_call(&mut child, "f()");
     assert!(!call.allow_eager_await);
-    let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
-        results: vec![future_reply(call.call_id, value.clone())],
-    }));
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
+        vec![future_reply(call.call_id, value.clone())],
+        MontyObject::int(42),
+    )));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Error(_)));
     let request = frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
         call_id: call.call_id,
         result: Some(pb::ExtFunctionResult { kind: Some(value) }),
+        values: Some(arena(MontyObject::int(42))),
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
-    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::Int(42));
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::int(42));
 }
 
 /// Frames one request the way a host transport would before posting it.
@@ -216,7 +233,8 @@ fn create_repl_with_flush_interval(child: &mut Child, print_flush_interval_ms: O
 fn feed(child: &mut Child, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind) {
     let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: code.to_owned(),
-        inputs: vec![],
+        inputs: vec![].into(),
+        values: None,
         skip_type_check: false,
         cwd: "/".to_owned(),
     }));
@@ -242,11 +260,9 @@ fn segments_per_event(prints: &[pb::Print]) -> Vec<Vec<(pb::PrintStream, &str)>>
 
 fn expect_complete(event: pb::child_event::Kind) -> MontyObject {
     match event {
-        pb::child_event::Kind::Complete(complete) => complete
-            .value
-            .expect("complete carries a value")
-            .into_object()
-            .expect("the complete value decodes"),
+        pb::child_event::Kind::Complete(complete) => {
+            MontyObject::try_from(complete).expect("the complete value decodes")
+        }
         other => panic!("expected Complete, got {other:?}"),
     }
 }
@@ -257,7 +273,7 @@ fn feed_round_trips_a_value() {
     create_repl(&mut child);
 
     let (_, event) = feed(&mut child, "1 + 2");
-    assert_eq!(expect_complete(event), MontyObject::Int(3));
+    assert_eq!(expect_complete(event), MontyObject::int(3));
 }
 
 #[test]
@@ -266,10 +282,10 @@ fn session_state_persists_across_feeds() {
     create_repl(&mut child);
 
     let (_, first) = feed(&mut child, "x = 21");
-    assert_eq!(expect_complete(first), MontyObject::None);
+    assert_eq!(expect_complete(first), MontyObject::none());
 
     let (_, second) = feed(&mut child, "x * 2");
-    assert_eq!(expect_complete(second), MontyObject::Int(42));
+    assert_eq!(expect_complete(second), MontyObject::int(42));
 }
 
 #[test]
@@ -284,7 +300,7 @@ fn print_output_is_streamed_before_the_terminator() {
         .map(|segment| segment.text)
         .collect();
     assert_eq!(streamed, "hello\nworld\n");
-    assert_eq!(expect_complete(event), MontyObject::None);
+    assert_eq!(expect_complete(event), MontyObject::none());
 }
 
 /// Output alternating between the streams batches into one event, holding a
@@ -301,7 +317,7 @@ fn alternating_streams_batch_into_one_event() {
         &mut child,
         "import sys\nprint('a')\nprint('b', file=sys.stderr)\nprint('c')",
     );
-    assert_eq!(expect_complete(event), MontyObject::None);
+    assert_eq!(expect_complete(event), MontyObject::none());
     assert_eq!(
         segments_per_event(&prints),
         vec![vec![
@@ -320,7 +336,7 @@ fn line_buffering_gives_each_line_its_own_event() {
     create_repl_with_flush_interval(&mut child, Some(0));
 
     let (prints, event) = feed(&mut child, "import sys\nprint('a')\nprint('b', file=sys.stderr)");
-    assert_eq!(expect_complete(event), MontyObject::None);
+    assert_eq!(expect_complete(event), MontyObject::none());
     assert_eq!(
         segments_per_event(&prints),
         vec![
@@ -342,7 +358,7 @@ fn line_buffering_keeps_a_line_spanning_the_streams_together() {
         &mut child,
         "import sys\nprint('out', end='')\nprint('err', file=sys.stderr)\nprint('next', end='')",
     );
-    assert_eq!(expect_complete(event), MontyObject::None);
+    assert_eq!(expect_complete(event), MontyObject::none());
     assert_eq!(
         segments_per_event(&prints),
         vec![
@@ -357,19 +373,18 @@ fn inputs_are_injected() {
     let mut child = Child::default();
     create_repl(&mut child);
 
+    let (inputs, values) = named_values_to_proto(NamedValues::from(vec![("n".to_owned(), MontyObject::int(41))]));
     let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: "n + 1".to_owned(),
-        inputs: vec![pb::NamedValue {
-            name: "n".to_owned(),
-            value: Some(WireObject::new(MontyObject::Int(41))),
-        }],
+        inputs,
+        values: Some(values),
         skip_type_check: false,
         cwd: "/".to_owned(),
     }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     let (_, event) = split_turn(&bytes);
-    assert_eq!(expect_complete(event), MontyObject::Int(42));
+    assert_eq!(expect_complete(event), MontyObject::int(42));
 }
 
 #[test]
@@ -399,18 +414,18 @@ fn shutdown_request_reports_shutdown() {
     );
 }
 
-/// A dump written by a different `DUMP_VERSION` is rejected, and the error
-/// names both versions so a host can tell a stale snapshot from a corrupt one.
+/// A dump below `MIN_SUPPORTED_DUMP_VERSION` is rejected, and the error names
+/// the bound it missed so a host can tell a stale snapshot from a corrupt one.
 #[test]
 fn load_rejects_old_dump_version() {
     // a real dump rewound to the previous version, so only the version is wrong
     let repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
     let mut state = dump("main.py", None, SessionRef::Idle(&repl)).expect("dumping an idle repl succeeds");
-    state[6..8].copy_from_slice(&(DUMP_VERSION - 1).to_le_bytes());
+    state[6..8].copy_from_slice(&(MIN_SUPPORTED_DUMP_VERSION - 1).to_le_bytes());
 
     let mut child = Child::default();
     create_repl(&mut child);
-    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state }));
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     let (_, event) = split_turn(&bytes);
@@ -420,21 +435,20 @@ fn load_rejects_old_dump_version() {
     assert_eq!(
         error.exception.unwrap().message.unwrap(),
         format!(
-            "protocol violation: failed to load session: dump format version {}, this build reads {DUMP_VERSION}",
-            DUMP_VERSION - 1
+            "protocol violation: failed to load session: dump format version {} is older than \
+             {MIN_SUPPORTED_DUMP_VERSION}, the oldest this build reads",
+            MIN_SUPPORTED_DUMP_VERSION - 1
         )
     );
 }
 
-/// A forged suspended dump whose call arguments nest deeper than the wire
-/// depth bound must be rejected at `Load` with a protocol violation — not
-/// re-announced as an event the parent cannot decode.
+/// A suspended dump whose call argument nests deeply is re-announced as-is on
+/// `Load`: the arena carries any depth, so nothing bounds it on the wire.
 #[test]
-fn load_rejects_dump_with_over_deep_suspension_args() {
-    // suspend in-process (no wire depth bound) at `f(x)` with x nested 100
-    // lists deep — over the ~48 wire bound, shallow enough that postcard's
-    // recursive deserialize doesn't overflow the test stack
+fn load_re_announces_deep_suspension_args() {
     let repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
+    // nested 100 lists deep, shallow enough that postcard's recursive
+    // deserialize fits the test stack
     let code = "x = []\nfor _ in range(100):\n    x = [x]\nf(x)";
     let progress = repl
         .feed_start(code, vec![], PrintWriter::Stdout)
@@ -443,25 +457,20 @@ fn load_rejects_dump_with_over_deep_suspension_args() {
         matches!(progress, ReplProgress::FunctionCall(_)),
         "expected a FunctionCall suspension"
     );
-    let state = dump("main.py", None, SessionRef::Suspended(&progress)).expect("in-process dump has no depth bound");
+    let state = dump("main.py", None, SessionRef::Suspended(&progress)).expect("suspended dump");
 
     let mut child = Child::default();
     create_repl(&mut child);
-    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state }));
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     let (_, event) = split_turn(&bytes);
-    let pb::child_event::Kind::Error(error) = event else {
-        panic!("expected an Error event, got {event:?}");
+    let pb::child_event::Kind::FunctionCall(call) = event else {
+        panic!("expected the re-announced FunctionCall, got {event:?}");
     };
-    assert_eq!(
-        error.exception.unwrap().message.unwrap(),
-        "protocol violation: dump suspension arguments exceed the maximum wire depth"
-    );
-
-    // the rejected load adopted nothing: the child is still fresh and usable
-    let (_, event) = feed(&mut child, "1 + 1");
-    assert_eq!(expect_complete(event), MontyObject::Int(2));
+    assert_eq!(call.function_name, "f");
+    // the empty innermost list, 100 wrappers, and nothing else
+    assert_eq!(call.values.0.len(), 101);
 }
 
 /// Decodes complete events, including their session budget fields.
@@ -490,7 +499,7 @@ fn abort_feed_ends_a_suspended_feed_uncatchably() {
         exception: Some(pb::RaisedException {
             exc_type: "RuntimeError".to_owned(),
             message: Some("suspension limit 3 exceeded".to_owned()),
-            traceback: vec![],
+            traceback: vec![].into(),
             data: None,
         }),
     }));
@@ -508,7 +517,7 @@ fn abort_feed_ends_a_suspended_feed_uncatchably() {
     assert_eq!(exception.traceback[0].start.map(|loc| loc.line), Some(3));
     // the session survives with the globals from before the suspension
     let (_, event) = feed(&mut child, "x");
-    assert_eq!(expect_complete(event), MontyObject::Int(41));
+    assert_eq!(expect_complete(event), MontyObject::int(41));
 }
 
 /// `AbortFeed` is only meaningful while a feed is suspended.
@@ -520,7 +529,7 @@ fn abort_feed_without_a_suspension_is_a_protocol_violation() {
         exception: Some(pb::RaisedException {
             exc_type: "RuntimeError".to_owned(),
             message: None,
-            traceback: vec![],
+            traceback: vec![].into(),
             data: None,
         }),
     }));
@@ -537,7 +546,7 @@ fn abort_feed_without_a_suspension_is_a_protocol_violation() {
     );
     // the session is untouched
     let (_, event) = feed(&mut child, "1 + 1");
-    assert_eq!(expect_complete(event), MontyObject::Int(2));
+    assert_eq!(expect_complete(event), MontyObject::int(2));
 }
 
 /// The child echoes the session's `max_suspensions` on every turn-ending
@@ -559,7 +568,8 @@ fn turn_events_carry_the_suspension_budget() {
     assert_eq!(outcome, HandleOutcome::Continue);
     let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: "1 + 1".to_owned(),
-        inputs: vec![],
+        inputs: vec![].into(),
+        values: None,
         skip_type_check: false,
         cwd: "/".to_owned(),
     }));

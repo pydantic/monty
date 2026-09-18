@@ -33,9 +33,10 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
     format specs and nested replacement fields
-- `async` / `await`, and `asyncio.run` / `asyncio.gather`
+- `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.sleep`
 - `import x`, `import x.y`, `from x import y, z as w`
 - Starred unpacking everywhere CPython allows it
+- Runtime generic aliases (`list[int]`) and `|` unions (`int | None`), see [typing.md](typing.md)
 
 **Rejected at parse time**, with `NotImplementedError` before any code runs:
 
@@ -58,7 +59,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - Function attributes.
     `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
     `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.
-- `eval`, `exec`, `compile`, `globals`, `locals`, `__import__` and `super` — all raise `NameError`.
+- `compile`, `globals`, `__import__` and `super` — all raise `NameError`.
+    `eval` and `exec` exist (source text only), and so does `locals()`; see [eval_exec.md](eval_exec.md).
 - Third-party packages.
     There is no `sys.path` and no site-packages.
 
@@ -72,6 +74,7 @@ The following modules are present:
 | `base64`      | [base64.md](base64.md)           |
 | `binascii`    | [base64.md](base64.md)           |
 | `collections` | [collections.md](collections.md) |
+| `copy`        | [copy.md](copy.md)               |
 | `dataclasses` | [dataclasses.md](dataclasses.md) |
 | `datetime`    | [datetime.md](datetime.md)       |
 | `functools`   | [functools.md](functools.md)     |
@@ -80,16 +83,19 @@ The following modules are present:
 | `math`        | [math.md](math.md)               |
 | `os`          | [os.md](os.md)                   |
 | `pathlib`     | [pathlib.md](pathlib.md)         |
+| `random`      | [random.md](random.md)           |
 | `re`          | [re.md](re.md)                   |
 | `sys`         | [sys.md](sys.md)                 |
+| `time`        | [time.md](time.md)               |
 | `typing`      | [typing.md](typing.md)           |
 | `unicodedata` | [unicodedata.md](unicodedata.md) |
 
-Each covers only part of its CPython surface — often a small part.
+Each covers only part of its CPython surface — often a small part. `itertools`
+is the exception: every name it exports is implemented.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 
-Notably absent: `enum`, `contextlib`, `random`, `time`, `io`, `copy`, `string`, `struct`, `operator`,
+Notably absent: `enum`, `contextlib`, `io`, `string`, `struct`, `operator`,
 `inspect`, `logging`, `traceback`, `hashlib`, `uuid`, `urllib`.
 Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.
@@ -113,9 +119,9 @@ Each links to the page that owns it, which is where the full account lives:
 - **Only the class dunders listed above are dispatched.** `__lt__`, `__len__`, `__getitem__`, `__call__` and the
     arithmetic dunders raise `TypeError` as if undefined, while `__bool__` and the `__getattr__` family are ignored
     silently, so an instance is always truthy ([classes.md](classes.md)).
-- **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio` exposes exactly two functions:
-    `run` and `gather`, the latter running host calls concurrently.
-    `create_task`, `sleep` and everything else do not exist
+- **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio` exposes exactly three functions:
+    `run`, `gather`, which runs host calls concurrently, and `sleep`, which asks the host to wait.
+    `create_task` and everything else do not exist
     ([asyncio.md](asyncio.md)).
 - **Only UTF-8, ASCII, UTF-16 and UTF-32 codecs exist.** `latin-1` and friends raise `LookupError`
     ([encoding.md](encoding.md)).

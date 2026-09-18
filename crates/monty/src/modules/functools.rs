@@ -31,11 +31,8 @@ pub(crate) enum FunctoolsFunctions {
 }
 
 /// Creates the `functools` module on the heap.
-///
-/// # Panics
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Functools);
+    let mut module = Module::new(StaticStrings::Functools, vm.interns);
 
     module.set_attr(
         StaticStrings::Reduce,

@@ -78,7 +78,7 @@ pub(crate) fn get_not_handled(py: Python<'_>) -> PyResult<&Py<PyAny>> {
 #[pymodule]
 mod _monty {
     // `MontyFileHandle` is produced by the value-conversion layer (in
-    // `monty_proto`) whenever a `MontyObject::FileHandle` crosses the
+    // `monty_proto`) whenever a `MontyNode::FileHandle` crosses the
     // boundary; export it as part of the `pydantic_monty` surface.
     // `MontyClassProxy` / `MontyClassTypeProxy` are the read-only proxies the
     // conversion layer builds for class instances and classes with no original

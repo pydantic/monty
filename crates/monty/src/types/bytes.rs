@@ -384,7 +384,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string() else {
+        let Some(method) = attr.static_string(vm.interns) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm.interns)));
         };
@@ -406,7 +406,7 @@ impl HeapItem for Bytes {
 /// This is the entry point for bytes method calls from the VM on interned bytes.
 /// Converts the `StringId` to `StaticStrings` and delegates to `call_bytes_method_impl`.
 pub fn call_bytes_method(bytes: &[u8], method_id: StringId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let Some(method) = StaticStrings::from_string_id(method_id) else {
+    let Some(method) = vm.interns.static_string(method_id) else {
         args.drop_with(vm);
         return Err(ExcType::attribute_error(Type::Bytes, vm.interns.get_str(method_id)));
     };
@@ -605,7 +605,7 @@ fn rfinder_for<'n>(needle: &'n [u8], haystack: &[u8]) -> Option<FinderRev<'n>> {
 /// Chunks overlap by `needle.len() - 1` so boundary-straddling matches are
 /// found; the stride never drops below the needle length so that overlap cannot
 /// dominate. Above that floor a chunk spans up to `2 * needle.len()`, so a long
-/// needle widens the `max_duration` overshoot — unavoidable, since a window
+/// needle widens the time-limit overshoot — unavoidable, since a window
 /// shorter than the needle cannot hold a match. See
 /// `limitations/resource_limits.md`.
 ///
@@ -1760,8 +1760,8 @@ struct BytesReplaceArgs {
 
 /// Replaces all occurrences of `old` with `new` in bytes.
 ///
-/// Checks the time limit periodically to enforce `max_duration` during
-/// potentially long replacement operations on large byte sequences.
+/// Checks the time limits periodically during potentially long replacement
+/// operations on large byte sequences.
 fn bytes_replace_all(bytes: &[u8], old: &[u8], new: &[u8], heap: &Heap) -> Result<Vec<u8>, ResourceError> {
     if old.is_empty() {
         // Empty pattern: insert new before each byte and at the end
@@ -1803,8 +1803,8 @@ fn replace_nothing(bytes: &[u8], heap: &Heap) -> Result<Vec<u8>, ResourceError> 
 
 /// Replaces at most n occurrences of `old` with `new` in bytes.
 ///
-/// Checks the time limit periodically to enforce `max_duration` during
-/// potentially long replacement operations on large byte sequences.
+/// Checks the time limits periodically during potentially long replacement
+/// operations on large byte sequences.
 fn bytes_replace_n(bytes: &[u8], old: &[u8], new: &[u8], n: usize, heap: &Heap) -> Result<Vec<u8>, ResourceError> {
     // `count=0` permits no replacements, so return before `finder_for`
     // preprocesses `old` — that runs ahead of any `check_time()`.

@@ -1,0 +1,17 @@
+---
+source: crates/monty/tests/repl.rs
+expression: "format!(\"{first}\\n\\n{second}\")"
+---
+Traceback (most recent call last):
+  File "<python-input-2>", line 1, in <module>
+    first()
+    ~~~~~~~
+  File "<string>", line 2, in first
+ValueError
+
+Traceback (most recent call last):
+  File "<python-input-3>", line 1, in <module>
+    second()
+    ~~~~~~~~
+  File "<string>", line 4, in second
+ValueError

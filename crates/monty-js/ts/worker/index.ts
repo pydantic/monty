@@ -26,7 +26,9 @@ export interface WasmPoolOptions {
   /** Hard per-turn deadline in seconds; on expiry the worker is terminated. */
   requestTimeout?: number
   /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
-  durationLimitGrace?: number | null
+  feedDurationLimitGrace?: number | null
+  /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
+  turnDurationLimitGrace?: number | null
   /** Recycle a worker after serving this many sessions. */
   maxCheckoutsPerWorker?: number
   /** Overrides the worker entry URL used by the browser backend. */
@@ -45,6 +47,17 @@ export async function createWorkerPool(modules: ComponentModules, options: WasmP
     maxWorkers: options.maxProcesses,
     maxCheckoutsPerWorker: options.maxCheckoutsPerWorker,
   })
+}
+
+/**
+ * Loads the bundled component's core modules. The browser and Node entries
+ * export their own loaders; this generic entry has no way to find the asset.
+ */
+export async function loadModule(): Promise<ComponentModules> {
+  throw new Error(
+    'loadModule cannot find the monty wasm module in this environment; ' +
+      'compile it yourself and call createWorkerPool(modules) instead',
+  )
 }
 
 /** Loads the bundled wasm module and creates a browser/worker-backed pool. */

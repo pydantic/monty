@@ -25,8 +25,9 @@ use crate::{
     expressions::Identifier,
     heap::{DropGuard, DropWithContext, HeapData},
     intern::{Interns, StringId},
+    resource_checks::check_estimated_size,
     types::{Dict, allocate_tuple},
-    value::Value,
+    value::{VALUE_SIZE, Value},
 };
 
 /// Represents a Python function signature with all parameter types.
@@ -130,20 +131,6 @@ enum BindMode {
     /// args and applies defaults without the full algorithm overhead.
     SimpleWithDefaults,
     Complex,
-}
-
-/// Malformed signature metadata for dump tests.
-#[cfg(feature = "test-hooks")]
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum SignatureMetadataFault {
-    /// Makes positional-only defaults outnumber their parameters.
-    PosDefaultsCountOutOfRange,
-    /// Makes positional defaults outnumber their parameters.
-    ArgDefaultsCountOutOfRange,
-    /// Breaks the keyword-only parameter/default-map pairing.
-    KwargDefaultMapLengthMismatch,
-    /// Makes keyword-only default indices non-contiguous.
-    KwargDefaultIndexGap,
 }
 
 impl Signature {
@@ -358,6 +345,11 @@ impl Signature {
         // any excess (the deferred overflow) stays in `pos_iter`, drained by
         // its guard when the overflow error returns below.
         if self.var_args.is_some() {
+            // Preflight the rounded-up reservation, not the length: `TupleVec` is a
+            // `SmallVec` whose `extend` rounds up to the next power of two. Unchecked,
+            // `f(*t)` on a big tuple clears the hard-limit headroom in one allocation.
+            let slots = pos_iter.len().checked_next_power_of_two().unwrap_or(usize::MAX);
+            check_estimated_size(slots.saturating_mul(VALUE_SIZE), &vm.heap.tracker)?;
             namespace[namespace_base + total_positional_params] = allocate_tuple(pos_iter.collect(), vm.heap);
         }
 
@@ -599,58 +591,6 @@ impl Signature {
         self.pos_defaults_count + self.arg_defaults_count + self.kwarg_defaults_count()
     }
 
-    /// Validates compiler-established default metadata before dump loading.
-    pub(crate) fn validate(&self) -> Result<(), &'static str> {
-        if self.pos_defaults_count > self.pos_arg_count() {
-            return Err("positional-only default count exceeds parameter count");
-        }
-        if self.arg_defaults_count > self.arg_count() {
-            return Err("positional default count exceeds parameter count");
-        }
-
-        match (&self.kwargs, &self.kwarg_default_map) {
-            (None, None) => Ok(()),
-            (Some(kwargs), Some(default_map)) if kwargs.len() == default_map.len() => {
-                for (expected, &actual) in default_map.iter().flatten().enumerate() {
-                    if actual != expected {
-                        return Err("keyword-only default indices are not contiguous");
-                    }
-                }
-                Ok(())
-            }
-            _ => Err("keyword-only parameters and default map have different lengths"),
-        }
-    }
-
-    /// Injects malformed metadata for dump tests.
-    #[cfg(feature = "test-hooks")]
-    pub(crate) fn corrupt_metadata_for_tests(&mut self, fault: SignatureMetadataFault) {
-        match fault {
-            SignatureMetadataFault::PosDefaultsCountOutOfRange => {
-                self.pos_defaults_count = self.pos_arg_count() + 1;
-            }
-            SignatureMetadataFault::ArgDefaultsCountOutOfRange => {
-                self.arg_defaults_count = self.arg_count() + 1;
-            }
-            SignatureMetadataFault::KwargDefaultMapLengthMismatch => {
-                self.kwarg_default_map
-                    .as_mut()
-                    .expect("test function has keyword-only parameters")
-                    .pop();
-            }
-            SignatureMetadataFault::KwargDefaultIndexGap => {
-                *self
-                    .kwarg_default_map
-                    .as_mut()
-                    .expect("test function has keyword-only parameters")
-                    .iter_mut()
-                    .flatten()
-                    .next()
-                    .expect("test function has a keyword-only default") = 1;
-            }
-        }
-    }
-
     /// Returns the minimum number of positional arguments required.
     ///
     /// This is the total positional param count minus the number of defaults.
@@ -682,10 +622,9 @@ impl Signature {
         self.kwargs.as_ref().map_or(0, Vec::len)
     }
 
-    /// Returns an iterator over all parameter names in namespace slot order.
-    ///
-    /// Order: pos_args, args, var_args (if present), kwargs, var_kwargs (if present)
-    fn param_names(&self) -> impl Iterator<Item = StringId> + '_ {
+    /// Returns parameter names in the slot order filled by `bind`:
+    /// positional-only, positional-or-keyword, `*args`, keyword-only, `**kwargs`.
+    pub(crate) fn param_names(&self) -> impl Iterator<Item = StringId> + '_ {
         let pos_args = self.pos_args.iter().flat_map(|v| v.iter().copied());
         let args = self.args.iter().flat_map(|v| v.iter().copied());
         let var_args = self.var_args.iter().copied();

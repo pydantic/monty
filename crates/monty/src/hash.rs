@@ -18,10 +18,8 @@
 //!   keeps the invariant "interned and heap values with equal content hash
 //!   identically" local rather than scattered, since otherwise dict lookups
 //!   would silently miss.
-//! * [`ASCII_HASHES`] / [`STATIC_HASHES`] — precomputed hashes for the
-//!   pre-interned ASCII single-character and [`StaticStrings`] tables,
-//!   built via `LazyLock` on first access (one-time cost, dwarfed by parse
-//!   time for any non-trivial program).
+//! * [`RESERVED_STRING_HASHES`] — lazily computed hashes for the reserved ASCII
+//!   single-character strings and the empty string.
 
 use std::{
     collections::hash_map::DefaultHasher,
@@ -33,9 +31,8 @@ use std::{
 
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
-use strum::EnumCount;
 
-use crate::{heap::HeapId, intern::StaticStrings};
+use crate::heap::HeapId;
 
 /// A verified Python hash value.
 ///
@@ -197,9 +194,9 @@ pub(crate) fn hash_python_long_int(bi: &BigInt) -> HashValue {
 /// impossible to forget to keep the value and hash in sync, and makes
 /// serde recompute-on-deserialise local to this type.
 ///
-/// Constructors and `Deserialize` impls are provided for the three concrete
-/// `T` we use ([`String`], `Vec<u8>`, [`BigInt`]). Adding a fourth would
-/// require its own `WithHash<NewT>` constructor and `Deserialize` impl.
+/// Constructors and `Deserialize` impls are provided for each concrete value
+/// type used by the interners. Adding another requires a constructor and the
+/// corresponding hash-rebuilding `Deserialize` implementation.
 ///
 /// # Wire format
 ///
@@ -229,11 +226,11 @@ impl<T> WithHash<T> {
     }
 }
 
-impl WithHash<String> {
-    /// Construct from an owned `String`, hashing via [`hash_python_str`].
+impl<T: AsRef<str>> WithHash<T> {
+    /// Caches the Python hash for owned or borrowed string storage.
     #[inline]
-    pub fn for_str(value: String) -> Self {
-        let hash = hash_python_str(&value);
+    pub fn for_str(value: T) -> Self {
+        let hash = hash_python_str(value.as_ref());
         Self { value, hash }
     }
 }
@@ -273,6 +270,12 @@ impl<'de> serde::Deserialize<'de> for WithHash<String> {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for WithHash<Box<str>> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::for_str(Box::<str>::deserialize(deserializer)?))
+    }
+}
+
 impl<'de> serde::Deserialize<'de> for WithHash<Vec<u8>> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(Self::for_bytes(Vec::<u8>::deserialize(deserializer)?))
@@ -297,7 +300,7 @@ impl<'de> serde::Deserialize<'de> for WithHash<BigInt> {
 /// to fill the same slot is benign: they compute the same value and one
 /// wins the store; the other's store overwrites with the same bits.
 ///
-/// Used for `static` precomputed-hash tables (ASCII / `StaticStrings`).
+/// Used for the reserved ASCII and empty-string hash table.
 /// `Cell<Option<HashValue>>` would be the equivalent for non-`static` /
 /// per-instance use (Phase 2's per-type heap caches).
 pub(crate) struct LazyHashTable<const N: usize> {
@@ -330,18 +333,6 @@ impl<const N: usize> LazyHashTable<N> {
     }
 }
 
-/// Per-slot lazy hashes for the 128 ASCII single-character strings.
-///
-/// Indexed by the byte value (`0..128`). Each slot is filled on first
-/// access via [`hash_python_str`] applied to the matching entry of
-/// [`ASCII_STRS`].
-pub(crate) static ASCII_HASHES: LazyHashTable<128> = LazyHashTable::new();
-
-/// Per-slot lazy hashes for every [`StaticStrings`] variant.
-///
-/// Indexed by the variant's discriminant, minus the static strings offset
-/// (`StaticStrings as usize - STATIC_STRING_ID_OFFSET`).
-///
-/// Each slot is filled on first access from the variant's `&'static str`
-/// representation.
-pub(crate) static STATIC_HASHES: LazyHashTable<{ StaticStrings::COUNT }> = LazyHashTable::new();
+/// Per-slot lazy hashes for ASCII IDs 0–127 and the empty-string ID 128.
+/// Each slot hashes the matching entry of [`crate::intern::RESERVED_STRS`].
+pub(crate) static RESERVED_STRING_HASHES: LazyHashTable<129> = LazyHashTable::new();

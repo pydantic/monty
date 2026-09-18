@@ -1,14 +1,17 @@
 //! Benchmarks for host-side decoding of child frames: how long one frame can
-//! occupy a thread in `Worker::recv`. Two payload shapes bracket the per-byte
-//! cost — one big string (bulk copy + UTF-8 validation) and a list of row
-//! dicts (allocation-heavy, the realistic tool-result shape).
+//! occupy a thread in `Worker::recv`. Three payload shapes exercise bulk copy
+//! and UTF-8 validation (one big string), mixed values (row dicts), and shared
+//! references (a DAG of small lists).
 
 #[cfg(codspeed)]
 use codspeed_criterion_compat::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use monty_proto::{WireObject, decode_frame, encode_to_capped_vec, pb};
-use monty_types::MontyObject;
+use monty_proto::{decode_frame, encode_to_capped_vec, pb};
+use monty_types::{
+    MontyObject,
+    unstable::{self, MontyGraph, MontyNode},
+};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 
@@ -24,7 +27,9 @@ fn decode_benchmark(c: &mut Criterion) {
     let payloads = [64 * KIB, 4 * MIB, 64 * MIB, 192 * MIB]
         .map(|size| ("str", size, str_frame(size)))
         .into_iter()
-        .chain([64 * KIB, 4 * MIB, 64 * MIB].map(|size| ("rows", size, rows_frame(size))));
+        .chain([64 * KIB, 4 * MIB, 64 * MIB].map(|size| ("rows", size, rows_frame(size))))
+        // a dag level amplifies ~15x on decode, so 64 MiB would exceed `DEFAULT_MAX_DECODE_BYTES`
+        .chain([64 * KIB, 4 * MIB, 32 * MIB].map(|size| ("dag", size, dag_frame(size))));
     for (shape, size, frame) in payloads {
         group.throughput(Throughput::Bytes(frame.len() as u64));
         group.bench_with_input(BenchmarkId::new(shape, size_label(size)), &frame, |bench, frame| {
@@ -39,19 +44,19 @@ fn decode_benchmark(c: &mut Criterion) {
 fn complete_frame(value: MontyObject) -> Vec<u8> {
     let event = pb::ChildEvent {
         total_execution_micros: 0,
-        max_duration_micros: None,
         max_suspensions: None,
         restored_script_name: None,
-        kind: Some(pb::child_event::Kind::Complete(pb::Complete {
-            value: Some(WireObject(Some(value))),
-        })),
+        feed_execution_micros: 0,
+        max_feed_duration_micros: None,
+        max_turn_duration_micros: None,
+        kind: Some(pb::child_event::Kind::Complete(pb::Complete::from(value))),
     };
     encode_to_capped_vec(&event).expect("frame within MAX_FRAME_LEN")
 }
 
 /// A frame whose payload is a single string of roughly `target` bytes.
 fn str_frame(target: usize) -> Vec<u8> {
-    complete_frame(MontyObject::String("x".repeat(target)))
+    complete_frame(MontyObject::string("x".repeat(target)))
 }
 
 /// A frame of roughly `target` bytes of row dicts, sized by measuring the
@@ -61,30 +66,49 @@ fn rows_frame(target: usize) -> Vec<u8> {
     complete_frame(rows((target / per_row).try_into().expect("row count fits i64")))
 }
 
+/// A frame of roughly `target` bytes of shared structure: `[0]` wrapped in
+/// `[x, x]` levels, one node per level. A tree would be exponential in the
+/// levels; the arena decodes in one pass over its nodes.
+fn dag_frame(target: usize) -> Vec<u8> {
+    let per_level = complete_frame(dag(1024)).len() / 1024;
+    complete_frame(dag(target / per_level))
+}
+
+/// `[0]` wrapped in `levels` `[x, x]` lists, every level sharing the one below.
+fn dag(levels: usize) -> MontyObject {
+    let mut graph = MontyGraph::new();
+    let zero = graph.push(MontyNode::Int(0));
+    let mut root = graph.push(MontyNode::List(vec![zero]));
+    for _ in 0..levels {
+        root = graph.push(MontyNode::List(vec![root, root]));
+    }
+    unstable::object_from_graph(graph, root).expect("the last node pushed is the root")
+}
+
 /// A list of `n` dicts shaped like a SQL tool reply (short string keys,
 /// mixed str/int values) — same shape as `pool.rs`'s `make_rows`, scaled.
 fn rows(n: i64) -> MontyObject {
-    MontyObject::List(
+    MontyObject::list(
         (0..n)
             .map(|i| {
-                MontyObject::dict(vec![
-                    (MontyObject::String("order_id".to_owned()), MontyObject::Int(i)),
+                MontyObject::dict([
+                    (MontyObject::string("order_id".to_owned()), MontyObject::int(i)),
                     (
-                        MontyObject::String("customer".to_owned()),
-                        MontyObject::String(format!("customer-{i}@example.com")),
+                        MontyObject::string("customer".to_owned()),
+                        MontyObject::string(format!("customer-{i}@example.com")),
                     ),
                     (
-                        MontyObject::String("region".to_owned()),
-                        MontyObject::String("north".to_owned()),
+                        MontyObject::string("region".to_owned()),
+                        MontyObject::string("north".to_owned()),
                     ),
                     (
-                        MontyObject::String("amount".to_owned()),
-                        MontyObject::Int((i * 37) % 500 + 1),
+                        MontyObject::string("amount".to_owned()),
+                        MontyObject::int((i * 37) % 500 + 1),
                     ),
-                    (MontyObject::String("quantity".to_owned()), MontyObject::Int(i % 7 + 1)),
+                    (MontyObject::string("quantity".to_owned()), MontyObject::int(i % 7 + 1)),
                 ])
             })
-            .collect(),
+            .collect::<Vec<_>>(),
     )
 }
 

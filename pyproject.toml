@@ -92,6 +92,7 @@ known-first-party = ["pydantic_monty"]
     "E731", # Do not assign a lambda expression, use a def - needed for testing lambda expressions
     "F541", # f-string without any placeholders
     "F601", # duplicate dict literal key - tests duplicate-key replacement behavior
+    "F622", # two starred expressions in one assignment - the SyntaxError under test
     "F632", # ignore replace `is` with `==` - we have lots of these tests
     "F701", # break outside loop - needed for testing break error handling
     "F702", # continue not properly in loop - needed for testing continue error handling
@@ -164,10 +165,30 @@ exclude = [
     # their TypeError messages
     "crates/monty/test_cases/functools__reduce.py",
     "crates/monty/test_cases/functools__partial.py",
+    # deliberately subscripts types with the wrong arity and with non-type
+    # arguments to pin `types.GenericAlias` behaviour
+    "crates/monty/test_cases/generic_alias.py",
+    "crates/monty/test_cases/generic_alias__not_subscriptable.py",
+    "crates/monty/test_cases/refcount__generic_alias.py",
+    "crates/monty/test_cases/typing__union.py",
+    "crates/monty/test_cases/refcount__typing_union.py",
     "scripts/startup_performance.py",
     "examples/web_scraper/example_code.py",
+    # two starred targets in one assignment is the SyntaxError under test
+    "crates/monty/test_cases/unpack__err_multiple_starred.py",
 ]
 venv = ".venv"
+
+# sandbox-side code copied verbatim from the PyScript example: `pydom`, `DOMParser`,
+# `open_url`, `set_interval` and `random` are bound by the host, not imported, and
+# the upstream file has no annotations; every other strict rule still applies
+[[tool.pyright.executionEnvironments]]
+root = "examples/antigravity"
+reportUndefinedVariable = false
+reportMissingParameterType = false
+reportUnknownParameterType = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
 
 # we include tests cases in type checking then switch off all rules that break
 # so the files don't show as errors in the IDE
