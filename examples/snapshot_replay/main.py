@@ -132,8 +132,7 @@ pre{background:#0b1421;padding:18px;overflow:auto;font:13px/1.7 ui-monospace,mon
 table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{text-align:left;vertical-align:top;padding:12px;border:1px solid #293749}td code{font-size:12px}td pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;margin:0;padding:8px}
 details pre,details h3{margin:16px}em{font-style:normal;color:#edbd6b;font-size:11px;margin-left:10px}
 footer{border-top:1px solid #293749;padding:20px 0;color:#91a6bf;font-size:13px}
-</style><main><header><div class="eyebrow">MONTY / SNAPSHOT REPLAY</div><h1>Compare recorded tool responses.</h1>
-<p>Recorded execution, inspectable calls, offline response experiments.</p></header>""",
+</style><main><header><div class="eyebrow">MONTY / SNAPSHOT REPLAY</div><h1>Compare recorded tool responses.</h1></header>""",
             f'<section><h2>Capture identity</h2><code>{recording["sha256"]}</code>'
             f'<p>Monty {html.escape(recording["header"]["runtime"]["monty"])} / {len(recording["events"])} calls. '
             'Checksum verifies integrity, not authorship.</p></section>'

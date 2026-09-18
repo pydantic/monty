@@ -8,13 +8,9 @@ No model or API key is required.
 For example, replace the `pydantic-ai-harness` response with [response.json](response.json) to inspect a hypothetical
 change to its Python requirement and Monty dependency:
 
-| Report field         | Example recording            | Replacement response         |
-| -------------------- | ---------------------------- | ---------------------------- |
-| `version`            | `recorded`                   | `what-if`                    |
-| `python`             | `>=3.10`                     | `>=3.14`                     |
-| `monty_dependencies` | `["pydantic-monty>=0.0.22"]` | `["pydantic-monty==0.0.23"]` |
+![Report showing changes to the second package's version, Python requirement and Monty dependency](report-example.png)
 
-These are test inputs, not current PyPI metadata.
+The screenshot uses test inputs, not current PyPI metadata.
 The other two package rows stay unchanged, and no package is fetched again.
 The program reports dependency strings containing `monty`; it does not resolve dependencies or check compatibility.
 
@@ -32,6 +28,9 @@ A recording contains source, arguments, responses, printed output and opaque wor
 The checksums detect corruption, not malicious replacement.
 Files remain on disk until you delete them; this example provides no automatic deletion, redaction or encryption.
 
+In PowerShell, replace `install -d` below with `New-Item -ItemType Directory examples/snapshot_replay/recordings`.
+On Windows, files inherit the directory's ACL; use a directory accessible only to your account.
+
 ```bash
 install -d -m 700 examples/snapshot_replay/recordings
 uv run python -m examples.snapshot_replay.main --binary target/debug/monty capture examples/snapshot_replay/recordings/run.jsonl
@@ -40,28 +39,13 @@ uv run python -m examples.snapshot_replay.main --binary target/debug/monty branc
 uv run python -m examples.snapshot_replay.main --binary target/debug/monty report examples/snapshot_replay/recordings/run.jsonl --branch examples/snapshot_replay/recordings/branch.json --output examples/snapshot_replay/recordings/report.html
 ```
 
-In PowerShell, create the directory with `New-Item -ItemType Directory examples/snapshot_replay/recordings`.
-On Windows, files inherit the directory's ACL; use a directory accessible only to your account.
-On POSIX, new artifacts are created with mode `0600`, independent of a permissive umask.
-Open `report.html` locally to inspect the calls and result differences.
-It contains no scripts or remote assets.
-The comparison file includes the replacement response or edited source as well as the original recording's checksum.
-Outputs use exclusive creation: choose new filenames for another capture or comparison.
-Comparison files use compact JSON and the same 8 MiB limit for writing and reading.
+Replay prints `same_result: true` when its output and return value match the recording.
 `--at 1` selects the second call, for `pydantic-ai-harness`; indices start at zero.
+Open `report.html` locally to inspect the calls and result differences.
+Outputs use exclusive creation: choose new filenames for another capture or comparison.
 
 To compare edited sandbox code, pass `--code path/to/edited.py` to `replay`.
 That starts from the edited source rather than restoring bytecode from the original snapshot.
-Capture and edited-source replay reject syntax errors with `ReplayError`, preserving Monty's diagnostic.
-A rejected capture has no completion record; a rejected replay produces no comparison.
-Type checking is not enabled.
-For both edited source and response branches, the name, host-visible JSON arguments, mapping order and order of
-every remaining host call must match the recording.
-A mismatch reports `DIVERGED`; it does not fetch another response.
-Returning early is allowed only after all remaining recorded calls have been consumed.
-Monty converts some guest values, such as functions, to strings before the host receives them.
-Replay cannot distinguish those values from literal strings with the same text; see
-[host-function argument conversion](../../docs/host-functions.md#arguments-and-return-values).
 
 ## Snapshot flow
 
@@ -93,12 +77,32 @@ This example accepts finite JSON values at the host boundary, up to 16 direct sy
 It rejects host objects, OS calls, name-lookup suspensions and futures.
 It does not inspect frames or locals, schedule async completions or persist host state.
 
+### Replay
+
 Replay requires the same Python client version and exact worker binary as capture.
 It is not a cross-version snapshot format.
 Restoring a later suspension preserves the recorded output prefix and remaining call count.
 The snapshot carries its resource limits and accumulated execution time; restoring does not reset the time budget.
 Memory limits apply to live allocations in the restored worker.
 Two different error observations are reported as different, even if both mention a resource limit.
+
+Capture and edited-source replay reject syntax errors with `ReplayError`, preserving Monty's diagnostic.
+A rejected capture has no completion record; a rejected replay produces no comparison.
+Type checking is not enabled.
+For both edited source and response branches, the name, host-visible JSON arguments, mapping order and order of
+every remaining host call must match the recording.
+A mismatch reports `DIVERGED`; it does not fetch another response.
+Returning early is allowed only after all remaining recorded calls have been consumed.
+Monty converts some guest values, such as functions, to strings before the host receives them.
+Replay cannot distinguish those values from literal strings with the same text; see
+[host-function argument conversion](../../docs/host-functions.md#arguments-and-return-values).
+
+### Files and reports
+
+On POSIX, new artifacts are created with mode `0600`, independent of a permissive umask.
+The comparison file includes the replacement response or edited source as well as the original recording's checksum.
+Comparison files use compact JSON and the same 8 MiB limit for writing and reading.
+The HTML report contains no scripts or remote assets.
 
 Printed output is an ordered list of `[stream, text]` pairs, with `stdout` and `stderr` kept distinct.
 Adjacent fragments from the same stream are combined, so transport chunk boundaries do not affect comparisons.
