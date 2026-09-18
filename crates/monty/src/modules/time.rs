@@ -71,9 +71,9 @@ fn time(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// perform; [`PostConversionEffect::DiscardResult`] then makes the call
 /// evaluate to `None` whatever the host answered with, matching CPython.
 ///
-/// `max_duration` does not run while the sandbox is suspended, so a sleep is
-/// bounded by the host's own turn deadline and by `max_suspensions` rather
-/// than by the execution-time limit (see `limitations/time.md`).
+/// The duration limits do not run while the sandbox is suspended, so a sleep
+/// is bounded by the host's own turn deadline and by `max_suspensions` rather
+/// than by `max_feed_duration`/`max_turn_duration` (see `limitations/time.md`).
 fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     // METH_O in CPython: keywords are refused wholesale, before arity.
     let seconds = args

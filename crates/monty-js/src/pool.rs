@@ -88,8 +88,8 @@ where
 }
 
 /// Pool construction options. Timeouts are pre-normalised to milliseconds by
-/// the TypeScript layer (which also applies the `durationLimitGrace` default
-/// and resolves the binary path).
+/// the TypeScript layer (which also applies the grace defaults and resolves the
+/// binary path).
 #[napi(object, js_name = "NativePoolOptions")]
 pub struct NativePoolOptions {
     /// Resolved path to the `monty` binary.

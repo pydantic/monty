@@ -327,9 +327,9 @@ that answers neither leaves both raising.
 [`OSAccess`][pydantic_monty.OSAccess] caps every wait at its `max_sleep`, ten seconds unless you say otherwise, and the
 CLI at `--max-sleep`.
 
-A wait costs nothing against `max_duration`, which measures execution time and stops while the sandbox is suspended, so
-what bounds a sleeping session is `max_suspensions` (one per sleep, two when an `asyncio.sleep()` answered with a future
-is awaited later) and your own turn deadline.
+A wait costs nothing against the duration limits, which measure execution time and stop while the sandbox is suspended,
+so what bounds a sleeping session is `max_suspensions` (one per sleep, two when an `asyncio.sleep()` answered with a
+future is awaited later) and your own turn deadline.
 See [resource limits](resource-limits.md).
 
 Under [`AsyncMonty`][pydantic_monty.AsyncMonty] and in JavaScript the handler may be `async`.
