@@ -8,6 +8,7 @@ For tests of the AbstractOS interface via custom subclasses, see test_os_access_
 """
 
 import datetime
+import time
 from pathlib import PurePosixPath
 from typing import Any
 from unittest.mock import Mock
@@ -115,6 +116,68 @@ def test_urandom_limit_must_be_int(limit: Any):
     with pytest.raises(TypeError) as exc_info:
         OSAccess(max_urandom_bytes=limit)
     assert str(exc_info.value) == f'max_urandom_bytes must be an int, not {type(limit).__name__}'
+
+
+def test_default_clock_and_sleeps(monty_run: RunMonty):
+    """OSAccess answers the clock and both sleeps from the host process."""
+    fs = OSAccess()
+
+    result = monty_run(
+        'import asyncio, time\n'
+        'start = time.time()\n'
+        'time.sleep(0.001)\n'
+        "woken = asyncio.run(asyncio.sleep(0.001, 'woken'))\n"
+        '(time.time() >= start, woken)',
+        os=fs,
+    )
+    assert result == snapshot((True, 'woken'))
+
+
+def test_max_sleep_caps_the_wait(monty_run: RunMonty):
+    """`max_sleep` bounds how long the sandbox can hold the host; it defaults to 10s."""
+    assert OSAccess().max_sleep == snapshot(10)
+    assert OSAccess(max_sleep=None).max_sleep is None
+
+    start = time.monotonic()
+    assert monty_run('import time; time.sleep(3600) is None', os=OSAccess(max_sleep=0.001)) == snapshot(True)
+    assert time.monotonic() - start < 5
+
+
+@pytest.mark.parametrize('limit', [-1, -0.5, float('nan'), float('-inf')])
+def test_max_sleep_must_be_non_negative(limit: float):
+    """A negative cap would make every sleep fail; a `nan` one would compare false and disable the cap."""
+    with pytest.raises(ValueError) as exc_info:
+        OSAccess(max_sleep=limit)
+    assert str(exc_info.value) == snapshot('max_sleep must be non-negative')
+
+
+@pytest.mark.parametrize('limit', ['8', True, [1]])
+def test_max_sleep_must_be_a_number(limit: Any):
+    with pytest.raises(TypeError) as exc_info:
+        OSAccess(max_sleep=limit)
+    assert str(exc_info.value) == f'max_sleep must be a number or None, not {type(limit).__name__}'
+
+
+def test_max_sleep_set_to_nan_after_construction_fails_closed(monty_run: RunMonty):
+    """A cap that bypassed validation must not let the full sleep through."""
+    fs = OSAccess()
+    fs.max_sleep = float('nan')
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import time; time.sleep(3600)', os=fs)
+    assert str(exc_info.value) == snapshot('ValueError: Invalid value NaN (not a number)')
+
+
+def test_sleep_override_sees_the_requested_length(monty_run: RunMonty):
+    """An override receives the sandbox's own request; the cap applies inside the default."""
+    waited: list[float] = []
+
+    class RecordingSleep(OSAccess):
+        def sleep(self, seconds: float) -> None:
+            waited.append(seconds)
+            super().sleep(seconds)
+
+    assert monty_run('import time; time.sleep(3600) is None', os=RecordingSleep(max_sleep=0.001)) == snapshot(True)
+    assert waited == snapshot([3600.0])
 
 
 # =============================================================================

@@ -2060,7 +2060,11 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::ExternalFuture(fut) => {
             // `Pending { awaiter: Some(GatherSlot { gather, .. }) }` owns an
             // inc_ref on `gather`. `Awaiter::Task` / `None` and the `Failed`
-            // state carry no heap refs. `Resolved` owns the cached value.
+            // state carry no heap refs. `Resolved` owns the cached value, and
+            // a pending sleep owns the `result` it will resolve with.
+            if let Some(Value::Ref(id)) = &fut.sleep_result {
+                on_child(*id);
+            }
             match &fut.state {
                 ExternalFutureState::Resolved(Value::Ref(id)) => on_child(*id),
                 ExternalFutureState::Pending {
@@ -2186,16 +2190,22 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
                 GatherState::Pending | GatherState::Failed(_) => {}
             }
         }
-        HeapData::ExternalFuture(fut) => match &mut fut.state {
-            ExternalFutureState::Resolved(value) => value.py_dec_ref_ids(stack),
-            ExternalFutureState::Pending {
-                awaiter: Some(Awaiter::GatherSlot { gather, .. }),
-            } => stack.push(*gather),
-            ExternalFutureState::Pending {
-                awaiter: None | Some(Awaiter::Task(_)),
+        HeapData::ExternalFuture(fut) => {
+            // Mirror `for_each_child_id`: a pending sleep's `result` is owned too.
+            if let Some(result) = &mut fut.sleep_result {
+                result.py_dec_ref_ids(stack);
             }
-            | ExternalFutureState::Failed(_) => {}
-        },
+            match &mut fut.state {
+                ExternalFutureState::Resolved(value) => value.py_dec_ref_ids(stack),
+                ExternalFutureState::Pending {
+                    awaiter: Some(Awaiter::GatherSlot { gather, .. }),
+                } => stack.push(*gather),
+                ExternalFutureState::Pending {
+                    awaiter: None | Some(Awaiter::Task(_)),
+                }
+                | ExternalFutureState::Failed(_) => {}
+            }
+        }
         HeapData::DateTime(dt) => {
             // Mirror `for_each_child_id`: when an aware datetime is freed we must
             // also drop the retained tzinfo reference so its refcount is balanced.

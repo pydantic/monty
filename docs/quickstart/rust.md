@@ -198,8 +198,8 @@ assert!(err.to_string().contains("time limit exceeded"));
 
 ### Reading the clock
 
-`run` has no host to ask, so it answers `date.today()` and `datetime.now()` from a clock of its own — this machine's,
-unless you choose otherwise:
+`run` has no host to ask, so it answers `date.today()`, `datetime.now()` and `time.time()` from a clock of its own —
+this machine's, unless you choose otherwise:
 
 ```rust
 use monty::MontyRun;
@@ -219,6 +219,8 @@ every pool session (see [the clock](../security.md#the-clock)).
 Entropy has no in-process fallback.
 Under `run`, an unseeded `random` draw or `os.urandom()` raises `NotImplementedError`.
 Under `start` it pauses on an `os.urandom` call for the host to answer (see [random](../limitations/random.md)).
+`time.sleep()` and `asyncio.sleep()` always pause for the host, whatever the clock: waiting is something only a host can
+bound (see [time](../limitations/time.md)).
 
 ### Host functions and pausing
 

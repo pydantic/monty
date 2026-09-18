@@ -968,6 +968,13 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("The only supported seed types are:\nNone, int, float, str, bytes, and bytearray.")
     }
 
+    /// The `OverflowError` `time.sleep()` raises for a length past the roughly
+    /// 292 years `PyTime_t` can represent: `timestamp out of range for C PyTime_t`.
+    #[must_use]
+    fn sleep_too_long() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range for C PyTime_t").into()
+    }
+
     /// Creates a TypeError for bytes() constructor with invalid type.
     ///
     /// Matches CPython's format: `TypeError: cannot convert '{type}' object to bytes`
@@ -1661,6 +1668,18 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(
             ExcType::TypeError,
             format!("'{type_}' object cannot be interpreted as an integer"),
+        )
+        .into()
+    }
+
+    /// The `TypeError` CPython's `_PyTime_FromSecondsObject` raises for a
+    /// non-numeric length (`time.sleep`): `'{type}' object cannot be
+    /// interpreted as an integer or float`.
+    #[must_use]
+    fn type_error_not_integer_or_float(type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("'{type_}' object cannot be interpreted as an integer or float"),
         )
         .into()
     }

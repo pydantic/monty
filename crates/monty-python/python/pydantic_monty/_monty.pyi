@@ -15,7 +15,7 @@ from . import (
     SyncSnapshot,
     TypeCheckFormat,
 )
-from .os_access import AbstractOS, OsFunction
+from .os_access import OsFunction
 
 __all__ = [
     '__version__',
@@ -601,7 +601,7 @@ class MontySession:
         | None = None,
         mount: MountDir | list[MountDir] | None = None,
         cwd: str | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
+        os: OsHandler | None = None,
         skip_type_check: bool = False,
     ) -> Any:
         """
@@ -641,8 +641,8 @@ class MontySession:
                 `os.getcwd()` reports it and relative paths resolve against
                 it before reaching a mount or the `os` handler.
             os: Fallback handler for OS calls (e.g. filesystem access) not
-                covered by a mount, invoked as `(function_name, args, kwargs)`,
-                or an `AbstractOS` instance.
+                covered by a mount — an `OsHandler` such as an `AbstractOS`
+                instance, called with keyword arguments.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
 
@@ -709,10 +709,10 @@ class MontySession:
             cwd: The sandbox's working directory for the whole feed (there is
                 no `cwd=` on `resume`); see `feed_run`. A dump taken mid-feed
                 carries it, so `load_snapshot` needs none.
-            os: Fallback handler for OS calls not covered by a mount, invoked
-                as `(function_name, args, kwargs)`, or an `AbstractOS` instance.
-                Consulted only by `resume_auto()` — `feed_start` always surfaces
-                OS calls as snapshots.
+            os: Fallback handler for OS calls not covered by a mount — an
+                `OsHandler` such as an `AbstractOS` instance. Consulted only by
+                `resume_auto()` — `feed_start` always surfaces OS calls as
+                snapshots.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
         """
@@ -974,7 +974,7 @@ class AsyncMontySession:
         | None = None,
         mount: MountDir | list[MountDir] | None = None,
         cwd: str | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
+        os: OsHandler | None = None,
         skip_type_check: bool = False,
     ) -> Any:
         """
@@ -1019,8 +1019,8 @@ class AsyncMontySession:
                 `os.getcwd()` reports it and relative paths resolve against
                 it before reaching a mount or the `os` handler.
             os: Fallback handler for OS calls (e.g. filesystem access) not
-                covered by a mount, invoked as `(function_name, args, kwargs)`,
-                or an `AbstractOS` instance.
+                covered by a mount — an `OsHandler` such as an `AbstractOS`
+                instance, called with keyword arguments.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
         """
@@ -1072,10 +1072,10 @@ class AsyncMontySession:
             cwd: The sandbox's working directory for the whole feed (there is
                 no `cwd=` on `resume`); see `feed_run`. A dump taken mid-feed
                 carries it, so `load_snapshot` needs none.
-            os: Fallback handler for OS calls not covered by a mount, invoked
-                as `(function_name, args, kwargs)`, or an `AbstractOS` instance.
-                Consulted only by `resume_auto()` — `feed_start` always surfaces
-                OS calls as snapshots.
+            os: Fallback handler for OS calls not covered by a mount — an
+                `OsHandler` such as an `AbstractOS` instance. Consulted only by
+                `resume_auto()` — `feed_start` always surfaces OS calls as
+                snapshots.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
         """
@@ -1156,7 +1156,12 @@ class FunctionSnapshot:
 
     @property
     def allow_eager_await(self) -> bool:
-        """Whether the worker permits eager coroutine resolution at this call."""
+        """Whether the worker permits eager coroutine resolution at this call.
+
+        True for a host function or `asyncio.sleep` awaited at once while no other
+        sandbox task can run, so a coroutine answer is awaited in place rather than
+        surfacing as a future snapshot.
+        """
 
     @property
     def script_name(self) -> str: ...

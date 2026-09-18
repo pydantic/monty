@@ -430,6 +430,7 @@ export interface OsCallEvent {
   args: Uint32Array
   kwargs: Array<NodePair>
   callId: number
+  allowEagerAwait: boolean
 }
 export interface CompleteEvent {
   values: Arena

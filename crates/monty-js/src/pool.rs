@@ -885,6 +885,7 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             function_name,
             args,
             call_id,
+            allow_eager_await,
         }) => {
             obj.set("kind", "osCall")?;
             obj.set("functionName", function_name)?;
@@ -893,6 +894,7 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("args", values_to_js(env, &arena, arg_ids)?)?;
             obj.set("kwargs", pairs_to_js(env, &arena, kwarg_ids)?)?;
             obj.set("callId", call_id)?;
+            obj.set("allowEagerAwait", allow_eager_await)?;
         }
         TurnOutcome::Event(TurnEvent::NameLookup { name, object_id }) => {
             obj.set("kind", "nameLookup")?;

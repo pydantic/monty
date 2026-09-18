@@ -30,16 +30,17 @@ import {
 import { PYTHON_EXC_NAMES } from './errors.js'
 import { mountsToNative } from './mount.js'
 import type { MountDir } from './mountDir.js'
-import type {
-  FunctionCallTurn,
-  LoadedTurn,
-  NameLookupTurn,
-  NativeFutureResult,
-  NativeTurn,
-  OkTurn,
-  NotMountedTurn,
-  OsCallTurn,
-  ResolveFuturesTurn,
+import {
+  type FunctionCallTurn,
+  type LoadedTurn,
+  type NameLookupTurn,
+  type NativeFutureResult,
+  type NativeTurn,
+  type OkTurn,
+  type NotMountedTurn,
+  type OsCallTurn,
+  type ResolveFuturesTurn,
+  osCallAcceptsFuture,
 } from './native.js'
 import { CollectString, CollectStreams } from './print.js'
 
@@ -564,14 +565,9 @@ class TurnAnswerer {
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
     }
-    if (isThenable(returned)) {
-      if (call.allowEagerAwait) {
-        return this.answerEagerCoroutine(call.callId, returned, onPrint)
-      }
-      this.registerFuture(call.callId, Promise.resolve(returned))
-      return this.native.resumeFuture(onPrint)
-    }
-    return this.resumeWithValue(returned, onPrint)
+    return isThenable(returned)
+      ? this.answerAwaitedCall(call, returned, onPrint)
+      : this.resumeWithValue(returned, onPrint)
   }
 
   /**
@@ -611,14 +607,9 @@ class TurnAnswerer {
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
     }
-    if (isThenable(returned)) {
-      if (call.allowEagerAwait) {
-        return this.answerEagerCoroutine(call.callId, returned, onPrint)
-      }
-      this.registerFuture(call.callId, Promise.resolve(returned))
-      return this.native.resumeFuture(onPrint)
-    }
-    return this.resumeWithValue(returned, onPrint)
+    return isThenable(returned)
+      ? this.answerAwaitedCall(call, returned, onPrint)
+      : this.resumeWithValue(returned, onPrint)
   }
 
   /**
@@ -685,6 +676,11 @@ class TurnAnswerer {
       const [args, kwargs] = restoreCallArgs(call, this.instances)
       returned = this.os(call.functionName, args, kwargsToRecord(kwargs))
       if (isThenable(returned)) {
+        if (osCallAcceptsFuture(call.functionName)) {
+          return await this.answerAwaitedCall(call, returned, onPrint)
+        }
+        // The sandbox does not await any other OS call, so a future would be
+        // an error: the wait happens here and only this session is held up.
         returned = await returned
       }
     } catch (err) {
@@ -695,6 +691,23 @@ class TurnAnswerer {
       return await this.native.resumeNotHandled(onPrint)
     }
     return await this.resumeWithValue(returned, onPrint)
+  }
+
+  /**
+   * Answers a call the sandbox awaits with the promise a host callback
+   * returned: settled here when the sandbox has nothing else to run, otherwise
+   * registered as a future so its other tasks run meanwhile.
+   */
+  private answerAwaitedCall(
+    call: { callId: number; allowEagerAwait?: boolean },
+    promise: PromiseLike<unknown>,
+    onPrint: PrintCallback,
+  ): Promise<object> {
+    if (call.allowEagerAwait) {
+      return this.answerEagerCoroutine(call.callId, promise, onPrint)
+    }
+    this.registerFuture(call.callId, Promise.resolve(promise))
+    return this.native.resumeFuture(onPrint)
   }
 
   /** Settles an eligible coroutine at its call suspension, including conversion errors. */
@@ -993,7 +1006,7 @@ export class FunctionSnapshot extends SingleUse {
     this.kwargs = kwargsToRecord(kwargs)
     this.callId = turn.callId
     this.isOsFunction = isOsFunction
-    this.allowEagerAwait = turn.kind === 'functionCall' && (turn.allowEagerAwait ?? false)
+    this.allowEagerAwait = turn.allowEagerAwait ?? false
     this.objectId = 'objectId' in turn ? (turn.objectId ?? null) : null
   }
 

@@ -76,8 +76,14 @@ impl PendingEffect {
             Self::Pre(effect) => Some(effect.operation_name()),
             Self::Post(PostConversionEffect::OpenName { .. }) => Some("open"),
             Self::Post(PostConversionEffect::SeedRandom { .. }) => Some("os.urandom"),
+            // `time.sleep` blocks by definition, so a future would leave the
+            // sandbox running before the wait it asked for finished.
+            Self::Post(PostConversionEffect::DiscardResult) => Some("time.sleep"),
             // A future strands these instead: the awaited value is the raw host reply.
             Self::Post(PostConversionEffect::BufferStore { .. } | PostConversionEffect::WritePosition { .. }) => None,
+            // `asyncio.sleep` wants the future: `resume_with_result` moves the
+            // result onto the pending awaitable instead.
+            Self::Post(PostConversionEffect::SleepResult { .. }) => None,
         }
     }
 
@@ -155,8 +161,9 @@ impl PreConversionEffect {
 
 /// Applies the converted host value to VM state. The file variants and
 /// `SeedRandom`'s instance target own a reference to their heap object across
-/// the host yield (see `inc_ref_for_pending_oscall`), released exactly once —
-/// on apply, or via [`Self::release`] when the effect is discarded.
+/// the host yield (see `inc_ref_for_pending_oscall`) and `SleepResult` owns its
+/// value; each is released exactly once — on apply, or via [`Self::release`]
+/// when the effect is discarded.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PostConversionEffect {
     /// Store a full-file read result into the file buffer, then compute the
@@ -181,16 +188,26 @@ pub(crate) enum PostConversionEffect {
         target: RandomTarget,
         retry: Option<RandomRetry>,
     },
+    /// Drop the host's answer and evaluate to `None` (`time.sleep`, whose
+    /// CPython return value is always `None`).
+    DiscardResult,
+    /// Drop the host's answer and produce `result` from an awaitable, so
+    /// `asyncio.sleep(delay, result)` is awaitable whether the host answered
+    /// immediately (a settled awaitable) or with a future (the pending
+    /// awaitable takes `result` over; see `ExternalFuture::sleep_result`).
+    /// Owns `result`'s reference; released by [`release_pending_effect`].
+    SleepResult { result: Value },
 }
 
 impl PostConversionEffect {
     /// Releases what the effect held across the yield: the pinned heap object
-    /// (a file handle, or a `random.Random` instance) and any stashed
-    /// arguments. The single place that knows which variants carry a refcount.
+    /// (a file handle, or a `random.Random` instance), any stashed arguments
+    /// and a sleep's result. The single place that knows which variants carry a refcount.
     pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
         match self {
             Self::BufferStore { file_id } | Self::WritePosition { file_id, .. } => heap.heap_mut().dec_ref(file_id),
-            Self::OpenName { .. } => {}
+            Self::OpenName { .. } | Self::DiscardResult => {}
+            Self::SleepResult { result } => result.drop_with(heap),
             Self::SeedRandom { target, retry } => {
                 if let RandomTarget::Instance(id) = target {
                     heap.heap_mut().dec_ref(id);
@@ -201,8 +218,8 @@ impl PostConversionEffect {
     }
 }
 
-/// Releases an effect that will never be resumed, dropping the heap pin and
-/// any arguments it carried (see `inc_ref_for_pending_oscall`).
+/// Releases an effect that will never be resumed, dropping the heap pin,
+/// arguments or sleep result it carried (see `inc_ref_for_pending_oscall`).
 ///
 /// Reached via the owner's `drop_with`, or `Drop for VM` once the effect is
 /// armed and no owning value remains.

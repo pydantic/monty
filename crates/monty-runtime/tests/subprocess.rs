@@ -563,6 +563,47 @@ fn clock_calls_bubble_to_parent() {
     let (_, event) = child.resume_return(call.call_id, MontyObject::datetime(now.clone()));
     assert_eq!(expect_complete(event), MontyObject::datetime(now));
 
+    let (_, event) = child.feed("import time\ntime.time()");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(call.call, Some(pb::os_call::Call::Time(pb::Unit {})));
+    let (_, event) = child.resume_return(call.call_id, MontyObject::float(1_700_000_000.5));
+    assert_eq!(expect_complete(event), MontyObject::float(1_700_000_000.5));
+
+    child.shutdown();
+}
+
+/// Neither sleep waits in the worker: both cross the wire so the parent can
+/// decide how long a wait it will perform, and `time.sleep()` evaluates to
+/// `None` whatever the parent answers with.
+#[test]
+fn sleep_calls_bubble_to_parent() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+
+    let (_, event) = child.feed("import time\ntime.sleep(1.5)");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::Sleep(pb::os_call::Sleep { seconds: 1.5 }))
+    );
+    let (_, event) = child.resume_return(call.call_id, MontyObject::int(7));
+    assert_eq!(expect_complete(event), MontyObject::none());
+
+    let (_, event) = child.feed("import asyncio\nasyncio.run(asyncio.sleep(0.25, 'woken'))");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep { delay: 0.25 }))
+    );
+    let (_, event) = child.resume_return(call.call_id, MontyObject::none());
+    assert_eq!(expect_complete(event), MontyObject::string("woken"));
+
     child.shutdown();
 }
 

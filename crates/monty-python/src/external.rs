@@ -274,7 +274,7 @@ fn result_to_call_result(py: Python<'_>, result: &Bound<'_, PyAny>, instances: &
 }
 
 /// Checks whether a Python object is a coroutine via `inspect.iscoroutine()`.
-fn is_coroutine(py: Python<'_>, obj: &Bound<'_, PyAny>) -> bool {
+pub(crate) fn is_coroutine(py: Python<'_>, obj: &Bound<'_, PyAny>) -> bool {
     py.import("inspect")
         .and_then(|inspect| inspect.getattr("iscoroutine"))
         .and_then(|is_coro| is_coro.call1((obj,)))

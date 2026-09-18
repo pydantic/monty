@@ -67,6 +67,8 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
             month: 11,
             day: 14,
         }),
+        OsFunctionCall::Time => MontyObject::float(1_700_000_000.0),
+        OsFunctionCall::Sleep(_) | OsFunctionCall::AsyncSleep(_) => MontyObject::none(),
         OsFunctionCall::DateTimeNow(_) => MontyObject::datetime(MontyDateTime {
             year: 2023,
             month: 11,
@@ -1346,6 +1348,249 @@ some_external('x')
     assert_eq!(
         progress.into_complete().expect("expected Complete"),
         MontyObject::string("external-result".to_owned())
+    );
+}
+
+// =============================================================================
+// time.time() / time.sleep() / asyncio.sleep()
+// =============================================================================
+
+#[test]
+fn time_time_yields_oscall() {
+    let (func, args) = run_to_oscall("import time\ntime.time()");
+    assert_eq!(func, "time.time");
+    assert!(args.is_empty(), "time.time() takes no arguments, got {args:?}");
+}
+
+#[test]
+fn time_time_result_used() {
+    let code = "import time\ntime.time() + 1";
+    let (func, _, result) = run_oscall_with_result(code, MontyObject::float(1_700_000_000.5));
+    assert_eq!(func, "time.time");
+    assert_eq!(result, MontyObject::float(1_700_000_001.5));
+}
+
+#[test]
+fn time_sleep_yields_the_delay_as_float_seconds() {
+    let (func, args) = run_to_oscall("import time\ntime.sleep(1.5)");
+    assert_eq!(func, "time.sleep");
+    assert_eq!(args, vec![MontyObject::float(1.5)]);
+    // an int length reaches the host as seconds too
+    let (_, args) = run_to_oscall("import time\ntime.sleep(2)");
+    assert_eq!(args, vec![MontyObject::float(2.0)]);
+}
+
+/// Whatever the host answers with, `time.sleep()` evaluates to `None` — the
+/// `DiscardResult` effect, which also keeps a careless host from handing
+/// sandboxed code a value CPython never produces.
+#[test]
+fn time_sleep_discards_the_host_answer() {
+    let code = "import time\nrepr(time.sleep(0))";
+    let (_, _, result) = run_oscall_with_result(code, MontyObject::string("surprise".to_owned()));
+    assert_eq!(result, MontyObject::string("None".to_owned()));
+}
+
+/// A future would let execution continue before the wait it asked for ended,
+/// so the sandbox refuses one rather than carrying on.
+#[test]
+fn time_sleep_refuses_a_future_answer() {
+    let runner = MontyRun::new(
+        "import time\ntime.sleep(0)".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected the sleep, got {progress:?}")
+    };
+    let err = call
+        .resume(ExtFunctionResult::Future(1), PrintWriter::Stdout)
+        .expect_err("a future is not an answer to a blocking wait");
+    assert!(
+        err.to_string()
+            .ends_with("RuntimeError: time.sleep cannot be answered with a future"),
+        "unexpected error: {err}"
+    );
+}
+
+/// Only the delay reaches the host: `result` stays in the sandbox.
+#[test]
+fn asyncio_sleep_yields_only_the_delay() {
+    let (func, args) = run_to_oscall("import asyncio\nasyncio.sleep(0.25, 'value')");
+    assert_eq!(func, "asyncio.sleep");
+    assert_eq!(args, vec![MontyObject::float(0.25)]);
+}
+
+/// The host answered immediately, so the `await` finds a settled awaitable
+/// holding `result` rather than the host's answer.
+#[test]
+fn asyncio_sleep_answered_by_value_is_awaitable() {
+    let code = "import asyncio\nasyncio.run(asyncio.sleep(0, 'woken'))";
+    let (func, _, result) = run_oscall_with_result(code, MontyObject::none());
+    assert_eq!(func, "asyncio.sleep");
+    assert_eq!(result, MontyObject::string("woken".to_owned()));
+}
+
+/// Both sleeps ignore the host's answer, so one with no sandbox form (a
+/// host object's repr) completes them rather than failing conversion.
+#[test]
+fn sleeps_ignore_an_unconvertible_answer() {
+    let repr = || MontyObject::repr("<host object>".to_owned());
+    let (_, _, result) = run_oscall_with_result("import time\ntime.sleep(0)", repr());
+    assert_eq!(result, MontyObject::none());
+    let (_, _, result) = run_oscall_with_result("import asyncio\nasyncio.run(asyncio.sleep(0, 'woken'))", repr());
+    assert_eq!(result, MontyObject::string("woken".to_owned()));
+}
+
+/// `result` never crosses the host boundary, so a value that has no wire
+/// form — a function — survives, as in CPython.
+#[test]
+fn asyncio_sleep_result_need_not_be_convertible() {
+    let code = "import asyncio\ndef f():\n    return 42\nasyncio.run(asyncio.sleep(0, f))()";
+    let (func, _, result) = run_oscall_with_result(code, MontyObject::none());
+    assert_eq!(func, "asyncio.sleep");
+    assert_eq!(result, MontyObject::int(42));
+}
+
+/// A host that runs an event loop answers with a future instead and resolves
+/// it when the delay elapses; the awaiting task blocks until it does, then
+/// produces `result` whatever the host resolved with.
+#[test]
+fn asyncio_sleep_answered_with_a_future_blocks_until_resolved() {
+    let runner = MontyRun::new(
+        "import asyncio\nasyncio.run(asyncio.sleep(5, 'late'))".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected the sleep, got {progress:?}")
+    };
+    assert_eq!(call.function_call.name(), "asyncio.sleep");
+    let call_id = call.call_id;
+    let progress = call
+        .resume(ExtFunctionResult::Future(call_id), PrintWriter::Stdout)
+        .unwrap();
+
+    let RunProgress::ResolveFutures(state) = progress else {
+        panic!("expected the await to block, got {progress:?}")
+    };
+    assert_eq!(state.pending_call_ids(), vec![call_id]);
+    let progress = state
+        .resume(vec![(call_id, MontyObject::none().into())], PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(
+        progress.into_complete().expect("expected Complete"),
+        MontyObject::string("late".to_owned())
+    );
+}
+
+/// An `asyncio.sleep` awaited at once, with nothing else to run, may be
+/// answered eagerly: the wait is done, so the `await` finds the sleep
+/// settled and no `ResolveFutures` round trip follows.
+#[test]
+fn asyncio_sleep_awaited_at_once_allows_an_eager_answer() {
+    let code = "import asyncio\nasync def main():\n    return await asyncio.sleep(5, 'late')\nasyncio.run(main())";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected the sleep, got {progress:?}")
+    };
+    assert!(call.allow_eager_await);
+    let progress = call.resume_eager(Ok(MontyObject::none()), PrintWriter::Stdout).unwrap();
+    assert_eq!(
+        progress.into_complete().expect("expected Complete"),
+        MontyObject::string("late".to_owned())
+    );
+}
+
+/// The eager hint needs an immediate `await`: a sleep passed to `asyncio.run`
+/// is not awaited by the calling frame, and `time.sleep` never is. Each call
+/// is answered rather than dropped, so the run releases what it holds.
+#[test]
+fn only_an_immediately_awaited_asyncio_sleep_allows_an_eager_answer() {
+    for (code, expected) in [
+        (
+            "import asyncio\nasyncio.run(asyncio.sleep(0, 'x'))",
+            MontyObject::string("x"),
+        ),
+        ("import time\ntime.sleep(0)", MontyObject::none()),
+    ] {
+        let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let progress = runner
+            .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap();
+        let RunProgress::OsCall(call) = progress else {
+            panic!("expected the sleep, got {progress:?}")
+        };
+        assert!(!call.allow_eager_await, "{code}");
+        let progress = call.resume(MontyObject::none(), PrintWriter::Stdout).unwrap();
+        assert_eq!(progress.into_complete().expect("expected Complete"), expected, "{code}");
+    }
+}
+
+/// A sleep answered with a future but never awaited is freed with its
+/// pending future once the run completes; the heap's own walkers must
+/// release the `result` it still holds (`memory-model-checks` verifies).
+#[test]
+fn unawaited_sleep_future_releases_its_result() {
+    let code = "import asyncio\nx = asyncio.sleep(5, [1, 2])\n'done'";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected the sleep, got {progress:?}")
+    };
+    let call_id = call.call_id;
+    let progress = call
+        .resume(ExtFunctionResult::Future(call_id), PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(
+        progress.into_complete().expect("expected Complete"),
+        MontyObject::string("done")
+    );
+}
+
+/// A future the host rejects raises at the `await`; `result` is dropped
+/// with it rather than leaking.
+#[test]
+fn asyncio_sleep_answered_with_a_failed_future_raises() {
+    let code = "import asyncio\nasync def main():\n    try:\n        await asyncio.sleep(5, [1, 2])\n    except OSError as e:\n        return str(e)\nasyncio.run(main())";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected the sleep, got {progress:?}")
+    };
+    let call_id = call.call_id;
+    let progress = call
+        .resume(ExtFunctionResult::Future(call_id), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::ResolveFutures(state) = progress else {
+        panic!("expected the await to block, got {progress:?}")
+    };
+    let interrupted = MontyException::new(ExcType::OSError, Some("wait interrupted".to_owned()));
+    let progress = state
+        .resume(
+            vec![(call_id, ExtFunctionResult::Error(interrupted))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(
+        progress.into_complete().expect("expected Complete"),
+        MontyObject::string("wait interrupted".to_owned())
     );
 }
 
