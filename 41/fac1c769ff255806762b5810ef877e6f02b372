@@ -1,0 +1,11 @@
+crates/monty-runtime/src/run.rs
+  ai_agent 26,230,307-308,605-606,619-630
+crates/monty-runtime/src/main.rs
+  ai_agent 86-88,174-175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "41fac1c769ff255806762b5810ef877e6f02b372",
+  "prompts": {}
+}
