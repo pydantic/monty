@@ -96,8 +96,9 @@ pub(crate) struct Cli {
     #[arg(long)]
     max_suspensions: Option<usize>,
 
-    /// Longest wait a `time.sleep()` or `asyncio.sleep()` performs, in
-    /// seconds; longer sleeps are cut short (defaults to 10, `inf` for no limit).
+    /// Longest wait a `time.sleep()` or `asyncio.sleep()` performs inside the
+    /// sandbox, in seconds; longer sleeps are cut short (defaults to 10, `inf`
+    /// for no limit).
     #[arg(long)]
     max_sleep: Option<f64>,
 
@@ -184,8 +185,8 @@ impl Cli {
         Ok(limits)
     }
 
-    /// The longest sleep the CLI performs, from `--max-sleep` (default 10s;
-    /// `inf` lifts the cap). A negative or NaN value is an error.
+    /// The longest sleep the sandbox performs, from `--max-sleep` (default
+    /// 10s; `inf` lifts the cap). A negative or NaN value is an error.
     #[cfg(feature = "standalone")]
     #[expect(clippy::absolute_paths)]
     fn max_sleep(&self) -> Result<std::time::Duration, String> {

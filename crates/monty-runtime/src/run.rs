@@ -10,7 +10,6 @@ use std::env;
 use std::{
     fmt, fs, io,
     process::ExitCode,
-    thread,
     time::{Duration, Instant},
 };
 
@@ -24,7 +23,7 @@ use monty::{MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, HostClock, MontyException,
+    AutoOsCalls, CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MontyException,
     MontyObject, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig,
     memory_limit_with_headroom, validate_cwd,
 };
@@ -33,15 +32,6 @@ use rustyline::{DefaultEditor, error::ReadlineError};
 use tracing::field::Empty;
 
 use crate::Cli;
-
-/// The clock the CLI lends to sandboxed code for `date.today()`,
-/// `datetime.now()` and `time.time()`.
-///
-/// The same clock a fresh [`MontyRun`] already has, named here so the CLI's
-/// choice does not quietly follow a change to that default.
-/// [`handle_os_call`] reads it too, so the mounted REPL path answers the
-/// suspended calls from the same source.
-const CLI_CLOCK: HostClock = HostClock::System;
 
 /// Dim/gray text (timings). `{DIM}` opens the style, `{DIM:#}` closes it.
 const DIM: Style = Style::new().dimmed();
@@ -237,7 +227,7 @@ fn run_script(
     let inputs = vec![];
 
     let mut runner = match MontyRun::new(code, file_path, input_names, CompileOptions::default()) {
-        Ok(ex) => ex.with_host_clock(CLI_CLOCK),
+        Ok(ex) => ex.with_auto_os_calls(host.auto_os_calls()),
         Err(err) => {
             eprintln!("{BOLD_RED}error{BOLD_RED:#}:\n{err}");
             return ExitCode::FAILURE;
@@ -314,7 +304,8 @@ fn run_script(
 /// initialization or I/O errors.
 fn run_repl(file_path: &str, code: &str, tracker: ResourceTracker, mut host: HostOs, cwd: &str) -> ExitCode {
     let mut suspensions = SuspensionBudget::new(&tracker);
-    let mut repl = MontyRepl::new(file_path, tracker, CompileOptions::default()).with_host_clock(CLI_CLOCK);
+    let mut repl =
+        MontyRepl::new(file_path, tracker, CompileOptions::default()).with_auto_os_calls(host.auto_os_calls());
     repl.set_cwd(cwd);
     let mut repl = Some(repl);
 
@@ -611,9 +602,8 @@ impl SuspensionBudget {
     }
 }
 
-/// What the CLI lends the sandbox as its host: the `-m` mounts and the
-/// `--max-sleep` cap. Only a run with mounts suspends at all, so the cap
-/// matters there alone.
+/// What the CLI lends the sandbox as its host: the `-m` mounts, and the
+/// `--max-sleep` cap on the sleeps the sandbox performs itself.
 struct HostOs {
     mounts: Option<MountTable>,
     /// Longest wait a sleep performs; longer ones are cut short.
@@ -626,28 +616,24 @@ impl HostOs {
         self.mounts.is_some()
     }
 
-    /// Answers an `OsCall`: the clock, a (capped) sleep, or a mount.
+    /// What the sandbox answers itself: the defaults — this machine's clock,
+    /// entropy-seeded `random`, sleeps waited out in the sandbox — with
+    /// `--max-sleep` as the sleep cap. A CLI run is one local script
+    /// expecting CPython's behaviour, so none of these calls reaches the host.
+    fn auto_os_calls(&self) -> AutoOsCalls {
+        AutoOsCalls {
+            sandbox_sleep_clamp: self.max_sleep,
+            ..AutoOsCalls::default()
+        }
+    }
+
+    /// Answers an `OsCall` from a mount.
     ///
     /// Consumes the call (moving write payloads into the mount backend) and
     /// returns the operation result as an `ExtFunctionResult` — either a
     /// successful `MontyObject` or an exception for errors / unsupported
     /// operations.
     fn handle_os_call(&mut self, call: OsFunctionCall) -> ExtFunctionResult {
-        // The clock answers `date.today()` / `datetime.now()` / `time.time()`
-        // here for the same reason it is granted to the non-suspending path:
-        // the CLI is the host, and a local script expecting CPython's clock
-        // should get one either way.
-        if let Some(now) = CLI_CLOCK.resolve(&call) {
-            return now.into();
-        }
-        // Both sleeps wait on this thread, which is the script's own: a CLI
-        // run is one local script, so there is nothing else to run meanwhile.
-        // `--max-sleep` bounds each wait and `--max-suspensions` how many a
-        // run can ask for.
-        if let OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay) = call {
-            thread::sleep(delay.min(self.max_sleep));
-            return MontyObject::none().into();
-        }
         match self.mounts.as_mut() {
             Some(mounts) => match mounts.handle_os_call(call) {
                 MountCallOutcome::Handled(Ok(obj)) => obj.into(),
