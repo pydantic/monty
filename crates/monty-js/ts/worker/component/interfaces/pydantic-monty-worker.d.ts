@@ -578,4 +578,5 @@ export interface DispatchResult {
   status: Status
   events: Array<Event>
   maxSuspensions?: bigint
+  maxTotalSleepMicros?: bigint
 }

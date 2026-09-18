@@ -174,6 +174,14 @@ while True:
   t.is(error.display('msg'), 'suspension limit 3 exceeded')
 })
 
+test('max total sleep refuses the sleep that would take the total over', async () => {
+  // exact binary fractions, so the reported total is exact too
+  const code = 'import time\ntime.sleep(0.125)\ntry:\n    time.sleep(0.5)\nexcept TimeoutError:\n    pass\n'
+  const error = await t.throwsAsync(() => run(code, { limits: { maxTotalSleepSecs: 0.25 } }), isRuntimeError)
+  t.is(error.exception.typeName, 'TimeoutError')
+  t.is(error.display('msg'), 'sleep limit exceeded: 625ms > 250ms')
+})
+
 test('suspension limit defaults to 1000', async () => {
   await using session = await pool().checkout()
   const error = await t.throwsAsync(

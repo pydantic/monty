@@ -124,7 +124,11 @@ fn run_cli(cli: Cli) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let host = HostOs { mounts, max_sleep };
+    let host = HostOs {
+        mounts,
+        max_sleep,
+        sleep_budget: limits.max_total_sleep.map(SleepBudget::new),
+    };
     let cwd = match sandbox_cwd(cli.cwd.as_deref(), first_mount) {
         Ok(cwd) => cwd,
         Err(err) => {
@@ -478,10 +482,16 @@ fn execute_repl_with_mounts(
         }
         match progress {
             ReplProgress::Complete { repl, value } => return Ok((repl, value)),
-            ReplProgress::OsCall(call) => match call.resume_with(PrintWriter::Stdout, |fc| host.handle_os_call(fc)) {
-                Ok(p) => progress = p,
-                Err(err) => return Err((err.repl, format!("{}", err.error))),
-            },
+            ReplProgress::OsCall(call) => {
+                let outcome = match host.refuse_sleep(&call.function_call) {
+                    Some(exc) => call.abort(exc, PrintWriter::Stdout),
+                    None => call.resume_with(PrintWriter::Stdout, |fc| host.handle_os_call(fc)),
+                };
+                match outcome {
+                    Ok(p) => progress = p,
+                    Err(err) => return Err((err.repl, format!("{}", err.error))),
+                }
+            }
             ReplProgress::FunctionCall(call) => {
                 return Err((
                     call.into_repl(),
@@ -553,10 +563,44 @@ fn run_until_complete(
                     .map_err(|err| format!("{err}"))?;
             }
             RunProgress::OsCall(call) => {
-                progress = call
-                    .resume_with(PrintWriter::Stdout, |fc| host.handle_os_call(fc))
-                    .map_err(|err| format!("{err}"))?;
+                let outcome = match host.refuse_sleep(&call.function_call) {
+                    Some(exc) => call.abort(exc, PrintWriter::Stdout),
+                    None => call.resume_with(PrintWriter::Stdout, |fc| host.handle_os_call(fc)),
+                };
+                progress = outcome.map_err(|err| format!("{err}"))?;
             }
+        }
+    }
+}
+
+/// The CLI-enforced `--max-total-sleep`, charged as the pools charge it: at the
+/// call, for the delay the CLI will wait, so the refusal is deterministic.
+struct SleepBudget {
+    limit: Duration,
+    /// What the sleeps let through so far asked for.
+    asked: Duration,
+}
+
+impl SleepBudget {
+    fn new(limit: Duration) -> Self {
+        Self {
+            limit,
+            asked: Duration::ZERO,
+        }
+    }
+
+    /// Charges `delay`, or returns the uncatchable `TimeoutError` to abort
+    /// with once the total would go over; the message is the pools' too.
+    fn charge(&mut self, delay: Duration) -> Option<MontyException> {
+        let total = self.asked.saturating_add(delay);
+        if total > self.limit {
+            Some(MontyException::new(
+                ExcType::TimeoutError,
+                Some(format!("sleep limit exceeded: {total:?} > {:?}", self.limit)),
+            ))
+        } else {
+            self.asked = total;
+            None
         }
     }
 }
@@ -604,27 +648,44 @@ impl SuspensionBudget {
 }
 
 /// What the CLI lends the sandbox as its host: the `-m` mounts, and the
-/// sleeps, waited out here under the `--max-sleep` cap.
+/// sleeps, waited out here under the `--max-sleep` cap and charged to
+/// `--max-total-sleep`.
 struct HostOs {
     mounts: Option<MountTable>,
     /// Longest wait a sleep performs; longer ones are cut short.
     max_sleep: Duration,
+    /// The `--max-total-sleep` budget, when given.
+    sleep_budget: Option<SleepBudget>,
 }
 
 impl HostOs {
-    /// Whether OS calls reach the host at all (see `run_script`).
+    /// Whether OS calls reach the host at all (see `run_script`): they must for
+    /// a mount to answer them, and for a sleep budget to be charged here.
     fn suspends(&self) -> bool {
-        self.mounts.is_some()
+        self.mounts.is_some() || self.sleep_budget.is_some()
     }
 
     /// The defaults — this machine's clock, entropy-seeded `random`, sleeps
     /// the CLI waits out itself with `--max-sleep` as the cap. A CLI run is
-    /// one local script expecting CPython's behaviour; without a mount the
-    /// interpreter's standard execution performs the sleeps instead.
+    /// one local script expecting CPython's behaviour; without a mount or a
+    /// sleep budget the interpreter's standard execution performs the sleeps
+    /// instead.
     fn auto_os_calls(&self) -> AutoOsCalls {
         AutoOsCalls {
             sleep: SleepMode::System(self.max_sleep),
             ..AutoOsCalls::default()
+        }
+    }
+
+    /// The exception to abort a sleep with once it would take the session past
+    /// `--max-total-sleep`; `None` charges it (cut to `--max-sleep`, as the wait
+    /// will be) and lets it through. Anything but a sleep is free.
+    fn refuse_sleep(&mut self, call: &OsFunctionCall) -> Option<MontyException> {
+        match (call, self.sleep_budget.as_mut()) {
+            (OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay), Some(budget)) => {
+                budget.charge((*delay).min(self.max_sleep))
+            }
+            _ => None,
         }
     }
 

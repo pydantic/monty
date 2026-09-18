@@ -13,7 +13,7 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 /// - `gc_interval`: Run garbage collection every N allocations (int)
 /// - `max_recursion_depth`: Maximum function call stack depth (int, default: 1000)
 /// - `max_suspensions`: Maximum host round trips the pool will service (int, default: 1000)
-/// - `max_total_sleep_secs`: Maximum cumulative time the sandbox sleeps itself, in seconds (float)
+/// - `max_total_sleep_secs`: Maximum cumulative time the sleeps may ask the pool to wait, in seconds (float)
 ///
 /// If a key is missing or set to `None`, that limit is not applied
 /// (except `max_recursion_depth` and `max_suspensions`, which default to 1000).

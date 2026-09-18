@@ -750,6 +750,9 @@ message ChildEvent {
   // bytes) still learns its budgets.
   optional uint64 max_feed_duration_micros = 25;
   optional uint64 max_turn_duration_micros = 26;
+  // The session's `max_total_sleep` in microseconds, when configured: the
+  // parent-enforced sleep budget, reported for the same reason.
+  optional uint64 max_total_sleep_micros = 27;
 
   // The session's script name, surfaced on a `Load` reply so a parent that
   // restored a session (whose script name, like the limits above, travels

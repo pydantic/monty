@@ -909,6 +909,10 @@ pub struct ChildEvent {
     pub max_feed_duration_micros: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "26")]
     pub max_turn_duration_micros: ::core::option::Option<u64>,
+    /// The session's `max_total_sleep` in microseconds, when configured: the
+    /// parent-enforced sleep budget, reported for the same reason.
+    #[prost(uint64, optional, tag = "27")]
+    pub max_total_sleep_micros: ::core::option::Option<u64>,
     /// The session's script name, surfaced on a `Load` reply so a parent that
     /// restored a session (whose script name, like the limits above, travels
     /// inside the opaque dump bytes) learns it without parsing the dump. Set only

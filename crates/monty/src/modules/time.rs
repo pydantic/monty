@@ -88,7 +88,7 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     });
     seconds.drop_with(vm.heap);
     let duration = result?;
-    Ok(match host_sleep_delay(vm, duration)? {
+    Ok(match host_sleep_delay(vm, duration) {
         Some(duration) => CallResult::OsCallWithEffect {
             call: OsFunctionCall::Sleep(duration),
             effect: PostConversionEffect::DiscardResult.into(),
@@ -98,19 +98,15 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 }
 
 /// The delay a sleep hands to the host, or `None` when nothing waits
-/// (`SleepMode::Zero`). Under `System` the delay is cut to the mode's maximum
-/// and charged to `max_total_sleep` first, so a sleep over budget is refused
-/// before it suspends; the host then waits it out without consulting its own
-/// `os` handler. Under `CallHost` it is the delay asked, uncut and uncharged.
-pub(crate) fn host_sleep_delay(vm: &VM<'_>, delay: Duration) -> RunResult<Option<Duration>> {
+/// (`SleepMode::Zero`). Under `System` the delay is cut to the mode's maximum;
+/// the host then charges it to `max_total_sleep` and waits it out without
+/// consulting its own `os` handler. Under `CallHost` it is the delay asked,
+/// uncut.
+pub(crate) fn host_sleep_delay(vm: &VM<'_>, delay: Duration) -> Option<Duration> {
     match vm.env.auto_os_calls.sleep {
-        SleepMode::System(max) => {
-            let delay = delay.min(max);
-            vm.heap.tracker.charge_sleep(delay)?;
-            Ok(Some(delay))
-        }
-        SleepMode::CallHost => Ok(Some(delay)),
-        SleepMode::Zero => Ok(None),
+        SleepMode::System(max) => Some(delay.min(max)),
+        SleepMode::CallHost => Some(delay),
+        SleepMode::Zero => None,
     }
 }
 

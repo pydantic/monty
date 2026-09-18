@@ -203,13 +203,16 @@ indistinguishable from a stack overflow.
     may ask the host to wait under the default `sleep` mode (see
     [time.md](time.md)). A sleep costs nothing against the duration limits, so
     without it a sleeping loop is bounded only by `max_suspensions`, one per sleep.
-- It is off by default. A sleep that would take the total over is refused
-    before it suspends, with an uncatchable
+- It is off by default. Like `max_suspensions`, the interpreter only stores
+    it: the host waiting out the sleeps (the pools, the CLI, the wasm pool)
+    charges each one and refuses the sleep that would take the total over,
+    before waiting, with an uncatchable
     `TimeoutError: sleep limit exceeded: <total> > <limit>`; the total
-    reported includes the refused sleep. A sleep is charged at the call for
+    reported includes the refused sleep. A sleep is charged as announced, for
     the delay asked (after the `sleep_system_max` cut), so an
     `asyncio.sleep()` costs its whole delay when created, however long the
-    host really waits.
+    host really waits. Rust's non-suspending `MontyRun::run`, which waits
+    inline, applies no total.
 - The time already slept travels in dumps with the limit, like execution time,
     so a restored session resumes its budget rather than restarting from zero.
 - Sleeps handed to the host under `'call_host'` are not charged to it.

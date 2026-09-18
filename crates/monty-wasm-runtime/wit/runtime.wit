@@ -457,6 +457,9 @@ interface worker {
         /// The current session's suspension limit. A host uses this after
         /// `load`, whose dump replaces the configured session limits.
         max-suspensions: option<u64>,
+        /// The session's `max-total-sleep` in microseconds, when configured;
+        /// enforced by the host like `max-suspensions`, so reported the same way.
+        max-total-sleep-micros: option<u64>,
     }
 
     /// Handles one semantic request using the retained child.

@@ -404,10 +404,10 @@ pub struct Checkout {
 /// Tracks limits the parent enforces or backstops.
 ///
 /// Limits come from `Configure` or the first reply after `Load`. Suspension
-/// counts are parent state and restart at zero on restore. The suspension
-/// limit survives a restore and a reply can only tighten it: the reply's
-/// value is untrusted (a compromised worker could omit or inflate it), so it
-/// never loosens what this checkout was configured with.
+/// counts and the sleep total are parent state and restart at zero on
+/// restore. The suspension limit survives a restore and a reply can only
+/// tighten it: the reply's value is untrusted (a compromised worker could omit
+/// or inflate it), so it never loosens what this checkout was configured with.
 #[derive(Clone, Copy)]
 struct SessionBudget {
     /// The session's `max_feed_duration`, when configured.
@@ -426,6 +426,11 @@ struct SessionBudget {
     suspension_limit: u64,
     /// Suspensions this checkout has received from the worker.
     suspensions_seen: u64,
+    /// The session's `max_total_sleep`, when configured.
+    sleep_limit: Option<Duration>,
+    /// Time the `SleepMode::System` sleeps seen so far asked for, each cut to
+    /// the mode's maximum; what `sleep_limit` bounds.
+    sleep_asked: Duration,
 }
 
 impl SessionBudget {
@@ -438,6 +443,8 @@ impl SessionBudget {
             reported_feed_execution: Duration::ZERO,
             suspension_limit: limits.map_or(DEFAULT_MAX_SUSPENSIONS as u64, |limits| limits.max_suspensions as u64),
             suspensions_seen: 0,
+            sleep_limit: limits.and_then(|limits| limits.max_total_sleep),
+            sleep_asked: Duration::ZERO,
         }
     }
 
@@ -450,6 +457,8 @@ impl SessionBudget {
             reported_feed_execution: Duration::ZERO,
             suspension_limit: self.suspension_limit,
             suspensions_seen: 0,
+            sleep_limit: None,
+            sleep_asked: Duration::ZERO,
         };
     }
 
@@ -469,6 +478,9 @@ impl SessionBudget {
         if self.turn_budget.is_none() {
             self.turn_budget = event.max_turn_duration_micros.map(Duration::from_micros);
         }
+        if self.sleep_limit.is_none() {
+            self.sleep_limit = event.max_total_sleep_micros.map(Duration::from_micros);
+        }
         if let Some(reported) = event.max_suspensions {
             self.suspension_limit = self.suspension_limit.min(reported);
         }
@@ -486,6 +498,35 @@ impl SessionBudget {
     /// Reports when this event exceeds the suspension limit.
     fn over_suspension_limit(&self, event: &pb::ChildEvent) -> Option<u64> {
         (is_suspension(event) && self.suspensions_seen > self.suspension_limit).then_some(self.suspension_limit)
+    }
+
+    /// Charges a `SleepMode::System` sleep announcement to `max_total_sleep`,
+    /// cut to the mode's maximum as the caller's wait will be. A sleep that
+    /// would take the total over is not charged; `Some((limit, total))` says
+    /// to refuse it. Any other event, and any sleep under another mode, is
+    /// free. The delay is the worker's number, so a nonsense value counts as
+    /// the maximum rather than being trusted.
+    fn charge_sleep(&mut self, event: &pb::ChildEvent, sleep: SleepMode) -> Option<(Duration, Duration)> {
+        let SleepMode::System(max) = sleep else {
+            return None;
+        };
+        let seconds = match &event.kind {
+            Some(pb::child_event::Kind::OsCall(call)) => match call.call {
+                Some(pb::os_call::Call::Sleep(pb::os_call::Sleep { seconds })) => seconds,
+                Some(pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep { delay })) => delay,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let delay = Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX).min(max);
+        let total = self.sleep_asked.saturating_add(delay);
+        match self.sleep_limit {
+            Some(limit) if total > limit => Some((limit, total)),
+            _ => {
+                self.sleep_asked = total;
+                None
+            }
+        }
     }
 
     /// Returns the tighter of the two duration backstops: what each configured
@@ -563,6 +604,17 @@ fn suspension_limit_exceeded(limit: u64) -> MontyException {
     MontyException::new(
         ExcType::RuntimeError,
         Some(format!("suspension limit {limit} exceeded")),
+    )
+}
+
+/// The uncatchable `TimeoutError` a feed is aborted with when a sleep would
+/// take the session past `max_total_sleep`; `total` includes the refused
+/// sleep. The `Duration` debug renderings (`1.5s > 1s`) are the documented
+/// message.
+fn sleep_limit_exceeded(limit: Duration, total: Duration) -> MontyException {
+    MontyException::new(
+        ExcType::TimeoutError,
+        Some(format!("sleep limit exceeded: {total:?} > {limit:?}")),
     )
 }
 
@@ -818,7 +870,9 @@ impl Checkout {
     /// The wait the pending [`TurnEvent::OsCall`] asks the caller to perform
     /// itself: `Some(delay)` for a `time.sleep` or `asyncio.sleep` under
     /// `SleepMode::System`, cut to the mode's maximum here as well as in the
-    /// worker, so a caller need not trust the worker's arithmetic. The caller
+    /// worker, so a caller need not trust the worker's arithmetic, and already
+    /// charged to `max_total_sleep` (a sleep over that budget never reaches
+    /// the caller: the feed is aborted with `TimeoutError` instead). The caller
     /// waits that long — inline, or as a future for `asyncio.sleep` — and
     /// answers `ResumeValue::Return(MontyObject::none())` without consulting
     /// its own `os` handler. `None` for every other call, and for every call
@@ -1142,7 +1196,8 @@ impl Checkout {
         }
     }
 
-    /// Records an event and aborts a suspension past `max_suspensions`.
+    /// Records an event and aborts a suspension past `max_suspensions`, or a
+    /// `'system'` sleep past `max_total_sleep`.
     ///
     /// The first non-`Print` reply to a `Load` settles `pending_load_budget`:
     /// an `Ok` or the re-announced suspension means the dump was adopted,
@@ -1166,7 +1221,16 @@ impl Checkout {
             self.budget = saved;
         }
         self.budget.update_from(event);
-        let Some(limit) = self.budget.over_suspension_limit(event) else {
+        let exceeded = self
+            .budget
+            .over_suspension_limit(event)
+            .map(suspension_limit_exceeded)
+            .or_else(|| {
+                self.budget
+                    .charge_sleep(event, self.sleep)
+                    .map(|(limit, total)| sleep_limit_exceeded(limit, total))
+            });
+        let Some(exception) = exceeded else {
             return Ok(false);
         };
         // an aborted event is dropped by the caller, so validation consumes the
@@ -1177,7 +1241,7 @@ impl Checkout {
             return Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
         }
         let abort = request(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
-            exception: Some((&suspension_limit_exceeded(limit)).into()),
+            exception: Some((&exception).into()),
         }));
         let Some(worker) = self.worker.as_mut() else {
             return Err(PoolError::Finished);

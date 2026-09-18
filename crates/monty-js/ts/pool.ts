@@ -144,10 +144,11 @@ export interface ResourceLimits {
   maxRecursionDepth?: number
   maxSuspensions?: number
   /**
-   * Maximum cumulative time the sandbox may spend waiting out `time.sleep()`
-   * and `asyncio.sleep()` itself, in seconds. Sandbox sleeps run off the
-   * `maxFeedDurationSecs` clock, so this is what bounds a sleeping loop; a sleep
-   * that would go over is refused with an uncatchable `TimeoutError`.
+   * Maximum cumulative time `time.sleep()` and `asyncio.sleep()` may ask this
+   * process to wait, in seconds. A sleep costs nothing against the duration
+   * limits, so this is what bounds a sleeping loop: the pool charges each
+   * `'system'` sleep before waiting it out, and refuses the one that would go
+   * over with an uncatchable `TimeoutError`.
    */
   maxTotalSleepSecs?: number
 }

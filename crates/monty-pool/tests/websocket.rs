@@ -716,6 +716,7 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
                 feed_execution_micros: 0,
                 max_feed_duration_micros: Some(100_000),
                 max_turn_duration_micros: None,
+                max_total_sleep_micros: None,
                 kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             },
         );
@@ -996,6 +997,7 @@ async fn restored_session_rearms_the_duration_backstop() {
                 feed_execution_micros: 0,
                 max_feed_duration_micros: Some(100_000),
                 max_turn_duration_micros: None,
+                max_total_sleep_micros: None,
             },
         );
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));

@@ -54,10 +54,12 @@ In the pools and the CLI each sleep is one suspension (two when an `asyncio.slee
 awaited later), so `max_suspensions` (default 1000) bounds a sandbox that sleeps in a loop; Rust's non-suspending
 `MontyRun::run` waits out a `'system'` sleep inline instead, and a zero-delay `asyncio.sleep()` settles without
 suspending at all.
-Under `'system'` a sleep is also charged to `max_total_sleep`, the cumulative time the sandbox may ask the host to
-wait, and a sleep that would take the total over is refused before it suspends with an uncatchable
+Under `'system'` the host also charges each sleep to `max_total_sleep`, the cumulative time the sandbox may ask it
+to wait, and refuses the sleep that would take the total over before waiting, with an uncatchable
 `TimeoutError: sleep limit exceeded: <total> > <limit>` — the Rust `Duration` debug renderings, e.g. `1.5s > 1s`.
-Under `call_host` `max_total_sleep` does not apply.
+Like `max_suspensions`, the interpreter only stores that limit: the pools, the CLI (with `--max-total-sleep`) and
+the wasm pool enforce it as they wait, and Rust's non-suspending `MontyRun::run`, which waits inline, applies no
+total. Under `call_host` `max_total_sleep` does not apply.
 See [resource_limits.md](resource_limits.md).
 
 ## `time.sleep()` arguments

@@ -46,7 +46,7 @@ monty --help
 - `--max-sleep 10` — longest wait a `time.sleep()` / `asyncio.sleep()` performs,
   in seconds; longer sleeps are cut short (`inf` for no limit)
 - `--max-total-sleep 30` — maximum cumulative time those sleeps may ask for, in
-  seconds; a sleep that would go over is refused (`inf` for no limit)
+  seconds; a sleep that would go over is refused (off unless given)
 
 `date.today()` and `datetime.now()` read this machine's clock and local
 timezone, and `time.time()` its clock as Unix epoch seconds; `time.sleep()` and

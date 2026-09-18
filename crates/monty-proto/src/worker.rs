@@ -170,6 +170,9 @@ pub struct SessionBudget {
     /// Maximum suspensions the host may service; enforced outside the child.
     /// `None` only when no session exists.
     pub max_suspensions: Option<usize>,
+    /// The session's `max_total_sleep`, enforced outside the child too;
+    /// `None` when unlimited, or when no session exists.
+    pub max_total_sleep: Option<Duration>,
 }
 
 /// REPL session state of the child.
@@ -350,6 +353,11 @@ impl Child {
                 type_check: config.type_check,
                 // the wire default applies before the repl exists too
                 max_suspensions: Some(ResourceLimits::from(config.limits.unwrap_or_default()).max_suspensions),
+                max_total_sleep: config
+                    .limits
+                    .as_ref()
+                    .and_then(|limits| limits.max_total_sleep_micros)
+                    .map(Duration::from_micros),
             },
             SessionState::Configured(None) => SessionBudget::default(),
             SessionState::Ready(repl) => self.tracker_budget(repl.tracker()),
@@ -363,6 +371,7 @@ impl Child {
             max_memory: tracker.max_memory(),
             type_check: self.type_check.is_some(),
             max_suspensions: Some(tracker.max_suspensions()),
+            max_total_sleep: tracker.max_total_sleep(),
         }
     }
 
@@ -959,6 +968,7 @@ fn stamp_budget(event: &mut pb::ChildEvent, tracker: &ResourceTracker) {
     event.feed_execution_micros = u64::try_from(tracker.feed_elapsed().as_micros()).unwrap_or(u64::MAX);
     event.max_feed_duration_micros = micros_field(tracker.max_feed_duration());
     event.max_turn_duration_micros = micros_field(tracker.max_turn_duration());
+    event.max_total_sleep_micros = micros_field(tracker.max_total_sleep());
     event.max_suspensions = Some(tracker.max_suspensions() as u64);
 }
 

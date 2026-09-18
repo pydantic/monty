@@ -83,9 +83,6 @@ pub enum ResourceError {
     Memory { limit: usize, used: usize },
     /// Maximum recursion depth exceeded.
     Recursion { limit: usize, depth: usize },
-    /// Maximum cumulative sandbox sleep exceeded: `total` is what the sleeps
-    /// so far plus the one refused would have come to.
-    Sleep { limit: Duration, total: Duration },
 }
 
 /// Which of the two nested execution-time budgets a [`ResourceError::Time`]
@@ -124,7 +121,6 @@ impl fmt::Display for ResourceError {
             Self::Recursion { .. } => {
                 write!(f, "maximum recursion depth exceeded")
             }
-            Self::Sleep { limit, total } => write!(f, "sleep limit exceeded: {total:?} > {limit:?}"),
         }
     }
 }
@@ -172,10 +168,11 @@ pub struct ResourceLimits {
     /// The interpreter only stores this limit; hosts must enforce it.
     pub max_suspensions: usize,
     /// Maximum cumulative time `time.sleep()` and `asyncio.sleep()` may ask
-    /// of the host under `SleepMode::System`. A sleep costs nothing against the
-    /// duration limits, so without this a sleeping loop is bounded only by
-    /// `max_suspensions` and a host deadline. Defaulted on deserialization
-    /// like `max_feed_duration`.
+    /// of the host under `SleepMode::System`. Like `max_suspensions`, the
+    /// interpreter only stores this limit; the host performing the waits
+    /// enforces it. A sleep costs nothing against the duration limits, so
+    /// without this a sleeping loop is bounded only by `max_suspensions` and
+    /// a host deadline. Defaulted on deserialization like `max_feed_duration`.
     #[serde(default)]
     pub max_total_sleep: Option<Duration>,
 }
@@ -314,11 +311,6 @@ pub struct ResourceTracker {
     /// existed (`#[serde(default)]` gives back the `None` fallback case).
     #[serde(default)]
     recursion_limit_override: Cell<Option<usize>>,
-    /// Time asked of the host in `SleepMode::System` sleeps, checked against
-    /// `limits.max_total_sleep`. Serialized like the execution time, so a
-    /// restored session resumes its sleep budget too.
-    #[serde(default)]
-    total_sleep: Cell<Duration>,
 }
 
 impl Default for ResourceTracker {
@@ -345,7 +337,6 @@ impl ResourceTracker {
             turn_execution_time: Cell::new(Duration::ZERO),
             running_since: Cell::new(None),
             recursion_limit_override: Cell::new(None),
-            total_sleep: Cell::new(Duration::ZERO),
         }
     }
 
@@ -421,16 +412,11 @@ impl ResourceTracker {
         self.limits.max_suspensions
     }
 
-    /// Returns the configured maximum cumulative sleep, if any.
+    /// Returns the configured maximum cumulative sleep, if any; enforced by
+    /// the host, which reads it back from here for a restored session.
     #[must_use]
     pub fn max_total_sleep(&self) -> Option<Duration> {
         self.limits.max_total_sleep
-    }
-
-    /// Time asked so far in `SleepMode::System` sleeps.
-    #[must_use]
-    pub fn total_sleep(&self) -> Duration {
-        self.total_sleep.get()
     }
 
     /// Returns whether the VM has a memory or time limit configured.
@@ -715,26 +701,9 @@ impl ResourceTracker {
         self.turn_execution_time.set(Duration::ZERO);
     }
 
-    /// Charges a `SleepMode::System` sleep to `max_total_sleep`, refusing it
-    /// up front — before it suspends — once the total would go over. Called
-    /// at the sleep call for the delay asked, so an `asyncio.sleep` is
-    /// charged when it is created, not when it is awaited, and the check is
-    /// deterministic.
-    pub fn charge_sleep(&self, duration: Duration) -> Result<(), ResourceError> {
-        let total = self.total_sleep.get().saturating_add(duration);
-        if let Some(limit) = self.limits.max_total_sleep
-            && total > limit
-        {
-            return Err(ResourceError::Sleep { limit, total });
-        }
-        self.total_sleep.set(total);
-        Ok(())
-    }
-
     /// Blocks for `duration` with the execution clock stopped: how standard
     /// execution, its own host, waits out a `SleepMode::System` sleep at no
-    /// cost against `max_feed_duration`, exactly as a host-performed one. Its
-    /// budget is [`charge_sleep`](Self::charge_sleep), taken at the call. The
+    /// cost against `max_feed_duration`, exactly as a host-performed one. The
     /// clock restarts only if it was running, so this is safe outside an
     /// execution window too.
     ///

@@ -1077,6 +1077,7 @@ mod tests {
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
+            max_total_sleep_micros: None,
         }
     }
 
@@ -1302,6 +1303,7 @@ mod tests {
                 feed_execution_micros: 0,
                 max_feed_duration_micros: None,
                 max_turn_duration_micros: None,
+                max_total_sleep_micros: None,
             });
         }
 
@@ -1397,6 +1399,7 @@ mod tests {
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
+            max_total_sleep_micros: None,
         });
         metrics.begin_turn(&feed());
         metrics.event(&pb::ChildEvent {
@@ -1407,6 +1410,7 @@ mod tests {
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
+            max_total_sleep_micros: None,
         });
 
         let execution = capture.histograms("monty.run.execution_time");
@@ -1436,6 +1440,7 @@ mod tests {
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
+            max_total_sleep_micros: None,
         });
         let turns = capture.attributes("monty.turn.duration");
         assert_eq!(
@@ -1457,6 +1462,7 @@ mod tests {
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
+            max_total_sleep_micros: None,
         });
         let execution = capture.histograms("monty.run.execution_time");
         assert_eq!(execution[0].0, 1);

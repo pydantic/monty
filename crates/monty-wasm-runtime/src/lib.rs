@@ -55,6 +55,9 @@ impl Guest for Component {
             let mut result = dispatch(child, request);
             let budget = child.session_budget();
             result.max_suspensions = budget.max_suspensions.map(|limit| limit as u64);
+            result.max_total_sleep_micros = budget
+                .max_total_sleep
+                .map(|limit| u64::try_from(limit.as_micros()).unwrap_or(u64::MAX));
             let hard_memory_limit = memory_limit_with_headroom(budget.max_memory, budget.type_check);
             let allocator_ready = monty_alloc::set_hard_limit(hard_memory_limit);
             (result, allocator_ready)
@@ -64,6 +67,7 @@ impl Guest for Component {
                 status: Status::Shutdown,
                 events: vec![Event::FatalError(error.to_owned())],
                 max_suspensions: result.max_suspensions,
+                max_total_sleep_micros: result.max_total_sleep_micros,
             }
         } else {
             result
@@ -82,6 +86,7 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
                     "malformed component request: {error}"
                 )))],
                 max_suspensions: None,
+                max_total_sleep_micros: None,
             };
         }
     };
@@ -92,6 +97,7 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
                 "request frame of {len} bytes exceeds maximum of {MAX_FRAME_LEN} bytes"
             )))],
             max_suspensions: None,
+            max_total_sleep_micros: None,
         };
     }
 
@@ -116,6 +122,7 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
         },
         events: sink.events,
         max_suspensions: None,
+        max_total_sleep_micros: None,
     }
 }
 

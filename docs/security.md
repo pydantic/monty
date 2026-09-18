@@ -326,8 +326,8 @@ A wait costs nothing against the duration limits, which measure execution time a
 suspended.
 Each sleep is a suspension (one per sleep, two when an `asyncio.sleep()` answered with a future is awaited later), so
 `max_suspensions` bounds a session that sleeps in a loop, and `max_total_sleep_secs` bounds the cumulative time it
-may ask for: a sleep that would take the total over is refused with an uncatchable `TimeoutError` before the host is
-asked.
+may ask for: the pool charges each sleep before waiting and refuses the one that would take the total over with an
+uncatchable `TimeoutError`, so the limit holds whatever the worker reports.
 See [resource limits](resource-limits.md).
 
 The session's `sleep` setting chooses otherwise: `'call_host'` sends both calls to your `os=` handler, uncut and

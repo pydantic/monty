@@ -127,9 +127,10 @@ pub fn unix_seconds(utc: NaiveDateTime) -> f64 {
 pub enum SleepMode {
     /// Suspend to the host, which waits out the delay itself without
     /// consulting its `os` handler. Each call is cut to the maximum given (a
-    /// longer request is cut short, not refused) and charged to
-    /// `ResourceLimits::max_total_sleep` before it suspends; the wait is not
-    /// execution time. Standard execution, having no host, waits inline.
+    /// longer request is cut short, not refused), and the host charges it to
+    /// `ResourceLimits::max_total_sleep` before waiting; the wait is not
+    /// execution time. Standard execution, having no host, waits inline and
+    /// applies no total.
     System(Duration),
     /// Suspend to the host's `os` handler, which performs (or declines) the
     /// wait, uncut and uncharged.

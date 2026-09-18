@@ -85,7 +85,7 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         // NaN is the one delay CPython refuses; the rest clamp.
         let delay = sleep_duration_saturating(seconds)
             .map_err(|_| ExcType::value_error("Invalid delay: NaN (not a number)"))?;
-        host_sleep_delay(vm, delay)?
+        host_sleep_delay(vm, delay)
     };
     let (result, vm) = result_guard.into_parts();
     Ok(match delay {

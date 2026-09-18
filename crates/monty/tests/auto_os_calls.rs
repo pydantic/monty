@@ -444,29 +444,6 @@ fn the_system_maximum_cuts_a_long_sleep_short() {
     assert!(elapsed < Duration::from_secs(1), "took {elapsed:?}");
 }
 
-/// Sandbox sleeps are charged to `max_total_sleep`, which the duration limits
-/// cannot see: the sleep that would take the total over is refused before it
-/// waits, uncatchably, for `time.sleep` and a sandbox `asyncio.sleep` alike.
-#[test]
-fn sandbox_sleeps_are_bounded_by_max_total_sleep() {
-    // exact binary fractions, so the reported total is exact too
-    let code = "import asyncio, time\n\
-        time.sleep(0.125)\n\
-        try:\n    asyncio.run(asyncio.sleep(0.5))\n\
-        except TimeoutError:\n    pass\n";
-    let tracker = ResourceTracker::new(ResourceLimits::default().max_total_sleep(Duration::from_millis(150)));
-    let started = Instant::now();
-    let err = runner(code, AutoOsCalls::default())
-        .run(vec![], tracker, PrintWriter::Disabled)
-        .unwrap_err();
-    assert_eq!(
-        err.to_string().lines().last().unwrap(),
-        "TimeoutError: sleep limit exceeded: 625ms > 150ms"
-    );
-    // refused up front: the 500 ms sleep never ran
-    assert!(started.elapsed() < Duration::from_millis(500));
-}
-
 /// Under `CallHost` neither sleep is served in-process; standard execution
 /// then refuses them like any other OS call.
 #[test]
@@ -558,30 +535,30 @@ fn sandbox_sleep_result_need_not_be_convertible() {
     assert_eq!(run(code, AutoOsCalls::default()).unwrap(), MontyObject::int(84));
 }
 
-/// Under `System` a sleep reaches the host already cut to the maximum and
-/// charged to `max_total_sleep`: one over budget is refused before it
-/// suspends, so the host never performs a wait the budget denies.
+/// Under `System` a sleep reaches the host already cut to the maximum, and
+/// only that: `max_total_sleep` is the host's to enforce, so the interpreter
+/// stores it for the host to read back and lets every sleep through.
 #[test]
-fn system_sleeps_reach_the_host_cut_and_charged() {
+fn system_sleeps_reach_the_host_cut_but_uncharged() {
     let code = "import time\ntime.sleep(3600)\ntime.sleep(3600)";
     let calls = with_sleep(SleepMode::System(Duration::from_millis(100)));
     let tracker = ResourceTracker::new(ResourceLimits::default().max_total_sleep(Duration::from_millis(150)));
-    let progress = runner(code, calls)
+    let mut progress = runner(code, calls)
         .start(vec![], tracker, PrintWriter::Disabled)
         .unwrap();
-    let RunProgress::OsCall(call) = progress else {
-        panic!("expected time.sleep, got {progress:?}")
-    };
-    assert!(
-        matches!(call.function_call, OsFunctionCall::Sleep(delay) if delay == Duration::from_millis(100)),
-        "got {:?}",
-        call.function_call
-    );
-    let err = call.resume(MontyObject::none(), PrintWriter::Disabled).unwrap_err();
-    assert_eq!(
-        err.to_string().lines().last().unwrap(),
-        "TimeoutError: sleep limit exceeded: 200ms > 150ms"
-    );
+    for _ in 0..2 {
+        let RunProgress::OsCall(call) = progress else {
+            panic!("expected time.sleep, got {progress:?}")
+        };
+        assert!(
+            matches!(call.function_call, OsFunctionCall::Sleep(delay) if delay == Duration::from_millis(100)),
+            "got {:?}",
+            call.function_call
+        );
+        assert_eq!(call.tracker().max_total_sleep(), Some(Duration::from_millis(150)));
+        progress = call.resume(MontyObject::none(), PrintWriter::Disabled).unwrap();
+    }
+    assert!(matches!(progress, RunProgress::Complete(_)), "got {progress:?}");
 }
 
 /// A sleep created in one feed is waited out at the call, so awaiting it in

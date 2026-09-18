@@ -164,10 +164,11 @@ class ResourceLimits(TypedDict, total=False):
     session remains usable. Restoring a dump resets the count."""
 
     max_total_sleep_secs: float | None
-    """Maximum cumulative time the sandbox may spend waiting out `time.sleep()` and `asyncio.sleep()` itself.
+    """Maximum cumulative time `time.sleep()` and `asyncio.sleep()` may ask the pool to wait, in seconds.
 
-    A sleep costs nothing against the duration limits, so this is what bounds a sleeping loop; a sleep that
-    would go over is refused with an uncatchable `TimeoutError` before it waits."""
+    A sleep costs nothing against the duration limits, so this is what bounds a sleeping loop. The pool charges
+    each `'system'` sleep before waiting it out; a sleep that would go over is refused with an uncatchable
+    `TimeoutError` instead."""
 
 
 class TimeZone(TypedDict):

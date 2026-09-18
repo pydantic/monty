@@ -11,10 +11,12 @@ import {
   type AutoOsCalls,
   type EncodedAutoOsCalls,
   type EncodedRandomSeed,
+  type SystemSleep,
   type TypeCheckFormat,
   encodeAssertMessageAnnotations,
   encodeAutoOsCalls,
   encodeTypeCheckFormat,
+  systemSleepOf,
 } from '../options.js'
 import type {
   Arena,
@@ -52,7 +54,7 @@ function flushIntervalMs(interval: number): number {
   return interval === 0 ? 0 : Math.min(Math.max(Math.floor(interval * 1000), 1), 0xffffffff)
 }
 
-/** Resource limits mirrored from the napi pool; the transport enforces `maxSuspensions`. */
+/** Resource limits mirrored from the napi pool; the transport enforces `maxSuspensions` and `maxTotalSleepSecs`. */
 export interface ResourceLimits {
   /**
    * @deprecated Removed: it capped a whole session, which neither replacement
@@ -112,6 +114,12 @@ export class WorkerTransport {
   private suspensionLimit: bigint | undefined
   private suspensionsSeen = 0n
 
+  /** The sleeps this session's host waits out itself, with their cap; see `SystemSleep`. */
+  private systemSleep: SystemSleep | null = null
+  /** `maxTotalSleepSecs` in microseconds, and what the sleeps let through so far asked for. */
+  private sleepLimitMicros: bigint | undefined
+  private sleepAskedMicros = 0n
+
   /** Reports whether the worker can return to its pool when the session ends. */
   onFinish?: (reusable: boolean) => void
 
@@ -121,7 +129,9 @@ export class WorkerTransport {
   static async create(dispatcher: Dispatcher, config: WorkerSessionConfig = {}): Promise<WorkerTransport> {
     const transport = new WorkerTransport(dispatcher)
     const assertMessageAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
-    const autoOsCalls = componentAutoOsCalls(encodeAutoOsCalls(config.autoOsCalls ?? {}))
+    const encodedAutoOsCalls = encodeAutoOsCalls(config.autoOsCalls ?? {})
+    transport.systemSleep = systemSleepOf(encodedAutoOsCalls)
+    const autoOsCalls = componentAutoOsCalls(encodedAutoOsCalls)
     await transport.control(
       {
         tag: 'configure',
@@ -289,7 +299,7 @@ export class WorkerTransport {
     }
     const event = await this.run({ tag: 'load', val: state }, onPrint)
     if (!event) return crashed('worker exited without a turn-ending event')
-    return event.tag === 'ok' ? { kind: 'loaded' } : this.enforceSuspensionLimit(this.toTurn(event), onPrint)
+    return event.tag === 'ok' ? { kind: 'loaded' } : this.enforceLimits(this.toTurn(event), onPrint)
   }
 
   /** Resets a live worker for reuse and disposes a dead worker. */
@@ -316,29 +326,59 @@ export class WorkerTransport {
   private async turn(request: ComponentRequest, onPrint: OnPrint): Promise<NativeTurn> {
     const event = await this.run(request, onPrint)
     const turn = event ? this.toTurn(event) : crashed('worker exited without a turn-ending event')
-    return this.enforceSuspensionLimit(turn, onPrint)
+    return this.enforceLimits(turn, onPrint)
   }
 
-  /** Counts a suspension and aborts the feed when it exceeds the session limit. */
-  private async enforceSuspensionLimit(turn: NativeTurn, onPrint: OnPrint): Promise<NativeTurn> {
+  /**
+   * Counts a suspension and charges a `'system'` sleep, aborting the feed when
+   * either the suspension limit or the sleep budget is exceeded.
+   */
+  private async enforceLimits(turn: NativeTurn, onPrint: OnPrint): Promise<NativeTurn> {
     if (isSuspension(turn)) {
       this.suspensionsSeen += 1n
-      // Abort instead of exposing an over-budget suspension to the host.
       if (this.suspensionLimit !== undefined && this.suspensionsSeen > this.suspensionLimit) {
-        const message = `suspension limit ${this.suspensionLimit} exceeded`
-        const aborted = await this.run({ tag: 'abort-feed', val: { excType: 'RuntimeError', message } }, onPrint)
-        turn = aborted ? this.toTurn(aborted) : crashed('worker exited without a turn-ending event')
-        // the component answers an abort with an error, never a suspension;
-        // servicing one would let a compromised worker call the host past
-        // the budget, so it ends the worker instead
-        if (turn.kind !== 'error' && turn.kind !== 'crashed') {
-          this.dead = true
-          turn = { kind: 'protocol', message: `worker answered abort-feed with ${turn.kind}` }
-        }
+        turn = await this.abortFeed('RuntimeError', `suspension limit ${this.suspensionLimit} exceeded`, onPrint)
+      } else {
+        const refused = this.chargeSleep(turn)
+        if (refused !== null) turn = await this.abortFeed('TimeoutError', refused, onPrint)
       }
     }
     if (turn.kind === 'crashed') this.dead = true
     return turn
+  }
+
+  /** Aborts the feed with an uncatchable exception instead of exposing an over-budget suspension to the host. */
+  private async abortFeed(excType: string, message: string, onPrint: OnPrint): Promise<NativeTurn> {
+    const aborted = await this.run({ tag: 'abort-feed', val: { excType, message } }, onPrint)
+    const turn = aborted ? this.toTurn(aborted) : crashed('worker exited without a turn-ending event')
+    // the component answers an abort with an error, never a suspension;
+    // servicing one would let a compromised worker call the host past
+    // the budget, so it ends the worker instead
+    if (turn.kind !== 'error' && turn.kind !== 'crashed') {
+      this.dead = true
+      return { kind: 'protocol', message: `worker answered abort-feed with ${turn.kind}` }
+    }
+    return turn
+  }
+
+  /**
+   * Charges a `'system'` sleep to `maxTotalSleepSecs`, cut to the cap as the
+   * session's wait will be: the message to refuse it with once the total
+   * would go over, else `null`. Mirrors monty-pool's `SessionBudget`, message
+   * included, so the wasm and native paths raise the same `TimeoutError`.
+   */
+  private chargeSleep(turn: NativeTurn): string | null {
+    if (this.systemSleep === null || turn.kind !== 'osCall') return null
+    if (turn.functionName !== 'time.sleep' && turn.functionName !== 'asyncio.sleep') return null
+    const asked = turn.args[0]
+    const secs = Math.min(typeof asked === 'number' && asked > 0 ? asked : 0, this.systemSleep.maxSecs)
+    const micros = Number.isFinite(secs) ? BigInt(Math.round(secs * 1_000_000)) : 0xffff_ffff_ffff_ffffn
+    const total = this.sleepAskedMicros + micros
+    if (this.sleepLimitMicros !== undefined && total > this.sleepLimitMicros) {
+      return `sleep limit exceeded: ${durationDebug(total)} > ${durationDebug(this.sleepLimitMicros)}`
+    }
+    this.sleepAskedMicros = total
+    return null
   }
 
   /** Sends a control request and verifies its expected event kind. */
@@ -360,6 +400,8 @@ export class WorkerTransport {
       if (request.tag === 'configure' || request.tag === 'load') {
         this.suspensionLimit = result.maxSuspensions
         this.suspensionsSeen = 0n
+        this.sleepLimitMicros = result.maxTotalSleepMicros
+        this.sleepAskedMicros = 0n
       }
       events = result.events
     } catch {
@@ -612,4 +654,19 @@ function lazyAttrValue(value: unknown): NameLookupRequest {
 /** Creates the standard worker-crash turn. */
 function crashed(message: string): NativeTurn {
   return { kind: 'crashed', message, timedOut: false }
+}
+
+/** Renders microseconds as Rust's `Duration` debug form (`1.5s`, `625ms`, `10µs`): the pools' message. */
+function durationDebug(micros: bigint): string {
+  const scaled = (unit: bigint, suffix: string) => {
+    const whole = micros / unit
+    const fraction = (micros % unit)
+      .toString()
+      .padStart(unit.toString().length - 1, '0')
+      .replace(/0+$/, '')
+    return fraction === '' ? `${whole}${suffix}` : `${whole}.${fraction}${suffix}`
+  }
+  if (micros >= 1_000_000n) return scaled(1_000_000n, 's')
+  if (micros >= 1_000n) return scaled(1_000n, 'ms')
+  return `${micros}µs`
 }

@@ -4,10 +4,26 @@
 
 import { test } from 'vitest'
 
-import { Monty, type MontyDateTime } from '@pydantic/monty/wasm'
+import { Monty, MontyRuntimeError, type MontyDateTime } from '@pydantic/monty/wasm'
 
 import { t } from './assertions.js'
 import { skipIfBrowser } from './env.js'
+
+test('the wasm pool charges system sleeps to maxTotalSleepSecs', async (ctx) => {
+  skipIfBrowser(ctx)
+  const pool = await Monty.create()
+  const session = await pool.checkout({ limits: { maxTotalSleepSecs: 0.25 } })
+  try {
+    // exact binary fractions, so the reported total is exact too
+    const code = 'import time\ntime.sleep(0.125)\ntry:\n    time.sleep(0.5)\nexcept TimeoutError:\n    pass\n'
+    const error = await t.throwsAsync(() => session.feedRun(code), { instanceOf: MontyRuntimeError })
+    t.is(error.exception.typeName, 'TimeoutError')
+    t.is(error.display('msg'), 'sleep limit exceeded: 625ms > 250ms')
+  } finally {
+    await session.close()
+    await pool.close()
+  }
+})
 
 test('a fixed clock, zero sleeps and a seed reach the wasm worker', async (ctx) => {
   skipIfBrowser(ctx)

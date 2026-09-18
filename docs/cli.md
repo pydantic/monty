@@ -22,22 +22,22 @@ hello world
 
 ## Flags
 
-| Flag                    | Meaning                                                                                                                                   |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `-i`, `--interactive`   | Run the file or `-c` program, then drop into a REPL, like `python -i`                                                                     |
-| `-t`, `--type-check`    | [Type check](type-checking.md) before executing                                                                                           |
-| `--type-check-format`   | Diagnostic format: `full` (default), `concise`, `json`, `github` and the other ty formats                                                 |
-| `-m`, `--mount`         | Mount a host directory into the sandbox (see below)                                                                                       |
-| `--cwd`                 | The sandbox's virtual working directory (default: the first mount, else `/`)                                                              |
-| `--max-feed-duration`   | Maximum execution time per feed, in seconds, e.g. `0.5`; only the REPL feeds more than once                                               |
-| `--max-turn-duration`   | Maximum execution time between host round trips, in seconds                                                                               |
-| `--max-memory`          | Maximum heap memory, e.g. `1024`, `512KB`, `10MB`, `1GB`                                                                                  |
-| `--max-recursion-depth` | Maximum call-stack depth (default 1000)                                                                                                   |
-| `--gc-interval`         | Run garbage collection every N allocations                                                                                                |
-| `--max-suspensions`     | Maximum suspensions serviced, per run or across a whole interactive session (default 1000); [what counts](resource-limits.md#suspensions) |
-| `--max-sleep`           | Longest wait a `time.sleep()` or `asyncio.sleep()` performs, in seconds; longer sleeps are cut short (default 10, `inf` for no limit)     |
-| `--max-total-sleep`     | Maximum cumulative time those sleeps may ask for, in seconds; a sleep that would go over is refused (default 30, `inf` for no limit)      |
-| `--version`             | Print the version                                                                                                                         |
+| Flag                    | Meaning                                                                                                                                    |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `-i`, `--interactive`   | Run the file or `-c` program, then drop into a REPL, like `python -i`                                                                      |
+| `-t`, `--type-check`    | [Type check](type-checking.md) before executing                                                                                            |
+| `--type-check-format`   | Diagnostic format: `full` (default), `concise`, `json`, `github` and the other ty formats                                                  |
+| `-m`, `--mount`         | Mount a host directory into the sandbox (see below)                                                                                        |
+| `--cwd`                 | The sandbox's virtual working directory (default: the first mount, else `/`)                                                               |
+| `--max-feed-duration`   | Maximum execution time per feed, in seconds, e.g. `0.5`; only the REPL feeds more than once                                                |
+| `--max-turn-duration`   | Maximum execution time between host round trips, in seconds                                                                                |
+| `--max-memory`          | Maximum heap memory, e.g. `1024`, `512KB`, `10MB`, `1GB`                                                                                   |
+| `--max-recursion-depth` | Maximum call-stack depth (default 1000)                                                                                                    |
+| `--gc-interval`         | Run garbage collection every N allocations                                                                                                 |
+| `--max-suspensions`     | Maximum suspensions serviced, per run or across a whole interactive session (default 1000); [what counts](resource-limits.md#suspensions)  |
+| `--max-sleep`           | Longest wait a `time.sleep()` or `asyncio.sleep()` performs, in seconds; longer sleeps are cut short (default 10, `inf` for no limit)      |
+| `--max-total-sleep`     | Maximum cumulative time those sleeps may ask for, in seconds; a sleep that would go over is refused (off unless given, `inf` for no limit) |
+| `--version`             | Print the version                                                                                                                          |
 
 See [resource limits](resource-limits.md) for what the limits actually bound.
 
@@ -71,8 +71,8 @@ Only the file argument's name is used, so `monty ./scripts/run.py` and `monty /a
 
 `date.today()` and `datetime.now()` read the machine's clock and local timezone; `time.time()` reads the machine's clock as Unix epoch seconds.
 `time.sleep()` and `asyncio.sleep()` are waited out by the CLI, each call cut short at `--max-sleep` (10 seconds
-unless changed, `inf` for no cap) and all of them together bounded by `--max-total-sleep` (30 seconds unless changed,
-`inf` for no cap), in every run — script, `-c` and REPL, with or without a mount.
+unless changed, `inf` for no cap) and, when `--max-total-sleep` is given, all of them together bounded by it, in
+every run — script, `-c` and REPL, with or without a mount.
 An unseeded `random` draw seeds the generator from the machine's entropy, as CPython does.
 These are the defaults every embedding gets; the CLI has no flag to freeze the clock, skip the sleeps or seed
 `random` — `MontyRun::with_auto_os_calls` is how a Rust embedder chooses otherwise, and `checkout()` how the pools do
