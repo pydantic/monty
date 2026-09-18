@@ -12,8 +12,8 @@ use std::{
 };
 
 use monty_proto::{
-    FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireFunctionCall,
-    exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
+    BudgetVec, FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION,
+    WireFunctionCall, exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
 };
 use monty_types::{
     CallArgs, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult, NamedValues,
@@ -165,7 +165,7 @@ impl ChildProc {
     fn feed_expecting_death(&mut self, code: &str) {
         self.send(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -358,7 +358,7 @@ fn abort_feed_round_trip() {
         exception: Some(pb::RaisedException {
             exc_type: "RuntimeError".to_owned(),
             message: Some("suspension limit 3 exceeded".to_owned()),
-            traceback: vec![],
+            traceback: BudgetVec::new(),
             data: None,
         }),
     }));
@@ -469,7 +469,7 @@ fn name_lookup_error_raises_in_sandbox() {
     let exc = pb::RaisedException {
         exc_type: "PermissionError".to_owned(),
         message: Some("secret is off limits".to_owned()),
-        traceback: vec![],
+        traceback: BudgetVec::new(),
         data: None,
     };
     child.send(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
@@ -705,7 +705,7 @@ fn os_call_error_resume_carries_exception() {
     let exc = pb::RaisedException {
         exc_type: "FileNotFoundError".to_owned(),
         message: Some("No such file or directory: '/nope.txt'".to_owned()),
-        traceback: vec![],
+        traceback: BudgetVec::new(),
         data: None,
     };
     let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::Error(exc));
@@ -1828,7 +1828,7 @@ fn install_dependencies_is_rejected_but_session_survives() {
     // The Monty sandbox has no host interpreter to install packages for, so it
     // refuses `InstallDependencies` with a recoverable error.
     child.send(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
-        requirements: vec!["numpy".to_owned()],
+        requirements: vec!["numpy".to_owned()].into(),
     }));
     let error = expect_error(child.recv());
     assert_eq!(error.exc_type, "RuntimeError");
@@ -2350,7 +2350,7 @@ fn killed_child_is_detected_as_eof() {
     // run forever (no limits), then kill the child mid-execution
     child.send(pb::parent_request::Kind::Feed(pb::Feed {
         code: "while True:\n    pass".to_owned(),
-        inputs: vec![],
+        inputs: vec![].into(),
         values: None,
         skip_type_check: false,
         cwd: "/".to_owned(),

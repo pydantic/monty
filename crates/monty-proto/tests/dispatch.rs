@@ -45,7 +45,7 @@ fn future_reply(call_id: u32, kind: pb::ext_function_result::Kind) -> pb::Future
 /// `ReturnValue(0)` reply names.
 fn resume_futures(results: Vec<pb::FutureResult>, value: MontyObject) -> pb::ResumeFutures {
     pb::ResumeFutures {
-        results,
+        results: results.into(),
         values: Some(WireArena::new(unstable::into_graph_parts(value).0)),
     }
 }
@@ -233,7 +233,7 @@ fn create_repl_with_flush_interval(child: &mut Child, print_flush_interval_ms: O
 fn feed(child: &mut Child, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind) {
     let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: code.to_owned(),
-        inputs: vec![],
+        inputs: vec![].into(),
         values: None,
         skip_type_check: false,
         cwd: "/".to_owned(),
@@ -425,7 +425,7 @@ fn load_rejects_old_dump_version() {
 
     let mut child = Child::default();
     create_repl(&mut child);
-    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state }));
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     let (_, event) = split_turn(&bytes);
@@ -460,7 +460,7 @@ fn load_re_announces_deep_suspension_args() {
 
     let mut child = Child::default();
     create_repl(&mut child);
-    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state }));
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     let (_, event) = split_turn(&bytes);
@@ -498,7 +498,7 @@ fn abort_feed_ends_a_suspended_feed_uncatchably() {
         exception: Some(pb::RaisedException {
             exc_type: "RuntimeError".to_owned(),
             message: Some("suspension limit 3 exceeded".to_owned()),
-            traceback: vec![],
+            traceback: vec![].into(),
             data: None,
         }),
     }));
@@ -528,7 +528,7 @@ fn abort_feed_without_a_suspension_is_a_protocol_violation() {
         exception: Some(pb::RaisedException {
             exc_type: "RuntimeError".to_owned(),
             message: None,
-            traceback: vec![],
+            traceback: vec![].into(),
             data: None,
         }),
     }));
@@ -567,7 +567,7 @@ fn turn_events_carry_the_suspension_budget() {
     assert_eq!(outcome, HandleOutcome::Continue);
     let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: "1 + 1".to_owned(),
-        inputs: vec![],
+        inputs: vec![].into(),
         values: None,
         skip_type_check: false,
         cwd: "/".to_owned(),

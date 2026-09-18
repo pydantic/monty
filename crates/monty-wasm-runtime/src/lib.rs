@@ -9,7 +9,7 @@
 use std::{cell::RefCell, io};
 
 use monty_proto::{
-    DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, WireArena, exceeds_max_frame_len,
+    BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, WireArena, exceeds_max_frame_len,
     os_call_from_proto, pb,
     worker::{Child, EventSink, HandleOutcome, protocol_violation},
 };
@@ -292,7 +292,7 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
             exception: Some(raised_exception_from_component(error)),
         }),
         Request::Dump => pb::parent_request::Kind::Dump(pb::Dump {}),
-        Request::Load(state) => pb::parent_request::Kind::Load(pb::Load { state }),
+        Request::Load(state) => pb::parent_request::Kind::Load(pb::Load { state: state.into() }),
         Request::Reset => pb::parent_request::Kind::Reset(pb::Reset {}),
     };
     Ok(pb::ParentRequest {
@@ -361,7 +361,7 @@ fn raised_exception_from_component(error: RaisedError) -> pb::RaisedException {
     pb::RaisedException {
         exc_type: error.exc_type,
         message: Some(error.message),
-        traceback: vec![],
+        traceback: BudgetVec::new(),
         data: None,
     }
 }
@@ -374,9 +374,9 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
             let object_id = call.object_id.map(|uuid| uuid.to_string());
             Event::FunctionCall(FunctionCallEvent {
                 function_name: call.function_name,
-                values: value::into_component(call.values.0),
-                args: value::raw_ids(call.args),
-                kwargs: value::raw_pairs(call.kwargs),
+                values: value::into_component(call.values.0.into_inner()),
+                args: value::raw_ids(call.args.into_inner()),
+                kwargs: value::raw_pairs(call.kwargs.into_inner()),
                 call_id: call.call_id,
                 object_id,
                 allow_eager_await: call.allow_eager_await,
@@ -391,12 +391,14 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
                 .and_then(|uuid| MontyUuid::try_from_slice(&uuid.data))
                 .map(|uuid| uuid.to_string()),
         }),
-        Some(pb::child_event::Kind::ResolveFutures(futures)) => Event::ResolveFutures(futures.pending_call_ids),
+        Some(pb::child_event::Kind::ResolveFutures(futures)) => {
+            Event::ResolveFutures(futures.pending_call_ids.into_inner())
+        }
         Some(pb::child_event::Kind::Complete(complete)) => complete.values.map_or_else(
             || invalid_event("Complete event carried no values"),
             |arena| {
                 Event::Complete(CompleteEvent {
-                    values: value::into_component(arena.0),
+                    values: value::into_component(arena.0.into_inner()),
                     value: complete.value,
                 })
             },
@@ -406,10 +408,10 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
             .map(exception_from_proto)
             .map_or_else(|| invalid_event("Error event carried no exception"), Event::Error),
         Some(pb::child_event::Kind::TypingError(error)) => Event::TypingError(error.diagnostics),
-        Some(pb::child_event::Kind::DumpResult(result)) => Event::DumpResult(result.state),
+        Some(pb::child_event::Kind::DumpResult(result)) => Event::DumpResult(result.state.into_inner()),
         Some(pb::child_event::Kind::Ok(_)) => Event::Ok,
         Some(pb::child_event::Kind::FatalError(error)) => Event::FatalError(error.message),
-        Some(pb::child_event::Kind::Shutdown(shutdown)) => Event::Shutdown(shutdown.dump),
+        Some(pb::child_event::Kind::Shutdown(shutdown)) => Event::Shutdown(shutdown.dump.map(Into::into)),
         None => invalid_event("ChildEvent carried no kind"),
     }
 }

@@ -155,12 +155,25 @@ subprocesses:
     every child index is lower than its holder's, an index used twice is a shared object, and the message names its
     roots by index, so a shared sub-object crosses once and the wire imposes no nesting limit.
     prost `extern_path` maps the message onto `WireArena` (`src/wire.rs`), a hand-written `prost::Message` impl that
-    encodes borrowed `MontyNode`s and validates *while* decoding, with no mirror struct, deep clone or recursion on
-    the hot path. `tests/differential.rs` proves it
+    encodes borrowed `MontyNode`s without cloning. Decoding parses one generated protobuf node at a time, then
+    validates and converts it into the domain arena; temporary buffers and conversions share the frame budget.
+    `wire/references.rs` maps index, pair and named-tuple messages onto domain reference buffers so node conversion
+    can transfer them without allocating or copying.
+    `tests/differential.rs` proves it
     byte-compatible against a fully prost-generated oracle (`tests/oracle/`,
     regenerated and CI-checked together with the main codegen). Parents must
     treat frames from a (possibly compromised) child as untrusted — wire
     decoding and proto→Rust conversions validate everything and never panic.
+    Generated decoders use `budgeted_prost` via `prost_path`: generated vectors
+    and byte buffers use `BudgetVec`, whose decode growth is fallible and shares
+    a cumulative per-frame allocation budget with hand-written boxed payloads.
+    Decode through `decode_frame` or `FrameReader::read`, which scope the budget;
+    decoding these protocol types cannot allocate payload storage outside a frame.
+    Integration tests enable the internal `test-util` feature for smaller budgets
+    and accounting checks.
+    New allocation forms must extend the adapter and its tests; codegen rejects
+    unsupported maps, groups, generated boxes, `Bytes` fields and repeated enums
+    (prost's enum accessors require infallible `push`).
     `monty-proto` depends only on `monty-types` by default; its `worker` feature
     (enabled by `monty-runtime`/`monty-wasm-runtime`) pulls in the full `monty`
     interpreter for the child-side `worker` state machine.

@@ -128,7 +128,7 @@ pub fn future_results_to_proto(results: Vec<(u32, ExtFunctionResult)>) -> pb::Re
 /// `ResolveFutures::resume`; each returned value gets its own copy of the
 /// nodes it reaches.
 pub fn future_results_from_proto(
-    results: Vec<pb::FutureResult>,
+    results: impl IntoIterator<Item = pb::FutureResult>,
     values: Option<WireArena>,
 ) -> Result<Vec<(u32, ExtFunctionResult)>, ProtoConvertError> {
     let graph = graph_or_empty(values)?;
