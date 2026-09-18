@@ -321,12 +321,13 @@ test('printCallback with multiple prints', async () => {
 })
 
 // =============================================================================
-// Sleeping: `time.sleep` and `asyncio.sleep` reach the `os` callback
+// Sleeping: under `sleep: 'call_host'`, `time.sleep` and `asyncio.sleep` reach the `os` callback
 // =============================================================================
 
 test('time.sleep reaches the os callback and evaluates to None', async () => {
   const calls: unknown[] = []
   const result = await run('import time\nrepr(time.sleep(1.5))', {
+    sleep: 'call_host',
     os: (name, args) => {
       calls.push([name, args])
       return null // the host decides how long to wait — here, not at all
@@ -347,6 +348,7 @@ test('an async os callback answers asyncio.sleep as a future, so gathered sleeps
     'asyncio.run(main())',
   ].join('\n')
   const result = await run(code, {
+    sleep: 'call_host',
     os: async (name, args) => {
       calls.push([name, args])
       started.push(performance.now())
@@ -366,6 +368,7 @@ test('an async os callback answers asyncio.sleep as a future, so gathered sleeps
 
 test('an async os callback answering time.sleep is awaited before the sandbox resumes', async () => {
   const result = await run('import time\nrepr(time.sleep(0.001))', {
+    sleep: 'call_host',
     os: async () => {
       await new Promise((resolve) => setTimeout(resolve, 1))
       return 'ignored'
@@ -374,8 +377,8 @@ test('an async os callback answering time.sleep is awaited before the sandbox re
   t.is(result, 'None')
 })
 
-test('sleeping without an os callback is refused', async () => {
-  const error = await t.throwsAsync(() => run('import time\ntime.sleep(30)'), {
+test('sleeping under call_host without an os callback is refused', async () => {
+  const error = await t.throwsAsync(() => run('import time\ntime.sleep(30)', { sleep: 'call_host' }), {
     instanceOf: MontyRuntimeError,
   })
   t.is(error.message, "RuntimeError: 'time.sleep' is not supported in this environment")

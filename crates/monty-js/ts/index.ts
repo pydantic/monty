@@ -13,7 +13,13 @@ export {
   type ClassInstanceOptions,
   type ClassTypeOptions,
 } from './classInstance.js'
-export { type AssertMessageAnnotations, type TypeCheckFormat } from './options.js'
+export {
+  type AssertMessageAnnotations,
+  type DateTimeSource,
+  type RandomStart,
+  type SleepMode,
+  type TypeCheckFormat,
+} from './options.js'
 export {
   FunctionSnapshot,
   FutureSnapshot,

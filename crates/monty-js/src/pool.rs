@@ -41,7 +41,8 @@ use monty_types::{
 };
 use napi::{
     bindgen_prelude::{
-        Array, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw, Unknown,
+        Array, BigInt, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw,
+        Unknown,
     },
     threadsafe_function::UnknownReturnValue,
     Env, Error, Result,
@@ -51,6 +52,7 @@ use opentelemetry::{trace::TraceContextExt, Context};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
+    auto_os_calls::extract_auto_os_calls,
     convert::{js_to_monty, monty_to_js, DecodedArena, GraphEncoder},
     limits::{extract_limits, JsResourceLimits},
     telemetry::{configured_adapter, configured_tracing_adapter},
@@ -142,6 +144,29 @@ pub struct NativeCheckoutOptions {
     /// it (ms). Absent: the worker's default. `0` restores line buffering,
     /// delivering each completed line on its own.
     pub print_flush_interval_ms: Option<f64>,
+
+    /// What the clock calls read: `'system'`, `'call_host'` or `'fixed'`
+    /// (with the three `datetime*` parts below). Absent: `'system'`.
+    pub datetime_kind: Option<String>,
+    /// A fixed clock's instant, seconds since the Unix epoch (UTC).
+    pub datetime_unix_seconds: Option<BigInt>,
+    /// A fixed clock's sub-second part, 0..=999999.
+    pub datetime_microsecond: Option<u32>,
+    /// A fixed clock's local-zone offset from UTC, in seconds.
+    pub datetime_local_offset_seconds: Option<i32>,
+    /// What the sleeps do: `'sandbox_sleep'`, `'zero'` or `'call_host'`.
+    /// Absent: `'sandbox_sleep'`.
+    pub sleep: Option<String>,
+    /// Longest sandbox sleep per call, in seconds; `Infinity` lifts the cap.
+    /// Absent: 10.
+    pub sandbox_sleep_clamp_secs: Option<f64>,
+    /// `random`'s seed, at most one set: an int as two's-complement
+    /// little-endian bytes, a finite float, a string, or bytes. All absent:
+    /// seeded from the worker's entropy.
+    pub random_seed_int: Option<Buffer>,
+    pub random_seed_float: Option<f64>,
+    pub random_seed_str: Option<String>,
+    pub random_seed_bytes: Option<Buffer>,
 }
 
 /// Per-feed settings other than the mounts, passed by the TypeScript
@@ -260,6 +285,7 @@ impl NativePool {
     #[napi]
     pub fn checkout(&self, options: NativeCheckoutOptions) -> Result<NativeSession> {
         let limits = options.limits.map(extract_limits).transpose()?;
+        let auto_os_calls = extract_auto_os_calls(&options)?;
         Ok(NativeSession {
             pool: Arc::clone(&self.pool),
             repl_config: ReplConfig {
@@ -282,6 +308,7 @@ impl NativePool {
                     .print_flush_interval_ms
                     .map(|ms| duration_from_ms("printFlushInterval", ms))
                     .transpose()?,
+                auto_os_calls,
             },
             checkout: Arc::new(AsyncMutex::new(None)),
         })

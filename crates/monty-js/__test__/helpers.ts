@@ -40,6 +40,10 @@ export function setupPool(): PoolFixture {
       typeCheckColor,
       assertMessageAnnotations,
       printFlushInterval,
+      datetime,
+      sleep,
+      sandboxSleepClamp,
+      randomStart,
       ...feed
     } = options
     const session = await get().checkout({
@@ -51,6 +55,10 @@ export function setupPool(): PoolFixture {
       ...(typeCheckColor !== undefined ? { typeCheckColor } : {}),
       ...(assertMessageAnnotations !== undefined ? { assertMessageAnnotations } : {}),
       ...(printFlushInterval !== undefined ? { printFlushInterval } : {}),
+      ...(datetime !== undefined ? { datetime } : {}),
+      ...(sleep !== undefined ? { sleep } : {}),
+      ...(sandboxSleepClamp !== undefined ? { sandboxSleepClamp } : {}),
+      ...(randomStart !== undefined ? { randomStart } : {}),
     })
     try {
       return await session.feedRun(code, feed)

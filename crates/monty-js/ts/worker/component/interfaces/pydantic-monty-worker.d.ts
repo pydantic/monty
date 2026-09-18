@@ -241,6 +241,63 @@ export interface ResourceLimits {
   maxRecursionDepth?: bigint
   maxSuspensions?: bigint
 }
+export interface FixedDatetime {
+  unixSeconds: bigint
+  microsecond: number
+  localOffsetSeconds: number
+}
+export type DatetimeSource = DatetimeSourceCallHost | DatetimeSourceSystem | DatetimeSourceFixed
+export interface DatetimeSourceCallHost {
+  tag: 'call-host'
+}
+export interface DatetimeSourceSystem {
+  tag: 'system'
+}
+export interface DatetimeSourceFixed {
+  tag: 'fixed'
+  val: FixedDatetime
+}
+/**
+ * # Variants
+ *
+ * ## `"call-host"`
+ *
+ * ## `"zero"`
+ *
+ * ## `"sandbox-sleep"`
+ */
+export type SleepMode = 'call-host' | 'zero' | 'sandbox-sleep'
+export type RandomSeed = RandomSeedInt | RandomSeedFloat | RandomSeedStr | RandomSeedBytes
+export interface RandomSeedInt {
+  tag: 'int'
+  val: Uint8Array
+}
+export interface RandomSeedFloat {
+  tag: 'float'
+  val: number
+}
+export interface RandomSeedStr {
+  tag: 'str'
+  val: string
+}
+export interface RandomSeedBytes {
+  tag: 'bytes'
+  val: Uint8Array
+}
+export type RandomStart = RandomStartRandom | RandomStartSeed
+export interface RandomStartRandom {
+  tag: 'random'
+}
+export interface RandomStartSeed {
+  tag: 'seed'
+  val: RandomSeed
+}
+export interface AutoOsCalls {
+  datetime?: DatetimeSource
+  sleep?: SleepMode
+  sandboxSleepClampMicros?: bigint
+  randomStart?: RandomStart
+}
 /**
  * # Variants
  *
@@ -281,6 +338,7 @@ export interface ConfigureRequest {
   typeCheckFormat: TypeCheckFormat
   typeCheckColor: boolean
   printFlushIntervalMs?: number
+  autoOsCalls?: AutoOsCalls
 }
 export interface FeedRequest {
   code: string

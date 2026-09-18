@@ -8,17 +8,24 @@
 import type { NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
 import {
   type AssertMessageAnnotations,
+  type AutoOsCallsOptions,
+  type EncodedAutoOsCalls,
+  type EncodedRandomSeed,
   type TypeCheckFormat,
   encodeAssertMessageAnnotations,
+  encodeAutoOsCalls,
   encodeTypeCheckFormat,
 } from '../options.js'
 import type {
   Arena,
+  AutoOsCalls as ComponentAutoOsCalls,
   CallResult,
   Event as ComponentEvent,
   NameLookupRequest,
+  RandomSeed as ComponentRandomSeed,
   Request as ComponentRequest,
   ResourceLimits as ComponentResourceLimits,
+  SleepMode as ComponentSleepMode,
   TypeCheckFormat as ComponentTypeCheckFormat,
 } from './component/monty.component.js'
 import type { Dispatcher } from './host.js'
@@ -63,7 +70,7 @@ export interface ResourceLimits {
 }
 
 /** Session-creation options sent to the component worker. */
-export interface WorkerSessionConfig {
+export interface WorkerSessionConfig extends AutoOsCallsOptions {
   scriptName?: string
   limits?: ResourceLimits
   typeCheck?: boolean
@@ -111,6 +118,7 @@ export class WorkerTransport {
   static async create(dispatcher: Dispatcher, config: WorkerSessionConfig = {}): Promise<WorkerTransport> {
     const transport = new WorkerTransport(dispatcher)
     const assertMessageAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
+    const autoOsCalls = componentAutoOsCalls(encodeAutoOsCalls(config))
     await transport.control(
       {
         tag: 'configure',
@@ -125,6 +133,7 @@ export class WorkerTransport {
           ...(config.printFlushInterval === undefined
             ? {}
             : { printFlushIntervalMs: flushIntervalMs(config.printFlushInterval) }),
+          ...(autoOsCalls === undefined ? {} : { autoOsCalls }),
         },
       },
       'ok',
@@ -418,6 +427,44 @@ export class WorkerTransport {
 function componentTypeCheckFormat(format: TypeCheckFormat): ComponentTypeCheckFormat {
   const formats = ['full', 'concise', 'azure', 'json', 'json-lines', 'rdjson', 'pylint', 'gitlab', 'github'] as const
   return formats[encodeTypeCheckFormat(format) - 1]
+}
+
+/**
+ * Maps the normalized options onto the WIT `auto-os-calls` record, or
+ * `undefined` when every field is the worker's default.
+ */
+function componentAutoOsCalls(calls: EncodedAutoOsCalls): ComponentAutoOsCalls | undefined {
+  const record: ComponentAutoOsCalls = {}
+  if (calls.datetime === 'call_host') record.datetime = { tag: 'call-host' }
+  else if (calls.datetime === 'system') record.datetime = { tag: 'system' }
+  else if (calls.datetime !== undefined) record.datetime = { tag: 'fixed', val: calls.datetime }
+  if (calls.sleep !== undefined) {
+    const modes: Record<typeof calls.sleep, ComponentSleepMode> = {
+      call_host: 'call-host',
+      zero: 'zero',
+      sandbox_sleep: 'sandbox-sleep',
+    }
+    record.sleep = modes[calls.sleep]
+  }
+  if (calls.sandboxSleepClampSecs !== undefined) {
+    // u64::MAX lifts the cap, as the native binding's `Duration::MAX` does
+    record.sandboxSleepClampMicros =
+      calls.sandboxSleepClampSecs === Infinity
+        ? 0xffff_ffff_ffff_ffffn
+        : BigInt(Math.round(calls.sandboxSleepClampSecs * 1_000_000))
+  }
+  if (calls.randomSeed !== undefined) {
+    record.randomStart = { tag: 'seed', val: componentRandomSeed(calls.randomSeed) }
+  }
+  return Object.keys(record).length === 0 ? undefined : record
+}
+
+/** The seed as the WIT `random-seed` variant. */
+function componentRandomSeed(seed: EncodedRandomSeed): ComponentRandomSeed {
+  if ('int' in seed) return { tag: 'int', val: seed.int }
+  if ('float' in seed) return { tag: 'float', val: seed.float }
+  if ('str' in seed) return { tag: 'str', val: seed.str }
+  return { tag: 'bytes', val: seed.bytes }
 }
 
 /** Converts JavaScript-facing limits to canonical WIT integer fields. */

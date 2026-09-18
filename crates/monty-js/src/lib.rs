@@ -9,6 +9,7 @@
 //! TypeScript pool in `ts/worker/`, not through napi — so there is no longer an
 //! in-process napi surface or a wasm napi build.
 
+mod auto_os_calls;
 mod convert;
 mod exceptions;
 mod limits;
