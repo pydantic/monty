@@ -32,7 +32,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// between releases is unnecessary and can lead to confusion.
 pub const DUMP_VERSION: u16 = 11;
 
-/// Defined as [`DUMP_VERSION`] current dump version until we can load older dumps.
+/// Set to [`DUMP_VERSION`], the current dump version, until this crate can load older dumps.
 pub const MIN_SUPPORTED_DUMP_VERSION: u16 = DUMP_VERSION;
 
 // The supported range must be non-empty, and must exclude zero
