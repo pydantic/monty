@@ -235,6 +235,34 @@ test('a suspension answering abort-feed ends the wasm worker', async () => {
   t.is(reusable, false)
 })
 
+test('the sleep limit is a ceiling a restored dump can only tighten', async () => {
+  const sleep = (secs: number) => `import time\ntime.sleep(${secs})`
+  let unlimited: Buffer
+  let capped: Buffer
+  {
+    await using session = await pool().checkout()
+    unlimited = await session.dump()
+  }
+  {
+    await using session = await pool().checkout({ limits: { maxTotalSleepSecs: 0.25 } })
+    t.is(await session.feedRun(sleep(0.125)), null)
+    capped = await session.dump()
+  }
+
+  // a dump with no limit does not loosen the checkout's, and the total restarts
+  await using kept = await pool().checkout({ limits: { maxTotalSleepSecs: 0.25 } })
+  await kept.loadSession(unlimited)
+  t.is(await kept.feedRun(sleep(0.125)), null)
+  const over = await t.throwsAsync(() => kept.feedRun(sleep(0.5)), isRuntimeError)
+  t.is(over.display('msg'), 'sleep limit exceeded: 625ms > 250ms')
+
+  // a dump's limit tightens a checkout that set none
+  await using adopted = await pool().checkout()
+  await adopted.loadSession(capped)
+  const refused = await t.throwsAsync(() => adopted.feedRun(sleep(0.5)), isRuntimeError)
+  t.is(refused.display('msg'), 'sleep limit exceeded: 500ms > 250ms')
+})
+
 test('restored session keeps its suspension limit with a fresh count', async () => {
   const fetch = () => 'ok'
   let state: Buffer

@@ -405,9 +405,11 @@ pub struct Checkout {
 ///
 /// Limits come from `Configure` or the first reply after `Load`. Suspension
 /// counts and the sleep total are parent state and restart at zero on
-/// restore. The suspension limit survives a restore and a reply can only
-/// tighten it: the reply's value is untrusted (a compromised worker could omit
-/// or inflate it), so it never loosens what this checkout was configured with.
+/// restore. The suspension and sleep limits, which the parent enforces,
+/// survive a restore and a reply can only tighten them: the reply's value is
+/// untrusted (a compromised worker could omit or inflate it), so it never
+/// loosens what this checkout was configured with. The duration budgets are
+/// only backstops for limits the child enforces itself, so a dump's are adopted.
 #[derive(Clone, Copy)]
 struct SessionBudget {
     /// The session's `max_feed_duration`, when configured.
@@ -426,7 +428,8 @@ struct SessionBudget {
     suspension_limit: u64,
     /// Suspensions this checkout has received from the worker.
     suspensions_seen: u64,
-    /// The session's `max_total_sleep`, when configured.
+    /// The session's `max_total_sleep` in force: the configured one, only
+    /// ever tightened by what the worker reports.
     sleep_limit: Option<Duration>,
     /// Time the `SleepMode::System` sleeps seen so far asked for, each cut to
     /// the mode's maximum; what `sleep_limit` bounds.
@@ -449,7 +452,7 @@ impl SessionBudget {
     }
 
     /// Clears `Configure` state before adopting a dump's budget. The
-    /// suspension limit stays: it is the ceiling on the dump's.
+    /// suspension and sleep limits stay: they are the ceilings on the dump's.
     fn forget(&mut self) {
         *self = Self {
             feed_budget: None,
@@ -457,7 +460,7 @@ impl SessionBudget {
             reported_feed_execution: Duration::ZERO,
             suspension_limit: self.suspension_limit,
             suspensions_seen: 0,
-            sleep_limit: None,
+            sleep_limit: self.sleep_limit,
             sleep_asked: Duration::ZERO,
         };
     }
@@ -465,9 +468,9 @@ impl SessionBudget {
     /// Adopts unknown limits and records an event's consumption.
     ///
     /// Reported time only ratchets up so a compromised worker cannot rewind it.
-    /// A reported suspension limit only ever tightens the one in force (an
-    /// ordinary reply echoes it; a `Load` reply carries the dump's). Suspension
-    /// events increment the parent-owned count.
+    /// A reported suspension or sleep limit only ever tightens the one in
+    /// force (an ordinary reply echoes it; a `Load` reply carries the dump's).
+    /// Suspension events increment the parent-owned count.
     fn update_from(&mut self, event: &pb::ChildEvent) {
         self.reported_feed_execution = self
             .reported_feed_execution
@@ -478,8 +481,8 @@ impl SessionBudget {
         if self.turn_budget.is_none() {
             self.turn_budget = event.max_turn_duration_micros.map(Duration::from_micros);
         }
-        if self.sleep_limit.is_none() {
-            self.sleep_limit = event.max_total_sleep_micros.map(Duration::from_micros);
+        if let Some(reported) = event.max_total_sleep_micros.map(Duration::from_micros) {
+            self.sleep_limit = Some(self.sleep_limit.map_or(reported, |limit| limit.min(reported)));
         }
         if let Some(reported) = event.max_suspensions {
             self.suspension_limit = self.suspension_limit.min(reported);

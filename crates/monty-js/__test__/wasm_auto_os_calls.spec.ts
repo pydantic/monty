@@ -25,6 +25,26 @@ test('the wasm pool charges system sleeps to maxTotalSleepSecs', async (ctx) => 
   }
 })
 
+test('the wasm pool keeps its sleep limit as a ceiling across a load', async (ctx) => {
+  skipIfBrowser(ctx)
+  const pool = await Monty.create()
+  const source = await pool.checkout()
+  const kept = await pool.checkout({ limits: { maxTotalSleepSecs: 0.25 } })
+  try {
+    // a dump made without a limit does not loosen the checkout's
+    await kept.loadSession(await source.dump())
+    t.is(await kept.feedRun('import time\ntime.sleep(0.125)'), null)
+    const error = await t.throwsAsync(() => kept.feedRun('import time\ntime.sleep(0.5)'), {
+      instanceOf: MontyRuntimeError,
+    })
+    t.is(error.display('msg'), 'sleep limit exceeded: 625ms > 250ms')
+  } finally {
+    await source.close()
+    await kept.close()
+    await pool.close()
+  }
+})
+
 test('a fixed clock, zero sleeps and a seed reach the wasm worker', async (ctx) => {
   skipIfBrowser(ctx)
   const pool = await Monty.create()

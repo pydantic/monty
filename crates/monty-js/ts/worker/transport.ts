@@ -116,18 +116,28 @@ export class WorkerTransport {
 
   /** The sleeps this session's host waits out itself, with their cap; see `SystemSleep`. */
   private systemSleep: SystemSleep | null = null
-  /** `maxTotalSleepSecs` in microseconds, and what the sleeps let through so far asked for. */
+  /**
+   * `maxTotalSleepSecs` in microseconds: the configured limit, only ever
+   * tightened by what the component reports (a dump's, on load), since the
+   * report is the worker's word; and what the sleeps let through so far asked for.
+   */
+  private readonly configuredSleepLimitMicros: bigint | undefined
   private sleepLimitMicros: bigint | undefined
   private sleepAskedMicros = 0n
 
   /** Reports whether the worker can return to its pool when the session ends. */
   onFinish?: (reusable: boolean) => void
 
-  private constructor(private readonly dispatcher: Dispatcher) {}
+  private constructor(
+    private readonly dispatcher: Dispatcher,
+    configuredSleepLimitMicros: bigint | undefined,
+  ) {
+    this.configuredSleepLimitMicros = configuredSleepLimitMicros
+  }
 
   /** Creates a configured REPL session over `dispatcher`. */
   static async create(dispatcher: Dispatcher, config: WorkerSessionConfig = {}): Promise<WorkerTransport> {
-    const transport = new WorkerTransport(dispatcher)
+    const transport = new WorkerTransport(dispatcher, encodeLimits(config.limits ?? {}).maxTotalSleepMicros)
     const assertMessageAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
     const encodedAutoOsCalls = encodeAutoOsCalls(config.autoOsCalls ?? {})
     transport.systemSleep = systemSleepOf(encodedAutoOsCalls)
@@ -400,7 +410,7 @@ export class WorkerTransport {
       if (request.tag === 'configure' || request.tag === 'load') {
         this.suspensionLimit = result.maxSuspensions
         this.suspensionsSeen = 0n
-        this.sleepLimitMicros = result.maxTotalSleepMicros
+        this.sleepLimitMicros = tighter(this.configuredSleepLimitMicros, result.maxTotalSleepMicros)
         this.sleepAskedMicros = 0n
       }
       events = result.events
@@ -669,4 +679,11 @@ function durationDebug(micros: bigint): string {
   if (micros >= 1_000_000n) return scaled(1_000_000n, 's')
   if (micros >= 1_000n) return scaled(1_000n, 'ms')
   return `${micros}µs`
+}
+
+/** The smaller of two optional limits; either alone when the other is unset. */
+function tighter(a: bigint | undefined, b: bigint | undefined): bigint | undefined {
+  if (a === undefined) return b
+  if (b === undefined) return a
+  return a < b ? a : b
 }
