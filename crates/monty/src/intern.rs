@@ -2262,7 +2262,13 @@ impl Interns {
         let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
         let interns = Self {
             strings: Entries::with_capacity(capacity + CORE_STATIC_STRINGS.len()),
-            ..Self::placeholder()
+            bytes: Entries::default(),
+            long_ints: Entries::default(),
+            functions: Entries::default(),
+            eval_sources: Entries::default(),
+            string_id_by_name: RefCell::new(AHashMap::with_capacity(capacity)),
+            static_string_ids: RefCell::new(AHashMap::with_capacity(CORE_STATIC_STRINGS.len())),
+            compiling: Cell::new(false),
         };
         for entry in CORE_ENTRIES.iter() {
             let value = entry.static_value().expect("core entries are static");
