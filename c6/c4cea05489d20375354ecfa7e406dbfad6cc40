@@ -1,0 +1,35 @@
+crates/monty-js/ts/pool.ts
+  ai_agent 12,101-106,108,172,208-209,219-225,229-233
+crates/monty-js/ts/worker/component/interfaces/pydantic-monty-worker.d.ts
+  ai_agent 247-260,301-304,314
+crates/monty-js/ts/worker/transport.ts
+  ai_agent 11,27,65,87-88,115,435,450-452,457-461
+crates/monty-js/README.md
+  ai_agent 403,473-474,478-484,488-499
+crates/monty-js/src/pool.rs
+  ai_agent 144-145,151-157,164-168
+crates/monty-js/ts/worker/index.ts
+  ai_agent 124-132
+crates/monty-js/__test__/wasm_auto_os_calls.spec.ts
+  ai_agent 16-21,32
+crates/monty-js/__test__/feed_start.spec.ts
+  ai_agent 126
+crates/monty-js/__test__/helpers.ts
+  ai_agent 43,55
+crates/monty-js/ts/index.ts
+  ai_agent 18,22
+crates/monty-js/ts/options.ts
+  ai_agent 77-81,86-95,102-107,109,111-116,118,120,129-134,146,151,157-160,162,166-170,185-188,193,201-218,230
+crates/monty-js/__test__/async.spec.ts
+  ai_agent 330,351,371,381
+crates/monty-js/src/auto_os_calls.rs
+  ai_agent 11,42-53,66-70,74,80-94
+crates/monty-js/__test__/auto_os_calls.spec.ts
+  ai_agent 1-3,7,12-15,17,33,48-88,91-93,99-100,104-113,123,130,132,151-154,158-160,180,185,198-199,205-218,220,222,224
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c6c4cea05489d20375354ecfa7e406dbfad6cc40",
+  "prompts": {}
+}
