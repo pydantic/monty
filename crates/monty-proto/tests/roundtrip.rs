@@ -195,6 +195,7 @@ fn exception_and_type_values_round_trip() {
     assert_value_round_trip(&MontyObject::exception(ExcType::JsonDecodeError, None));
     assert_value_round_trip(&MontyObject::type_object(MontyType::Int));
     assert_value_round_trip(&MontyObject::type_object(MontyType::DateTime));
+    assert_value_round_trip(&MontyObject::type_object(MontyType::Generator));
     // Qualified name (`collections.deque`) must survive the wire round-trip.
     assert_value_round_trip(&MontyObject::type_object(MontyType::Deque));
     assert_value_round_trip(&MontyObject::type_object(MontyType::Exception(ExcType::KeyError)));

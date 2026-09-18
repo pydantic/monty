@@ -139,7 +139,7 @@ from pathlib import Path
 from collections import deque
 [
     int, str, type, type(None), type(...), type(iter([])), type(iter(lambda: 0, 0)),
-    type(Path('/x')), Path,
+    type(x for x in []), type(Path('/x')), Path,
     datetime.datetime, datetime.date, datetime.time, datetime.timedelta, datetime.timezone,
     type(re.compile('a')), type(re.match('a', 'a')),
     type(deque()),
@@ -154,6 +154,7 @@ from collections import deque
         type(...),
         type(iter([])),
         type(iter(lambda: 0, 0)),
+        types.GeneratorType,
         pathlib.PurePosixPath,
         pathlib.PurePosixPath,
         datetime.datetime,
@@ -179,6 +180,7 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         type(...),
         type(iter([])),
         type(iter(lambda: 0, 0)),
+        types.GeneratorType,
         datetime.datetime,
         datetime.date,
         datetime.time,

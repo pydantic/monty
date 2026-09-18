@@ -148,6 +148,8 @@ macro_rules! heap_payloads {
             Union(inline $crate::types::Union),
             /// A `random.Random` generator instance.
             Random(boxed $crate::types::Random),
+            /// A lazy generator-expression iterator with a saved synthetic frame.
+            Generator(inline $crate::types::Generator),
         }
     };
 }
@@ -225,7 +227,8 @@ impl HeapData {
             | Self::ExternalFuture(_)
             | Self::Partial(_)
             | Self::GenericAlias(_)
-            | Self::Union(_) => true,
+            | Self::Union(_)
+            | Self::Generator(_) => true,
             // Leaf types, plus iterators whose heap refs only point at leaves and so
             // cannot close a cycle. Move one up if it gains a container-valued field.
             Self::Str(_)
@@ -310,6 +313,7 @@ impl HeapData {
             Self::BoundMethod(_) => Type::Function,
             Self::DataclassField(_) => Type::DataclassField,
             Self::DataclassParams(_) => Type::DataclassParams,
+            Self::Generator(_) => Type::Generator,
             Self::LongInt(_) => Type::Int,
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
@@ -630,6 +634,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::BoundMethod($value) => $body,
             Self::DataclassField($value) => $body,
             Self::DataclassParams($value) => $body,
+            Self::Generator($value) => $body,
             Self::LongInt($value) => $body,
             Self::Path($value) => $body,
             Self::OpenFile($value) => $body,
@@ -1098,6 +1103,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::BoundMethod(value) => value.py_iter(vm),
             Self::DataclassField(value) => value.py_iter(vm),
             Self::DataclassParams(value) => value.py_iter(vm),
+            Self::Generator(value) => value.py_iter(vm),
             Self::Path(value) => value.py_iter(vm),
             Self::OpenFile(value) => value.py_iter(vm),
             Self::ReMatch(value) => value.py_iter(vm),
@@ -1159,6 +1165,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::BoundMethod(value) => value.py_next(vm),
             Self::DataclassField(value) => value.py_next(vm),
             Self::DataclassParams(value) => value.py_next(vm),
+            Self::Generator(value) => value.py_next(vm),
             Self::Path(value) => value.py_next(vm),
             Self::OpenFile(value) => value.py_next(vm),
             Self::ReMatch(value) => value.py_next(vm),

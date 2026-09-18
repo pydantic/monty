@@ -15,6 +15,7 @@ pub mod dict;
 pub mod dict_view;
 pub mod ext_function;
 pub mod file;
+pub mod generator;
 pub mod generic_alias;
 pub mod host_class;
 pub mod instance;
@@ -51,6 +52,7 @@ pub(crate) use dict::{Dict, DictItemIterator, DictKeyIterator, DictValueIterator
 pub(crate) use dict_view::{DictItemsView, DictKeysView, DictValuesView};
 pub(crate) use ext_function::ExtFunction;
 pub(crate) use file::OpenFile;
+pub(crate) use generator::{Generator, GeneratorState};
 pub(crate) use generic_alias::GenericAlias;
 pub(crate) use host_class::{HostClass, HostClassType, host_class_type};
 pub(crate) use instance::{BoundMethod, Instance, instance_call_copy_hook};

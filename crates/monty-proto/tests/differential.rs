@@ -162,6 +162,7 @@ fn corpus() -> Vec<MontyObject> {
         MontyObject::exception(ExcType::ValueError, None),
         MontyObject::exception(ExcType::JsonDecodeError, Some(String::new())),
         MontyObject::type_object(MontyType::Int),
+        MontyObject::type_object(MontyType::Generator),
         MontyObject::type_object(MontyType::Exception(ExcType::KeyError)),
         MontyObject::class_type("Foo", MontyUuid::from_u128(0xF00), false, false, []),
         MontyObject::class_type(

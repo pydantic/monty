@@ -25,6 +25,60 @@ fn yield_expressions_return_not_implemented_error() {
 }
 
 #[test]
+fn async_generator_expression_body_is_rejected() {
+    insta::allow_duplicates! {
+        for code in [
+            "async def foo():\n    return (await bar(x) for x in [1])",
+            "async def foo():\n    return (f'{x:{await width()}}' for x in [1])",
+        ] {
+            let err = get_parse_err(code);
+            assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+            assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support async generator expressions");
+        }
+    }
+}
+
+#[test]
+fn comprehension_walrus_cannot_rebind_iteration_variable() {
+    insta::allow_duplicates! {
+        for code in ["[(x := 1) for x in [0]]", "(x := 1 for x in [0])"] {
+            let err = get_parse_err(code);
+            assert_eq!(err.exc_type(), ExcType::SyntaxError);
+            assert_snapshot!(
+                err.message().unwrap(),
+                @"assignment expression cannot rebind comprehension iteration variable 'x'"
+            );
+        }
+    }
+}
+
+#[test]
+fn comprehension_iterables_reject_walrus_expressions() {
+    insta::allow_duplicates! {
+        for iterable in [
+            "(items := [1])",
+            "(lambda: (items := [1]))()",
+            "(lambda items=(bound := [1]): items)()",
+            "[(bound := item) for item in [1]]",
+            "(f'{1:{(width := 2)}}',)",
+        ] {
+            for clauses in [format!("x in {iterable}"), format!("_ in [0] for x in {iterable}")] {
+                for code in [
+                    format!("(x for {clauses})"),
+                    format!("[x for {clauses}]"),
+                    format!("{{x for {clauses}}}"),
+                    format!("{{x: x for {clauses}}}"),
+                ] {
+                    let err = get_parse_err(code);
+                    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+                    assert_snapshot!(err.message().unwrap(), @"assignment expression cannot be used in a comprehension iterable expression");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn simple_classes_compile_successfully() {
     // Simple classes are supported; only the advanced forms below are rejected.
     let result = MontyRun::new(

@@ -102,10 +102,7 @@ assert (cmp := 10) > 5
 assert cmp == 10
 
 # === Walrus in chained comparisons ===
-# Note: Chained comparisons like `0 < (mid := 5) < 10` are not yet supported
-# Testing a simpler comparison chain
-mid = (chain := 5)
-assert 0 < chain and chain < 10, 'walrus result used in comparison chain'
+assert 0 < (mid := 5) < 10, 'walrus result used in comparison chain'
 assert mid == 5
 
 # === Walrus in boolean expressions ===
@@ -163,6 +160,16 @@ assert leak == 2
 result = [x for x in range(5) if (limit := 3) and x < limit]
 assert result == [0, 1, 2]
 assert limit == 3
+
+# === Nested iterable does not prohibit walrus in the outer element or filter ===
+result = [(leak := x) for x in [j for j in range(3)] if (limit := 2) and x < limit]
+assert result == [0, 1]
+assert leak == 1
+assert limit == 2
+generator = ((leak := x) for x in (j for j in range(3)) if (limit := 1) and x < limit)
+assert list(generator) == [0]
+assert leak == 0
+assert limit == 1
 
 # === Multiple walrus in same expression ===
 result = (m1 := 1) + (m2 := 2) + (m3 := 3)

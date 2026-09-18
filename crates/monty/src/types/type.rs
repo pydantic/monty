@@ -275,6 +275,8 @@ pub enum Type {
     /// reads `<class 'random.Random'>`.
     #[strum(serialize = "random.Random")]
     Random,
+    /// Iterator produced by a generator expression.
+    Generator,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -458,6 +460,7 @@ impl Type {
                 | Self::ItertoolsDropWhile
                 | Self::ItertoolsFilterFalse
                 | Self::ItertoolsStarMap
+                | Self::Generator
                 | Self::ItertoolsAccumulate
                 | Self::ItertoolsBatched
                 | Self::ItertoolsZipLongest

@@ -1351,6 +1351,8 @@ pub enum MontyType {
     ItertoolsTee,
     #[strum(serialize = "itertools._tee_dataobject")]
     ItertoolsTeeDataObject,
+    /// Iterator type produced by a generator expression.
+    Generator,
 }
 
 impl fmt::Display for MontyType {

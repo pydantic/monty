@@ -225,7 +225,8 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
         | HeapReadOutput::ExtFunction(_)
         | HeapReadOutput::Cell(_)
         | HeapReadOutput::DataclassField(_)
-        | HeapReadOutput::DataclassParams(_) => Err(cannot_copy(value, vm)),
+        | HeapReadOutput::DataclassParams(_)
+        | HeapReadOutput::Generator(_) => Err(cannot_copy(value, vm)),
     }
 }
 
@@ -354,7 +355,8 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
         | HeapReadOutput::ExtFunction(_)
         | HeapReadOutput::Cell(_)
         | HeapReadOutput::DataclassField(_)
-        | HeapReadOutput::DataclassParams(_) => Err(cannot_copy(source, vm)),
+        | HeapReadOutput::DataclassParams(_)
+        | HeapReadOutput::Generator(_) => Err(cannot_copy(source, vm)),
     }?;
     // CPython only memoizes a copy that is a new object ("if y is not x").
     if same_object(source, &copy) {
