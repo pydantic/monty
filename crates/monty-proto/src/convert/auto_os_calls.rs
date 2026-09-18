@@ -14,17 +14,18 @@ use crate::{
     convert::ProtoConvertError,
     pb::{
         self,
-        auto_os_calls::{Datetime, RandomStart as WireRandomStart, SleepMode as WireSleepMode},
+        auto_os_calls::{Datetime, RandomStart as WireRandomStart},
         random_seed::Value,
         sandbox_time_zone::Zone,
+        sleep_mode::Mode,
     },
 };
 
 impl From<&AutoOsCalls> for pb::AutoOsCalls {
     fn from(calls: &AutoOsCalls) -> Self {
         let datetime = match calls.datetime {
-            DateTimeSource::CallHost => Datetime::CallHost(pb::Unit {}),
             DateTimeSource::System => Datetime::System(pb::Unit {}),
+            DateTimeSource::CallHost => Datetime::CallHost(pb::Unit {}),
             DateTimeSource::Fixed {
                 unix_seconds,
                 microsecond,
@@ -34,29 +35,29 @@ impl From<&AutoOsCalls> for pb::AutoOsCalls {
             }),
         };
         let zone = match &calls.timezone {
-            SandboxTimeZone::CallHost => Zone::CallHost(pb::Unit {}),
             SandboxTimeZone::System => Zone::System(pb::Unit {}),
+            SandboxTimeZone::CallHost => Zone::CallHost(pb::Unit {}),
             SandboxTimeZone::Fixed { offset_seconds, name } => Zone::Fixed(pb::TimeZone {
                 offset_seconds: *offset_seconds,
                 name: name.clone(),
             }),
         };
-        let random_start = match &calls.random_start {
-            RandomStart::CallHost => WireRandomStart::RandomCallHost(pb::Unit {}),
-            RandomStart::Random => WireRandomStart::Random(pb::Unit {}),
-            RandomStart::Seed(seed) => WireRandomStart::Seed(seed.into()),
-        };
-        let sleep_mode = match calls.sleep {
-            SleepMode::CallHost => WireSleepMode::SleepCallHost(pb::Unit {}),
-            SleepMode::Zero => WireSleepMode::SleepZero(pb::Unit {}),
-            SleepMode::SandboxSleep(clamp) => WireSleepMode::SandboxSleep(pb::SandboxSleep {
-                clamp_micros: Some(u64::try_from(clamp.as_micros()).unwrap_or(u64::MAX)),
+        let mode = match calls.sleep {
+            SleepMode::System(max) => Mode::System(pb::SystemSleep {
+                max_micros: Some(u64::try_from(max.as_micros()).unwrap_or(u64::MAX)),
             }),
+            SleepMode::CallHost => Mode::CallHost(pb::Unit {}),
+            SleepMode::Zero => Mode::Zero(pb::Unit {}),
+        };
+        let random_start = match &calls.random_start {
+            RandomStart::System => WireRandomStart::RandomSystem(pb::Unit {}),
+            RandomStart::CallHost => WireRandomStart::RandomCallHost(pb::Unit {}),
+            RandomStart::Seed(seed) => WireRandomStart::Seed(seed.into()),
         };
         Self {
             datetime: Some(datetime),
             timezone: Some(pb::SandboxTimeZone { zone: Some(zone) }),
-            sleep_mode: Some(sleep_mode),
+            sleep: Some(pb::SleepMode { mode: Some(mode) }),
             random_start: Some(random_start),
         }
     }
@@ -69,8 +70,8 @@ impl TryFrom<pb::AutoOsCalls> for AutoOsCalls {
         let defaults = Self::default();
         let datetime = match calls.datetime {
             None => defaults.datetime,
-            Some(Datetime::CallHost(_)) => DateTimeSource::CallHost,
             Some(Datetime::System(_)) => DateTimeSource::System,
+            Some(Datetime::CallHost(_)) => DateTimeSource::CallHost,
             Some(Datetime::Fixed(fixed)) => {
                 if fixed.microsecond > 999_999 {
                     return Err(ProtoConvertError::InvalidValue {
@@ -86,27 +87,25 @@ impl TryFrom<pb::AutoOsCalls> for AutoOsCalls {
         };
         let timezone = match calls.timezone.and_then(|timezone| timezone.zone) {
             None => defaults.timezone,
-            Some(Zone::CallHost(_)) => SandboxTimeZone::CallHost,
             Some(Zone::System(_)) => SandboxTimeZone::System,
+            Some(Zone::CallHost(_)) => SandboxTimeZone::CallHost,
             Some(Zone::Fixed(fixed)) => SandboxTimeZone::Fixed {
                 offset_seconds: fixed.offset_seconds,
                 name: fixed.name,
             },
         };
-        let sleep = match calls.sleep_mode {
+        let sleep = match calls.sleep.and_then(|sleep| sleep.mode) {
             None => defaults.sleep,
-            Some(WireSleepMode::SleepCallHost(_)) => SleepMode::CallHost,
-            Some(WireSleepMode::SleepZero(_)) => SleepMode::Zero,
-            Some(WireSleepMode::SandboxSleep(sandbox)) => SleepMode::SandboxSleep(
-                sandbox
-                    .clamp_micros
-                    .map_or(SleepMode::DEFAULT_CLAMP, Duration::from_micros),
-            ),
+            Some(Mode::System(system)) => {
+                SleepMode::System(system.max_micros.map_or(SleepMode::DEFAULT_MAX, Duration::from_micros))
+            }
+            Some(Mode::CallHost(_)) => SleepMode::CallHost,
+            Some(Mode::Zero(_)) => SleepMode::Zero,
         };
         let random_start = match calls.random_start {
             None => defaults.random_start,
+            Some(WireRandomStart::RandomSystem(_)) => RandomStart::System,
             Some(WireRandomStart::RandomCallHost(_)) => RandomStart::CallHost,
-            Some(WireRandomStart::Random(_)) => RandomStart::Random,
             Some(WireRandomStart::Seed(seed)) => RandomStart::Seed(seed.try_into()?),
         };
         Ok(Self {

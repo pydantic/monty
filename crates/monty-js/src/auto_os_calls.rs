@@ -51,20 +51,20 @@ pub(crate) fn extract_auto_os_calls(options: &NativeCheckoutOptions) -> Result<A
         },
         Some(other) => return Err(invalid(&format!("timezone: unknown zone '{other}'"))),
     };
-    let clamp = match options.sandbox_sleep_clamp_secs {
-        None => SleepMode::DEFAULT_CLAMP,
+    let max = match options.sleep_system_max_secs {
+        None => SleepMode::DEFAULT_MAX,
         Some(secs) if secs == f64::INFINITY => Duration::MAX,
-        Some(secs) => Duration::try_from_secs_f64(secs).map_err(|err| invalid(&format!("sandboxSleepClamp: {err}")))?,
+        Some(secs) => Duration::try_from_secs_f64(secs).map_err(|err| invalid(&format!("sleepSystemMax: {err}")))?,
     };
-    // The clamp only applies to a sandbox sleep; the other modes ignore it.
+    // The maximum only applies to a system sleep; the other modes ignore it.
     let sleep = match options.sleep.as_deref() {
-        None | Some("sandbox_sleep") => SleepMode::SandboxSleep(clamp),
+        None | Some("system") => SleepMode::System(max),
         Some("zero") => SleepMode::Zero,
         Some("call_host") => SleepMode::CallHost,
         Some(other) => return Err(invalid(&format!("sleep: unknown mode '{other}'"))),
     };
     let random_start = match options.random_start_kind.as_deref() {
-        None | Some("random") => RandomStart::Random,
+        None | Some("system") => RandomStart::System,
         Some("call_host") => RandomStart::CallHost,
         Some("seed") => RandomStart::Seed(random_seed(options)?),
         Some(other) => return Err(invalid(&format!("randomStart: unknown start '{other}'"))),

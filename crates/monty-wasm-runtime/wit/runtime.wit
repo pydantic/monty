@@ -195,31 +195,31 @@ interface worker {
 
     /// The local zone naive `datetime.now()` and `date.today()` read in.
     variant time-zone {
-        /// Suspend the calls that need the zone to the host.
-        call-host,
         /// The worker's local zone.
         system,
+        /// Suspend the calls that need the zone to the host.
+        call-host,
         fixed(fixed-time-zone),
     }
 
     /// What `date.today()`, `datetime.now()` and `time.time()` read.
     variant datetime-source {
-        /// Suspend to the host, as every other OS call does.
-        call-host,
         /// The worker's own clock.
         system,
+        /// Suspend to the host, as every other OS call does.
+        call-host,
         /// One frozen instant.
         fixed(fixed-datetime),
     }
 
     /// What `time.sleep()` and `asyncio.sleep()` do.
     variant sleep-mode {
+        /// Wait in the worker, each call capped at these microseconds
+        /// (absent = 10s).
+        system(option<u64>),
         call-host,
         /// Return at once without waiting.
         zero,
-        /// Wait in the worker, each call capped at these microseconds
-        /// (absent = 10s).
-        sandbox-sleep(option<u64>),
     }
 
     /// A `random.seed()` argument: the types CPython accepts.
@@ -234,10 +234,10 @@ interface worker {
 
     /// Where an unseeded `random` generator gets its first state.
     variant random-start {
+        /// The worker's own OS entropy.
+        system,
         /// Suspend the first draw with an `os.urandom` call for the host.
         call-host,
-        /// The worker's own OS entropy.
-        random,
         /// As `random.seed(seed)` would.
         seed(random-seed),
     }

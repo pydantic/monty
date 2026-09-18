@@ -19,7 +19,7 @@ platform (see the note on floats below).
 An unseeded generator seeds itself on its first draw from the session's `random_start`
 (`auto_os_calls` on `checkout()` in the bindings, `AutoOsCalls::random_start` in Rust):
 
-- `'random'`, the default, reads 2496 bytes of OS entropy — the 624 32-bit words of one MT19937 state vector, what
+- `'system'`, the default, reads 2496 bytes of OS entropy — the 624 32-bit words of one MT19937 state vector, what
     CPython's `seed(None)` reads — so unseeded draws are unpredictable, as in CPython.
 - A seed (`{'seed': s}` in Python, `{ seed }` in JavaScript, `RandomStart::Seed` in Rust; any int, a float, a `str` or
     `bytes`) starts the module-level generator exactly as `random.seed(s)` would, so its draws are CPython's for that

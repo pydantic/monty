@@ -456,15 +456,15 @@ pub struct AutoOsCalls {
     /// Absent (or with no arm set) = the child's local zone.
     #[prost(message, optional, tag = "9")]
     pub timezone: ::core::option::Option<SandboxTimeZone>,
+    /// What `time.sleep()` and `asyncio.sleep()` do.
+    /// Absent (or with no arm set) = a sleep in the child with the default maximum.
+    #[prost(message, optional, tag = "4")]
+    pub sleep: ::core::option::Option<SleepMode>,
     /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
-    #[prost(oneof = "auto_os_calls::Datetime", tags = "1, 2, 3")]
+    #[prost(oneof = "auto_os_calls::Datetime", tags = "2, 1, 3")]
     pub datetime: ::core::option::Option<auto_os_calls::Datetime>,
-    /// What `time.sleep()` and `asyncio.sleep()` do; unset = a sandbox sleep
-    /// with the default clamp.
-    #[prost(oneof = "auto_os_calls::SleepMode", tags = "4, 5, 6")]
-    pub sleep_mode: ::core::option::Option<auto_os_calls::SleepMode>,
     /// Where an unseeded `random` generator gets its first state.
-    #[prost(oneof = "auto_os_calls::RandomStart", tags = "7, 8, 10")]
+    #[prost(oneof = "auto_os_calls::RandomStart", tags = "7, 10, 8")]
     pub random_start: ::core::option::Option<auto_os_calls::RandomStart>,
 }
 /// Nested message and enum types in `AutoOsCalls`.
@@ -473,30 +473,15 @@ pub mod auto_os_calls {
     #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Oneof)]
     #[prost(prost_path = "crate::budgeted_prost")]
     pub enum Datetime {
-        /// Suspend to the parent, as every other OS call does.
-        #[prost(message, tag = "1")]
-        CallHost(super::Unit),
         /// The child's clock.
         #[prost(message, tag = "2")]
         System(super::Unit),
+        /// Suspend to the parent, as every other OS call does.
+        #[prost(message, tag = "1")]
+        CallHost(super::Unit),
         /// One frozen instant, for reproducible runs.
         #[prost(message, tag = "3")]
         Fixed(super::FixedDateTime),
-    }
-    /// What `time.sleep()` and `asyncio.sleep()` do; unset = a sandbox sleep
-    /// with the default clamp.
-    #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Oneof)]
-    #[prost(prost_path = "crate::budgeted_prost")]
-    pub enum SleepMode {
-        /// Suspend to the parent, which performs the wait.
-        #[prost(message, tag = "4")]
-        SleepCallHost(super::Unit),
-        /// Return at once without waiting.
-        #[prost(message, tag = "5")]
-        SleepZero(super::Unit),
-        /// Wait in the child.
-        #[prost(message, tag = "6")]
-        SandboxSleep(super::SandboxSleep),
     }
     /// Where an unseeded `random` generator gets its first state.
     #[derive(Clone, PartialEq, crate::budgeted_prost::Oneof)]
@@ -504,20 +489,20 @@ pub mod auto_os_calls {
     pub enum RandomStart {
         /// From the child's own OS entropy.
         #[prost(message, tag = "7")]
-        Random(super::Unit),
-        /// As `random.seed(seed)` would, for reproducible runs.
-        #[prost(message, tag = "8")]
-        Seed(super::RandomSeed),
+        RandomSystem(super::Unit),
         /// Suspend the first draw with an `os.urandom` call for 2496 bytes.
         #[prost(message, tag = "10")]
         RandomCallHost(super::Unit),
+        /// As `random.seed(seed)` would, for reproducible runs.
+        #[prost(message, tag = "8")]
+        Seed(super::RandomSeed),
     }
 }
 /// Mirrors monty's `SandboxTimeZone`.
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct SandboxTimeZone {
-    #[prost(oneof = "sandbox_time_zone::Zone", tags = "1, 2, 3")]
+    #[prost(oneof = "sandbox_time_zone::Zone", tags = "2, 1, 3")]
     pub zone: ::core::option::Option<sandbox_time_zone::Zone>,
 }
 /// Nested message and enum types in `SandboxTimeZone`.
@@ -525,24 +510,47 @@ pub mod sandbox_time_zone {
     #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Oneof)]
     #[prost(prost_path = "crate::budgeted_prost")]
     pub enum Zone {
-        /// Suspend the calls that need the zone to the parent.
-        #[prost(message, tag = "1")]
-        CallHost(super::Unit),
         /// The child's local zone.
         #[prost(message, tag = "2")]
         System(super::Unit),
+        /// Suspend the calls that need the zone to the parent.
+        #[prost(message, tag = "1")]
+        CallHost(super::Unit),
         /// A fixed offset from UTC, with a name if it has one.
         #[prost(message, tag = "3")]
         Fixed(super::TimeZone),
     }
 }
+/// Mirrors monty's `SleepMode`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct SleepMode {
+    #[prost(oneof = "sleep_mode::Mode", tags = "1, 2, 3")]
+    pub mode: ::core::option::Option<sleep_mode::Mode>,
+}
+/// Nested message and enum types in `SleepMode`.
+pub mod sleep_mode {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Oneof)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub enum Mode {
+        /// Wait in the child.
+        #[prost(message, tag = "1")]
+        System(super::SystemSleep),
+        /// Suspend to the parent, which performs the wait.
+        #[prost(message, tag = "2")]
+        CallHost(super::Unit),
+        /// Return at once without waiting.
+        #[prost(message, tag = "3")]
+        Zero(super::Unit),
+    }
+}
 /// A sleep the child performs itself.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
-pub struct SandboxSleep {
+pub struct SystemSleep {
     /// Longest wait one call performs; longer sleeps are cut short. Absent = 10s.
     #[prost(uint64, optional, tag = "1")]
-    pub clamp_micros: ::core::option::Option<u64>,
+    pub max_micros: ::core::option::Option<u64>,
 }
 /// A frozen clock reading.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]

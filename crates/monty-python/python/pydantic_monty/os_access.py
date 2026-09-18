@@ -162,7 +162,7 @@ class AbstractOS(ABC):
     A longer `time.sleep()` or `asyncio.sleep()` is cut short to this, so
     sandboxed code cannot hold the host for longer; `None` waits the full time.
     Only reached under `auto_os_calls={'sleep': 'call_host'}`: by default the
-    sandbox waits itself, capped by `sandbox_sleep_clamp`.
+    sandbox waits itself, capped by `sleep_system_max`.
     """
 
     def __call__(

@@ -905,14 +905,14 @@ def test_sleep_zero_returns_at_once(monty_run: RunMonty):
     assert time.monotonic() - start < 5
 
 
-def test_sandbox_sleep_clamp(monty_run: RunMonty):
-    """The default waits in the worker; the clamp cuts a long sleep short."""
+def test_sleep_system_max(monty_run: RunMonty):
+    """The default waits in the worker; `sleep_system_max` cuts a long sleep short."""
     start = time.monotonic()
     code = "import asyncio, time\nt = time.time()\ntime.sleep(3600)\nasyncio.run(asyncio.sleep(3600, 'woken'))\ntime.time() >= t"
-    assert monty_run(code, checkout={'auto_os_calls': {'sandbox_sleep_clamp': 0.001}}) == snapshot(True)
+    assert monty_run(code, checkout={'auto_os_calls': {'sleep_system_max': 0.001}}) == snapshot(True)
     assert time.monotonic() - start < 5
     assert (
-        monty_run('import time\ntime.sleep(0.001)', checkout={'auto_os_calls': {'sandbox_sleep_clamp': float('inf')}})
+        monty_run('import time\ntime.sleep(0.001)', checkout={'auto_os_calls': {'sleep_system_max': float('inf')}})
         is None
     )
 
@@ -936,19 +936,19 @@ def test_sandbox_sleeps_overlap(monty_run: RunMonty):
 @pytest.mark.parametrize(
     ('value', 'error', 'message'),
     [
-        (-1, ValueError, 'invalid sandbox_sleep_clamp: cannot convert float seconds to Duration: value is negative'),
+        (-1, ValueError, 'invalid sleep_system_max: cannot convert float seconds to Duration: value is negative'),
         (
             float('nan'),
             ValueError,
-            'invalid sandbox_sleep_clamp: cannot convert float seconds to Duration: value is either too big or NaN',
+            'invalid sleep_system_max: cannot convert float seconds to Duration: value is either too big or NaN',
         ),
-        ('1', TypeError, 'sandbox_sleep_clamp must be a number of seconds, not str'),
-        (True, TypeError, 'sandbox_sleep_clamp must be a number of seconds, not bool'),
+        ('1', TypeError, 'sleep_system_max must be a number of seconds, not str'),
+        (True, TypeError, 'sleep_system_max must be a number of seconds, not bool'),
     ],
 )
-def test_sandbox_sleep_clamp_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+def test_sleep_system_max_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
     with pytest.raises(error) as exc_info:
-        pool.checkout(auto_os_calls={'sandbox_sleep_clamp': value})
+        pool.checkout(auto_os_calls={'sleep_system_max': value})
     assert str(exc_info.value) == message
 
 
@@ -969,7 +969,7 @@ def test_sleep_call_host_reaches_os(monty_run: RunMonty):
 @pytest.mark.parametrize(
     ('value', 'error', 'message'),
     [
-        ('forever', ValueError, "sleep must be 'sandbox_sleep', 'zero' or 'call_host', got 'forever'"),
+        ('forever', ValueError, "sleep must be 'system', 'call_host' or 'zero', got 'forever'"),
         (0, TypeError, 'sleep must be a str'),
     ],
 )
@@ -1015,16 +1015,16 @@ def test_random_start_seed_instances_are_deterministic(monty_run: RunMonty):
         (
             'seeded',
             ValueError,
-            "random_start must be 'random', 'call_host' or {'seed': int | float | str | bytes}, got 'seeded'",
+            "random_start must be 'system', 'call_host' or {'seed': int | float | str | bytes}, got 'seeded'",
         ),
         (
             {'sead': 1},
             ValueError,
-            "random_start must be 'random', 'call_host' or {'seed': int | float | str | bytes}, got {'sead': 1}",
+            "random_start must be 'system', 'call_host' or {'seed': int | float | str | bytes}, got {'sead': 1}",
         ),
         ({'seed': True}, TypeError, 'random_start seed must be an int, float, str or bytes, not bool'),
         ({'seed': None}, TypeError, 'random_start seed must be an int, float, str or bytes, not NoneType'),
-        (1, TypeError, "random_start must be 'random', 'call_host' or {'seed': int | float | str | bytes}, not int"),
+        (1, TypeError, "random_start must be 'system', 'call_host' or {'seed': int | float | str | bytes}, not int"),
     ],
 )
 def test_random_start_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
@@ -1155,7 +1155,7 @@ def test_auto_os_calls_rejects_unknown_keys(pool: Monty):
     with pytest.raises(ValueError) as exc_info:
         pool.checkout(auto_os_calls={'sleeps': 'zero'})  # pyright: ignore[reportArgumentType]
     assert str(exc_info.value) == snapshot(
-        "unknown auto_os_calls key 'sleeps', expected one of: datetime, timezone, sleep, sandbox_sleep_clamp, random_start"
+        "unknown auto_os_calls key 'sleeps', expected one of: datetime, timezone, sleep, sleep_system_max, random_start"
     )
     with pytest.raises(TypeError) as exc_info:
         pool.checkout(auto_os_calls='zero')  # pyright: ignore[reportArgumentType]

@@ -332,8 +332,8 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
 /// the protocol conversion validates it as it would from any parent.
 fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
     let datetime = calls.datetime.map(|source| match source {
-        DatetimeSource::CallHost => pb::auto_os_calls::Datetime::CallHost(pb::Unit {}),
         DatetimeSource::System => pb::auto_os_calls::Datetime::System(pb::Unit {}),
+        DatetimeSource::CallHost => pb::auto_os_calls::Datetime::CallHost(pb::Unit {}),
         DatetimeSource::Fixed(fixed) => pb::auto_os_calls::Datetime::Fixed(pb::FixedDateTime {
             unix_seconds: fixed.unix_seconds,
             microsecond: fixed.microsecond,
@@ -341,24 +341,24 @@ fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
     });
     let timezone = calls.timezone.map(|zone| pb::SandboxTimeZone {
         zone: Some(match zone {
-            TimeZone::CallHost => pb::sandbox_time_zone::Zone::CallHost(pb::Unit {}),
             TimeZone::System => pb::sandbox_time_zone::Zone::System(pb::Unit {}),
+            TimeZone::CallHost => pb::sandbox_time_zone::Zone::CallHost(pb::Unit {}),
             TimeZone::Fixed(fixed) => pb::sandbox_time_zone::Zone::Fixed(pb::TimeZone {
                 offset_seconds: fixed.offset_seconds,
                 name: fixed.name,
             }),
         }),
     });
-    let sleep_mode = calls.sleep.map(|mode| match mode {
-        SleepMode::CallHost => pb::auto_os_calls::SleepMode::SleepCallHost(pb::Unit {}),
-        SleepMode::Zero => pb::auto_os_calls::SleepMode::SleepZero(pb::Unit {}),
-        SleepMode::SandboxSleep(clamp_micros) => {
-            pb::auto_os_calls::SleepMode::SandboxSleep(pb::SandboxSleep { clamp_micros })
-        }
+    let sleep = calls.sleep.map(|mode| pb::SleepMode {
+        mode: Some(match mode {
+            SleepMode::System(max_micros) => pb::sleep_mode::Mode::System(pb::SystemSleep { max_micros }),
+            SleepMode::CallHost => pb::sleep_mode::Mode::CallHost(pb::Unit {}),
+            SleepMode::Zero => pb::sleep_mode::Mode::Zero(pb::Unit {}),
+        }),
     });
     let random_start = calls.random_start.map(|start| match start {
+        RandomStart::System => pb::auto_os_calls::RandomStart::RandomSystem(pb::Unit {}),
         RandomStart::CallHost => pb::auto_os_calls::RandomStart::RandomCallHost(pb::Unit {}),
-        RandomStart::Random => pb::auto_os_calls::RandomStart::Random(pb::Unit {}),
         RandomStart::Seed(seed) => pb::auto_os_calls::RandomStart::Seed(pb::RandomSeed {
             value: Some(match seed {
                 RandomSeed::Int(bytes) => pb::random_seed::Value::Int(bytes.into()),
@@ -371,7 +371,7 @@ fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
     pb::AutoOsCalls {
         datetime,
         timezone,
-        sleep_mode,
+        sleep,
         random_start,
     }
 }

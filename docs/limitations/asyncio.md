@@ -55,22 +55,22 @@ awaited. Monty's starts the wait at the call itself, and the `await` then
 produces `result` once the wait is over. What the wait is depends on the
 session's `sleep` setting (see [time.md](time.md)):
 
-- `'sandbox_sleep'`, the default: a timer the sandbox's own scheduler serves.
-    The delay is cut to `sandbox_sleep_clamp` (10 seconds unless changed).
+- `'system'`, the default: a timer the sandbox's own scheduler serves.
+    The delay is cut to `sleep_system_max` (10 seconds unless changed).
     Sibling tasks run while it is pending, so gathered sleeps overlap —
     `gather(sleep(1), sleep(1))` takes one second — and the scheduler only
     hands control to the host once no timer is pending: a host future that
     resolves while a timer is still running is delivered after the timer fires.
     A sleep awaited at once with nothing else to run is waited inline instead.
-- `'zero'`: the awaitable is settled immediately; nothing waits and no other
-    task runs meanwhile, so `sleep(0)` does not yield as CPython's does. That
-    is true of a zero delay in every mode.
 - `'call_host'`: the call suspends to the host, which performs the wait. A
     host that answers with a pending future lets sibling tasks run while the
     delay elapses: `AsyncMonty` and `@pydantic/monty` do this when the `os`
     callback is async (`OSAccess` is, by default, under `AsyncMonty`). A host
     that waits inline — the sync `Monty`, a sync callback — runs gathered
     sleeps one after another. Either way the results are the same.
+- `'zero'`: the awaitable is settled immediately; nothing waits and no other
+    task runs meanwhile, so `sleep(0)` does not yield as CPython's does. That
+    is true of a zero delay in every mode.
 
 What follows from waiting at the call:
 

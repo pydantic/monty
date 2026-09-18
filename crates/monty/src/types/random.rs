@@ -75,8 +75,8 @@ impl SessionRandom {
     /// `None` is `CallHost`: the state is the host's to supply.
     pub(crate) fn fresh_state(&mut self, start: &RandomStart) -> Option<Mt19937> {
         match start {
+            RandomStart::System => Some(Mt19937::from_os_entropy()),
             RandomStart::CallHost => None,
-            RandomStart::Random => Some(Mt19937::from_os_entropy()),
             RandomStart::Seed(seed) => {
                 let stream = self.derived.get_or_insert_with(|| {
                     // One extra word keeps the stream distinct from `seed(s)`'s own state.

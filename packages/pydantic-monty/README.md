@@ -283,7 +283,7 @@ with Monty(request_timeout=10) as pool:
 By default the sandbox answers these itself, with no `os=` handler involved:
 `date.today()`, `datetime.now()` and `time.time()` read the worker's clock;
 `time.sleep()` and `asyncio.sleep()` wait inside the worker, each call cut to
-`sandbox_sleep_clamp` (10 seconds), with gathered `asyncio.sleep()` calls
+`sleep_system_max` (10 seconds), with gathered `asyncio.sleep()` calls
 overlapping; and an unseeded `random` seeds itself from the worker's OS
 entropy. A sandbox wait costs nothing against `max_duration_secs` and is not a
 suspension, so `request_timeout` is what bounds a sleeping loop. The
@@ -304,16 +304,16 @@ f'{datetime.now():%Y-%m-%d %H:%M} {random.random():.4f}'
 
 # datetime: 'system' (default), 'call_host' or a datetime
 # timezone: 'system' (default), 'call_host' or {'offset_seconds': int, 'name': str}
-# sleep: 'sandbox_sleep' (default), 'zero' or 'call_host'
-# sandbox_sleep_clamp: seconds per sandbox sleep; float('inf') for no cap
-# random_start: 'random' (default), 'call_host' or {'seed': int | float | str | bytes}
+# sleep: 'system' (default), 'call_host' or 'zero'
+# sleep_system_max: seconds per sandbox sleep; float('inf') for no cap
+# random_start: 'system' (default), 'call_host' or {'seed': int | float | str | bytes}
 with Monty() as pool:
     with pool.checkout(
         auto_os_calls={
             'datetime': datetime(2026, 1, 1, 9, 30),
             'timezone': {'offset_seconds': 3600, 'name': 'CET'},
             'sleep': 'zero',
-            'sandbox_sleep_clamp': 0.5,
+            'sleep_system_max': 0.5,
             'random_start': {'seed': 42},
         }
     ) as session:

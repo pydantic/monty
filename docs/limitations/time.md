@@ -31,16 +31,16 @@ Where nothing answers a `call_host` call it raises: through the bindings with no
 
 What `time.sleep()` does is the session's `sleep` setting:
 
-- `'sandbox_sleep'` (the default): the sandbox waits, each call cut to `sandbox_sleep_clamp` (10 seconds unless
+- `'system'` (the default): the sandbox waits, each call cut to `sleep_system_max` (10 seconds unless
     changed; the CLI's `--max-sleep`). A longer request returns early with no error, where CPython would have waited,
     so `time.time()` advances by less than the sleep asked for.
-- `'zero'`: returns at once without waiting.
 - `'call_host'`: the call suspends and the host performs the wait, so how long it actually sleeps is the host's
     choice: `pydantic_monty`'s [`OSAccess`][pydantic_monty.OSAccess] caps it at `max_sleep` (default 10 seconds,
     `None` for no cap). A host may answer with any value, which is discarded: `time.sleep()` always evaluates to
     `None`. A host answering it with a future gets
     `RuntimeError: time.sleep cannot be answered with a future` in the sandbox — the call is a wait, so there is
     nothing to resume into. Where nothing answers the call it raises as `time.time()` does above.
+- `'zero'`: returns at once without waiting.
 
 ## Sleeping does not consume the execution-time limits
 
@@ -48,7 +48,7 @@ What `time.sleep()` does is the session's `sleep` setting:
 the sandbox or on the host — so a sleep costs nothing against them, however long it lasts.
 A sandbox sleep is not a suspension either, so `max_suspensions` does not count it; what bounds a sandbox that sleeps
 in a loop is the host's own turn deadline (`request_timeout` for the pools), reached after at most
-`sandbox_sleep_clamp` per iteration.
+`sleep_system_max` per iteration.
 Under `call_host` each sleep is one suspension (two when an `asyncio.sleep()` answered with a future is awaited
 later), so `max_suspensions` (default 1000) bounds it as well.
 See [resource_limits.md](resource_limits.md).
@@ -58,4 +58,4 @@ See [resource_limits.md](resource_limits.md).
 The argument is validated the same way in every sleep mode, before any wait.
 The `OverflowError` past ~9223372036.85 seconds is CPython's,
 `timestamp out of range for C PyTime_t`. What does not happen is the `OSError: [Errno 22] Invalid argument` CPython's platform sleep
-raises for a delay just *under* that boundary: Monty accepts it, and the clamp (or the host) cuts it short.
+raises for a delay just *under* that boundary: Monty accepts it, and `sleep_system_max` (or the host) cuts it short.

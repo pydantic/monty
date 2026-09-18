@@ -1,6 +1,6 @@
 // The `autoOsCalls` checkout option choosing which OS calls the sandbox
 // answers itself: the clock (`datetime`) and its zone (`timezone`), the sleeps
-// (`sleep`, `sandboxSleepClamp`) and where `random` starts (`randomStart`).
+// (`sleep`, `sleepSystemMax`) and where `random` starts (`randomStart`).
 
 import { test } from 'vitest'
 import { t } from './assertions.js'
@@ -124,12 +124,12 @@ test('zero returns at once', async () => {
   t.true(performance.now() - started < 5000)
 })
 
-test('the clamp cuts a sandbox sleep short', async () => {
+test('sleepSystemMax cuts a system sleep short', async () => {
   const started = performance.now()
   const code = "import asyncio, time\ntime.sleep(3600)\nasyncio.run(asyncio.sleep(3600, 'woken'))"
-  t.is(await runWith(code, { sandboxSleepClamp: 0.001 }), 'woken')
+  t.is(await runWith(code, { sleepSystemMax: 0.001 }), 'woken')
   t.true(performance.now() - started < 5000)
-  t.is(await runWith('import time\ntime.sleep(0.001)', { sandboxSleepClamp: Infinity }), null)
+  t.is(await runWith('import time\ntime.sleep(0.001)', { sleepSystemMax: Infinity }), null)
 })
 
 test('gathered sandbox sleeps overlap', async () => {
@@ -151,11 +151,11 @@ test('invalid sleep options are rejected before the checkout', async () => {
   await t.throwsAsync(() => pool().checkout({ autoOsCalls: { sleep: 'forever' as 'zero' } }), {
     instanceOf: RangeError,
   })
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { sandboxSleepClamp: -1 } }), {
+  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { sleepSystemMax: -1 } }), {
     instanceOf: RangeError,
-    message: 'sandboxSleepClamp must be a non-negative number of seconds (Infinity for no cap)',
+    message: 'sleepSystemMax must be a non-negative number of seconds (Infinity for no cap)',
   })
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { sandboxSleepClamp: NaN } }), {
+  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { sleepSystemMax: NaN } }), {
     instanceOf: RangeError,
   })
 })
@@ -219,9 +219,9 @@ test('call_host asks the os callback for one state vector', async () => {
 test('an invalid randomStart is rejected before the checkout', async () => {
   await t.throwsAsync(() => pool().checkout({ autoOsCalls: { randomStart: { seed: true as unknown as number } } }), {
     instanceOf: TypeError,
-    message: "randomStart must be 'random', 'call_host' or { seed: number | bigint | string | Uint8Array }",
+    message: "randomStart must be 'system', 'call_host' or { seed: number | bigint | string | Uint8Array }",
   })
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { randomStart: { sead: 1 } as unknown as 'random' } }), {
+  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { randomStart: { sead: 1 } as unknown as 'system' } }), {
     instanceOf: TypeError,
   })
 })

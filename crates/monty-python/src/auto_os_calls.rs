@@ -41,7 +41,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for AutoOsCallsArg {
         // A fixed `datetime` implies a zone (see `fixed_datetime`) unless
         // `timezone` says otherwise, so the zone key is applied last.
         let mut timezone = None;
-        let mut clamp = None;
+        let mut max = None;
         for (key, value) in dict.iter() {
             let key = key
                 .cast::<PyString>()
@@ -57,12 +57,12 @@ impl<'a, 'py> FromPyObject<'a, 'py> for AutoOsCallsArg {
                 }
                 "timezone" => timezone = Some(time_zone(&value)?),
                 "sleep" => calls.sleep = sleep_mode(&value)?,
-                "sandbox_sleep_clamp" => clamp = Some(sleep_clamp(&value)?),
+                "sleep_system_max" => max = Some(sleep_system_max(&value)?),
                 "random_start" => calls.random_start = random_start(&value)?,
                 other => {
                     return Err(PyValueError::new_err(format!(
                         "unknown auto_os_calls key '{other}', expected one of: \
-                         datetime, timezone, sleep, sandbox_sleep_clamp, random_start"
+                         datetime, timezone, sleep, sleep_system_max, random_start"
                     )));
                 }
             }
@@ -70,9 +70,9 @@ impl<'a, 'py> FromPyObject<'a, 'py> for AutoOsCallsArg {
         if let Some(timezone) = timezone {
             calls.timezone = timezone;
         }
-        // The clamp only applies to a sandbox sleep; the other modes ignore it.
-        if let (Some(clamp), SleepMode::SandboxSleep(_)) = (clamp, calls.sleep) {
-            calls.sleep = SleepMode::SandboxSleep(clamp);
+        // The maximum only applies to a system sleep; the other modes ignore it.
+        if let (Some(max), SleepMode::System(_)) = (max, calls.sleep) {
+            calls.sleep = SleepMode::System(max);
         }
         Ok(Self(calls))
     }
@@ -184,28 +184,28 @@ fn offset_seconds(offset: &Bound<'_, PyDelta>, what: &str) -> PyResult<i32> {
         .map_err(|_| PyValueError::new_err(format!("{what} is out of range")))
 }
 
-/// `sleep`: `'sandbox_sleep'` (with the default clamp until
-/// `sandbox_sleep_clamp` replaces it), `'zero'` or `'call_host'`.
+/// `sleep`: `'system'` (with the default maximum until `sleep_system_max`
+/// replaces it), `'call_host'` or `'zero'`.
 fn sleep_mode(value: &Bound<'_, PyAny>) -> PyResult<SleepMode> {
     let name = value
         .cast::<PyString>()
         .map_err(|_| PyTypeError::new_err("sleep must be a str"))?;
     match &*name.to_cow()? {
-        "sandbox_sleep" => Ok(SleepMode::default()),
-        "zero" => Ok(SleepMode::Zero),
+        "system" => Ok(SleepMode::default()),
         "call_host" => Ok(SleepMode::CallHost),
+        "zero" => Ok(SleepMode::Zero),
         other => Err(PyValueError::new_err(format!(
-            "sleep must be 'sandbox_sleep', 'zero' or 'call_host', got '{other}'"
+            "sleep must be 'system', 'call_host' or 'zero', got '{other}'"
         ))),
     }
 }
 
-/// `sandbox_sleep_clamp`: seconds, `inf` for no cap. `bool` is refused
+/// `sleep_system_max`: seconds, `inf` for no cap. `bool` is refused
 /// rather than read as 0/1.
-fn sleep_clamp(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
+fn sleep_system_max(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
     if value.cast::<PyBool>().is_ok() || (value.cast::<PyInt>().is_err() && value.cast::<PyFloat>().is_err()) {
         return Err(PyTypeError::new_err(format!(
-            "sandbox_sleep_clamp must be a number of seconds, not {}",
+            "sleep_system_max must be a number of seconds, not {}",
             value.get_type().name()?
         )));
     }
@@ -213,17 +213,17 @@ fn sleep_clamp(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
     if seconds == f64::INFINITY {
         Ok(Duration::MAX)
     } else {
-        duration_from_secs("sandbox_sleep_clamp", seconds)
+        duration_from_secs("sleep_system_max", seconds)
     }
 }
 
-/// `random_start`: `'random'`, `'call_host'`, or a `{'seed': ...}` mapping
+/// `random_start`: `'system'`, `'call_host'`, or a `{'seed': ...}` mapping
 /// whose seed is what `random.seed()` accepts.
 fn random_start(value: &Bound<'_, PyAny>) -> PyResult<RandomStart> {
-    const SHAPE: &str = "random_start must be 'random', 'call_host' or {'seed': int | float | str | bytes}";
+    const SHAPE: &str = "random_start must be 'system', 'call_host' or {'seed': int | float | str | bytes}";
     if let Ok(name) = value.cast::<PyString>() {
         match &*name.to_cow()? {
-            "random" => Ok(RandomStart::Random),
+            "system" => Ok(RandomStart::System),
             "call_host" => Ok(RandomStart::CallHost),
             other => Err(PyValueError::new_err(format!("{SHAPE}, got '{other}'"))),
         }

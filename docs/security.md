@@ -285,10 +285,10 @@ The session's `auto_os_calls` ([`AutoOSCalls`][pydantic_monty.AutoOSCalls] on
 [`Monty.checkout`][pydantic_monty.Monty.checkout] in Python, `autoOsCalls` on `checkout()` in JavaScript,
 `AutoOsCalls` in Rust) choose otherwise, for the instant (`datetime`) and the zone (`timezone`) separately:
 
-- a fixed instant — a `datetime.datetime`, a `Date`, `DateTimeSource::Fixed` — freezes the clock, for runs that
-    have to be reproducible, and a fixed `timezone` (an offset and a name) pins the zone naive calls read in;
 - `'call_host'` sends each call to your `os=` handler as an OS call like any other, so you decide what the sandbox
-    sees, and a handler that answers none of them makes all three raise.
+    sees, and a handler that answers none of them makes all three raise;
+- a fixed instant — a `datetime.datetime`, a `Date`, `DateTimeSource::Fixed` — freezes the clock, for runs that
+    have to be reproducible, and a fixed `timezone` (an offset and a name) pins the zone naive calls read in.
 
 Wall-clock time is a weak capability, but it is one — it is what makes elapsed time measurable from inside the sandbox,
 and a naive `datetime.now()` is read in the host's local zone, which discloses its UTC offset.
@@ -314,17 +314,17 @@ See [random](limitations/random.md).
 ### Waiting
 
 `time.sleep()` and `asyncio.sleep()` wait inside the sandbox by default, each call cut short at
-`sandbox_sleep_clamp` — ten seconds unless you say otherwise (`--max-sleep` in the CLI).
+`sleep_system_max` — ten seconds unless you say otherwise (`--max-sleep` in the CLI).
 Gathered `asyncio.sleep()` calls overlap: the sandbox's scheduler runs the other tasks while a sleep is pending.
 
 A wait costs nothing against the duration limits, which measure execution time and stop while the sandbox waits,
 and a sandbox wait is not a suspension either, so what bounds a session that sleeps in a loop is your own turn
-deadline (`request_timeout` for the pools), reached after at most one clamp per iteration.
+deadline (`request_timeout` for the pools), reached after at most `sleep_system_max` per iteration.
 See [resource limits](resource-limits.md).
 
-The session's `sleep` setting chooses otherwise: `'zero'` makes both calls return at once, and `'call_host'` sends
-them to your `os=` handler, which decides how long a wait it is willing to perform — cap it, scale it, or refuse it —
-and one that answers neither leaves both raising.
+The session's `sleep` setting chooses otherwise: `'call_host'` sends both calls to your `os=` handler, which decides
+how long a wait it is willing to perform — cap it, scale it, or refuse it — and one that answers neither leaves both
+raising; `'zero'` makes both calls return at once.
 [`OSAccess`][pydantic_monty.OSAccess] caps every wait at its `max_sleep`, ten seconds unless you say otherwise.
 Under `'call_host'` each sleep is a suspension, so `max_suspensions` bounds it too (one per sleep, two when an
 `asyncio.sleep()` answered with a future is awaited later).

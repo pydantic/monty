@@ -253,7 +253,7 @@ function nativeAutoOsCalls(calls: EncodedAutoOsCalls): Record<string, unknown> {
     if (calls.timezone.name !== undefined) fields.timezoneName = calls.timezone.name
   }
   if (calls.sleep !== undefined) fields.sleep = calls.sleep
-  if (calls.sandboxSleepClampSecs !== undefined) fields.sandboxSleepClampSecs = calls.sandboxSleepClampSecs
+  if (calls.sleepSystemMaxSecs !== undefined) fields.sleepSystemMaxSecs = calls.sleepSystemMaxSecs
   if (calls.randomStart === 'call_host') {
     fields.randomStartKind = 'call_host'
   } else if (calls.randomStart !== undefined) {

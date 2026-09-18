@@ -234,7 +234,7 @@ See [resource limits](../resource-limits.md) and [type checking](../type-checkin
 
 The clock, the sleeps and `random`'s seed are session options too.
 By default the sandbox reads the worker's clock, waits out `time.sleep()` itself (ten seconds at most per call) and
-seeds `random` from the worker's entropy; `autoOsCalls` (`datetime`, `timezone`, `sleep`, `sandboxSleepClamp` and
+seeds `random` from the worker's entropy; `autoOsCalls` (`datetime`, `timezone`, `sleep`, `sleepSystemMax` and
 `randomStart`) changes that, so a run can be made reproducible:
 
 ```ts

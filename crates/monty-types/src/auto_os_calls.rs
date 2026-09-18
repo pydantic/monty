@@ -31,11 +31,11 @@ pub struct AutoOsCalls {
 /// Where the clock calls read the instant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum DateTimeSource {
-    /// Suspend to the host, which answers each call.
-    CallHost,
     /// The process's own clock.
     #[default]
     System,
+    /// Suspend to the host, which answers each call.
+    CallHost,
     /// A frozen instant, for runs that have to be reproducible: every call
     /// reads the same time.
     ///
@@ -56,8 +56,8 @@ impl DateTimeSource {
     #[must_use]
     pub fn read(self) -> Option<NaiveDateTime> {
         let utc = match self {
-            Self::CallHost => return None,
             Self::System => Local::now().naive_utc(),
+            Self::CallHost => return None,
             Self::Fixed {
                 unix_seconds,
                 microsecond,
@@ -80,11 +80,11 @@ impl DateTimeSource {
 /// what `astimezone()`, `time.tzname` and `%Z` will report once implemented.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum SandboxTimeZone {
-    /// Suspend the calls that need the zone to the host, which answers them.
-    CallHost,
     /// The process's own local zone, at its offset for the instant read.
     #[default]
     System,
+    /// Suspend the calls that need the zone to the host, which answers them.
+    CallHost,
     /// A fixed offset from UTC, with the name `datetime.timezone(offset, name)`
     /// would carry. Not an IANA zone: there are no DST rules in the sandbox.
     Fixed {
@@ -101,8 +101,8 @@ impl SandboxTimeZone {
     #[must_use]
     pub fn offset_seconds(&self, utc: NaiveDateTime) -> Option<i32> {
         match self {
-            Self::CallHost => None,
             Self::System => Some(Local.offset_from_utc_datetime(&utc).local_minus_utc()),
+            Self::CallHost => None,
             Self::Fixed { offset_seconds, .. } => Some(*offset_seconds),
         }
     }
@@ -126,38 +126,38 @@ pub fn unix_seconds(utc: NaiveDateTime) -> f64 {
 /// What the sleep calls do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SleepMode {
+    /// Wait in the sandbox, each call cut to the maximum given (a longer
+    /// request is cut short, not refused). The wait is not execution time
+    /// and not a suspension, so only the host's turn deadline bounds a loop
+    /// of them.
+    System(Duration),
     /// Suspend to the host, which performs (or declines) the wait.
     CallHost,
     /// Return at once without waiting.
     Zero,
-    /// Wait in the sandbox, each call cut to the clamp given (a longer
-    /// request is cut short, not refused). The wait is not execution time
-    /// and not a suspension, so only the host's turn deadline bounds a loop
-    /// of them.
-    SandboxSleep(Duration),
 }
 
 impl SleepMode {
-    /// The clamp [`SandboxSleep`](Self::SandboxSleep) starts with.
-    pub const DEFAULT_CLAMP: Duration = Duration::from_secs(10);
+    /// The maximum [`System`](Self::System) starts with.
+    pub const DEFAULT_MAX: Duration = Duration::from_secs(10);
 }
 
 impl Default for SleepMode {
-    /// Sleeps performed in the sandbox for at most [`DEFAULT_CLAMP`](Self::DEFAULT_CLAMP) each.
+    /// Sleeps performed in the sandbox for at most [`DEFAULT_MAX`](Self::DEFAULT_MAX) each.
     fn default() -> Self {
-        Self::SandboxSleep(Self::DEFAULT_CLAMP)
+        Self::System(Self::DEFAULT_MAX)
     }
 }
 
 /// Where an unseeded `random` generator gets its first state.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum RandomStart {
+    /// From the sandbox's own OS entropy.
+    #[default]
+    System,
     /// Suspend the first draw with an `os.urandom` call for one state vector
     /// (2496 bytes), which the host answers.
     CallHost,
-    /// From the sandbox's own OS entropy.
-    #[default]
-    Random,
     /// The module-level generator starts exactly as `random.seed(seed)` leaves
     /// it; unseeded `random.Random()` instances take deterministic states
     /// derived from the same seed.

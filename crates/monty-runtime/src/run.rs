@@ -622,7 +622,7 @@ impl HostOs {
     /// expecting CPython's behaviour, so none of these calls reaches the host.
     fn auto_os_calls(&self) -> AutoOsCalls {
         AutoOsCalls {
-            sleep: SleepMode::SandboxSleep(self.max_sleep),
+            sleep: SleepMode::System(self.max_sleep),
             ..AutoOsCalls::default()
         }
     }

@@ -114,7 +114,7 @@ impl Task {
     }
 }
 
-/// An `asyncio.sleep` the sandbox serves itself (`SleepMode::SandboxSleep`).
+/// An `asyncio.sleep` the sandbox serves itself (`SleepMode::System`).
 ///
 /// Also an ordinary entry in `Scheduler::pending_externals` — the
 /// `ExternalFuture` holding the sleep's `result` — resolved with `None` once

@@ -80,7 +80,7 @@ export function encodeAssertMessageAnnotations(value: AssertMessageAnnotations |
  * the clock at that instant — and, unless `timezone` is given, sets the zone
  * to UTC, so `datetime.now()` returns it exactly.
  */
-export type DateTimeSource = 'call_host' | 'system' | Date
+export type DateTimeSource = 'system' | 'call_host' | Date
 
 /**
  * `AutoOsCalls.timezone`: the local zone naive `datetime.now()` and
@@ -89,24 +89,24 @@ export type DateTimeSource = 'call_host' | 'system' | Date
  * callback, and an object is a fixed offset from UTC with an optional name —
  * what `datetime.timezone(offset, name)` carries, not an IANA zone.
  */
-export type TimeZone = 'call_host' | 'system' | { offsetSeconds: number; name?: string }
+export type TimeZone = 'system' | 'call_host' | { offsetSeconds: number; name?: string }
 
 /**
  * `AutoOsCalls.sleep`: what `time.sleep()` and `asyncio.sleep()` do.
- * `'sandbox_sleep'` (the default) waits inside the worker, `'zero'` returns
- * at once, `'call_host'` sends both to the `os` callback.
+ * `'system'` (the default) waits inside the worker, `'call_host'` sends
+ * both to the `os` callback, `'zero'` returns at once.
  */
-export type SleepMode = 'call_host' | 'zero' | 'sandbox_sleep'
+export type SleepMode = 'system' | 'call_host' | 'zero'
 
 /**
  * `AutoOsCalls.randomStart`: where an unseeded `random` generator gets its
- * first state. `'random'` (the default) is the worker's OS entropy;
+ * first state. `'system'` (the default) is the worker's OS entropy;
  * `'call_host'` sends an `os.urandom` request for 2496 bytes to the `os`
  * callback on the first draw; `{ seed }` starts it as `random.seed(seed)`
  * would, with the types CPython accepts (a `number` is an int when integral,
  * `bigint` for larger ints, `string`, or `Uint8Array` for `bytes`).
  */
-export type RandomStart = 'call_host' | 'random' | { seed: number | bigint | string | Uint8Array }
+export type RandomStart = 'system' | 'call_host' | { seed: number | bigint | string | Uint8Array }
 
 /**
  * The `autoOsCalls` checkout option: which OS calls the worker answers
@@ -117,8 +117,8 @@ export interface AutoOsCalls {
   datetime?: DateTimeSource
   timezone?: TimeZone
   sleep?: SleepMode
-  /** Longest wait a `'sandbox_sleep'` performs per call, in seconds (default 10; `Infinity` for no cap). */
-  sandboxSleepClamp?: number
+  /** Longest wait a `'system'` performs per call, in seconds (default 10; `Infinity` for no cap). */
+  sleepSystemMax?: number
   randomStart?: RandomStart
 }
 
@@ -142,16 +142,16 @@ export type EncodedRandomSeed = { int: Uint8Array } | { float: number } | { str:
  * and the wasm transport. An absent field is the worker's default.
  */
 export interface EncodedAutoOsCalls {
-  datetime?: 'call_host' | 'system' | FixedDateTime
-  timezone?: 'call_host' | 'system' | FixedTimeZone
+  datetime?: 'system' | 'call_host' | FixedDateTime
+  timezone?: 'system' | 'call_host' | FixedTimeZone
   sleep?: SleepMode
   /** Seconds; `Infinity` lifts the cap. */
-  sandboxSleepClampSecs?: number
-  /** Absent means `'random'`. */
+  sleepSystemMaxSecs?: number
+  /** Absent means `'system'`. */
   randomStart?: 'call_host' | { seed: EncodedRandomSeed }
 }
 
-const SLEEP_MODES: readonly SleepMode[] = ['call_host', 'zero', 'sandbox_sleep']
+const SLEEP_MODES: readonly SleepMode[] = ['system', 'call_host', 'zero']
 
 /**
  * Validates and normalizes the options, throwing `RangeError` / `TypeError`
@@ -175,24 +175,24 @@ export function encodeAutoOsCalls(options: AutoOsCalls): EncodedAutoOsCalls {
     }
     encoded.sleep = options.sleep
   }
-  if (options.sandboxSleepClamp !== undefined) {
-    const secs = options.sandboxSleepClamp
+  if (options.sleepSystemMax !== undefined) {
+    const secs = options.sleepSystemMax
     if (typeof secs !== 'number' || Number.isNaN(secs) || secs < 0) {
-      throw new RangeError('sandboxSleepClamp must be a non-negative number of seconds (Infinity for no cap)')
+      throw new RangeError('sleepSystemMax must be a non-negative number of seconds (Infinity for no cap)')
     }
-    encoded.sandboxSleepClampSecs = secs
+    encoded.sleepSystemMaxSecs = secs
   }
   if (options.randomStart === 'call_host') {
     encoded.randomStart = 'call_host'
-  } else if (options.randomStart !== undefined && options.randomStart !== 'random') {
+  } else if (options.randomStart !== undefined && options.randomStart !== 'system') {
     encoded.randomStart = { seed: encodeRandomSeed(options.randomStart) }
   }
   return encoded
 }
 
 /** A `Date` becomes its instant; the two names pass through. */
-function encodeDateTime(datetime: DateTimeSource): 'call_host' | 'system' | FixedDateTime {
-  if (datetime === 'call_host' || datetime === 'system') return datetime
+function encodeDateTime(datetime: DateTimeSource): 'system' | 'call_host' | FixedDateTime {
+  if (datetime === 'system' || datetime === 'call_host') return datetime
   if (!(datetime instanceof Date) || Number.isNaN(datetime.getTime())) {
     throw new RangeError("datetime must be 'system', 'call_host' or a valid Date")
   }
@@ -202,8 +202,8 @@ function encodeDateTime(datetime: DateTimeSource): 'call_host' | 'system' | Fixe
 }
 
 /** A fixed zone is validated field by field; the two names pass through. */
-function encodeTimeZone(timezone: TimeZone): 'call_host' | 'system' | FixedTimeZone {
-  if (timezone === 'call_host' || timezone === 'system') return timezone
+function encodeTimeZone(timezone: TimeZone): 'system' | 'call_host' | FixedTimeZone {
+  if (timezone === 'system' || timezone === 'call_host') return timezone
   const shape = "timezone must be 'system', 'call_host' or { offsetSeconds: number, name?: string }"
   if (typeof timezone !== 'object' || timezone === null || !Object.hasOwn(timezone, 'offsetSeconds')) {
     throw new TypeError(shape)
@@ -227,7 +227,7 @@ function encodeRandomSeed(start: RandomStart): EncodedRandomSeed {
   }
   if (typeof seed === 'string') return { str: seed }
   if (seed instanceof Uint8Array) return { bytes: seed }
-  throw new TypeError("randomStart must be 'random', 'call_host' or { seed: number | bigint | string | Uint8Array }")
+  throw new TypeError("randomStart must be 'system', 'call_host' or { seed: number | bigint | string | Uint8Array }")
 }
 
 /** Two's-complement little-endian bytes of `n`, as `BigInt::from_signed_bytes_le` reads them. */

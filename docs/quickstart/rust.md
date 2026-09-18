@@ -225,7 +225,7 @@ assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
 
 `with_auto_os_calls` changes that, per call: `DateTimeSource::Fixed` freezes the clock, `SandboxTimeZone::Fixed`
 pins the zone naive calls read in, and `RandomStart::Seed` seeds `random` as `random.seed()` would, for runs that
-have to be reproducible; `SleepMode::Zero` skips the waits and `SleepMode::SandboxSleep(clamp)` bounds them; and
+have to be reproducible; `SleepMode::Zero` skips the waits and `SleepMode::System(max)` bounds them; and
 `CallHost` on any field hands those calls to the host instead — under `start` they pause as
 `RunProgress::OsCall`, and under `run`, which has no host, they raise `NotImplementedError`:
 

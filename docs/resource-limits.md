@@ -105,7 +105,7 @@ Both duration limits count **execution time**, not wall clock:
 - It is paused while execution is suspended waiting on the host — a [host function](host-functions.md) that takes a
     minute costs nothing — and while the sandbox waits out a `time.sleep()` or `asyncio.sleep()` itself.
     A sandbox sleep is not a suspension either, so a loop of them is bounded only by the pool's `request_timeout`,
-    reached after at most `sandbox_sleep_clamp` (10 seconds by default) per iteration; see
+    reached after at most `sleep_system_max` (10 seconds by default) per iteration; see
     [security](security.md#waiting).
 - There is no way for sandboxed code to observe a budget or the time remaining.
 

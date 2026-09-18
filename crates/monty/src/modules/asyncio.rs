@@ -75,7 +75,7 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
 /// Unlike CPython, the wait starts at the call rather than at the `await`.
 /// In the sandbox it is a timer the scheduler serves while sibling tasks run
 /// (or an inline wait when the call is awaited at once with nothing else to
-/// run), cut to the mode's clamp. Under `CallHost` the call suspends: a
+/// run), cut to the mode's maximum. Under `CallHost` the call suspends: a
 /// host with an event loop answers with a pending future so sibling tasks
 /// keep running, one without waits inline and answers with anything, and
 /// [`PostConversionEffect::SleepResult`] keeps `result` in the sandbox either
@@ -93,13 +93,8 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     };
     let (result, vm) = result_guard.into_parts();
     Ok(match vm.env.auto_os_calls.sleep {
-        SleepMode::CallHost => CallResult::OsCallWithEffect {
-            call: OsFunctionCall::AsyncSleep(delay),
-            effect: PostConversionEffect::SleepResult { result }.into(),
-        },
-        SleepMode::Zero => CallResult::Value(vm.settled_awaitable(result)),
-        SleepMode::SandboxSleep(clamp) => {
-            let delay = delay.min(clamp);
+        SleepMode::System(max) => {
+            let delay = delay.min(max);
             if delay.is_zero() {
                 CallResult::Value(vm.settled_awaitable(result))
             } else if vm.allow_eager_await() {
@@ -111,6 +106,11 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
                 CallResult::Value(vm.add_sandbox_timer(delay, result))
             }
         }
+        SleepMode::CallHost => CallResult::OsCallWithEffect {
+            call: OsFunctionCall::AsyncSleep(delay),
+            effect: PostConversionEffect::SleepResult { result }.into(),
+        },
+        SleepMode::Zero => CallResult::Value(vm.settled_awaitable(result)),
     })
 }
 

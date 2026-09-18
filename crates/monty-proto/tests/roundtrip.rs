@@ -594,7 +594,7 @@ fn auto_os_calls_round_trip() {
                 offset_seconds: -3_600,
                 name: Some("EST".to_owned()),
             },
-            sleep: SleepMode::SandboxSleep(Duration::from_millis(250)),
+            sleep: SleepMode::System(Duration::from_millis(250)),
             random_start: RandomStart::Seed(seed),
         };
         let back = AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap();
@@ -616,10 +616,12 @@ fn auto_os_calls_round_trip() {
 fn empty_auto_os_calls_is_the_default() {
     let back = AutoOsCalls::try_from(pb::AutoOsCalls::default()).unwrap();
     assert_eq!(back, AutoOsCalls::default());
-    assert_eq!(back.sleep, SleepMode::SandboxSleep(Duration::from_secs(10)));
-    // a sandbox sleep with no clamp given is the default clamp too
+    assert_eq!(back.sleep, SleepMode::System(Duration::from_secs(10)));
+    // a system sleep with no maximum given is the default maximum too
     let sandbox = pb::AutoOsCalls {
-        sleep_mode: Some(pb::auto_os_calls::SleepMode::SandboxSleep(pb::SandboxSleep::default())),
+        sleep: Some(pb::SleepMode {
+            mode: Some(pb::sleep_mode::Mode::System(pb::SystemSleep::default())),
+        }),
         ..Default::default()
     };
     assert_eq!(AutoOsCalls::try_from(sandbox).unwrap(), AutoOsCalls::default());

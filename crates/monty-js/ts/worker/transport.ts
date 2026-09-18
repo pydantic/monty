@@ -437,24 +437,19 @@ function componentTypeCheckFormat(format: TypeCheckFormat): ComponentTypeCheckFo
  */
 function componentAutoOsCalls(calls: EncodedAutoOsCalls): ComponentAutoOsCalls | undefined {
   const record: ComponentAutoOsCalls = {}
-  if (calls.datetime === 'call_host') record.datetime = { tag: 'call-host' }
-  else if (calls.datetime === 'system') record.datetime = { tag: 'system' }
+  if (calls.datetime === 'system') record.datetime = { tag: 'system' }
+  else if (calls.datetime === 'call_host') record.datetime = { tag: 'call-host' }
   else if (calls.datetime !== undefined) record.datetime = { tag: 'fixed', val: calls.datetime }
   if (calls.timezone !== undefined) record.timezone = componentTimeZone(calls.timezone)
-  if (calls.sleep === 'call_host') record.sleep = { tag: 'call-host' }
-  else if (calls.sleep === 'zero') record.sleep = { tag: 'zero' }
-  else if (calls.sleep === 'sandbox_sleep' || calls.sandboxSleepClampSecs !== undefined) {
-    // the clamp only applies to a sandbox sleep; u64::MAX lifts it, as the
+  if (calls.sleep === 'system' || (calls.sleep === undefined && calls.sleepSystemMaxSecs !== undefined)) {
+    // the maximum only applies to a system sleep; u64::MAX lifts it, as the
     // native binding's `Duration::MAX` does
-    const clamp = calls.sandboxSleepClampSecs
+    const max = calls.sleepSystemMaxSecs
     const val =
-      clamp === undefined
-        ? undefined
-        : clamp === Infinity
-          ? 0xffff_ffff_ffff_ffffn
-          : BigInt(Math.round(clamp * 1_000_000))
-    record.sleep = { tag: 'sandbox-sleep', val }
-  }
+      max === undefined ? undefined : max === Infinity ? 0xffff_ffff_ffff_ffffn : BigInt(Math.round(max * 1_000_000))
+    record.sleep = { tag: 'system', val }
+  } else if (calls.sleep === 'call_host') record.sleep = { tag: 'call-host' }
+  else if (calls.sleep === 'zero') record.sleep = { tag: 'zero' }
   if (calls.randomStart === 'call_host') record.randomStart = { tag: 'call-host' }
   else if (calls.randomStart !== undefined) {
     record.randomStart = { tag: 'seed', val: componentRandomSeed(calls.randomStart.seed) }
@@ -464,8 +459,8 @@ function componentAutoOsCalls(calls: EncodedAutoOsCalls): ComponentAutoOsCalls |
 
 /** The zone as the WIT `time-zone` variant. */
 function componentTimeZone(timezone: NonNullable<EncodedAutoOsCalls['timezone']>): ComponentTimeZone {
-  if (timezone === 'call_host') return { tag: 'call-host' }
   if (timezone === 'system') return { tag: 'system' }
+  if (timezone === 'call_host') return { tag: 'call-host' }
   return { tag: 'fixed', val: { offsetSeconds: timezone.offsetSeconds, name: timezone.name } }
 }
 

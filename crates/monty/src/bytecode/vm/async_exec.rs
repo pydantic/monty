@@ -871,9 +871,9 @@ impl<'h> VM<'h> {
     /// due and activates the first task that woke. `false` means no timer is
     /// pending, so the `ResolveFutures` exit really is the host's to answer.
     ///
-    /// Each wait is capped at the sleep mode's clamp and always fires the
+    /// Each wait is capped at the sleep mode's maximum and always fires the
     /// earliest timer, so a wall clock jumping backwards costs at most one
-    /// clamp per timer rather than a stall.
+    /// maximum per timer rather than a stall.
     pub(super) fn wait_sandbox_timers(&mut self) -> RunResult<bool> {
         loop {
             let Some(earliest) = self.scheduler.earliest_timer() else {
@@ -881,13 +881,13 @@ impl<'h> VM<'h> {
             };
             let now = unix_micros_now();
             let remaining = u64::try_from(earliest.deadline_unix_micros.saturating_sub(now)).unwrap_or(0);
-            // A timer only exists under `SandboxSleep`; the clamp is a bound on
-            // the wait, not the deadline, which was clamped when the timer was set.
-            let clamp = match self.env.auto_os_calls.sleep {
-                SleepMode::SandboxSleep(clamp) => clamp,
+            // A timer only exists under `SleepMode::System`; its maximum is a
+            // bound on the wait, not the deadline, which was cut when the timer was set.
+            let max = match self.env.auto_os_calls.sleep {
+                SleepMode::System(max) => max,
                 SleepMode::CallHost | SleepMode::Zero => Duration::MAX,
             };
-            let wait = Duration::from_micros(remaining).min(clamp);
+            let wait = Duration::from_micros(remaining).min(max);
             self.heap.tracker.sandbox_sleep(wait);
             let now = unix_micros_now().max(earliest.deadline_unix_micros);
             for call_id in self.scheduler.take_due_timers(now) {

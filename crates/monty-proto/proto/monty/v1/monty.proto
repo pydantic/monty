@@ -382,53 +382,58 @@ message ResourceLimits {
 message AutoOsCalls {
   // The instant `date.today()`, `datetime.now()` and `time.time()` read.
   oneof datetime {
-    // Suspend to the parent, as every other OS call does.
-    Unit call_host = 1;
     // The child's clock.
     Unit system = 2;
+    // Suspend to the parent, as every other OS call does.
+    Unit call_host = 1;
     // One frozen instant, for reproducible runs.
     FixedDateTime fixed = 3;
   }
   // The local zone naive `datetime.now()` and `date.today()` read in.
   // Absent (or with no arm set) = the child's local zone.
   SandboxTimeZone timezone = 9;
-  // What `time.sleep()` and `asyncio.sleep()` do; unset = a sandbox sleep
-  // with the default clamp.
-  oneof sleep_mode {
-    // Suspend to the parent, which performs the wait.
-    Unit sleep_call_host = 4;
-    // Return at once without waiting.
-    Unit sleep_zero = 5;
-    // Wait in the child.
-    SandboxSleep sandbox_sleep = 6;
-  }
+  // What `time.sleep()` and `asyncio.sleep()` do.
+  // Absent (or with no arm set) = a sleep in the child with the default maximum.
+  SleepMode sleep = 4;
   // Where an unseeded `random` generator gets its first state.
   oneof random_start {
     // From the child's own OS entropy.
-    Unit random = 7;
-    // As `random.seed(seed)` would, for reproducible runs.
-    RandomSeed seed = 8;
+    Unit random_system = 7;
     // Suspend the first draw with an `os.urandom` call for 2496 bytes.
     Unit random_call_host = 10;
+    // As `random.seed(seed)` would, for reproducible runs.
+    RandomSeed seed = 8;
   }
 }
 
 // Mirrors monty's `SandboxTimeZone`.
 message SandboxTimeZone {
   oneof zone {
-    // Suspend the calls that need the zone to the parent.
-    Unit call_host = 1;
     // The child's local zone.
     Unit system = 2;
+    // Suspend the calls that need the zone to the parent.
+    Unit call_host = 1;
     // A fixed offset from UTC, with a name if it has one.
     TimeZone fixed = 3;
   }
 }
 
+// Mirrors monty's `SleepMode`.
+message SleepMode {
+  oneof mode {
+    // Wait in the child.
+    SystemSleep system = 1;
+    // Suspend to the parent, which performs the wait.
+    Unit call_host = 2;
+    // Return at once without waiting.
+    Unit zero = 3;
+  }
+}
+
 // A sleep the child performs itself.
-message SandboxSleep {
+message SystemSleep {
   // Longest wait one call performs; longer sleeps are cut short. Absent = 10s.
-  optional uint64 clamp_micros = 1;
+  optional uint64 max_micros = 1;
 }
 
 // A frozen clock reading.

@@ -249,38 +249,38 @@ export interface FixedTimeZone {
   offsetSeconds: number
   name?: string
 }
-export type TimeZone = TimeZoneCallHost | TimeZoneSystem | TimeZoneFixed
-export interface TimeZoneCallHost {
-  tag: 'call-host'
-}
+export type TimeZone = TimeZoneSystem | TimeZoneCallHost | TimeZoneFixed
 export interface TimeZoneSystem {
   tag: 'system'
+}
+export interface TimeZoneCallHost {
+  tag: 'call-host'
 }
 export interface TimeZoneFixed {
   tag: 'fixed'
   val: FixedTimeZone
 }
-export type DatetimeSource = DatetimeSourceCallHost | DatetimeSourceSystem | DatetimeSourceFixed
-export interface DatetimeSourceCallHost {
-  tag: 'call-host'
-}
+export type DatetimeSource = DatetimeSourceSystem | DatetimeSourceCallHost | DatetimeSourceFixed
 export interface DatetimeSourceSystem {
   tag: 'system'
+}
+export interface DatetimeSourceCallHost {
+  tag: 'call-host'
 }
 export interface DatetimeSourceFixed {
   tag: 'fixed'
   val: FixedDatetime
 }
-export type SleepMode = SleepModeCallHost | SleepModeZero | SleepModeSandboxSleep
+export type SleepMode = SleepModeSystem | SleepModeCallHost | SleepModeZero
+export interface SleepModeSystem {
+  tag: 'system'
+  val: bigint | undefined
+}
 export interface SleepModeCallHost {
   tag: 'call-host'
 }
 export interface SleepModeZero {
   tag: 'zero'
-}
-export interface SleepModeSandboxSleep {
-  tag: 'sandbox-sleep'
-  val: bigint | undefined
 }
 export type RandomSeed = RandomSeedInt | RandomSeedFloat | RandomSeedStr | RandomSeedBytes
 export interface RandomSeedInt {
@@ -299,12 +299,12 @@ export interface RandomSeedBytes {
   tag: 'bytes'
   val: Uint8Array
 }
-export type RandomStart = RandomStartCallHost | RandomStartRandom | RandomStartSeed
+export type RandomStart = RandomStartSystem | RandomStartCallHost | RandomStartSeed
+export interface RandomStartSystem {
+  tag: 'system'
+}
 export interface RandomStartCallHost {
   tag: 'call-host'
-}
-export interface RandomStartRandom {
-  tag: 'random'
 }
 export interface RandomStartSeed {
   tag: 'seed'

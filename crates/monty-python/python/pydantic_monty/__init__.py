@@ -201,23 +201,23 @@ class AutoOSCalls(TypedDict, total=False):
     `'system'` (the default) is the worker's local zone; `'call_host'` sends the calls that need the zone to the
     `os=` handler; a `TimeZone` is a fixed offset."""
 
-    sleep: Literal['sandbox_sleep', 'zero', 'call_host']
+    sleep: Literal['system', 'call_host', 'zero']
     """What `time.sleep()` and `asyncio.sleep()` do.
 
-    `'sandbox_sleep'` (the default) waits inside the worker, each call cut to `sandbox_sleep_clamp`, and gathered
-    `asyncio.sleep()` calls overlap; `'zero'` returns at once; `'call_host'` sends both to the `os=` handler, which
-    performs the wait."""
+    `'system'` (the default) waits inside the worker, each call cut to `sleep_system_max`, and gathered
+    `asyncio.sleep()` calls overlap; `'call_host'` sends both to the `os=` handler, which performs the wait;
+    `'zero'` returns at once."""
 
-    sandbox_sleep_clamp: float
-    """Longest wait a `'sandbox_sleep'` performs per call, in seconds (default 10; `inf` for no cap).
+    sleep_system_max: float
+    """Longest wait a `'system'` performs per call, in seconds (default 10; `inf` for no cap).
 
     A wait costs nothing against `max_duration_secs` and is not a suspension, so `request_timeout` is what bounds a
     sleeping loop."""
 
-    random_start: Literal['random', 'call_host'] | RandomSeed
+    random_start: Literal['system', 'call_host'] | RandomSeed
     """Where an unseeded `random` generator gets its first state.
 
-    `'random'` (the default) seeds from the worker's OS entropy; `'call_host'` sends an `os.urandom` request for
+    `'system'` (the default) seeds from the worker's OS entropy; `'call_host'` sends an `os.urandom` request for
     2496 bytes to the `os=` handler on the first draw; `{'seed': s}` starts the module-level generator exactly as
     `random.seed(s)` would (any int, float, str or bytes), with unseeded `random.Random()` instances taking
     deterministic states derived from it. `random.seed()` in the sandbox still applies afterwards."""
