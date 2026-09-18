@@ -32,13 +32,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// between releases is unnecessary and can lead to confusion.
 pub const DUMP_VERSION: u16 = 11;
 
-/// Oldest [`DUMP_VERSION`] this build can load, mirroring `monty-proto`'s
-/// `MIN_SUPPORTED_PROTOCOL_VERSION`.
-///
-/// Defined as [`DUMP_VERSION`] rather than a literal so a bump refuses older
-/// dumps by default — nothing can decode them until migration code exists.
-/// Replacing it with a literal is what opts a release into reading older dumps,
-/// and is sound only once every layout changed since that version is migrated.
+/// Defined as [`DUMP_VERSION`] current dump version until we can load older dumps.
 pub const MIN_SUPPORTED_DUMP_VERSION: u16 = DUMP_VERSION;
 
 // The supported range must be non-empty, and must exclude zero
