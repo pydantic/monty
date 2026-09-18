@@ -114,14 +114,11 @@ impl Task {
     }
 }
 
-/// An `asyncio.sleep` the sandbox serves itself (`SleepMode::System`).
-///
-/// Also an ordinary entry in `Scheduler::pending_externals` — the
-/// `ExternalFuture` holding the sleep's `result` — resolved with `None` once
-/// the deadline passes, so everything downstream of a host-resolved future
-/// (awaiters, gathers, `can_await_eagerly`) applies unchanged. The deadline
-/// is absolute wall-clock time so a timer still pending when another task
-/// suspends to the host is simply due, not restarted, when the host answers.
+/// An `asyncio.sleep` the sandbox serves itself (`SleepMode::System`): also
+/// an ordinary `Scheduler::pending_externals` entry, resolved with `None`
+/// once the deadline passes so everything downstream of a host-resolved
+/// future applies unchanged. The deadline is absolute wall-clock time, so a
+/// timer pending across a host suspension is simply due, not restarted.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SandboxTimer {
     /// The call id of the timer's `ExternalFuture`.

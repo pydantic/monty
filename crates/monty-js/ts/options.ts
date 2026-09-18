@@ -117,7 +117,11 @@ export interface AutoOsCalls {
   datetime?: DateTimeSource
   timezone?: TimeZone
   sleep?: SleepMode
-  /** Longest wait a `'system'` performs per call, in seconds (default 10; `Infinity` for no cap). */
+  /**
+   * Longest wait a `'system'` performs per call, in seconds (default 10;
+   * `Infinity` for no cap). Given alongside any other `sleep` it is a
+   * `RangeError`, not ignored.
+   */
   sleepSystemMax?: number
   randomStart?: RandomStart
 }
@@ -179,6 +183,10 @@ export function encodeAutoOsCalls(options: AutoOsCalls): EncodedAutoOsCalls {
     const secs = options.sleepSystemMax
     if (typeof secs !== 'number' || Number.isNaN(secs) || secs < 0) {
       throw new RangeError('sleepSystemMax must be a non-negative number of seconds (Infinity for no cap)')
+    }
+    // a cap on a sleep that never happens in the worker is a contradiction, not something to ignore
+    if (options.sleep !== undefined && options.sleep !== 'system') {
+      throw new RangeError(`sleepSystemMax only applies to sleep: 'system', not '${options.sleep}'`)
     }
     encoded.sleepSystemMaxSecs = secs
   }

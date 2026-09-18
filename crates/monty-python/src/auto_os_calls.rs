@@ -70,9 +70,21 @@ impl<'a, 'py> FromPyObject<'a, 'py> for AutoOsCallsArg {
         if let Some(timezone) = timezone {
             calls.timezone = timezone;
         }
-        // The maximum only applies to a system sleep; the other modes ignore it.
-        if let (Some(max), SleepMode::System(_)) = (max, calls.sleep) {
-            calls.sleep = SleepMode::System(max);
+        // The maximum only applies to a system sleep; with any other mode it
+        // is a contradiction rather than something to ignore.
+        match (max, calls.sleep) {
+            (Some(max), SleepMode::System(_)) => calls.sleep = SleepMode::System(max),
+            (Some(_), SleepMode::CallHost) => {
+                return Err(PyValueError::new_err(
+                    "sleep_system_max only applies to sleep='system', not 'call_host'",
+                ));
+            }
+            (Some(_), SleepMode::Zero) => {
+                return Err(PyValueError::new_err(
+                    "sleep_system_max only applies to sleep='system', not 'zero'",
+                ));
+            }
+            (None, _) => {}
         }
         Ok(Self(calls))
     }

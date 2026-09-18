@@ -952,6 +952,13 @@ def test_sleep_system_max_invalid(pool: Monty, value: Any, error: type[Exception
     assert str(exc_info.value) == message
 
 
+@pytest.mark.parametrize('sleep', ['call_host', 'zero'])
+def test_sleep_system_max_contradicts_other_modes(pool: Monty, sleep: Any):
+    with pytest.raises(ValueError) as exc_info:
+        pool.checkout(auto_os_calls={'sleep': sleep, 'sleep_system_max': 1})
+    assert str(exc_info.value) == f"sleep_system_max only applies to sleep='system', not '{sleep}'"
+
+
 def test_sleep_call_host_reaches_os(monty_run: RunMonty):
     calls: list[Any] = []
 

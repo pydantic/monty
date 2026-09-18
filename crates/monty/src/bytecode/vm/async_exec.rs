@@ -867,13 +867,11 @@ impl<'h> VM<'h> {
     }
 
     /// Serves the sandbox timers when every task is blocked: sleeps until the
-    /// earliest deadline (off the execution clock), fires every timer then
-    /// due and activates the first task that woke. `false` means no timer is
+    /// earliest deadline (off the execution clock), fires the timers then due
+    /// and activates the first task that woke. `false` means no timer is
     /// pending, so the `ResolveFutures` exit really is the host's to answer.
-    ///
-    /// Each wait is capped at the sleep mode's maximum and always fires the
-    /// earliest timer, so a wall clock jumping backwards costs at most one
-    /// maximum per timer rather than a stall.
+    /// Each wait is capped at the mode's maximum and always fires the earliest
+    /// timer, so a wall clock jumping backwards cannot stall it.
     pub(super) fn wait_sandbox_timers(&mut self) -> RunResult<bool> {
         loop {
             let Some(earliest) = self.scheduler.earliest_timer() else {

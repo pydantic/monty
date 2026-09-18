@@ -217,6 +217,8 @@ class AutoOSCalls(TypedDict, total=False):
     sleep_system_max: float
     """Longest wait a `'system'` performs per call, in seconds (default 10; `inf` for no cap).
 
+    Given alongside any other `sleep` it is a `ValueError`, not ignored.
+
     A wait costs nothing against `max_duration_secs` and is not a suspension: `max_total_sleep_secs` and
     `request_timeout` are what bound a sleeping loop."""
 

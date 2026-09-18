@@ -33,7 +33,9 @@ What `time.sleep()` does is the session's `sleep` setting:
 
 - `'system'` (the default): the sandbox waits, each call cut to `sleep_system_max` (10 seconds unless
     changed; the CLI's `--max-sleep`). A longer request returns early with no error, where CPython would have waited,
-    so `time.time()` advances by less than the sleep asked for.
+    so `time.time()` advances by less than the sleep asked for. In the wasm worker the wait is a busy spin on the
+    monotonic clock rather than a blocking sleep, since a browser has no synchronous one to offer, so a sleeping
+    browser worker occupies a core for the duration; `sleep_system_max` bounds each spin.
 - `'call_host'`: the call suspends and the host performs the wait, so how long it actually sleeps is the host's
     choice: `pydantic_monty`'s [`OSAccess`][pydantic_monty.OSAccess] caps it at `max_sleep` (default 10 seconds,
     `None` for no cap). A host may answer with any value, which is discarded: `time.sleep()` always evaluates to

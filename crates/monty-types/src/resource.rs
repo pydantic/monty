@@ -789,12 +789,10 @@ fn block_for(duration: Duration) {
     thread::sleep(duration);
 }
 
-/// Blocks for `duration` on wasm, where `std::thread::sleep` needs
-/// `wasi:io/poll` and a browser host can only serve that asynchronously — a
-/// synchronous component call cannot wait on it. The monotonic clock is
-/// served synchronously everywhere, so the wait spins on it instead; the
-/// worker is idle during a sleep anyway, and the cap on each sleep bounds the
-/// spin.
+/// Blocks for `duration` on wasm by spinning on the monotonic clock:
+/// `std::thread::sleep` needs `wasi:io/poll`, which a browser host serves
+/// only asynchronously. The worker is idle during a sleep anyway, and the
+/// per-sleep cap bounds the spin (see `limitations/time.md`).
 #[cfg(target_arch = "wasm32")]
 fn block_for(duration: Duration) {
     let started = Instant::now();

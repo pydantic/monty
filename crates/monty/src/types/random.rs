@@ -21,7 +21,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes, hash_python_str, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
@@ -62,21 +62,23 @@ pub(crate) struct SessionRandom {
 impl SessionRandom {
     /// The state an unseeded `target` starts with: exactly `random.seed(s)` for
     /// the module generator under `Seed(s)`, otherwise a fresh state. `None`
-    /// is `CallHost`: the state is the host's to supply.
-    pub(crate) fn first_state(&mut self, target: RandomTarget, start: &RandomStart) -> Option<Mt19937> {
+    /// is `CallHost`: the state is the host's to supply. Errs only when the
+    /// OS entropy source fails.
+    pub(crate) fn first_state(&mut self, target: RandomTarget, start: &RandomStart) -> RunResult<Option<Mt19937>> {
         match (start, target) {
-            (RandomStart::Seed(seed), RandomTarget::Global) => Some(Mt19937::from_key(&seed_key_from_seed(seed))),
+            (RandomStart::Seed(seed), RandomTarget::Global) => Ok(Some(Mt19937::from_key(&seed_key_from_seed(seed)))),
             _ => self.fresh_state(start),
         }
     }
 
     /// A state for `seed()` / `seed(None)` or an unseeded instance: OS entropy,
     /// or under `Seed(s)` the next state of the stream derived from `s`.
-    /// `None` is `CallHost`: the state is the host's to supply.
-    pub(crate) fn fresh_state(&mut self, start: &RandomStart) -> Option<Mt19937> {
+    /// `None` is `CallHost`: the state is the host's to supply. Errs only when
+    /// the OS entropy source fails.
+    pub(crate) fn fresh_state(&mut self, start: &RandomStart) -> RunResult<Option<Mt19937>> {
         match start {
-            RandomStart::System => Some(Mt19937::from_os_entropy()),
-            RandomStart::CallHost => None,
+            RandomStart::System => Mt19937::from_os_entropy().map(Some),
+            RandomStart::CallHost => Ok(None),
             RandomStart::Seed(seed) => {
                 let stream = self.derived.get_or_insert_with(|| {
                     // One extra word keeps the stream distinct from `seed(s)`'s own state.
@@ -85,7 +87,7 @@ impl SessionRandom {
                     Mt19937::from_key(&key)
                 });
                 let words: Vec<u32> = (0..N).map(|_| stream.next_u32()).collect();
-                Some(Mt19937::from_key(&words))
+                Ok(Some(Mt19937::from_key(&words)))
             }
         }
     }
@@ -459,11 +461,18 @@ impl Mt19937 {
         mt
     }
 
-    /// Seeds from the OS entropy source, as `random_seed_urandom` does.
-    pub(crate) fn from_os_entropy() -> Self {
+    /// Seeds from the OS entropy source, as `random_seed_urandom` does. A
+    /// source that fails ends the run uncatchably: no draw could be trusted,
+    /// and CPython's fallback to a time-and-pid seed is exactly what a sandbox
+    /// must not do.
+    pub(crate) fn from_os_entropy() -> RunResult<Self> {
         let mut bytes = [0u8; SEED_BYTES];
-        getrandom::fill(&mut bytes).expect("OS entropy source unavailable");
-        Self::from_entropy(&bytes)
+        getrandom::fill(&mut bytes).map_err(|err| {
+            RunError::UncatchableExc(
+                SimpleException::new_msg(ExcType::OSError, format!("OS entropy source unavailable: {err}")).into(),
+            )
+        })?;
+        Ok(Self::from_entropy(&bytes))
     }
 
     /// Seeds from `SEED_BYTES` bytes of entropy read as little-endian words.

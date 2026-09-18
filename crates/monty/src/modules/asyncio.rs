@@ -70,18 +70,11 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
     }
 }
 
-/// `asyncio.sleep(delay, result=None)` — an awaitable that produces `result`
-/// once the wait is over, the wait being whatever the session's `SleepMode`
-/// says.
-///
-/// Unlike CPython, the wait starts at the call rather than at the `await`.
-/// In the sandbox it is a timer the scheduler serves while sibling tasks run
-/// (or an inline wait when the call is awaited at once with nothing else to
-/// run), cut to the mode's maximum. Under `CallHost` the call suspends: a
-/// host with an event loop answers with a pending future so sibling tasks
-/// keep running, one without waits inline and answers with anything, and
-/// [`PostConversionEffect::SleepResult`] keeps `result` in the sandbox either
-/// way. See `limitations/asyncio.md`.
+/// `asyncio.sleep(delay, result=None)` — an awaitable producing `result` once
+/// the session's `SleepMode` wait is over. Unlike CPython the wait starts at
+/// the call: in the sandbox a scheduler timer ([`sandbox_sleep_awaitable`]),
+/// under `CallHost` a suspension the host answers with a pending future or
+/// inline, [`PostConversionEffect::SleepResult`] keeping `result` here. See `limitations/asyncio.md`.
 fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let SleepArgs { delay, result } = SleepArgs::from_args(args, vm)?;
     // `result` outlives `delay`: it moves into the awaitable once the delay is valid.

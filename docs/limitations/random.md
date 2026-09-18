@@ -20,7 +20,9 @@ An unseeded generator seeds itself on its first draw from the session's `random_
 (`auto_os_calls` on `checkout()` in the bindings, `AutoOsCalls::random_start` in Rust):
 
 - `'system'`, the default, reads 2496 bytes of OS entropy — the 624 32-bit words of one MT19937 state vector, what
-    CPython's `seed(None)` reads — so unseeded draws are unpredictable, as in CPython.
+    CPython's `seed(None)` reads — so unseeded draws are unpredictable, as in CPython. If the OS entropy source
+    fails, the draw raises an uncatchable `OSError: OS entropy source unavailable: <reason>` and the run ends; CPython
+    falls back to seeding from the time and process id instead.
 - A seed (`{'seed': s}` in Python, `{ seed }` in JavaScript, `RandomStart::Seed` in Rust; any int, a float, a `str` or
     `bytes`) starts the module-level generator exactly as `random.seed(s)` would, so its draws are CPython's for that
     seed. An unseeded `random.Random()` instance takes a state derived from the seed instead — deterministic from run

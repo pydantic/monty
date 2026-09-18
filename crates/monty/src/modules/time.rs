@@ -66,14 +66,11 @@ fn time(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     }
 }
 
-/// `time.sleep(seconds)` — wait as the session's `SleepMode` says.
-///
-/// A sandbox wait is cut to the mode's maximum and runs off the execution
-/// clock, charged to `max_total_sleep` instead. Under `CallHost` the wait is
-/// the host's to perform, and
-/// [`PostConversionEffect::DiscardResult`] makes the call evaluate to `None`
-/// whatever the host answered with. The argument is validated identically in
-/// every mode, so the CPython errors do not depend on the mode.
+/// `time.sleep(seconds)` — wait as the session's `SleepMode` says: in the
+/// sandbox, cut to the mode's maximum and charged to `max_total_sleep`
+/// rather than the execution clock; under `CallHost`, a wait the host
+/// performs, [`PostConversionEffect::DiscardResult`] making the call `None`
+/// whatever it answered. The argument is validated the same way in every mode.
 fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     // METH_O in CPython: keywords are refused wholesale, before arity.
     let seconds = args

@@ -315,6 +315,7 @@ See [random](limitations/random.md).
 
 `time.sleep()` and `asyncio.sleep()` wait inside the sandbox by default, each call cut short at
 `sleep_system_max` — ten seconds unless you say otherwise (`--max-sleep` in the CLI).
+In the browser worker that wait is a busy spin, so a sleeping worker occupies a core until the cap.
 Gathered `asyncio.sleep()` calls overlap: the sandbox's scheduler runs the other tasks while a sleep is pending.
 
 A wait costs nothing against the duration limits, which measure execution time and stop while the sandbox waits,

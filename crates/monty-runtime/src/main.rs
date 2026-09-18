@@ -97,7 +97,8 @@ pub(crate) struct Cli {
     max_suspensions: Option<usize>,
 
     /// Maximum cumulative time the sandbox spends in `time.sleep()` and
-    /// `asyncio.sleep()`, in seconds; a sleep that would go over is refused.
+    /// `asyncio.sleep()`, in seconds; a sleep that would go over is refused
+    /// (defaults to 30, `inf` for no limit).
     #[arg(long)]
     max_total_sleep: Option<f64>,
 
@@ -164,11 +165,12 @@ impl Cli {
 
     /// Builds `ResourceLimits` from the parsed CLI arguments.
     ///
-    /// When no resource flags were provided, returns the default
-    /// recursion-only limits (`ResourceLimits::default()`).
+    /// When no resource flags were provided, returns the default limits
+    /// (`ResourceLimits::default()`) plus the CLI's 30 s sleep budget.
     /// Returns `Err` if a supplied flag cannot be converted into a valid limit.
     #[cfg(feature = "standalone")]
     fn resource_limits(&self) -> Result<monty_types::ResourceLimits, String> {
+        const DEFAULT_MAX_TOTAL_SLEEP: f64 = 30.0;
         let mut limits = monty_types::ResourceLimits::default();
         if let Some(secs) = self.max_feed_duration {
             limits = limits.max_feed_duration(duration_flag(secs, "--max-feed-duration")?);
@@ -188,7 +190,10 @@ impl Cli {
         if let Some(max) = self.max_suspensions {
             limits = limits.max_suspensions(max);
         }
-        if let Some(secs) = self.max_total_sleep {
+        // A CLI run is one local script with no host deadline, so the sleep
+        // budget defaults on; `inf` lifts it.
+        let secs = self.max_total_sleep.unwrap_or(DEFAULT_MAX_TOTAL_SLEEP);
+        if !(secs.is_infinite() && secs > 0.0) {
             limits = limits.max_total_sleep(
                 #[expect(clippy::absolute_paths)]
                 std::time::Duration::try_from_secs_f64(secs)

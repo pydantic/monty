@@ -277,14 +277,11 @@ struct DatetimeInitArgs {
     fold: i32,
 }
 
-/// Classmethod implementation for `datetime.now(tz=None)`.
-///
-/// Read from the session's clock when it has one: a naive result is the
-/// wall clock in the session's zone, `now(tz)` the same instant in `tz`, with
-/// the argument itself attached so `now(tz).tzinfo is tz`. When the instant,
-/// or the zone a naive result needs, is the host's, it yields a `DateTimeNow`
-/// OS call carrying the tz argument as a typed [`Option<MontyTimeZone>`] —
-/// validated here, so the call can never carry an arbitrary object.
+/// Classmethod implementation for `datetime.now(tz=None)`: the session's
+/// clock in its zone (naive) or in `tz`, with the argument attached so
+/// `now(tz).tzinfo is tz`. When the instant, or the zone a naive result
+/// needs, is the host's, it yields a `DateTimeNow` OS call carrying `tz` as a
+/// validated [`Option<MontyTimeZone>`], never an arbitrary object.
 pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let NowArgs { tz } = NowArgs::from_args(args, vm)?;
     defer_drop!(tz, vm);

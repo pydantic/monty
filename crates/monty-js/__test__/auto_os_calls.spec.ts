@@ -158,6 +158,11 @@ test('invalid sleep options are rejected before the checkout', async () => {
   await t.throwsAsync(() => pool().checkout({ autoOsCalls: { sleepSystemMax: NaN } }), {
     instanceOf: RangeError,
   })
+  // a cap only makes sense for a sleep the worker performs
+  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { sleep: 'zero', sleepSystemMax: 1 } }), {
+    instanceOf: RangeError,
+    message: "sleepSystemMax only applies to sleep: 'system', not 'zero'",
+  })
 })
 
 // =============================================================================

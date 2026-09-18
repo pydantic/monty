@@ -6,15 +6,11 @@ use std::time::Duration;
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeDelta, TimeZone};
 use num_bigint::BigInt;
 
-/// Per-session choice of which OS calls the sandbox serves in-process.
-///
-/// Applies on every execution path, in-process runs and pool workers alike,
-/// for the life of the session. Each field either names an in-sandbox answer
-/// or `CallHost`, which suspends the call to the host as any other OS call
-/// (under standard execution, where there is no host, such a call raises
+/// Per-session choice of which OS calls the sandbox serves in-process, on
+/// every execution path. Each field names an in-sandbox answer or `CallHost`,
+/// which suspends the call to the host as any other OS call (with no host,
 /// `NotImplementedError`). The default answers everything in the sandbox:
-/// the system clock in the system zone, sleeps of at most ten seconds each,
-/// and `random` seeded from OS entropy.
+/// system clock and zone, sleeps of at most ten seconds, entropy-seeded `random`.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct AutoOsCalls {
     /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
