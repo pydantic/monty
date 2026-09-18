@@ -28,9 +28,10 @@ Snippets rejected before execution retain none of their compilation products (se
 - Memory usage is measured by the worker's process-global allocator, while the
     configured budget belongs to one session.
 - Workers count bytes requested from their global allocator. Direct Rust users
-    must install `monty-alloc` as the global allocator and arm it with
-    `set_limit` before using `max_memory`; without it usage always reads as
-    zero and the limit is silently not enforced.
+    must install `monty-alloc` as the global allocator and arm its hard ceiling
+    with `set_hard_limit(memory_limit_with_headroom(...))` before using
+    `max_memory`; without it usage always reads as zero and the limit is silently
+    not enforced.
 - Operations whose result is bounded by simple arithmetic on input sizes
     are **pre-checked** before allocating: integer multiplication, left
     shift, integer power, sequence repeat (`'x' * n`), replacement
@@ -102,7 +103,7 @@ without one is unlimited.
     and replaced rather than allowed to grow indefinitely.
 - **Restoring a dump is bounded by the checkout it lands in.** `load_session` /
     `load_snapshot` restore the dump's own limits (see
-    [pool-architecture.md](pool-architecture.md)), and the cap is re-derived from
+    [snapshot configuration](../snapshots.md#what-restoring-does-and-does-not-carry)), and the cap is re-derived from
     them once the session exists, but the load *itself* runs under the limit the
     `checkout()` config applied. Restoring a large dump into a checkout with a
     much smaller `max_memory` can therefore exceed it while loading; pass a

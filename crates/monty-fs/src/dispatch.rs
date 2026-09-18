@@ -169,7 +169,10 @@ pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
         | OsFunctionCall::GetEnviron
         | OsFunctionCall::DateToday
         | OsFunctionCall::DateTimeNow(_)
-        | OsFunctionCall::Urandom(_) => unreachable!("non-filesystem OS function reached filesystem parser"),
+        | OsFunctionCall::Urandom(_)
+        | OsFunctionCall::Time
+        | OsFunctionCall::Sleep(_)
+        | OsFunctionCall::AsyncSleep(_) => unreachable!("non-filesystem OS function reached filesystem parser"),
     }
 }
 

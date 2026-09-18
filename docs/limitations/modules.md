@@ -35,6 +35,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `random`      | [random.md](random.md)           |
 | `re`          | [re.md](re.md)                   |
 | `sys`         | [sys.md](sys.md)                 |
+| `time`        | [time.md](time.md)               |
 | `typing`      | [typing.md](typing.md)           |
 | `unicodedata` | [unicodedata.md](unicodedata.md) |
 
@@ -54,7 +55,7 @@ Common modules that are *not* importable in Monty (non-exhaustive):
 `hashlib`, `heapq`, `hmac`, `http`, `inspect`, `io`,
 `logging`, `multiprocessing`, `operator`, `pickle`, `queue`,
 `socket`, `string`, `struct`, `subprocess`, `tempfile`, `threading`,
-`time`, `traceback`, `unittest`, `urllib`, `uuid`, `warnings`, `weakref`,
+`traceback`, `unittest`, `urllib`, `uuid`, `warnings`, `weakref`,
 `zipfile`, `zlib`.
 
 `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` are
@@ -63,7 +64,8 @@ are unimplemented and may appear over time.
 
 Some available modules cover only part of their CPython surface: `functools`
 implements only `reduce` and `partial`, `copy` only `copy()` and `deepcopy()`,
-and `collections` only the four types above. The absent names are missing from
+`time` only `time()` and `sleep()`, and `collections` only the four types above.
+The absent names are missing from
 the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime; see each module's page for the specifics.
 

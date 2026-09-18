@@ -767,6 +767,9 @@ pub struct ReplOsCall {
     pub function_call: OsFunctionCall,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
+    /// The host may await its wait and answer with [`Self::resume_eager`];
+    /// see [`OsCall::allow_eager_await`](crate::OsCall::allow_eager_await).
+    pub allow_eager_await: bool,
     /// Internal REPL execution snapshot.
     snapshot: ReplSnapshot,
 }
@@ -803,6 +806,21 @@ impl ReplOsCall {
 
     /// Raises `exc` uncatchably at the suspended call.
     ///
+    /// Resumes with the wait already performed; see
+    /// [`OsCall::resume_eager`](crate::OsCall::resume_eager). Only use when
+    /// [`Self::allow_eager_await`] is true.
+    pub fn resume_eager(
+        self,
+        result: Result<MontyObject, MontyException>,
+        print: PrintWriter<'_>,
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.snapshot.run_inner(
+            result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
+            Some(self.call_id),
+            print,
+        )
+    }
+
     /// Always returns `Err` with a reusable session; see [`crate::OsCall::abort`].
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         self.snapshot.abort(exc, print)
@@ -1325,9 +1343,14 @@ fn build_repl_progress(
             allow_eager_await,
             snapshot: new_repl_snapshot!(),
         })),
-        ConvertedExit::OsCall { function_call, call_id } => Ok(ReplProgress::OsCall(ReplOsCall {
+        ConvertedExit::OsCall {
             function_call,
             call_id,
+            allow_eager_await,
+        } => Ok(ReplProgress::OsCall(ReplOsCall {
+            function_call,
+            call_id,
+            allow_eager_await,
             snapshot: new_repl_snapshot!(),
         })),
         ConvertedExit::ResolveFutures(pending_call_ids) => Ok(ReplProgress::ResolveFutures(ReplResolveFutures {

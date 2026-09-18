@@ -246,6 +246,10 @@ pub enum TurnEvent {
         /// One arena holding every positional and keyword argument.
         args: CallArgs,
         call_id: u32,
+        /// As on [`FunctionCall`](Self::FunctionCall): the caller may await
+        /// the wait and answer with [`Checkout::resume_futures`]. Only set on
+        /// a call `OsFunctionCall::accepts_future` allows a future for.
+        allow_eager_await: bool,
     },
     /// The sandbox read an undefined name, or — when `object_id` is set — a
     /// lazy attribute on the host-backed object with that uuid (a class
@@ -1353,6 +1357,7 @@ impl Checkout {
                     // `restore`) decodes into a typed `OsFunctionCall`; a
                     // payload the child could never legitimately produce is a
                     // protocol violation.
+                    let mut allow_eager_await = call.allow_eager_await;
                     let (call_id, function_call) = match os_call_from_proto(call) {
                         Ok(call) => call,
                         Err(err) => {
@@ -1363,17 +1368,21 @@ impl Checkout {
                     // Retain the raw typed call for mount validation; `to_args`
                     // normalizes only the clone presented to callbacks.
                     let function_name = function_call.name().to_owned();
+                    // The child is untrusted: an eager bit on a call no future
+                    // may answer is dropped rather than exposed.
+                    allow_eager_await = allow_eager_await && OsFunctionCall::accepts_future(function_call.name());
                     let args = function_call.clone().to_args();
                     self.pending = Some(Pending::Call {
                         call_id,
                         function_name: function_name.clone(),
                         os_call: Some(Box::new(function_call)),
-                        allow_eager_await: false,
+                        allow_eager_await,
                     });
                     return Ok(ControlEvent::Turn(TurnEvent::OsCall {
                         function_name,
                         args,
                         call_id,
+                        allow_eager_await,
                     }));
                 }
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {

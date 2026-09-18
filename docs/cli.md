@@ -34,6 +34,7 @@ hello world
 | `--max-recursion-depth` | Maximum call-stack depth (default 1000)                                                                                                   |
 | `--gc-interval`         | Run garbage collection every N allocations                                                                                                |
 | `--max-suspensions`     | Maximum suspensions serviced, per run or across a whole interactive session (default 1000); [what counts](resource-limits.md#suspensions) |
+| `--max-sleep`           | Longest wait a `time.sleep()` or `asyncio.sleep()` performs, in seconds; longer sleeps are cut short (default 10, `inf` for no limit)     |
 | `--version`             | Print the version                                                                                                                         |
 
 See [resource limits](resource-limits.md) for what the limits actually bound.
@@ -66,7 +67,7 @@ Only the file argument's name is used, so `monty ./scripts/run.py` and `monty /a
 
 ## The clock
 
-`date.today()` and `datetime.now()` read the machine's clock and local timezone.
+`date.today()` and `datetime.now()` read the machine's clock and local timezone; `time.time()` reads the machine's clock as Unix epoch seconds.
 Nothing answers `os.urandom()` in the CLI, so it and any unseeded `random` draw fail.
 Without `--mount` the script runs in-process and the call raises
 `NotImplementedError: OS function 'os.urandom' not implemented with standard execution`; with a mount it goes
@@ -80,9 +81,15 @@ $ monty -c "from datetime import datetime; print(datetime.now())"
 
 An in-process Rust run reads the same clock; `MontyRun::with_host_clock` is how an embedder chooses otherwise, and the
 CLI has no flag for it.
-A sandbox driven through the pool is different: there both calls reach your `os=` handler (see
+A sandbox driven through the pool is different: there the clock calls reach your `os=` handler (see
 [the clock](security.md#the-clock)).
 See [`limitations/datetime.md`](https://github.com/pydantic/monty/blob/main/limitations/datetime.md).
+
+`time.sleep()` and `asyncio.sleep()` wait on the thread running the script, but only when the CLI drives suspensions,
+which it does when at least one `-m` mount is given.
+Without a mount every run — script, `-c` and REPL alike — takes the in-process path, where the sandbox has no host to
+wait for it and both raise `NotImplementedError`.
+See [`limitations/time.md`](https://github.com/pydantic/monty/blob/main/limitations/time.md).
 
 ## Worker mode
 

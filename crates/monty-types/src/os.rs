@@ -9,7 +9,7 @@
 //! host bindings get a generic `(positional, keyword)` view via
 //! [`OsFunctionCall::to_args`].
 
-use std::{borrow::Cow, fmt, ops::Deref};
+use std::{borrow::Cow, fmt, ops::Deref, time::Duration};
 
 use crate::{
     args::{PushValue, ToArgs},
@@ -118,9 +118,36 @@ pub enum OsFunctionCall {
     /// how the `random` module seeds an unseeded generator).
     #[strum(serialize = "os.urandom")]
     Urandom(UrandomArgs),
+    /// Read the host clock as `time.time()` does: seconds since the Unix
+    /// epoch, answered with a [`MontyNode::Float`].
+    #[strum(serialize = "time.time")]
+    Time,
+    /// `time.sleep(seconds)` — the host waits, then answers with any value
+    /// (`time.sleep` discards it and evaluates to `None`).
+    #[strum(serialize = "time.sleep")]
+    Sleep(Duration),
+    /// `asyncio.sleep(delay)` — like [`Sleep`](Self::Sleep), except the
+    /// sandbox turns the answer into an awaitable, so a host that runs an
+    /// event loop should answer with a future (`ExtFunctionResult::Future`)
+    /// and resolve it when the delay elapses, letting sibling tasks run
+    /// meanwhile. The answer's value is ignored: the sandbox keeps the
+    /// `result` argument itself and produces it from the `await`.
+    #[strum(serialize = "asyncio.sleep")]
+    AsyncSleep(Duration),
 }
 
 impl OsFunctionCall {
+    /// Whether a host may answer the call with this [`name`](Self::name) with
+    /// `ExtFunctionResult::Future` and resolve it later, letting the sandbox's
+    /// other tasks run meanwhile.
+    ///
+    /// Only `asyncio.sleep` qualifies: every other call is a value the
+    /// calling code is waiting on, so the host must answer it in place.
+    #[must_use]
+    pub fn accepts_future(name: &str) -> bool {
+        name == "asyncio.sleep"
+    }
+
     /// Stable string name for this OS function — surfaces in
     /// [`Self::on_no_handler`] errors, host `os` callbacks, and serialised
     /// snapshots. The strum `serialize` string on each variant.
@@ -166,8 +193,9 @@ impl OsFunctionCall {
             Self::Getenv(a) => a.to_args(),
             Self::Urandom(a) => a.to_args(),
             // Unit & single-value non-FS variants.
-            Self::GetEnviron | Self::DateToday => CallArgs::new(),
+            Self::GetEnviron | Self::DateToday | Self::Time => CallArgs::new(),
             Self::DateTimeNow(tz) => single_arg(tz.map_or(MontyNode::None, MontyNode::TimeZone)),
+            Self::Sleep(delay) | Self::AsyncSleep(delay) => single_arg(MontyNode::Float(delay.as_secs_f64())),
         }
     }
 
@@ -266,7 +294,14 @@ impl OsFunctionCall {
             Self::Open(a) => Some(a.path.as_str()),
             Self::Mkdir(a) => Some(a.path.as_str()),
             Self::Rename(a) => Some(a.src.as_str()),
-            Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) | Self::Urandom(_) => None,
+            Self::Getenv(_)
+            | Self::GetEnviron
+            | Self::DateToday
+            | Self::DateTimeNow(_)
+            | Self::Urandom(_)
+            | Self::Time
+            | Self::Sleep(_)
+            | Self::AsyncSleep(_) => None,
         }
     }
 
@@ -304,9 +339,14 @@ impl OsFunctionCall {
             Self::Open(a) => (Some(&mut a.path), None),
             Self::Mkdir(a) => (Some(&mut a.path), None),
             Self::Rename(a) => (Some(&mut a.src), Some(&mut a.dst)),
-            Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) | Self::Urandom(_) => {
-                (None, None)
-            }
+            Self::Getenv(_)
+            | Self::GetEnviron
+            | Self::DateToday
+            | Self::DateTimeNow(_)
+            | Self::Urandom(_)
+            | Self::Time
+            | Self::Sleep(_)
+            | Self::AsyncSleep(_) => (None, None),
         };
         primary.into_iter().chain(dst)
     }
@@ -410,6 +450,60 @@ pub struct GetenvArgs {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct UrandomArgs {
     pub size: u64,
+}
+
+/// Longest sleep the sleep calls accept, matching the point where CPython's
+/// `PyTime_t` (nanoseconds in an `i64`) overflows.
+pub const MAX_SLEEP_SECONDS: f64 = 9_223_372_036.854_775;
+
+/// Why a requested sleep length cannot be carried by an OS call.
+///
+/// The caller picks the Python-level consequence: `time.sleep` raises
+/// (`ValueError` for the first two, `OverflowError` for the third) while
+/// `asyncio.sleep` raises only for NaN and clamps the rest, as CPython does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepError {
+    /// The delay was NaN.
+    NotANumber,
+    /// The delay was negative.
+    Negative,
+    /// The delay was past [`MAX_SLEEP_SECONDS`] (infinity included).
+    TooLarge,
+}
+
+/// Converts a Python sleep argument into the [`Duration`] an OS call carries.
+///
+/// Sleep payloads are `Duration` rather than raw seconds precisely so no host
+/// is ever handed a NaN, negative or unrepresentable span to convert — the
+/// obvious `Duration::from_secs_f64` panics on all three. Both producers, the
+/// interpreter and the wire decoder, go through here.
+pub fn sleep_duration(seconds: f64) -> Result<Duration, SleepError> {
+    // Range before sign, as CPython converts to `PyTime_t` before checking
+    // the sign: `-inf` and huge negatives overflow rather than being negative.
+    if seconds.is_nan() {
+        Err(SleepError::NotANumber)
+    } else if seconds.abs() > MAX_SLEEP_SECONDS {
+        Err(SleepError::TooLarge)
+    } else if seconds < 0.0 {
+        Err(SleepError::Negative)
+    } else {
+        Duration::try_from_secs_f64(seconds).map_err(|_| SleepError::TooLarge)
+    }
+}
+
+/// Like [`sleep_duration`], but for `asyncio.sleep`, which clamps rather than
+/// raising: a negative delay becomes no wait at all (CPython returns
+/// immediately) and an over-long one saturates at [`MAX_SLEEP_SECONDS`]. Only
+/// NaN is refused, the one delay CPython rejects there.
+pub fn sleep_duration_saturating(seconds: f64) -> Result<Duration, SleepError> {
+    match sleep_duration(seconds) {
+        Ok(delay) => Ok(delay),
+        // `delay <= 0` returns at once in CPython, however far below zero.
+        Err(SleepError::Negative) => Ok(Duration::ZERO),
+        Err(SleepError::TooLarge) if seconds < 0.0 => Ok(Duration::ZERO),
+        Err(SleepError::TooLarge) => Ok(Duration::from_secs_f64(MAX_SLEEP_SECONDS)),
+        Err(err @ SleepError::NotANumber) => Err(err),
+    }
 }
 
 // =============================================================================

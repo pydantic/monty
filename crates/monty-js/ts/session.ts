@@ -9,8 +9,10 @@
 // external future so other sandbox tasks keep executing, and results are
 // delivered when the worker reports everything is blocked (`resolveFutures`).
 
+import { context as ContextAPI, type Context } from '@opentelemetry/api'
+
 import type { NativeSession } from '../native-addon.js'
-import { bindPrintCallback, runWithCallbackContext } from './callbackContext.js'
+import { bindPrintCallback, getCallbackContext, runWithCallbackContext } from './callbackContext.js'
 import {
   AttrNotExposed,
   attributeErrorMessage,
@@ -30,16 +32,17 @@ import {
 import { PYTHON_EXC_NAMES } from './errors.js'
 import { mountsToNative } from './mount.js'
 import type { MountDir } from './mountDir.js'
-import type {
-  FunctionCallTurn,
-  LoadedTurn,
-  NameLookupTurn,
-  NativeFutureResult,
-  NativeTurn,
-  OkTurn,
-  NotMountedTurn,
-  OsCallTurn,
-  ResolveFuturesTurn,
+import {
+  type FunctionCallTurn,
+  type LoadedTurn,
+  type NameLookupTurn,
+  type NativeFutureResult,
+  type NativeTurn,
+  type OkTurn,
+  type NotMountedTurn,
+  type OsCallTurn,
+  type ResolveFuturesTurn,
+  osCallAcceptsFuture,
 } from './native.js'
 import { CollectString, CollectStreams } from './print.js'
 
@@ -564,14 +567,9 @@ class TurnAnswerer {
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
     }
-    if (isThenable(returned)) {
-      if (call.allowEagerAwait) {
-        return this.answerEagerCoroutine(call.callId, returned, onPrint)
-      }
-      this.registerFuture(call.callId, Promise.resolve(returned))
-      return this.native.resumeFuture(onPrint)
-    }
-    return this.resumeWithValue(returned, onPrint)
+    return isThenable(returned)
+      ? this.answerAwaitedCall(call, returned, onPrint)
+      : this.resumeWithValue(returned, onPrint)
   }
 
   /**
@@ -611,14 +609,9 @@ class TurnAnswerer {
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
     }
-    if (isThenable(returned)) {
-      if (call.allowEagerAwait) {
-        return this.answerEagerCoroutine(call.callId, returned, onPrint)
-      }
-      this.registerFuture(call.callId, Promise.resolve(returned))
-      return this.native.resumeFuture(onPrint)
-    }
-    return this.resumeWithValue(returned, onPrint)
+    return isThenable(returned)
+      ? this.answerAwaitedCall(call, returned, onPrint)
+      : this.resumeWithValue(returned, onPrint)
   }
 
   /**
@@ -685,6 +678,11 @@ class TurnAnswerer {
       const [args, kwargs] = restoreCallArgs(call, this.instances)
       returned = this.os(call.functionName, args, kwargsToRecord(kwargs))
       if (isThenable(returned)) {
+        if (osCallAcceptsFuture(call.functionName)) {
+          return await this.answerAwaitedCall(call, returned, onPrint)
+        }
+        // The sandbox does not await any other OS call, so a future would be
+        // an error: the wait happens here and only this session is held up.
         returned = await returned
       }
     } catch (err) {
@@ -695,6 +693,23 @@ class TurnAnswerer {
       return await this.native.resumeNotHandled(onPrint)
     }
     return await this.resumeWithValue(returned, onPrint)
+  }
+
+  /**
+   * Answers a call the sandbox awaits with the promise a host callback
+   * returned: settled here when the sandbox has nothing else to run, otherwise
+   * registered as a future so its other tasks run meanwhile.
+   */
+  private answerAwaitedCall(
+    call: { callId: number; allowEagerAwait?: boolean },
+    promise: PromiseLike<unknown>,
+    onPrint: PrintCallback,
+  ): Promise<object> {
+    if (call.allowEagerAwait) {
+      return this.answerEagerCoroutine(call.callId, promise, onPrint)
+    }
+    this.registerFuture(call.callId, Promise.resolve(promise))
+    return this.native.resumeFuture(onPrint)
   }
 
   /** Settles an eligible coroutine at its call suspension, including conversion errors. */
@@ -819,6 +834,9 @@ class PrintTarget {
  * produces, so they all answer the same worker with the same print sink.
  */
 class SnapshotDriver {
+  /** Captured before the first feed/load await and shared by the snapshot chain, never serialized. */
+  readonly traceBaseContext = ContextAPI.active()
+
   /** Exposed so the session's first turn can stream prints through it. */
   get onPrint(): PrintCallback {
     return bindPrintCallback(this.printTarget.write.bind(this.printTarget))
@@ -949,14 +967,38 @@ class SnapshotDriver {
   }
 }
 
-/** Marks a snapshot single-use: each may be resumed at most once. */
+/** Shares tracing context access and the single-resume check across snapshot kinds. */
 class SingleUse {
   private used = false
+
+  /** Retains the suspension's telemetry parent until the snapshot is resumed. */
+  protected constructor(
+    private readonly callbackSpanKey: string | undefined,
+    private readonly traceBaseContext: Context,
+  ) {}
+
+  /**
+   * Returns the suspension's OTel context without activating it or resuming execution.
+   * Preserves context entries captured at `feedStart` / `loadSnapshot`; without Monty tracing,
+   * returns that captured context unchanged. Access after resume throws; previously returned
+   * contexts remain usable but do not keep the suspension span open.
+   */
+  traceContext(): Context {
+    this.ensureUnused()
+    return getCallbackContext(this.callbackSpanKey, this.traceBaseContext)
+  }
+
+  /** Consumes the snapshot's single resume, independently of its tracing context. */
   protected claim(): void {
+    this.ensureUnused()
+    this.used = true
+  }
+
+  /** Rejects operations on a suspension the caller has already answered. */
+  private ensureUnused(): void {
     if (this.used) {
       throw new Error('snapshot has already been resumed')
     }
-    this.used = true
   }
 }
 
@@ -986,14 +1028,14 @@ export class FunctionSnapshot extends SingleUse {
     private readonly turn: FunctionCallTurn | OsCallTurn,
     isOsFunction: boolean,
   ) {
-    super()
+    super(turn.callbackSpanKey, driver.traceBaseContext)
     this.functionName = turn.functionName
     const [args, kwargs] = restoreCallArgs(turn, driver.instances)
     this.args = args
     this.kwargs = kwargsToRecord(kwargs)
     this.callId = turn.callId
     this.isOsFunction = isOsFunction
-    this.allowEagerAwait = turn.kind === 'functionCall' && (turn.allowEagerAwait ?? false)
+    this.allowEagerAwait = turn.allowEagerAwait ?? false
     this.objectId = 'objectId' in turn ? (turn.objectId ?? null) : null
   }
 
@@ -1062,7 +1104,7 @@ export class NameLookupSnapshot extends SingleUse {
     private readonly driver: SnapshotDriver,
     private readonly turn: NameLookupTurn,
   ) {
-    super()
+    super(turn.callbackSpanKey, driver.traceBaseContext)
     this.variableName = turn.name
     this.objectId = turn.objectId ?? null
   }
@@ -1109,7 +1151,7 @@ export class FutureSnapshot extends SingleUse {
     private readonly driver: SnapshotDriver,
     private readonly turn: ResolveFuturesTurn,
   ) {
-    super()
+    super(turn.callbackSpanKey, driver.traceBaseContext)
     this.pendingCallIds = turn.pendingCallIds
   }
 

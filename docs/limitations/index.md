@@ -33,7 +33,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
     format specs and nested replacement fields
-- `async` / `await`, and `asyncio.run` / `asyncio.gather`
+- `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.sleep`
 - `import x`, `import x.y`, `from x import y, z as w`
 - Starred unpacking everywhere CPython allows it
 - Runtime generic aliases (`list[int]`) and `|` unions (`int | None`), see [typing.md](typing.md)
@@ -86,6 +86,7 @@ The following modules are present:
 | `random`      | [random.md](random.md)           |
 | `re`          | [re.md](re.md)                   |
 | `sys`         | [sys.md](sys.md)                 |
+| `time`        | [time.md](time.md)               |
 | `typing`      | [typing.md](typing.md)           |
 | `unicodedata` | [unicodedata.md](unicodedata.md) |
 
@@ -94,7 +95,7 @@ is the exception: every name it exports is implemented.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 
-Notably absent: `enum`, `contextlib`, `time`, `io`, `string`, `struct`, `operator`,
+Notably absent: `enum`, `contextlib`, `io`, `string`, `struct`, `operator`,
 `inspect`, `logging`, `traceback`, `hashlib`, `uuid`, `urllib`.
 Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.
@@ -118,9 +119,9 @@ Each links to the page that owns it, which is where the full account lives:
 - **Only the class dunders listed above are dispatched.** `__lt__`, `__len__`, `__getitem__`, `__call__` and the
     arithmetic dunders raise `TypeError` as if undefined, while `__bool__` and the `__getattr__` family are ignored
     silently, so an instance is always truthy ([classes.md](classes.md)).
-- **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio` exposes exactly two functions:
-    `run` and `gather`, the latter running host calls concurrently.
-    `create_task`, `sleep` and everything else do not exist
+- **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio` exposes exactly three functions:
+    `run`, `gather`, which runs host calls concurrently, and `sleep`, which asks the host to wait.
+    `create_task` and everything else do not exist
     ([asyncio.md](asyncio.md)).
 - **Only UTF-8, ASCII, UTF-16 and UTF-32 codecs exist.** `latin-1` and friends raise `LookupError`
     ([encoding.md](encoding.md)).

@@ -433,6 +433,7 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
             &event_kind(pb::child_event::Kind::OsCall(pb::OsCall {
                 call_id: 7,
                 values: None,
+                allow_eager_await: false,
                 call: Some(pb::os_call::Call::ReadText("/mnt/data.txt".to_owned())),
             })),
         );
@@ -479,6 +480,76 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
     join_server(server).await;
 }
 
+/// A child claiming `allow_eager_await` on a call no future may answer is
+/// not believed: the event does not expose it, and an eager `ResumeFutures`
+/// is refused, so only an ordinary answer resumes the call.
+#[tokio::test]
+async fn eager_bit_on_a_non_future_os_call_is_dropped() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::OsCall(pb::OsCall {
+                call_id: 7,
+                values: None,
+                allow_eager_await: true,
+                call: Some(pb::os_call::Call::ReadText("/mnt/data.txt".to_owned())),
+            })),
+        );
+        let pb::parent_request::Kind::ResumeCall(resume) = read_request(&mut socket) else {
+            panic!("expected ResumeCall");
+        };
+        assert_eq!(resume.call_id, 7);
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::Complete(pb::Complete::from(
+                MontyObject::string("done"),
+            ))),
+        );
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let event = checkout
+        .feed("unused", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert!(
+        matches!(
+            event,
+            TurnEvent::OsCall {
+                allow_eager_await: false,
+                ..
+            }
+        ),
+        "got {event:?}"
+    );
+    let refused = checkout
+        .resume_futures(vec![(7, ResumeValue::Return(MontyObject::none()))], &mut no_print)
+        .await;
+    assert!(
+        matches!(&refused, Err(PoolError::Protocol(message)) if message == "no suspended futures to resume"),
+        "got {refused:?}"
+    );
+    let event = checkout
+        .resume(ResumeValue::Return(MontyObject::string("body")), &mut no_print)
+        .await
+        .expect("resume");
+    assert!(
+        matches!(&event, TurnEvent::Complete(v) if *v == MontyObject::string("done")),
+        "got {event:?}"
+    );
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
 /// A malformed `OsCall` payload from a (possibly compromised) child is a
 /// protocol violation: the child validates and serializes these calls itself,
 /// so a payload it could never legitimately produce (here an invalid open
@@ -504,6 +575,7 @@ async fn malformed_os_call_is_a_protocol_error() {
             &event_kind(pb::child_event::Kind::OsCall(pb::OsCall {
                 call_id: 3,
                 values: None,
+                allow_eager_await: false,
                 call: Some(pb::os_call::Call::Open(pb::os_call::Open {
                     path: "/mnt/data.txt".to_owned(),
                     mode: "q".to_owned(),
@@ -853,10 +925,9 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
 /// serviced inside the turn, so a worker that simply runs too long before
 /// announcing it is killed by the deadline exactly as without mounts.
 ///
-/// Servicing a covered call is now a separate turn with its own deadline (see
-/// "Mount I/O is not covered by `request_timeout`" in
-/// limitations/pool-architecture.md), so a *loop* of covered calls is bounded
-/// by `max_duration`, not by `request_timeout`.
+/// Each resume starts a new deadline; `max_duration` bounds cumulative worker
+/// time across a loop of calls. Neither limit covers the host I/O itself; see
+/// docs/filesystem.md#io-timeouts-and-cancellation.
 #[tokio::test]
 async fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
     let dir = tempfile::tempdir().unwrap();
@@ -1096,6 +1167,7 @@ async fn a_malformed_over_budget_os_call_is_a_protocol_violation() {
                     call_id: 1,
                     values: None,
                     call: None,
+                    allow_eager_await: false,
                 })),
                 max_suspensions: Some(0),
                 ..Default::default()

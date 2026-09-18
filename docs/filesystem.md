@@ -164,6 +164,8 @@ Each feed starts with a fresh overlay.
 | `memory_usage_limit` | `100_000_000` | Byte budget for overlay data and transient results; exceeding it raises `MemoryError`    |
 
 Validation happens at construction, not at feed time — a bad `virtual_path` raises immediately.
+Mounts are serviced by the host, including for remote workers; the worker never receives host paths.
+Closing a mount prevents new feeds from using it, but an in-flight feed keeps its own reference.
 
 The names are keyword-only on purpose: mount tools disagree on whether host or virtual comes first (`docker -v` versus
 nginx's `alias`), so requiring names removes the ambiguity.
@@ -197,10 +199,22 @@ Relative symlinks that stay inside the mount are followed in the non-overlay mod
 The full list is in [`limitations/filesystem.md`](limitations/filesystem.md)
 and [`limitations/open.md`](limitations/open.md).
 
+## I/O timeouts and cancellation
+
+Mount I/O has no timeout: it runs on the host between protocol turns, outside `request_timeout` and `max_duration_secs`.
+A stalled NFS or FUSE volume can block a feed indefinitely.
+The pool uses blocking threads for filesystem operations, so a stalled call does not block other sessions' timers.
+
+Cancelling the feed does not cancel an in-flight filesystem operation.
+It keeps its blocking thread until it returns, and a read-write mount's write, rename or delete can finish after
+cancellation was observed.
+Use host storage whose availability and side effects are acceptable for the workload.
+
 ## The `os` callback
 
-Operations no mount covers fall through to the `os=` handler.
-It is called as `(function_name, args, kwargs)` and its return value is handed back to the sandbox:
+Operations no mount covers fall through to the `os=` handler, an [`OsHandler`][pydantic_monty.OsHandler].
+It is called with keyword arguments, `name`, `args`, `kwargs` and `is_async`, and its return value is handed back to the sandbox.
+Absorb the arguments you do not use with `**_future_kwargs`, so a later version can pass more:
 
 === "Python"
 
@@ -208,8 +222,8 @@ It is called as `(function_name, args, kwargs)` and its return value is handed b
     from pydantic_monty import NOT_HANDLED, Monty
 
 
-    def handle_os(function_name, args, kwargs):
-        if function_name == 'os.getenv' and args[0] == 'STAGE':
+    def handle_os(*, name, args, **_future_kwargs):
+        if name == 'os.getenv' and args[0] == 'STAGE':
             return 'production'
         return NOT_HANDLED
 
@@ -241,7 +255,7 @@ handler at all.
 The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`, `open`,
 `Path.read_text`, `Path.read_bytes`, `Path.write_text`, `Path.write_bytes`, `Path.append_text`, `Path.append_bytes`,
 `Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.stat`, `Path.rename`, `Path.resolve`, `Path.absolute`,
-`os.getenv`, `os.environ`, `date.today`, `datetime.now` and `os.urandom`.
+`os.getenv`, `os.environ`, `date.today`, `datetime.now`, `os.urandom`, `time.time`, `time.sleep` and `asyncio.sleep`.
 `os.urandom` also arrives, for 2496 bytes, the first time an unseeded `random` generator draws a value
 (see [random](limitations/random.md)).
 
@@ -259,6 +273,7 @@ sandbox's own no-handler error.
 `feed_start` is different: it surfaces every OS call as a snapshot instead of answering it.
 `snapshot.resume_auto()` applies the same mounts-then-`os` order, and `snapshot.resume_not_handled()` applies the
 no-handler default explicitly.
+Plain `resume(...)` bypasses both mounts and the handler, using only the supplied answer.
 
 ## A virtual filesystem
 
@@ -316,7 +331,8 @@ you wrote.
 
 For anything more specific, subclass `OSAccess` and override the methods you want to change, or implement every
 abstract method of `AbstractOS` yourself; the optional hooks (`path_open`, the append methods, `date_today`,
-`datetime_now`) report [`NOT_HANDLED`][pydantic_monty.NOT_HANDLED] to Monty if you make them raise `NotImplementedError`.
+`datetime_now`, `time`, `sleep`, `async_sleep`) report [`NOT_HANDLED`][pydantic_monty.NOT_HANDLED] to Monty if you make
+them raise `NotImplementedError`.
 
 ## Rust
 

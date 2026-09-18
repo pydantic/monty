@@ -581,7 +581,11 @@ impl HeapItem for ExternalFuture {
         // `Pending { awaiter: Some(Awaiter::GatherSlot { gather, .. }) }`
         // owns an inc_ref on `gather` — release it when this entry is
         // freed. `Awaiter::Task` and `None` own nothing. `Resolved` owns
-        // the cached value; `Failed` carries no heap refs.
+        // the cached value; `Failed` carries no heap refs. A pending sleep
+        // result is owned until resolution takes it.
+        if let Some(result) = &mut self.sleep_result {
+            result.py_dec_ref_ids(stack);
+        }
         match &mut self.state {
             ExternalFutureState::Resolved(value) => value.py_dec_ref_ids(stack),
             ExternalFutureState::Pending {
