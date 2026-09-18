@@ -22,7 +22,9 @@ fn feed() -> pb::ParentRequest {
         kind: Some(RequestKind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         trace_parent: None,
     }

@@ -379,11 +379,21 @@ pub enum Expr {
     },
 }
 
-/// Target for tuple unpacking - can be a single name, nested tuple, or starred target.
+/// Target for tuple unpacking - a name, attribute, subscript, nested tuple or
+/// starred target.
 ///
 /// Supports recursive structures like `(a, b), c` or `a, (b, c)`.
 /// Also supports starred targets like `first, *rest = [1, 2, 3, 4]`.
 /// Used in assignment statements, for loop targets, and comprehension targets.
+///
+/// `Attr` and `Subscript` mirror the same-named [`AssignTarget`] variants and
+/// compile to the same stores, so `self.x, self.y = pair` behaves as the two
+/// single-target assignments would. Comprehension targets are the exception:
+/// their leaves live on the operand stack as comp-var slots, so only names
+/// reach that path (`prepare` rejects the rest).
+///
+/// Their expressions are boxed: `Node::For` and `Node::With` embed a target
+/// inline, so an inline `ExprLoc` here would grow every `Node`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum UnpackTarget {
     /// Single identifier: `a`
@@ -398,7 +408,25 @@ pub enum UnpackTarget {
     /// Starred target: `*rest` - captures remaining values into a list.
     ///
     /// Only one starred target is allowed per unpacking level.
-    Starred(Identifier),
+    Starred(Box<Self>),
+    /// Attribute target: `obj.attr`.
+    Attr {
+        /// Expression evaluating to the object whose attribute is being set.
+        object: Box<ExprLoc>,
+        /// The attribute name.
+        attr: EitherStr,
+        /// Position of the full attribute expression (for traceback carets).
+        position: CodeRange,
+    },
+    /// Subscript target: `container[index]`.
+    Subscript {
+        /// Expression evaluating to the container object.
+        container: Box<ExprLoc>,
+        /// Expression evaluating to the index/key.
+        index: Box<ExprLoc>,
+        /// Position of the full subscript expression (for traceback carets).
+        position: CodeRange,
+    },
 }
 
 /// Target of a single assignment step within a chained assignment.

@@ -205,10 +205,20 @@ asyncio.run(main())
 ```
 
 There is no event loop inside the sandbox — the host is the loop.
-Sandboxed `async def` and `await` work, and `asyncio` exposes exactly `run` and `gather`, the latter running host calls
-concurrently.
-`asyncio.create_task`, `asyncio.sleep` and everything else in the module do not exist.
-See [`limitations/asyncio.md`](../limitations/asyncio.md).
+Sandboxed `async def` and `await` work;
+see [`limitations/asyncio.md`](../limitations/asyncio.md) for the supported module functions.
+
+Cancelling an in-flight session call loses the session; check out a new one before running more code.
+The worker is discarded immediately, or by the next call if another call holds the session lock.
+Cancellation while queued behind another call leaves the session usable because that request never reached the worker.
+Cancellation does not undo host-function side effects or stop
+[in-flight mount I/O](../filesystem.md#io-timeouts-and-cancellation).
+The pool remains usable.
+
+Synchronous `Monty` calls block the calling thread; Ctrl-C cannot interrupt a turn waiting on the worker.
+Independent nested sync pools or sessions are supported from async host callbacks, but calling back into the same
+session from its own callback deadlocks.
+When embedded in a current-thread Tokio runtime, sync methods raise `RuntimeError` instead of blocking that runtime.
 
 ## Pausing at host calls
 
@@ -339,8 +349,11 @@ with Monty() as pool:
 `display()` also takes `'traceback'` (the default, a full CPython-style traceback) and `'msg'`.
 `exc.exception()` returns the inner exception as a native Python exception object.
 
-`MontyCrashedError` is the one that loses the session.
-The pool has already replaced the worker by the time you catch it, so retrying on a fresh checkout is safe:
+After `MontyCrashedError`, use a fresh checkout; the pool replaces the worker.
+The error includes the worker's fatal message and exit status when available.
+Other failures can also lose the session, including a hard memory-limit breach and a
+[failed snapshot load](../snapshots.md#storing-and-restoring).
+Retry only if any host side effects from the failed feed can safely repeat:
 
 ```python test="skip"
 from pydantic_monty import Monty, MontyCrashedError

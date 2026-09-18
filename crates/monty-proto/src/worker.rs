@@ -31,7 +31,8 @@ use monty_types::{
 
 use super::{
     DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError, WireFunctionCall,
-    check_protocol_version, exceeds_max_frame_len, exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
+    check_protocol_version, exceeds_max_frame_len, ext_result_from_proto, future_results_from_proto,
+    named_values_from_proto, os_call_from_proto, os_call_to_proto, pb, write_frame,
 };
 use crate::wire::uuid_to_pb;
 
@@ -312,13 +313,12 @@ impl Child {
         };
         match (progress.as_mut(), &mut event.kind) {
             (ReplProgress::FunctionCall(call), Some(pb::child_event::Kind::FunctionCall(announced))) => {
-                call.args = mem::take(&mut announced.args);
-                call.kwargs = mem::take(&mut announced.kwargs);
+                call.args = mem::take(announced).into_call_args()?;
             }
-            (ReplProgress::OsCall(call), Some(pb::child_event::Kind::OsCall(announced))) => {
-                if let Some(announced) = announced.call.take() {
-                    call.function_call = announced.try_into()?;
-                }
+            (ReplProgress::OsCall(call), Some(pb::child_event::Kind::OsCall(announced)))
+                if announced.call.is_some() =>
+            {
+                call.function_call = os_call_from_proto(mem::take(announced))?.1;
             }
             // any other pairing is an event that borrowed nothing
             _ => {}
@@ -514,13 +514,18 @@ impl Child {
         {
             return event;
         }
-        let inputs = match named_inputs(feed.inputs) {
+        let inputs = match named_values_from_proto(feed.inputs, feed.values) {
             Ok(inputs) => inputs,
-            Err(event) => return *event,
+            Err(err) => return protocol_violation(&format!("invalid inputs: {err}")),
         };
-        let SessionState::Ready(repl) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
+        let SessionState::Ready(mut repl) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked Ready above");
         };
+        // The working directory persists in the REPL (including `os.chdir`);
+        // the parent sends one only to switch it, and an older parent never does.
+        if !feed.cwd.is_empty() {
+            repl.set_cwd(&feed.cwd);
+        }
         // snippets fed with skip_type_check never become type-check context:
         // the caller explicitly excluded them from checking, so later snippets
         // must not be checked against their (unchecked) bindings either
@@ -531,7 +536,7 @@ impl Child {
         }
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let result = repl.feed_start(&feed.code, inputs, PrintWriter::Callback(&mut print));
-        let event = self.drive(result, &mut print);
+        let event = self.drive(result);
         print.drain();
         event
     }
@@ -572,7 +577,7 @@ impl Child {
                 };
                 ExtFunctionResult::Error(call.function_call.on_no_handler())
             } else {
-                match wire_result.try_into() {
+                match ext_result_from_proto(wire_result, resume.values) {
                     Ok(result) => result,
                     Err(err) => return protocol_violation(&format!("invalid result: {err}")),
                 }
@@ -586,7 +591,7 @@ impl Child {
             ReplProgress::OsCall(call) => call.resume(result, PrintWriter::Callback(&mut print)),
             _ => unreachable!("checked above"),
         };
-        let event = self.drive(outcome, &mut print);
+        let event = self.drive(outcome);
         print.drain();
         event
     }
@@ -612,7 +617,7 @@ impl Child {
         };
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let outcome = lookup.resume(result, PrintWriter::Callback(&mut print));
-        let event = self.drive(outcome, &mut print);
+        let event = self.drive(outcome);
         print.drain();
         event
     }
@@ -644,33 +649,51 @@ impl Child {
             ReplProgress::ResolveFutures(state) => state.abort(exc, PrintWriter::Callback(&mut print)),
             ReplProgress::Complete { .. } => unreachable!("checked above"),
         };
-        let event = self.drive(outcome, &mut print);
+        let event = self.drive(outcome);
         print.drain();
         event
     }
 
-    /// Delivers the parent's resolved future results to a suspended
-    /// `ResolveFutures` state, then resumes execution.
+    /// Delivers settled futures to a `ResolveFutures` suspension, or one
+    /// settled coroutine to the function call that allowed an eager reply.
     fn handle_resume_futures(&mut self, resume: pb::ResumeFutures, sink: &mut dyn EventSink) -> pb::ChildEvent {
+        let results = match future_results_from_proto(resume.results, resume.values) {
+            Ok(results) => results,
+            Err(err) => return protocol_violation(&format!("invalid results: {err}")),
+        };
+        // Shaped against the borrowed state, so a rejected reply leaves the suspension intact.
         let SessionState::Suspended(progress) = &self.state else {
             return protocol_violation("ResumeFutures without suspended futures");
         };
-        if !matches!(progress.as_ref(), ReplProgress::ResolveFutures(_)) {
-            return protocol_violation("ResumeFutures without suspended futures");
-        }
-        let results = match future_results_from_proto(resume.results) {
-            Ok(results) => results,
-            Err(err) => return protocol_violation(&format!("invalid results: {err}")),
+        let reply = match progress.as_ref() {
+            ReplProgress::FunctionCall(call) if call.allow_eager_await => match eager_result(results, call.call_id) {
+                Ok(result) => FuturesReply::Eager(result),
+                Err(message) => return protocol_violation(message),
+            },
+            ReplProgress::OsCall(call) if call.allow_eager_await => match eager_result(results, call.call_id) {
+                Ok(result) => FuturesReply::Eager(result),
+                Err(message) => return protocol_violation(message),
+            },
+            ReplProgress::ResolveFutures(_) => FuturesReply::Batch(results),
+            _ => return protocol_violation("ResumeFutures without suspended futures"),
         };
         let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked above");
         };
-        let ReplProgress::ResolveFutures(state) = *progress else {
-            unreachable!("checked above");
-        };
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
-        let outcome = state.resume(results, PrintWriter::Callback(&mut print));
-        let event = self.drive(outcome, &mut print);
+        let outcome = match (*progress, reply) {
+            (ReplProgress::FunctionCall(call), FuturesReply::Eager(result)) => {
+                call.resume_eager(result, PrintWriter::Callback(&mut print))
+            }
+            (ReplProgress::OsCall(call), FuturesReply::Eager(result)) => {
+                call.resume_eager(result, PrintWriter::Callback(&mut print))
+            }
+            (ReplProgress::ResolveFutures(state), FuturesReply::Batch(results)) => {
+                state.resume(results, PrintWriter::Callback(&mut print))
+            }
+            _ => unreachable!("reply shaped by the suspension above"),
+        };
+        let event = self.drive(outcome);
         print.drain();
         event
     }
@@ -716,9 +739,8 @@ impl Child {
             type_check,
             state,
         } = restored;
-        // the depth/oversize checks below can only fail on a forged or corrupted
-        // dump — `drive` enforces them on every fresh suspension before it is
-        // stored
+        // In-process Rust producers can dump suspensions exceeding the wire size limit;
+        // check transport compatibility even though snapshot integrity is the host's responsibility.
         let mut event = match state {
             Session::Idle(repl) => {
                 self.state = SessionState::Ready(repl);
@@ -728,29 +750,21 @@ impl Child {
             // execution has no way to accept further feeds
             Session::Running(_) => protocol_violation("dump holds a one-shot run, not a repl session"),
             Session::Suspended(progress) => match *progress {
-                // a dump is never taken at Complete, but a forged one could
-                // contain it; surface the value rather than fail
+                // The public Rust dump API can serialize Complete, even though
+                // this worker only dumps idle or suspended sessions.
                 ReplProgress::Complete { repl, value } => {
-                    if exceeds_max_value_depth(&value) {
-                        protocol_violation("dump value exceeds the maximum wire depth")
-                    } else {
-                        self.state = SessionState::Ready(Box::new(repl));
-                        complete_event(value)
-                    }
+                    self.state = SessionState::Ready(Box::new(repl));
+                    complete_event(value)
                 }
                 mut progress => {
-                    if suspension_args_too_deep(&progress) {
-                        protocol_violation("dump suspension arguments exceed the maximum wire depth")
+                    let mut event = suspension_event(&mut progress);
+                    // size-checked with the stamps `handle` sends it with
+                    stamp_budget(&mut event, progress.tracker());
+                    if let Some(message) = oversize_suspension_error_message(&event) {
+                        protocol_violation(&message)
                     } else {
-                        let mut event = suspension_event(&mut progress);
-                        // size-checked with the stamps `handle` sends it with
-                        stamp_budget(&mut event, progress.tracker());
-                        if let Some(message) = oversize_suspension_error_message(&event) {
-                            protocol_violation(&message)
-                        } else {
-                            self.state = SessionState::Suspended(Box::new(progress));
-                            event
-                        }
+                        self.state = SessionState::Suspended(Box::new(progress));
+                        event
                     }
                 }
             },
@@ -770,80 +784,56 @@ impl Child {
     /// Drives execution until it needs the parent, returning the turn-ending
     /// event. Every OS call surfaces to the parent — the child performs no
     /// filesystem I/O (mounts are serviced parent-side).
-    fn drive(
-        &mut self,
-        mut result: Result<ReplProgress, Box<ReplStartError>>,
-        print: &mut ProtoPrint,
-    ) -> pb::ChildEvent {
-        loop {
-            match result {
-                Ok(ReplProgress::Complete { repl, value }) => {
-                    self.state = SessionState::Ready(Box::new(repl));
-                    if let Some(state) = &mut self.type_check
-                        && let Some(snippet) = state.pending_snippet.take()
-                    {
-                        state.committed_stubs.push('\n');
-                        state.committed_stubs.push_str(&snippet);
-                    }
-                    // a value too deep for the wire must fail cleanly here —
-                    // shipping it would be an undecodable frame, which the
-                    // parent has to treat as a worker crash
-                    if exceeds_max_value_depth(&value) {
-                        return error_event(ExcType::RuntimeError, "Max output depth exceeded");
-                    }
-                    return complete_event(value);
+    fn drive(&mut self, result: Result<ReplProgress, Box<ReplStartError>>) -> pb::ChildEvent {
+        match result {
+            Ok(ReplProgress::Complete { repl, value }) => {
+                self.state = SessionState::Ready(Box::new(repl));
+                if let Some(state) = &mut self.type_check
+                    && let Some(snippet) = state.pending_snippet.take()
+                {
+                    state.committed_stubs.push('\n');
+                    state.committed_stubs.push_str(&snippet);
                 }
-                Ok(ReplProgress::OsCall(mut call)) => {
-                    if os_call_args_too_deep(&call) {
-                        let err =
-                            MontyException::new(ExcType::RuntimeError, Some("Max argument depth exceeded".to_owned()));
-                        result = call.resume(ExtFunctionResult::Error(err), PrintWriter::Callback(print));
-                        continue;
-                    }
-                    let mut event = suspension_event_os_call(&mut call);
-                    let progress = ReplProgress::OsCall(call);
-                    // stamped before the size check, so the frame measured is
-                    // the frame `handle` sends
-                    stamp_budget(&mut event, progress.tracker());
-                    if let Some(message) = oversize_suspension_error_message(&event) {
-                        return self.abort_feed_with_runtime_error(progress.into_repl(), &message);
-                    }
+                complete_event(value)
+            }
+            Ok(ReplProgress::OsCall(mut call)) => {
+                let mut event = suspension_event_os_call(&mut call);
+                let progress = ReplProgress::OsCall(call);
+                // stamped before the size check, so the frame measured is
+                // the frame `handle` sends
+                stamp_budget(&mut event, progress.tracker());
+                if let Some(message) = oversize_suspension_error_message(&event) {
+                    self.abort_feed_with_runtime_error(progress.into_repl(), &message)
+                } else {
                     self.state = SessionState::Suspended(Box::new(progress));
-                    return event;
+                    event
                 }
-                Ok(ReplProgress::FunctionCall(mut call)) => {
-                    // arguments too deep for the wire resume the call with a
-                    // catchable error instead of corrupting the protocol
-                    if function_call_args_too_deep(&call) {
-                        let err =
-                            MontyException::new(ExcType::RuntimeError, Some("Max argument depth exceeded".to_owned()));
-                        result = call.resume(ExtFunctionResult::Error(err), PrintWriter::Callback(print));
-                        continue;
-                    }
-                    let mut event = suspension_event_function_call(&mut call);
-                    let progress = ReplProgress::FunctionCall(call);
-                    stamp_budget(&mut event, progress.tracker());
-                    if let Some(message) = oversize_suspension_error_message(&event) {
-                        return self.abort_feed_with_runtime_error(progress.into_repl(), &message);
-                    }
+            }
+            Ok(ReplProgress::FunctionCall(mut call)) => {
+                let mut event = suspension_event_function_call(&mut call);
+                let progress = ReplProgress::FunctionCall(call);
+                stamp_budget(&mut event, progress.tracker());
+                if let Some(message) = oversize_suspension_error_message(&event) {
+                    self.abort_feed_with_runtime_error(progress.into_repl(), &message)
+                } else {
                     self.state = SessionState::Suspended(Box::new(progress));
-                    return event;
+                    event
                 }
-                Ok(mut progress) => {
-                    let event = suspension_event(&mut progress);
-                    self.state = SessionState::Suspended(Box::new(progress));
-                    return event;
+            }
+            Ok(mut progress) => {
+                let event = suspension_event(&mut progress);
+                self.state = SessionState::Suspended(Box::new(progress));
+                event
+            }
+            Err(err) => {
+                // Python-level failure: the session always survives
+                self.state = SessionState::Ready(Box::new(err.repl));
+                if let Some(state) = &mut self.type_check {
+                    state.pending_snippet = None;
                 }
-                Err(err) => {
-                    // Python-level failure: the session always survives
-                    self.state = SessionState::Ready(Box::new(err.repl));
-                    if let Some(state) = &mut self.type_check {
-                        state.pending_snippet = None;
-                    }
-                    return event(pb::child_event::Kind::Error(pb::Error {
-                        exception: Some((&err.error).into()),
-                    }));
-                }
+                event(pb::child_event::Kind::Error(pb::Error {
+                    exception: Some((&err.error).into()),
+                }))
             }
         }
     }
@@ -967,8 +957,8 @@ fn oversize_suspension_error_message(event: &pb::ChildEvent) -> Option<String> {
         .map(|len| format!("argument frame of {len} bytes exceeds the maximum of {MAX_FRAME_LEN} bytes"))
 }
 
-/// Builds the suspension event for a `FunctionCall` (depth-checked by the
-/// caller), **moving** the arguments into it.
+/// Builds the suspension event for a `FunctionCall`, **moving** the
+/// arguments into it.
 ///
 /// The suspension keeps its args — a `Dump` of the suspended state (and its
 /// replay on `Load`) needs them — so they come back via
@@ -979,66 +969,36 @@ fn oversize_suspension_error_message(event: &pb::ChildEvent) -> Option<String> {
 /// encode buffer, is what used to push a large host-call argument past the
 /// session's memory limit.
 fn suspension_event_function_call(call: &mut monty::ReplFunctionCall) -> pb::ChildEvent {
-    event(pb::child_event::Kind::FunctionCall(WireFunctionCall {
-        function_name: call.function_name.clone(),
-        args: mem::take(&mut call.args),
-        kwargs: mem::take(&mut call.kwargs),
-        call_id: call.call_id,
-        object_id: call.object_id,
-    }))
+    event(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+        call.function_name.clone(),
+        mem::take(&mut call.args),
+        call.call_id,
+        call.object_id,
+        call.allow_eager_await,
+    )))
 }
 
-/// Builds the suspension event for an `OsCall` (depth-checked by the caller),
-/// **moving** the call payload into it — see
+/// Builds the suspension event for an `OsCall`, **moving** the call payload
+/// into it — see
 /// [`suspension_event_function_call`] for why, and
 /// [`Child::reclaim_suspension_payload`] for how it comes back. `GetEnviron` is
 /// the placeholder left behind: a unit variant, so the swap allocates nothing.
 fn suspension_event_os_call(call: &mut monty::ReplOsCall) -> pb::ChildEvent {
     let function_call = mem::replace(&mut call.function_call, OsFunctionCall::GetEnviron);
-    event(pb::child_event::Kind::OsCall(pb::OsCall {
-        call_id: call.call_id,
-        call: Some(function_call.into()),
-    }))
+    event(pb::child_event::Kind::OsCall(os_call_to_proto(
+        call.call_id,
+        function_call,
+        call.allow_eager_await,
+    )))
 }
 
 fn complete_event(value: MontyObject) -> pb::ChildEvent {
-    event(pb::child_event::Kind::Complete(pb::Complete {
-        value: Some(value.into()),
-    }))
-}
-
-/// Whether a suspension's argument payload nests too deeply for the wire —
-/// used by `drive` (fresh) and `handle_load` (restored, i.e. forged dumps).
-fn suspension_args_too_deep(progress: &ReplProgress) -> bool {
-    match progress {
-        ReplProgress::FunctionCall(call) => function_call_args_too_deep(call),
-        ReplProgress::OsCall(call) => os_call_args_too_deep(call),
-        // name lookups / future resolutions carry no sandbox values
-        _ => false,
-    }
-}
-
-/// Whether an external call's args/kwargs nest too deeply for the wire.
-fn function_call_args_too_deep(call: &monty::ReplFunctionCall) -> bool {
-    call.args.iter().any(exceeds_max_value_depth)
-        || call
-            .kwargs
-            .iter()
-            .any(|(k, v)| exceeds_max_value_depth(k) || exceeds_max_value_depth(v))
-}
-
-/// Whether an OS call's payload nests too deeply for the wire — only
-/// `os.getenv`'s default carries an arbitrary (nestable) sandbox value.
-fn os_call_args_too_deep(call: &monty::ReplOsCall) -> bool {
-    match &call.function_call {
-        OsFunctionCall::Getenv(args) => exceeds_max_value_depth(&args.default),
-        _ => false,
-    }
+    event(pb::child_event::Kind::Complete(value.into()))
 }
 
 /// Builds the suspension event for a non-`Complete` progress state. Used on
 /// `Load` to re-announce a restored suspension; fresh suspensions go through
-/// `drive`, which adds depth/oversize checks before delegating to the same
+/// `drive`, which adds the oversize check before delegating to the same
 /// per-variant builders.
 fn suspension_event(progress: &mut ReplProgress) -> pb::ChildEvent {
     match progress {
@@ -1055,20 +1015,26 @@ fn suspension_event(progress: &mut ReplProgress) -> pb::ChildEvent {
     }
 }
 
-/// Converts wire named inputs into `(name, value)` pairs for `feed_start`.
-fn named_inputs(inputs: Vec<pb::NamedValue>) -> Result<Vec<(String, MontyObject)>, Box<pb::ChildEvent>> {
-    inputs
-        .into_iter()
-        .map(|input| {
-            let value = input
-                .value
-                .ok_or_else(|| Box::new(protocol_violation(&format!("input {:?} has no value", input.name))))?;
-            let value = value
-                .into_object()
-                .map_err(|err| Box::new(protocol_violation(&format!("invalid input {:?}: {err}", input.name))))?;
-            Ok((input.name, value))
-        })
-        .collect()
+/// A validated `ResumeFutures` body, shaped for the suspension it answers.
+enum FuturesReply {
+    /// One settled coroutine for a call with `allow_eager_await`.
+    Eager(Result<MontyObject, MontyException>),
+    /// Results for a `ResolveFutures` suspension.
+    Batch(Vec<(u32, ExtFunctionResult)>),
+}
+
+/// Checks an eager reply is exactly one settled result for `call_id`; the
+/// error is the protocol-violation message.
+fn eager_result(
+    results: Vec<(u32, ExtFunctionResult)>,
+    call_id: u32,
+) -> Result<Result<MontyObject, MontyException>, &'static str> {
+    match <[_; 1]>::try_from(results) {
+        Ok([(id, ExtFunctionResult::Return(value))]) if id == call_id => Ok(Ok(value)),
+        Ok([(id, ExtFunctionResult::Error(exc))]) if id == call_id => Ok(Err(exc)),
+        Ok([(id, _)]) if id == call_id => Err("eager coroutine must resolve to a value or exception"),
+        _ => Err("eager ResumeFutures must contain exactly the suspended call id"),
+    }
 }
 
 /// Streams sandbox `print()` output as `Print` events through an

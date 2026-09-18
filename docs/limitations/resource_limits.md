@@ -23,14 +23,16 @@ WebAssembly runtimes do.
 - Memory usage is measured by the worker's process-global allocator, while the
     configured budget belongs to one session.
 - Workers count bytes requested from their global allocator. Direct Rust users
-    must install `monty-alloc` as the global allocator and arm it with
-    `set_limit` before using `max_memory`; without it usage always reads as
-    zero and the limit is silently not enforced.
+    must install `monty-alloc` as the global allocator and arm its hard ceiling
+    with `set_hard_limit(memory_limit_with_headroom(...))` before using
+    `max_memory`; without it usage always reads as zero and the limit is silently
+    not enforced.
 - Operations whose result is bounded by simple arithmetic on input sizes
     are **pre-checked** before allocating: integer multiplication, left
     shift, integer power, sequence repeat (`'x' * n`), replacement
     (`str.replace`, `bytes.replace`), `re.sub`, padding (`str.ljust`, `str.center`,
-    `str.zfill`, `bytes.ljust`, …), integer division and `divmod`, deque
+    `str.zfill`, `bytes.ljust`, …), integer division and `divmod`,
+    `math.factorial`, `math.comb` and `math.perm`, deque
     rotation, slicing and repeat, materialising an iterator into a
     container, and string formatting with dynamic width or precision, for
     f-strings (`f"{v:>{w}}"`, `f"{v:.{p}f}"`), `str.format()`
@@ -56,7 +58,15 @@ without one is unlimited.
     limit so exception and traceback machinery can run. Crossing that ceiling
     between checkpoints exits the subprocess with its dedicated OOM status, or
     traps wasm. The pool replaces the worker and the session is lost. Large
-    result operations are pre-checked to avoid this path when their size is known.
+    result operations are pre-checked to avoid this path when their size is known,
+    as is buffer growth a program drives one element at a time — `append`,
+    `insert`, `add` or `d[k] = v` on a list, deque, set or dict, a parsed JSON
+    array — and the argument buffers behind `f(*args)` and the pieces `re.split`
+    collects.
+    `re.findall` is covered only for a pattern with at most one capture group.
+    A wider `findall` builds a tuple per match, and `re.finditer` a match object,
+    and those accumulate between the checks on the result list itself, so a
+    large enough subject still crosses the ceiling and kills the worker.
 - **Work outside Python execution is hard-limit-only.** Request framing, input
     decoding, loading snapshots, and type checking do not reach an interpreter
     checkpoint. A sufficiently large allocation there can cross the hard ceiling
@@ -88,7 +98,7 @@ without one is unlimited.
     and replaced rather than allowed to grow indefinitely.
 - **Restoring a dump is bounded by the checkout it lands in.** `load_session` /
     `load_snapshot` restore the dump's own limits (see
-    [pool-architecture.md](pool-architecture.md)), and the cap is re-derived from
+    [snapshot configuration](../snapshots.md#what-restoring-does-and-does-not-carry)), and the cap is re-derived from
     them once the session exists, but the load *itself* runs under the limit the
     `checkout()` config applied. Restoring a large dump into a checkout with a
     much smaller `max_memory` can therefore exceed it while loading; pass a
@@ -144,6 +154,17 @@ indistinguishable from a stack overflow.
     limit, so Monty raises `RecursionError` before a native stack overflow would
     abort the process. See the `__repr__`/`__str__` entry in [classes.md](classes.md) for
     the main user-visible divergence this causes.
+- Operations that walk a nested container in Rust — `==`, `<`, `repr()`,
+    `hash()`, `isinstance()`, `json.dumps()`, `copy.deepcopy()` — charge one
+    recursion level per level of nesting, but each level costs real native stack
+    (roughly 0.5-1.1 KiB, depending on the operation and the container). They are
+    not capped separately the way native re-entry above is, so on a worker with a
+    small stack a structure nested close to the 1000-frame limit can exhaust it
+    before `RecursionError` is raised. A wasm worker (1 MiB) reaches that point at
+    roughly 950 levels of nesting for the most expensive operations; the sandbox
+    is not breached, but the worker dies and the pool replaces it rather than the
+    session raising. Lowering `max_recursion_depth` moves the point at which the
+    limit fires ahead of the stack.
 
 ## Suspensions
 
@@ -183,6 +204,14 @@ indistinguishable from a stack overflow.
     themselves (iterator advancement, sequence repeats, comparisons, `repr`)
     do so every 64th item. Both are unconditional overshoots of ordinary
     `max_duration` enforcement, on top of the per-operation cases below.
+- A container narrower than that 64-item interval never reaches a poll at all.
+    Structures that share sub-objects are walked once per path rather than once per
+    object, so `repr` and `==` over one nested `n` levels deep do work exponential
+    in `n` (`x = (x, x)` repeated, and the same through a generic alias). Neither
+    limit is consulted until the walk finishes, and the two end differently: `repr`
+    grows a result string until it crosses the allocator's hard ceiling, while `==`
+    allocates nothing proportional, so only the pool's `request_timeout` ends it.
+    `hash` is unaffected, each tuple caching its own.
 - Every host turn re-checks both limits as it returns, so a turn that
     finished without reaching a checkpoint still fails rather than returning
     its result. Two consequences: a turn whose Python code raised an exception
@@ -199,6 +228,10 @@ indistinguishable from a stack overflow.
     **not** polled and run to completion however large the input: `in` with an
     integer probe (a single-byte scan) and `split()`/`rsplit()` left to their
     default `sep=None` (whitespace splitting).
+- The `str` case methods (`lower`, `upper`, `casefold`, `capitalize`, `title`,
+    `swapcase`) and `is*()` predicates are **not** polled and run to completion.
+    Their cost is linear in the input, so the overshoot is bounded by the largest
+    string `max_memory` admits.
 - `base64.a85decode()` polls the clock every 64th byte that matches no
     Ascii85 digit and so reaches `ignorechars`. Each of those bytes is one
     `in` test against the container, so a large explicit `ignorechars`

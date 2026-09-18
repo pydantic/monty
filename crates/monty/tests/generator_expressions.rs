@@ -23,7 +23,7 @@ fn generator_crosses_the_host_boundary_as_repr() {
     .expect("generator source should compile")
     .run_no_limits(vec![])
     .expect("generator creation should succeed");
-    assert_eq!(result, MontyObject::Repr("<generator object <genexpr>>".to_owned()));
+    assert_eq!(result, MontyObject::repr("<generator object <genexpr>>".to_owned()));
 }
 
 #[test]
@@ -37,7 +37,7 @@ fn generator_type_crosses_the_host_boundary_exactly() {
     .expect("generator source should compile")
     .run_no_limits(vec![])
     .expect("generator type lookup should succeed");
-    assert_eq!(result, MontyObject::Type(MontyType::Generator));
+    assert_eq!(result, MontyObject::type_object(MontyType::Generator));
 }
 
 #[test]

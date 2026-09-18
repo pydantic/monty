@@ -1,12 +1,11 @@
 # `asyncio` module and `async` / `await`
 
 `async def` functions can suspend on `await`, and the host drives long-running
-external calls. There is no event loop inside the sandbox; the host is the
-loop.
+external calls. The sandbox schedules its own tasks; host event loops execute external coroutines.
 
 ## Module surface
 
-The `asyncio` module exposes exactly two functions:
+The `asyncio` module exposes exactly three functions:
 
 - `asyncio.run(coro)` — runs a coroutine to completion. Returns the value
     the coroutine `return`s, or re-raises an exception from it.
@@ -17,10 +16,12 @@ The `asyncio` module exposes exactly two functions:
     where CPython raises
     `TypeError: gather() got an unexpected keyword argument 'X'` because
     `return_exceptions` is a real kwarg there.
+- `asyncio.sleep(delay, result=None)` — asks the host to wait, then produces
+    `result`. See [below](#asynciosleep-waits-at-the-call-not-at-the-await).
 
 Not implemented (raise `AttributeError`):
 
-`create_task`, `sleep`, `wait`, `wait_for`, `shield`, `to_thread`,
+`create_task`, `wait`, `wait_for`, `shield`, `to_thread`,
 `new_event_loop`, `get_event_loop`, `get_running_loop`, `Queue`, `Lock`,
 `Semaphore`, `Event`, `Future`, `Task`, `TaskGroup`, `timeout`,
 `timeout_at`, `Timeout`, `as_completed`, `iscoroutine`, `ensure_future`,
@@ -47,18 +48,55 @@ time (see [language.md](language.md)).
     knows internally: coroutines from `async def`, gather futures, and external
     function call futures returned by host bindings.
 
+## `asyncio.sleep()` waits at the call, not at the `await`
+
+CPython's `asyncio.sleep()` returns a coroutine that does nothing until it is
+awaited. Monty's suspends to the host at the call itself — the wait belongs to
+the host, which is also the only side that can run anything else meanwhile — and
+the `await` then produces `result` once the host has answered. What follows from that:
+
+- `asyncio.sleep(...)` whose result is never awaited has still asked the host to
+    wait, where CPython runs nothing and warns that the coroutine was never
+    awaited.
+- A bad `delay` raises at the call rather than at the `await`. The error is the
+    one CPython's `delay <= 0` produces —
+    `TypeError: '<=' not supported between instances of 'str' and 'int'` — but it
+    surfaces one step earlier.
+- The value is a host future rather than a coroutine, though `type(...).__name__`
+    is `coroutine` either way. Its `repr()` is `<coroutine external_future(N)>`,
+    not CPython's `<coroutine object sleep at 0x...>`, and awaiting it a second
+    time replays the same result where CPython raises
+    `RuntimeError: cannot reuse already awaited coroutine`.
+
+How much concurrency a gathered sleep gets is the host's choice. A host that
+answers the call with a pending future lets sibling tasks run while the delay
+elapses: `AsyncMonty` and `@pydantic/monty` do this when the `os` callback is
+async (`OSAccess` is, by default, under `AsyncMonty`). A host that waits inline
+— the sync `Monty`, a sync callback, or the `monty` CLI — runs gathered sleeps
+one after another, so `gather(sleep(1), sleep(1))` takes two seconds rather
+than one. Either way the results are the same.
+
+`delay` accepts only real numbers, matching CPython's `delay <= 0`: an
+`__index__`-able class is rejected here although `time.sleep()` accepts it.
+A negative delay waits zero seconds instead of raising, as CPython
+effectively does, and one past ~9223372036.85 seconds is clamped to that
+maximum rather than raising the `OverflowError` `time.sleep()` raises (see
+[time.md](time.md)).
+A NaN delay raises CPython's `ValueError: Invalid delay: NaN (not a number)`,
+but at the call rather than at the `await`.
+
 ## Concurrency model
 
 Concurrency is cooperative and host-driven. `gather` suspends Monty whenever
 every branch is blocked on an external call, hands the pending calls to the
 host, and resumes when the host returns results. There is no preemption, no
-threads, and no in-sandbox scheduler.
+threads and no exposed event loop.
 
 ### Siblings left running by a failed `gather` only advance while something else suspends
 
 When one child of a `gather` raises, the siblings keep running as they do in CPython.
-They resume only when a host result arrives or when another task awaits, because Monty has no event loop of its own
-to turn.
+They resume only when a host result arrives or when another task awaits: Monty's scheduler runs ready tasks only at
+those suspension points and has no idle loop that would otherwise turn.
 Code that catches the error and then returns without awaiting again leaves them parked where they were:
 
 ```python test="skip"

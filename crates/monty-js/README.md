@@ -18,7 +18,8 @@ npm packages installed automatically (like esbuild). Browser builds use the
 package `browser` export and never import the napi loader; they run the sandbox
 in a Web Worker as a WIT-defined WASI 0.2 component with the same pool/session
 API. Advanced Node-only helpers are available from `@pydantic/monty/node`, and wasm-specific
-factories from `@pydantic/monty/wasm`.
+factories from `@pydantic/monty/wasm`: `Monty.create()` there is `createWorkerPool(await loadModule())`,
+and both are exported so an app can fetch and compile the wasm ahead of starting workers.
 
 ## Installation
 
@@ -46,6 +47,10 @@ await session.feedRun('x * 2') // 42
 
 Without `await using`, call `session.close()` (returns the worker to the pool)
 and `pool.close()` explicitly.
+
+`checkout({ scriptName })` names the script in tracebacks and type-checking
+diagnostics; its final path component is what the sandbox's `__file__` places
+under its working directory (`/main.py` by default).
 
 ## Inputs
 
@@ -147,7 +152,7 @@ chosen per value (deliberately nothing inherits another wrapper's policies).
 Each wrapper the hook creates is held by the session's instance store until
 the session closes, so a method returning a fresh object per call grows host
 memory by one entry per call; see
-[`limitations/pool-architecture.md`](https://github.com/pydantic/monty/blob/main/limitations/pool-architecture.md#host-api-behaviour-notes).
+[host-object retention](https://github.com/pydantic/monty/blob/main/docs/host-objects.md#values-returned-by-methods).
 
 One more option: `name` overrides the class name the sandbox sees (default
 the class name). It is a class-level property: on a `ClassInstance` it names
@@ -239,8 +244,9 @@ pass an `externalLookup` (and/or `os`) to `feedStart` and drive with
 `snapshot.resumeAuto()`, which resolves each external call and name lookup from
 them automatically — the same resolution `feedRun` performs, but one step at a
 time so you can inspect or `dump()` each snapshot along the way. A
-promise-returning external is awaited concurrently (surfacing as an intermediate
-`FutureSnapshot`), exactly as under `feedRun`:
+promise-returning external is awaited directly when the snapshot's
+`allowEagerAwait` is true, and otherwise concurrently (surfacing as an
+intermediate `FutureSnapshot`), exactly as under `feedRun`:
 
 ```ts
 let snap = await session.feedStart('greet(name) + "!"', {
@@ -253,6 +259,32 @@ while (!(snap instanceof MontyComplete)) {
 console.log(snap.output) // 'hello Ada!'
 ```
 
+For manual handlers, all three snapshot types expose `traceContext()`, returning an OpenTelemetry `Context`.
+Use the standard OTel API to nest host tracing under the suspension:
+
+```ts
+import { context } from '@opentelemetry/api'
+import { FunctionSnapshot, Monty, MontyComplete } from '@pydantic/monty'
+
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+const snapshot = await session.feedStart('greet(name)', { inputs: { name: 'Ada' } })
+if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
+const result = await context.with(snapshot.traceContext(), async () => `hello ${snapshot.args[0]}`)
+const done = await snapshot.resume(result)
+if (!(done instanceof MontyComplete)) throw new Error('expected completion')
+console.log(done.output) // hello Ada
+```
+
+With [Monty instrumentation](#observability) enabled, the method adds the suspension's span to the context captured at
+`feedStart` / `loadSnapshot`, preserving baggage and other entries.
+Without Monty tracing, including on Browser/WASM, it returns that captured context unchanged.
+Context is not serialized: restoring captures the restoring caller's context instead.
+Use an SDK-configured OTel context manager to propagate context across awaits.
+The method does not activate the context, resume execution, or own the span's lifetime.
+Calling it after resume throws; contexts retrieved earlier remain usable, but resuming still ends the suspension span.
+`resumeAuto()` already activates the suspension span around callbacks.
+
 Calls and lookups routed to a wrapped host object carry the receiver's id:
 `FunctionSnapshot.objectId` is set for a method call on a `ClassInstance`
 (or a static method / `__call__` construction on a `ClassType`), and
@@ -263,6 +295,12 @@ from the session's wrappers. To answer a lazy lookup by hand, use
 any convertible value (`resume()` resolves a name to an external function
 only, and with no argument leaves the lookup unresolved: `NameError` for a
 plain name, `AttributeError` when `objectId` is set).
+
+Only restore unmodified session dumps and suspended snapshots from a trusted, compatible Monty producer.
+The caller must establish provenance and integrity before calling either `loadSession` or `loadSnapshot`;
+Monty does not authenticate the bytes.
+Invalid dumps and snapshots have no correctness or availability guarantees.
+Successful loading does not establish validity.
 
 `snapshot.dump()` serializes the paused worker to bytes; a fresh session's
 `loadSnapshot` restores it and returns the snapshot to resume. Re-supply the
@@ -327,6 +365,16 @@ const mount = new MountDir({ hostPath: '/path/on/host', virtualPath: '/mnt/data'
 await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
 ```
 
+The sandbox's working directory is session state: the first feed sets it to
+the first mount's virtual path, or `/` without mounts, and it then persists
+(`os.chdir()` included) unless `cwd` switches it to another absolute virtual
+path. `os.getcwd()` reports it and relative paths resolve against it before
+reaching a mount or the `os` callback.
+
+```ts
+await session.feedRun("open('file.txt').read()", { mount, cwd: '/mnt/data' })
+```
+
 Each mount has a 100 MB aggregate memory budget by default. Configure it with
 `memoryUsageLimit`; retained overlay data and filesystem results share it, and
 operations that exceed it raise a `MontyRuntimeError` wrapping `MemoryError`.
@@ -351,6 +399,11 @@ await session.feedRun('import os\nos.getenv("HOME")', {
   os: (name, args) => (name === 'os.getenv' && args[0] === 'HOME' ? '/home/user' : NOT_HANDLED),
 })
 ```
+
+An `async` callback works too. Its answer to `asyncio.sleep` is registered as a
+future, so the sandbox's other tasks run while it waits (or, when there are
+none, is awaited in place like an eager host function); its answer to any other
+OS call is awaited before that session resumes.
 
 Callback-backed virtual files return a `MontyFileHandle` marker from the
 open-time call. Paths are virtual POSIX sandbox paths and `position` defaults
@@ -569,3 +622,15 @@ Browser/WASM does not yet implement this instrumentation path.
 | class instances   | `ClassInstance` wrappers / `MontyClassProxy` stand-ins |
 
 Plain objects are accepted as dict inputs (string keys).
+
+Object identity is kept within one message.
+A value the sandbox references twice (a returned `[x, x]`, or `f(x, x)` to a host function) arrives as one JavaScript
+object, and an object passed under two inputs is one sandbox object.
+Each separate feed or call gets its own copy.
+
+A cyclic input or return value is rejected with `TypeError: Circular reference detected`.
+A self-referential sandbox value arrives with its placeholder string (`'[...]'`, `'{...}'`) at the point of the cycle.
+
+The wire imposes no nesting limit, but a sandbox value nested deeper than `maxRecursionDepth` (1000 by default) arrives
+with the part below that depth replaced by the string `'<deeply nested>'`; see
+[host-value limitations](https://github.com/pydantic/monty/blob/main/docs/limitations/host-values.md).

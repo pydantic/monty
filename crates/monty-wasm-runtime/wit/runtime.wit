@@ -10,7 +10,7 @@ interface worker {
         shutdown,
     }
 
-    /// A pair of indexes into a value's flat node arena.
+    /// A pair of indexes into a message's node arena.
     record node-pair {
         /// Index of the key node.
         key: u32,
@@ -114,13 +114,8 @@ interface worker {
         docstring: option<string>,
     }
 
-    /// An output cycle marker.
-    record cycle-node {
-        identity: u64,
-        placeholder: string,
-    }
-
-    /// One node in a flat, index-linked `MontyObject` tree.
+    /// One node of an arena: a leaf, or a container holding the indexes of
+    /// its children.
     ///
     /// Indexes avoid recursive WIT types, which the component model forbids,
     /// while keeping protobuf bytes entirely inside Rust.
@@ -154,26 +149,23 @@ interface worker {
         class-instance(class-instance-node),
         function(function-node),
         repr(string),
-        cycle(cycle-node),
+        /// An output-only reference back to an enclosing container, as its
+        /// placeholder text (`[...]`, `(...)`, `{...}` or `...`).
+        cycle(string),
     }
 
-    /// A Python value encoded as a root index and a flat node tree.
-    /// Every node must be reachable exactly once from `root`.
-    record value {
-        root: u32,
+    /// The values of one message: a post-order node arena. Every child
+    /// index is strictly lower than its holder's, so a receiver builds it in
+    /// one forward pass; an index used twice is a shared object. Each
+    /// message names its roots by index.
+    record arena {
         nodes: list<value-node>,
     }
 
-    /// A semantic key/value pair used for kwargs and dict-like results.
-    record value-pair {
-        key: value,
-        value: value,
-    }
-
-    /// A named input supplied to a feed.
+    /// A named input supplied to a feed: an index into the feed's arena.
     record named-value {
         name: string,
-        value: value,
+        value: u32,
     }
 
     /// Resource limits. The host enforces `max-suspensions`; the sandbox
@@ -217,7 +209,12 @@ interface worker {
     record feed-request {
         code: string,
         inputs: list<named-value>,
+        /// The arena every input indexes.
+        values: arena,
         skip-type-check: bool,
+        /// Absolute virtual working directory to switch the session to; empty
+        /// keeps its current one (`/` until a feed or `os.chdir` changes it).
+        cwd: string,
     }
 
     /// A host-raised exception used to resume a call.
@@ -226,9 +223,10 @@ interface worker {
         message: string,
     }
 
-    /// The host's answer to an external function or OS call.
+    /// The host's answer to an external function or OS call; a returned
+    /// value is an index into the request's arena.
     variant call-result {
-        return-value(value),
+        return-value(u32),
         error(raised-error),
         pending-future(u32),
         not-found(string),
@@ -239,16 +237,24 @@ interface worker {
     record resume-call-request {
         call-id: u32,
         outcome: call-result,
+        /// The arena a returned value indexes.
+        values: arena,
     }
 
-    /// The host's answer to an undefined-name suspension: a value, absence
-    /// (NameError / AttributeError in the sandbox), or an exception the host
-    /// raised while resolving it (raised in the sandbox, bypassing
-    /// hasattr()/getattr() defaults).
+    /// The host's answer to an undefined-name suspension: a value (an index
+    /// into the request's arena), absence (NameError / AttributeError in the
+    /// sandbox), or an exception the host raised while resolving it (raised
+    /// in the sandbox, bypassing hasattr()/getattr() defaults).
     variant name-lookup-result {
-        value(value),
+        value(u32),
         undefined,
         error(raised-error),
+    }
+
+    /// An answer to an undefined-name suspension and the arena it indexes.
+    record name-lookup-request {
+        outcome: name-lookup-result,
+        values: arena,
     }
 
     /// One settled external future.
@@ -257,13 +263,19 @@ interface worker {
         outcome: call-result,
     }
 
+    /// Settled external futures and the one arena their values index.
+    record futures-request {
+        results: list<future-result>,
+        values: arena,
+    }
+
     /// A semantic request to the retained protocol child.
     variant request {
         configure(configure-request),
         feed(feed-request),
         resume-call(resume-call-request),
-        resume-name-lookup(name-lookup-result),
-        resume-futures(list<future-result>),
+        resume-name-lookup(name-lookup-request),
+        resume-futures(futures-request),
         /// Raises an error uncatchably at any pending suspension; the session stays usable.
         abort-feed(raised-error),
         dump,
@@ -303,12 +315,16 @@ interface worker {
     /// type (construction of a host class arrives as a `__call__` call).
     record function-call-event {
         function-name: string,
-        args: list<value>,
-        kwargs: list<value-pair>,
+        /// The arena every argument indexes; an object passed twice is one node.
+        values: arena,
+        args: list<u32>,
+        kwargs: list<node-pair>,
         call-id: u32,
         /// Uuid string of the routed receiver (instance or class type);
         /// absent for plain external calls.
         object-id: option<string>,
+        /// A coroutine may settle before replying with resume-futures.
+        allow-eager-await: bool,
     }
 
     /// A suspended name or lazy-attribute lookup.
@@ -323,9 +339,20 @@ interface worker {
     /// A suspended OS call projected into the public callback shape.
     record os-call-event {
         function-name: string,
-        args: list<value>,
-        kwargs: list<value-pair>,
+        /// The arena every argument indexes.
+        values: arena,
+        args: list<u32>,
+        kwargs: list<node-pair>,
         call-id: u32,
+        /// As on `function-call-event`: the host may await its wait and answer
+        /// with `resume-futures`. Only ever set on `asyncio.sleep`.
+        allow-eager-await: bool,
+    }
+
+    /// A finished feed's value: an index into its arena.
+    record complete-event {
+        values: arena,
+        value: u32,
     }
 
     /// A semantic event emitted by the child.
@@ -335,7 +362,7 @@ interface worker {
         os-call(os-call-event),
         name-lookup(name-lookup-event),
         resolve-futures(list<u32>),
-        complete(value),
+        complete(complete-event),
         error(raised-exception),
         typing-error(string),
         dump-result(list<u8>),

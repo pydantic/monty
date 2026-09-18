@@ -10,14 +10,14 @@ use std::{
 };
 
 use cap_std::{ambient_authority, fs::Dir};
-use monty_types::{MontyObject, OsFunctionCall};
+use monty_types::{MontyObject, OsFunctionCall, normalize_virtual_path};
 
 use super::{
     common::MountContext,
     dispatch,
     error::MountError,
     mount_mode::MountMode,
-    path_security::{contains_null_byte, normalize_virtual_path, reject_overlong_path},
+    path_security::{contains_null_byte, reject_overlong_path},
 };
 
 /// Default aggregate memory budget for one mount: 100 MB in decimal bytes.
@@ -118,7 +118,7 @@ impl MountTable {
                 // Both make CPython's predicates answer `False` rather than
                 // raise — `pathlib` swallows `OSError` and `ValueError` alike.
                 MountCallOutcome::Handled(if call.is_existence_check() {
-                    Ok(MontyObject::Bool(false))
+                    Ok(MontyObject::bool(false))
                 } else {
                     Err(e)
                 })
@@ -372,7 +372,7 @@ impl MountRoot {
         })?;
 
         Ok(Self {
-            virtual_path: normalized_virtual,
+            virtual_path: normalized_virtual.into_owned(),
             host_path: canonical_host,
             dir: Arc::new(dir),
         })

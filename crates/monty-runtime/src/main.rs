@@ -56,6 +56,13 @@ pub(crate) struct Cli {
     #[arg(short = 'm', long = "mount")]
     mounts: Vec<String>,
 
+    /// Sandbox working directory: an absolute virtual path.
+    ///
+    /// `os.getcwd()` reports it and relative paths resolve against it.
+    /// Defaults to the first `--mount` virtual path, or `/` without mounts.
+    #[arg(long)]
+    cwd: Option<String>,
+
     /// Maximum execution time in seconds (e.g. `0.5` for 500ms).
     #[arg(long)]
     max_duration: Option<f64>,
@@ -75,6 +82,11 @@ pub(crate) struct Cli {
     /// Maximum suspensions serviced in one CLI session (defaults to 1000).
     #[arg(long)]
     max_suspensions: Option<usize>,
+
+    /// Longest wait a `time.sleep()` or `asyncio.sleep()` performs, in
+    /// seconds; longer sleeps are cut short (defaults to 10, `inf` for no limit).
+    #[arg(long)]
+    max_sleep: Option<f64>,
 
     #[command(subcommand)]
     subcommand: Option<Command>,
@@ -105,8 +117,12 @@ impl Cli {
             Some("--type-check")
         } else if !self.mounts.is_empty() {
             Some("--mount")
+        } else if self.cwd.is_some() {
+            Some("--cwd")
         } else if self.any_resource_limit_flag() {
             Some("a resource-limit flag")
+        } else if self.max_sleep.is_some() {
+            Some("--max-sleep")
         } else {
             None
         }
@@ -152,6 +168,20 @@ impl Cli {
             limits = limits.max_suspensions(max);
         }
         Ok(limits)
+    }
+
+    /// The longest sleep the CLI performs, from `--max-sleep` (default 10s;
+    /// `inf` lifts the cap). A negative or NaN value is an error.
+    #[cfg(feature = "standalone")]
+    #[expect(clippy::absolute_paths)]
+    fn max_sleep(&self) -> Result<std::time::Duration, String> {
+        const DEFAULT: f64 = 10.0;
+        let seconds = self.max_sleep.unwrap_or(DEFAULT);
+        if seconds.is_infinite() && seconds > 0.0 {
+            Ok(std::time::Duration::MAX)
+        } else {
+            std::time::Duration::try_from_secs_f64(seconds).map_err(|err| format!("invalid --max-sleep: {err}"))
+        }
     }
 }
 

@@ -9,6 +9,7 @@ mod clock;
 mod exceptions;
 mod file_mode;
 pub mod format;
+mod graph;
 mod io;
 mod object;
 mod os;
@@ -17,6 +18,7 @@ mod results;
 mod run_options;
 mod type_checking;
 mod uuid;
+mod virtual_path;
 
 pub use crate::{
     builtins::BuiltinsFunctions,
@@ -27,25 +29,28 @@ pub use crate::{
     },
     file_mode::FileMode,
     format::{FormatFloat, StringRepr, bytes_repr, bytes_repr_fmt, string_repr_fmt, utf8_error_reason},
+    graph::{ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
     io::{
         COLLECT_STREAMS_ENTRY_OVERHEAD, CollectedStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES, PrintStream, PrintWriter,
         PrintWriterCallback, check_print_collect_limit,
     },
     object::{
-        ConversionError, DictPairs, InvalidInputError, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
-        MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
-        MontyTimeDelta, MontyTimeZone, MontyType,
+        CallArgs, ConversionError, InvalidInputError, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
+        MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
+        NamedValues, ObjectRef,
     },
     os::{
-        GetenvArgs, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-        RenameCallArgs, dir_stat, file_stat, stat_result, symlink_stat,
+        GetenvArgs, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
+        PathStringDataArgs, RenameCallArgs, SleepError, UrandomArgs, dir_stat, file_stat, sleep_duration,
+        sleep_duration_saturating, stat_result, symlink_stat,
     },
     resource::{
         BASELINE_MEMORY, DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MAX_SUSPENSIONS, LARGE_RESULT_THRESHOLD, LIVE_MEMORY,
-        OOM_EXIT_CODE, ResourceError, ResourceLimits, ResourceTracker,
+        OOM_EXIT_CODE, ResourceError, ResourceLimits, ResourceTracker, memory_limit_with_headroom,
     },
     results::{ExtFunctionResult, NameLookupResult},
     run_options::{AssertMessageAnnotations, CompileOptions},
     type_checking::{TypeCheckState, TypeCheckingConfig, TypeCheckingFormat},
     uuid::MontyUuid,
+    virtual_path::{normalize_virtual_path, validate_cwd},
 };

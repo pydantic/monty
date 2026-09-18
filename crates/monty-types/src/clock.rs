@@ -1,5 +1,6 @@
-//! The host clock capability: [`HostClock`], which answers `date.today()` and
-//! `datetime.now()` in-process instead of suspending to the host for them.
+//! The host clock capability: [`HostClock`], which answers `date.today()`,
+//! `datetime.now()` and `time.time()` in-process instead of suspending to the
+//! host for them.
 
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeDelta, Timelike};
 
@@ -8,19 +9,19 @@ use crate::{
     os::OsFunctionCall,
 };
 
-/// Where `date.today()` and `datetime.now()` read the time under standard
-/// (non-suspending) execution, which has no host to deliver their
-/// [`OsFunctionCall`] to.
+/// Where `date.today()`, `datetime.now()` and `time.time()` read the time
+/// under standard (non-suspending) execution, which has no host to deliver
+/// their [`OsFunctionCall`] to.
 ///
 /// Only standard execution consults it — under suspend/resume the host answers
-/// both calls and a clock set here is ignored, so this is absent from the wire
+/// those calls and a clock set here is ignored, so this is absent from the wire
 /// protocol. Deliberately not [`Default`]: a fresh runner gets
 /// [`System`](Self::System) (see `monty`'s `default_clock`), which a type-level
 /// [`Denied`](Self::Denied) would quietly contradict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HostClock {
-    /// No clock: both calls raise `NotImplementedError`, as every other OS
-    /// call does under standard execution.
+    /// No clock: the clock calls raise `NotImplementedError`, as every other
+    /// OS call does under standard execution.
     Denied,
     /// The process's own clock, in its local timezone.
     System,
@@ -56,7 +57,7 @@ impl HostClock {
             OsFunctionCall::DateToday => {
                 let (utc, local_offset_seconds) = self.instant()?;
                 let local = shift(utc, local_offset_seconds)?;
-                Some(MontyObject::Date(MontyDate {
+                Some(MontyObject::date(MontyDate {
                     year: local.year(),
                     month: u8::try_from(local.month()).ok()?,
                     day: u8::try_from(local.day()).ok()?,
@@ -68,7 +69,7 @@ impl HostClock {
                 let (utc, local_offset_seconds) = self.instant()?;
                 let offset_seconds = tz.as_ref().map_or(local_offset_seconds, |tz| tz.offset_seconds);
                 let local = shift(utc, offset_seconds)?;
-                Some(MontyObject::DateTime(MontyDateTime {
+                Some(MontyObject::datetime(MontyDateTime {
                     year: local.year(),
                     month: u8::try_from(local.month()).ok()?,
                     day: u8::try_from(local.day()).ok()?,
@@ -80,13 +81,23 @@ impl HostClock {
                     timezone_name: tz.as_ref().and_then(|tz| tz.name.clone()),
                 }))
             }
+            // `time.time()` is the raw epoch offset, so the local zone does
+            // not apply to it. The range check keeps a clock all-or-nothing:
+            // an instant `datetime.now()` refuses is refused here too.
+            OsFunctionCall::Time => {
+                let (utc, _) = self.instant()?;
+                shift(utc, 0)?;
+                let epoch = utc.and_utc();
+                let seconds = epoch.timestamp() as f64 + f64::from(epoch.timestamp_subsec_micros()) / 1_000_000.0;
+                Some(MontyObject::float(seconds))
+            }
             _ => None,
         }
     }
 
     /// This clock's instant as `(UTC wall clock, local offset in seconds)`.
     ///
-    /// Both variants reduce to the same pair so the two calls above share one
+    /// Every variant reduces to the same pair so the calls above share one
     /// conversion; `None` is [`Denied`](Self::Denied) or an unrepresentable
     /// fixed instant.
     fn instant(self) -> Option<(NaiveDateTime, i32)> {

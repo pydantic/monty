@@ -116,13 +116,11 @@ impl MontyConversionError {
         }
     }
 
-    /// Surfaces a failure from converting a host value into a Monty value
+    /// Wraps a failure from converting a host value into a Monty value
     /// (`py_to_monty_value`). An unrepresentable *type* (`TypeError`, "Cannot
     /// convert X to Monty value") becomes a `MontyConversionError`; any other
-    /// exception the converter raises — notably the `RuntimeError` from
-    /// exceeding the max input nesting depth — keeps its own type as a
-    /// `MontyRuntimeError`, so a depth guard is not mislabeled a conversion
-    /// error.
+    /// exception the converter raises, such as the `ValueError` for a cyclic
+    /// value, keeps its own type as a `MontyRuntimeError`.
     #[must_use]
     pub fn value_conversion_err(py: Python<'_>, exc: MontyException) -> PyErr {
         if exc.exc_type() == ExcType::TypeError {

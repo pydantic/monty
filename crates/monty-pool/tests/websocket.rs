@@ -20,8 +20,8 @@ use monty_pool::{
     Checkout, CheckoutOptions, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
     ResumeValue, TurnEvent,
 };
-use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, WireObject, decode_frame, encode_to_capped_vec, pb};
-use monty_types::{MontyObject, PrintStream, ResourceLimits};
+use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb, resume_call_from_proto};
+use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
@@ -49,9 +49,9 @@ fn answer_requests(socket: &mut WebSocket<TcpStream>) {
     while let Ok(Message::Binary(data)) = socket.read() {
         let request = decode_frame::<pb::ParentRequest>(data.as_ref()).expect("decode request");
         let kind = match request.kind.expect("request kind") {
-            pb::parent_request::Kind::Feed(_) => pb::child_event::Kind::Complete(pb::Complete {
-                value: Some(MontyObject::Int(42).into()),
-            }),
+            pb::parent_request::Kind::Feed(_) => {
+                pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42)))
+            }
             // Configure / Reset / Shutdown / anything else: acknowledge.
             _ => pb::child_event::Kind::Ok(pb::Ok {}),
         };
@@ -157,7 +157,7 @@ async fn drives_a_session_over_websocket() {
         .await
         .expect("feed");
     assert!(
-        matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
+        matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
         "got {event:?}"
     );
 
@@ -197,7 +197,7 @@ async fn connect_headers_are_per_checkout() {
             .await
             .expect("feed");
         assert!(
-            matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
+            matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
             "got {event:?}"
         );
         checkout.finish().await.expect("finish");
@@ -432,6 +432,8 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
             &mut socket,
             &event_kind(pb::child_event::Kind::OsCall(pb::OsCall {
                 call_id: 7,
+                values: None,
+                allow_eager_await: false,
                 call: Some(pb::os_call::Call::ReadText("/mnt/data.txt".to_owned())),
             })),
         );
@@ -440,16 +442,15 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
             panic!("expected ResumeCall");
         };
         assert_eq!(resume.call_id, 7);
-        let Some(pb::ext_function_result::Kind::ReturnValue(value)) = resume.result.and_then(|r| r.kind) else {
+        let ExtFunctionResult::Return(value) = resume_call_from_proto(resume).expect("valid result") else {
             panic!("expected a ReturnValue result");
         };
-        let value = value.into_object().expect("valid value");
-        assert_eq!(value, MontyObject::String("parent-side bytes".to_owned()));
+        assert_eq!(value, MontyObject::string("parent-side bytes".to_owned()));
         send_event(
             &mut socket,
-            &event_kind(pb::child_event::Kind::Complete(pb::Complete {
-                value: Some(MontyObject::String("done".to_owned()).into()),
-            })),
+            &event_kind(pb::child_event::Kind::Complete(pb::Complete::from(
+                MontyObject::string("done".to_owned()),
+            ))),
         );
     });
 
@@ -472,7 +473,77 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
         .expect("mount servicing")
         .expect("the mount covers /mnt/data.txt");
     assert!(
-        matches!(&event, TurnEvent::Complete(MontyObject::String(s)) if s == "done"),
+        matches!(&event, TurnEvent::Complete(v) if *v == MontyObject::string("done".to_owned())),
+        "got {event:?}"
+    );
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+/// A child claiming `allow_eager_await` on a call no future may answer is
+/// not believed: the event does not expose it, and an eager `ResumeFutures`
+/// is refused, so only an ordinary answer resumes the call.
+#[tokio::test]
+async fn eager_bit_on_a_non_future_os_call_is_dropped() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::OsCall(pb::OsCall {
+                call_id: 7,
+                values: None,
+                allow_eager_await: true,
+                call: Some(pb::os_call::Call::ReadText("/mnt/data.txt".to_owned())),
+            })),
+        );
+        let pb::parent_request::Kind::ResumeCall(resume) = read_request(&mut socket) else {
+            panic!("expected ResumeCall");
+        };
+        assert_eq!(resume.call_id, 7);
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::Complete(pb::Complete::from(
+                MontyObject::string("done"),
+            ))),
+        );
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let event = checkout
+        .feed("unused", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert!(
+        matches!(
+            event,
+            TurnEvent::OsCall {
+                allow_eager_await: false,
+                ..
+            }
+        ),
+        "got {event:?}"
+    );
+    let refused = checkout
+        .resume_futures(vec![(7, ResumeValue::Return(MontyObject::none()))], &mut no_print)
+        .await;
+    assert!(
+        matches!(&refused, Err(PoolError::Protocol(message)) if message == "no suspended futures to resume"),
+        "got {refused:?}"
+    );
+    let event = checkout
+        .resume(ResumeValue::Return(MontyObject::string("body")), &mut no_print)
+        .await
+        .expect("resume");
+    assert!(
+        matches!(&event, TurnEvent::Complete(v) if *v == MontyObject::string("done")),
         "got {event:?}"
     );
     checkout.finish().await.expect("finish");
@@ -503,6 +574,8 @@ async fn malformed_os_call_is_a_protocol_error() {
             &mut socket,
             &event_kind(pb::child_event::Kind::OsCall(pb::OsCall {
                 call_id: 3,
+                values: None,
+                allow_eager_await: false,
                 call: Some(pb::os_call::Call::Open(pb::os_call::Open {
                     path: "/mnt/data.txt".to_owned(),
                     mode: "q".to_owned(),
@@ -603,7 +676,9 @@ async fn duration_backstop_arms_on_the_raw_path() {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "while True:\n    pass".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -665,7 +740,9 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "while True:\n    pass".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -696,9 +773,7 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
         send_event(
             &mut socket,
-            &event_kind(pb::child_event::Kind::Complete(pb::Complete {
-                value: Some(MontyObject::Int(2).into()),
-            })),
+            &event_kind(pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(2)))),
         );
     });
 
@@ -724,7 +799,9 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -778,7 +855,9 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "while True:\n    pass".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -820,7 +899,9 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -844,10 +925,9 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
 /// serviced inside the turn, so a worker that simply runs too long before
 /// announcing it is killed by the deadline exactly as without mounts.
 ///
-/// Servicing a covered call is now a separate turn with its own deadline (see
-/// "Mount I/O is not covered by `request_timeout`" in
-/// limitations/pool-architecture.md), so a *loop* of covered calls is bounded
-/// by `max_duration`, not by `request_timeout`.
+/// Each resume starts a new deadline; `max_duration` bounds cumulative worker
+/// time across a loop of calls. Neither limit covers the host I/O itself; see
+/// docs/filesystem.md#io-timeouts-and-cancellation.
 #[tokio::test]
 async fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
     let dir = tempfile::tempdir().unwrap();
@@ -939,13 +1019,13 @@ async fn restored_session_rearms_the_duration_backstop() {
 /// Serves suspensions until the parent responds with the expected `AbortFeed`.
 fn serve_endless_suspensions(socket: &mut WebSocket<TcpStream>, expected_calls: u32) {
     let function_call = |call_id: u32| {
-        event_kind(pb::child_event::Kind::FunctionCall(WireFunctionCall {
-            function_name: "fetch".to_owned(),
-            args: vec![],
-            kwargs: vec![],
+        event_kind(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+            "fetch".to_owned(),
+            CallArgs::new(),
             call_id,
-            object_id: None,
-        }))
+            None,
+            false,
+        )))
     };
     assert!(matches!(read_request(socket), pb::parent_request::Kind::Feed(_)));
     send_event(socket, &function_call(1));
@@ -999,12 +1079,12 @@ async fn suspension_limit_is_enforced_by_the_parent() {
         .expect("feed");
     assert!(matches!(event, TurnEvent::FunctionCall { .. }));
     event = checkout
-        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
         .await
         .expect("second suspension");
     assert!(matches!(event, TurnEvent::FunctionCall { .. }));
     let err = checkout
-        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
         .await
         .unwrap_err();
     let PoolError::Runtime(exc) = err else {
@@ -1054,7 +1134,7 @@ async fn a_suspension_answering_an_abort_is_a_protocol_violation() {
         .expect("feed");
     assert!(matches!(event, TurnEvent::FunctionCall { .. }));
     let err = checkout
-        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
         .await
         .unwrap_err();
     let PoolError::Protocol(msg) = err else {
@@ -1083,7 +1163,12 @@ async fn a_malformed_over_budget_os_call_is_a_protocol_violation() {
         send_event(
             &mut socket,
             &pb::ChildEvent {
-                kind: Some(pb::child_event::Kind::OsCall(pb::OsCall { call_id: 1, call: None })),
+                kind: Some(pb::child_event::Kind::OsCall(pb::OsCall {
+                    call_id: 1,
+                    values: None,
+                    call: None,
+                    allow_eager_await: false,
+                })),
                 max_suspensions: Some(0),
                 ..Default::default()
             },
@@ -1101,7 +1186,7 @@ async fn a_malformed_over_budget_os_call_is_a_protocol_violation() {
     let PoolError::Protocol(msg) = err else {
         panic!("expected Protocol, got {err:?}");
     };
-    assert_eq!(msg, "OsCall event with no call");
+    assert_eq!(msg, "invalid OS call payload: missing required field OsCall.call");
     join_server(server).await;
 }
 
@@ -1133,7 +1218,9 @@ async fn suspension_limit_is_enforced_on_the_raw_path() {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "fetch()".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1142,11 +1229,7 @@ async fn suspension_limit_is_enforced_on_the_raw_path() {
     let resume = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
-            result: Some(pb::ExtFunctionResult {
-                kind: Some(pb::ext_function_result::Kind::ReturnValue(WireObject::new(
-                    MontyObject::None,
-                ))),
-            }),
+            ..pb::ResumeCall::from(MontyObject::none())
         })),
         ..pb::ParentRequest::default()
     };
@@ -1176,13 +1259,13 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
         ));
         send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         let function_call = |call_id: u32| {
-            event_kind(pb::child_event::Kind::FunctionCall(WireFunctionCall {
-                function_name: "fetch".to_owned(),
-                args: vec![],
-                kwargs: vec![],
+            event_kind(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+                "fetch".to_owned(),
+                CallArgs::new(),
                 call_id,
-                object_id: None,
-            }))
+                None,
+                false,
+            )))
         };
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
         send_event(&mut socket, &function_call(1));
@@ -1235,7 +1318,9 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "fetch()".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1250,11 +1335,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
     let resume = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
-            result: Some(pb::ExtFunctionResult {
-                kind: Some(pb::ext_function_result::Kind::ReturnValue(WireObject::new(
-                    MontyObject::None,
-                ))),
-            }),
+            ..pb::ResumeCall::from(MontyObject::none())
         })),
         ..pb::ParentRequest::default()
     };
@@ -1317,7 +1398,7 @@ async fn configured_suspension_limit_caps_a_restored_one() {
             .expect("feed");
         assert!(matches!(event, TurnEvent::FunctionCall { .. }));
         let err = checkout
-            .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+            .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
             .await
             .unwrap_err();
         let PoolError::Runtime(exc) = err else {
@@ -1357,12 +1438,12 @@ async fn suspension_limit_defaults_to_one_thousand() {
     for _ in 1..1000 {
         assert!(matches!(event, TurnEvent::FunctionCall { .. }));
         event = checkout
-            .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+            .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
             .await
             .expect("resume");
     }
     let err = checkout
-        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
         .await
         .unwrap_err();
     let PoolError::Runtime(exc) = err else {
@@ -1386,13 +1467,8 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
             pb::parent_request::Kind::Configure(_)
         ));
         send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
-        let function_call = |call_id: u32| WireFunctionCall {
-            function_name: "fetch".to_owned(),
-            args: vec![],
-            kwargs: vec![],
-            call_id,
-            object_id: None,
-        };
+        let function_call =
+            |call_id: u32| WireFunctionCall::new("fetch".to_owned(), CallArgs::new(), call_id, None, false);
         let abort_reply = |socket: &mut WebSocket<TcpStream>| {
             let pb::parent_request::Kind::AbortFeed(abort) = read_request(socket) else {
                 panic!("expected AbortFeed");
@@ -1448,7 +1524,9 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "fetch()".to_owned(),
             inputs: vec![],
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1501,7 +1579,7 @@ async fn restored_session_readopts_the_suspension_limit() {
         .expect("feed");
     assert!(matches!(event, TurnEvent::FunctionCall { .. }));
     let err = checkout
-        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
         .await
         .unwrap_err();
     let PoolError::Runtime(exc) = err else {
@@ -1550,13 +1628,13 @@ fn shutdown(dump: Option<&[u8]>) -> pb::child_event::Kind {
 
 /// Builds a `FunctionCall` suspension with the given call id.
 fn function_call(call_id: u32) -> pb::child_event::Kind {
-    pb::child_event::Kind::FunctionCall(WireFunctionCall {
-        function_name: "ext".to_owned(),
-        args: vec![],
-        kwargs: vec![],
+    pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+        "ext".to_owned(),
+        CallArgs::new(),
         call_id,
-        object_id: None,
-    })
+        None,
+        false,
+    ))
 }
 
 /// Asserts the next request is `Configure` and acknowledges it.
@@ -1620,9 +1698,7 @@ async fn shutdown_hands_back_a_restorable_dump() {
         expect_feed(&mut socket, "1 + 1");
         send_kind(
             &mut socket,
-            pb::child_event::Kind::Complete(pb::Complete {
-                value: Some(MontyObject::Int(42).into()),
-            }),
+            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
         );
         while try_read_request(&mut socket).is_some() {}
     });
@@ -1648,7 +1724,7 @@ async fn shutdown_hands_back_a_restorable_dump() {
         .await
         .expect("feed on the restored session");
     assert!(
-        matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
+        matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
         "got {event:?}"
     );
     checkout.finish().await.expect("finish");
@@ -1689,7 +1765,7 @@ async fn shutdown_during_a_suspension_carries_the_suspended_dump() {
         "got {event:?}"
     );
     let err = checkout
-        .resume(ResumeValue::Return(MontyObject::Int(5)), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::int(5)), &mut no_print)
         .await
         .expect_err("a draining server must not run the resume");
     let PoolError::Shutdown { dump: Some(dump) } = err else {
@@ -1789,9 +1865,7 @@ async fn finishing_a_checkout_sends_a_close_frame() {
         expect_feed(&mut socket, "1 + 1");
         send_kind(
             &mut socket,
-            pb::child_event::Kind::Complete(pb::Complete {
-                value: Some(MontyObject::Int(42).into()),
-            }),
+            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
         );
         expect_close(&mut socket);
     });
@@ -1918,9 +1992,7 @@ async fn a_dropped_connection_is_a_disconnect() {
         expect_feed(&mut socket, "1 + 1");
         send_kind(
             &mut socket,
-            pb::child_event::Kind::Complete(pb::Complete {
-                value: Some(MontyObject::Int(42).into()),
-            }),
+            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
         );
         // the server drops the session while the client sits idle, then exits
         let _ = socket.close(None);
@@ -1932,7 +2004,7 @@ async fn a_dropped_connection_is_a_disconnect() {
         .await
         .expect("feed");
     assert!(
-        matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
+        matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
         "got {event:?}"
     );
     // joining first guarantees the server side is fully torn down before the

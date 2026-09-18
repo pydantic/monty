@@ -1,7 +1,7 @@
 // every test here drives the standalone CLI, which a worker-only build refuses
 #![cfg(feature = "standalone")]
 
-use std::{fs, process::Command};
+use std::{fs, process::Command, time::Instant};
 
 use tempfile::TempDir;
 
@@ -66,6 +66,29 @@ fn unmounted_paths_report_permission_error() {
         stderr.contains("PermissionError: Permission denied: '/outside.txt'"),
         "unexpected stderr: {stderr}"
     );
+}
+
+/// `--max-sleep` cuts a long sleep short; the default cap is ten seconds, so
+/// an hour-long sleep with a tiny cap returns at once.
+#[test]
+fn max_sleep_caps_a_long_sleep() {
+    let host_dir = TempDir::new().expect("tempdir should be created");
+    let script_dir = script_dir("import time\ntime.sleep(3600)\nprint('woke')\n");
+    let mount = format!("{}::/mnt", host_dir.path().display());
+    let script = script_dir.path().join("script.py");
+
+    let start = Instant::now();
+    let (success, stderr) = run_monty(&[
+        "-m",
+        &mount,
+        "--max-sleep",
+        "0.001",
+        script.to_str().expect("utf-8 path"),
+    ]);
+
+    assert!(success, "unexpected stderr: {stderr}");
+    // well under the 10s default, so an ignored `--max-sleep` fails too
+    assert!(start.elapsed().as_secs() < 5, "the sleep was not capped");
 }
 
 #[test]

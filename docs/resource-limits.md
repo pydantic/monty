@@ -81,6 +81,14 @@ threshold, including integer multiplication, division and `divmod`, left shift, 
 an iterator into a container, and f-string, `str.format()` or `%` formatting with a dynamic width or precision.
 So `'x' * 10**12` fails immediately rather than after consuming the machine's memory.
 
+Containers a program grows one element at a time are pre-checked as well, at the point the buffer would reallocate
+rather than on every push: `list.append` and `list.insert`, `deque.append` and `deque.appendleft`, `set.add`, and
+assigning a new dict key.
+So are the value buffers a single call fills: the argument pack behind `f(*args)`, the array `json.loads` parses, the
+pieces `re.split` collects, and the list `re.findall` builds for a pattern with at most one capture group.
+A wider `findall`, and `re.finditer`, allocate an object per match and are not covered — see
+[the limitations note](limitations/resource_limits.md).
+
 A few integer operations carry their own caps regardless of `max_memory`:
 
 - `base ** exp` with an exponent above `u32::MAX` raises `OverflowError`, except for bases 0, 1 and -1.
@@ -93,7 +101,7 @@ A few integer operations carry their own caps regardless of `max_memory`:
 
 - The clock runs only while the interpreter executes bytecode.
 - It is paused while execution is suspended waiting on the host — a [host function](host-functions.md) that takes a
-    minute costs nothing.
+    minute costs nothing, and neither does a `time.sleep()` your `os=` handler waited out.
 - It accumulates across `feed_run` calls for the life of the session.
 - It is serialized into [snapshots](snapshots.md), so a restored session resumes its budget rather than restarting from
     zero.
@@ -113,6 +121,8 @@ Two host-side backstops cover that:
 
 Set `max_duration_secs` for untrusted code that may suspend repeatedly; `request_timeout` alone does not bound the
 overall call.
+These deadlines are polled: synchronous host telemetry callbacks and decoding a large reply can delay enforcement.
+Neither deadline covers [host mount I/O](filesystem.md#io-timeouts-and-cancellation).
 
 ## Recursion
 
@@ -130,7 +140,7 @@ could abort the process.
 ## Suspensions
 
 `max_suspensions` counts external calls, host-object method calls and construction, lazy attribute lookups, `os`
-callbacks, name lookups and future-resolution events.
+callbacks (the sleeps among them), name lookups and future-resolution events.
 These host round trips are outside `max_memory`; each [`ClassType`](host-objects.md) construction with `init=True` also
 adds an instance-store entry.
 Because `max_duration_secs` pauses during suspensions, a snippet could otherwise retry rejected calls indefinitely.
@@ -156,6 +166,9 @@ caps the dump's, so a worker cannot report a looser one.
 - **Mount memory.** Each [mount](filesystem.md) has its own `memory_usage_limit`, defaulting to 100 MB, shared between
     retained overlay data and transient results.
 - **`json.loads` nesting**, capped at 200 levels independently of the recursion limit.
+- **Host entropy.** Python's `AbstractOS.urandom()` raises `MemoryError` before allocating when a request exceeds
+    `max_urandom_bytes`, 1 MiB by default (`OSAccess(max_urandom_bytes=...)`).
+    A custom entropy callback allocates in the host process, so it must apply its own cap.
 - **The host instance store.** Every [`ClassInstance`][pydantic_monty.ClassInstance]/[`ClassType`][pydantic_monty.ClassType] wrapper sent into a session (nested wrappers,
     `init=True` constructions and `convert_value` wraps included) is retained in the host process until the session
     ends; re-sending a wrapper with the same id reuses its entry, distinct wrappers accumulate; see

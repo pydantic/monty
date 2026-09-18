@@ -1,5 +1,5 @@
-//! [`HostClock`]: the opt-in clock that answers `date.today()` and
-//! `datetime.now()` on the non-suspending run paths.
+//! [`HostClock`]: the opt-in clock that answers `date.today()`,
+//! `datetime.now()` and `time.time()` on the non-suspending run paths.
 //!
 //! These can't live in `test_cases/`, which has no way to grant a clock and
 //! runs every fixture against a real CPython whose clock keeps moving. The
@@ -53,11 +53,12 @@ fn run_repr(expr: &str, clock: HostClock) -> String {
 fn the_host_clock_is_the_default() {
     let code = "from datetime import date, datetime\n(date.today().year, datetime.now().year)";
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let MontyObject::Tuple(years) = runner.run_no_limits(vec![]).unwrap() else {
+    let value = runner.run_no_limits(vec![]).unwrap();
+    let Some(years) = value.as_ref().items() else {
         panic!("expected a tuple of years");
     };
     for year in years {
-        let MontyObject::Int(year) = year else {
+        let Some(year) = year.as_int() else {
             panic!("expected an int year");
         };
         assert!((2026..=2100).contains(&year), "implausible year {year}");
@@ -66,7 +67,7 @@ fn the_host_clock_is_the_default() {
 
 /// `Denied` is how an embedder takes the default clock away again.
 #[test]
-fn a_denied_clock_refuses_both_calls() {
+fn a_denied_clock_refuses_every_call() {
     assert_eq!(
         run("from datetime import datetime\ndatetime.now()", HostClock::Denied).unwrap_err(),
         "NotImplementedError: OS function 'datetime.now' not implemented with standard execution"
@@ -74,6 +75,33 @@ fn a_denied_clock_refuses_both_calls() {
     assert_eq!(
         run("from datetime import date\ndate.today()", HostClock::Denied).unwrap_err(),
         "NotImplementedError: OS function 'date.today' not implemented with standard execution"
+    );
+    assert_eq!(
+        run("import time\ntime.time()", HostClock::Denied).unwrap_err(),
+        "NotImplementedError: OS function 'time.time' not implemented with standard execution"
+    );
+}
+
+/// `time.time()` is the same instant as `datetime.now()`, read as epoch
+/// seconds rather than as local wall time — no timezone applies to it.
+#[test]
+fn fixed_clock_reads_epoch_seconds() {
+    assert_eq!(run("import time\ntime.time()", FIXED).unwrap(), {
+        MontyObject::float(1_700_000_000.123_456)
+    });
+}
+
+/// Sleeping is never served in-process, whatever the clock: a wait has to
+/// happen where a host can bound it.
+#[test]
+fn a_clock_does_not_grant_sleeping() {
+    assert_eq!(
+        run("import time\ntime.sleep(0)", HostClock::System).unwrap_err(),
+        "NotImplementedError: OS function 'time.sleep' not implemented with standard execution"
+    );
+    assert_eq!(
+        run("import asyncio\nasyncio.run(asyncio.sleep(0))", HostClock::System).unwrap_err(),
+        "NotImplementedError: OS function 'asyncio.sleep' not implemented with standard execution"
     );
 }
 
@@ -106,7 +134,7 @@ fn fixed_clock_converts_into_the_requested_timezone() {
 fn aware_and_naive_agree_on_the_instant() {
     let code = "from datetime import datetime, timezone\n\
                 (datetime.now(timezone.utc).hour - datetime.now().hour) % 24";
-    assert_eq!(run(code, FIXED).unwrap(), MontyObject::Int(22));
+    assert_eq!(run(code, FIXED).unwrap(), MontyObject::int(22));
 }
 
 /// A fixed instant outside `datetime`'s 1..=9999 years is refused rather than
@@ -121,6 +149,11 @@ fn unrepresentable_fixed_instant_reads_as_denied() {
     assert_eq!(
         run("from datetime import date\ndate.today()", far_future).unwrap_err(),
         "NotImplementedError: OS function 'date.today' not implemented with standard execution"
+    );
+    // `time.time()` has no year range of its own, but a clock answers every call or none
+    assert_eq!(
+        run("import time\ntime.time()", far_future).unwrap_err(),
+        "NotImplementedError: OS function 'time.time' not implemented with standard execution"
     );
 }
 
@@ -155,7 +188,7 @@ fn system_clock_returns_a_plausible_now() {
     // Written 2026; a system clock that reads before then is broken, not stale.
     let code = "from datetime import date, datetime\n\
                 date.today() == datetime.now().date() and datetime.now().year >= 2026";
-    assert_eq!(run(code, HostClock::System).unwrap(), MontyObject::Bool(true));
+    assert_eq!(run(code, HostClock::System).unwrap(), MontyObject::bool(true));
 }
 
 /// The clock is a *standard execution* fallback: with a host loop present the
@@ -189,7 +222,7 @@ fn repl_sessions_take_a_clock_too() {
             monty_types::PrintWriter::Disabled,
         )
         .unwrap();
-    assert_eq!(result, MontyObject::String("datetime.date(2023, 11, 15)".to_owned()));
+    assert_eq!(result, MontyObject::string("datetime.date(2023, 11, 15)".to_owned()));
 }
 
 /// The clock is granted on the session, so which entry point runs the code
@@ -208,7 +241,7 @@ fn call_function_takes_the_session_clock_too() {
     let result = repl
         .call_function("when", vec![], monty_types::PrintWriter::Disabled)
         .unwrap();
-    assert_eq!(result, MontyObject::String("datetime.date(2023, 11, 15)".to_owned()));
+    assert_eq!(result, MontyObject::string("datetime.date(2023, 11, 15)".to_owned()));
 }
 
 /// A denied clock refuses through `call_function` too, as it does `feed_run`.
@@ -260,5 +293,5 @@ fn a_granted_clock_survives_a_dump() {
             monty_types::PrintWriter::Disabled,
         )
         .unwrap();
-    assert_eq!(result, MontyObject::String("datetime.date(2023, 11, 15)".to_owned()));
+    assert_eq!(result, MontyObject::string("datetime.date(2023, 11, 15)".to_owned()));
 }

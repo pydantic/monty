@@ -78,10 +78,6 @@ export interface FunctionNode {
   name: string
   docstring?: string
 }
-export interface CycleNode {
-  identity: bigint
-  placeholder: string
-}
 export type ValueNode =
   | ValueNodeEllipsis
   | ValueNodeNotImplemented
@@ -228,19 +224,14 @@ export interface ValueNodeRepr {
 }
 export interface ValueNodeCycle {
   tag: 'cycle'
-  val: CycleNode
+  val: string
 }
-export interface Value {
-  root: number
+export interface Arena {
   nodes: Array<ValueNode>
-}
-export interface ValuePair {
-  key: Value
-  value: Value
 }
 export interface NamedValue {
   name: string
-  value: Value
+  value: number
 }
 export interface ResourceLimits {
   maxDurationMicros?: bigint
@@ -293,7 +284,9 @@ export interface ConfigureRequest {
 export interface FeedRequest {
   code: string
   inputs: Array<NamedValue>
+  values: Arena
   skipTypeCheck: boolean
+  cwd: string
 }
 export interface RaisedError {
   excType: string
@@ -307,7 +300,7 @@ export type CallResult =
   | CallResultNotHandled
 export interface CallResultReturnValue {
   tag: 'return-value'
-  val: Value
+  val: number
 }
 export interface CallResultError {
   tag: 'error'
@@ -327,11 +320,12 @@ export interface CallResultNotHandled {
 export interface ResumeCallRequest {
   callId: number
   outcome: CallResult
+  values: Arena
 }
 export type NameLookupResult = NameLookupResultValue | NameLookupResultUndefined | NameLookupResultError
 export interface NameLookupResultValue {
   tag: 'value'
-  val: Value
+  val: number
 }
 export interface NameLookupResultUndefined {
   tag: 'undefined'
@@ -340,9 +334,17 @@ export interface NameLookupResultError {
   tag: 'error'
   val: RaisedError
 }
+export interface NameLookupRequest {
+  outcome: NameLookupResult
+  values: Arena
+}
 export interface FutureResult {
   callId: number
   outcome: CallResult
+}
+export interface FuturesRequest {
+  results: Array<FutureResult>
+  values: Arena
 }
 export type Request =
   | RequestConfigure
@@ -368,11 +370,11 @@ export interface RequestResumeCall {
 }
 export interface RequestResumeNameLookup {
   tag: 'resume-name-lookup'
-  val: NameLookupResult
+  val: NameLookupRequest
 }
 export interface RequestResumeFutures {
   tag: 'resume-futures'
-  val: Array<FutureResult>
+  val: FuturesRequest
 }
 export interface RequestAbortFeed {
   tag: 'abort-feed'
@@ -411,10 +413,12 @@ export interface PrintEvent {
 }
 export interface FunctionCallEvent {
   functionName: string
-  args: Array<Value>
-  kwargs: Array<ValuePair>
+  values: Arena
+  args: Uint32Array
+  kwargs: Array<NodePair>
   callId: number
   objectId?: string
+  allowEagerAwait: boolean
 }
 export interface NameLookupEvent {
   name: string
@@ -422,9 +426,15 @@ export interface NameLookupEvent {
 }
 export interface OsCallEvent {
   functionName: string
-  args: Array<Value>
-  kwargs: Array<ValuePair>
+  values: Arena
+  args: Uint32Array
+  kwargs: Array<NodePair>
   callId: number
+  allowEagerAwait: boolean
+}
+export interface CompleteEvent {
+  values: Arena
+  value: number
 }
 export type Event =
   | EventPrint
@@ -461,7 +471,7 @@ export interface EventResolveFutures {
 }
 export interface EventComplete {
   tag: 'complete'
-  val: Value
+  val: CompleteEvent
 }
 export interface EventError {
   tag: 'error'

@@ -10,6 +10,7 @@
 use std::{error::Error, fmt, mem::size_of};
 
 use monty_types::TypeCheckState;
+use postcard::ser_flavors::Flavor;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -22,14 +23,22 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 
 /// Version of the dump's postcard schema.
 ///
-/// Bump this whenever a serialized discriminant can shift, so older dumps are
+/// Bump this for every release where a serialized discriminant can shift, so older dumps are
 /// rejected instead of decoding as their neighbour. That covers the
 /// interpreter's own types *and* everything reachable from [`Dump`] — notably
 /// [`TypeCheckingConfig`](monty_types::TypeCheckingConfig) in `monty-types`.
-pub const DUMP_VERSION: u16 = 9;
+///
+/// Before bumping, check there's already been a bump since the last release - multiple bumps
+/// between releases is unnecessary and can lead to confusion.
+pub const DUMP_VERSION: u16 = 11;
 
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
+
+/// Initial payload capacity for [`dump`]. A fresh idle session dumps to ~130
+/// bytes and one suspended on a host call to ~480, so this never over-allocates
+/// meaningfully and skips the first few `Vec` doublings.
+const MIN_PAYLOAD_CAPACITY: usize = 200;
 
 /// Serializes a live session and its metadata into a versioned dump, readable
 /// by [`Dump::load`].
@@ -52,16 +61,41 @@ pub fn dump(
         state: SessionRef<'a>,
     }
 
-    let payload = postcard::to_allocvec(&DumpRef {
+    let mut bytes = Vec::with_capacity(HEADER_LEN + MIN_PAYLOAD_CAPACITY);
+    bytes.extend_from_slice(MAGIC);
+    bytes.extend_from_slice(&DUMP_VERSION.to_le_bytes());
+    // the payload is written after the header in place: no second buffer to copy it into
+    let dump = DumpRef {
         script_name,
         type_check,
         state,
-    })?;
-    let mut bytes = Vec::with_capacity(HEADER_LEN + payload.len());
-    bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&DUMP_VERSION.to_le_bytes());
-    bytes.extend_from_slice(&payload);
-    Ok(bytes)
+    };
+    postcard::serialize_with_flavor(&dump, PrefixedVec(bytes))
+}
+
+/// Postcard output flavor appending to a `Vec` that already holds the dump
+/// header. `postcard::to_extend` does the same through `Extend`, which
+/// benchmarks ~10% slower than `Vec::push`/`extend_from_slice`.
+struct PrefixedVec(Vec<u8>);
+
+impl Flavor for PrefixedVec {
+    type Output = Vec<u8>;
+
+    #[inline]
+    fn try_extend(&mut self, data: &[u8]) -> postcard::Result<()> {
+        self.0.extend_from_slice(data);
+        Ok(())
+    }
+
+    #[inline]
+    fn try_push(&mut self, data: u8) -> postcard::Result<()> {
+        self.0.push(data);
+        Ok(())
+    }
+
+    fn finalize(self) -> postcard::Result<Self::Output> {
+        Ok(self.0)
+    }
 }
 
 /// A complete REPL session snapshot: the interpreter state plus the
@@ -82,6 +116,14 @@ pub struct Dump {
 
 impl Dump {
     /// Restores a session dumped by [`dump`].
+    ///
+    /// # Snapshot trust
+    /// The caller must establish that the bytes are unmodified output from a trusted,
+    /// compatible Monty producer. Invalid snapshots have no correctness or availability
+    /// guarantees: loading or using them may panic, abort, hang, or produce wrong results,
+    /// but must not cause undefined behaviour in the host process.
+    /// Successful decoding does not authenticate or fully validate a snapshot.
+    /// The same contract applies to direct serde deserialization.
     ///
     /// # Errors
     /// Returns [`DumpError`] for a dump this build cannot read — most usefully
@@ -178,10 +220,7 @@ mod tests {
     use strum::VariantNames;
 
     use super::DUMP_VERSION;
-    use crate::{
-        bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint,
-        intern::static_strings_fingerprint, types::Type,
-    };
+    use crate::{bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, types::Type};
 
     /// If a component changes incompatibly, bump `DUMP_VERSION` before updating its
     /// expected fingerprint. Compatible changes only require a fingerprint update.
@@ -192,44 +231,52 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0xcc18_cb17_4261_f9de,
-            "opcodes changed for dump version {DUMP_VERSION}"
-        );
-        assert_eq!(
-            static_strings_fingerprint(),
-            0x6ef2_6279_a467_3927,
-            "static strings changed for dump version {DUMP_VERSION}"
+            0xe073_c6d9_f407_73f5,
+            "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(opcode_fingerprint())
         );
         assert_eq!(
             comparison_operators_fingerprint(),
             0x8ecc_d26b_160d_9c0b,
-            "comparison operators changed for dump version {DUMP_VERSION}"
+            "comparison operators changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(comparison_operators_fingerprint())
         );
         // `VariantNames` keeps the `#[strum(disabled)]` variants that `EnumString`
         // and `EnumIter` drop, which is what lets the two fingerprints below cover
         // every postcard discriminant. Asserted rather than assumed, so a strum
         // upgrade that changed it says so instead of quietly narrowing the guard.
         assert!(Type::VARIANTS.contains(&"instance"));
-        assert!(MontyType::VARIANTS.contains(&"instance"));
         assert!(MontyType::VARIANTS.contains(&"exception"));
 
         assert_eq!(
             variant_order_fingerprint(Type::VARIANTS),
-            0x10ff_43fa_5d2e_2eb4,
-            "Type variants changed for dump version {DUMP_VERSION}"
+            0xd636_4b2d_681f_679e,
+            "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(variant_order_fingerprint(Type::VARIANTS))
         );
         assert_eq!(
             variant_order_fingerprint(MontyType::VARIANTS),
-            0xc7da_24a0_14f2_39e4,
-            "MontyType variants changed for dump version {DUMP_VERSION}"
+            0x3ea2_67bf_664e_2db7,
+            "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(variant_order_fingerprint(MontyType::VARIANTS))
         );
         // Builtin discriminants are `CallBuiltinFunction` operands, so the enum
         // is append-only: a new builtin goes after the last variant.
         assert_eq!(
             variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
             0xd5ef_68ff_fc6b_f752,
-            "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}"
+            "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(variant_order_fingerprint(BuiltinsFunctions::VARIANTS))
         );
+    }
+
+    /// Formats an integer as hex with underscores between four-digit groups.
+    fn grouped_hex(n: u64) -> String {
+        let mut s = format!("{n:x}");
+        for i in (1..s.len()).rev().skip(3).step_by(4) {
+            s.insert(i, '_');
+        }
+        format!("0x{s}")
     }
 
     /// FNV-1a over variant names in declaration order.
@@ -240,9 +287,9 @@ mod tests {
     /// failing the version check. Appending leaves this unchanged for every
     /// existing variant; inserting or reordering does not.
     ///
-    /// The list covers the `#[strum(disabled)]` variants too — `Type::Instance`,
-    /// `MontyType::{Instance, Exception}` — which carry discriminants like any
-    /// other despite having no name to round-trip through `EnumString`.
+    /// The list covers the `#[strum(disabled)]` variants too — `Type::Instance`
+    /// and `MontyType::Exception` — which carry discriminants like any other
+    /// despite having no name to round-trip through `EnumString`.
     fn variant_order_fingerprint(variants: &[&str]) -> u64 {
         const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
         const PRIME: u64 = 0x0100_0000_01b3;

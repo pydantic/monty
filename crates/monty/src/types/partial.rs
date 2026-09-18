@@ -17,12 +17,15 @@ use smallvec::SmallVec;
 
 use crate::{
     args::{ArgValues, KwargsValues},
-    bytecode::{CallResult, VM},
+    bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{
+        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput,
+    },
     intern::StaticStrings,
+    modules::copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
     types::{Dict, LazyHeapSet, PyTrait, Type, list::repr_check_time, tuple::allocate_tuple},
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -178,8 +181,10 @@ fn check_clone_slots(slots: usize, heap: &impl ContainsHeap) -> RunResult<()> {
 /// Merges a call's `args` beneath the arguments a `partial` has bound.
 ///
 /// The bound halves are already owned clones (see [`Partial::clone_parts`]), so
-/// the heap borrow on the partial has ended by the time this runs and the
-/// resulting call may re-enter that same partial.
+/// no `&Partial` borrow is live by the time this runs and the resulting call may
+/// re-enter that same partial. The `HeapRead` reader count does outlive it, but
+/// that bars only freeing the entry, which the caller's own reference prevents
+/// anyway.
 pub(crate) fn partial_call_args(
     bound_args: Vec<Value>,
     bound_keywords: Vec<(Value, Value)>,
@@ -293,6 +298,40 @@ impl HeapItem for Partial {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
+    /// Calls the wrapped callable with the bound arguments merged beneath the
+    /// call's own.
+    ///
+    /// A partial stored as a class attribute binds as a `BoundMethod` whose
+    /// `__func__` is another partial, so a chain of them nests on the native
+    /// stack without ever pushing a VM frame. Charging the native re-entry
+    /// budget is what bounds such a chain by `RecursionError` rather than a
+    /// stack overflow.
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let parts = self.get(vm.heap).clone_parts(vm);
+        let (func, bound_args, bound_keywords) = match parts {
+            Ok(parts) => parts,
+            Err(err) => {
+                // The preflight rejected the per-call clone before anything was
+                // lifted out, so only the call's own arguments need releasing.
+                args.drop_with(vm);
+                return Err(err);
+            }
+        };
+        if let Err(err) = vm.enter_run_reentry() {
+            // Bailing before `partial_call_args` takes ownership, so reclaim
+            // what was lifted out of the partial as well as the call's own
+            // arguments.
+            (func, (bound_args, bound_keywords)).drop_with(vm);
+            args.drop_with(vm);
+            return Err(err.into());
+        }
+        let mut guard = RunReentryGuard::new(vm);
+        let vm = &mut *guard;
+        defer_drop!(func, vm);
+        let args = partial_call_args(bound_args, bound_keywords, args, vm);
+        vm.call_function(func, args)
+    }
+
     fn py_type(&self, _: &VM<'h>) -> Type {
         Type::Partial
     }
@@ -375,7 +414,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
     /// `args` and `keywords` are rebuilt on each access, so mutating the
     /// returned dict does not change what the partial passes on.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr = match attr.static_string() {
+        let attr = match attr.static_string(vm.interns) {
             Some(StaticStrings::Func) => "func",
             Some(StaticStrings::Args) => "args",
             Some(StaticStrings::Keywords) => "keywords",
@@ -410,4 +449,117 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
             _ => Ok(None),
         }
     }
+}
+
+impl<'h> HeapRead<'h, Partial> {
+    /// Allocates a partial over the very same callable and bound arguments.
+    ///
+    /// How `copy.copy` rebuilds a partial: CPython's reducer hands the same
+    /// `func`, argument values and keyword values to a new object, so the two
+    /// partials share everything they hold.
+    pub(crate) fn allocate_like(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        let (func, args, keywords) = self.get(vm.heap).clone_parts(vm.heap)?;
+        Ok(Value::Ref(vm.heap.allocate(HeapData::Partial(Box::new(Partial {
+            func,
+            args,
+            keywords,
+        })))))
+    }
+}
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, Partial> {
+    /// Copies a partial by rebuilding it over deep copies of its callable and
+    /// of everything it has bound.
+    ///
+    /// `func` is copied *before* the memo entry exists, as CPython's
+    /// `_reconstruct` does — it is the reconstructor's argument, not part of
+    /// the pickled state — so a partial reachable from its own callable
+    /// recurses to the limit in both. The bound arguments go in afterwards, so
+    /// a container that holds this partial resolves to the copy instead.
+    #[inline(never)]
+    fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let func = self.get(vm.heap).func.clone_with_heap(vm.heap);
+        let copied = deep_copy(&func, memo, vm);
+        func.drop_with(vm);
+        let copied = copied?;
+        // CPython's `partial.__setstate__` rejects a non-callable too, which is
+        // reachable through a `__deepcopy__` that returns something else.
+        if !copied.is_callable(vm.heap) {
+            copied.drop_with(vm);
+            return Err(ExcType::partial_not_callable());
+        }
+        let copy = Value::Ref(vm.heap.allocate(HeapData::Partial(Box::new(Partial {
+            func: copied,
+            args: Vec::new(),
+            keywords: Vec::new(),
+        }))));
+        let copy_id = copy.ref_id().expect("partial is heap allocated");
+
+        let mut guard = DropGuard::new(copy, vm);
+        let (copy, vm) = guard.as_parts_mut();
+        memo.insert(source, copy, vm)?;
+        // Nothing mutates a partial once it is built, so both loops can index
+        // by position even though `deep_copy` may run a user `__deepcopy__`.
+        deep_copy_args(self, copy_id, memo, vm)?;
+        let (_, vm) = guard.as_parts_mut();
+        deep_copy_keywords(self, copy_id, memo, vm)?;
+
+        let (copy, _) = guard.into_parts();
+        Ok(copy)
+    }
+}
+
+/// Deep-copies `source`'s bound positionals into the partial at `copy_id`,
+/// which starts empty.
+///
+/// Copies land in the destination one at a time rather than being collected
+/// first, so a failure part-way leaves the caller's guard holding everything
+/// copied so far — there is never a second owner to release.
+fn deep_copy_args<'h>(
+    source: &HeapRead<'h, Partial>,
+    copy_id: HeapId,
+    memo: &mut Memo,
+    vm: &mut VM<'h>,
+) -> RunResult<()> {
+    let count = source.get(vm.heap).args.len();
+    check_clone_slots(count, vm.heap)?;
+    for index in 0..count {
+        vm.heap.tracker.check_time_every(index)?;
+        let arg = source.get(vm.heap).args[index].clone_with_heap(vm.heap);
+        let copied = deep_copy(&arg, memo, vm);
+        arg.drop_with(vm);
+        let copied = copied?;
+        let HeapReadOutput::Partial(mut dest) = vm.heap.read(copy_id) else {
+            unreachable!("copy was allocated as a partial")
+        };
+        dest.get_mut(vm.heap).args.push(copied);
+    }
+    Ok(())
+}
+
+/// Deep-copies `source`'s bound keywords into the partial at `copy_id`, one
+/// pair at a time for the reason [`deep_copy_args`] does.
+///
+/// Names go through the memo alongside their values, as copying CPython's
+/// keywords dict does; a `str` name comes back shared, so the order the
+/// merge relies on is preserved without rehashing anything.
+fn deep_copy_keywords<'h>(
+    source: &HeapRead<'h, Partial>,
+    copy_id: HeapId,
+    memo: &mut Memo,
+    vm: &mut VM<'h>,
+) -> RunResult<()> {
+    let count = source.get(vm.heap).keywords.len();
+    check_clone_slots(count.saturating_mul(2), vm.heap)?;
+    for index in 0..count {
+        vm.heap.tracker.check_time_every(index)?;
+        let (name, value) = &source.get(vm.heap).keywords[index];
+        let (name, value) = (name.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap));
+        let pair = deep_copy_pair(name, value, memo, vm)?;
+        let HeapReadOutput::Partial(mut dest) = vm.heap.read(copy_id) else {
+            unreachable!("copy was allocated as a partial")
+        };
+        dest.get_mut(vm.heap).keywords.push(pair);
+    }
+    Ok(())
 }

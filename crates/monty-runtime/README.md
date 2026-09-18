@@ -38,12 +38,22 @@ monty --help
   `json`, `github` and the other ty formats (requires `--type-check`)
 - `-m` / `--mount /host/path::/virtual/path[::mode[::write_limit_bytes]]` —
   mount a host directory into the sandbox (`ro`, `rw`, or `overlay`)
+- `--cwd /virtual/path` — the sandbox's working directory (default: the first
+  mount's virtual path, else `/`); relative paths resolve against it
 - `--max-memory 10MB`, `--max-duration 0.5`, `--max-recursion-depth`,
   `--gc-interval`, `--max-suspensions` — sandbox resource limits
+- `--max-sleep 10` — longest wait a `time.sleep()` / `asyncio.sleep()` performs
+  in seconds; longer sleeps are cut short (`inf` for no limit)
 
 `date.today()` and `datetime.now()` read this machine's clock and local
-timezone, as they do for any in-process run. `MontyRun::with_host_clock` is how
-an embedder chooses otherwise; the CLI has no flag for it.
+timezone, and `time.time()` its clock as Unix epoch seconds, as they do for any
+in-process run. `MontyRun::with_host_clock` is
+how an embedder chooses otherwise; the CLI has no flag for it. `time.sleep()` and
+`asyncio.sleep()` wait on the running thread, but only where the CLI drives
+suspensions, which is a run with at least one `-m` mount. Nothing answers
+`os.urandom()`, so it and any unseeded `random` draw raise `NotImplementedError`
+(or `RuntimeError` under `--mount`). Seed with an explicit value first, e.g.
+`random.seed(0)`: `random.seed()` with no argument also needs entropy.
 
 ## Worker mode
 

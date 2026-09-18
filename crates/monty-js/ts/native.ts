@@ -56,6 +56,8 @@ export interface FunctionCallTurn extends CallbackTurn {
    *  `__call__` construction). The receiver is NOT in `args`; null/absent
    *  for plain external calls. */
   objectId?: string | null
+  /** A coroutine may settle before replying with `resolveFutures`. */
+  allowEagerAwait?: boolean
 }
 
 /** The sandbox performed an OS operation no mount handled. */
@@ -65,6 +67,16 @@ export interface OsCallTurn extends CallbackTurn {
   args: unknown[]
   kwargs: [unknown, unknown][]
   callId: number
+  /** As on `FunctionCallTurn`: the wait may settle before replying with `resolveFutures`. Only set on `asyncio.sleep`. */
+  allowEagerAwait?: boolean
+}
+
+/**
+ * Whether `resumeFuture` is a valid answer to an OS call: only `asyncio.sleep`, which the
+ * sandbox awaits. Mirrors `OsFunctionCall::accepts_future` in `monty-types`.
+ */
+export function osCallAcceptsFuture(functionName: string): boolean {
+  return functionName === 'asyncio.sleep'
 }
 
 /** The sandbox read an undefined name — answer with `resumeNameLookup`. */

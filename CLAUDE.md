@@ -19,7 +19,8 @@ Project goals:
 
 ## `monty-types` — shared boundary types
 
-The public data types (`MontyObject`, `MontyException`/`ExcType`, `OsFunctionCall` +
+The public data types (the `MontyGraph`/`MontyNode` value graph and the `MontyObject`/`CallArgs`/`NamedValues`
+built on it, `MontyException`/`ExcType`, `OsFunctionCall` +
 its arg structs, `ResourceLimits`/`ResourceTracker`, `PrintStream`/`PrintWriter`,
 `CompileOptions`, `ExtFunctionResult`, `FileMode`, ...) live in `crates/monty-types`,
 which depends on no other monty crate except the `monty-macros` derives. `monty`
@@ -37,9 +38,14 @@ interpreter. Don't add a `monty` dependency to a host-side crate; if it needs a
 type, that type belongs in `monty-types`.
 
 Interpreter-coupled methods on these types live in `monty` as `pub(crate)`
-extension traits (`ExcTypeExt`, `MontyObjectExt`, `MontyTypeExt`, `StackFrameExt`,
-`FileModeExt`, `BuiltinsFunctionsExt`, `ExtFunctionResultExt`) — import the trait
-to call e.g. `ExcType::type_error(...)` or `MontyObject::new(value, vm)`.
+extension traits (`ExcTypeExt`, `MontyObjectExt`, `MontyGraphExt`, `CallArgsExt`,
+`MontyTypeExt`, `StackFrameExt`, `FileModeExt`, `BuiltinsFunctionsExt`,
+`ExtFunctionResultExt`) — import the trait to call e.g. `ExcType::type_error(...)` or
+`MontyObject::export(value, vm)`.
+`object_bridge::GraphExporter` builds one `MontyGraph` per outgoing message, so a sub-object shared in the sandbox
+crosses once; `MontyGraphExt::to_values` converts an incoming graph back into interpreter values.
+`MontyObject` is one owned value, a graph plus its root node: hosts build inputs with it and read results through its
+`ObjectRef` accessors.
 
 ## Cross-Platform Requirements
 
@@ -78,10 +84,25 @@ Possible security risks to consider:
 - subprocess/shell execution - os.system, subprocess, etc.
 - import system abuse - importing modules with side effects or accessing `__import__`
 - external function/callback misuse - callbacks run in host environment
-- deserialization attacks - loading untrusted serialized Monty/snapshot data
+- deserialization attacks - worker frames are untrusted; snapshots follow the trust contract below
 - regex/string DoS - catastrophic backtracking or operations bypassing limits
 - information leakage via timing or error messages
 - Python/Javascript/Rust APIs that accidentally allow developers to expose their host to monty code
+
+### Snapshot trust
+
+Snapshots and direct serde-serialized interpreter state must be unmodified output from a trusted, compatible Monty producer.
+The caller is responsible for establishing provenance and integrity before loading; the interpreter does not authenticate
+snapshots or fully validate their contents.
+Invalid snapshots have no correctness or availability guarantees: loading or using them may panic, abort, hang, or produce
+incorrect results, but MUST NOT cause undefined behaviour.
+Successful deserialization is not proof of validity.
+Genuine snapshots produced while running untrusted Python remain supported.
+
+Do not add semantic validation or graceful error paths solely for tampered snapshots.
+Keep memory-safety checks (including rejecting transient Gray/White GC states), reconstruction needed by valid snapshots,
+format/version checks, and transport compatibility checks.
+Worker frames, host values, callbacks and filesystem mounts remain untrusted boundaries independently of snapshot trust.
 
 ## Filesystem Mounts (`crates/monty-fs/`)
 
@@ -112,7 +133,7 @@ followed, even inside the mount (see `limitations/filesystem.md`) — do not
 check-then-use this removes.
 
 **Changes to `mount_table.rs` or `path_security.rs` require careful security
-review.** `heap.rs` and the mount boundary are the most security-critical
+review.** The `crates/monty/src/heap/` module and the mount boundary are the most security-critical
 code in the codebase.
 
 ## Subprocess isolation (`monty-proto`, `monty subprocess`, `monty-pool`)
@@ -125,11 +146,12 @@ subprocesses:
     (`proto/monty/v1/monty.proto`), checked-in prost-generated code (regenerate
     with `make generate-proto`; CI enforces sync via `make check-proto`),
     4-byte LE length-prefixed framing, and fallible conversions between wire
-    types and `MontyException`/etc. Values are special-cased for performance:
-    the `monty.v1.MontyObject` message is mapped via prost `extern_path` onto
-    `WireObject` (`src/wire.rs`), a hand-written `prost::Message` impl that
-    encodes borrowed `MontyObject`s and validates *while* decoding — no mirror
-    struct, no deep clone on the hot path. `tests/differential.rs` proves it
+    types and `MontyException`/etc. Values cross as one flat post-order `MontyGraph` per message (`monty.v1.Arena`):
+    every child index is lower than its holder's, an index used twice is a shared object, and the message names its
+    roots by index, so a shared sub-object crosses once and the wire imposes no nesting limit.
+    prost `extern_path` maps the message onto `WireArena` (`src/wire.rs`), a hand-written `prost::Message` impl that
+    encodes borrowed `MontyNode`s and validates *while* decoding, with no mirror struct, deep clone or recursion on
+    the hot path. `tests/differential.rs` proves it
     byte-compatible against a fully prost-generated oracle (`tests/oracle/`,
     regenerated and CI-checked together with the main codegen). Parents must
     treat frames from a (possibly compromised) child as untrusted — wire
@@ -146,10 +168,10 @@ subprocesses:
     are cancel-safe (partial-frame state lives in the worker, no pump task),
     and turn deadlines are tokio timers rather than a watchdog thread.
 - `crates/monty-alloc` — the `#[global_allocator]` both workers run under: it
-    counts live bytes against soft and hard session limits (via
-    `Child::session_budget`, re-armed after every request). The interpreter reads
-    the soft limit at execution checkpoints; crossing the hard limit ends the
-    process rather than letting Rust abort. Its `exit-code` feature picks how:
+    exposes live-byte usage for the interpreter's soft-limit checks and enforces
+    the hard ceiling selected from `Child::session_budget` after every request.
+    Crossing the hard limit ends the process rather than letting Rust abort. Its
+    `exit-code` feature picks how:
     `monty-runtime` enables it and exits with `OOM_EXIT_CODE` for the pool to
     classify, `monty-wasm-runtime` leaves it off and traps, having no exit status
     to offer. Only a binary or a wasm module may declare a global allocator, so
@@ -160,8 +182,9 @@ subprocesses:
     of workers (`with Monty() as pool: with pool.checkout() as session: session.feed_run(...)`, and the `async with` / `await feed_run` equivalents).
 
 The contract for crash detection: a child that exits or EOFs *without* a
-`FatalError` event crashed hard; the parent discards it and replaces it. See
-`limitations/pool-architecture.md` for host-API divergences from in-process execution.
+`FatalError` event crashed hard; the parent discards it and replaces it.
+Pool and protocol design belong in their crate READMEs; host-API contracts belong in the relevant
+`docs/` topic and binding reference. Value-conversion divergences belong in `limitations/host-values.md`.
 
 ## Bytecode VM Architecture
 
@@ -179,7 +202,9 @@ discriminating operand would cost measurable dispatch time.
 
 All heap-allocated Python objects (lists, dicts, strings, etc.) are stored in a paged arena (`Heap`). The `HeapReader` API provides **compile-time safe** access to heap data. This is the primary mechanism for reading and mutating heap objects throughout the codebase.
 
-**`heap.rs` is a critical safety boundary.** It contains `unsafe` code that underpins the soundness of the entire `HeapReader`/`HeapRead` system (pointer arithmetic, `UnsafeCell` access, reader-count invariants). Do NOT modify `heap.rs` without explicit user approval. Changes to this file require careful review of the safety invariants documented in the code comments.
+**The `crates/monty/src/heap/` module is a critical safety boundary.** Its `mod.rs`, `stable_heap.rs` and `free_list.rs` contain `unsafe` code that underpins the soundness of the entire `HeapReader`/`HeapRead` system (pointer arithmetic, `UnsafeCell` access, reader-count invariants).
+Do NOT modify files under `crates/monty/src/heap/` without explicit user approval.
+Changes to this module require careful review of the safety invariants documented in the code comments.
 
 #### Core concepts
 
@@ -346,12 +371,23 @@ inside a single builtin call (i.e. before the next instruction checkpoint):
     already handle it; for push-loops that bypass them, a one-shot size-hint
     preflight (see `deque_extend`) — never a per-item poll.
 - Unbounded/amplifying string building: `StringBuilder` (above).
+- Incremental growth of a buffer of interpreter values: `tracker.check_growth`
+    before the push (`List::append`, `parse_json_array`, `re_pattern`'s match
+    loops) — it only reaches the tracker at a capacity boundary. It models one
+    push; a bulk reservation wants `check_allocation` sized for the whole result.
 
 Do NOT add per-iteration `check_time()` polls to Rust-side loops for memory's
 sake, and do NOT preflight results bounded by a constant multiple of an
-already-tracked input (path joins, `*args` tuples, regex match lists, parsed
-JSON) — rare oversized cases there are the hard limit's job. Test each graceful
-path in `large_allocations_are_rejected_before_the_hard_limit`
+already-tracked input (path joins) — rare oversized cases there are the hard
+limit's job. The exception is a loop allocating per item, where a preflight on
+the result buffer cannot see what the items themselves cost:
+`tracker.check_memory_time_every(i)` is the amortized poll for that, as in
+`parse_json_array` and `re_pattern`'s match and split loops. `*args`, parsed
+JSON arrays and `re.findall` with at most one capture group are preflighted now
+— each killed the worker on ordinary code while listed as bounded-by-input
+above; a wider `findall` and `re.finditer` allocate per match between the checks
+and are still open. Test each graceful path in
+`large_allocations_are_rejected_before_the_hard_limit`
 (`crates/monty-runtime/tests/subprocess.rs`) — the interpreter's own tests
 never arm the allocator, so only subprocess tests exercise `max_memory`.
 
@@ -400,6 +436,8 @@ make test-docs            Test docs examples only
 make test                 Run rust tests
 make testcov              Run Rust tests with coverage, print table, and generate HTML report
 make complete-tests       Fill in incomplete test expectations using CPython
+make generate-unicode-type Regenerate the str character-property tables from the current CPython
+make check-unicode-type   Verify the checked-in str character-property tables match the current CPython
 make update-typeshed      Update vendored typeshed from upstream
 make bench                Run benchmarks
 make bench-pool           Run subprocess pool benchmarks (spawn, checkout, wire round-trips)
@@ -709,6 +747,7 @@ All these markers must be at the start of comment lines to be recognized.
 - Run `make lint-py` after adding tests
 - Use `make complete-tests` to fill in blank expectations
 - Regression tests run via `datatest-stable` harness in `crates/monty-datatest/src/main.rs`, use `make test-cases` to run them
+- The CPython side of each case runs under a 30s watchdog (`CpythonWatchdog` in the harness): a hanging case fails on its own instead of stalling the whole run, and one stuck in C code aborts the run naming the test
 
 ### Rust integration tests and `insta` snapshots
 
@@ -823,7 +862,7 @@ If you find yourself fighting the borrow checker around `clone_with_heap` or `al
 ### Cycle collection — Bacon–Rajan trial deletion
 
 Reference counting alone cannot reclaim cycles. Monty uses **Bacon–Rajan trial deletion**
-(`Heap::collect_cycles` in `crates/monty/src/heap.rs`).
+(`Heap::collect_cycles` in `crates/monty/src/heap/mod.rs`).
 
 **Resource limits**: When a memory or time limit is exceeded, execution terminates with a `ResourceError`. No guarantees are made about the state of the heap or reference counts after a resource limit is exceeded. The heap may contain orphaned objects with incorrect refcounts. This is acceptable because resource exhaustion is a terminal error - the execution context should be discarded.
 
@@ -841,7 +880,7 @@ recovery, framing and value conversion all live in Rust.
 
 - `crates/monty-js/src/` - Rust napi crate (native-only): `pool.rs`
     (NativePool / NativeSession over `monty-pool`), `convert.rs`
-    (JS ↔ MontyObject), `exceptions.rs`, `limits.rs`
+    (JS ↔ `MontyGraph`; an object referenced twice crosses once in either direction), `exceptions.rs`, `limits.rs`
 - `crates/monty-js/ts/` - TypeScript wrapper: `pool.ts` (Monty),
     `session.ts` (MontySession + drive loop), `errors.ts`, `binary.ts`
     (monty binary resolution), `mount.ts`, `native.ts` (turn-object typings)
@@ -1052,12 +1091,13 @@ Limitations section of the docs site (`docs/limitations/index.md` is the subset 
 `limitations/<file>.md` path in this file, the skills and the agents keeps working.
 The contributor rules below are also in `docs/limitations/AGENTS.md`, which is excluded from the build.
 
-Every pull request that adds, changes, or removes user-visible behavior MUST
-land (or update) a markdown document under `./limitations/` describing how
-the feature DIVERGES from CPython and what subset of the CPython surface
-area Monty actually implements. The directory is the single source of truth
-for "what does Monty *not* do that CPython does" — module-level docstrings
-and inline comments are not sufficient on their own.
+Every pull request that changes a CPython divergence MUST update the owning page under `./limitations/`.
+The directory records what Monty does not implement or does differently; docstrings and inline comments alone
+are not sufficient.
+Host-API contracts belong in the relevant `docs/` topic and binding reference, and implementation rationale in
+crate READMEs or code comments.
+Do not add migration history or a general architecture page here.
+Before adding a caveat, check its topic page: update the existing explanation and link to it rather than duplicating it.
 
 **NOTE**: `./limitations/` SHOULD **ONLY** INCLUDE INFORMATION ABOUT BEHAVIOR DIVERGENCES FROM CPython, not points that describe behavior that matches CPython's behavior.
 

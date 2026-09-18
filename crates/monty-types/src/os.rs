@@ -5,18 +5,20 @@
 //! these; the host (a `MountTable`, an `os` callback) decides whether to
 //! permit it. The interpreter itself never performs I/O.
 //!
-//! The fs/ layer matches on the enum directly (no [`MontyObject`](crate::MontyObject) introspection);
+//! The fs/ layer matches on the enum directly (no value introspection);
 //! host bindings get a generic `(positional, keyword)` view via
 //! [`OsFunctionCall::to_args`].
 
-use std::{fmt, ops::Deref};
+use std::{borrow::Cow, fmt, ops::Deref, time::Duration};
 
 use crate::{
-    args::{ToArgs, ToMontyObject},
+    args::{PushValue, ToArgs},
     exceptions::{ExcType, MontyException},
     file_mode::FileMode,
     format::StringRepr,
-    object::{MontyObject, MontyTimeZone},
+    graph::{MontyGraph, MontyNode, NodeId},
+    object::{CallArgs, MontyObject, MontyTimeZone},
+    virtual_path::normalize_virtual_path,
 };
 // =============================================================================
 // OsFunctionCall — the central public dispatch value.
@@ -25,7 +27,7 @@ use crate::{
 /// Tagged dispatch value for OS-level operations.
 ///
 /// Each variant carries the strongly-typed args/kwargs the corresponding OS
-/// call needs. The fs/ layer matches on this enum directly (no [`MontyObject`](crate::MontyObject)
+/// call needs. The fs/ layer matches on this enum directly (no value
 /// introspection); host bindings get a generic `(positional, keyword)` view
 /// via [`OsFunctionCall::to_args`].
 ///
@@ -81,7 +83,7 @@ pub enum OsFunctionCall {
     // ---- FS mutate (custom shapes) ----------------------------------------
     /// Open a file. The host performs the open-time effect (truncate for
     /// `w`/`w+`, create-if-missing for `a`/`a+`, existence check for `r`/`r+`)
-    /// and returns a [`MontyObject::FileHandle`] — it never holds a live OS
+    /// and returns a [`MontyFileHandle`](crate::MontyFileHandle) — it never holds a live OS
     /// handle across calls.
     #[strum(serialize = "open")]
     Open(OpenCallArgs),
@@ -112,9 +114,40 @@ pub enum OsFunctionCall {
     /// Carries the timezone argument, `None` for a naive result.
     #[strum(serialize = "datetime.now")]
     DateTimeNow(Option<MontyTimeZone>),
+    /// Read `size` bytes of entropy from the host (for `os.urandom(size)`, and
+    /// how the `random` module seeds an unseeded generator).
+    #[strum(serialize = "os.urandom")]
+    Urandom(UrandomArgs),
+    /// Read the host clock as `time.time()` does: seconds since the Unix
+    /// epoch, answered with a [`MontyNode::Float`].
+    #[strum(serialize = "time.time")]
+    Time,
+    /// `time.sleep(seconds)` — the host waits, then answers with any value
+    /// (`time.sleep` discards it and evaluates to `None`).
+    #[strum(serialize = "time.sleep")]
+    Sleep(Duration),
+    /// `asyncio.sleep(delay)` — like [`Sleep`](Self::Sleep), except the
+    /// sandbox turns the answer into an awaitable, so a host that runs an
+    /// event loop should answer with a future (`ExtFunctionResult::Future`)
+    /// and resolve it when the delay elapses, letting sibling tasks run
+    /// meanwhile. The answer's value is ignored: the sandbox keeps the
+    /// `result` argument itself and produces it from the `await`.
+    #[strum(serialize = "asyncio.sleep")]
+    AsyncSleep(Duration),
 }
 
 impl OsFunctionCall {
+    /// Whether a host may answer the call with this [`name`](Self::name) with
+    /// `ExtFunctionResult::Future` and resolve it later, letting the sandbox's
+    /// other tasks run meanwhile.
+    ///
+    /// Only `asyncio.sleep` qualifies: every other call is a value the
+    /// calling code is waiting on, so the host must answer it in place.
+    #[must_use]
+    pub fn accepts_future(name: &str) -> bool {
+        name == "asyncio.sleep"
+    }
+
     /// Stable string name for this OS function — surfaces in
     /// [`Self::on_no_handler`] errors, host `os` callbacks, and serialised
     /// snapshots. The strum `serialize` string on each variant.
@@ -123,10 +156,20 @@ impl OsFunctionCall {
         self.into()
     }
 
-    /// Projects this call's args into `(positional, keyword)` [`MontyObject`](crate::MontyObject)
-    /// vectors for delivery to a host callback.
+    /// Projects this call's args into the [`CallArgs`] delivered to a host
+    /// callback, with lexically normalized paths. Empty paths stay empty. The
+    /// interpreter checks NUL bytes before dispatch; hosts constructing calls
+    /// must use [`Self::check_path_null_bytes`] first. Mounts must validate
+    /// length limits on the original typed call.
     #[must_use]
-    pub fn to_args(self) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
+    pub fn to_args(mut self) -> CallArgs {
+        for path in self.fs_paths_mut() {
+            if !path.is_empty()
+                && let Cow::Owned(normalized) = normalize_virtual_path(path)
+            {
+                *path = MontyPath::new(normalized);
+            }
+        }
         match self {
             // Single-path variants — just the path in positionals.
             Self::Exists(p)
@@ -140,7 +183,7 @@ impl OsFunctionCall {
             | Self::Resolve(p)
             | Self::Absolute(p)
             | Self::Unlink(p)
-            | Self::Rmdir(p) => (vec![p.into_monty_object()], vec![]),
+            | Self::Rmdir(p) => single_arg(p),
             // Multi-field variants delegate to their derived `ToArgs`.
             Self::WriteText(a) | Self::AppendText(a) => a.to_args(),
             Self::WriteBytes(a) | Self::AppendBytes(a) => a.to_args(),
@@ -148,9 +191,11 @@ impl OsFunctionCall {
             Self::Mkdir(a) => a.to_args(),
             Self::Rename(a) => a.to_args(),
             Self::Getenv(a) => a.to_args(),
+            Self::Urandom(a) => a.to_args(),
             // Unit & single-value non-FS variants.
-            Self::GetEnviron | Self::DateToday => (vec![], vec![]),
-            Self::DateTimeNow(tz) => (vec![tz.map_or(MontyObject::None, MontyObject::TimeZone)], vec![]),
+            Self::GetEnviron | Self::DateToday | Self::Time => CallArgs::new(),
+            Self::DateTimeNow(tz) => single_arg(tz.map_or(MontyNode::None, MontyNode::TimeZone)),
+            Self::Sleep(delay) | Self::AsyncSleep(delay) => single_arg(MontyNode::Float(delay.as_secs_f64())),
         }
     }
 
@@ -182,6 +227,19 @@ impl OsFunctionCall {
             self,
             Self::Exists(_) | Self::IsFile(_) | Self::IsDir(_) | Self::IsSymlink(_)
         )
+    }
+
+    /// Checks both raw filesystem paths before normalization can hide a NUL byte.
+    /// Returns the operation-specific `ValueError` message; existence predicates
+    /// should return `False` instead of raising it.
+    pub fn check_path_null_bytes(&self) -> Result<(), &'static str> {
+        if self.fs_primary_path().is_some_and(|path| path.contains('\0')) {
+            Err(self.embedded_null_message(false))
+        } else if self.rename_destination().is_some_and(|path| path.contains('\0')) {
+            Err(self.embedded_null_message(true))
+        } else {
+            Ok(())
+        }
     }
 
     /// CPython's `ValueError` message for a path containing a null byte.
@@ -236,7 +294,14 @@ impl OsFunctionCall {
             Self::Open(a) => Some(a.path.as_str()),
             Self::Mkdir(a) => Some(a.path.as_str()),
             Self::Rename(a) => Some(a.src.as_str()),
-            Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) => None,
+            Self::Getenv(_)
+            | Self::GetEnviron
+            | Self::DateToday
+            | Self::DateTimeNow(_)
+            | Self::Urandom(_)
+            | Self::Time
+            | Self::Sleep(_)
+            | Self::AsyncSleep(_) => None,
         }
     }
 
@@ -251,14 +316,54 @@ impl OsFunctionCall {
         }
     }
 
+    /// Every path this call carries, mutably: the primary path plus the
+    /// rename destination. The interpreter resolves relative paths against
+    /// the sandbox working directory here before the call reaches the host,
+    /// so host backends only ever see absolute virtual paths.
+    pub fn fs_paths_mut(&mut self) -> impl Iterator<Item = &mut MontyPath> {
+        let (primary, dst) = match self {
+            Self::Exists(p)
+            | Self::IsFile(p)
+            | Self::IsDir(p)
+            | Self::IsSymlink(p)
+            | Self::ReadText(p)
+            | Self::ReadBytes(p)
+            | Self::Stat(p)
+            | Self::Iterdir(p)
+            | Self::Resolve(p)
+            | Self::Absolute(p)
+            | Self::Unlink(p)
+            | Self::Rmdir(p) => (Some(p), None),
+            Self::WriteText(a) | Self::AppendText(a) => (Some(&mut a.path), None),
+            Self::WriteBytes(a) | Self::AppendBytes(a) => (Some(&mut a.path), None),
+            Self::Open(a) => (Some(&mut a.path), None),
+            Self::Mkdir(a) => (Some(&mut a.path), None),
+            Self::Rename(a) => (Some(&mut a.src), Some(&mut a.dst)),
+            Self::Getenv(_)
+            | Self::GetEnviron
+            | Self::DateToday
+            | Self::DateTimeNow(_)
+            | Self::Urandom(_)
+            | Self::Time
+            | Self::Sleep(_)
+            | Self::AsyncSleep(_) => (None, None),
+        };
+        primary.into_iter().chain(dst)
+    }
+
     /// Exception to raise when no handler accepted this call: `PermissionError`
     /// for FS ops (with the path), `RuntimeError` for non-FS ops.
     #[must_use]
     pub fn on_no_handler(&self) -> MontyException {
         if let Some(path) = self.fs_primary_path() {
+            let path = if path.is_empty() {
+                Cow::Borrowed(path)
+            } else {
+                normalize_virtual_path(path)
+            };
             MontyException::new(
                 ExcType::PermissionError,
-                Some(format!("Permission denied: {}", StringRepr(path))),
+                Some(format!("Permission denied: {}", StringRepr(&path))),
             )
         } else {
             MontyException::new(
@@ -274,14 +379,21 @@ impl fmt::Display for OsFunctionCall {
         f.write_str(self.name())
     }
 }
+/// A call with one positional argument.
+fn single_arg(value: impl PushValue) -> CallArgs {
+    let mut call = CallArgs::new();
+    call.push_arg(value);
+    call
+}
+
 // =============================================================================
 // Args structs — per-variant payloads carried by `OsFunctionCall`.
 // =============================================================================
 //
 // Each variant carries a struct that derives `ToArgs` for projection to
-// `(positional, keyword)` MontyObjects. Zero-arg variants use empty structs so
-// `to_args()` has no special arms. Producers construct these directly via
-// struct literals (see `types/path.rs`, `builtins/open.rs`, etc.).
+// `CallArgs`. Zero-arg variants use empty structs so `to_args()` has no
+// special arms. Producers construct these directly via struct literals (see
+// `types/path.rs`, `builtins/open.rs`, etc.).
 
 /// `path + str data` shape used by `WriteText` and `AppendText`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
@@ -299,7 +411,7 @@ pub struct PathBytesDataArgs {
 
 /// `open(path, mode)` shape. The mode is parsed into [`FileMode`] before
 /// construction so the fs/ backend doesn't re-parse; [`ToArgs`](crate::args::ToArgs) re-serialises
-/// it back to a [`MontyObject::String`](crate::MontyObject::String) for the host.
+/// it back to a [`MontyNode::String`] for the host.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct OpenCallArgs {
     pub path: MontyPath,
@@ -332,30 +444,94 @@ pub struct GetenvArgs {
     pub default: MontyObject,
 }
 
+/// `os.urandom(size)` shape. The interpreter rejects a negative `size` before
+/// suspending, so the count is unsigned; the host answers with exactly `size`
+/// bytes. `size` is sandbox-controlled, so a handler should cap it before allocating.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
+pub struct UrandomArgs {
+    pub size: u64,
+}
+
+/// Longest sleep the sleep calls accept, matching the point where CPython's
+/// `PyTime_t` (nanoseconds in an `i64`) overflows.
+pub const MAX_SLEEP_SECONDS: f64 = 9_223_372_036.854_775;
+
+/// Why a requested sleep length cannot be carried by an OS call.
+///
+/// The caller picks the Python-level consequence: `time.sleep` raises
+/// (`ValueError` for the first two, `OverflowError` for the third) while
+/// `asyncio.sleep` raises only for NaN and clamps the rest, as CPython does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepError {
+    /// The delay was NaN.
+    NotANumber,
+    /// The delay was negative.
+    Negative,
+    /// The delay was past [`MAX_SLEEP_SECONDS`] (infinity included).
+    TooLarge,
+}
+
+/// Converts a Python sleep argument into the [`Duration`] an OS call carries.
+///
+/// Sleep payloads are `Duration` rather than raw seconds precisely so no host
+/// is ever handed a NaN, negative or unrepresentable span to convert — the
+/// obvious `Duration::from_secs_f64` panics on all three. Both producers, the
+/// interpreter and the wire decoder, go through here.
+pub fn sleep_duration(seconds: f64) -> Result<Duration, SleepError> {
+    // Range before sign, as CPython converts to `PyTime_t` before checking
+    // the sign: `-inf` and huge negatives overflow rather than being negative.
+    if seconds.is_nan() {
+        Err(SleepError::NotANumber)
+    } else if seconds.abs() > MAX_SLEEP_SECONDS {
+        Err(SleepError::TooLarge)
+    } else if seconds < 0.0 {
+        Err(SleepError::Negative)
+    } else {
+        Duration::try_from_secs_f64(seconds).map_err(|_| SleepError::TooLarge)
+    }
+}
+
+/// Like [`sleep_duration`], but for `asyncio.sleep`, which clamps rather than
+/// raising: a negative delay becomes no wait at all (CPython returns
+/// immediately) and an over-long one saturates at [`MAX_SLEEP_SECONDS`]. Only
+/// NaN is refused, the one delay CPython rejects there.
+pub fn sleep_duration_saturating(seconds: f64) -> Result<Duration, SleepError> {
+    match sleep_duration(seconds) {
+        Ok(delay) => Ok(delay),
+        // `delay <= 0` returns at once in CPython, however far below zero.
+        Err(SleepError::Negative) => Ok(Duration::ZERO),
+        Err(SleepError::TooLarge) if seconds < 0.0 => Ok(Duration::ZERO),
+        Err(SleepError::TooLarge) => Ok(Duration::from_secs_f64(MAX_SLEEP_SECONDS)),
+        Err(err @ SleepError::NotANumber) => Err(err),
+    }
+}
+
 // =============================================================================
 // MontyPath — owned virtual-sandbox path used by every path-bearing variant.
 // =============================================================================
 
 /// Owned virtual (sandbox) path carried by OS-call args.
 ///
-/// `String` newtype: derefs to `&str` for fs/ routing, and [`ToMontyObject`](crate::args::ToMontyObject)
-/// projects it back to [`MontyObject::Path`] at the host boundary. Constructed
-/// at the producer site after the source `Value` has been validated as a
-/// path/string — never from raw input.
+/// Preserves the supplied string, including invalid components, for host validation.
+/// Derefs to `&str` for routing; [`PushValue`](crate::args::PushValue)
+/// projects it back to a [`MontyNode::Path`] at the host boundary.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MontyPath(String);
 
 impl MontyPath {
+    /// Stores the path without validation or normalization; hosts validate before I/O.
     #[must_use]
     pub fn new(path: String) -> Self {
         Self(path)
     }
 
+    /// Borrows the original spelling for host validation and error messages.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    /// Takes the original string without copying it.
     #[must_use]
     pub fn into_string(self) -> String {
         self.0
@@ -382,16 +558,16 @@ impl From<&str> for MontyPath {
     }
 }
 
-impl ToMontyObject for MontyPath {
-    fn into_monty_object(self) -> MontyObject {
-        MontyObject::Path(self.0)
+impl PushValue for MontyPath {
+    fn push_into(self, graph: &mut MontyGraph) -> NodeId {
+        graph.push(MontyNode::Path(self.0))
     }
 }
 // =============================================================================
 // stat_result builders — separate utility API used by host backends.
 // =============================================================================
 //
-// These functions create MontyObject::NamedTuple values that match Python's
+// These functions create namedtuple values that match Python's
 // os.stat_result structure. The stat_result has 10 fields:
 // st_mode, st_ino, st_dev, st_nlink, st_uid, st_gid, st_size, st_atime, st_mtime, st_ctime.
 
@@ -462,22 +638,22 @@ pub fn stat_result(
     st_mtime: f64,
     st_ctime: f64,
 ) -> MontyObject {
-    MontyObject::NamedTuple {
-        type_name: STAT_RESULT_TYPE_NAME.to_owned(),
-        field_names: STAT_RESULT_FIELDS.iter().map(|s| (*s).to_owned()).collect(),
-        values: vec![
-            MontyObject::Int(st_mode),
-            MontyObject::Int(st_ino),
-            MontyObject::Int(st_dev),
-            MontyObject::Int(st_nlink),
-            MontyObject::Int(st_uid),
-            MontyObject::Int(st_gid),
-            MontyObject::Int(st_size),
-            MontyObject::Float(st_atime),
-            MontyObject::Float(st_mtime),
-            MontyObject::Float(st_ctime),
+    MontyObject::named_tuple(
+        STAT_RESULT_TYPE_NAME,
+        STAT_RESULT_FIELDS.iter().copied(),
+        [
+            MontyObject::int(st_mode),
+            MontyObject::int(st_ino),
+            MontyObject::int(st_dev),
+            MontyObject::int(st_nlink),
+            MontyObject::int(st_uid),
+            MontyObject::int(st_gid),
+            MontyObject::int(st_size),
+            MontyObject::float(st_atime),
+            MontyObject::float(st_mtime),
+            MontyObject::float(st_ctime),
         ],
-    }
+    )
 }
 
 const STAT_RESULT_TYPE_NAME: &str = "StatResult";

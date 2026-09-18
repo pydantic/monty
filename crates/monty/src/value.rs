@@ -8,6 +8,8 @@ use std::{
 
 use num_bigint::{BigInt, Sign};
 use num_traits::{FromPrimitive, ToPrimitive};
+use serde::de::Error as _;
+use smallvec::smallvec;
 
 use crate::{
     builtins::{Builtins, BuiltinsFunctions},
@@ -21,17 +23,18 @@ use crate::{
     heap_data::heap_subscript,
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
-    modules::ModuleFunctions,
+    modules::{ModuleFunctions, itertools::ItertoolsFunctions},
     percent_format::{copy_bytes_template, percent_format, percent_format_bytes},
     resource_checks::check_pow_size,
     types::{
-        Bytes, BytesIterator, CmpOrder, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
+        Bytes, BytesIterator, CmpOrder, GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
+        Union,
         bytes::{bytes_contains, bytes_repr_fmt, concat_bytes, get_byte_at_index, repeat_bytes},
         host_class_type,
         instance::{instance_dataclass_eq, instance_getattr, instance_str, instance_user_eq},
         long_int::{
-            bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, check_bits_str_digits_limit, i64_cmp_f64,
-            repeat_count, wide_i128_into_value,
+            bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, bigint_true_divide,
+            check_bits_str_digits_limit, i64_cmp_f64, repeat_count, wide_i128_into_value,
         },
         namedtuple::cmp_item_seqs,
         slice::slice_collect_iterator,
@@ -39,6 +42,7 @@ use crate::{
             allocate_char, allocate_string, concat_allocate_str, copy_format_template, get_char_at_index, repeat_str,
             str_contains, string_repr_fmt,
         },
+        tuple::allocate_tuple,
     },
 };
 
@@ -541,11 +545,15 @@ impl<'h> PyTrait<'h> for Value {
     /// of a `str` still needs a buffer for quoting/escaping.
     fn py_repr(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         match self {
-            Self::None => Ok(Self::InternString(StaticStrings::NoneRepr.into())),
-            Self::Bool(true) => Ok(Self::InternString(StaticStrings::TrueRepr.into())),
-            Self::Bool(false) => Ok(Self::InternString(StaticStrings::FalseRepr.into())),
-            Self::Ellipsis => Ok(Self::InternString(StaticStrings::EllipsisRepr.into())),
-            Self::NotImplemented => Ok(Self::InternString(StaticStrings::NotImplementedRepr.into())),
+            Self::None => Ok(Self::InternString(vm.interns.intern_static(StaticStrings::NoneRepr))),
+            Self::Bool(true) => Ok(Self::InternString(vm.interns.intern_static(StaticStrings::TrueRepr))),
+            Self::Bool(false) => Ok(Self::InternString(vm.interns.intern_static(StaticStrings::FalseRepr))),
+            Self::Ellipsis => Ok(Self::InternString(
+                vm.interns.intern_static(StaticStrings::EllipsisRepr),
+            )),
+            Self::NotImplemented => Ok(Self::InternString(
+                vm.interns.intern_static(StaticStrings::NotImplementedRepr),
+            )),
             Self::Int(i) => Ok(allocate_string(itoa::Buffer::new().format(*i), vm.heap)),
             _ => {
                 let mut s = String::new();
@@ -774,8 +782,16 @@ impl<'h> PyTrait<'h> for Value {
             (Self::Int(a), Self::Int(b)) => {
                 if *b == 0 {
                     Err(ExcType::zero_division().into())
-                } else {
+                } else if a.unsigned_abs() <= 1 << f64::MANTISSA_DIGITS && b.unsigned_abs() <= 1 << f64::MANTISSA_DIGITS
+                {
                     Ok(Some(Self::Float(*a as f64 / *b as f64)))
+                } else {
+                    // Rounding each operand to `f64` first would round the quotient twice.
+                    Ok(Some(Self::Float(bigint_true_divide(
+                        &BigInt::from(*a),
+                        &BigInt::from(*b),
+                        &vm.heap.tracker,
+                    )?)))
                 }
             }
             (Self::Float(a), Self::Float(b)) => {
@@ -870,21 +886,21 @@ impl<'h> PyTrait<'h> for Value {
                 if *b == 0.0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Self::Float((a / b).floor())))
+                    Ok(Some(Self::Float(py_float_divmod(*a, *b).0)))
                 }
             }
             (Self::Int(a), Self::Float(b)) => {
                 if *b == 0.0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Self::Float((*a as f64 / b).floor())))
+                    Ok(Some(Self::Float(py_float_divmod(*a as f64, *b).0)))
                 }
             }
             (Self::Float(a), Self::Int(b)) => {
                 if *b == 0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Self::Float((a / *b as f64).floor())))
+                    Ok(Some(Self::Float(py_float_divmod(*a, *b as f64).0)))
                 }
             }
             // Bool floor division (True=1, False=0)
@@ -1001,6 +1017,28 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    /// One-sided implementation of Python `divmod()`.
+    fn py_divmod_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        if let (Some(lhs), Some(rhs)) = (immediate_int(self), immediate_int(other)) {
+            int_divmod_tuple(lhs, rhs, vm.heap).map(Some)
+        } else if let (Some(lhs), Some(rhs)) = (immediate_float(self), immediate_float(other)) {
+            float_divmod_tuple(lhs, rhs, vm.heap).map(Some)
+        } else if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_divmod_impl(other, vm)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Reflected implementation of Python `divmod()`.
+    fn py_rdivmod_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_rdivmod_impl(other, vm)
+        } else {
+            Ok(None)
+        }
+    }
+
     /// One-sided implementation of Python `** or pow()`.
     fn py_pow_impl(&self, other: &Self, modulus: Option<&Self>, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         if modulus.is_some() {
@@ -1012,9 +1050,7 @@ impl<'h> PyTrait<'h> for Value {
         } else {
             match (self, other) {
                 (Self::Int(base), Self::Int(exp)) => {
-                    if *base == 0 && *exp < 0 {
-                        Err(ExcType::zero_negative_power())
-                    } else if *exp >= 0 {
+                    if *exp >= 0 {
                         // Positive exponent: try to return int, promote to LongInt on overflow
                         if let Ok(exp_u32) = u32::try_from(*exp) {
                             if let Some(result) = base.checked_pow(exp_u32) {
@@ -1038,46 +1074,17 @@ impl<'h> PyTrait<'h> for Value {
                             Ok(Some(LongInt::new(bi).into_value(vm.heap)))
                         }
                     } else {
-                        // Negative exponent: return float
-                        // Use powi if exp fits in i32, otherwise use powf
-                        if let Ok(exp_i32) = i32::try_from(*exp) {
-                            Ok(Some(Self::Float((*base as f64).powi(exp_i32))))
-                        } else {
-                            Ok(Some(Self::Float((*base as f64).powf(*exp as f64))))
-                        }
+                        // Negative exponent: CPython hands off to `float_pow`
+                        Ok(Some(Self::Float(float_pow(*base as f64, *exp as f64)?)))
                     }
                 }
-                (Self::Float(base), Self::Float(exp)) => {
-                    if *base == 0.0 && *exp < 0.0 {
-                        Err(ExcType::zero_negative_power())
-                    } else {
-                        Ok(Some(Self::Float(base.powf(*exp))))
-                    }
-                }
-                (Self::Int(base), Self::Float(exp)) => {
-                    if *base == 0 && *exp < 0.0 {
-                        Err(ExcType::zero_negative_power())
-                    } else {
-                        Ok(Some(Self::Float((*base as f64).powf(*exp))))
-                    }
-                }
-                (Self::Float(base), Self::Int(exp)) => {
-                    if *base == 0.0 && *exp < 0 {
-                        Err(ExcType::zero_negative_power())
-                    } else if let Ok(exp_i32) = i32::try_from(*exp) {
-                        // Use powi if exp fits in i32
-                        Ok(Some(Self::Float(base.powi(exp_i32))))
-                    } else {
-                        // Fall back to powf for exponents outside i32 range
-                        Ok(Some(Self::Float(base.powf(*exp as f64))))
-                    }
-                }
+                (Self::Float(base), Self::Float(exp)) => Ok(Some(Self::Float(float_pow(*base, *exp)?))),
+                (Self::Int(base), Self::Float(exp)) => Ok(Some(Self::Float(float_pow(*base as f64, *exp)?))),
+                (Self::Float(base), Self::Int(exp)) => Ok(Some(Self::Float(float_pow(*base, *exp as f64)?))),
                 // Bool power operations (True=1, False=0)
                 (Self::Bool(base), Self::Int(exp)) => {
                     let base_int = i64::from(*base);
-                    if base_int == 0 && *exp < 0 {
-                        Err(ExcType::zero_negative_power())
-                    } else if *exp >= 0 {
+                    if *exp >= 0 {
                         // Positive exponent: 1**n=1, 0**n=0 (for n>0), 0**0=1
                         if let Ok(exp_u32) = u32::try_from(*exp) {
                             match base_int.checked_pow(exp_u32) {
@@ -1088,12 +1095,8 @@ impl<'h> PyTrait<'h> for Value {
                             Ok(Some(Self::Float((base_int as f64).powf(*exp as f64))))
                         }
                     } else {
-                        // Negative exponent: return float (1**-n=1.0)
-                        if let Ok(exp_i32) = i32::try_from(*exp) {
-                            Ok(Some(Self::Float((base_int as f64).powi(exp_i32))))
-                        } else {
-                            Ok(Some(Self::Float((base_int as f64).powf(*exp as f64))))
-                        }
+                        // Negative exponent: CPython hands off to `float_pow`
+                        Ok(Some(Self::Float(float_pow(base_int as f64, *exp as f64)?)))
                     }
                 }
                 (Self::Int(base), Self::Bool(exp)) => {
@@ -1104,14 +1107,7 @@ impl<'h> PyTrait<'h> for Value {
                         Ok(Some(Self::Int(1)))
                     }
                 }
-                (Self::Bool(base), Self::Float(exp)) => {
-                    let base_float = f64::from(*base);
-                    if base_float == 0.0 && *exp < 0.0 {
-                        Err(ExcType::zero_negative_power())
-                    } else {
-                        Ok(Some(Self::Float(base_float.powf(*exp))))
-                    }
-                }
+                (Self::Bool(base), Self::Float(exp)) => Ok(Some(Self::Float(float_pow(f64::from(*base), *exp)?))),
                 (Self::Float(base), Self::Bool(exp)) => {
                     // base ** True = base, base ** False = 1.0
                     if *exp {
@@ -1175,6 +1171,11 @@ impl<'h> PyTrait<'h> for Value {
             Ok(Some(Self::Int(lhs | rhs)))
         } else if let Self::Ref(id) = self {
             vm.heap.read(*id).py_or_impl(other, vm)
+        } else if matches!(self, Self::Builtin(_) | Self::None | Self::Marker(_)) {
+            // `int | None` and the other unions with an immediate left operand;
+            // class objects, aliases and unions dispatch through their own
+            // `py_or_impl`, so other heap receivers never reach this check.
+            Union::try_or(self, other, vm)
         } else {
             Ok(None)
         }
@@ -1184,6 +1185,10 @@ impl<'h> PyTrait<'h> for Value {
     fn py_ror_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         if let Self::Ref(id) = self {
             vm.heap.read(*id).py_ror_impl(other, vm)
+        } else if matches!(self, Self::Builtin(_) | Self::None | Self::Marker(_)) {
+            // `None | int`: the left operand has no `|` of its own, so the
+            // union forms on the reflected path, in source order.
+            Union::try_or(other, self, vm)
         } else {
             Ok(None)
         }
@@ -1317,17 +1322,36 @@ impl<'h> PyTrait<'h> for Value {
                 let byte = get_byte_at_index(bytes, index).ok_or_else(ExcType::bytes_index_error)?;
                 Ok(Self::Int(i64::from(byte)))
             }
+            // `list[int]` and the other parameterizable types build a
+            // `types.GenericAlias`; `type` is a builtin function in Monty but
+            // subscripts like the type it is in CPython.
+            Self::Builtin(Builtins::Type(t)) if t.has_class_getitem() => {
+                Ok(GenericAlias::subscript(*t, key.clone_with_heap(vm), vm))
+            }
+            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
+                Ok(GenericAlias::subscript(Type::Type, key.clone_with_heap(vm), vm))
+            }
+            // `typing.Union[int, str]` and `typing.Optional[int]` are the
+            // `|` unions spelled the pre-3.10 way.
+            Self::Builtin(Builtins::Type(Type::Union)) => Union::subscript(key.clone_with_heap(vm), vm),
+            Self::Marker(Marker(StaticStrings::Optional)) => Union::optional(key.clone_with_heap(vm), vm),
+            Self::Builtin(Builtins::Type(t)) => {
+                Err(ExcType::type_error_type_not_subscriptable(&t.name(vm.heap, vm.interns)))
+            }
+            Self::Builtin(Builtins::ExcType(exc_type)) => {
+                Err(ExcType::type_error_type_not_subscriptable((*exc_type).into()))
+            }
             _ => Err(ExcType::type_error_not_sub(&self.py_type_name(vm))),
         }
     }
 
     fn py_setitem(&mut self, key: Self, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
-        match self {
-            Self::Ref(id) => vm.heap.read(*id).py_setitem(key, value, vm),
-            _ => Err(ExcType::type_error(format!(
-                "'{}' object does not support item assignment",
-                self.py_type_name(vm)
-            ))),
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_setitem(key, value, vm)
+        } else {
+            key.drop_with(vm);
+            value.drop_with(vm);
+            Err(ExcType::type_error_not_sub_assignment(&self.py_type_name(vm)))
         }
     }
 
@@ -1420,16 +1444,16 @@ impl Value {
             .unwrap_or_else(|| self.py_type_heap(heap).name(heap, interns))
     }
 
-    /// Class name of a named tuple or host class instance, if this value is
-    /// one.
+    /// Class name to use in error messages when [`Type`] does not carry it:
+    /// a named tuple, a host class instance, or a `random.Random`.
     ///
-    /// Both keep their class name in the heap entry rather than in [`Type`],
-    /// which carries no identity for them (unlike `Type::Instance`, whose
-    /// payload is the refcounted class object). Error messages therefore
-    /// reach for it here to name the class (`'P'`, `'Point'`) rather than the
-    /// generic `'namedtuple'` / `'HostClass'`, matching CPython — including
-    /// for structseqs, whose stored name is already the qualified
-    /// `sys.version_info`.
+    /// Named tuples and host classes keep their class name in the heap entry
+    /// (unlike `Type::Instance`, whose payload is the refcounted class
+    /// object), so messages name the class (`'P'`, `'Point'`) rather than
+    /// the generic `'namedtuple'` / `'HostClass'`, matching CPython. That
+    /// includes structseqs, whose stored name is already the qualified
+    /// `sys.version_info`. `Random` is the reverse case: its `Type` name is
+    /// the qualified `random.Random`, but messages use the bare class name.
     #[must_use]
     fn dynamic_class_name<'i>(&self, heap: &Heap, interns: &'i Interns) -> Option<Cow<'i, str>> {
         let Self::Ref(heap_id) = self else {
@@ -1438,6 +1462,9 @@ impl Value {
         let name = match heap.get(*heap_id) {
             HeapData::NamedTuple(nt) => nt.name_either(),
             HeapData::HostClass(hc) => host_class_type(heap, hc.class_id()).name_either(),
+            // A Python class in CPython, so messages carry the bare name and
+            // only `repr(type(x))` the module-qualified one.
+            HeapData::Random(_) => return Some(Cow::Borrowed("Random")),
             _ => return None,
         };
         Some(name.to_cow(interns))
@@ -1755,7 +1782,7 @@ impl Value {
             }
             Self::Builtin(Builtins::Type(t)) => {
                 // Handle type object attributes like __name__
-                let is_dunder_name = attr.static_string().map_or_else(
+                let is_dunder_name = attr.static_string(vm.interns).map_or_else(
                     || attr.as_str(vm.interns) == "__name__",
                     |ss| ss == StaticStrings::DunderName,
                 );
@@ -1765,13 +1792,22 @@ impl Value {
                         vm.heap,
                     )));
                 }
-                if *t == Type::TimeZone && attr.as_str(vm.interns) == "utc" {
-                    return Ok(CallResult::Value(vm.heap.get_timezone_utc()));
+                let t = *t;
+                if let Some(constant) = t.class_constant(attr, vm) {
+                    return Ok(CallResult::Value(constant));
+                }
+                // `chain.from_iterable`, the one attribute an `itertools`
+                // type carries. Handed out as a value so it can be bound and
+                // called later, not only called in place.
+                if t == Type::ItertoolsChain && attr.static_string(vm.interns) == Some(StaticStrings::FromIterable) {
+                    return Ok(CallResult::Value(Self::ModuleFunction(ModuleFunctions::Itertools(
+                        ItertoolsFunctions::ChainFromIterable,
+                    ))));
                 }
                 // `object.__setattr__` is the only member `object` carries: it
                 // exists so a class that hooks attribute writes has a way to
                 // perform one (see `limitations/classes.md`).
-                if *t == Type::Object && attr.as_str(vm.interns) == "__setattr__" {
+                if t == Type::Object && attr.as_str(vm.interns) == "__setattr__" {
                     return Ok(CallResult::Value(Self::Builtin(Builtins::Function(
                         BuiltinsFunctions::ObjectSetattr,
                     ))));
@@ -1933,6 +1969,20 @@ impl Value {
         }
     }
 
+    /// Borrows the arbitrary-precision value of a `LongInt`-valued int (interned
+    /// or heap-allocated). `None` for every other value, `Int`/`Bool` included,
+    /// so callers keep their own fast paths for those.
+    pub(crate) fn as_long_int<'a>(&self, vm: &'a VM<'_>) -> Option<&'a BigInt> {
+        match self {
+            Self::InternLongInt(id) => Some(vm.interns.get_long_int(*id)),
+            Self::Ref(id) => match vm.heap.get(*id) {
+                HeapData::LongInt(li) => Some(li.inner()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Performs Python `+` with reflected-operation fallback.
     pub(crate) fn py_add(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
         if let Some(result) = self.py_add_result(other, vm)? {
@@ -2020,6 +2070,20 @@ impl Value {
             |vm| self.py_mod_impl(other, vm),
             |vm| other.py_rmod_impl(self, vm),
             "%",
+        )
+    }
+
+    /// Performs Python `divmod()` with reflected-operation fallback.
+    ///
+    /// CPython spells the operator as `divmod()` in the `TypeError` an
+    /// unsupported pair raises, so that is the name passed through.
+    pub(crate) fn py_divmod(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        self.binary_op(
+            other,
+            vm,
+            |vm| self.py_divmod_impl(other, vm),
+            |vm| other.py_rdivmod_impl(self, vm),
+            "divmod()",
         )
     }
 
@@ -2368,20 +2432,10 @@ impl From<StringId> for EitherStr {
     }
 }
 
-impl From<StaticStrings> for EitherStr {
-    fn from(s: StaticStrings) -> Self {
-        Self::Interned(s.into())
-    }
-}
-
-/// Convert String to EitherStr: use Interned for known static strings,
-/// otherwise use Heap for user-defined field names.
+/// Converts owned text without assuming an executor-local intern ID.
 impl From<String> for EitherStr {
     fn from(s: String) -> Self {
-        match StaticStrings::from_str(&s) {
-            Ok(s) => s.into(),
-            Err(_) => Self::Heap(s),
-        }
+        Self::Heap(s)
     }
 }
 
@@ -2439,12 +2493,12 @@ impl EitherStr {
         }
     }
 
-    /// Returns the `StaticStrings` if this is an interned attribute from `StaticStrings`s.
+    /// Returns the static classification of this name, if recognized.
     #[inline]
-    pub fn static_string(&self) -> Option<StaticStrings> {
+    pub fn static_string(&self, interns: &Interns) -> Option<StaticStrings> {
         match self {
-            Self::Interned(id) => StaticStrings::from_string_id(*id),
-            Self::Heap(_) => None,
+            Self::Interned(id) => interns.static_string(*id),
+            Self::Heap(value) => StaticStrings::from_str(value).ok(),
         }
     }
 
@@ -2469,34 +2523,45 @@ impl EitherStr {
 ///   don't need runtime functionality
 ///
 /// Wraps a `StaticStrings` variant to leverage its string conversion capabilities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct Marker(pub StaticStrings);
+
+impl serde::Serialize for Marker {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let value: &'static str = self.0.into();
+        serde::Serialize::serialize(value, serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Marker {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        StaticStrings::from_str(&value).map(Self).map_err(D::Error::custom)
+    }
+}
 
 impl Marker {
     /// Returns the Python type of this marker.
     ///
-    /// System markers (stdout, stderr) are `TextIOWrapper`.
-    /// `typing.Union` has type `type` (matching CPython).
-    /// Other typing markers (Any, Optional, etc.) are `_SpecialForm`.
+    /// System markers (stdout, stderr) are `TextIOWrapper`; the typing
+    /// markers (Any, Optional, etc.) are `_SpecialForm`. (`typing.Union` is
+    /// a real type, `Type::Union`, not a marker.)
     pub(crate) fn py_type(self) -> Type {
         match self.0 {
             StaticStrings::Stdout | StaticStrings::Stderr => Type::TextIOWrapper,
-            StaticStrings::UnionType => Type::Type,
             _ => Type::SpecialForm,
         }
     }
 
     /// Writes the Python repr for this marker.
     ///
-    /// System markers have special repr formats ("<stdout>", "<stderr>").
-    /// `typing.Union` uses `<class 'typing.Union'>` format (matching CPython).
-    /// Other typing markers are prefixed with "typing." (e.g., "typing.Any").
+    /// System markers have special repr formats ("<stdout>", "<stderr>");
+    /// typing markers are prefixed with "typing." (e.g., "typing.Any").
     pub(crate) fn py_repr_fmt(self, f: &mut impl Write) -> fmt::Result {
         let s: &'static str = self.0.into();
         match self.0 {
             StaticStrings::Stdout => f.write_str("<stdout>")?,
             StaticStrings::Stderr => f.write_str("<stderr>")?,
-            StaticStrings::UnionType => f.write_str("<class 'typing.Union'>")?,
             _ => write!(f, "typing.{s}")?,
         }
         Ok(())
@@ -2524,6 +2589,50 @@ fn immediate_int(value: &Value) -> Option<i64> {
     }
 }
 
+/// Widens any immediate number to `f64`, for the arms where one operand is a float.
+///
+/// Callers must try [`immediate_int`] first: an all-integer pair must stay exact.
+fn immediate_float(value: &Value) -> Option<f64> {
+    match value {
+        Value::Float(value) => Some(*value),
+        Value::Int(value) => Some(*value as f64),
+        Value::Bool(value) => Some(f64::from(*value)),
+        _ => None,
+    }
+}
+
+/// Builds `divmod()`'s `(quotient, remainder)` tuple for two machine integers.
+///
+/// Only `i64::MIN // -1` overflows `i64`, and that lone case promotes to a
+/// `LongInt` pair — too small to be worth preflighting against the tracker.
+fn int_divmod_tuple(lhs: i64, rhs: i64, heap: &Heap) -> RunResult<Value> {
+    if rhs == 0 {
+        Err(ExcType::zero_division().into())
+    } else if let Some((quotient, remainder)) = floor_divmod(lhs, rhs) {
+        Ok(allocate_tuple(
+            smallvec![Value::Int(quotient), Value::Int(remainder)],
+            heap,
+        ))
+    } else {
+        Ok(bigint_divmod_tuple(&BigInt::from(lhs), &BigInt::from(rhs), heap))
+    }
+}
+
+/// Builds `divmod()`'s `(quotient, remainder)` tuple for float operands.
+///
+/// Shared with [`LongInt`]'s mixed-type arms, which widen their long operand first.
+pub(crate) fn float_divmod_tuple(lhs: f64, rhs: f64, heap: &Heap) -> RunResult<Value> {
+    if rhs == 0.0 {
+        Err(ExcType::zero_division().into())
+    } else {
+        let (quotient, remainder) = py_float_divmod(lhs, rhs);
+        Ok(allocate_tuple(
+            smallvec![Value::Float(quotient), Value::Float(remainder)],
+            heap,
+        ))
+    }
+}
+
 /// Computes Python-style floor division and modulo.
 ///
 /// Python's division rounds toward negative infinity (floor division),
@@ -2542,13 +2651,57 @@ pub(crate) fn floor_divmod(a: i64, b: i64) -> Option<(i64, i64)> {
     }
 }
 
+/// Computes Python-style float floor division and modulo together (CPython's `float_divmod`).
+///
+/// The remainder comes from `fmod` adjusted to the divisor's sign, and the quotient is
+/// floored from the exactly adjusted dividend rather than from `a / b`, which keeps
+/// `quotient * b + remainder == a` as close as floats allow. Callers must reject a zero
+/// divisor first; this helper assumes `b != 0`.
+pub(crate) fn py_float_divmod(a: f64, b: f64) -> (f64, f64) {
+    let mut modulus = a % b;
+    let mut div = (a - modulus) / b;
+    if modulus == 0.0 {
+        modulus = 0.0f64.copysign(b);
+    } else if (b < 0.0) != (modulus < 0.0) {
+        modulus += b;
+        div -= 1.0;
+    }
+    let floordiv = if div == 0.0 {
+        0.0f64.copysign(a / b)
+    } else {
+        // `div` is within an ulp of an integer; an excess above one half means it rounded down.
+        let floordiv = div.floor();
+        if div - floordiv > 0.5 { floordiv + 1.0 } else { floordiv }
+    };
+    (floordiv, modulus)
+}
+
+/// Raises `base` to `exp` with CPython's `float_pow` error rules.
+///
+/// Zero to a finite negative power is `ZeroDivisionError`, and finite operands whose
+/// result overflows raise `OverflowError` where C's `pow` would set `ERANGE`. Infinite or
+/// NaN operands pass straight through `powf`, whose special cases match C99 `pow`
+/// (so `0.0 ** -inf` is `inf`, not an error).
+pub(crate) fn float_pow(base: f64, exp: f64) -> RunResult<f64> {
+    if base == 0.0 && exp.is_finite() && exp < 0.0 {
+        Err(ExcType::zero_negative_power())
+    } else {
+        let result = base.powf(exp);
+        if result.is_infinite() && base.is_finite() && exp.is_finite() {
+            Err(ExcType::overflow_float_pow())
+        } else {
+            Ok(result)
+        }
+    }
+}
+
 /// Computes Python-style float modulo (CPython's `float_rem`).
 ///
 /// Unlike Rust's `%` (which follows the dividend's sign), the result takes the
 /// divisor's sign — `-7.0 % 3.0 == 2.0` — and a zero result gets the divisor's
 /// sign too (`6.0 % -3.0 == -0.0`). Callers must reject a zero divisor first
 /// (`ZeroDivisionError`); this helper assumes `b != 0`.
-fn py_float_mod(a: f64, b: f64) -> f64 {
+pub(crate) fn py_float_mod(a: f64, b: f64) -> f64 {
     let r = a % b;
     if r == 0.0 {
         0.0f64.copysign(b)
@@ -2602,11 +2755,11 @@ fn bigint_pow(base: BigInt, exp: u64) -> BigInt {
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{AssertMessageAnnotations, PrintWriter, ResourceTracker};
+    use monty_types::{PrintWriter, ResourceTracker};
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::{bytecode::Code, heap::HeapReader, intern::InternerBuilder};
+    use crate::{bytecode::Code, heap::HeapReader, run::VmEnv};
 
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///
@@ -2621,8 +2774,7 @@ mod tests {
 
     /// Creates a minimal Interns for testing.
     fn create_test_interns() -> Interns {
-        let interner = InternerBuilder::new("");
-        Interns::new(interner, vec![])
+        Interns::default()
     }
 
     /// Tests that `as_index()` correctly handles a LongInt containing an i64-fitting value.
@@ -2644,7 +2796,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2667,7 +2819,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2692,7 +2844,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2717,7 +2869,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_int(&mut vm)
         });
@@ -2741,7 +2893,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_int(&mut vm)
         });
@@ -2764,7 +2916,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2787,7 +2939,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2811,7 +2963,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });
@@ -2835,7 +2987,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+                VmEnv::default(),
             );
             value.as_index(&mut vm, Type::List)
         });

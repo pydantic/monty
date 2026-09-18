@@ -210,8 +210,8 @@ with Monty() as pool:
 
 On `AsyncMonty`, `external_lookup` callables may be coroutine functions and
 `resume_auto` is awaitable (`snapshot = await snapshot.resume_auto()`); a
-coroutine external is awaited concurrently and settled via an
-`AsyncFutureSnapshot`.
+coroutine external is awaited directly when the snapshot's `allow_eager_await`
+is true, and otherwise concurrently, settled via an `AsyncFutureSnapshot`.
 
 `snapshot.dump()` serializes the paused worker to bytes; a fresh session's
 `load_snapshot` restores it and returns the snapshot to resume. This lets you
@@ -377,6 +377,6 @@ dumps and restores are recorded by size only. Instrumentation is disabled until
 `instrument_telemetry` is called, and enabled instrumentation truncates large
 values at the telemetry attribute size limit.
 
-See `limitations/pool-architecture.md` in the repository for the behavioural
-details of subprocess execution (host-side mounts, buffered print callbacks,
-session dumps).
+See the documentation for [filesystem mounts](https://github.com/pydantic/monty/blob/main/docs/filesystem.md),
+[print buffering](https://github.com/pydantic/monty/blob/main/docs/limitations/print.md), and
+[session snapshots](https://github.com/pydantic/monty/blob/main/docs/snapshots.md).

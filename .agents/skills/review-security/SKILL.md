@@ -1,6 +1,6 @@
 ---
 name: review-security
-description: Security review of the current branch against its merge base — sandbox escapes, memory errors, panics and resource-limit bypasses. Use when reviewing changes for security risk, or before merging anything touching heap.rs, path_security.rs, the wire protocol or the pool.
+description: Security review of the current branch against its merge base — sandbox escapes, memory errors, panics and resource-limit bypasses. Use when reviewing changes for security risk, or before merging anything touching the heap/ module, path_security.rs, the wire protocol or the pool.
 ---
 
 # Security review
@@ -28,8 +28,10 @@ is in scope even if it isn't in the diff. Ask:
 - **Resource limits bypassed?** Allocations dodging the `ResourceTracker` (`String`
     without `StringBuilder`), loops with no fuel check, small input → huge allocation.
 - **Untrusted input still untrusted?** Wire frames from a child are hostile: decoding
-    and proto→Rust conversion must validate everything and never panic. (Snapshots and
-    dumps are trusted by contract — hosts sign and verify them.)
+    and proto→Rust conversion must validate everything and never panic. Snapshot provenance
+    and integrity are the host's responsibility. Invalid snapshots may panic, abort, hang or
+    produce wrong results, but must not cause UB; do not require semantic validation solely
+    for tampered snapshots. Keep checks needed for memory safety or transport compatibility.
 - **Panics or aborts?** `unwrap`/`expect` reachable from sandboxed input, unbounded
     recursion hitting a stack-overflow abort.
 - **Mount escapes?** Any behaviour that allows sandbox code to escape a filesystem mount
@@ -43,8 +45,8 @@ code (`monty-pool`, `monty-proto` decoding, `monty-fs`, the bindings), or in a R
 embedder calling the `monty` crate in-process, the same bug takes down the application.
 **Scrutinise those hardest**, especially anything handling a frame from a child.
 
-`crates/monty/src/heap.rs` and `crates/monty-fs/src/path_security.rs` are the two most
-security-critical files; any change to either needs careful justification. Also check the
+The `crates/monty/src/heap/` module and `crates/monty-fs/src/path_security.rs` are
+security-critical; any change to either needs careful justification. Also check the
 public API: could a `pydantic_monty` or `@pydantic/monty` user misuse this to expose
 their host?
 

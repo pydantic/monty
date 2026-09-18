@@ -217,6 +217,110 @@ try:
 except TypeError as exc:
     assert str(exc) == 'chain() takes no keyword arguments'
 
+# === The names are types ===
+# Every `itertools` name but `tee` is a class, as in CPython, so it works with
+# `isinstance`, compares equal to `type(...)`, and reprs as a class.
+assert isinstance(itertools.count(), itertools.count)
+assert isinstance(itertools.chain([1]), itertools.chain)
+assert isinstance(itertools.pairwise([1, 2]), itertools.pairwise)
+assert not isinstance(itertools.count(), itertools.repeat)
+assert not isinstance([1], itertools.count)
+assert type(itertools.cycle([1])) is itertools.cycle
+assert str(itertools.count) == "<class 'itertools.count'>"
+assert itertools.count.__name__ == 'count'
+assert itertools.zip_longest.__name__ == 'zip_longest'
+# `chain` is the one with a `__class_getitem__`, as in CPython.
+assert str(itertools.chain[int]) == 'itertools.chain[int]'
+try:
+    itertools.count[int]
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "type 'itertools.count' is not subscriptable"
+
+# The private types are exposed under their CPython names but cannot be built.
+assert str(itertools._grouper) == "<class 'itertools._grouper'>"
+assert isinstance(next(itertools.groupby([1]))[1], itertools._grouper)
+
+# === chain.from_iterable ===
+assert list(itertools.chain.from_iterable([[1, 2], [3], ()])) == [1, 2, 3]
+assert list(itertools.chain.from_iterable([])) == []
+assert list(itertools.chain.from_iterable('ab')) == ['a', 'b']
+assert list(itertools.chain.from_iterable(['ab', 'cd'])) == ['a', 'b', 'c', 'd']
+assert list(itertools.chain.from_iterable([[], [1], []])) == [1]
+# It can be bound and called later, not only called in place.
+bound_from_iterable = itertools.chain.from_iterable
+assert list(bound_from_iterable([[1], [2]])) == [1, 2]
+# The result is an ordinary chain.
+assert str(type(itertools.chain.from_iterable([]))) == "<class 'itertools.chain'>"
+from_iterable_iter = itertools.chain.from_iterable([[1]])
+assert iter(from_iterable_iter) is from_iterable_iter
+
+# The outer iterable is consumed lazily, one inner source at a time.
+outer = iter([[1, 2], [3]])
+lazy = itertools.chain.from_iterable(outer)
+assert next(lazy) == 1
+assert list(outer) == [[3]]
+
+# Each inner source is resolved only when reached, as `chain`'s arguments are,
+# and a failure there ends the chain.
+inner_bad = itertools.chain.from_iterable([[1], 5, [2]])
+assert next(inner_bad) == 1
+try:
+    next(inner_bad)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
+assert list(inner_bad) == []
+
+
+# An outer iterable that raises propagates, and ends the chain too.
+class BoomOuter:
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise ValueError('boom')
+
+
+outer_erroring = itertools.chain.from_iterable(BoomOuter())
+try:
+    next(outer_erroring)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'boom'
+assert list(outer_erroring) == []
+
+# Unlike `chain`, the outer iterable is resolved eagerly.
+try:
+    itertools.chain.from_iterable(5)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
+
+# `METH_O`, so exactly one positional argument and no keywords.
+try:
+    itertools.chain.from_iterable()
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'chain.from_iterable() takes exactly one argument (0 given)'
+
+try:
+    itertools.chain.from_iterable([[1]], [[2]])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'chain.from_iterable() takes exactly one argument (2 given)'
+
+try:
+    itertools.chain.from_iterable(iterable=[[1]])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'chain.from_iterable() takes no keyword arguments'
+
+# Composition, including flattening what another adaptor produced.
+assert list(itertools.chain.from_iterable(itertools.repeat([1, 2], 2))) == [1, 2, 1, 2]
+assert list(itertools.islice(itertools.chain.from_iterable(itertools.repeat([0, 1])), 5)) == [0, 1, 0, 1, 0]
+assert list(itertools.chain.from_iterable(itertools.pairwise([1, 2, 3]))) == [1, 2, 2, 3]
+
 # === cycle ===
 assert list(itertools.islice(itertools.cycle([1, 2, 3]), 7)) == [1, 2, 3, 1, 2, 3, 1]
 assert list(itertools.islice(itertools.cycle('ab'), 5)) == ['a', 'b', 'a', 'b', 'a']

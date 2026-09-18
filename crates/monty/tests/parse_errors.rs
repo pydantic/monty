@@ -718,11 +718,11 @@ fn long_source_line_does_not_overflow_column() {
 #[test]
 fn starred_name_target_has_clean_message() {
     // `*a = [1, 2]`: Ruff parses the LHS as a bare starred target, which
-    // Monty rejects at `parse_identifier`.
+    // Monty rejects with CPython's message.
     let result = MontyRun::new("*a = [1, 2]".to_owned(), "test.py", vec![], CompileOptions::default());
     let exc = result.expect_err("expected parse error");
     assert_eq!(exc.exc_type(), ExcType::SyntaxError);
-    assert_snapshot!(exc.message().expect("has message"), @"Expected name, got starred expression");
+    assert_snapshot!(exc.message().expect("has message"), @"starred assignment target must be in a list or tuple");
 }
 
 #[test]
@@ -732,7 +732,7 @@ fn starred_attribute_target_has_clean_message() {
     let result = MontyRun::new("*x.y = 1".to_owned(), "test.py", vec![], CompileOptions::default());
     let exc = result.expect_err("expected parse error");
     assert_eq!(exc.exc_type(), ExcType::SyntaxError);
-    assert_snapshot!(exc.message().expect("has message"), @"Expected name, got starred expression");
+    assert_snapshot!(exc.message().expect("has message"), @"starred assignment target must be in a list or tuple");
 }
 
 #[test]
@@ -741,24 +741,69 @@ fn starred_subscript_target_has_clean_message() {
     let result = MontyRun::new("*x[0] = 1".to_owned(), "test.py", vec![], CompileOptions::default());
     let exc = result.expect_err("expected parse error");
     assert_eq!(exc.exc_type(), ExcType::SyntaxError);
-    assert_snapshot!(exc.message().expect("has message"), @"Expected name, got starred expression");
+    assert_snapshot!(exc.message().expect("has message"), @"starred assignment target must be in a list or tuple");
+}
+
+/// A bare `*a` is rejected as the root target of `for`, `with ... as` and a
+/// comprehension, just like in a plain assignment; it stays valid inside a tuple.
+#[test]
+fn starred_root_targets_are_rejected() {
+    for code in [
+        "for *a in [[1, 2]]:\n    pass",
+        "with cm as *a:\n    pass",
+        "[a for *a in [[1, 2]]]",
+    ] {
+        let result = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default());
+        let exc = result.expect_err("expected parse error");
+        assert_eq!(exc.exc_type(), ExcType::SyntaxError, "{code}");
+        assert_eq!(
+            exc.message().expect("has message"),
+            "starred assignment target must be in a list or tuple",
+            "{code}"
+        );
+    }
+    let ok = MontyRun::new(
+        "for *a, in [[1, 2]]:\n    pass".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    );
+    ok.expect("starred target inside a tuple is valid");
 }
 
 #[test]
-fn for_loop_attribute_target_has_clean_message() {
-    // `for x.y in [1]: pass`: attribute as a for-loop target. CPython
-    // accepts this; Monty currently rejects at `parse_unpack_target_impl`.
-    // That rejection of valid Python is a separate issue; this test locks
-    // only that the error message does not leak `ExprAttribute` Debug.
+fn comprehension_attribute_target_is_rejected() {
+    // `[i for x.y in [1]]`: CPython allows an attribute as a comprehension
+    // target; Monty's comp vars are operand-stack slots, so it does not.
     let result = MontyRun::new(
-        "for x.y in [1]: pass".to_owned(),
+        "[i for x.y in [1]]".to_owned(),
         "test.py",
         vec![],
         CompileOptions::default(),
     );
     let exc = result.expect_err("expected parse error");
     assert_eq!(exc.exc_type(), ExcType::SyntaxError);
-    assert_snapshot!(exc.message().expect("has message"), @"invalid unpacking target: attribute");
+    assert_snapshot!(
+        exc.message().expect("has message"),
+        @"comprehension target must be a name, not an attribute"
+    );
+}
+
+#[test]
+fn comprehension_subscript_target_is_rejected() {
+    // The subscript form of the same restriction.
+    let result = MontyRun::new(
+        "[i for x[0] in [1]]".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    );
+    let exc = result.expect_err("expected parse error");
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(
+        exc.message().expect("has message"),
+        @"comprehension target must be a name, not a subscript"
+    );
 }
 
 #[test]
@@ -944,10 +989,10 @@ fn module_with_too_many_names_returns_syntax_error() {
 
 #[test]
 fn module_with_too_many_interned_strings_returns_syntax_error() {
-    // 60 000 distinct attribute references push the user-intern pool past its
-    // `u16::MAX - INTERN_STRING_ID_OFFSET` cap.
+    // 66 000 distinct attribute references push the executor-local interner
+    // beyond the bytecode format's `u16` ID range.
     let mut code = "x = None\n".to_owned();
-    for i in 0..60_000 {
+    for i in 0..66_000 {
         writeln!(code, "x.a{i}").unwrap();
     }
     let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());

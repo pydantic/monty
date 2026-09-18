@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -178,7 +179,7 @@ def test_os_call_surfaces_without_handler(session: MontySession):
 def test_os_handler_used_by_resume_auto(session: MontySession):
     """`feed_start` surfaces the OS call even with `os=`; `resume_auto` answers it."""
 
-    def handle_os(name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
+    def handle_os(*, name: OsFunction, args: tuple[Any, ...], **_: Any) -> str:
         assert name == 'Path.read_text'
         return 'file body'
 
@@ -245,6 +246,59 @@ def test_dump_at_suspension_then_load_and_resume(pool: Monty):
         done = loaded_snap.resume({'return_value': 41})
         assert isinstance(done, MontyComplete)
         assert done.output == snapshot(42)
+
+
+def test_dump_keeps_the_feeds_working_directory(pool: Monty):
+    # cwd is session state and travels inside a mid-feed dump, so the
+    # restoring session needs no `cwd=`
+    with pool.checkout() as session:
+        snap = session.feed_start('import os\nfetch()\nos.getcwd()', cwd='/work')
+        assert isinstance(snap, FunctionSnapshot)
+        blob = snap.dump()
+
+    with pool.checkout() as session:
+        loaded_snap = session.load_snapshot(blob)
+        assert isinstance(loaded_snap, FunctionSnapshot)
+        done = loaded_snap.resume({'return_value': None})
+        assert isinstance(done, MontyComplete)
+        assert done.output == snapshot('/work')
+
+
+@pytest.mark.parametrize(
+    'expression, expected',
+    [
+        ("open('./hello.txt').name", './hello.txt'),
+        ("open(b'./hello.txt').name", b'./hello.txt'),
+        ("[str(p) for p in Path('.').iterdir()]", ['hello.txt']),
+    ],
+)
+def test_dump_keeps_original_filesystem_paths(pool: Monty, tmp_path: Path, expression: str, expected: Any):
+    """Original path spelling survives suspension before the host returns a result."""
+    (tmp_path / 'hello.txt').write_text('hi')
+    with pool.checkout() as session:
+        snap = session.feed_start('from pathlib import Path\n' + expression, cwd='/data')
+        assert isinstance(snap, FunctionSnapshot)
+        blob = snap.dump()
+
+    with MountDir(host_path=tmp_path, virtual_path='/data') as mount:
+        with pool.checkout() as session:
+            loaded = session.load_snapshot(blob, mount=mount)
+            assert isinstance(loaded, FunctionSnapshot)
+            done = loaded.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == expected
+
+
+def test_dump_keeps_open_file_name_and_target(pool: Monty, tmp_path: Path):
+    """The display name and I/O target both survive dumping an already-open file."""
+    (tmp_path / 'hello.txt').write_text('hi')
+    with MountDir(host_path=tmp_path, virtual_path='/data') as mount:
+        with pool.checkout() as session:
+            session.feed_run("f = open('./hello.txt')", mount=mount)
+            blob = session.dump()
+        with pool.checkout() as session:
+            session.load_session(blob)
+            assert session.feed_run('(f.name, f.read())', cwd='/', mount=mount) == ('./hello.txt', 'hi')
 
 
 def test_loaded_snapshot_reports_the_dumps_script_name(pool: Monty):
@@ -600,6 +654,22 @@ def test_sync_resume_auto_coroutine_external_raises(pool: Monty):
             session.feed_run('1 + 1')
 
 
+def test_sync_resume_auto_coroutine_os_callback_raises(pool: Monty):
+    # as for a coroutine external: the sync session has no event loop to run it on
+    async def handle_os(**_: Any) -> str:
+        return 'file body'
+
+    with pool.checkout() as session:
+        snap = session.feed_start("from pathlib import Path\nPath('/data/x').read_text()", os=handle_os)
+        assert isinstance(snap, FunctionSnapshot)
+        with pytest.raises(RuntimeError) as exc_info:
+            snap.resume_auto()
+        assert str(exc_info.value) == snapshot('async os callbacks require AsyncMonty')
+        # the discarded checkout is not reusable
+        with pytest.raises(RuntimeError):
+            session.feed_run('1 + 1')
+
+
 def test_load_snapshot_resume_auto_with_external_lookup(pool: Monty):
     with pool.checkout() as session:
         snap = session.feed_start('y = fetch()\ny + 1')
@@ -633,12 +703,107 @@ async def test_async_resume_auto_coroutine_external():
         async with pool.checkout() as session:
             snap = await session.feed_start(code, external_lookup={'go': go})
             assert isinstance(snap, AsyncFunctionSnapshot)
-            # the coroutine is spawned and answered with a pending future
-            fut = await snap.resume_auto()
-            assert isinstance(fut, AsyncFutureSnapshot)
-            done = await fut.resume_auto()
+            assert snap.allow_eager_await
+            done = await snap.resume_auto()
             assert isinstance(done, MontyComplete)
             assert done.output == snapshot(99)
+
+
+async def test_async_resume_auto_awaits_asyncio_sleep_eagerly():
+    """An `asyncio.sleep` awaited at once is settled in place, with no future snapshot."""
+    waited: list[float] = []
+
+    async def handle_os(*, name: OsFunction, args: tuple[Any, ...], **_: Any) -> None:
+        waited.append(args[0])
+        await asyncio.sleep(args[0])
+
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap = await session.feed_start("import asyncio\nawait asyncio.sleep(0.001, 'woken')", os=handle_os)
+            assert isinstance(snap, AsyncFunctionSnapshot)
+            assert snap.is_os_function
+            assert snap.allow_eager_await
+            done = await snap.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot('woken')
+            assert waited == snapshot([0.001])
+
+
+async def test_async_resume_auto_sync_os_callback():
+    def handle_os(*, name: OsFunction, **_: Any) -> str:
+        assert name == 'Path.read_text'
+        return 'file body'
+
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap = await session.feed_start("from pathlib import Path\nPath('/data/x').read_text()", os=handle_os)
+            assert isinstance(snap, AsyncFunctionSnapshot)
+            assert snap.is_os_function
+            done = await snap.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot('file body')
+
+
+async def test_async_resume_auto_coroutine_os_callback_is_awaited_as_a_value():
+    """The sandbox does not await `Path.read_text`, so the coroutine settles before it resumes."""
+
+    async def handle_os(*, name: OsFunction, **_: Any) -> str:
+        assert name == 'Path.read_text'
+        await asyncio.sleep(0.001)
+        return 'file body'
+
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap = await session.feed_start("from pathlib import Path\nPath('/data/x').read_text()", os=handle_os)
+            assert isinstance(snap, AsyncFunctionSnapshot)
+            assert not snap.allow_eager_await
+            done = await snap.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot('file body')
+
+
+async def test_async_resume_auto_gathered_asyncio_sleeps_are_futures():
+    """With sibling tasks to run, each sleep is spawned and delivered by the future snapshot."""
+    started: list[float] = []
+
+    async def handle_os(*, name: OsFunction, args: tuple[Any, ...], **_: Any) -> None:
+        assert name == 'asyncio.sleep'
+        started.append(args[0])
+        await asyncio.sleep(args[0])
+
+    code = "import asyncio\nawait asyncio.gather(asyncio.sleep(0.002, 'a'), asyncio.sleep(0.001, 'b'))"
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap: Any = await session.feed_start(code, os=handle_os)
+            kinds: list[str] = []
+            while not isinstance(snap, MontyComplete):
+                kinds.append(type(snap).__name__)
+                assert not getattr(snap, 'allow_eager_await', False)
+                snap = await snap.resume_auto()
+            assert snap.output == snapshot(['a', 'b'])
+            assert started == snapshot([0.002, 0.001])
+            # one or two future snapshots follow, depending on whether the sleeps finish together
+            assert kinds[:3] == snapshot(['AsyncFunctionSnapshot', 'AsyncFunctionSnapshot', 'AsyncFutureSnapshot'])
+
+
+async def test_async_allow_eager_await_survives_snapshot_restore():
+    """A restored call retains eager eligibility and finishes without a future suspension."""
+
+    async def go() -> list[int]:
+        return [42]
+
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap = await session.feed_start('await go()', external_lookup={'go': go})
+            assert isinstance(snap, AsyncFunctionSnapshot)
+            blob = snap.dump()
+        async with pool.checkout() as session:
+            restored = await session.load_snapshot(blob, external_lookup={'go': go})
+            assert isinstance(restored, AsyncFunctionSnapshot)
+            assert restored.allow_eager_await
+            done = await restored.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == [42]
 
 
 async def test_async_resume_auto_multiple_pending_coroutines():

@@ -14,6 +14,7 @@ import tempfile
 import traceback
 from threading import Lock
 
+from cpython_watchdog import CPythonTestTimeout
 from test_fixtures import exported_globals
 
 lock = Lock()
@@ -87,6 +88,8 @@ def run_file_and_get_traceback(
                 runpy.run_path(file_path, init_globals=exported_globals, run_name='__main__')
             except SystemExit:
                 pass  # don't error on ctrl+c
+            except CPythonTestTimeout:
+                raise  # the harness reports the watchdog interrupt itself
             except BaseException as e:
                 # Format the traceback
                 stack = traceback.format_exception(type(e), e, e.__traceback__)

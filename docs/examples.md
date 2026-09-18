@@ -90,7 +90,7 @@ Swap `CodeModeToolset(weather_toolset)` for `weather_toolset` to see the same ta
 
 ## Worked examples in the repository
 
-Each directory under [`examples/`](https://github.com/pydantic/monty/tree/main/examples) is runnable after `make dev-py`; its README has the command.
+Each directory under [`examples/`](https://github.com/pydantic/monty/tree/main/examples) is runnable from a dev build of the package it uses; its README has the commands.
 
 - [`sql_playground`](https://github.com/pydantic/monty/tree/main/examples/sql_playground): customer purchase data in CSV
     joined with tweets in JSON, with sentiment analysis called in a loop from the sandbox.
@@ -103,6 +103,12 @@ Each directory under [`examples/`](https://github.com/pydantic/monty/tree/main/e
 - [`web_scraper`](https://github.com/pydantic/monty/tree/main/examples/web_scraper): Playwright and BeautifulSoup
     exposed to the sandbox as [host objects](host-objects.md) so the model can extract prices from model labs' websites;
     `example_code.py` is the code Claude Sonnet 4.5 wrote for it.
+- [`antigravity`](https://github.com/pydantic/monty/tree/main/examples/antigravity): [xkcd 353](https://xkcd.com/353/)
+    ported from [PyScript](https://github.com/pyscript/examples/tree/main/antigravity), running in the browser on the
+    WebAssembly build.
+    The PyScript file runs unchanged apart from its imports: [host objects](host-objects.md) stand in for `random`,
+    `DOMParser` and the DOM element the program moves, and [host functions](host-functions.md) for `open_url` and
+    `set_interval`, all under [resource limits](resource-limits.md).
 - [`classes`](https://github.com/pydantic/monty/tree/main/examples/classes): one short file per behaviour of [host
     objects](host-objects.md), in Python and TypeScript: explicit policies, lazy attributes, sandbox-side copies,
     `convert_value` hooks, constructing host classes from the sandbox, and round-tripping sandbox-defined classes.

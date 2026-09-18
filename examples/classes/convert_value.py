@@ -5,7 +5,7 @@ derived objects with their own policies (nothing is auto-wrapped — exposure
 is always an explicit host decision) or to redact values. Each wrapper the
 hook returns stays in the session's instance store until the session ends,
 so a long-lived session calling `pay()` many times accumulates one entry per
-call (see limitations/pool-architecture.md).
+call (see docs/host-objects.md#values-returned-by-methods).
 """
 
 from dataclasses import dataclass

@@ -37,9 +37,10 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
+    modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     resource_checks::check_repeat_size,
     types::{
-        Dict, Type, allocate_tuple,
+        Dict, Type, Union, allocate_tuple,
         iter::collect_owned_iterable,
         long_int::repeat_count,
         py_trait::LazyHeapSet,
@@ -207,6 +208,24 @@ impl NamedTuple {
 }
 
 impl<'h> HeapRead<'h, NamedTuple> {
+    /// Allocates a named tuple holding `items` with this one's name, fields and
+    /// originating class. Ownership of `items` transfers to it.
+    ///
+    /// A named tuple is immutable, so unlike the other `allocate_*_like`
+    /// constructors this one takes its items up front.
+    pub(crate) fn allocate_like(&self, items: Vec<Value>, vm: &mut VM<'h>) -> Value {
+        let data = self.get(vm.heap);
+        let name = data.name_either().clone();
+        let field_names = data.field_names().to_vec();
+        let class_id = data.class_id();
+        // `with_class` takes ownership of a reference to the class object.
+        if let Some(class_id) = class_id {
+            vm.heap.inc_ref(class_id);
+        }
+        let named = NamedTuple::with_class(name, field_names, items, class_id);
+        Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named))))
+    }
+
     /// Returns `Some(value)` if the index is in bounds, `None` otherwise.
     /// Uses `index + len` instead of `-index` to avoid overflow on `i64::MIN`.
     #[must_use]
@@ -531,13 +550,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         // Gated on `class_id`: Monty's internal named tuples (`sys.version_info`,
         // host imports) model CPython *structseqs*, which expose none of the
         // `collections.namedtuple` API.
-        if attr.static_string() == Some(StaticStrings::UnderFields) && self.get(vm.heap).class_id().is_some() {
+        if attr.static_string(vm.interns) == Some(StaticStrings::UnderFields) && self.get(vm.heap).class_id().is_some()
+        {
             return Ok(Some(CallResult::Value(self.fields_tuple(vm))));
         }
         // `_field_defaults` lives only on the class (an instance stores field
         // *names* but not defaults), so it is read through `class_id` rather than
         // rebuilt here — the two spellings then cannot drift apart.
-        if attr.static_string() == Some(StaticStrings::UnderFieldDefaults)
+        if attr.static_string(vm.interns) == Some(StaticStrings::UnderFieldDefaults)
             && let Some(class_id) = self.get(vm.heap).class_id()
             && let HeapReadOutput::NamedTupleClass(class) = vm.heap.read(class_id)
         {
@@ -546,7 +566,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         // `__doc__` / `__module__` are class attributes an instance inherits, so
         // read them from the class object rather than duplicating them per instance.
         if let Some(class_id) = self.get(vm.heap).class_id()
-            && let Some(static_attr @ (StaticStrings::DunderDoc | StaticStrings::DunderModule)) = attr.static_string()
+            && let Some(static_attr @ (StaticStrings::DunderDoc | StaticStrings::DunderModule)) =
+                attr.static_string(vm.interns)
             && let HeapData::NamedTupleClass(class) = vm.heap.get(class_id)
         {
             let value = if static_attr == StaticStrings::DunderDoc {
@@ -573,7 +594,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         // `count`/`index` are inherited from `tuple`, so unlike the `_`-prefixed
         // methods they are available on structseqs too (`sys.version_info.count(0)`
         // works in CPython).
-        match attr.static_string() {
+        match attr.static_string(vm.interns) {
             Some(StaticStrings::Count) => return self.method_count(vm, args).map(CallResult::Value),
             Some(StaticStrings::Index) => return self.method_index(vm, args).map(CallResult::Value),
             Some(StaticStrings::DunderGetnewargs) => {
@@ -581,7 +602,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
             }
             _ => {}
         }
-        match attr.static_string().filter(|_| from_factory) {
+        match attr.static_string(vm.interns).filter(|_| from_factory) {
             Some(StaticStrings::UnderAsdict) => self.method_asdict(vm, args).map(CallResult::Value),
             Some(StaticStrings::UnderReplace) => self.method_replace(vm, args).map(CallResult::Value),
             Some(StaticStrings::UnderMake) => self.method_make(vm, args).map(CallResult::Value),
@@ -828,9 +849,19 @@ impl NamedTupleClass {
     pub(crate) fn module(&self) -> &Value {
         &self.module
     }
+
+    /// The class name, `Point` for `namedtuple('Point', ...)`.
+    pub(crate) fn name<'a>(&'a self, interns: &'a Interns) -> &'a str {
+        self.name.as_str(interns)
+    }
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
+    /// Builds an instance from the field values, with no `__init__` to run.
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        construct_namedtuple(self.id(), vm, args).map(CallResult::Value)
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         // The type of a class object is `type` (matching `type(Point) is type`).
         Type::Type
@@ -845,6 +876,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
         Ok(None)
     }
 
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_or(self, other, vm)
+    }
+
+    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_ror(self, other, vm)
+    }
+
+    /// `Point[int]` raises here where CPython builds a `types.GenericAlias`
+    /// via the inherited `tuple.__class_getitem__` (see `limitations/namedtuple.md`).
+    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+        Err(ExcType::type_error_type_not_subscriptable(
+            self.get(vm.heap).name(vm.interns),
+        ))
+    }
+
     fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         Ok(Some(identity_hash(self.id())))
     }
@@ -854,7 +901,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let value = match attr.static_string() {
+        let value = match attr.static_string(vm.interns) {
             // `namedtuple` assigns `__qualname__ = typename` outright, so it always
             // equals `__name__` and never picks up a dotted path from an enclosing scope.
             Some(StaticStrings::DunderName | StaticStrings::DunderQualname) => {
@@ -882,7 +929,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string() == Some(StaticStrings::UnderMake) {
+        if attr.static_string(vm.interns) == Some(StaticStrings::UnderMake) {
             make_namedtuple(self.id(), vm, args).map(CallResult::Value)
         } else {
             args.drop_with(vm);
@@ -1072,8 +1119,8 @@ fn synthesise_doc(class: &NamedTupleClass, interns: &Interns) -> String {
 /// Binds positional and keyword arguments to the class's fields, applies
 /// defaults for omitted trailing fields, and reports arity/keyword errors with
 /// CPython's exact `<lambda>()` wording (its generated `__new__` is a lambda).
-/// Called from the VM's `call_heap_callable` dispatch.
-pub(crate) fn construct_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+/// Called from this type's [`PyTrait::py_call`].
+fn construct_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let HeapData::NamedTupleClass(c) = vm.heap.get(class_id) else {
         unreachable!("construct_namedtuple called on a non-namedtuple-class heap entry");
     };
@@ -1251,4 +1298,15 @@ fn take_key(key: Value, vm: &mut VM<'_>) -> EitherStr {
 fn py_list_repr(names: &[String]) -> String {
     let inner = names.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", ");
     format!("[{inner}]")
+}
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, NamedTuple> {
+    /// Copies a named tuple, keeping its name, fields and originating class.
+    #[inline(never)]
+    fn py_deep_copy(&self, _source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let items = deep_copy_slots(self.get(vm.heap).field_names().len(), memo, vm, |index, vm| {
+            self.clone_item(index, vm)
+        })?;
+        Ok(self.allocate_like(items, vm))
+    }
 }
