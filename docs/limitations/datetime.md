@@ -225,14 +225,13 @@ pass-through applies to f-string and `str.format()` formatting (below).
 
 A directive that is *recognised* but can't be rendered for the given value
 raises `ValueError: Invalid format string` rather than substituting a default
-the way CPython does. The known cases:
+the way CPython does. The known case is `%+`, which chrono renders as the
+RFC 3339 form and so needs an offset the naive components lack.
 
-- `%z` / `%Z` on a naive `date`, `datetime` or `time`: Monty raises; CPython
-    yields `''`.
-- `%z` / `%Z` on an **aware** `datetime` or `time`: Monty formats the wall-clock
-    (naive) components and so raises rather than emitting the offset/name; CPython
-    yields `'+0200'` / `'CEST'`. Passing the timezone to the formatter is not yet
-    implemented.
+`%z`, `%:z` and `%Z` are filled from `utcoffset()` and `tzname()` as in
+CPython: empty for a naive `date`, `datetime` or `time`, and `'+0200'`,
+`'+02:00'` and the zone name for an aware value. The name of an unnamed zone
+is `UTC±HH:MM`, and a sub-minute offset renders its seconds (`'+023015'`).
 
 f-strings and `str.format()` format `date`, `datetime` and `time` values through
 `strftime`, matching CPython's `__format__`: `f'{dt:%Y-%m-%d}'` and

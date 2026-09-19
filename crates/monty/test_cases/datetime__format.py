@@ -81,6 +81,31 @@ assert datetime.datetime(2020, 1, 2).strftime('%%f') == '%f'
 assert datetime.datetime(2020, 1, 2).strftime('100%% %f') == '100% 000000'
 assert datetime.datetime(2020, 1, 2).strftime('%%%f') == '%000000'
 
+# === %z, %:z and %Z come from utcoffset() and tzname(); empty when naive ===
+assert datetime.datetime(2024, 1, 1).strftime('%z|%:z|%Z') == '||'
+assert datetime.date(2024, 1, 1).strftime('%z|%Z') == '|'
+assert datetime.time(1, 2).strftime('%z|%Z') == '|'
+_eet = datetime.timezone(datetime.timedelta(hours=2), 'EET')
+_aware = datetime.datetime(2024, 6, 15, 12, 30, tzinfo=_eet)
+assert _aware.strftime('%z|%:z|%Z') == '+0200|+02:00|EET'
+assert _aware.strftime('%Y-%m-%d %H:%M %Z (%z)') == '2024-06-15 12:30 EET (+0200)'
+assert f'{_aware:%Z %z}' == 'EET +0200'
+assert '{:%Z}'.format(_aware) == 'EET'
+# an unnamed zone reports CPython's UTC±HH:MM name; a sub-minute offset adds seconds
+assert datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone(datetime.timedelta(hours=-5))).strftime('%z %Z') == (
+    '-0500 UTC-05:00'
+)
+_odd = datetime.timezone(datetime.timedelta(hours=2, minutes=30, seconds=15))
+assert datetime.datetime(2024, 1, 1, tzinfo=_odd).strftime('%z|%:z|%Z') == '+023015|+02:30:15|UTC+02:30:15'
+assert datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc).strftime('%z %Z') == '+0000 UTC'
+assert datetime.time(1, 2, tzinfo=_eet).strftime('%z|%Z') == '+0200|EET'
+assert f'{datetime.time(1, 2, tzinfo=_eet):%Z}' == 'EET'
+# an escaped percent is a literal, and a percent inside the name stays one
+assert _aware.strftime('%%z|%%Z|%%%z') == '%z|%Z|%+0200'
+assert datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone(datetime.timedelta(0), '50%')).strftime('%Z|%%') == (
+    '50%|%'
+)
+
 # === time directives on a bare date read as midnight ===
 _d_mid = datetime.date(2024, 6, 15)
 assert _d_mid.strftime('%H:%M:%S') == '00:00:00'

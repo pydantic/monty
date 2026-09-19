@@ -435,13 +435,18 @@ struct IsoformatArgs {
 ///
 /// A bare time has no date, so the components are anchored to 1900-01-01, the
 /// same anchor CPython's C implementation uses: `time(12, 30).strftime('%Y')`
-/// yields `'1900'` on both. As for `datetime`, the naive wall clock is
-/// formatted, so `%z`/`%Z` raise rather than emitting an aware time's offset.
-pub(crate) fn format_time_strftime(time: &Time, format: &str) -> RunResult<String> {
+/// yields `'1900'` on both. `tz` is the attached zone, read before the call
+/// because the caller may hold the heap; it fills `%z` and `%Z`.
+pub(crate) fn format_time_strftime(time: &Time, tz: Option<&TimeZone>, format: &str) -> RunResult<String> {
     let anchored = NaiveDate::from_ymd_opt(1900, 1, 1)
         .expect("1900-01-01 is a valid date")
         .and_time(naive_time(time));
-    let format = date::rewrite_microsecond_directive(format);
+    let format = date::rewrite_zone_directives(
+        format,
+        tz.map(|tz| tz.offset_seconds),
+        tz.and_then(|tz| tz.name.as_deref()),
+    );
+    let format = date::rewrite_microsecond_directive(&format);
     date::render_strftime(anchored.format_with_items(StrftimeItems::new_lenient(&format)))
         .ok_or_else(date::invalid_strftime_error)
 }
@@ -562,7 +567,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
                 defer_drop!(format, vm);
                 // Cloned so the heap borrow ends before `format.as_str(vm)`.
                 let time = self.get(vm.heap).clone();
-                let formatted = format_time_strftime(&time, format.as_str(vm))?;
+                let tz = attached_timezone(&time, vm.heap);
+                let formatted = format_time_strftime(&time, tz.as_ref(), format.as_str(vm))?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
             }
             Some(StaticStrings::Replace) => self.replace(vm, args).map(CallResult::Value),

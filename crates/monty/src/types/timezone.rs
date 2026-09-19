@@ -182,6 +182,13 @@ pub(crate) fn format_offset_hms(offset_seconds: i32) -> String {
     format!("{sign}{hours:02}:{minutes:02}:{seconds:02}")
 }
 
+/// The offset as `strftime('%z')` renders it: `±HHMM`, with `SS` appended
+/// when the offset has seconds.
+#[must_use]
+pub(crate) fn format_offset_compact(offset_seconds: i32) -> String {
+    format_offset_hms(offset_seconds).replace(':', "")
+}
+
 /// The name a fixed-offset zone reports from `tzname()` and `str()`.
 ///
 /// An explicit constructor name wins; otherwise CPython renders the zero offset

@@ -816,9 +816,11 @@ fn year_in_python_range(year: i32) -> bool {
 /// Uses the naive (wall-clock) components, mirroring `chrono`'s formatting of
 /// `NaiveDateTime`, with the **lenient** parser so an unrecognised directive is
 /// passed through verbatim to match glibc/Linux CPython (see
-/// [`date::format_date_strftime`]).
+/// [`date::format_date_strftime`]). The zone directives are substituted from
+/// the offset and name first (`%z` and `%Z` are empty for a naive value).
 pub(crate) fn format_datetime_strftime(dt: &DateTime, format: &str) -> RunResult<String> {
-    let format = date::rewrite_microsecond_directive(format);
+    let format = date::rewrite_zone_directives(format, dt.offset_seconds, dt.timezone_name.as_deref());
+    let format = date::rewrite_microsecond_directive(&format);
     date::render_strftime(dt.naive.format_with_items(StrftimeItems::new_lenient(&format)))
         .ok_or_else(date::invalid_strftime_error)
 }
