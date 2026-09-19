@@ -1,0 +1,38 @@
+crates/monty-types/Cargo.toml
+  s_440a7ea0ee4e52::t_b08afdf089f5fa 44-48
+crates/monty/tests/auto_os_calls.rs
+  s_440a7ea0ee4e52::t_8e976f9215cdd0 393,395,398-399
+docs/quickstart/rust.md
+  s_440a7ea0ee4e52::t_32dce8189f7519 228
+crates/monty-proto/src/convert/auto_os_calls.rs
+  s_440a7ea0ee4e52::t_32dce8189f7519 40
+crates/monty-types/src/auto_os_calls.rs
+  s_440a7ea0ee4e52::t_32dce8189f7519 80-83,106,114,128-129,145-147,188-231
+  s_440a7ea0ee4e52::t_b08afdf089f5fa 103-104
+crates/monty-runtime/tests/subprocess.rs
+  s_440a7ea0ee4e52::t_32dce8189f7519 1120-1122
+crates/monty-proto/Cargo.toml
+  s_440a7ea0ee4e52::t_b08afdf089f5fa 50-51
+crates/monty-types/src/lib.rs
+  s_440a7ea0ee4e52::t_32dce8189f7519 25
+docs/limitations/datetime.md
+  s_440a7ea0ee4e52::t_32dce8189f7519 145
+docs/limitations/time.md
+  s_440a7ea0ee4e52::t_32dce8189f7519 20-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3998c2a415ed43c6f20e0dc118cc586881039a3c",
+  "prompts": {},
+  "sessions": {
+    "s_440a7ea0ee4e52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a9754f7-13d8-42d0-a0e4-9657814a0b0c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
