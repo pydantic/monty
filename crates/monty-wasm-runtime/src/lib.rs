@@ -357,7 +357,7 @@ fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
     });
     let timezone = calls.timezone.map(|zone| pb::SandboxTimeZone {
         zone: Some(match zone {
-            TimeZone::System => pb::sandbox_time_zone::Zone::System(pb::Unit {}),
+            TimeZone::Utc => pb::sandbox_time_zone::Zone::Utc(pb::Unit {}),
             TimeZone::CallHost => pb::sandbox_time_zone::Zone::CallHost(pb::Unit {}),
             TimeZone::Fixed(fixed) => pb::sandbox_time_zone::Zone::Fixed(pb::TimeZone {
                 offset_seconds: fixed.offset_seconds,

@@ -513,9 +513,9 @@ pub mod sandbox_time_zone {
     #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Oneof)]
     #[prost(prost_path = "crate::budgeted_prost")]
     pub enum Zone {
-        /// The child's local zone.
+        /// UTC, the default: the child's own zone is never read.
         #[prost(message, tag = "1")]
-        System(super::Unit),
+        Utc(super::Unit),
         /// Suspend the calls that need the zone to the parent.
         #[prost(message, tag = "2")]
         CallHost(super::Unit),

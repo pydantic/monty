@@ -128,11 +128,11 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
   Plain calls and lookups carry `None`.
 - `MontyRun::with_auto_os_calls` / `MontyRepl::with_auto_os_calls` configure clocks, sleeps and initial random state on every
   execution path.
-  `DateTimeSource` selects the system clock, a fixed instant or the host; `SandboxTimeZone` independently selects the local
-  zone, a fixed offset and name or the host.
+  `DateTimeSource` selects the system clock, a fixed instant or the host; `SandboxTimeZone` independently selects UTC, a
+  fixed offset and name or the host.
   `SleepMode` selects capped system sleeps, a host handler or no wait; `RandomStart` selects OS entropy, a seed with
   `random.seed()` semantics or host entropy.
-  Defaults use the system clock, local zone and OS entropy, with sleeps capped at ten seconds.
+  Defaults use the system clock, UTC and OS entropy, with sleeps capped at ten seconds.
   System sleeps suspend for the host to wait without its `os` handler; standard execution waits inline.
   `CallHost` delegates to the host through `RunProgress::OsCall`.
 

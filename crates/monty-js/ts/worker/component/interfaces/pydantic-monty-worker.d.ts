@@ -250,9 +250,9 @@ export interface FixedTimeZone {
   offsetSeconds: number
   name?: string
 }
-export type TimeZone = TimeZoneSystem | TimeZoneCallHost | TimeZoneFixed
-export interface TimeZoneSystem {
-  tag: 'system'
+export type TimeZone = TimeZoneUtc | TimeZoneCallHost | TimeZoneFixed
+export interface TimeZoneUtc {
+  tag: 'utc'
 }
 export interface TimeZoneCallHost {
   tag: 'call-host'

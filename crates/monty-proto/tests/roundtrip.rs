@@ -611,6 +611,15 @@ fn auto_os_calls_round_trip() {
         };
         assert_eq!(AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap(), calls);
     }
+    // the UTC default has its own arm, so an explicit UTC survives a parent with a different default
+    let utc = pb::AutoOsCalls::from(&AutoOsCalls::default());
+    assert_eq!(
+        utc.timezone,
+        Some(pb::SandboxTimeZone {
+            zone: Some(pb::sandbox_time_zone::Zone::Utc(pb::Unit {})),
+        })
+    );
+    assert_eq!(AutoOsCalls::try_from(utc).unwrap().timezone, SandboxTimeZone::utc());
 }
 
 #[test]

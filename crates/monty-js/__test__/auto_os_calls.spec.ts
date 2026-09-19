@@ -101,7 +101,7 @@ test('invalid datetime and timezone values are rejected before the checkout', as
     instanceOf: RangeError,
     message: 'timezone offsetSeconds must be an integer number of seconds',
   })
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { name: 'CET' } as unknown as 'system' } }), {
+  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { name: 'CET' } as unknown as 'utc' } }), {
     instanceOf: TypeError,
   })
   await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { offsetSeconds: 86_400 } } }), {

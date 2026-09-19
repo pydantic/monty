@@ -105,7 +105,7 @@ export interface CheckoutOptions {
   printFlushInterval?: number
   /**
    * Session clock, sleep and random initialization policies; see `AutoOsCalls`.
-   * Defaults to the worker's clock, local zone and entropy, with pool-managed sleeps capped at ten seconds.
+   * Defaults to the worker's clock in UTC and its entropy, with pool-managed sleeps capped at ten seconds.
    * Sleeps count toward suspensions and `maxTotalSleepSecs`, but not execution duration limits.
    */
   autoOsCalls?: AutoOsCalls

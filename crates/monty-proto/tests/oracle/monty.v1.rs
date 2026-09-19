@@ -523,9 +523,9 @@ pub struct SandboxTimeZone {
 pub mod sandbox_time_zone {
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Zone {
-        /// The child's local zone.
+        /// UTC, the default: the child's own zone is never read.
         #[prost(message, tag = "1")]
-        System(super::Unit),
+        Utc(super::Unit),
         /// Suspend the calls that need the zone to the parent.
         #[prost(message, tag = "2")]
         CallHost(super::Unit),

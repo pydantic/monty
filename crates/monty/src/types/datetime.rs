@@ -319,7 +319,7 @@ pub(crate) fn sandbox_instant(vm: &VM<'_>) -> RunResult<Option<NaiveDateTime>> {
 /// Converts UTC to the session zone for naive `now()` and `today()`.
 /// Returns `None` for `CallHost`; out-of-range years raise `OverflowError`.
 pub(crate) fn sandbox_local_wall_clock(vm: &VM<'_>, utc: NaiveDateTime) -> RunResult<Option<NaiveDateTime>> {
-    match vm.env.auto_os_calls.timezone.offset_seconds(utc) {
+    match vm.env.auto_os_calls.timezone.offset_seconds() {
         None => Ok(None),
         Some(offset) => local_wall_clock(utc, offset).map(Some).ok_or_else(date_out_of_range),
     }

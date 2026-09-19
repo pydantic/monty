@@ -85,7 +85,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for AutoOsCallsArg {
     }
 }
 
-/// A fixed datetime also supplies the local zone: its UTC offset, or UTC if naive.
+/// A fixed datetime also supplies the local zone: its UTC offset and name, or the UTC default if naive.
 fn datetime_source(value: &Bound<'_, PyAny>) -> PyResult<(DateTimeSource, Option<SandboxTimeZone>)> {
     if let Ok(name) = value.cast::<PyString>() {
         match &*name.to_cow()? {
@@ -108,16 +108,18 @@ fn datetime_source(value: &Bound<'_, PyAny>) -> PyResult<(DateTimeSource, Option
 /// A `datetime.datetime` as a frozen instant plus the zone it implies.
 fn fixed_datetime(datetime: &Bound<'_, PyDateTime>) -> PyResult<(DateTimeSource, SandboxTimeZone)> {
     let py = datetime.py();
-    let offset_seconds = match datetime
+    let (offset_seconds, name) = match datetime
         .call_method0(intern!(py, "utcoffset"))?
         .extract::<Option<Bound<'_, PyDelta>>>()?
     {
-        None => 0,
-        Some(offset) => offset_seconds(&offset, "datetime utcoffset")?,
+        None => (0, Some("UTC".to_owned())),
+        Some(offset) => (
+            offset_seconds(&offset, "datetime utcoffset")?,
+            datetime
+                .call_method0(intern!(py, "tzname"))?
+                .extract::<Option<String>>()?,
+        ),
     };
-    let name = datetime
-        .call_method0(intern!(py, "tzname"))?
-        .extract::<Option<String>>()?;
     let wall = NaiveDate::from_ymd_opt(
         datetime.get_year(),
         u32::from(datetime.get_month()),
@@ -139,10 +141,10 @@ fn fixed_datetime(datetime: &Bound<'_, PyDateTime>) -> PyResult<(DateTimeSource,
 }
 
 fn time_zone(value: &Bound<'_, PyAny>) -> PyResult<SandboxTimeZone> {
-    const SHAPE: &str = "timezone must be 'system', 'call_host' or {'offset_seconds': int, 'name': str}";
+    const SHAPE: &str = "timezone must be 'utc', 'call_host' or {'offset_seconds': int, 'name': str}";
     if let Ok(name) = value.cast::<PyString>() {
         match &*name.to_cow()? {
-            "system" => Ok(SandboxTimeZone::System),
+            "utc" => Ok(SandboxTimeZone::utc()),
             "call_host" => Ok(SandboxTimeZone::CallHost),
             other => Err(PyValueError::new_err(format!("{SHAPE}, got '{other}'"))),
         }

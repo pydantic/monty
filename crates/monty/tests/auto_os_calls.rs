@@ -4,7 +4,6 @@
 
 use std::time::{Duration, Instant};
 
-use chrono::{Local, Offset, TimeZone};
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
@@ -29,11 +28,11 @@ const PLUS_TWO: SandboxTimeZone = SandboxTimeZone::Fixed {
     name: None,
 };
 
-/// Use UTC+02:00 for fixed instants to make expectations independent of the host zone.
+/// Fixed instants use UTC+02:00, so the date-changing offset is exercised; the rest keep the UTC default.
 fn with_datetime(datetime: DateTimeSource) -> AutoOsCalls {
     let timezone = match datetime {
         DateTimeSource::Fixed { .. } => PLUS_TWO,
-        DateTimeSource::CallHost | DateTimeSource::System => SandboxTimeZone::System,
+        DateTimeSource::CallHost | DateTimeSource::System => SandboxTimeZone::default(),
     };
     AutoOsCalls {
         datetime,
@@ -221,27 +220,17 @@ fn out_of_range_microsecond_raises() {
     );
 }
 
-/// A CallHost zone delegates only naive now() and today(); time() and now(tz) stay local.
+/// The default zone is UTC, never the host's own; a CallHost zone delegates only
+/// naive now() and today(), while time() and now(tz) stay local.
 #[test]
 fn the_zone_is_chosen_separately_from_the_instant() {
-    let system_zone = AutoOsCalls {
+    let utc_zone = AutoOsCalls {
         datetime: FIXED,
-        timezone: SandboxTimeZone::System,
         ..AutoOsCalls::default()
     };
     let code = "from datetime import datetime, timezone\n\
                 (datetime.now() - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()";
-    // the host's offset at the instant read, not now: DST may differ
-    let host_offset = Local
-        .timestamp_opt(FIXTURE_SECONDS, 0)
-        .unwrap()
-        .offset()
-        .fix()
-        .local_minus_utc();
-    assert_eq!(
-        run(code, system_zone).unwrap(),
-        MontyObject::float(f64::from(host_offset))
-    );
+    assert_eq!(run(code, utc_zone).unwrap(), MontyObject::float(0.0));
 
     let host_zone = AutoOsCalls {
         datetime: FIXED,

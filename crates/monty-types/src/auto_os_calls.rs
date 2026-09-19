@@ -2,19 +2,20 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeDelta, TimeZone};
+use chrono::{DateTime, Datelike, NaiveDateTime, TimeDelta, Utc};
 use num_bigint::BigInt;
 
 /// Policies for clocks, sleeps and initial random state on every execution path.
 /// `CallHost` suspends to the host, or raises `NotImplementedError` without one.
-/// Defaults use the system clock and zone, OS entropy, and sleeps capped at ten
-/// seconds. Hosts perform those sleeps without their `os` handler; standard
+/// Defaults use the system clock, the UTC zone, OS entropy, and sleeps capped at
+/// ten seconds. Hosts perform those sleeps without their `os` handler; standard
 /// execution waits inline.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct AutoOsCalls {
     /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
     pub datetime: DateTimeSource,
-    /// The local zone for naive `datetime.now()` and `date.today()`.
+    /// The local zone: naive `datetime.now()` and `date.today()` read it,
+    /// `astimezone()`, `time.timezone`/`tzname` and `%Z` report it.
     pub timezone: SandboxTimeZone,
     /// What `time.sleep()` and `asyncio.sleep()` do.
     pub sleep: SleepMode,
@@ -45,7 +46,7 @@ impl DateTimeSource {
     #[must_use]
     pub fn read(self) -> Option<NaiveDateTime> {
         let utc = match self {
-            Self::System => Local::now().naive_utc(),
+            Self::System => Utc::now().naive_utc(),
             Self::CallHost => return None,
             Self::Fixed {
                 unix_seconds,
@@ -61,13 +62,10 @@ impl DateTimeSource {
     }
 }
 
-/// Local zone for naive `datetime.now()` and `date.today()`.
-/// Also reserved for future `astimezone()`, `time.tzname` and `%Z` support.
-#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+/// The sandbox's local zone. UTC unless configured; the host's own zone is
+/// never read, so nothing about the host leaks through the clock.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SandboxTimeZone {
-    /// The process's own local zone, at its offset for the instant read.
-    #[default]
-    System,
     /// Suspend the calls that need the zone to the host, which answers them.
     CallHost,
     /// A fixed offset from UTC, with the name `datetime.timezone(offset, name)`
@@ -80,15 +78,37 @@ pub enum SandboxTimeZone {
     },
 }
 
+impl Default for SandboxTimeZone {
+    fn default() -> Self {
+        Self::utc()
+    }
+}
+
 impl SandboxTimeZone {
-    /// The zone's offset from UTC at `utc`, in seconds; `None` is
-    /// [`CallHost`](Self::CallHost).
+    /// UTC named `UTC`, as CPython reports the zone under `TZ=UTC`.
     #[must_use]
-    pub fn offset_seconds(&self, utc: NaiveDateTime) -> Option<i32> {
+    pub fn utc() -> Self {
+        Self::Fixed {
+            offset_seconds: 0,
+            name: Some("UTC".to_owned()),
+        }
+    }
+
+    /// The zone's offset from UTC in seconds; `None` is [`CallHost`](Self::CallHost).
+    #[must_use]
+    pub fn offset_seconds(&self) -> Option<i32> {
         match self {
-            Self::System => Some(Local.offset_from_utc_datetime(&utc).local_minus_utc()),
             Self::CallHost => None,
             Self::Fixed { offset_seconds, .. } => Some(*offset_seconds),
+        }
+    }
+
+    /// The configured zone name; `None` for [`CallHost`](Self::CallHost) or an unnamed offset.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Self::CallHost => None,
+            Self::Fixed { name, .. } => name.as_deref(),
         }
     }
 }

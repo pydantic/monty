@@ -824,9 +824,10 @@ Path('/tmp/mydir/file.txt').read_text()
 
 
 def test_datetime_default_reads_worker_clock(monty_run: RunMonty):
-    before = datetime.datetime.now()
+    """The default clock is the worker's, read in UTC rather than the host's zone."""
+    before = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     result = monty_run('from datetime import datetime\ndatetime.now()')
-    after = datetime.datetime.now()
+    after = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     assert before - datetime.timedelta(seconds=60) <= result <= after + datetime.timedelta(seconds=60)
 
 
@@ -1140,17 +1141,17 @@ def test_timezone_call_host_sends_only_the_naive_calls(monty_run: RunMonty):
         (
             'mars',
             ValueError,
-            "timezone must be 'system', 'call_host' or {'offset_seconds': int, 'name': str}, got 'mars'",
+            "timezone must be 'utc', 'call_host' or {'offset_seconds': int, 'name': str}, got 'mars'",
         ),
         (
             {'name': 'CET'},
             ValueError,
-            "timezone must be 'system', 'call_host' or {'offset_seconds': int, 'name': str}, got {'name': 'CET'}",
+            "timezone must be 'utc', 'call_host' or {'offset_seconds': int, 'name': str}, got {'name': 'CET'}",
         ),
         ({'offset_seconds': True}, TypeError, 'timezone offset_seconds must be an int'),
         ({'offset_seconds': 86_400}, ValueError, 'timezone offset_seconds must be within -86399..=86399, got 86400'),
         ({'offset_seconds': 0, 'name': 1}, TypeError, 'timezone name must be a str'),
-        (3600, TypeError, "timezone must be 'system', 'call_host' or {'offset_seconds': int, 'name': str}, not int"),
+        (3600, TypeError, "timezone must be 'utc', 'call_host' or {'offset_seconds': int, 'name': str}, not int"),
     ],
 )
 def test_timezone_invalid(pool: Monty, value: Any, error: type[Exception], message: str):

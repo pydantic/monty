@@ -411,8 +411,8 @@ message AutoOsCalls {
 // Mirrors monty's `SandboxTimeZone`.
 message SandboxTimeZone {
   oneof zone {
-    // The child's local zone.
-    Unit system = 1;
+    // UTC, the default: the child's own zone is never read.
+    Unit utc = 1;
     // Suspend the calls that need the zone to the parent.
     Unit call_host = 2;
     // A fixed offset from UTC, with a name if it has one.
