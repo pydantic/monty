@@ -1,0 +1,21 @@
+examples/antigravity/README.md
+  s_bb655d1c925d08::t_708e366f658dc5 33-34
+examples/antigravity/main.ts
+  s_bb655d1c925d08::t_708e366f658dc5 88,99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "536c2d031ec9111da11dc744c4c9f013e489439e",
+  "prompts": {},
+  "sessions": {
+    "s_bb655d1c925d08": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "da80b649-4782-492f-abb6-6f424107e2a6",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
