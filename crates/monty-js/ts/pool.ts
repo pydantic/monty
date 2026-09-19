@@ -243,8 +243,11 @@ function nativeAutoOsCalls(calls: EncodedAutoOsCalls): Record<string, unknown> {
     fields.datetimeUnixSeconds = calls.datetime.unixSeconds
     fields.datetimeMicrosecond = calls.datetime.microsecond
   }
-  if (typeof calls.timezone === 'string') {
-    fields.timezoneKind = calls.timezone
+  if (calls.timezone === 'utc') {
+    fields.timezoneKind = 'utc'
+  } else if (typeof calls.timezone === 'string') {
+    fields.timezoneKind = 'named'
+    fields.timezoneName = calls.timezone
   } else if (calls.timezone !== undefined) {
     fields.timezoneKind = 'fixed'
     fields.timezoneOffsetSeconds = calls.timezone.offsetSeconds

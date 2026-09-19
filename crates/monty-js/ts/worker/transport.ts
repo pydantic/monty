@@ -508,7 +508,7 @@ function componentAutoOsCalls(calls: EncodedAutoOsCalls): ComponentAutoOsCalls |
 
 function componentTimeZone(timezone: NonNullable<EncodedAutoOsCalls['timezone']>): ComponentTimeZone {
   if (timezone === 'utc') return { tag: 'utc' }
-  if (timezone === 'call_host') return { tag: 'call-host' }
+  if (typeof timezone === 'string') return { tag: 'named', val: timezone }
   return { tag: 'fixed', val: { offsetSeconds: timezone.offsetSeconds, name: timezone.name } }
 }
 

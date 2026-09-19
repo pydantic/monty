@@ -85,19 +85,17 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
         | OsFunctionCall::SystemSleep(_)
         | OsFunctionCall::AsyncSleep(_)
         | OsFunctionCall::AsyncSystemSleep(_) => MontyObject::none(),
-        OsFunctionCall::DateTimeNow(_) | OsFunctionCall::DateTimeAsTimeZone(_) => {
-            MontyObject::datetime(MontyDateTime {
-                year: 2023,
-                month: 11,
-                day: 14,
-                hour: 22,
-                minute: 13,
-                second: 20,
-                microsecond: 0,
-                offset_seconds: None,
-                timezone_name: None,
-            })
-        }
+        OsFunctionCall::DateTimeNow(_) => MontyObject::datetime(MontyDateTime {
+            year: 2023,
+            month: 11,
+            day: 14,
+            hour: 22,
+            minute: 13,
+            second: 20,
+            microsecond: 0,
+            offset_seconds: None,
+            timezone_name: None,
+        }),
         OsFunctionCall::Urandom(args) => MontyObject::bytes(vec![0; usize::try_from(args.size).unwrap()]),
     }
 }

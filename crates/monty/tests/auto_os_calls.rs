@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    AutoOsCalls, CompileOptions, DateTimeSource, MontyDateTime, MontyObject, OsFunctionCall, PrintWriter,
-    ResourceLimits, ResourceTracker, SandboxTimeZone, SleepMode,
+    AutoOsCalls, CompileOptions, DateTimeSource, MontyObject, OsFunctionCall, PrintWriter, ResourceLimits,
+    ResourceTracker, SandboxTimeZone, SleepMode,
 };
 
 /// 2023-11-14 22:13:20 UTC, shared with the datatest fixtures.
@@ -220,8 +220,8 @@ fn out_of_range_microsecond_raises() {
     );
 }
 
-/// The default zone is UTC, never the host's own; a CallHost zone delegates only
-/// naive now() and today(), while time() and now(tz) stay local.
+/// The default zone is UTC, never the host's own; a named zone shifts only
+/// naive now() and today(), while time() and now(tz) stay UTC.
 #[test]
 fn the_zone_is_chosen_separately_from_the_instant() {
     let utc_zone = AutoOsCalls {
@@ -232,32 +232,29 @@ fn the_zone_is_chosen_separately_from_the_instant() {
                 (datetime.now() - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()";
     assert_eq!(run(code, utc_zone).unwrap(), MontyObject::float(0.0));
 
-    let host_zone = AutoOsCalls {
+    // a named zone applies its rules at the instant: London is on GMT in November
+    let london = AutoOsCalls {
         datetime: FIXED,
-        timezone: SandboxTimeZone::CallHost,
+        timezone: SandboxTimeZone::named("Europe/London").unwrap(),
         ..AutoOsCalls::default()
     };
     assert_eq!(
-        run("import time\ntime.time()", host_zone.clone()).unwrap(),
+        run("import time\ntime.time()", london.clone()).unwrap(),
         MontyObject::float(1_700_000_000.123_456)
     );
     assert_eq!(
-        run_repr_under("datetime.now(timezone.utc)", host_zone.clone()),
+        run_repr_under("datetime.now(timezone.utc)", london.clone()),
         "datetime.datetime(2023, 11, 14, 22, 13, 20, 123456, tzinfo=datetime.timezone.utc)"
     );
     assert_eq!(
-        run("from datetime import datetime\ndatetime.now()", host_zone.clone()).unwrap_err(),
-        "NotImplementedError: OS function 'datetime.now' not implemented with standard execution"
+        run_repr_under("datetime.now()", london.clone()),
+        "datetime.datetime(2023, 11, 14, 22, 13, 20, 123456)"
     );
-    assert_eq!(
-        run("from datetime import date\ndate.today()", host_zone).unwrap_err(),
-        "NotImplementedError: OS function 'date.today' not implemented with standard execution"
-    );
+    assert_eq!(run_repr_under("date.today()", london), "datetime.date(2023, 11, 14)");
 }
 
 /// `astimezone()`, the `time` constants and `%Z` all read the sandbox zone: UTC
-/// unless configured, with the configured name. `CallHost` delegates the two
-/// `astimezone()` forms that need the zone and leaves the constants unset.
+/// unless configured, with the configured name.
 #[test]
 fn astimezone_and_the_time_constants_read_the_sandbox_zone() {
     let utc = AutoOsCalls::default();
@@ -305,77 +302,104 @@ fn astimezone_and_the_time_constants_read_the_sandbox_zone() {
         run_repr_under("(time.timezone, time.altzone, time.daylight, time.tzname)", eet),
         "(-7200, -7200, 0, ('EET', 'EET'))"
     );
+}
 
-    let host_zone = AutoOsCalls {
-        timezone: SandboxTimeZone::CallHost,
+/// A named zone carries its DST rules: the offset and abbreviation follow the
+/// instant, a naive value is read at its first occurrence (CPython's `fold=0`),
+/// and the `time` constants come from January and July of the clock's year.
+/// Expectations were checked against CPython under `TZ=Europe/London` and
+/// `TZ=Australia/Sydney`.
+#[test]
+fn a_named_zone_applies_its_dst_rules() {
+    let london = AutoOsCalls {
+        datetime: FIXED,
+        timezone: SandboxTimeZone::named("Europe/London").unwrap(),
         ..AutoOsCalls::default()
     };
-    for expr in [
-        "datetime(2024, 6, 15, 12, 30).astimezone()",
-        "datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc).astimezone()",
-        "datetime(2024, 6, 15, 12, 30).astimezone(timezone.utc)",
-    ] {
-        assert_eq!(
-            run(
-                &format!("from datetime import datetime, timezone\n{expr}"),
-                host_zone.clone()
-            )
-            .unwrap_err(),
-            "NotImplementedError: OS function 'datetime.astimezone' not implemented with standard execution"
-        );
-    }
-    // an aware value converting to an explicit zone needs no local zone
     assert_eq!(
         run_repr_under(
-            "datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=1)))",
-            host_zone.clone()
+            "datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc).astimezone()",
+            london.clone()
         ),
-        "datetime.datetime(2024, 6, 15, 13, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600)))"
+        "datetime.datetime(2024, 6, 15, 13, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600), 'BST'))"
     );
     assert_eq!(
-        run("import time\ntime.tzname", host_zone).unwrap_err(),
+        run_repr_under("datetime(2024, 6, 15, 12, 30).astimezone(timezone.utc)", london.clone()),
+        "datetime.datetime(2024, 6, 15, 11, 30, tzinfo=datetime.timezone.utc)"
+    );
+    // 01:30 happens twice when the clocks go back; the first occurrence is still BST
+    assert_eq!(
+        run_repr_under("datetime(2024, 10, 27, 1, 30).astimezone(timezone.utc)", london.clone()),
+        "datetime.datetime(2024, 10, 27, 0, 30, tzinfo=datetime.timezone.utc)"
+    );
+    // 01:30 never happens when the clocks go forward; the offset from before the gap applies
+    assert_eq!(
+        run_repr_under("datetime(2024, 3, 31, 1, 30).astimezone(timezone.utc)", london.clone()),
+        "datetime.datetime(2024, 3, 31, 1, 30, tzinfo=datetime.timezone.utc)"
+    );
+    assert_eq!(
+        run_repr_under(
+            "datetime.now().astimezone().strftime('%Y-%m-%d %H:%M %Z %z')",
+            london.clone()
+        ),
+        "'2023-11-14 22:13 GMT +0000'"
+    );
+    assert_eq!(
+        run_repr_under("(time.timezone, time.altzone, time.daylight, time.tzname)", london),
+        "(0, -3600, 1, ('GMT', 'BST'))"
+    );
+    // south of the equator January is the daylight half, so the halves swap
+    let sydney = AutoOsCalls {
+        datetime: FIXED,
+        timezone: SandboxTimeZone::named("Australia/Sydney").unwrap(),
+        ..AutoOsCalls::default()
+    };
+    assert_eq!(
+        run_repr_under("(time.timezone, time.altzone, time.daylight, time.tzname)", sydney),
+        "(-36000, -39600, 1, ('AEST', 'AEDT'))"
+    );
+    // the constants need the clock's year, which a CallHost clock cannot give at import
+    let no_clock = AutoOsCalls {
+        datetime: DateTimeSource::CallHost,
+        timezone: SandboxTimeZone::named("Europe/London").unwrap(),
+        ..AutoOsCalls::default()
+    };
+    assert_eq!(
+        run("import time\ntime.tzname", no_clock).unwrap_err(),
         "AttributeError: 'module' object has no attribute 'tzname'"
+    );
+    assert_eq!(
+        run_repr_under("(time.timezone, time.tzname)", call_host()),
+        "(0, ('UTC', 'UTC'))"
     );
 }
 
-/// The suspension carries the datetime and the requested zone; the host's
-/// answer becomes the result.
+/// Zone names are validated before the database sees them, and the database
+/// answers for `UTC` and every IANA key.
 #[test]
-fn astimezone_suspends_with_the_datetime_and_zone() {
-    let host_zone = AutoOsCalls {
-        timezone: SandboxTimeZone::CallHost,
-        ..AutoOsCalls::default()
-    };
-    let code = "from datetime import datetime, timedelta, timezone\n\
-                datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc).astimezone()";
-    let call = runner(code, host_zone)
-        .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
-        .unwrap()
-        .into_os_call()
-        .expect("astimezone() suspends to the host");
-    let OsFunctionCall::DateTimeAsTimeZone(args) = &call.function_call else {
-        panic!("expected datetime.astimezone, got {}", call.function_call.name());
-    };
-    assert_eq!(args.datetime.hour, 12);
-    assert_eq!(args.datetime.offset_seconds, Some(0));
-    assert_eq!(args.tz, None);
-    let answer = MontyObject::datetime(MontyDateTime {
-        year: 2024,
-        month: 6,
-        day: 15,
-        hour: 14,
-        minute: 30,
-        second: 0,
-        microsecond: 0,
-        offset_seconds: Some(7_200),
-        timezone_name: Some("EET".to_owned()),
-    });
-    let result = call
-        .resume(answer.clone(), PrintWriter::Disabled)
-        .unwrap()
-        .into_complete()
-        .expect("the host's answer completes the run");
-    assert_eq!(result, answer);
+fn zone_names_are_resolved_or_refused() {
+    assert_eq!(
+        SandboxTimeZone::named("UTC").unwrap().iana_name(),
+        Some("UTC"),
+        "UTC is in every database"
+    );
+    assert_eq!(
+        SandboxTimeZone::named("Europe/London").unwrap().iana_name(),
+        Some("Europe/London")
+    );
+    for name in [
+        "",
+        "Mars/Olympus",
+        "../zoneinfo/UTC",
+        "Europe//London",
+        "Europe/London\0",
+    ] {
+        assert_eq!(
+            SandboxTimeZone::named(name).unwrap_err().to_string(),
+            format!("unknown timezone '{name}'")
+        );
+    }
+    assert_eq!(SandboxTimeZone::utc().iana_name(), None);
 }
 
 #[test]

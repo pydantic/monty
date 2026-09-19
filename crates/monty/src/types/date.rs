@@ -137,17 +137,16 @@ struct DateInitArgs {
     day: i32,
 }
 
-/// Reads `date.today()` from the session's clock and zone. If either uses
-/// `CallHost`, requests a `DateToday` answer constructed with `MontyObject::date`.
+/// Reads `date.today()` from the session's clock in the session zone. A `CallHost`
+/// clock requests a `DateToday` answer constructed with `MontyObject::date`.
 pub(crate) fn class_today(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("date.today", vm.heap)?;
-    let local = match datetime::sandbox_instant(vm)? {
-        Some(utc) => datetime::sandbox_local_wall_clock(vm, utc)?,
-        None => None,
-    };
-    Ok(match local {
+    Ok(match datetime::sandbox_instant(vm)? {
         None => CallResult::OsCall(OsFunctionCall::DateToday),
-        Some(local) => CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(Date(local.date()))))),
+        Some(utc) => {
+            let local = datetime::sandbox_local_wall_clock(vm, utc)?;
+            CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(Date(local.date())))))
+        }
     })
 }
 

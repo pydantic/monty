@@ -87,3 +87,19 @@ test('a fixed clock, zero sleeps and a seed reach the wasm worker', async (ctx) 
     await pool.close()
   }
 })
+
+test('a named zone resolves from the tz database bundled into the wasm worker', async (ctx) => {
+  skipIfBrowser(ctx)
+  const pool = await Monty.create()
+  const session = await pool.checkout({
+    autoOsCalls: { datetime: new Date('2024-06-15T12:30:00Z'), timezone: 'Europe/London' },
+  })
+  try {
+    const code =
+      'import time\nfrom datetime import datetime\n(datetime.now().hour, datetime.now().astimezone().tzname(), time.tzname)'
+    t.deepEqual(await session.feedRun(code), [13, 'BST', ['GMT', 'BST']])
+  } finally {
+    await session.close()
+    await pool.close()
+  }
+})

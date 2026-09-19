@@ -79,11 +79,12 @@ Methods: `isoformat(sep='T', timespec='auto')`, `strftime`, `replace`,
 `weekday`, `isoweekday`, `date`, `time`, `timetz`, `timestamp`, `astimezone(tz=None)`,
 `utcoffset`, `tzname`, `dst`.
 
-`astimezone()` converts to the [session zone](#reading-the-clock), a fixed offset, so the result's `tzinfo` is a
-`timezone` and `dst()` is `None`; CPython's result is the host's zone with its DST name at that instant.
+`astimezone()` converts to the [session zone](#reading-the-clock) where CPython uses the host's; as in CPython the
+result's `tzinfo` is a `timezone` carrying the offset and abbreviation at that instant (`BST`).
 The default zone is `timezone(timedelta(0), 'UTC')`, what CPython reports under `TZ=UTC`, so
 `datetime.now().astimezone().tzinfo == timezone.utc` holds but it is not the `timezone.utc` singleton.
-A naive value is read in the session zone, as CPython reads it in the host's.
+A naive value is read in the session zone, as CPython reads it in the host's, at its first occurrence in a DST fold
+and with the offset from before a DST gap: CPython's `fold=0` reading, since `fold` is not stored (below).
 `dt.astimezone(dt.tzinfo)` returns an equal copy, not `dt` itself.
 
 `fold` is not readable: `datetime(2020, 1, 1, fold=1).fold` raises
@@ -138,14 +139,17 @@ The [session clock](../security.md#the-clock) has separate `datetime` and `timez
 
 - The default is UTC, not the host's zone, so a naive `datetime.now()` is the UTC wall clock and `astimezone()`
     attaches `timezone(timedelta(0), 'UTC')`.
-- A fixed zone is a UTC offset with an optional name, without IANA timezone or DST rules.
+- A fixed zone is a UTC offset with an optional name and no DST rules.
     `astimezone()`, `%Z` and `time.tzname` report the name (`UTC±HH:MM` when there is none).
-- `'call_host'` delegates `date.today()`, naive `datetime.now()`, `astimezone()` with no argument and
-    `astimezone(tz)` on a naive value, the calls that require the local zone (`OSAccess.datetime_astimezone()` in
-    Python).
-    `time.time()`, `datetime.now(tz)` and an aware `astimezone(tz)` are answered in the sandbox.
-    `time.timezone`, `time.altzone`, `time.daylight` and `time.tzname` are absent under `'call_host'`, since the
-    module is created without suspending; see [time.md](time.md#zone-constants).
+- An IANA name (`'Europe/London'`) is resolved in the worker against its tz database: the OS copy under `TZDIR` or
+    `/usr/share/zoneinfo`, or the copy bundled into the binary when the OS has none (Windows, and always in the wasm
+    worker).
+    The offset and abbreviation then follow the instant, so the results depend on that database's version, as
+    CPython's do on the host's.
+    An unknown name is refused when the session is checked out.
+    The zone is never delegated to the host: `time.timezone`, `time.altzone`, `time.daylight` and `time.tzname` are
+    computed at import and need the clock's year, so a named zone under `datetime='call_host'` leaves them absent;
+    see [time.md](time.md#zone-constants).
 
 ## `time`
 

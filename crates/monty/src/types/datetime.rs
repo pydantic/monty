@@ -12,10 +12,7 @@ use std::{
 use chrono::{
     Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike, format::StrftimeItems,
 };
-use monty_types::{
-    DateTimeAsTimeZoneArgs, DateTimeSource, MontyDateTime, MontyTimeZone, OsFunctionCall, ResourceTracker,
-    local_wall_clock,
-};
+use monty_types::{DateTimeSource, MontyDateTime, MontyTimeZone, OsFunctionCall, ResourceTracker, local_wall_clock};
 
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
@@ -298,39 +295,32 @@ struct DatetimeInitArgs {
 }
 
 /// Reads `datetime.now(tz=None)` from the session clock, preserving `tz` identity.
-/// Naive results use the session zone. If the clock or required zone uses
-/// `CallHost`, yields `DateTimeNow` with a validated [`Option<MontyTimeZone>`].
+/// Naive results use the session zone. A `CallHost` clock yields `DateTimeNow`
+/// with a validated [`Option<MontyTimeZone>`] for the host to answer.
 pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let NowArgs { tz } = NowArgs::from_args(args, vm)?;
     defer_drop!(tz, vm);
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
     // Invalid fixed instants raise; only CallHost falls back to the host's clock.
-    let local = match (sandbox_instant(vm)?, &tz) {
-        (Some(utc), Some(tz)) => Some(
-            from_utc_naive_with_timezone_parts(utc, tz.offset_seconds, tz.name.clone())
-                .ok_or_else(date_out_of_range)?,
-        ),
-        (Some(utc), None) => match sandbox_local_wall_clock(vm, utc)? {
-            Some(local) => Some(from_local_naive(local).ok_or_else(date_out_of_range)?),
-            None => None,
-        },
-        (None, _) => None,
-    };
-    let Some(mut dt) = local else {
+    let Some(utc) = sandbox_instant(vm)? else {
         let tz = tz.map(|tz| MontyTimeZone {
             offset_seconds: tz.offset_seconds,
             name: tz.name,
         });
         return Ok(CallResult::OsCall(OsFunctionCall::DateTimeNow(tz)));
     };
+    let mut dt = match &tz {
+        Some(tz) => from_utc_naive_with_timezone_parts(utc, tz.offset_seconds, tz.name.clone()),
+        None => from_local_naive(sandbox_local_wall_clock(vm, utc)?),
+    }
+    .ok_or_else(date_out_of_range)?;
     attach_or_allocate_tzinfo_ref(&mut dt, tz_ref, vm.heap);
     Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt)))))
 }
 
 /// `datetime.astimezone(tz=None)`: the same instant in `tz`, or in the sandbox
-/// zone when `tz` is `None`. A naive value is read as sandbox-local wall time,
-/// as CPython reads it in the host's zone. Suspends with `DateTimeAsTimeZone`
-/// when the sandbox zone is needed and it is `CallHost`.
+/// zone at that instant when `tz` is `None`. A naive value is read as sandbox-local
+/// wall time, as CPython reads it in the host's zone.
 fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let AstimezoneArgs { tz } = AstimezoneArgs::from_args(args, vm)?;
     defer_drop!(tz, vm);
@@ -339,33 +329,19 @@ fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Call
     // CPython forms `self - utcoffset()` as a datetime, so the UTC intermediate
     // must be in range as well as the result.
     let utc = match dt.offset_seconds {
-        Some(_) => Some(
-            to_utc_naive(dt)
-                .filter(|utc| year_in_python_range(utc.year()))
-                .ok_or_else(date_out_of_range)?,
-        ),
-        None => zone
-            .offset_seconds()
-            .map(|offset| local_wall_clock(dt.naive, -offset).ok_or_else(date_out_of_range))
-            .transpose()?,
-    };
-    let target = match &tz {
-        Some(tz) => Some((tz.offset_seconds, tz.name.clone())),
-        None => zone
-            .offset_seconds()
-            .map(|offset| (offset, zone.name().map(str::to_owned))),
-    };
-    let (Some(utc), Some((offset_seconds, name))) = (utc, target) else {
-        let datetime = to_monty_datetime(dt).ok_or_else(date_out_of_range)?;
-        let tz = tz.map(|tz| MontyTimeZone {
+        Some(_) => to_utc_naive(dt).filter(|utc| year_in_python_range(utc.year())),
+        None => zone.utc_from_local(dt.naive),
+    }
+    .ok_or_else(date_out_of_range)?;
+    let target = match tz {
+        Some(tz) => MontyTimeZone {
             offset_seconds: tz.offset_seconds,
             name: tz.name,
-        });
-        return Ok(CallResult::OsCall(OsFunctionCall::DateTimeAsTimeZone(
-            DateTimeAsTimeZoneArgs { datetime, tz },
-        )));
+        },
+        None => zone.at(utc),
     };
-    let mut converted = from_utc_naive_with_timezone_parts(utc, offset_seconds, name).ok_or_else(date_out_of_range)?;
+    let mut converted =
+        from_utc_naive_with_timezone_parts(utc, target.offset_seconds, target.name).ok_or_else(date_out_of_range)?;
     attach_or_allocate_tzinfo_ref(&mut converted, tz_ref, vm.heap);
     Ok(CallResult::Value(Value::Ref(
         vm.heap.allocate(HeapData::DateTime(converted)),
@@ -390,13 +366,11 @@ pub(crate) fn sandbox_instant(vm: &VM<'_>) -> RunResult<Option<NaiveDateTime>> {
     }
 }
 
-/// Converts UTC to the session zone for naive `now()` and `today()`.
-/// Returns `None` for `CallHost`; out-of-range years raise `OverflowError`.
-pub(crate) fn sandbox_local_wall_clock(vm: &VM<'_>, utc: NaiveDateTime) -> RunResult<Option<NaiveDateTime>> {
-    match vm.env.auto_os_calls.timezone.offset_seconds() {
-        None => Ok(None),
-        Some(offset) => local_wall_clock(utc, offset).map(Some).ok_or_else(date_out_of_range),
-    }
+/// Converts UTC to the session zone's wall clock for naive `now()` and `today()`;
+/// out-of-range years raise `OverflowError`.
+pub(crate) fn sandbox_local_wall_clock(vm: &VM<'_>, utc: NaiveDateTime) -> RunResult<NaiveDateTime> {
+    let offset = vm.env.auto_os_calls.timezone.at(utc).offset_seconds;
+    local_wall_clock(utc, offset).ok_or_else(date_out_of_range)
 }
 
 fn date_out_of_range() -> RunError {

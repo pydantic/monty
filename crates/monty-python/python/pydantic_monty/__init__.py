@@ -169,7 +169,9 @@ class ResourceLimits(TypedDict, total=False):
 
 
 class TimeZone(TypedDict):
-    """A fixed UTC offset and optional name, as in `datetime.timezone`; IANA zones are unsupported."""
+    """A fixed UTC offset and optional name, as in `datetime.timezone`.
+
+    For an IANA zone with DST rules, pass its name (`'Europe/London'`) as `timezone` instead."""
 
     offset_seconds: int
     """Offset from UTC, in seconds."""
@@ -195,10 +197,12 @@ class AutoOSCalls(TypedDict, total=False):
     A `datetime` freezes the instant and, unless `timezone` is set, uses its `utcoffset()` and `tzname()`
     (UTC if naive). Naive `datetime.now()` then returns its wall time."""
 
-    timezone: Literal['utc', 'call_host'] | TimeZone
+    timezone: str | TimeZone
     """The sandbox's local zone, read by naive `datetime.now()` and `date.today()`, `astimezone()`,
-    `time.timezone`/`time.tzname` and `%Z`; defaults to `'utc'`, never the worker's own zone.
-    `'call_host'` routes calls requiring the zone to `os=`; a `TimeZone` supplies a fixed offset."""
+    `time.timezone`/`time.tzname` and `%Z`; defaults to `'utc'`.
+
+    Any other string is an IANA zone name such as `'Europe/London'`, resolved with its DST rules from the
+    worker's tz database; a `TimeZone` supplies a fixed offset."""
 
     sleep: Literal['system', 'call_host', 'zero']
     """Policy for `time.sleep()` and `asyncio.sleep()`; defaults to `'system'`.

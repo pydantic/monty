@@ -82,10 +82,11 @@ export type DateTimeSource = 'system' | 'call_host' | Date
 /**
  * The sandbox's local zone, read by naive `datetime.now()` and `date.today()`, `astimezone()`,
  * `time.timezone`/`time.tzname` and `%Z`; defaults to `'utc'`, never the worker's own zone.
- * `'call_host'` delegates calls requiring the zone to `os`; an object supplies a fixed UTC offset
- * and optional name, as in `datetime.timezone`. IANA zones are unsupported.
+ * Any other string is an IANA zone name such as `'Europe/London'`, resolved with its DST rules from
+ * the worker's tz database; an object supplies a fixed UTC offset and optional name, as in
+ * `datetime.timezone`.
  */
-export type TimeZone = 'utc' | 'call_host' | { offsetSeconds: number; name?: string }
+export type TimeZone = 'utc' | (string & {}) | { offsetSeconds: number; name?: string }
 
 /**
  * Sleep policy: `'system'` (default) waits in the pool, capped per call by `sleepSystemMax`;
@@ -137,7 +138,8 @@ export type EncodedRandomSeed = { int: Uint8Array } | { float: number } | { str:
  */
 export interface EncodedAutoOsCalls {
   datetime?: 'system' | 'call_host' | FixedDateTime
-  timezone?: 'utc' | 'call_host' | FixedTimeZone
+  /** `'utc'`, an IANA zone name, or a fixed offset. */
+  timezone?: string | FixedTimeZone
   sleep?: SleepMode
   /** Seconds; `Infinity` lifts the cap. */
   sleepSystemMaxSecs?: number
@@ -215,9 +217,9 @@ function encodeDateTime(datetime: DateTimeSource): 'system' | 'call_host' | Fixe
   return { unixSeconds: BigInt(seconds), microsecond: (ms - seconds * 1000) * 1000 }
 }
 
-function encodeTimeZone(timezone: TimeZone): 'utc' | 'call_host' | FixedTimeZone {
-  if (timezone === 'utc' || timezone === 'call_host') return timezone
-  const shape = "timezone must be 'utc', 'call_host' or { offsetSeconds: number, name?: string }"
+function encodeTimeZone(timezone: TimeZone): string | FixedTimeZone {
+  if (typeof timezone === 'string') return timezone
+  const shape = "timezone must be 'utc', an IANA zone name or { offsetSeconds: number, name?: string }"
   if (typeof timezone !== 'object' || timezone === null || !Object.hasOwn(timezone, 'offsetSeconds')) {
     throw new TypeError(shape)
   }

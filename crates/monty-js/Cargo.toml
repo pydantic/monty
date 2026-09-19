@@ -19,7 +19,7 @@ repository = { workspace = true }
 crate-type = ["cdylib"]
 
 [dependencies]
-monty-types = { workspace = true }
+monty-types = { workspace = true, features = ["tzdb"] }
 opentelemetry = "0.32"
 opentelemetry_sdk = "0.32"
 monty-pool = { workspace = true, features = ["telemetry"] }

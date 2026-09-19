@@ -141,12 +141,11 @@ fn fixed_datetime(datetime: &Bound<'_, PyDateTime>) -> PyResult<(DateTimeSource,
 }
 
 fn time_zone(value: &Bound<'_, PyAny>) -> PyResult<SandboxTimeZone> {
-    const SHAPE: &str = "timezone must be 'utc', 'call_host' or {'offset_seconds': int, 'name': str}";
+    const SHAPE: &str = "timezone must be 'utc', an IANA zone name or {'offset_seconds': int, 'name': str}";
     if let Ok(name) = value.cast::<PyString>() {
         match &*name.to_cow()? {
             "utc" => Ok(SandboxTimeZone::utc()),
-            "call_host" => Ok(SandboxTimeZone::CallHost),
-            other => Err(PyValueError::new_err(format!("{SHAPE}, got '{other}'"))),
+            other => SandboxTimeZone::named(other).map_err(|err| PyValueError::new_err(err.to_string())),
         }
     } else if let Ok(mapping) = value.cast::<PyDict>() {
         let mut offset_seconds = None;

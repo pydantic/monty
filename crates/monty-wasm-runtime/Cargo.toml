@@ -20,7 +20,7 @@ crate-type = ["cdylib"]
 [dependencies]
 monty-alloc = { workspace = true }
 monty-proto = { workspace = true, features = ["worker"] }
-monty-types = { workspace = true }
+monty-types = { workspace = true, features = ["tzdb-bundled"] }
 wit-bindgen = "0.46"
 
 [lints]

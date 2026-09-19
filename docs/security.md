@@ -284,19 +284,19 @@ The session's `auto_os_calls` ([`AutoOSCalls`][pydantic_monty.AutoOSCalls] on
 [`Monty.checkout`][pydantic_monty.Monty.checkout] in Python, `autoOsCalls` on `checkout()` in JavaScript,
 `AutoOsCalls` in Rust) configures the instant (`datetime`) and local zone (`timezone`) separately:
 
-- `'call_host'` delegates to your `os=` handler; unanswered calls raise.
+- `datetime='call_host'` delegates the clock calls to your `os=` handler; unanswered calls raise.
 - A fixed instant (`datetime.datetime`, `Date` or `DateTimeSource::Fixed`) freezes the clock.
-    A fixed `timezone` sets the offset and name that naive `datetime.now()` and `date.today()` use and that
-    `astimezone()`, `strftime('%Z')` and the `time.timezone` / `time.tzname` constants report.
+- `timezone` sets the zone that naive `datetime.now()` and `date.today()` use and that `astimezone()`,
+    `strftime('%Z')` and the `time.timezone` / `time.tzname` constants report: `'utc'`, an IANA name such as
+    `'Europe/London'` resolved inside the worker from its tz database, or a fixed offset and name.
 
 A fixed zone uses `{'offset_seconds': ..., 'name': ...}` in Python, `{ offsetSeconds, name }` in JavaScript,
-or `SandboxTimeZone::Fixed` in Rust.
+or `SandboxTimeZone::Fixed` in Rust; a named one is `SandboxTimeZone::named(...)` in Rust.
 
 Wall-clock time is a weak capability, but it is one: it is what makes elapsed time measurable from inside the sandbox.
 A fixed instant removes it.
-With the default or a fixed zone, sandboxed code learns only the zone you configure, so the host's own UTC offset
-never reaches it.
-Under `'call_host'` it learns whatever your handler answers; the default
+Sandboxed code learns only the zone you configure, so the host's own UTC offset never reaches it.
+Under `datetime='call_host'` it learns whatever your handler answers; the default
 [`OSAccess`][pydantic_monty.OSAccess] handler answers with the host's real clock and zone.
 See [datetime](limitations/datetime.md#reading-the-clock).
 

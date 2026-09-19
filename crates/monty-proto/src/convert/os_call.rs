@@ -6,8 +6,8 @@
 use std::time::Duration;
 
 use monty_types::{
-    DateTimeAsTimeZoneArgs, GetenvArgs, MkdirCallArgs, MontyDateTime, MontyPath, MontyTimeZone, OpenCallArgs,
-    OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, UrandomArgs, sleep_duration, unstable,
+    GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
+    PathStringDataArgs, RenameCallArgs, UrandomArgs, sleep_duration, unstable,
 };
 
 use crate::{
@@ -16,7 +16,7 @@ use crate::{
         self, TimeZone, Unit,
         os_call::{self, Call},
     },
-    wire::{WireArena, datetime_from_proto},
+    wire::WireArena,
 };
 
 /// Builds the `OsCall` envelope: call id, typed arm, the eager-await hint and,
@@ -93,10 +93,6 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
         OsFunctionCall::DateTimeNow(tz) => Call::DateTimeNow(os_call::DateTimeNow {
             tz: tz.map(timezone_to_proto),
         }),
-        OsFunctionCall::DateTimeAsTimeZone(a) => Call::DateTimeAstimezone(os_call::DateTimeAsTimeZone {
-            datetime: Some(datetime_to_proto(a.datetime)),
-            tz: a.tz.map(timezone_to_proto),
-        }),
         OsFunctionCall::Urandom(a) => Call::Urandom(os_call::Urandom { size: a.size }),
         OsFunctionCall::Time => Call::Time(Unit {}),
         OsFunctionCall::Sleep(delay) => Call::Sleep(os_call::Sleep {
@@ -162,13 +158,6 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             // typed arm: the wire cannot express anything but an optional
             // timezone here, mirroring the VM's validation of `datetime.now`
             os_call::Call::DateTimeNow(now) => Self::DateTimeNow(now.tz.map(timezone_from_proto)),
-            os_call::Call::DateTimeAstimezone(a) => Self::DateTimeAsTimeZone(DateTimeAsTimeZoneArgs {
-                datetime: datetime_from_proto(
-                    a.datetime
-                        .ok_or(ProtoConvertError::MissingField("DateTimeAsTimeZone.datetime"))?,
-                )?,
-                tz: a.tz.map(timezone_from_proto),
-            }),
             os_call::Call::Urandom(u) => Self::Urandom(UrandomArgs { size: u.size }),
             os_call::Call::Time(_) => Self::Time,
             os_call::Call::Sleep(s) => Self::Sleep(field_sleep_duration(s.seconds, "Sleep.seconds")?),
@@ -192,21 +181,6 @@ fn timezone_from_proto(tz: TimeZone) -> MontyTimeZone {
     MontyTimeZone {
         offset_seconds: tz.offset_seconds,
         name: tz.name,
-    }
-}
-
-/// The wire form of an already-valid interpreter datetime.
-fn datetime_to_proto(dt: MontyDateTime) -> pb::DateTime {
-    pb::DateTime {
-        year: dt.year,
-        month: u32::from(dt.month),
-        day: u32::from(dt.day),
-        hour: u32::from(dt.hour),
-        minute: u32::from(dt.minute),
-        second: u32::from(dt.second),
-        microsecond: dt.microsecond,
-        offset_seconds: dt.offset_seconds,
-        timezone_name: dt.timezone_name,
     }
 }
 

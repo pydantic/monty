@@ -17,12 +17,15 @@ forms), `time_ns`, `struct_time`, `localtime`, `gmtime`, `mktime`, `strftime`,
 
 ## Zone constants
 
-The constants describe the [session zone](datetime.md#reading-the-clock), a fixed offset, where CPython reads the
-host's zone from the C library.
-`timezone` and `altzone` are both the offset in seconds west of UTC, `daylight` is `0` and `tzname` repeats the
-zone's name (`UTC±HH:MM` when it has none), so the default session reports `0, 0, 0, ('UTC', 'UTC')`.
-Under `timezone='call_host'` the four names are absent and raise `AttributeError`: the module is created when it is
-imported, without suspending to the host.
+The constants describe the [session zone](datetime.md#reading-the-clock) where CPython reads the host's zone from
+the C library.
+A named zone gives its standard and daylight halves from 1 January and 1 July of the clock's year, as CPython does:
+`Europe/London` reports `0, -3600, 1, ('GMT', 'BST')`.
+A fixed zone has one half: `timezone` and `altzone` are both the offset in seconds west of UTC, `daylight` is `0`
+and `tzname` repeats the zone's name (`UTC±HH:MM` when it has none), so the default session reports
+`0, 0, 0, ('UTC', 'UTC')`.
+A named zone under `datetime='call_host'` leaves the four names absent, raising `AttributeError`: the module is
+created when it is imported, without suspending to the host for the year.
 
 ## `time.time()`
 

@@ -26,7 +26,7 @@ monty-pool = { workspace = true, features = ["telemetry"] }
 opentelemetry = "0.32"
 opentelemetry_sdk = "0.32"
 monty-proto = { workspace = true, features = ["python"] }
-monty-types = { workspace = true }
+monty-types = { workspace = true, features = ["tzdb"] }
 monty-fs = { workspace = true }
 pyo3 = { workspace = true, features = ["indexmap", "generate-import-lib", "num-bigint"] }
 num-bigint = { workspace = true }

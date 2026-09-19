@@ -110,6 +110,8 @@ pyo3-async-runtimes = "0.29.0"
 pyo3-build-config = { version = "0.29.2", features = ["resolve-config"] }
 # others
 chrono = { version = "0.4", features = ["serde"] }
+# The zone rules for `SandboxTimeZone::Named`; database features are enabled per binary.
+jiff = { version = "0.2", default-features = false, features = ["std", "serde"] }
 strum = { version = "0.27", features = ["derive"] }
 itoa = "1"
 ahash = { version = "0.8.0", features = ["serde"] }

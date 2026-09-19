@@ -7,11 +7,11 @@ use monty_proto::{
     named_values_to_proto, os_call_from_proto, os_call_to_proto, pb,
 };
 use monty_types::{
-    AutoOsCalls, CodeLoc, CompileOptions, DateTimeAsTimeZoneArgs, DateTimeSource, ExcData, ExcType, ExtFunctionResult,
-    GetenvArgs, JsonErrorData, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException,
-    MontyFileHandle, MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
-    NameLookupResult, NamedValues, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RandomSeed,
-    RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, StackFrame, UnicodeErrorData, UrandomArgs,
+    AutoOsCalls, CodeLoc, CompileOptions, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs,
+    JsonErrorData, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
+    MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult,
+    NamedValues, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RandomSeed, RandomStart,
+    RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, StackFrame, UnicodeErrorData, UrandomArgs,
     sleep_duration, sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
@@ -605,7 +605,7 @@ fn auto_os_calls_round_trip() {
     for sleep in [SleepMode::CallHost, SleepMode::Zero] {
         let calls = AutoOsCalls {
             datetime: DateTimeSource::CallHost,
-            timezone: SandboxTimeZone::CallHost,
+            timezone: SandboxTimeZone::named("Europe/London").unwrap(),
             sleep,
             random_start: RandomStart::CallHost,
         };
@@ -620,6 +620,27 @@ fn auto_os_calls_round_trip() {
         })
     );
     assert_eq!(AutoOsCalls::try_from(utc).unwrap().timezone, SandboxTimeZone::utc());
+    // a named zone crosses as its IANA name, which the child resolves against its own database
+    let london = pb::AutoOsCalls::from(&AutoOsCalls {
+        timezone: SandboxTimeZone::named("Europe/London").unwrap(),
+        ..AutoOsCalls::default()
+    });
+    assert_eq!(
+        london.timezone,
+        Some(pb::SandboxTimeZone {
+            zone: Some(pb::sandbox_time_zone::Zone::Named("Europe/London".to_owned())),
+        })
+    );
+    let unknown = pb::AutoOsCalls {
+        timezone: Some(pb::SandboxTimeZone {
+            zone: Some(pb::sandbox_time_zone::Zone::Named("Mars/Olympus".to_owned())),
+        }),
+        ..pb::AutoOsCalls::default()
+    };
+    assert_eq!(
+        AutoOsCalls::try_from(unknown).unwrap_err().to_string(),
+        "invalid value for SandboxTimeZone.named: unknown timezone 'Mars/Olympus'"
+    );
 }
 
 #[test]
@@ -944,37 +965,6 @@ fn os_calls_round_trip_all_variants() {
             offset_seconds: 3600,
             name: Some("CET".to_owned()),
         })),
-        OsFunctionCall::DateTimeAsTimeZone(DateTimeAsTimeZoneArgs {
-            datetime: MontyDateTime {
-                year: 2024,
-                month: 6,
-                day: 15,
-                hour: 12,
-                minute: 30,
-                second: 5,
-                microsecond: 123_456,
-                offset_seconds: None,
-                timezone_name: None,
-            },
-            tz: None,
-        }),
-        OsFunctionCall::DateTimeAsTimeZone(DateTimeAsTimeZoneArgs {
-            datetime: MontyDateTime {
-                year: 2024,
-                month: 6,
-                day: 15,
-                hour: 12,
-                minute: 30,
-                second: 5,
-                microsecond: 123_456,
-                offset_seconds: Some(7_200),
-                timezone_name: Some("EET".to_owned()),
-            },
-            tz: Some(MontyTimeZone {
-                offset_seconds: 0,
-                name: None,
-            }),
-        }),
         OsFunctionCall::Urandom(UrandomArgs { size: 2496 }),
         OsFunctionCall::Time,
         OsFunctionCall::Sleep(Duration::ZERO),

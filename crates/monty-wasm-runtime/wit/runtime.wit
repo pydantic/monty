@@ -198,8 +198,8 @@ interface worker {
     variant time-zone {
         /// UTC, the default.
         utc,
-        /// Delegate calls requiring the local timezone to the host.
-        call-host,
+        /// An IANA zone name (`Europe/London`), resolved from the bundled tz database.
+        named(string),
         fixed(fixed-time-zone),
     }
 

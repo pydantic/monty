@@ -744,17 +744,6 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64
                 os_call!("date_time_now")
             }
         }
-        Some(Call::DateTimeAstimezone(a)) => {
-            if let Some(tz) = &a.tz {
-                os_call!(
-                    "date_time_astimezone",
-                    args.tz_offset_seconds = tz.offset_seconds,
-                    args.tz_name = tz.name.as_deref().map(|name| string_arg!(name))
-                )
-            } else {
-                os_call!("date_time_astimezone")
-            }
-        }
         Some(Call::Urandom(u)) => os_call!("urandom", args.size = u.size),
         Some(Call::Time(_)) => os_call!("time"),
         Some(Call::Sleep(s)) => os_call!("sleep", args.seconds = s.seconds),

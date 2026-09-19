@@ -152,12 +152,12 @@ pub struct NativeCheckoutOptions {
     pub datetime_unix_seconds: Option<BigInt>,
     /// A fixed clock's sub-second part, 0..=999999.
     pub datetime_microsecond: Option<u32>,
-    /// The zone naive clock calls read in: `'system'`, `'call_host'` or
-    /// `'fixed'` (with the two `timezone*` parts below). Absent: `'system'`.
+    /// The sandbox zone: `'utc'`, `'named'` (an IANA name in `timezone_name`) or
+    /// `'fixed'` (with the two `timezone*` parts below). Absent: `'utc'`.
     pub timezone_kind: Option<String>,
     /// A fixed zone's offset from UTC, in seconds.
     pub timezone_offset_seconds: Option<i32>,
-    /// A fixed zone's name, if it has one.
+    /// A fixed zone's name, if it has one; a named zone's IANA name.
     pub timezone_name: Option<String>,
     /// Sleep policy: `'system'` (default), `'zero'` or `'call_host'`.
     pub sleep: Option<String>,

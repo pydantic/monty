@@ -141,7 +141,7 @@ Otherwise they use worker OS entropy or the configured seed.
 
 By default, `date.today()`, `datetime.now()` and `time.time()` read the worker's clock.
 The pool handles `time.sleep()` and `asyncio.sleep()`, capped per call by `sleep_system_max`.
-Setting `datetime`, `timezone` or `sleep` to `'call_host'` in `checkout(auto_os_calls=...)` routes those calls to `os=`.
+Setting `datetime` or `sleep` to `'call_host'` in `checkout(auto_os_calls=...)` routes those calls to `os=`.
 `OSAccess` answers from the host process and caps each wait at `max_sleep`.
 
 A `random.Random` instance or the `random.Random` class returned from the sandbox converts to its repr string.

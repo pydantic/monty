@@ -64,6 +64,7 @@ required-features = ["worker"]
 allocation-counter = "0.8"
 insta = { workspace = true }
 monty = { workspace = true }
+monty-types = { workspace = true, features = ["tzdb"] }
 # Self dev-dependency enables budget instrumentation for tests, not normal builds.
 monty-proto = { workspace = true, features = ["test-util"] }
 serde_json = { workspace = true }

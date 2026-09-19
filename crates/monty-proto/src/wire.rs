@@ -1066,8 +1066,7 @@ fn date_from_proto(d: &pb::Date) -> Result<MontyDate, ProtoConvertError> {
     Ok(MontyDate { year, month, day })
 }
 
-/// Validates a wire `DateTime`; shared with the `datetime.astimezone` OS call arm.
-pub(crate) fn datetime_from_proto(dt: pb::DateTime) -> Result<MontyDateTime, ProtoConvertError> {
+fn datetime_from_proto(dt: pb::DateTime) -> Result<MontyDateTime, ProtoConvertError> {
     if dt.offset_seconds.is_none() && dt.timezone_name.is_some() {
         return Err(ProtoConvertError::InvalidValue {
             field: "DateTime.timezone_name",

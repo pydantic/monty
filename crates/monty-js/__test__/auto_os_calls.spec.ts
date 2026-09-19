@@ -59,24 +59,23 @@ test('a fixed timezone shifts the naive calls only', async () => {
   t.is(epoch, 1705361405)
 })
 
-test('call_host on the timezone sends only the naive calls to the os callback', async () => {
-  const calls: string[] = []
+test('a named zone applies its DST rules in the worker', async () => {
   const frozen = new Date('2024-01-15T10:30:05Z')
-  const code = 'import time\nfrom datetime import date, datetime, timezone\n(datetime.now(timezone.utc), time.time())'
-  const [aware, epoch] = (await runWith(code, { datetime: frozen, timezone: 'call_host' }, (name) => {
-    calls.push(name)
-    return null
-  })) as [MontyDateTime, number]
-  t.is(aware.hour, 10)
-  t.is(epoch, 1705314605)
-  t.deepEqual(calls, [])
-  const today: MontyDate = { __monty_type__: 'Date', year: 2001, month: 2, day: 3 }
-  const result = await runWith('from datetime import date\ndate.today()', { timezone: 'call_host' }, (name) => {
-    calls.push(name)
-    return today
-  })
-  t.deepEqual(result, today)
-  t.deepEqual(calls, ['date.today'])
+  const code = [
+    'import time',
+    'from datetime import datetime, timezone',
+    '(datetime.now().hour, datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc).astimezone().strftime("%H:%M %Z %z"),',
+    ' datetime(2024, 10, 27, 1, 30).astimezone(timezone.utc).hour, time.timezone, time.altzone, time.daylight, time.tzname)',
+  ].join('\n')
+  t.deepEqual(await runWith(code, { datetime: frozen, timezone: 'Europe/London' }), [
+    10,
+    '13:30 BST +0100',
+    0,
+    0,
+    -3600,
+    1,
+    ['GMT', 'BST'],
+  ])
 })
 
 test('astimezone and the time constants read the sandbox zone, UTC by default', async () => {
@@ -91,53 +90,6 @@ test('astimezone and the time constants read the sandbox zone, UTC by default', 
     '12:30 EET +0200',
     -7200,
     ['EET', 'EET'],
-  ])
-})
-
-test('call_host on the timezone sends astimezone to the os callback with the datetime and zone', async () => {
-  const calls: unknown[] = []
-  const answer: MontyDateTime = {
-    __monty_type__: 'DateTime',
-    year: 2024,
-    month: 6,
-    day: 15,
-    hour: 14,
-    minute: 30,
-    second: 0,
-    microsecond: 0,
-    offsetSeconds: 7200,
-    timezoneName: 'EET',
-  }
-  const code = [
-    'from datetime import datetime, timedelta, timezone',
-    'aware = datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc)',
-    '(aware.astimezone(), aware.astimezone(timezone(timedelta(hours=1))).hour)',
-  ].join('\n')
-  const [converted, explicit] = (await runWith(code, { timezone: 'call_host' }, (name, args) => {
-    calls.push([name, args])
-    return answer
-  })) as [MontyDateTime, number]
-  t.deepEqual(converted, answer)
-  // the explicit zone needs no local zone, so it is answered in the worker
-  t.is(explicit, 13)
-  t.deepEqual(calls, [
-    [
-      'datetime.astimezone',
-      [
-        {
-          __monty_type__: 'DateTime',
-          year: 2024,
-          month: 6,
-          day: 15,
-          hour: 12,
-          minute: 30,
-          second: 0,
-          microsecond: 0,
-          offsetSeconds: 0,
-        },
-        null,
-      ],
-    ],
   ])
 })
 
@@ -162,6 +114,9 @@ test('invalid datetime and timezone values are rejected before the checkout', as
   await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { offsetSeconds: 1.5 } } }), {
     instanceOf: RangeError,
     message: 'timezone offsetSeconds must be an integer number of seconds',
+  })
+  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: 'Mars/Olympus' } }), {
+    message: "timezone: unknown timezone 'Mars/Olympus'",
   })
   await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { name: 'CET' } as unknown as 'utc' } }), {
     instanceOf: TypeError,

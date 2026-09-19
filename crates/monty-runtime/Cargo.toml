@@ -41,7 +41,7 @@ monty-fs = { workspace = true }
 monty-alloc = { workspace = true, features = ["exit-code"] }
 monty-proto = { workspace = true, features = ["worker"] }
 monty-type-checking = { workspace = true }
-monty-types = { workspace = true }
+monty-types = { workspace = true, features = ["tzdb"] }
 rustyline = { version = "15", optional = true }
 # Only the `run monty` span's deferred field; goes with `logfire`.
 tracing = { version = "0.1", optional = true }

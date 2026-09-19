@@ -484,15 +484,16 @@ const fixed = await pool.checkout({
 })
 ```
 
-A `Date` freezes the instant; `timezone` is `'utc'` (the default), `'call_host'` or a fixed UTC offset with an
-optional name, without IANA zone rules.
+A `Date` freezes the instant; `timezone` is `'utc'` (the default), an IANA zone name such as `'Europe/London'`
+(resolved with its DST rules from the worker's tz database, the bundled copy in the wasm worker) or a fixed UTC
+offset with an optional name.
 The zone shifts naive `datetime.now()` and `date.today()`, and is what `astimezone()`, `strftime('%Z')` and the
 `time.timezone` / `time.tzname` constants report.
 `sleep: 'zero'` returns immediately; `sleepSystemMax: Infinity` disables the per-call cap.
 `{ seed }` initializes the module as `random.seed(seed)` and derives deterministic states for unseeded `random.Random()`
 instances.
 Seeds accept `number`, `bigint`, `string` and `Uint8Array`; sandbox calls to `random.seed()` still override the state.
-`'call_host'` delegates the selected clock, local-zone, sleep or initial-entropy calls to `os`.
+`'call_host'` delegates the selected clock, sleep or initial-entropy calls to `os`.
 Explicit `os.urandom()` calls always reach `os`.
 
 ## Assert message annotations
