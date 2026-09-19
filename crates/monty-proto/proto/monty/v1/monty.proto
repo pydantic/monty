@@ -20,8 +20,7 @@
 // act on counts as mis-read even when the change is additive, in both
 // directions: an older child ignores a limit the parent set and the parent
 // never learns, and an older parent keeps sending a limit this build no longer
-// reads. Version 5 covers both for the duration budgets; version 6 gives the
-// `SandboxTimeZone` arms new meanings.
+// reads.
 
 syntax = "proto3";
 

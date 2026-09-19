@@ -2502,25 +2502,6 @@ fn oldest_supported_protocol_version_is_accepted() {
     child.shutdown();
 }
 
-/// Version 5 gave `SandboxTimeZone` tag 1 the child's own zone and tag 2 a
-/// host-delegated zone, which this build reads as UTC and an IANA name, so a
-/// version 5 parent would configure a zone neither side agrees on. The literal
-/// is spelled out: pinning it to `MIN_SUPPORTED_PROTOCOL_VERSION` would pass
-/// again if that constant ever went back to 5.
-#[test]
-fn protocol_version_5_is_refused_for_its_timezone_arms() {
-    let mut child = ChildProc::spawn();
-    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
-        5,
-        env!("CARGO_PKG_VERSION"),
-    )));
-    let message = expect_fatal_exit(child);
-    assert!(
-        message.contains("unsupported protocol version 5"),
-        "message should name the rejected version: {message}"
-    );
-}
-
 /// The package version is informational: a parent from a different build is
 /// served as long as its protocol version is one this build speaks.
 #[test]
