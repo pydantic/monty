@@ -373,7 +373,14 @@ pub(crate) fn rewrite_zone_directives<'f>(
     name: Option<&str>,
     tracker: &ResourceTracker,
 ) -> RunResult<Cow<'f, str>> {
-    if !(format.contains("%z") || format.contains("%Z") || format.contains("%:z")) {
+    // One byte-pair pass: three `str::contains` calls cost more than the whole
+    // chrono render on a short format. `%%z` and `%:` without `z` pass here
+    // and are handled by the loop below.
+    let may_have_zone = format
+        .as_bytes()
+        .windows(2)
+        .any(|pair| pair[0] == b'%' && matches!(pair[1], b'z' | b'Z' | b':'));
+    if !may_have_zone {
         return Ok(Cow::Borrowed(format));
     }
     let zone_name = offset_seconds.map(|offset| tzname_string(offset, name).replace('%', "%%"));
