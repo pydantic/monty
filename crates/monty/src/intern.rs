@@ -11,7 +11,8 @@
 //! * 0 to 127 - single character strings for all 128 ASCII characters
 //! * 128 - the empty string
 //! * 129 to 2³¹-1 - strings interned per executor
-//! * 2³¹ and above - snippet filename identities, never Python string values
+//! * 2³¹ and above - snippet filename identities, never Python string values: one per
+//!   `exec()` / `eval()` call or REPL input, each indexing a [`SnippetSource`]
 //!
 //! Other static strings occupy ordinary executor-local slots. Their interner entries
 //! retain a [`StaticStrings`] tag for dispatch, while snapshots serialize only
@@ -2175,7 +2176,12 @@ pub(crate) struct Interns {
     long_ints: Entries<WithHash<BigInt>>,
     /// Boxes keep a mostly empty storage page from reserving hundreds of function bodies.
     functions: Entries<Box<Function>>,
-    eval_sources: Entries<Arc<str>>,
+    /// Sources compiled into an existing session, indexed by filename IDs from
+    /// [`SOURCE_ID_BASE`] up. Kept out of `strings` so a long-lived session's
+    /// per-snippet filenames never use up the `u16` name operand space. Boxed
+    /// like `functions`: every REPL session allocates this table's first page,
+    /// and the sandbox's memory limit is charged for all of it.
+    snippet_sources: Entries<Box<SnippetSource>>,
     #[serde(skip)]
     string_id_by_name: RefCell<AHashMap<String, StringId>>,
     #[serde(skip)]
@@ -2198,7 +2204,7 @@ struct InternsWire {
     bytes: Entries<WithHash<Vec<u8>>>,
     long_ints: Entries<WithHash<BigInt>>,
     functions: Entries<Box<Function>>,
-    eval_sources: Entries<Arc<str>>,
+    snippet_sources: Entries<Box<SnippetSource>>,
 }
 
 impl TryFrom<InternsWire> for Interns {
@@ -2225,7 +2231,7 @@ impl TryFrom<InternsWire> for Interns {
             bytes: wire.bytes,
             long_ints: wire.long_ints,
             functions: wire.functions,
-            eval_sources: wire.eval_sources,
+            snippet_sources: wire.snippet_sources,
             string_id_by_name: RefCell::new(string_id_by_name),
             static_string_ids: RefCell::new(static_string_ids),
             compiling: Cell::new(false),
@@ -2234,8 +2240,59 @@ impl TryFrom<InternsWire> for Interns {
 }
 
 /// Filename-only IDs are separate from canonical Python strings.
-/// Each snippet has distinct source identity but the same displayed filename.
+///
+/// Every snippet gets a distinct source identity even when snippets share a
+/// displayed filename (all `exec()` calls show `<string>`). Bytecode never
+/// carries these IDs as operands, so they can grow for the whole life of a
+/// session without touching the `u16` space that name-bearing opcodes address.
 const SOURCE_ID_BASE: usize = 1 << 31;
+
+/// Source text compiled into a running session, kept so tracebacks through
+/// its frames can show line numbers and carets long after it ran.
+///
+/// Two kinds share the table: `exec()` / `eval()` snippets, and REPL inputs
+/// (`<python-input-N>`, including [`MontyRepl::call_function`](crate::MontyRepl::call_function)'s
+/// synthetic call site). Entries are never removed: a function defined by a
+/// snippet, or a saved exception, may produce a traceback frame pointing at it
+/// at any later time.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct SnippetSource {
+    /// Displayed filename, or `None` for `exec()` / `eval()`, which CPython
+    /// shows as `<string>` with no source line, since it has nothing to read back.
+    filename: Option<Box<str>>,
+    /// The complete source text the snippet was compiled from.
+    text: Arc<str>,
+}
+
+impl SnippetSource {
+    /// An `exec()` / `eval()` snippet, displayed as `<string>` without a source line.
+    pub(crate) fn eval(text: Arc<str>) -> Self {
+        Self { filename: None, text }
+    }
+
+    /// A REPL input, displayed under `filename` with its source lines shown.
+    pub(crate) fn named(filename: &str, text: Arc<str>) -> Self {
+        Self {
+            filename: Some(filename.into()),
+            text,
+        }
+    }
+
+    /// The source text frames in this snippet resolve their positions against.
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Whether traceback frames in this snippet print the offending source line.
+    pub(crate) fn shows_source_line(&self) -> bool {
+        self.filename.is_some()
+    }
+
+    /// The filename tracebacks display for this snippet.
+    fn display_filename(&self) -> &str {
+        self.filename.as_deref().unwrap_or("<string>")
+    }
+}
 
 impl Interns {
     /// Moves session ownership without initializing another interner.
@@ -2250,7 +2307,7 @@ impl Interns {
             bytes: Entries::default(),
             long_ints: Entries::default(),
             functions: Entries::default(),
-            eval_sources: Entries::default(),
+            snippet_sources: Entries::default(),
             string_id_by_name: RefCell::default(),
             static_string_ids: RefCell::default(),
             compiling: Cell::new(false),
@@ -2265,7 +2322,7 @@ impl Interns {
             bytes: Entries::default(),
             long_ints: Entries::default(),
             functions: Entries::default(),
-            eval_sources: Entries::default(),
+            snippet_sources: Entries::default(),
             string_id_by_name: RefCell::new(AHashMap::with_capacity(capacity)),
             static_string_ids: RefCell::new(AHashMap::with_capacity(CORE_STATIC_STRINGS.len())),
             compiling: Cell::new(false),
@@ -2291,14 +2348,13 @@ impl Interns {
         get_str(&self.strings, id)
     }
 
-    /// Resolves a traceback filename, displaying each snippet's source identity as `<string>`.
+    /// Resolves a traceback filename: a snippet's own displayed name for a
+    /// source identity, otherwise the interned script name.
     pub(crate) fn get_filename(&self, id: StringId) -> &str {
         if id.index() >= SOURCE_ID_BASE {
-            assert!(
-                id.index() - SOURCE_ID_BASE < self.eval_sources.len(),
-                "invalid snippet source ID"
-            );
-            "<string>"
+            self.snippet_source(id)
+                .expect("invalid snippet source ID")
+                .display_filename()
         } else {
             get_str(&self.strings, id)
         }
@@ -2327,12 +2383,13 @@ impl Interns {
         &self.functions[id.index()]
     }
 
-    /// Looks up source by its filename-only ID, never by the displayed text.
-    pub(crate) fn eval_source(&self, filename: StringId) -> Option<&str> {
+    /// Looks up a snippet by its filename-only ID, never by the displayed text.
+    /// Returns `None` for an ordinary interned filename (a whole-program run).
+    pub(crate) fn snippet_source(&self, filename: StringId) -> Option<&SnippetSource> {
         filename
             .index()
             .checked_sub(SOURCE_ID_BASE)
-            .and_then(|index| self.eval_sources.get(index))
+            .and_then(|index| self.snippet_sources.get(index))
             .map(AsRef::as_ref)
     }
 

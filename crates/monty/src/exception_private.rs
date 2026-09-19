@@ -2532,23 +2532,18 @@ impl ExceptionRaise {
         }
     }
 
-    /// Converts this exception to a `MontyException` for the public API.
-    ///
-    /// Uses `Interns` to resolve `StringId` references to actual strings.
-    /// Extracts preview lines from the source code for traceback display.
     /// Converts this exception into a public `MontyException`, expanding each
-    /// stack frame's raw byte offsets into lines/columns/preview text via a
-    /// caller-provided source lookup.
+    /// stack frame's raw byte offsets into lines/columns/preview text.
     ///
-    /// The caller must supply `source_for` so that frames whose `CodeRange`
-    /// points into a *different* source than the one currently executing can
-    /// still be resolved. In particular, REPL tracebacks can interleave
-    /// frames from multiple snippets (e.g. calling into a function defined
-    /// in an earlier feed); resolving those byte offsets against only the
-    /// current snippet's source would produce wrong line/column/caret
-    /// information. `source_for` is called per unique filename encountered
-    /// in the traceback and its result is cached, so each source is scanned
-    /// at most once regardless of how many frames share it.
+    /// Every frame must be resolved against the source it was compiled from,
+    /// which need not be the one currently executing: REPL tracebacks
+    /// interleave frames from several inputs (calling a function defined in
+    /// an earlier feed), and `exec()` frames come from runtime strings. Those
+    /// snippets carry filename IDs into [`Interns`]' snippet table and resolve
+    /// there. `source_for` supplies the source for any other filename, which
+    /// is a whole-program run's single script; REPL callers pass `|_| None`.
+    /// Each source is looked up once per traceback and its line index cached,
+    /// however many frames share it.
     #[must_use]
     pub fn into_python_exception<'s>(
         self,
@@ -2566,20 +2561,23 @@ impl ExceptionRaise {
                 let mut current = Some(&frame);
                 while let Some(f) = current {
                     let fname_id = f.position.filename;
-                    // An `eval()` / `exec()` snippet resolves against its own
-                    // recorded source, never the host's, and prints no source
-                    // line: CPython has nothing to read back for `<string>`.
-                    let eval_source = interns.eval_source(fname_id);
+                    // A snippet compiled into the session (a REPL input, or an
+                    // `eval()` / `exec()` call) resolves against its own recorded
+                    // source, never the host's. `eval()` / `exec()` frames print
+                    // no source line: CPython has nothing to read back for `<string>`.
+                    let snippet = interns.snippet_source(fname_id);
                     let sm_idx = if let Some(i) = cache.iter().position(|(k, _)| *k == fname_id) {
                         i
                     } else {
-                        let src =
-                            eval_source.unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
+                        let src = match snippet {
+                            Some(snippet) => snippet.text(),
+                            None => source_for(interns.get_filename(fname_id)).unwrap_or(""),
+                        };
                         cache.push((fname_id, SourceMap::new(src)));
                         cache.len() - 1
                     };
                     let mut stack_frame = StackFrame::from_raw(f, interns, &mut cache[sm_idx].1);
-                    if eval_source.is_some() {
+                    if snippet.is_some_and(|snippet| !snippet.shows_source_line()) {
                         stack_frame.preview_line = None;
                     }
                     frames.push(stack_frame);

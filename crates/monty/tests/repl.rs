@@ -15,7 +15,7 @@ use monty_types::{
     PrintWriter, ResourceLimits, ResourceTracker,
     unstable::{self, MontyNode},
 };
-use serde_json::to_value;
+use serde_json::{json, to_value};
 
 #[test]
 fn repl_executes_only_new_code() {
@@ -379,6 +379,40 @@ fn repl_tracebacks_use_incrementing_python_input_filenames() {
     assert_eq!(second.traceback()[0].filename, "<python-input-1>");
 }
 
+/// Every input and host call gets a fresh `<python-input-N>` filename, and a
+/// long-lived session (a game loop feeding one snippet per frame) must not let
+/// those use up the 65,536 string ids that name-bearing opcodes address: calls,
+/// attributes, methods, keyword arguments and imports. Before filenames moved
+/// into the snippet source table, the snippet after the loop failed to compile
+/// with "module has too many distinct names".
+#[test]
+fn repl_input_filenames_do_not_exhaust_name_ids() {
+    let (mut repl, _) = init_repl("class P:\n    pass\np = P()\ndef fail(n):\n    raise ValueError(n)");
+    // More inputs than a `u16` can index, split between both ways a host drives a session.
+    for _ in 0..35_000 {
+        repl.feed_run("0", vec![], PrintWriter::Disabled).unwrap();
+        repl.call_function("P", vec![], PrintWriter::Disabled).unwrap();
+    }
+
+    let code = "\
+import math
+def fresh(**kwargs):
+    return kwargs
+p.fresh_attr = [1].copy()
+fresh(fresh_kw=math.floor(1.5))['fresh_kw'] + len(p.fresh_attr)";
+    assert_eq!(feed_run_print(&mut repl, code).unwrap(), MontyObject::int(2));
+
+    // Frames from the first input still resolve against its source.
+    let err = feed_run_print(&mut repl, "fail('boom')").unwrap_err();
+    let tb = err.traceback();
+    assert_eq!(tb.len(), 2);
+    assert_eq!(tb[0].filename, "<python-input-70002>");
+    assert_eq!(tb[0].preview_line.as_deref(), Some("fail('boom')"));
+    assert_eq!(tb[1].filename, "<python-input-0>");
+    assert_eq!(tb[1].start.line, 5);
+    assert_eq!(tb[1].preview_line.as_deref(), Some("    raise ValueError(n)"));
+}
+
 #[test]
 fn repl_cross_snippet_traceback_resolves_against_defining_source() {
     // Tracebacks for a function defined in snippet 0 and called in snippet 1
@@ -711,11 +745,11 @@ fn repl_rejected_snippet_admission_keeps_no_products() {
                     repl.call_function("attempt", vec![], PrintWriter::Stdout).unwrap(),
                     result
                 );
-                // Each host call interns its filename, but none of the rejected snippet's entries.
-                expected["interns"]["strings"]
+                // Each host call records its own call-site source, but none of the rejected snippet's entries.
+                expected["interns"]["snippet_sources"]
                     .as_array_mut()
                     .unwrap()
-                    .push(format!("<python-input-{snippet}>").into());
+                    .push(json!({"filename": format!("<python-input-{snippet}>"), "text": "attempt()"}));
                 let after = to_value(&repl).unwrap();
                 assert_eq!(after["interns"], expected["interns"]);
                 assert_eq!(after["global_names"], expected["global_names"]);
@@ -2095,6 +2129,7 @@ fn repl_failed_exec_locals_snapshot_releases_globals() {
 fn repl_rejected_snippet_locations() {
     let (mut repl, _) = init_repl("pass");
     let mut errors = Vec::new();
+    let mut expected_filenames = vec!["<python-input-0>".to_owned()];
     for source in [
         "\n\nfrom . import missing",
         "\n\nfrom math import *",
@@ -2104,10 +2139,29 @@ fn repl_rejected_snippet_locations() {
         let error = feed_run_print(&mut repl, &format!("exec({source:?})")).unwrap_err();
         assert_eq!(error.traceback().last().unwrap().start.line, 3);
         errors.push(error.to_string());
-        let state = to_value(&repl).unwrap();
-        assert_eq!(state["interns"]["eval_sources"].as_array().unwrap().len(), 0);
+        // The REPL input that called `exec()` compiled, so its source is kept;
+        // the rejected `exec()` source (which would have no filename) is not.
+        expected_filenames.push(format!("<python-input-{}>", expected_filenames.len()));
+        assert_eq!(snippet_source_filenames(&repl), expected_filenames);
     }
     assert_snapshot!("rejected_snippet_locations", errors.join("\n\n"));
+
+    // A REPL input rejected at compile time keeps no source either.
+    let error = feed_run_print(&mut repl, "def").unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::SyntaxError);
+    assert_eq!(snippet_source_filenames(&repl), expected_filenames);
+}
+
+/// Display filenames of the session's snippet source table, in id order;
+/// `exec()` / `eval()` entries have none and show as `<string>`.
+fn snippet_source_filenames(repl: &MontyRepl) -> Vec<String> {
+    let state = to_value(repl).unwrap();
+    state["interns"]["snippet_sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|source| source["filename"].as_str().unwrap_or("<string>").to_owned())
+        .collect()
 }
 
 /// Equal displayed filenames retain distinct source locations after loading a session.

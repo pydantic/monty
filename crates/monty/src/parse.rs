@@ -188,21 +188,14 @@ fn code_range(filename: StringId, range: TextRange) -> CodeRange {
     }
 }
 
-/// Parses code into a private interner overlay, discarded if any compilation stage fails.
-pub(crate) fn parse_with_interner(
-    code: &str,
-    filename: &str,
-    interner: &mut CompileInterns<'_>,
-) -> Result<Vec<ParseNode>, ParseError> {
-    // Interned up front so a syntax error can be located without a `Parser`,
-    // leaving the parser to be built once, fully populated, after parsing.
-    let filename_id = interner.intern(filename);
-    parse_module_with_filename_id(code, filename_id, interner)
-}
-
-/// [`parse_with_interner`] for a filename already interned — an `exec()`
-/// snippet, whose `<string>` id is fresh per call so tracebacks can tell the
-/// snippets apart.
+/// Parses module code into `interner`, a private overlay when compiling into
+/// an existing session, discarded if any compilation stage fails.
+///
+/// `filename_id` is supplied by the caller, already assigned, so a syntax
+/// error can be located without a `Parser`. A whole program interns its script
+/// name; a REPL input or `exec()` call registers its source with
+/// [`CompileInterns::add_snippet_source`], getting a fresh id per snippet so
+/// tracebacks can tell the snippets apart.
 pub(crate) fn parse_module_with_filename_id(
     code: &str,
     filename_id: StringId,
