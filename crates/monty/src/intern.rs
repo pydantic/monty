@@ -790,10 +790,10 @@ pub enum StaticStrings {
     Datetime,
     /// `date` / `datetime` `day` attribute and constructor kwarg.
     Day,
-    /// `timedelta.days` attribute and constructor kwarg.
-    Days,
     /// `time.daylight` constant.
     Daylight,
+    /// `timedelta.days` attribute and constructor kwarg.
+    Days,
     /// `sys.flags.debug` field.
     Debug,
     /// `bytes.decode()` method.

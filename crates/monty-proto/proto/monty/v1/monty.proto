@@ -20,7 +20,8 @@
 // act on counts as mis-read even when the change is additive, in both
 // directions: an older child ignores a limit the parent set and the parent
 // never learns, and an older parent keeps sending a limit this build no longer
-// reads. Version 5 covers both for the duration budgets.
+// reads. Version 5 covers both for the duration budgets; version 6 gives the
+// `SandboxTimeZone` arms new meanings.
 
 syntax = "proto3";
 
@@ -391,8 +392,8 @@ message AutoOsCalls {
     // One frozen instant, for reproducible runs.
     FixedDateTime fixed = 3;
   }
-  // The local zone naive `datetime.now()` and `date.today()` read in.
-  // Absent (or with no arm set) = the child's local zone.
+  // The zone naive `datetime.now()` and `date.today()` read in, and that
+  // `astimezone()`, `%Z` and the `time` constants report. Absent = UTC.
   SandboxTimeZone timezone = 4;
   // What `time.sleep()` and `asyncio.sleep()` do.
   // Absent (or with no arm set) = system sleep with the default maximum.
@@ -411,7 +412,7 @@ message AutoOsCalls {
 // Mirrors monty's `SandboxTimeZone`.
 message SandboxTimeZone {
   oneof zone {
-    // UTC, the default: the child's own zone is never read.
+    // UTC, the default.
     Unit utc = 1;
     // An IANA zone name (`Europe/London`), resolved from the child's tz database.
     string named = 2;
@@ -576,7 +577,7 @@ message Configure {
   // Output is always flushed before a turn-ending event whatever this says, so
   // the field trades streaming latency for event volume and nothing else.
   optional uint32 print_flush_interval_ms = 10;
-  // Absent = `AutoOsCalls::default()`: the child's clock, local zone and entropy,
+  // Absent = `AutoOsCalls::default()`: the child's clock in UTC and its entropy,
   // with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
   optional AutoOsCalls auto_os_calls = 11;
 }

@@ -81,7 +81,7 @@ export type DateTimeSource = 'system' | 'call_host' | Date
 
 /**
  * The sandbox's local zone, read by naive `datetime.now()` and `date.today()`, `astimezone()`,
- * `time.timezone`/`time.tzname` and `%Z`; defaults to `'utc'`, never the worker's own zone.
+ * `time.timezone`/`time.tzname` and `%Z`; defaults to `'utc'`.
  * Any other string is an IANA zone name such as `'Europe/London'`, resolved with its DST rules from
  * the worker's tz database; an object supplies a fixed UTC offset and optional name, as in
  * `datetime.timezone`.

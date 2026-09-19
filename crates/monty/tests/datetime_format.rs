@@ -56,9 +56,10 @@ fn fstring_unknown_directive_passes_through_verbatim() {
     );
 }
 
-/// A directive that *parses* but can't be rendered for the value (`%+`, the
-/// RFC 3339 form, needs an offset the naive components lack) raises
-/// `ValueError` — and, critically, must NOT panic the host: `chrono`'s
+/// A directive chrono *parses* but can't render for the value (`%+`, its RFC
+/// 3339 form, needs an offset the naive components lack) raises `ValueError`
+/// where CPython passes `%+` to the C library (glibc echoes it); see
+/// `limitations/datetime.md`. Critically, it must NOT panic the host: `chrono`'s
 /// `DelayedFormat::to_string()` panics here, which would be a sandbox escape
 /// on untrusted input.
 #[test]

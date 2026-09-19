@@ -466,7 +466,7 @@ uncatchable `RuntimeError`.
 
 ## Clock, sleeping and entropy
 
-By default, `date.today()`, `datetime.now()` and `time.time()` read the worker's clock in UTC; the worker's own zone is never read.
+By default, `date.today()`, `datetime.now()` and `time.time()` read the worker's clock in UTC.
 The pool handles `time.sleep()` and `asyncio.sleep()`, capped per call by `sleepSystemMax` (10 seconds).
 Gathered async sleeps overlap.
 Sleeps count toward suspensions and `maxTotalSleepSecs`, but not execution duration limits.

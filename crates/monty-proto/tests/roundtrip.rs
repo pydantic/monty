@@ -1102,3 +1102,19 @@ fn shutdown_event_round_trips() {
     let back = decode_frame::<pb::ChildEvent>(bare.encode_to_vec().as_slice()).expect("bare ShutdownDump decodes");
     assert_eq!(back, bare);
 }
+
+/// A child-supplied fixed offset outside `datetime.timezone`'s range is refused
+/// before it can reach a host as a `MontyTimeZone`.
+#[test]
+fn out_of_range_now_timezone_is_rejected() {
+    let call = pb::os_call::Call::DateTimeNow(pb::os_call::DateTimeNow {
+        tz: Some(pb::TimeZone {
+            offset_seconds: i32::MIN,
+            name: None,
+        }),
+    });
+    assert_eq!(
+        OsFunctionCall::try_from(call).unwrap_err().to_string(),
+        "invalid value for TimeZone.offset_seconds: -2147483648 is outside the range -86399..=86399"
+    );
+}

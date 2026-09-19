@@ -147,8 +147,7 @@ The [session clock](../security.md#the-clock) has separate `datetime` and `timez
     The offset and abbreviation then follow the instant, so the results depend on that database's version, as
     CPython's do on the host's.
     An unknown name is refused when the session is checked out.
-    The zone is never delegated to the host: `time.timezone`, `time.altzone`, `time.daylight` and `time.tzname` are
-    computed at import and need the clock's year, so a named zone under `datetime='call_host'` leaves them absent;
+    `time.timezone`, `time.altzone`, `time.daylight` and `time.tzname` are computed at import and need the clock's year, so a named zone under `datetime='call_host'` leaves them absent;
     see [time.md](time.md#zone-constants).
 
 ## `time`
@@ -239,10 +238,13 @@ pass-through applies to f-string and `str.format()` formatting (below).
 
 ### Directives that need data the value lacks
 
-A directive that is *recognised* but can't be rendered for the given value
-raises `ValueError: Invalid format string` rather than substituting a default
-the way CPython does. The known case is `%+`, which chrono renders as the
-RFC 3339 form and so needs an offset the naive components lack.
+A directive that chrono *recognises* but can't render for the given value
+raises `ValueError: Invalid format string` where CPython hands it to the C
+library: `%+` (chrono's RFC 3339 form) and `%#z` (chrono's hour-only offset)
+both need an offset the naive components lack, so they raise even on an aware
+value's naive components. The other flagged forms of `%z` (`%-z`, `%_z`,
+`%Ez`, `%Oz`) are unrecognised and pass through verbatim, where macOS CPython
+renders them as an empty string.
 
 `%z`, `%:z` and `%Z` are filled from `utcoffset()` and `tzname()` as in
 CPython: empty for a naive `date`, `datetime` or `time`, and `'+0200'`,

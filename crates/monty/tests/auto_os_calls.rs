@@ -220,7 +220,7 @@ fn out_of_range_microsecond_raises() {
     );
 }
 
-/// The default zone is UTC, never the host's own; a named zone shifts only
+/// The default zone is UTC; a named zone shifts only
 /// naive now() and today(), while time() and now(tz) stay UTC.
 #[test]
 fn the_zone_is_chosen_separately_from_the_instant() {

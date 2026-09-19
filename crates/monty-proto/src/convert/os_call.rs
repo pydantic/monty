@@ -6,8 +6,9 @@
 use std::time::Duration;
 
 use monty_types::{
-    GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
-    PathStringDataArgs, RenameCallArgs, UrandomArgs, sleep_duration, unstable,
+    GetenvArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MkdirCallArgs, MontyPath, MontyTimeZone,
+    OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, UrandomArgs, sleep_duration,
+    unstable,
 };
 
 use crate::{
@@ -157,7 +158,7 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             os_call::Call::DateToday(_) => Self::DateToday,
             // typed arm: the wire cannot express anything but an optional
             // timezone here, mirroring the VM's validation of `datetime.now`
-            os_call::Call::DateTimeNow(now) => Self::DateTimeNow(now.tz.map(timezone_from_proto)),
+            os_call::Call::DateTimeNow(now) => Self::DateTimeNow(now.tz.map(timezone_from_proto).transpose()?),
             os_call::Call::Urandom(u) => Self::Urandom(UrandomArgs { size: u.size }),
             os_call::Call::Time(_) => Self::Time,
             os_call::Call::Sleep(s) => Self::Sleep(field_sleep_duration(s.seconds, "Sleep.seconds")?),
@@ -177,11 +178,22 @@ fn timezone_to_proto(tz: MontyTimeZone) -> TimeZone {
     }
 }
 
-fn timezone_from_proto(tz: TimeZone) -> MontyTimeZone {
-    MontyTimeZone {
+/// Validates a child-supplied fixed offset into the range `datetime.timezone`
+/// accepts, so a compromised child cannot hand the host an impossible zone.
+fn timezone_from_proto(tz: TimeZone) -> Result<MontyTimeZone, ProtoConvertError> {
+    if !(MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&tz.offset_seconds) {
+        return Err(ProtoConvertError::InvalidValue {
+            field: "TimeZone.offset_seconds",
+            reason: format!(
+                "{} is outside the range {MIN_TIMEZONE_OFFSET_SECONDS}..={MAX_TIMEZONE_OFFSET_SECONDS}",
+                tz.offset_seconds
+            ),
+        });
+    }
+    Ok(MontyTimeZone {
         offset_seconds: tz.offset_seconds,
         name: tz.name,
-    }
+    })
 }
 
 /// Validates wire seconds into a `Duration`.

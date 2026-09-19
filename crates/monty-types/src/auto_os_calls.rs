@@ -66,8 +66,7 @@ impl DateTimeSource {
     }
 }
 
-/// The sandbox's local zone. UTC unless configured; the host's own zone is
-/// never read, so nothing about the host leaks through the clock.
+/// The sandbox's local zone, UTC unless configured.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SandboxTimeZone {
     /// A fixed offset from UTC, with the name `datetime.timezone(offset, name)`
