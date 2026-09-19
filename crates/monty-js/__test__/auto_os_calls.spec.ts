@@ -1,6 +1,7 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 import type { AutoOsCalls, MontyDate, MontyDateTime } from '@pydantic/monty'
+import { kind } from './env.js'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -115,8 +116,12 @@ test('invalid datetime and timezone values are rejected before the checkout', as
     instanceOf: RangeError,
     message: 'timezone offsetSeconds must be an integer number of seconds',
   })
+  // the native binding resolves the name before spawning; the wasm worker is the first to see it
   await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: 'Mars/Olympus' } }), {
-    message: "timezone: unknown timezone 'Mars/Olympus'",
+    message:
+      kind === 'browser'
+        ? "Configure failed: protocol violation: invalid auto_os_calls: invalid value for SandboxTimeZone.named: unknown timezone 'Mars/Olympus'"
+        : "timezone: unknown timezone 'Mars/Olympus'",
   })
   await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { name: 'CET' } as unknown as 'utc' } }), {
     instanceOf: TypeError,
