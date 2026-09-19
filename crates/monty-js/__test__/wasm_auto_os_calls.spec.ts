@@ -38,6 +38,19 @@ test('the wasm pool keeps its sleep limit as a ceiling across a load', async (ct
       instanceOf: MontyRuntimeError,
     })
     t.is(error.display('msg'), 'sleep limit exceeded: 625ms > 250ms')
+    // and a dump's limit tightens a checkout that set none
+    const capped = await pool.checkout({ limits: { maxTotalSleepSecs: 0.25 } })
+    const adopted = await pool.checkout()
+    try {
+      await adopted.loadSession(await capped.dump())
+      const refused = await t.throwsAsync(() => adopted.feedRun('import time\ntime.sleep(0.5)'), {
+        instanceOf: MontyRuntimeError,
+      })
+      t.is(refused.display('msg'), 'sleep limit exceeded: 500ms > 250ms')
+    } finally {
+      await adopted.close()
+      await capped.close()
+    }
   } finally {
     await source.close()
     await kept.close()
