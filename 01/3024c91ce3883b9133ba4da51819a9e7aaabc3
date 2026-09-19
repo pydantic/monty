@@ -1,0 +1,19 @@
+crates/monty-runtime/tests/subprocess.rs
+  s_440a7ea0ee4e52::t_6d07dc6afc76d9 2505-2523
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "013024c91ce3883b9133ba4da51819a9e7aaabc3",
+  "prompts": {},
+  "sessions": {
+    "s_440a7ea0ee4e52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a9754f7-13d8-42d0-a0e4-9657814a0b0c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
