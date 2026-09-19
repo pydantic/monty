@@ -1,0 +1,31 @@
+crates/monty/src/types/datetime.rs
+  s_440a7ea0ee4e52::t_b3ceecf4d98904 16-17,339-340,342-346,895-896,1132
+crates/monty/test_cases/datetime__core.py
+  s_440a7ea0ee4e52::t_818b0592dc693a 152-164
+crates/monty/src/types/time.rs
+  s_440a7ea0ee4e52::t_b3ceecf4d98904 441-446,454-455,578
+  s_440a7ea0ee4e52::t_818b0592dc693a 22
+crates/monty/src/bytecode/vm/format.rs
+  s_440a7ea0ee4e52::t_b3ceecf4d98904 190-191,194
+crates/monty/src/types/date.rs
+  s_440a7ea0ee4e52::t_b3ceecf4d98904 14,24,277,356,361,370,375-376,378,380-381,385,388-390,393-395,398-399,404,407,415-416
+crates/monty-runtime/tests/subprocess.rs
+  s_440a7ea0ee4e52::t_6a1d7d793eba24 1123
+  s_440a7ea0ee4e52::t_818b0592dc693a 1120-1122,1124
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "067702ba8a3bcaa72e08573c8871490dab2de70f",
+  "prompts": {},
+  "sessions": {
+    "s_440a7ea0ee4e52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a9754f7-13d8-42d0-a0e4-9657814a0b0c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
