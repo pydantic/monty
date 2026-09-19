@@ -1,0 +1,49 @@
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_440a7ea0ee4e52::t_2650656fa61fd2 472-473,526,750
+crates/monty-proto/src/lib.rs
+  s_440a7ea0ee4e52::t_2650656fa61fd2 31,35,40-44
+crates/monty-js/README.md
+  s_440a7ea0ee4e52::t_fc196901f86eee 469
+crates/monty/src/intern.rs
+  s_440a7ea0ee4e52::t_2650656fa61fd2 795-796
+crates/monty-proto/src/convert/os_call.rs
+  s_440a7ea0ee4e52::t_2650656fa61fd2 9-11,161,181-193,196
+crates/monty-proto/tests/roundtrip.rs
+  s_440a7ea0ee4e52::t_2650656fa61fd2 1105-1120
+crates/monty/tests/datetime_format.rs
+  s_440a7ea0ee4e52::t_2650656fa61fd2 59-62
+crates/monty-types/src/auto_os_calls.rs
+  s_440a7ea0ee4e52::t_2650656fa61fd2 69
+docs/cli.md
+  s_440a7ea0ee4e52::t_2650656fa61fd2 72
+crates/monty-js/ts/options.ts
+  s_440a7ea0ee4e52::t_fc196901f86eee 84
+crates/monty-proto/src/generated/monty.v1.rs
+  s_440a7ea0ee4e52::t_2650656fa61fd2 458-459,516,757
+crates/monty-runtime/README.md
+  s_440a7ea0ee4e52::t_2650656fa61fd2 51
+docs/security.md
+  s_440a7ea0ee4e52::t_2650656fa61fd2 282
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_440a7ea0ee4e52::t_2650656fa61fd2 23-24,395-396,415,580
+docs/limitations/datetime.md
+  s_440a7ea0ee4e52::t_2650656fa61fd2 150,241-247
+crates/monty/tests/auto_os_calls.rs
+  s_440a7ea0ee4e52::t_2650656fa61fd2 223
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "610237bf9ab918c86a81d280843eca00f092cfa6",
+  "prompts": {},
+  "sessions": {
+    "s_440a7ea0ee4e52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a9754f7-13d8-42d0-a0e4-9657814a0b0c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
