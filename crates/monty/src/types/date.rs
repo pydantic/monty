@@ -11,7 +11,7 @@ use std::{
 };
 
 use chrono::{Datelike, NaiveDate, NaiveTime, format::StrftimeItems};
-use monty_types::OsFunctionCall;
+use monty_types::{OsFunctionCall, ResourceTracker};
 
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
@@ -21,6 +21,7 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
+    string_builder::StringBuilder,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, datetime,
         str::{allocate_string, allocate_string_no_interning},
@@ -273,7 +274,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
             Some(StaticStrings::Strftime) => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
                 defer_drop!(format, vm);
-                let formatted = format_date_strftime(date, format.as_str(vm))?;
+                let formatted = format_date_strftime(date, format.as_str(vm), &vm.heap.tracker)?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
             }
             Some(StaticStrings::Replace) => {
@@ -352,12 +353,12 @@ pub(crate) fn py_sub_timedelta(date: Date, delta: TimeDelta, heap: &mut Heap) ->
 /// [`invalid_strftime_error`] for why that platform is the target. The
 /// `ValueError` path remains for the rare directive that parses but can't be
 /// rendered (so [`render_strftime`] never has to panic).
-pub(crate) fn format_date_strftime(date: Date, format: &str) -> RunResult<String> {
+pub(crate) fn format_date_strftime(date: Date, format: &str, tracker: &ResourceTracker) -> RunResult<String> {
     // Anchored at midnight so time directives render CPython's zeros
     // (`date(2024, 6, 15).strftime('%H:%M')` is `'00:00'` on both) rather than
     // failing for want of a time component.
     let anchored = date.0.and_time(NaiveTime::MIN);
-    let format = rewrite_zone_directives(format, None, None);
+    let format = rewrite_zone_directives(format, None, None, tracker)?;
     render_strftime(anchored.format_with_items(StrftimeItems::new_lenient(&rewrite_microsecond_directive(&format))))
         .ok_or_else(invalid_strftime_error)
 }
@@ -366,37 +367,44 @@ pub(crate) fn format_date_strftime(date: Date, format: &str) -> RunResult<String
 /// `tzname()`: `%z` (`±HHMM[SS]`), `%:z` (`±HH:MM[:SS]`) and `%Z` (the zone
 /// name), all empty for a naive value. chrono renders the naive components
 /// and cannot supply them. A `%` in the name is doubled to stay literal.
+/// Every `%Z` copies the name, so the output is built against the tracker.
 pub(crate) fn rewrite_zone_directives<'f>(
     format: &'f str,
     offset_seconds: Option<i32>,
     name: Option<&str>,
-) -> Cow<'f, str> {
+    tracker: &ResourceTracker,
+) -> RunResult<Cow<'f, str>> {
     if !(format.contains("%z") || format.contains("%Z") || format.contains("%:z")) {
-        return Cow::Borrowed(format);
+        return Ok(Cow::Borrowed(format));
     }
-    let mut out = String::with_capacity(format.len());
+    let zone_name = offset_seconds.map(|offset| tzname_string(offset, name).replace('%', "%%"));
+    let mut out = StringBuilder::with_capacity(format.len(), tracker)?;
     let mut rest = format;
     while let Some(percent) = rest.find('%') {
         let (before, from_percent) = rest.split_at(percent);
-        out.push_str(before);
+        out.push_str(before)?;
         let directive = &from_percent[1..];
         let consumed = if let Some(after) = directive.strip_prefix('z') {
-            out.extend(offset_seconds.map(format_offset_compact));
+            if let Some(offset) = offset_seconds {
+                out.push_str(&format_offset_compact(offset))?;
+            }
             directive.len() - after.len() + 1
         } else if let Some(after) = directive.strip_prefix(":z") {
-            out.extend(offset_seconds.map(format_offset_hms));
+            if let Some(offset) = offset_seconds {
+                out.push_str(&format_offset_hms(offset))?;
+            }
             directive.len() - after.len() + 1
         } else if let Some(after) = directive.strip_prefix('Z') {
-            if let Some(offset_seconds) = offset_seconds {
-                out.push_str(&tzname_string(offset_seconds, name).replace('%', "%%"));
+            if let Some(zone_name) = &zone_name {
+                out.push_str(zone_name)?;
             }
             directive.len() - after.len() + 1
         } else {
             // Copy the directive whole, so `%%z` consumes `%%` and leaves `z` as text.
-            out.push('%');
+            out.push('%')?;
             match directive.chars().next() {
                 Some(c) => {
-                    out.push(c);
+                    out.push(c)?;
                     1 + c.len_utf8()
                 }
                 None => 1,
@@ -404,8 +412,8 @@ pub(crate) fn rewrite_zone_directives<'f>(
         };
         rest = &from_percent[consumed..];
     }
-    out.push_str(rest);
-    Cow::Owned(out)
+    out.push_str(rest)?;
+    out.finish_raw().map(Cow::Owned)
 }
 
 /// Rewrites CPython's `%f` to chrono's `%6f` in a strftime format string.

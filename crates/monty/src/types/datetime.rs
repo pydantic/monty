@@ -13,7 +13,8 @@ use chrono::{
     Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike, format::StrftimeItems,
 };
 use monty_types::{
-    DateTimeAsTimeZoneArgs, DateTimeSource, MontyDateTime, MontyTimeZone, OsFunctionCall, local_wall_clock,
+    DateTimeAsTimeZoneArgs, DateTimeSource, MontyDateTime, MontyTimeZone, OsFunctionCall, ResourceTracker,
+    local_wall_clock,
 };
 
 use crate::{
@@ -335,8 +336,14 @@ fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Call
     defer_drop!(tz, vm);
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
     let zone = &vm.env.auto_os_calls.timezone;
+    // CPython forms `self - utcoffset()` as a datetime, so the UTC intermediate
+    // must be in range as well as the result.
     let utc = match dt.offset_seconds {
-        Some(_) => Some(to_utc_naive(dt).ok_or_else(date_out_of_range)?),
+        Some(_) => Some(
+            to_utc_naive(dt)
+                .filter(|utc| year_in_python_range(utc.year()))
+                .ok_or_else(date_out_of_range)?,
+        ),
         None => zone
             .offset_seconds()
             .map(|offset| local_wall_clock(dt.naive, -offset).ok_or_else(date_out_of_range))
@@ -885,8 +892,8 @@ fn year_in_python_range(year: i32) -> bool {
 /// passed through verbatim to match glibc/Linux CPython (see
 /// [`date::format_date_strftime`]). The zone directives are substituted from
 /// the offset and name first (`%z` and `%Z` are empty for a naive value).
-pub(crate) fn format_datetime_strftime(dt: &DateTime, format: &str) -> RunResult<String> {
-    let format = date::rewrite_zone_directives(format, dt.offset_seconds, dt.timezone_name.as_deref());
+pub(crate) fn format_datetime_strftime(dt: &DateTime, format: &str, tracker: &ResourceTracker) -> RunResult<String> {
+    let format = date::rewrite_zone_directives(format, dt.offset_seconds, dt.timezone_name.as_deref(), tracker)?;
     let format = date::rewrite_microsecond_directive(&format);
     date::render_strftime(dt.naive.format_with_items(StrftimeItems::new_lenient(&format)))
         .ok_or_else(date::invalid_strftime_error)
@@ -1122,7 +1129,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
             Some(StaticStrings::Strftime) => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
                 defer_drop!(format, vm);
-                let formatted = format_datetime_strftime(&dt, format.as_str(vm))?;
+                let formatted = format_datetime_strftime(&dt, format.as_str(vm), &vm.heap.tracker)?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
             }
             Some(StaticStrings::Replace) => Ok(CallResult::Value(self.replace(vm, args)?)),

@@ -149,6 +149,19 @@ assert datetime.datetime(2024, 6, 15, 12, 30).astimezone(datetime.timezone.utc).
 assert repr(datetime.datetime(2024, 1, 1, 1, 0, tzinfo=_eet).astimezone(datetime.timezone.utc)) == (
     'datetime.datetime(2023, 12, 31, 23, 0, tzinfo=datetime.timezone.utc)'
 )
+# CPython forms `self - utcoffset()` first, so an out-of-range UTC intermediate raises even when the result fits
+try:
+    datetime.datetime(1, 1, 1, tzinfo=_eet).astimezone(datetime.timezone(datetime.timedelta(hours=3)))
+    assert False, 'astimezone with a year-0 UTC intermediate should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'date value out of range'
+try:
+    datetime.datetime(9999, 12, 31, 23, tzinfo=datetime.timezone(datetime.timedelta(hours=-2))).astimezone(
+        datetime.timezone(datetime.timedelta(hours=-3))
+    )
+    assert False, 'astimezone with a year-10000 UTC intermediate should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'date value out of range'
 try:
     _aware.astimezone(1)
     assert False, 'astimezone(1) should raise TypeError'

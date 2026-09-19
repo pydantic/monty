@@ -187,11 +187,11 @@ impl VM<'_> {
         }
 
         let formatted = match self.heap.read(id) {
-            HeapReadOutput::Date(d) => format_date_strftime(*d.get(self.heap), spec_str),
-            HeapReadOutput::DateTime(d) => format_datetime_strftime(d.get(self.heap), spec_str),
+            HeapReadOutput::Date(d) => format_date_strftime(*d.get(self.heap), spec_str, &self.heap.tracker),
+            HeapReadOutput::DateTime(d) => format_datetime_strftime(d.get(self.heap), spec_str, &self.heap.tracker),
             HeapReadOutput::Time(t) => {
                 let tz = attached_timezone(t.get(self.heap), self.heap);
-                format_time_strftime(t.get(self.heap), tz.as_ref(), spec_str)
+                format_time_strftime(t.get(self.heap), tz.as_ref(), spec_str, &self.heap.tracker)
             }
             _ => unreachable!("temporal-ness checked above"),
         };
