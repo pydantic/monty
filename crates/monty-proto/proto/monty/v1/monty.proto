@@ -385,24 +385,24 @@ message AutoOsCalls {
   // The instant `date.today()`, `datetime.now()` and `time.time()` read.
   oneof datetime {
     // The child's clock.
-    Unit system = 2;
+    Unit system = 1;
     // Suspend to the parent's OS handler.
-    Unit call_host = 1;
+    Unit call_host = 2;
     // One frozen instant, for reproducible runs.
     FixedDateTime fixed = 3;
   }
   // The local zone naive `datetime.now()` and `date.today()` read in.
   // Absent (or with no arm set) = the child's local zone.
-  SandboxTimeZone timezone = 9;
+  SandboxTimeZone timezone = 4;
   // What `time.sleep()` and `asyncio.sleep()` do.
   // Absent (or with no arm set) = system sleep with the default maximum.
-  SleepMode sleep = 4;
+  SleepMode sleep = 5;
   // Where an unseeded `random` generator gets its first state.
   oneof random_start {
     // From the child's own OS entropy.
-    Unit random_system = 7;
+    Unit random_system = 6;
     // Suspend the first draw with an `os.urandom` call for 2496 bytes.
-    Unit random_call_host = 10;
+    Unit random_call_host = 7;
     // As `random.seed(seed)` would, for reproducible runs.
     RandomSeed seed = 8;
   }
@@ -412,9 +412,9 @@ message AutoOsCalls {
 message SandboxTimeZone {
   oneof zone {
     // The child's local zone.
-    Unit system = 2;
+    Unit system = 1;
     // Suspend the calls that need the zone to the parent.
-    Unit call_host = 1;
+    Unit call_host = 2;
     // A fixed offset from UTC, with a name if it has one.
     TimeZone fixed = 3;
   }

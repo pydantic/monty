@@ -457,17 +457,17 @@ pub struct ResourceLimits {
 pub struct AutoOsCalls {
     /// The local zone naive `datetime.now()` and `date.today()` read in.
     /// Absent (or with no arm set) = the child's local zone.
-    #[prost(message, optional, tag = "9")]
+    #[prost(message, optional, tag = "4")]
     pub timezone: ::core::option::Option<SandboxTimeZone>,
     /// What `time.sleep()` and `asyncio.sleep()` do.
     /// Absent (or with no arm set) = system sleep with the default maximum.
-    #[prost(message, optional, tag = "4")]
+    #[prost(message, optional, tag = "5")]
     pub sleep: ::core::option::Option<SleepMode>,
     /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
-    #[prost(oneof = "auto_os_calls::Datetime", tags = "2, 1, 3")]
+    #[prost(oneof = "auto_os_calls::Datetime", tags = "1, 2, 3")]
     pub datetime: ::core::option::Option<auto_os_calls::Datetime>,
     /// Where an unseeded `random` generator gets its first state.
-    #[prost(oneof = "auto_os_calls::RandomStart", tags = "7, 10, 8")]
+    #[prost(oneof = "auto_os_calls::RandomStart", tags = "6, 7, 8")]
     pub random_start: ::core::option::Option<auto_os_calls::RandomStart>,
 }
 /// Nested message and enum types in `AutoOsCalls`.
@@ -477,10 +477,10 @@ pub mod auto_os_calls {
     #[prost(prost_path = "crate::budgeted_prost")]
     pub enum Datetime {
         /// The child's clock.
-        #[prost(message, tag = "2")]
+        #[prost(message, tag = "1")]
         System(super::Unit),
         /// Suspend to the parent's OS handler.
-        #[prost(message, tag = "1")]
+        #[prost(message, tag = "2")]
         CallHost(super::Unit),
         /// One frozen instant, for reproducible runs.
         #[prost(message, tag = "3")]
@@ -491,10 +491,10 @@ pub mod auto_os_calls {
     #[prost(prost_path = "crate::budgeted_prost")]
     pub enum RandomStart {
         /// From the child's own OS entropy.
-        #[prost(message, tag = "7")]
+        #[prost(message, tag = "6")]
         RandomSystem(super::Unit),
         /// Suspend the first draw with an `os.urandom` call for 2496 bytes.
-        #[prost(message, tag = "10")]
+        #[prost(message, tag = "7")]
         RandomCallHost(super::Unit),
         /// As `random.seed(seed)` would, for reproducible runs.
         #[prost(message, tag = "8")]
@@ -505,7 +505,7 @@ pub mod auto_os_calls {
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct SandboxTimeZone {
-    #[prost(oneof = "sandbox_time_zone::Zone", tags = "2, 1, 3")]
+    #[prost(oneof = "sandbox_time_zone::Zone", tags = "1, 2, 3")]
     pub zone: ::core::option::Option<sandbox_time_zone::Zone>,
 }
 /// Nested message and enum types in `SandboxTimeZone`.
@@ -514,10 +514,10 @@ pub mod sandbox_time_zone {
     #[prost(prost_path = "crate::budgeted_prost")]
     pub enum Zone {
         /// The child's local zone.
-        #[prost(message, tag = "2")]
+        #[prost(message, tag = "1")]
         System(super::Unit),
         /// Suspend the calls that need the zone to the parent.
-        #[prost(message, tag = "1")]
+        #[prost(message, tag = "2")]
         CallHost(super::Unit),
         /// A fixed offset from UTC, with a name if it has one.
         #[prost(message, tag = "3")]
