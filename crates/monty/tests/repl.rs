@@ -2129,6 +2129,7 @@ fn repl_failed_exec_locals_snapshot_releases_globals() {
 fn repl_rejected_snippet_locations() {
     let (mut repl, _) = init_repl("pass");
     let mut errors = Vec::new();
+    let mut expected_filenames = vec!["<python-input-0>".to_owned()];
     for source in [
         "\n\nfrom . import missing",
         "\n\nfrom math import *",
@@ -2138,12 +2139,29 @@ fn repl_rejected_snippet_locations() {
         let error = feed_run_print(&mut repl, &format!("exec({source:?})")).unwrap_err();
         assert_eq!(error.traceback().last().unwrap().start.line, 3);
         errors.push(error.to_string());
-        // The table holds REPL inputs too; only an `exec()` source has no filename.
-        let state = to_value(&repl).unwrap();
-        let sources = state["interns"]["snippet_sources"].as_array().unwrap();
-        assert!(sources.iter().all(|source| !source["filename"].is_null()));
+        // The REPL input that called `exec()` compiled, so its source is kept;
+        // the rejected `exec()` source (which would have no filename) is not.
+        expected_filenames.push(format!("<python-input-{}>", expected_filenames.len()));
+        assert_eq!(snippet_source_filenames(&repl), expected_filenames);
     }
     assert_snapshot!("rejected_snippet_locations", errors.join("\n\n"));
+
+    // A REPL input rejected at compile time keeps no source either.
+    let error = feed_run_print(&mut repl, "def").unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::SyntaxError);
+    assert_eq!(snippet_source_filenames(&repl), expected_filenames);
+}
+
+/// Display filenames of the session's snippet source table, in id order;
+/// `exec()` / `eval()` entries have none and show as `<string>`.
+fn snippet_source_filenames(repl: &MontyRepl) -> Vec<String> {
+    let state = to_value(repl).unwrap();
+    state["interns"]["snippet_sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|source| source["filename"].as_str().unwrap_or("<string>").to_owned())
+        .collect()
 }
 
 /// Equal displayed filenames retain distinct source locations after loading a session.
