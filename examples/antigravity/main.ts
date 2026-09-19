@@ -85,15 +85,18 @@ function node(element: Element): ClassInstance {
   return wrapped
 }
 
-/** The program sets the figure's transform once per tick, so counting them times the flight. */
+/** The program sets the figure's transform once per tick, so counting them gives the frame rate. */
 let ticks = 0
 let flightStartedAt = 0
 
 function tick(): void {
   ticks += 1
-  if (ticks === 1) flightStartedAt = performance.now()
-  const msPerTick = ((performance.now() - flightStartedAt) / ticks).toFixed(2)
-  status.textContent = `${started} · ${ticks} ticks, ${msPerTick} ms per tick`
+  if (ticks === 1) {
+    flightStartedAt = performance.now()
+    return
+  }
+  const fps = ((ticks - 1) / ((performance.now() - flightStartedAt) / 1000)).toFixed(0)
+  status.textContent = `${started} · ${fps} fps`
 }
 
 // ---- Running the program ----

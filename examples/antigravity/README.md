@@ -30,8 +30,8 @@ The sandbox has no DOM, so [`main.ts`](main.ts) provides the other three names: 
 
 `main.ts` feeds the file once, which builds `_auto` and appends the SVG, then feeds `fly()` once: that feed is the whole
 flight, and it ends when `maxSuspensions` runs out.
-The line under the comic shows the time to a checked-out session and the mean time per tick, 10 ms of which is the
-sleep.
+The line under the comic shows the time to a checked-out session and the frame rate, each frame being one tick and
+its 10 ms sleep.
 
 The line art in [`antigravity.svg`](antigravity.svg) is copied from the PyScript example.
 xkcd is CC BY-NC 2.5, Randall Munroe.
