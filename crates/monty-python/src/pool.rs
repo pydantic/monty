@@ -1404,7 +1404,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
     } = args;
     let lookup = ExternalLookup::new(py, external_lookup, &instances);
     let mut sleeps: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
-    // the call ids of those sleeps: the only futures this loop may be asked to resolve
+    // Only system sleeps may create futures in the synchronous API.
     let mut sleep_ids: HashSet<u32> = HashSet::new();
     let mut event = run_turn_sync(
         py,
@@ -1434,10 +1434,8 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
         let callback_guard = callback_context.enter(py, &native)?;
         let resume_with = match event {
             TurnEvent::Complete(value) => return monty_to_py(py, &value, &instances),
-            // A `'system'` sleep is this loop's own wait, never the `os=`
-            // callback's: `time.sleep` (and an `asyncio.sleep` awaited at
-            // once) blocks here with the GIL released; any other
-            // `asyncio.sleep` is a tokio timer, so gathered sleeps overlap.
+            // Immediate sleeps release the GIL; deferred async sleeps use tokio timers
+            // so gathered sleeps overlap. Neither invokes the `os=` callback.
             TurnEvent::OsCall {
                 function_name,
                 call_id,
@@ -1465,8 +1463,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                     TurnAnswer::Call(ResumeValue::Return(MontyObject::none()))
                 }
             },
-            // Only the loop's own sleeps can be pending under `Monty`: any other
-            // id would never be answered, so it is a bug here, not a stall.
+            // Unknown future IDs cannot be resolved by this loop.
             TurnEvent::ResolveFutures { pending_call_ids } if !sleeps.is_empty() => {
                 if let Some(id) = pending_call_ids.iter().find(|id| !sleep_ids.contains(id)) {
                     discard_checkout_sync(py, &checkout);
@@ -1712,8 +1709,6 @@ async fn drive_async_inner(
                 .await?;
                 continue;
             }
-            // A `'system'` sleep is this loop's own timer, never the `os=`
-            // callback's; see `dispatch_system_sleep`.
             TurnEvent::OsCall {
                 function_name,
                 call_id,

@@ -2,8 +2,7 @@
 //!
 //! Eligible coroutines are awaited at their call suspension. Other coroutines
 //! are spawned as tokio tasks and resolved in batches when the sandbox blocks.
-//! A `SleepMode::System` sleep is answered the same way, as a tokio timer the
-//! loop owns rather than a coroutine the `os=` handler returned.
+//! System sleeps use the same scheduling with tokio timers.
 
 use std::{future::Future, pin::Pin, time::Duration};
 
@@ -74,7 +73,7 @@ impl CoroutineMode {
     }
 }
 
-/// The boxed future behind an answer, awaited or spawned by the drive loop.
+/// An answer the drive loop can await or spawn.
 pub(crate) type AnswerFuture = Pin<Box<dyn Future<Output = ExtFunctionResult> + Send>>;
 
 /// Converts the coroutine a host callback answered `call_id` with, spawning it
@@ -90,9 +89,7 @@ pub(crate) fn dispatch_coroutine(
     Ok(dispatch_future(Box::pin(future), call_id, mode, join_set))
 }
 
-/// Answers a `SleepMode::System` sleep of `delay` (see `Checkout::system_sleep`):
-/// the wait is the drive loop's own tokio timer, never the `os=` handler's,
-/// routed by `mode` exactly like a coroutine answer so gathered sleeps overlap.
+/// Schedules a system sleep like a coroutine answer, allowing gathered sleeps to overlap.
 pub(crate) fn dispatch_system_sleep(
     delay: Duration,
     call_id: u32,
@@ -106,8 +103,7 @@ pub(crate) fn dispatch_system_sleep(
     dispatch_future(Box::pin(wait), call_id, mode, join_set)
 }
 
-/// Routes an answer future by `mode`: spawned into `join_set` behind a
-/// `Future` answer, or handed back to await outside the callback context.
+/// Spawns deferred answers; returns other futures for awaiting outside the callback context.
 fn dispatch_future(
     future: AnswerFuture,
     call_id: u32,

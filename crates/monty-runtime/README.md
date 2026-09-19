@@ -48,13 +48,11 @@ monty --help
 - `--max-total-sleep 30` — maximum cumulative time those sleeps may ask for, in
   seconds; a sleep that would go over is refused (off unless given)
 
-`date.today()` and `datetime.now()` read this machine's clock and local
-timezone, and `time.time()` its clock as Unix epoch seconds; `time.sleep()` and
-`asyncio.sleep()` are waited out by the CLI, capped by `--max-sleep`; an unseeded
-`random` draw seeds from the machine's entropy — the defaults of every
-embedding. `MontyRun::with_auto_os_calls` is how a Rust embedder chooses
-otherwise; the CLI has no flag for it. Nothing answers `os.urandom()`, so it
-raises `NotImplementedError` (or `RuntimeError` under `--mount`).
+`date.today()` and `datetime.now()` use the system clock and local timezone; `time.time()` returns Unix epoch seconds.
+`time.sleep()` and `asyncio.sleep()` wait for at most `--max-sleep` seconds each.
+An unseeded `random` draw uses system entropy.
+Rust embedders can change these defaults with `MontyRun::with_auto_os_calls`; the CLI only exposes the sleep limits.
+`os.urandom()` raises `NotImplementedError` (or `RuntimeError` under `--mount`) because the CLI has no handler for it.
 
 ## Worker mode
 

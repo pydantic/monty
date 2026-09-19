@@ -446,7 +446,7 @@ pub struct ResourceLimits {
     pub max_feed_duration_micros: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "7")]
     pub max_turn_duration_micros: ::core::option::Option<u64>,
-    /// Cumulative time the sandbox may spend waiting out sleeps itself.
+    /// Cumulative budget for system sleeps, enforced by the parent.
     #[prost(uint64, optional, tag = "8")]
     pub max_total_sleep_micros: ::core::option::Option<u64>,
 }
@@ -460,7 +460,7 @@ pub struct AutoOsCalls {
     #[prost(message, optional, tag = "9")]
     pub timezone: ::core::option::Option<SandboxTimeZone>,
     /// What `time.sleep()` and `asyncio.sleep()` do.
-    /// Absent (or with no arm set) = a sleep in the child with the default maximum.
+    /// Absent (or with no arm set) = system sleep with the default maximum.
     #[prost(message, optional, tag = "4")]
     pub sleep: ::core::option::Option<SleepMode>,
     /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
@@ -479,7 +479,7 @@ pub mod auto_os_calls {
         /// The child's clock.
         #[prost(message, tag = "2")]
         System(super::Unit),
-        /// Suspend to the parent, as every other OS call does.
+        /// Suspend to the parent's OS handler.
         #[prost(message, tag = "1")]
         CallHost(super::Unit),
         /// One frozen instant, for reproducible runs.
@@ -536,7 +536,7 @@ pub mod sleep_mode {
     #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Oneof)]
     #[prost(prost_path = "crate::budgeted_prost")]
     pub enum Mode {
-        /// Wait in the child.
+        /// The parent waits without invoking its OS handler.
         #[prost(message, tag = "1")]
         System(super::SystemSleep),
         /// Suspend to the parent, which performs the wait.
@@ -547,7 +547,7 @@ pub mod sleep_mode {
         Zero(super::Unit),
     }
 }
-/// A sleep the child performs itself.
+/// A sleep capped by the child and performed by the parent.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct SystemSleep {
@@ -578,8 +578,7 @@ pub mod random_seed {
     #[derive(Clone, PartialEq, crate::budgeted_prost::Oneof)]
     #[prost(prost_path = "crate::budgeted_prost")]
     pub enum Value {
-        /// Two's-complement little-endian bytes (`BigInt::to_signed_bytes_le`),
-        /// any size.
+        /// Arbitrary-size two's-complement little-endian bytes (`BigInt::to_signed_bytes_le`).
         #[prost(bytes, tag = "1")]
         Int(crate::budgeted_prost::alloc::vec::Vec<u8>),
         /// Must be finite.
@@ -755,11 +754,8 @@ pub struct Configure {
     /// the field trades streaming latency for event volume and nothing else.
     #[prost(uint32, optional, tag = "10")]
     pub print_flush_interval_ms: ::core::option::Option<u32>,
-    /// Which OS calls the child answers itself instead of suspending to the
-    /// parent. Absent = every default (`AutoOsCalls::default()` in monty-types):
-    /// the child's own clock, sleeps waited out in the child capped at 10s, and
-    /// an unseeded `random` seeded from the child's entropy. A `Load` restores
-    /// the dump's own settings instead, as it does for `limits`.
+    /// Absent = `AutoOsCalls::default()`: the child's clock, local zone and entropy,
+    /// with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
     #[prost(message, optional, tag = "11")]
     pub auto_os_calls: ::core::option::Option<AutoOsCalls>,
 }
@@ -930,8 +926,7 @@ pub struct ChildEvent {
     pub max_feed_duration_micros: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "26")]
     pub max_turn_duration_micros: ::core::option::Option<u64>,
-    /// The session's `max_total_sleep` in microseconds, when configured: the
-    /// parent-enforced sleep budget, reported for the same reason.
+    /// Parent-enforced sleep budget, also reported on `Load`.
     #[prost(uint64, optional, tag = "27")]
     pub max_total_sleep_micros: ::core::option::Option<u64>,
     /// The session's script name, surfaced on a `Load` reply so a parent that
@@ -1213,9 +1208,8 @@ pub mod os_call {
         /// asyncio.sleep(delay) under `call_host`
         #[prost(message, tag = "28")]
         AsyncSleep(AsyncSleep),
-        /// The same two under `system`: the parent itself waits, cut to the mode's
-        /// maximum by the child, charged to `max_total_sleep` by the parent, never
-        /// consulting its `os` handler. Distinct so the parent keeps no sleep policy.
+        /// System sleeps: capped by the child, charged to `max_total_sleep` and
+        /// waited out by the parent without invoking its OS handler.
         #[prost(message, tag = "29")]
         SystemSleep(Sleep),
         #[prost(message, tag = "30")]

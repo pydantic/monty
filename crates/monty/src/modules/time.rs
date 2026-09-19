@@ -1,12 +1,8 @@
 //! Implementation of the `time` module.
 //!
-//! Two functions: `time()`, answered in the sandbox or suspended to the host
-//! as the session's `AutoOsCalls` says, exactly like `date.today()`, and
-//! `sleep()`, always the host's wait (or none under `SleepMode::Zero`), the
-//! mode deciding the cut and the budget. See `limitations/time.md` for what
-//! diverges from CPython;
-//! the monotonic clocks and the `struct_time` family are absent rather than
-//! stubbed, so they raise `AttributeError` up front.
+//! `time()` and `sleep()` follow the session's `AutoOsCalls` policies.
+//! Monotonic clocks and the `struct_time` family raise `AttributeError`.
+//! See `limitations/time.md` for CPython divergences.
 
 use std::time::Duration;
 
@@ -59,9 +55,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: TimeFunctions, args: ArgValues) ->
     }
 }
 
-/// `time.time()` — seconds since the Unix epoch, as a float, read from the
-/// session's clock. Under `CallHost` the host answers from whatever clock it
-/// exposes, so the value need not agree with the machine's wall clock.
+/// Reads epoch seconds from the session's clock, or the host under `CallHost`.
 fn time(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("time.time", vm.heap)?;
     match sandbox_instant(vm)? {
@@ -70,10 +64,9 @@ fn time(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     }
 }
 
-/// `time.sleep(seconds)` — a wait the host performs ([`host_sleep`] says
-/// who and for how long), [`PostConversionEffect::DiscardResult`] making the
-/// call `None` whatever it answered; under `Zero` nothing waits. The
-/// argument is validated the same way in every mode.
+/// Validates the delay in every mode, then applies [`host_sleep`].
+/// [`PostConversionEffect::DiscardResult`] makes the call return `None`
+/// regardless of the host's answer; `Zero` skips the wait.
 fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     // METH_O in CPython: keywords are refused wholesale, before arity.
     let seconds = args
@@ -99,7 +92,7 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     })
 }
 
-/// Who waits out a sleep, and for how long; see [`host_sleep`].
+/// Sleep destination and delay after applying the session policy.
 pub(crate) enum HostSleep {
     /// The host itself, for a delay already cut to the mode's maximum.
     System(Duration),
@@ -107,9 +100,8 @@ pub(crate) enum HostSleep {
     CallHost(Duration),
 }
 
-/// The wait a sleep suspends with, or `None` when nothing waits
-/// (`SleepMode::Zero`). The call kind says who waits, so no host needs a
-/// copy of the sandbox's sleep policy to answer it.
+/// Applies the sleep policy, returning `None` for `SleepMode::Zero`.
+/// The call kind tells the host who waits without needing the session policy.
 pub(crate) fn host_sleep(vm: &VM<'_>, delay: Duration) -> Option<HostSleep> {
     match vm.env.auto_os_calls.sleep {
         SleepMode::System(max) => Some(HostSleep::System(delay.min(max))),

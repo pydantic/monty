@@ -119,7 +119,6 @@ def test_urandom_limit_must_be_int(limit: Any):
 
 
 def test_default_clock_and_sleeps(monty_run: RunMonty):
-    """Under `call_host`, OSAccess answers the clock and both sleeps from the host process."""
     fs = OSAccess()
 
     result = monty_run(

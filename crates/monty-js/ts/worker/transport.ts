@@ -116,9 +116,7 @@ export class WorkerTransport {
   /** The ceiling on one `'system'` sleep; see `systemSleepCapOf`. */
   private systemSleepMaxSecs = 0
   /**
-   * `maxTotalSleepSecs` in microseconds: the configured limit, only ever
-   * tightened by what the component reports (a dump's, on load), since the
-   * report is the worker's word; and what the sleeps let through so far asked for.
+   * Host ceiling in microseconds; component-reported limits may tighten it, never relax it.
    */
   private readonly configuredSleepLimitMicros: bigint | undefined
   private sleepLimitMicros: bigint | undefined
@@ -360,9 +358,7 @@ export class WorkerTransport {
   private async abortFeed(excType: string, message: string, onPrint: OnPrint): Promise<NativeTurn> {
     const aborted = await this.run({ tag: 'abort-feed', val: { excType, message } }, onPrint)
     const turn = aborted ? this.toTurn(aborted) : crashed('worker exited without a turn-ending event')
-    // the component answers an abort with an error, never a suspension;
-    // servicing one would let a compromised worker call the host past
-    // the budget, so it ends the worker instead
+    // Reject suspensions after abort: servicing them would bypass the host's budget.
     if (turn.kind !== 'error' && turn.kind !== 'crashed') {
       this.dead = true
       return { kind: 'protocol', message: `worker answered abort-feed with ${turn.kind}` }
@@ -371,10 +367,8 @@ export class WorkerTransport {
   }
 
   /**
-   * Charges a `'system'` sleep (already cut to the ceiling by `toTurn`) to
-   * `maxTotalSleepSecs`: the message to refuse it with once the total would
-   * go over, else `null`. Mirrors monty-pool's `SessionBudget`, message
-   * included, so the wasm and native paths raise the same `TimeoutError`.
+   * Charges the capped sleep duration, returning a refusal message if over budget, else `null`.
+   * Matches monty-pool's `SessionBudget` errors.
    */
   private chargeSleep(turn: NativeTurn): string | null {
     if (turn.kind !== 'osCall' || turn.systemSleepSecs === undefined) return null
@@ -498,8 +492,7 @@ function componentAutoOsCalls(calls: EncodedAutoOsCalls): ComponentAutoOsCalls |
   else if (calls.datetime !== undefined) record.datetime = { tag: 'fixed', val: calls.datetime }
   if (calls.timezone !== undefined) record.timezone = componentTimeZone(calls.timezone)
   if (calls.sleep === 'system' || (calls.sleep === undefined && calls.sleepSystemMaxSecs !== undefined)) {
-    // the maximum only applies to a system sleep; u64::MAX lifts it, as the
-    // native binding's `Duration::MAX` does
+    // u64::MAX disables the cap, matching the native binding's `Duration::MAX`.
     const max = calls.sleepSystemMaxSecs
     const val =
       max === undefined ? undefined : max === Infinity ? 0xffff_ffff_ffff_ffffn : BigInt(Math.round(max * 1_000_000))
@@ -513,14 +506,12 @@ function componentAutoOsCalls(calls: EncodedAutoOsCalls): ComponentAutoOsCalls |
   return Object.keys(record).length === 0 ? undefined : record
 }
 
-/** The zone as the WIT `time-zone` variant. */
 function componentTimeZone(timezone: NonNullable<EncodedAutoOsCalls['timezone']>): ComponentTimeZone {
   if (timezone === 'system') return { tag: 'system' }
   if (timezone === 'call_host') return { tag: 'call-host' }
   return { tag: 'fixed', val: { offsetSeconds: timezone.offsetSeconds, name: timezone.name } }
 }
 
-/** The seed as the WIT `random-seed` variant. */
 function componentRandomSeed(seed: EncodedRandomSeed): ComponentRandomSeed {
   if ('int' in seed) return { tag: 'int', val: seed.int }
   if ('float' in seed) return { tag: 'float', val: seed.float }
@@ -669,7 +660,7 @@ function crashed(message: string): NativeTurn {
   return { kind: 'crashed', message, timedOut: false }
 }
 
-/** Renders microseconds as Rust's `Duration` debug form (`1.5s`, `625ms`, `10µs`): the pools' message. */
+/** Matches Rust's `Duration` debug format in pool error messages. */
 function durationDebug(micros: bigint): string {
   const scaled = (unit: bigint, suffix: string) => {
     const whole = micros / unit

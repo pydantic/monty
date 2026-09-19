@@ -400,11 +400,8 @@ await session.feedRun('import os\nos.getenv("HOME")', {
 })
 ```
 
-An `async` callback works too. Under `autoOsCalls: { sleep: 'call_host' }` its answer to
-`asyncio.sleep` is registered as a future, so the sandbox's other tasks run
-while it waits (or, when there are none, is awaited in place like an eager
-host function); its answer to any other OS call is awaited before that
-session resumes.
+Under `autoOsCalls: { sleep: 'call_host' }`, an async `os` callback lets other sandbox tasks run during `asyncio.sleep`.
+With no other tasks, the pool awaits it in place, as it does for every other OS call.
 
 Callback-backed virtual files return a `MontyFileHandle` marker from the
 open-time call. Paths are virtual POSIX sandbox paths and `position` defaults
@@ -469,39 +466,32 @@ uncatchable `RuntimeError`.
 
 ## Clock, sleeping and entropy
 
-By default these never reach an `os` callback: `date.today()`,
-`datetime.now()` and `time.time()` read the worker's clock; `time.sleep()` and
-`asyncio.sleep()` are waited out by the pool itself, each call cut to
-`sleepSystemMax` (10 seconds), with gathered `asyncio.sleep()` calls
-overlapping; and an unseeded `random` seeds itself from the worker's OS
-entropy. A wait costs nothing against the duration limits; each sleep is one
-suspension, and the `maxTotalSleepSecs` limit bounds their sum. The
-per-session `autoOsCalls` option changes that:
+By default, `date.today()`, `datetime.now()` and `time.time()` read the worker's clock.
+The pool handles `time.sleep()` and `asyncio.sleep()`, capped per call by `sleepSystemMax` (10 seconds).
+Gathered async sleeps overlap.
+Sleeps count toward suspensions and `maxTotalSleepSecs`, but not execution duration limits.
+Unseeded `random` generators use worker OS entropy.
+Configure these policies per session with `autoOsCalls`:
 
 ```ts
 const fixed = await pool.checkout({
   autoOsCalls: {
-    datetime: new Date('2026-01-01T09:30:00Z'), // 'system' (default) | 'call_host' | Date
-    timezone: { offsetSeconds: 3600, name: 'CET' }, // 'system' (default) | 'call_host' | a fixed offset
-    sleep: 'system', // 'system' (default) | 'call_host' | 'zero'
-    sleepSystemMax: 0.5, // seconds per 'system' sleep; Infinity for no cap
-    randomStart: { seed: 42 }, // 'system' (default) | 'call_host' | { seed: number | bigint | string | Uint8Array }
+    datetime: new Date('2026-01-01T09:30:00Z'),
+    timezone: { offsetSeconds: 3600, name: 'CET' },
+    sleepSystemMax: 0.5,
+    randomStart: { seed: 42 },
   },
 })
 ```
 
-A `Date` freezes the clock at that instant (and, unless `timezone` is given,
-sets the zone to UTC, so `datetime.now()` returns it exactly); `timezone`
-is the zone naive `datetime.now()` and `date.today()` read in, a fixed
-offset rather than an IANA zone. `'zero'` makes both sleeps return at once.
-`{ seed }` starts the module-level `random` generator exactly as
-`random.seed(seed)` would (unseeded `random.Random()` instances take
-deterministic states derived from it); `random.seed()` in the sandbox still
-applies afterwards. `'call_host'` on any field sends those calls to the `os`
-callback instead — the clock, the calls that need the zone, the waits, or an
-`os.urandom` request for `random`'s first state — which then decides what
-the sandbox sees. Explicit `os.urandom()` calls always reach the `os`
-callback.
+A `Date` freezes the instant and defaults the local zone to UTC unless `timezone` is supplied.
+`timezone` controls naive `datetime.now()` and `date.today()` using a fixed UTC offset, without IANA zone rules.
+`sleep: 'zero'` returns immediately; `sleepSystemMax: Infinity` disables the per-call cap.
+`{ seed }` initializes the module as `random.seed(seed)` and derives deterministic states for unseeded `random.Random()`
+instances.
+Seeds accept `number`, `bigint`, `string` and `Uint8Array`; sandbox calls to `random.seed()` still override the state.
+`'call_host'` delegates the selected clock, local-zone, sleep or initial-entropy calls to `os`.
+Explicit `os.urandom()` calls always reach `os`.
 
 ## Assert message annotations
 

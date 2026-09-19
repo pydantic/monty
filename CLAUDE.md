@@ -1075,8 +1075,8 @@ where they are. Change one and you must change all of them:
 - **Default resource limits** (1000 recursion frames, 1000 suspensions, 100 MB per-mount memory, 10 MiB
     print collectors, 1s duration grace) — `limitations/resource_limits.md`,
     `docs/resource-limits.md`, and the binding docstrings.
-- **`AutoOsCalls` defaults** (system clock and zone, sleeps the host waits out, cut at 10 s, `random` seeded from OS
-    entropy) and the `call_host` escape hatch — `limitations/time.md`, `limitations/datetime.md`,
+- **`AutoOsCalls` defaults** (system clock and zone, host-serviced sleeps capped at 10 s, OS entropy for `random`)
+    and `call_host` — `limitations/time.md`, `limitations/datetime.md`,
     `limitations/random.md`, `docs/security.md` (the clock / entropy / waiting), `docs/cli.md` and
     `crates/monty-runtime/README.md` (`--max-sleep`, `--max-total-sleep`), the `checkout()` docstrings in
     `_monty.pyi` and `crates/monty-js/ts/pool.ts`.

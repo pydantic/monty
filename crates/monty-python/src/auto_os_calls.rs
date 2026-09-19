@@ -1,10 +1,5 @@
-//! Extraction of the `auto_os_calls` checkout argument — the `AutoOSCalls`
-//! TypedDict — into the session's [`AutoOsCalls`].
-//!
-//! Every key is optional and defaults as the Rust struct does; an unknown
-//! key is a `ValueError`, since a misspelt one would silently leave a call
-//! answered differently from what the caller meant. Values are rejected at
-//! argument-extraction time with a message naming the accepted forms.
+//! Converts the `auto_os_calls` dict to [`AutoOsCalls`], retaining omitted defaults.
+//! Unknown keys raise `ValueError` so typos cannot silently change call routing.
 
 use std::time::Duration;
 
@@ -26,7 +21,7 @@ use pyo3::{
 
 use crate::pool::duration_from_secs;
 
-/// The `auto_os_calls` checkout argument; `None` is every default.
+/// Python checkout argument; omitted keys retain `AutoOsCalls` defaults.
 #[derive(Clone, Default)]
 pub(crate) struct AutoOsCallsArg(pub AutoOsCalls);
 
@@ -41,8 +36,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for AutoOsCallsArg {
             )));
         };
         let mut calls = AutoOsCalls::default();
-        // A fixed `datetime` implies a zone (see `fixed_datetime`) unless
-        // `timezone` says otherwise, so the zone key is applied last.
+        // Apply `timezone` last so it overrides the fixed datetime's implied zone.
         let mut timezone = None;
         let mut max = None;
         for (key, value) in dict.iter() {
@@ -73,8 +67,6 @@ impl<'a, 'py> FromPyObject<'a, 'py> for AutoOsCallsArg {
         if let Some(timezone) = timezone {
             calls.timezone = timezone;
         }
-        // The maximum only applies to a system sleep; with any other mode it
-        // is a contradiction rather than something to ignore.
         match (max, calls.sleep) {
             (Some(max), SleepMode::System(_)) => calls.sleep = SleepMode::System(max),
             (Some(_), SleepMode::CallHost) => {
@@ -93,9 +85,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for AutoOsCallsArg {
     }
 }
 
-/// `datetime`: `'system'`, `'call_host'`, or a `datetime.datetime` to freeze
-/// the clock at. A `datetime` also implies the zone naive calls read in — its
-/// `utcoffset()`, or UTC when naive — so `datetime.now()` returns it exactly.
+/// A fixed datetime also supplies the local zone: its UTC offset, or UTC if naive.
 fn datetime_source(value: &Bound<'_, PyAny>) -> PyResult<(DateTimeSource, Option<SandboxTimeZone>)> {
     if let Ok(name) = value.cast::<PyString>() {
         match &*name.to_cow()? {
@@ -148,8 +138,6 @@ fn fixed_datetime(datetime: &Bound<'_, PyDateTime>) -> PyResult<(DateTimeSource,
     Ok((source, SandboxTimeZone::Fixed { offset_seconds, name }))
 }
 
-/// `timezone`: `'system'`, `'call_host'`, or a `{'offset_seconds': int,
-/// 'name': str}` mapping (`name` optional).
 fn time_zone(value: &Bound<'_, PyAny>) -> PyResult<SandboxTimeZone> {
     const SHAPE: &str = "timezone must be 'system', 'call_host' or {'offset_seconds': int, 'name': str}";
     if let Ok(name) = value.cast::<PyString>() {
@@ -205,8 +193,6 @@ fn offset_seconds(offset: &Bound<'_, PyDelta>, what: &str) -> PyResult<i32> {
         .map_err(|_| PyValueError::new_err(format!("{what} is out of range")))
 }
 
-/// `sleep`: `'system'` (with the default maximum until `sleep_system_max`
-/// replaces it), `'call_host'` or `'zero'`.
 fn sleep_mode(value: &Bound<'_, PyAny>) -> PyResult<SleepMode> {
     let name = value
         .cast::<PyString>()
@@ -221,8 +207,7 @@ fn sleep_mode(value: &Bound<'_, PyAny>) -> PyResult<SleepMode> {
     }
 }
 
-/// `sleep_system_max`: seconds, `inf` for no cap. `bool` is refused
-/// rather than read as 0/1.
+/// Seconds per sleep; `inf` disables the cap. Rejects booleans.
 fn sleep_system_max(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
     if value.cast::<PyBool>().is_ok() || (value.cast::<PyInt>().is_err() && value.cast::<PyFloat>().is_err()) {
         return Err(PyTypeError::new_err(format!(
@@ -238,8 +223,6 @@ fn sleep_system_max(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
     }
 }
 
-/// `random_start`: `'system'`, `'call_host'`, or a `{'seed': ...}` mapping
-/// whose seed is what `random.seed()` accepts.
 fn random_start(value: &Bound<'_, PyAny>) -> PyResult<RandomStart> {
     const SHAPE: &str = "random_start must be 'system', 'call_host' or {'seed': int | float | str | bytes}";
     if let Ok(name) = value.cast::<PyString>() {
@@ -262,8 +245,7 @@ fn random_start(value: &Bound<'_, PyAny>) -> PyResult<RandomStart> {
     }
 }
 
-/// A seed of any type `random.seed()` accepts; `bool` is refused since it
-/// is never what a caller meant.
+/// Accepts integers, finite floats, strings and bytes; rejects booleans.
 fn random_seed(seed: &Bound<'_, PyAny>) -> PyResult<RandomSeed> {
     if seed.cast::<PyBool>().is_ok() {
         Err(PyTypeError::new_err(
@@ -272,7 +254,7 @@ fn random_seed(seed: &Bound<'_, PyAny>) -> PyResult<RandomSeed> {
     } else if let Ok(n) = seed.cast::<PyInt>() {
         Ok(RandomSeed::Int(n.extract::<BigInt>()?))
     } else if let Ok(f) = seed.cast::<PyFloat>() {
-        // the wire refuses a non-finite seed, so refuse it here, at the checkout
+        // Reject non-finite seeds before sending them to the wire decoder.
         let f = f.value();
         if f.is_finite() {
             Ok(RandomSeed::Float(f))

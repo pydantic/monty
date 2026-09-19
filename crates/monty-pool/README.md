@@ -65,18 +65,16 @@ async fn main() -> Result<(), PoolError> {
 }
 ```
 
-`ReplConfig` also enables per-session sandbox `ResourceLimits`, type checking of every fed
-snippet, `print_flush_interval` — how long the worker may batch `print()` output before
-sending it, so a burst of prints costs one event rather than one each (`Duration::ZERO`
-restores line buffering, one event per completed line) — and `auto_os_calls`, which OS calls
-the worker answers itself for the life of the session (the clock and its zone and `random`'s
-first state; a field set to `CallHost` delivers those calls as `TurnEvent::OsCall` instead) and
-how the sleeps reach the caller (every sleep is a `TurnEvent::OsCall`; under the default
-`SleepMode::System` it arrives cut to the mode's maximum for the caller to wait out itself, as
-`TurnEvent::OsCall::system_sleep` says, without consulting its own `os` handler); `Checkout::feed` accepts inputs (host values exposed as sandbox globals) and
-per-feed filesystem mounts (`MountSpec`) and, through `Checkout::feed_with_cwd`, a switch of the
-sandbox's working directory (the first feed's first mount by default; it then persists across feeds). Sessions can be snapshotted with `Checkout::dump`
-and restored later — including on a different worker or machine — with `Checkout::restore`.
+`ReplConfig` sets per-session `ResourceLimits`, type checking of every snippet, and `print_flush_interval`.
+The flush interval batches `print()` output; `Duration::ZERO` sends one event per completed line.
+Its `auto_os_calls` sets the clock, timezone, initial random state and sleep policy for the session.
+`CallHost` delegates calls to the caller's OS handler through `TurnEvent::OsCall`.
+The default `SleepMode::System` sets `system_sleep` to the capped delay for the caller to await directly.
+`SleepMode::Zero` returns immediately.
+
+`Checkout::feed` accepts inputs exposed as sandbox globals and per-feed filesystem mounts (`MountSpec`).
+`Checkout::feed_with_cwd` also changes the working directory, which defaults to the first feed's first mount and persists.
+`Checkout::dump` snapshots a session; `Checkout::restore` can restore it on another worker or machine.
 The caller must establish that restored bytes are unmodified output from a trusted, compatible Monty producer.
 Neither the pool nor the interpreter authenticates snapshots; successful loading does not establish validity.
 Invalid snapshots have no correctness or availability guarantees.

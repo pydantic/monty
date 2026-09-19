@@ -613,13 +613,12 @@ fn auto_os_calls_round_trip() {
     }
 }
 
-/// An all-absent message, as an older parent sends, is every default.
 #[test]
 fn empty_auto_os_calls_is_the_default() {
     let back = AutoOsCalls::try_from(pb::AutoOsCalls::default()).unwrap();
     assert_eq!(back, AutoOsCalls::default());
     assert_eq!(back.sleep, SleepMode::System(Duration::from_secs(10)));
-    // a system sleep with no maximum given is the default maximum too
+    // An explicit system mode can also omit its maximum.
     let sandbox = pb::AutoOsCalls {
         sleep: Some(pb::SleepMode {
             mode: Some(pb::sleep_mode::Mode::System(pb::SystemSleep::default())),

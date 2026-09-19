@@ -280,15 +280,11 @@ with Monty(request_timeout=10) as pool:
 
 ### Clock, sleeping and entropy
 
-By default these never reach an `os=` handler: `date.today()`,
-`datetime.now()` and `time.time()` read the worker's clock; `time.sleep()` and
-`asyncio.sleep()` are waited out by the pool itself, each call cut to
-`sleep_system_max` (10 seconds), with gathered `asyncio.sleep()` calls
-overlapping; and an unseeded `random` seeds itself from the worker's OS
-entropy. A wait costs nothing against the duration limits; each sleep is one
-suspension, and the `max_total_sleep_secs` limit bounds their sum. The
-`auto_os_calls` argument of `checkout()` changes that, for the life of the
-session:
+By default, clock calls read the worker's clock, and unseeded `random` generators use the worker's OS entropy.
+The pool handles sleeps without an `os=` handler, capping each at `sleep_system_max` (10 seconds).
+Gathered `asyncio.sleep()` calls overlap.
+Suspending sleeps count against `max_suspensions` and `max_total_sleep_secs`, but not the execution-time limits.
+Set `checkout(auto_os_calls=...)` to change these defaults for the session:
 
 ```python
 from datetime import datetime
@@ -321,18 +317,17 @@ with Monty() as pool:
         #> 2026-01-01 10:30 0.6394
 ```
 
-A `datetime` freezes the clock at that instant and, unless `timezone` is
-given, sets the zone too — its `utcoffset()` and `tzname()`, or UTC when
-naive — so `datetime.now()` returns it exactly; `timezone` is the zone naive
-`datetime.now()` and `date.today()` read in, a fixed offset rather than an
-IANA zone. `'zero'` makes both sleeps return at once. `{'seed': s}` starts
-the module-level `random` generator exactly as `random.seed(s)` would
-(unseeded `random.Random()` instances take deterministic states derived from
-it); `random.seed()` in the sandbox still applies afterwards. `'call_host'`
-on any key sends those calls to the `os=` handler instead — `OSAccess`
-answers the clock and the waits from the host process, capping each wait at
-its `max_sleep`, and `os.urandom` from the host's entropy — and explicit
-`os.urandom()` calls always reach the handler.
+A `datetime` freezes the clock and, unless `timezone` is explicit, sets the zone from its `utcoffset()` and
+`tzname()` (UTC for a naive value).
+`timezone` is a fixed offset used by naive `datetime.now()` and `date.today()`, with no IANA zone rules.
+`'zero'` skips both sleeps.
+`{'seed': s}` initializes the module generator as `random.seed(s)` would; unseeded `random.Random()` instances
+receive deterministic states derived from it.
+Sandboxed code can still reseed afterwards.
+
+`'call_host'` sends the selected calls to the `os=` handler.
+`OSAccess` answers from the host's clock and entropy, and caps waits at its `max_sleep`.
+Explicit `os.urandom()` calls always reach the handler.
 
 ### Type checking
 

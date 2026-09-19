@@ -159,17 +159,14 @@ pub struct NativeCheckoutOptions {
     pub timezone_offset_seconds: Option<i32>,
     /// A fixed zone's name, if it has one.
     pub timezone_name: Option<String>,
-    /// What the sleeps do: `'system'`, `'zero'` or `'call_host'`.
-    /// Absent: `'system'`.
+    /// Sleep policy: `'system'` (default), `'zero'` or `'call_host'`.
     pub sleep: Option<String>,
-    /// Longest sandbox sleep per call, in seconds; `Infinity` lifts the cap.
-    /// Absent: 10.
+    /// Maximum seconds per system sleep (default 10); `Infinity` disables the cap.
     pub sleep_system_max_secs: Option<f64>,
     /// Where `random` starts: `'system'`, `'call_host'` or `'seed'` (with
     /// exactly one `random_seed_*` field below). Absent: `'system'`.
     pub random_start_kind: Option<String>,
-    /// The seed: an int as two's-complement little-endian bytes, a finite
-    /// float, a string, or bytes.
+    /// Integer seed encoded as two's-complement little-endian bytes.
     pub random_seed_int: Option<Buffer>,
     pub random_seed_float: Option<f64>,
     pub random_seed_str: Option<String>,

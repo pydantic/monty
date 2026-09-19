@@ -79,9 +79,8 @@ pub struct MontyRepl {
     /// at construction so all snippets compile consistently.
     #[serde(default)]
     options: CompileOptions,
-    /// Which OS calls the session answers itself, on every path; see
-    /// [`with_auto_os_calls`](Self::with_auto_os_calls). Shared with each
-    /// snippet's executor rather than copied per feed.
+    /// OS-call policies shared with each snippet's executor.
+    /// See [`with_auto_os_calls`](Self::with_auto_os_calls).
     #[serde(default)]
     auto_os_calls: Arc<AutoOsCalls>,
     /// Sandbox working directory the next snippet starts in: what
@@ -126,10 +125,8 @@ impl MontyRepl {
         }
     }
 
-    /// Chooses which OS calls the session answers itself — the clock, the
-    /// sleeps and `random`'s first state — replacing the
-    /// [`AutoOsCalls::default()`] a session starts with. Applies to every
-    /// path, [`feed_start`](Self::feed_start) included; see
+    /// Replaces the default clock, sleep and random initialization policies
+    /// on every path, including [`feed_start`](Self::feed_start). See
     /// [`MontyRun::with_auto_os_calls`](crate::MontyRun::with_auto_os_calls).
     #[must_use]
     pub fn with_auto_os_calls(mut self, auto_os_calls: AutoOsCalls) -> Self {

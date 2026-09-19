@@ -1876,10 +1876,8 @@ async fn suspension_time_does_not_consume_the_duration_budget() {
     session.finish().await.unwrap();
 }
 
-/// The session's `AutoOsCalls` travel in `Configure`: by default the worker
-/// answers the clock and `random`'s seed itself, so neither costs a turn,
-/// while each sleep is an `OsCall` whose `system_sleep` the caller waits out,
-/// cut to the mode's maximum; a seed and a fixed clock are honoured exactly.
+/// Clock and entropy requests cost no turns; system sleeps reach the caller capped.
+/// Fixed clocks and seeds survive `Configure` unchanged.
 #[tokio::test]
 async fn auto_os_calls_are_answered_in_the_worker() {
     let pool = Pool::new(config()).await.unwrap();
@@ -1958,7 +1956,6 @@ async fn auto_os_calls_are_answered_in_the_worker() {
     session.finish().await.unwrap();
 }
 
-/// `CallHost` delivers the clock and sleep calls as `OsCall` turns instead.
 #[tokio::test]
 async fn call_host_delivers_clock_and_sleeps_as_os_calls() {
     let pool = Pool::new(config()).await.unwrap();

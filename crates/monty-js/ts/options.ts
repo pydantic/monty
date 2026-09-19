@@ -74,54 +74,42 @@ export function encodeAssertMessageAnnotations(value: AssertMessageAnnotations |
 }
 
 /**
- * `AutoOsCalls.datetime`: the instant `date.today()`, `datetime.now()` and
- * `time.time()` read. `'system'` (the default) is the worker's clock,
- * `'call_host'` sends each call to the `os` callback, and a `Date` freezes
- * the clock at that instant — and, unless `timezone` is given, sets the zone
- * to UTC, so `datetime.now()` returns it exactly.
+ * Clock for `date.today()`, `datetime.now()` and `time.time()`; defaults to the worker's clock.
+ * `'call_host'` delegates to `os`; a `Date` freezes the instant and defaults `timezone` to UTC.
  */
 export type DateTimeSource = 'system' | 'call_host' | Date
 
 /**
- * `AutoOsCalls.timezone`: the local zone naive `datetime.now()` and
- * `date.today()` read in. `'system'` (the default) is the worker's local
- * zone, `'call_host'` sends the calls that need the zone to the `os`
- * callback, and an object is a fixed offset from UTC with an optional name —
- * what `datetime.timezone(offset, name)` carries, not an IANA zone.
+ * Zone for naive `datetime.now()` and `date.today()`; defaults to the worker's local zone.
+ * `'call_host'` delegates calls requiring the zone to `os`; an object supplies a fixed UTC offset
+ * and optional name, as in `datetime.timezone`. IANA zones are unsupported.
  */
 export type TimeZone = 'system' | 'call_host' | { offsetSeconds: number; name?: string }
 
 /**
- * `AutoOsCalls.sleep`: what `time.sleep()` and `asyncio.sleep()` do.
- * `'system'` (the default) has this process wait, each call cut to
- * `sleepSystemMax`, without consulting the `os` callback; `'call_host'`
- * sends both to the `os` callback; `'zero'` returns at once.
+ * Sleep policy: `'system'` (default) waits in the pool, capped per call by `sleepSystemMax`;
+ * `'call_host'` delegates to `os`; `'zero'` returns immediately.
  */
 export type SleepMode = 'system' | 'call_host' | 'zero'
 
 /**
- * `AutoOsCalls.randomStart`: where an unseeded `random` generator gets its
- * first state. `'system'` (the default) is the worker's OS entropy;
- * `'call_host'` sends an `os.urandom` request for 2496 bytes to the `os`
- * callback on the first draw; `{ seed }` starts it as `random.seed(seed)`
- * would, with the types CPython accepts (a `number` is an int when integral,
- * `bigint` for larger ints, `string`, or `Uint8Array` for `bytes`).
+ * Initial `random` state: `'system'` (default) uses worker OS entropy; `'call_host'` requests
+ * 2496 bytes from `os.urandom` via `os` on the first draw. `{ seed }` applies `random.seed(seed)`:
+ * integral numbers and bigints become ints, other finite numbers become floats, strings become str,
+ * and Uint8Array becomes bytes.
  */
 export type RandomStart = 'system' | 'call_host' | { seed: number | bigint | string | Uint8Array }
 
 /**
- * The `autoOsCalls` checkout option: which OS calls the worker answers
- * itself, for the life of the session. Every field is optional; an omitted
- * one keeps its default.
+ * Session clock, sleep and random initialization policies. Omitted fields retain their defaults.
  */
 export interface AutoOsCalls {
   datetime?: DateTimeSource
   timezone?: TimeZone
   sleep?: SleepMode
   /**
-   * Longest wait a `'system'` sleep performs per call, in seconds (default
-   * 10; `Infinity` for no cap). Given alongside any other `sleep` it is a
-   * `RangeError`, not ignored.
+   * Maximum seconds per `'system'` sleep (default 10; `Infinity` disables the cap).
+   * Raises `RangeError` with other sleep modes.
    */
   sleepSystemMax?: number
   randomStart?: RandomStart
@@ -168,20 +156,15 @@ const MAX_TIMEZONE_OFFSET_SECONDS = 86_399
 const MAX_WIRE_SECS = 18_446_744_073_709
 
 /**
- * The ceiling on one `'system'` sleep the wasm transport applies, in seconds:
- * the configured `sleepSystemMax`, else the default (a restored dump may
- * sleep under any checkout). The worker cuts its own sleeps; this cut is the
- * host's, so a worker's number is never trusted.
+ * Host-enforced cap in seconds, applied even when a restored dump requests system sleeps.
+ * The worker's own cap cannot be trusted at this boundary.
  */
 export function systemSleepCapOf(calls: EncodedAutoOsCalls): number {
   return calls.sleepSystemMaxSecs ?? DEFAULT_SLEEP_SYSTEM_MAX_SECS
 }
 
 /**
- * Validates and normalizes the options, throwing `RangeError` / `TypeError`
- * for a value the wire cannot carry. Own-property and instance checks matter
- * here as in {@link encodeTypeCheckFormat}: callers are not bound by the
- * types.
+ * Validates options at runtime before wire encoding; callers need not obey TypeScript types.
  */
 export function encodeAutoOsCalls(options: AutoOsCalls): EncodedAutoOsCalls {
   const encoded: EncodedAutoOsCalls = {}
@@ -208,7 +191,6 @@ export function encodeAutoOsCalls(options: AutoOsCalls): EncodedAutoOsCalls {
     if (secs !== Infinity && secs > MAX_WIRE_SECS) {
       throw new RangeError(`sleepSystemMax must be at most ${MAX_WIRE_SECS} seconds (Infinity for no cap)`)
     }
-    // a cap on a sleep that never happens in the worker is a contradiction, not something to ignore
     if (options.sleep !== undefined && options.sleep !== 'system') {
       throw new RangeError(`sleepSystemMax only applies to sleep: 'system', not '${options.sleep}'`)
     }
@@ -222,7 +204,6 @@ export function encodeAutoOsCalls(options: AutoOsCalls): EncodedAutoOsCalls {
   return encoded
 }
 
-/** A `Date` becomes its instant; the two names pass through. */
 function encodeDateTime(datetime: DateTimeSource): 'system' | 'call_host' | FixedDateTime {
   if (datetime === 'system' || datetime === 'call_host') return datetime
   if (!(datetime instanceof Date) || Number.isNaN(datetime.getTime())) {
@@ -233,7 +214,6 @@ function encodeDateTime(datetime: DateTimeSource): 'system' | 'call_host' | Fixe
   return { unixSeconds: BigInt(seconds), microsecond: (ms - seconds * 1000) * 1000 }
 }
 
-/** A fixed zone is validated field by field; the two names pass through. */
 function encodeTimeZone(timezone: TimeZone): 'system' | 'call_host' | FixedTimeZone {
   if (timezone === 'system' || timezone === 'call_host') return timezone
   const shape = "timezone must be 'system', 'call_host' or { offsetSeconds: number, name?: string }"
@@ -244,7 +224,6 @@ function encodeTimeZone(timezone: TimeZone): 'system' | 'call_host' | FixedTimeZ
   if (!Number.isInteger(offsetSeconds)) {
     throw new RangeError('timezone offsetSeconds must be an integer number of seconds')
   }
-  // the range `datetime.timezone` accepts: strictly within a day of UTC
   if (Math.abs(offsetSeconds) > MAX_TIMEZONE_OFFSET_SECONDS) {
     throw new RangeError(`timezone offsetSeconds must be within ±${MAX_TIMEZONE_OFFSET_SECONDS}, got ${offsetSeconds}`)
   }
@@ -254,12 +233,11 @@ function encodeTimeZone(timezone: TimeZone): 'system' | 'call_host' | FixedTimeZ
   return name === undefined ? { offsetSeconds } : { offsetSeconds, name }
 }
 
-/** The seed in its wire form; `bool` and other types are refused. */
 function encodeRandomSeed(start: RandomStart): EncodedRandomSeed {
   const seed = typeof start === 'object' && start !== null && Object.hasOwn(start, 'seed') ? start.seed : undefined
   if (typeof seed === 'bigint') return { int: bigintToSignedLeBytes(seed) }
   if (typeof seed === 'number') {
-    // the wire refuses a non-finite seed, so refuse it here, at the checkout
+    // Reject non-finite seeds before sending them to the wire decoder.
     if (!Number.isFinite(seed)) throw new RangeError(`randomStart seed must be finite, got ${seed}`)
     return Number.isInteger(seed) ? { int: bigintToSignedLeBytes(BigInt(seed)) } : { float: seed }
   }

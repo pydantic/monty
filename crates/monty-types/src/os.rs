@@ -128,11 +128,9 @@ pub enum OsFunctionCall {
     /// and evaluates to `None`).
     #[strum(serialize = "time.sleep")]
     Sleep(Duration),
-    /// `time.sleep(seconds)` under `SleepMode::System`, already cut to the
-    /// mode's maximum: the host itself waits this long, charges it to
-    /// `max_total_sleep`, and answers `None`, without consulting its `os`
-    /// handler. Distinct from [`Sleep`](Self::Sleep), name included, so a
-    /// host needs no copy of the sandbox's sleep policy to tell the two apart.
+    /// `time.sleep(seconds)` under `SleepMode::System`, capped at its maximum.
+    /// The host charges `max_total_sleep`, waits and returns `None` without its
+    /// `os` handler. The distinct name identifies the policy for the host.
     #[strum(serialize = "system.sleep")]
     SystemSleep(Duration),
     /// `asyncio.sleep(delay)` — like [`Sleep`](Self::Sleep), except the
@@ -151,13 +149,9 @@ pub enum OsFunctionCall {
 }
 
 impl OsFunctionCall {
-    /// Whether a host may answer the call with this [`name`](Self::name) with
-    /// `ExtFunctionResult::Future` and resolve it later, letting the sandbox's
-    /// other tasks run meanwhile.
-    ///
-    /// Only `asyncio.sleep` qualifies, under either sleep mode: every other
-    /// call is a value the calling code is waiting on, so the host must
-    /// answer it in place.
+    /// Whether this [`name`](Self::name) accepts `ExtFunctionResult::Future`,
+    /// letting other tasks run until the host resolves it. Only `asyncio.sleep`
+    /// qualifies, in either sleep mode; all other calls require an immediate answer.
     #[must_use]
     pub fn accepts_future(name: &str) -> bool {
         matches!(name, "asyncio.sleep" | "system.async_sleep")

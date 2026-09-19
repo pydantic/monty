@@ -135,9 +135,8 @@ struct DateInitArgs {
     day: i32,
 }
 
-/// Classmethod implementation for `date.today()`: the session's clock read
-/// in its zone, or a `DateToday` OS call when either is the host's (the host
-/// answers with a `MontyObject::Date`).
+/// Reads `date.today()` from the session's clock and zone. If either uses
+/// `CallHost`, requests a `DateToday` answer constructed with `MontyObject::date`.
 pub(crate) fn class_today(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("date.today", vm.heap)?;
     let local = match datetime::sandbox_instant(vm)? {

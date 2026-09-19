@@ -936,15 +936,13 @@ fn get_virtual_dir_entries(path: &str) -> Option<Vec<String>> {
 #[expect(clippy::cast_possible_wrap)] // Virtual file sizes are tiny, no wrap possible
 fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
     match call {
-        // Deterministic "entropy" for explicit `os.urandom()`: a fixture can
-        // only assert invariants on it anyway, since CPython reads real entropy.
+        // Fixed bytes for `os.urandom()`; fixtures assert invariants because CPython reads real entropy.
         OsFunctionCall::Urandom(args) => MontyObject::bytes(fixture_entropy(args.size)).into(),
-        // The clock and `random`'s seed are answered in the sandbox
-        // (`AutoOsCalls::default()`), as they are for every embedder.
+        // `AutoOsCalls::default()` answers the clock and initial random seed in the sandbox.
         OsFunctionCall::DateToday | OsFunctionCall::DateTimeNow(_) | OsFunctionCall::Time => {
             unreachable!("{} is answered in the sandbox", call.name())
         }
-        // The sleeps are the host's to wait out, already cut by the sandbox.
+        // The sandbox has already capped these delays.
         OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) => {
             thread::sleep(*delay);
             MontyObject::none().into()

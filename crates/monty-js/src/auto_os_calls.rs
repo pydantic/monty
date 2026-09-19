@@ -1,10 +1,6 @@
-//! Extraction of the session's `AutoOsCalls` — what the sandbox answers
-//! itself: the clock, the sleeps and `random`'s first state — from the flat
-//! fields the TypeScript `checkout()` wrapper puts on `NativeCheckoutOptions`.
-//!
-//! The wrapper has already validated and normalized the public options
-//! (`ts/options.ts`), so this side only rejects what a wire type cannot
-//! carry; each absent field is the worker's default.
+//! Converts flattened `NativeCheckoutOptions` into `AutoOsCalls`.
+//! `ts/options.ts` validates public options; this module checks wire representability.
+//! Missing fields retain worker defaults.
 
 use std::time::Duration;
 
@@ -14,7 +10,6 @@ use num_bigint::BigInt as NumBigInt;
 
 use crate::pool::NativeCheckoutOptions;
 
-/// Builds the `AutoOsCalls` the flat option fields describe.
 pub(crate) fn extract_auto_os_calls(options: &NativeCheckoutOptions) -> Result<AutoOsCalls> {
     let defaults = AutoOsCalls::default();
     let datetime = match options.datetime_kind.as_deref() {
@@ -77,7 +72,6 @@ pub(crate) fn extract_auto_os_calls(options: &NativeCheckoutOptions) -> Result<A
     })
 }
 
-/// The seed from whichever one of the four typed fields is set.
 fn random_seed(options: &NativeCheckoutOptions) -> Result<RandomSeed> {
     match (
         &options.random_seed_int,
@@ -94,7 +88,6 @@ fn random_seed(options: &NativeCheckoutOptions) -> Result<RandomSeed> {
     }
 }
 
-/// A JS `bigint` as `i64`, rejecting one that does not fit.
 fn bigint_to_i64(value: &BigInt) -> Result<i64> {
     let (n, lossless) = value.get_i64();
     if lossless {
@@ -104,7 +97,6 @@ fn bigint_to_i64(value: &BigInt) -> Result<i64> {
     }
 }
 
-/// An `InvalidArg` error naming the option.
 fn invalid(message: &str) -> Error {
     Error::new(Status::InvalidArg, message.to_owned())
 }

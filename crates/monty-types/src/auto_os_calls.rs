@@ -1,25 +1,20 @@
-//! [`AutoOsCalls`]: which OS calls the sandbox answers itself instead of
-//! suspending to the host — the clock and `random`'s first state — and what
-//! the sleeps do: the host's wait, cut and budgeted, or no wait at all.
+//! Session policies for clocks, sleeps and initial random state.
 
 use std::time::Duration;
 
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeDelta, TimeZone};
 use num_bigint::BigInt;
 
-/// Per-session choice of which OS calls the sandbox serves in-process, on
-/// every execution path. Each field names an in-sandbox answer or `CallHost`,
-/// which suspends the call to the host as any other OS call (with no host,
-/// `NotImplementedError`). The default answers the clock and `random` in the
-/// sandbox (system clock and zone, entropy-seeded `random`) and hands each
-/// sleep to the host cut to ten seconds, for it to wait out without its `os`
-/// handler; standard execution waits inline.
+/// Policies for clocks, sleeps and initial random state on every execution path.
+/// `CallHost` suspends to the host, or raises `NotImplementedError` without one.
+/// Defaults use the system clock and zone, OS entropy, and sleeps capped at ten
+/// seconds. Hosts perform those sleeps without their `os` handler; standard
+/// execution waits inline.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct AutoOsCalls {
     /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
     pub datetime: DateTimeSource,
-    /// The local zone naive `datetime.now()` and `date.today()` read that
-    /// instant in.
+    /// The local zone for naive `datetime.now()` and `date.today()`.
     pub timezone: SandboxTimeZone,
     /// What `time.sleep()` and `asyncio.sleep()` do.
     pub sleep: SleepMode,
@@ -35,11 +30,7 @@ pub enum DateTimeSource {
     System,
     /// Suspend to the host, which answers each call.
     CallHost,
-    /// A frozen instant, for runs that have to be reproducible: every call
-    /// reads the same time.
-    ///
-    /// An instant outside `datetime`'s 1..=9999 year range raises
-    /// `OverflowError` in the sandbox rather than failing some other way.
+    /// Every call reads this instant. Years outside 1..=9999 raise `OverflowError`.
     Fixed {
         /// Seconds since the Unix epoch, UTC.
         unix_seconds: i64,
@@ -49,9 +40,8 @@ pub enum DateTimeSource {
 }
 
 impl DateTimeSource {
-    /// Reads the instant as a UTC wall clock. `None` is an unrepresentable
-    /// [`Fixed`](Self::Fixed) instant; callers handle
-    /// [`CallHost`](Self::CallHost) before calling.
+    /// Reads the instant in UTC. Returns `None` for [`CallHost`](Self::CallHost)
+    /// or a [`Fixed`](Self::Fixed) instant Python's `datetime` cannot represent.
     #[must_use]
     pub fn read(self) -> Option<NaiveDateTime> {
         let utc = match self {
@@ -61,22 +51,18 @@ impl DateTimeSource {
                 unix_seconds,
                 microsecond,
             } => {
-                // Kept under a full second here rather than left to
-                // `from_timestamp`, which on the last second of a minute reads
-                // anything above one as a leap second and accepts it, yielding a
-                // `microsecond` no Python `datetime` can hold.
+                // Chrono accepts leap seconds; Python requires microseconds below 1_000_000.
                 let nanoseconds = microsecond.checked_mul(1_000).filter(|ns| *ns < 1_000_000_000)?;
                 DateTime::from_timestamp(unix_seconds, nanoseconds)?.naive_utc()
             }
         };
-        // All-or-nothing: an instant `datetime.now()` refuses is refused by
-        // `time.time()` too.
+        // Apply datetime's year range to time.time() too.
         local_wall_clock(utc, 0).map(|_| utc)
     }
 }
 
-/// The local zone naive `datetime.now()` and `date.today()` read in, and
-/// what `astimezone()`, `time.tzname` and `%Z` will report once implemented.
+/// Local zone for naive `datetime.now()` and `date.today()`.
+/// Also reserved for future `astimezone()`, `time.tzname` and `%Z` support.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum SandboxTimeZone {
     /// The process's own local zone, at its offset for the instant read.
@@ -125,27 +111,23 @@ pub fn unix_seconds(utc: NaiveDateTime) -> f64 {
 /// What the sleep calls do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SleepMode {
-    /// Suspend to the host, which waits out the delay itself without
-    /// consulting its `os` handler. Each call is cut to the maximum given (a
-    /// longer request is cut short, not refused), and the host charges it to
-    /// `ResourceLimits::max_total_sleep` before waiting; the wait is not
-    /// execution time. Standard execution, having no host, waits inline and
-    /// applies no total.
+    /// Cap each delay at this duration, then suspend to the host to wait without
+    /// its `os` handler. The host charges `ResourceLimits::max_total_sleep` before
+    /// waiting; waits do not count as execution time. Standard execution waits
+    /// inline without a cumulative limit. Longer delays are capped, not rejected.
     System(Duration),
-    /// Suspend to the host's `os` handler, which performs (or declines) the
-    /// wait, uncut and uncharged.
+    /// Delegate to the host's `os` handler without capping or charging the delay.
     CallHost,
     /// Return at once without waiting.
     Zero,
 }
 
 impl SleepMode {
-    /// The maximum [`System`](Self::System) starts with.
+    /// Default per-call cap for [`System`](Self::System).
     pub const DEFAULT_MAX: Duration = Duration::from_secs(10);
 }
 
 impl Default for SleepMode {
-    /// Sleeps the host waits out, cut to [`DEFAULT_MAX`](Self::DEFAULT_MAX) each.
     fn default() -> Self {
         Self::System(Self::DEFAULT_MAX)
     }
@@ -157,8 +139,7 @@ pub enum RandomStart {
     /// From the sandbox's own OS entropy.
     #[default]
     System,
-    /// Suspend the first draw with an `os.urandom` call for one state vector
-    /// (2496 bytes), which the host answers.
+    /// Request one state vector (2496 bytes) from the host via `os.urandom` on the first draw.
     CallHost,
     /// The module-level generator starts exactly as `random.seed(seed)` leaves
     /// it; unseeded `random.Random()` instances take deterministic states
@@ -166,8 +147,7 @@ pub enum RandomStart {
     Seed(RandomSeed),
 }
 
-/// A seed for [`RandomStart::Seed`]: the types CPython's `random.seed()`
-/// accepts, seeded the way it seeds them.
+/// Explicit seeds for [`RandomStart::Seed`], using CPython's `random.seed()` semantics.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RandomSeed {
     /// Any size; CPython seeds from the absolute value.

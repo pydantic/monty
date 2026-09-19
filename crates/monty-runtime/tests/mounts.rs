@@ -91,9 +91,7 @@ fn max_sleep_caps_a_long_sleep() {
     assert!(start.elapsed().as_secs() < 5, "the sleep was not capped");
 }
 
-/// `--max-total-sleep` is charged as the CLI answers each sleep, for the
-/// delay it will wait: the sleep that would take the total over is refused
-/// with an uncatchable `TimeoutError` before it waits.
+/// A sleep exceeding `--max-total-sleep` raises an uncatchable `TimeoutError` before waiting.
 #[test]
 fn max_total_sleep_refuses_a_sleep_over_budget() {
     // exact binary fractions, so the reported total is exact too
@@ -109,12 +107,9 @@ fn max_total_sleep_refuses_a_sleep_over_budget() {
         stderr.contains("TimeoutError: sleep limit exceeded: 5.125s > 250ms"),
         "unexpected stderr: {stderr}"
     );
-    // refused up front: the 5 s sleep never ran
     assert!(start.elapsed().as_secs() < 5, "the sleep was not refused");
 }
 
-/// The sleep is the sandbox's own, so the cap applies to an in-process run
-/// with no mount just the same.
 #[test]
 fn max_sleep_applies_without_a_mount() {
     let script_dir = script_dir("import time\ntime.sleep(3600)\nprint('woke')\n");

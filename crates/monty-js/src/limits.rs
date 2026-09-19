@@ -30,7 +30,7 @@ pub struct JsResourceLimits {
     pub max_recursion_depth: Option<f64>,
     /// Maximum suspensions (host round trips) the pool will service (default: 1000).
     pub max_suspensions: Option<f64>,
-    /// Maximum cumulative time the sandbox sleeps itself, in seconds.
+    /// Maximum cumulative seconds of pool-managed system sleeps.
     pub max_total_sleep_secs: Option<f64>,
 }
 

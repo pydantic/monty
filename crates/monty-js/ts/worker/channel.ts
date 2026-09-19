@@ -81,7 +81,7 @@ export class WorkerChannel implements PooledWorker {
     if (!pending) return
     this.pending.delete(reply.id)
     if (pending.timer) clearTimeout(pending.timer)
-    // every limit the component reports crosses, since the transport enforces them
+    // Forward all reported limits for the transport to enforce.
     pending.resolve({
       status: reply.status,
       events: reply.events,

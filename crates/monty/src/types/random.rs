@@ -1,14 +1,11 @@
 //! The `random.Random` generator: CPython's MT19937 core plus the seeding and
 //! state that `random.py` adds to it.
 //!
-//! [`Mt19937`] reproduces `Modules/_randommodule.c` bit for bit (`init_by_array`
-//! seeding, `random()`'s 53-bit float, `getrandbits()`'s word packing), so a
-//! seeded Monty generator yields exactly CPython's sequence. [`Random`] adds
-//! `gauss()`'s cached second value and an *unseeded* state: an unseeded
-//! generator takes its first state from the session's [`RandomStart`] on its
-//! first draw (see [`SessionRandom::first_state`]). The module-level functions
-//! use the generator stored on the VM ([`RandomTarget::Global`]);
-//! `random.Random(...)` instances are stored on the heap.
+//! [`Mt19937`] matches CPython's `init_by_array` seeding, 53-bit `random()` and
+//! `getrandbits()` word packing. [`Random`] adds the `gauss()` cache and an
+//! unseeded state initialized from [`RandomStart`] on the first draw.
+//! Module functions use the VM's generator ([`RandomTarget::Global`]);
+//! `random.Random(...)` instances use the heap.
 
 use std::{fmt::Write, mem};
 
@@ -41,29 +38,23 @@ const MATRIX_A: u32 = 0x9908_b0df;
 const UPPER_MASK: u32 = 0x8000_0000;
 const LOWER_MASK: u32 = 0x7fff_ffff;
 
-/// Bytes of entropy an unseeded generator reads (or asks the host for under
-/// `CallHost`): one full state vector, exactly what CPython's
-/// `random_seed_urandom` reads.
+/// Entropy bytes per state vector, matching CPython's `random_seed_urandom`.
 pub(crate) const SEED_BYTES: usize = N * 4;
 
-/// The session's `random` state: the module-level generator, and where
-/// unseeded generators get their first state from. Carried between REPL
-/// snippets like the globals and included in a dump.
+/// Module generator and initialization stream, preserved across REPL feeds and dumps.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct SessionRandom {
     /// The generator behind `random.random()` and friends.
     pub(crate) module: Random,
-    /// Under [`RandomStart::Seed`], the stream unseeded instances and `seed()`
-    /// take their states from, derived from the session seed on first use so
-    /// each such state is deterministic yet distinct from the module's.
+    /// Lazily derived from [`RandomStart::Seed`] for unseeded instances and `seed()`.
+    /// Produces deterministic states distinct from the module generator's.
     derived: Option<Mt19937>,
 }
 
 impl SessionRandom {
-    /// The state an unseeded `target` starts with: exactly `random.seed(s)` for
-    /// the module generator under `Seed(s)`, otherwise a fresh state. `None`
-    /// is `CallHost`: the state is the host's to supply. Errs only when the
-    /// OS entropy source fails.
+    /// Initializes the module generator as `random.seed(s)` under `Seed(s)`;
+    /// other targets use [`Self::fresh_state`]. `None` requests host entropy.
+    /// Errors only if OS entropy fails.
     pub(crate) fn first_state(&mut self, target: RandomTarget, start: &RandomStart) -> RunResult<Option<Mt19937>> {
         match (start, target) {
             (RandomStart::Seed(seed), RandomTarget::Global) => Ok(Some(Mt19937::from_key(&seed_key_from_seed(seed)))),
@@ -71,10 +62,9 @@ impl SessionRandom {
         }
     }
 
-    /// A state for `seed()` / `seed(None)` or an unseeded instance: OS entropy,
-    /// or under `Seed(s)` the next state of the stream derived from `s`.
-    /// `None` is `CallHost`: the state is the host's to supply. Errs only when
-    /// the OS entropy source fails.
+    /// Initializes `seed()` / `seed(None)` or an unseeded instance from OS entropy
+    /// or the next state derived from `Seed(s)`. `None` requests host entropy.
+    /// Errors only if OS entropy fails.
     pub(crate) fn fresh_state(&mut self, start: &RandomStart) -> RunResult<Option<Mt19937>> {
         match start {
             RandomStart::System => Mt19937::from_os_entropy().map(Some),
@@ -96,13 +86,9 @@ impl SessionRandom {
 /// Appended to a session seed's key for the derived stream (`SessionRandom::derived`).
 const DERIVED_STREAM_TAG: u32 = 0x6d6f_6e74; // "mont"
 
-/// A `random.Random` generator, seeded or not yet.
-///
-/// `None` in `rng` is the *unseeded* state: `random.Random()` and the
-/// module-level generator start here and stay here until a seed is given or
-/// the first draw takes one from the session's [`RandomStart`]. Serialized as
-/// VM/heap state, so a seeded generator survives a dump, a REPL feed boundary,
-/// and a mid-call suspension.
+/// A `random.Random` generator, initially unseeded until an explicit seed or
+/// first draw initializes it from [`RandomStart`]. Serialized with VM/heap state
+/// to preserve draws across dumps, REPL feeds and suspensions.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct Random {
     /// `None` until explicitly seeded, restored with `setstate()`, or
@@ -122,7 +108,6 @@ impl Random {
         }
     }
 
-    /// Whether a draw can proceed without taking a first state.
     pub(crate) fn is_seeded(&self) -> bool {
         self.rng.is_some()
     }
@@ -192,7 +177,6 @@ pub(crate) enum RandomTarget {
 }
 
 impl RandomTarget {
-    /// Whether the target already has a state to draw from.
     pub(crate) fn is_seeded(self, vm: &VM<'_>) -> bool {
         match self {
             Self::Global => vm.random.module.is_seeded(),
@@ -274,8 +258,7 @@ pub(crate) fn seed_key_from_value(value: &Value, version: i64, vm: &VM<'_>) -> R
     Ok(key)
 }
 
-/// The key a host-chosen [`RandomSeed`] reduces to: what `random.seed(seed)`
-/// would build, with the default `version` of 2.
+/// Converts a host seed using `random.seed(seed, version=2)` semantics.
 fn seed_key_from_seed(seed: &RandomSeed) -> Vec<u32> {
     match seed {
         RandomSeed::Int(n) => key_from_bigint(n),
@@ -461,10 +444,8 @@ impl Mt19937 {
         mt
     }
 
-    /// Seeds from the OS entropy source, as `random_seed_urandom` does. A
-    /// source that fails ends the run uncatchably: no draw could be trusted,
-    /// and CPython's fallback to a time-and-pid seed is exactly what a sandbox
-    /// must not do.
+    /// Seeds from OS entropy. Failure ends the run with an uncatchable error
+    /// instead of CPython's predictable time-and-pid fallback.
     pub(crate) fn from_os_entropy() -> RunResult<Self> {
         let mut bytes = [0u8; SEED_BYTES];
         getrandom::fill(&mut bytes).map_err(|err| {

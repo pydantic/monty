@@ -1,9 +1,7 @@
 //! `AutoOsCalls` ↔ `pb::AutoOsCalls` conversions.
 //!
-//! Every unset wire arm means that field's default, so an empty message is
-//! `AutoOsCalls::default()` and a parent that predates a field still gets the
-//! behaviour it had. Rust → proto sets every arm; proto → Rust rejects a
-//! microsecond past a second and a non-finite float seed.
+//! Unset wire arms use field defaults for compatibility with older parents.
+//! Encoding sets every arm; decoding validates microseconds, zone offsets and seeds.
 
 use std::time::Duration;
 

@@ -1,10 +1,5 @@
-//! `random` at the host boundary: repr output, how an unseeded generator
-//! takes its first state (`RandomStart`, including the `os.urandom`
-//! suspension under `CallHost`), and state preserved across snapshots and
-//! REPL feeds.
-//!
-//! Seeded values are pinned against a live CPython in `test_cases/`; these
-//! tests cover only what a fixture cannot drive — the host-chosen start.
+//! Random initialization policies, host entropy and state across snapshots and REPL feeds.
+//! `test_cases/random__*.py` covers algorithms against CPython.
 
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
@@ -14,8 +9,7 @@ use monty_types::{
     unstable::{self, MontyNode},
 };
 
-/// Bytes of entropy an unseeded generator asks the host for under
-/// `CallHost`: one MT19937 state vector.
+/// One MT19937 state vector requested from the host under `CallHost`.
 const SEED_BYTES: usize = 2496;
 
 /// A fixed "entropy" reply. Its top byte is non-zero, so CPython seeds
@@ -29,7 +23,6 @@ fn pattern() -> MontyObject {
 /// CPython's first `random()` after seeding from [`pattern`].
 const PATTERN_FIRST_RANDOM: f64 = 0.246_986_487_449_397_1;
 
-/// A runner for `code` with `random` started as `start` says.
 fn runner_with(code: &str, start: RandomStart) -> MontyRun {
     let auto_os_calls = AutoOsCalls {
         random_start: start,
@@ -40,21 +33,18 @@ fn runner_with(code: &str, start: RandomStart) -> MontyRun {
         .with_auto_os_calls(auto_os_calls)
 }
 
-/// Runs `code` with `random` started from `seed`.
 fn run_seeded(code: &str, seed: RandomSeed) -> MontyObject {
     runner_with(code, RandomStart::Seed(seed))
         .run_no_limits(vec![])
         .unwrap()
 }
 
-/// Starts `code` under suspend/resume execution with `random` started by the host.
 fn start_call_host(code: &str) -> RunProgress {
     runner_with(code, RandomStart::CallHost)
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap()
 }
 
-/// Asserts `progress` is paused on the entropy call and hands it back.
 fn expect_entropy_call(progress: RunProgress) -> monty::OsCall {
     match progress {
         RunProgress::OsCall(call) => {
@@ -97,8 +87,7 @@ fn start(code: &str) -> RunProgress {
         .unwrap()
 }
 
-/// An unseeded generator seeds itself from OS entropy on its first draw, so
-/// nothing suspends and two runs disagree.
+/// OS entropy should produce distinct sequences across runs.
 #[test]
 fn an_unseeded_draw_never_suspends() {
     let draw = || {
@@ -116,7 +105,6 @@ fn an_unseeded_draw_never_suspends() {
     assert_ne!(first, second);
 }
 
-/// A seeded generator produces CPython's sequence and never suspends.
 #[test]
 fn seeded_code_never_suspends() {
     let progress = start("import random\nrandom.seed(42)\nrandom.random()");
@@ -126,9 +114,7 @@ fn seeded_code_never_suspends() {
     );
 }
 
-/// `RandomStart::Seed(s)` starts the module generator exactly as
-/// `random.seed(s)` would, for every seed type CPython accepts. The values
-/// are CPython's: `random.seed(s); random.random(), random.randint(1, 100)`.
+/// Expected values are CPython's `random.seed(s); random.random(), random.randint(1, 100)`.
 #[test]
 fn a_session_seed_matches_random_seed() {
     let code = "import random\n[random.random(), random.randint(1, 100)]";
@@ -149,7 +135,6 @@ fn a_session_seed_matches_random_seed() {
             "seed {seed:?}"
         );
     }
-    // `random.seed(42)` in the sandbox lands on the same state
     assert_eq!(
         run_seeded(
             "import random\nrandom.seed(42)\nrandom.random()",
@@ -159,9 +144,7 @@ fn a_session_seed_matches_random_seed() {
     );
 }
 
-/// Under a session seed, unseeded instances and `seed()` take deterministic
-/// states derived from it: the same from run to run, but distinct from the
-/// module generator's and from each other.
+/// Unseeded instances and seed() derive reproducible states distinct from each other and the module.
 #[test]
 fn derived_states_are_deterministic_and_distinct() {
     let code = "import random\n\
@@ -181,8 +164,6 @@ fn derived_states_are_deterministic_and_distinct() {
     assert_eq!(values[4], MontyObject::int(4));
 }
 
-/// `random.seed()` with no argument reseeds from entropy, so the draw that
-/// follows no longer matches the explicit seed.
 #[test]
 fn explicit_seed_with_no_argument_reseeds_from_entropy() {
     let result = start("import random\nrandom.seed(42)\nrandom.seed()\nrandom.random()")
@@ -331,8 +312,6 @@ fn call_host_dump_taken_while_waiting_for_entropy_resumes_the_stashed_draw() {
     assert_eq!(from_original, MontyObject::string("ax".to_owned()));
 }
 
-/// Standard execution has no host to ask, so `CallHost` refuses the draw as
-/// it does every other unanswered OS call.
 #[test]
 fn call_host_has_no_host_under_standard_execution() {
     let err = runner_with("import random\nrandom.random()", RandomStart::CallHost)
@@ -414,8 +393,6 @@ fn the_module_generator_persists_across_repl_feeds() {
     assert_eq!(actual, expected);
 }
 
-/// The session seed applies to the first draw whichever feed makes it, and
-/// travels through a dump like the generator itself.
 #[test]
 fn a_session_seed_applies_across_repl_feeds_and_dumps() {
     let auto_os_calls = AutoOsCalls {

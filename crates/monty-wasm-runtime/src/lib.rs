@@ -209,7 +209,7 @@ struct PreparedOsEvent {
     args: CallArgs,
     call_id: u32,
     allow_eager_await: bool,
-    /// The wait a `'system'` sleep asks the host to perform itself, in seconds.
+    /// System sleep duration for the host to await directly.
     system_sleep_secs: Option<f64>,
 }
 
@@ -345,8 +345,7 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
     }
 }
 
-/// Converts the component's `auto-os-calls` record into the protocol message;
-/// the protocol conversion validates it as it would from any parent.
+/// Protocol conversion validates these component settings as untrusted parent input.
 fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
     let datetime = calls.datetime.map(|source| match source {
         DatetimeSource::System => pb::auto_os_calls::Datetime::System(pb::Unit {}),

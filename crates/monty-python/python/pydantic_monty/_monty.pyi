@@ -585,13 +585,9 @@ class Monty:
                 before a host call and before a run ends, so this only sets
                 how far live output may lag — never what arrives, or in what
                 order.
-            auto_os_calls: Which OS calls the worker answers itself for the
-                life of the session — the clock and `random`'s first state —
-                and what the sleeps do; see `AutoOSCalls`. `None` (the default)
-                reads the worker's clock and local zone, seeds `random` from
-                its entropy, and has the pool wait out each sleep, cut to
-                `sleep_system_max` (ten seconds by default), without the `os=`
-                handler.
+            auto_os_calls: Session clock, sleep and random initialization policies;
+                see `AutoOSCalls`. Defaults to the worker's clock, local zone and
+                entropy, with sleeps handled by the pool and capped at ten seconds.
         """
 
 @final

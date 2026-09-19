@@ -256,12 +256,11 @@ handler at all.
 The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`, `open`,
 `Path.read_text`, `Path.read_bytes`, `Path.write_text`, `Path.write_bytes`, `Path.append_text`, `Path.append_bytes`,
 `Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.stat`, `Path.rename`, `Path.resolve`, `Path.absolute`,
-`os.getenv`, `os.environ` and `os.urandom`, plus — only when the session's `auto_os_calls` route them to the
-host — `date.today`, `datetime.now`, `time.time`, `time.sleep` and `asyncio.sleep` (see
-[the clock](security.md#the-clock)).
-An unseeded `random` generator (or a `random.seed()` with no value) calls `os.urandom` only under
-`random_start='call_host'`; otherwise it seeds itself
-inside the sandbox (see [random](limitations/random.md)).
+`os.getenv`, `os.environ` and `os.urandom`.
+With `auto_os_calls` configured to call the host, the handler also receives clock and sleep calls
+(see [the clock](security.md#the-clock)).
+Unseeded random generators and `random.seed()` call `os.urandom` only under `random_start='call_host'`
+(see [random](limitations/random.md)).
 
 `os` callbacks run in your process with your process's authority.
 Everything in [designing a safe tool surface](host-functions.md#designing-a-safe-tool-surface) applies.

@@ -104,13 +104,9 @@ export interface CheckoutOptions {
    */
   printFlushInterval?: number
   /**
-   * Which OS calls the worker answers itself for the life of the session —
-   * the clock and its zone, `random`'s first state — and what the sleeps do
-   * (see `AutoOsCalls`). Omitted: the worker's clock and local zone, `random`
-   * seeded from its entropy, and sleeps this process waits out itself, each
-   * cut to ten seconds, without consulting the `os` callback. A sleep costs
-   * nothing against the duration limits; each is one suspension, and
-   * `maxTotalSleepSecs` bounds their sum.
+   * Session clock, sleep and random initialization policies; see `AutoOsCalls`.
+   * Defaults to the worker's clock, local zone and entropy, with pool-managed sleeps capped at ten seconds.
+   * Sleeps count toward suspensions and `maxTotalSleepSecs`, but not execution duration limits.
    */
   autoOsCalls?: AutoOsCalls
 }
@@ -143,11 +139,8 @@ export interface ResourceLimits {
   maxRecursionDepth?: number
   maxSuspensions?: number
   /**
-   * Maximum cumulative time `time.sleep()` and `asyncio.sleep()` may ask this
-   * process to wait, in seconds. A sleep costs nothing against the duration
-   * limits, so this is what bounds a sleeping loop: the pool charges each
-   * `'system'` sleep before waiting it out, and refuses the one that would go
-   * over with an uncatchable `TimeoutError`.
+   * Maximum cumulative seconds of `'system'` sleep, excluded from execution duration limits.
+   * The pool charges each sleep before waiting; exceeding the limit raises an uncatchable `TimeoutError`.
    */
   maxTotalSleepSecs?: number
 }
@@ -240,11 +233,7 @@ function graceMs(key: string, seconds: number | null | undefined): Record<string
   return seconds === null ? {} : { [key]: (seconds ?? 1) * 1000 }
 }
 
-/**
- * Flattens the normalized options into the native binding's fields: the
- * fixed clock's parts, the zone's parts, the sleep mode and cap, and the
- * random start as a kind plus the seed in one of four typed fields.
- */
+/** Flattens normalized options into native binding fields. */
 function nativeAutoOsCalls(calls: EncodedAutoOsCalls): Record<string, unknown> {
   const fields: Record<string, unknown> = {}
   if (typeof calls.datetime === 'string') {

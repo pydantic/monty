@@ -662,9 +662,7 @@ class TurnAnswerer {
   }
 
   /**
-   * Answers an OS call: a `'system'` sleep is waited out here, then the feed's
-   * mounts get first refusal, then the `os` callback, then the sandbox's own
-   * no-handler default.
+   * Handles system sleeps locally; other calls try mounts, `os`, then the sandbox's no-handler default.
    */
   async answerOsCall(call: OsCallTurn, onPrint: PrintCallback): Promise<object> {
     const wait = this.systemSleepFor(call)
@@ -705,9 +703,7 @@ class TurnAnswerer {
   }
 
   /**
-   * The wait a `'system'` sleep asks of this process, as a promise; `null`
-   * for any other call, where the `os` callback decides. The call says which
-   * it is, so no copy of the sandbox's sleep policy is kept here.
+   * Uses the call's sleep marker, so restored sessions need no local copy of their sleep policy.
    */
   private systemSleepFor(call: OsCallTurn): Promise<void> | null {
     return call.systemSleepSecs === undefined ? null : sleepMs(call.systemSleepSecs * 1000)

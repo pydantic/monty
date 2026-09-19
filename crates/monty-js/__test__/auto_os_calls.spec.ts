@@ -1,7 +1,3 @@
-// The `autoOsCalls` checkout option choosing which OS calls the sandbox
-// answers itself: the clock (`datetime`) and its zone (`timezone`), the sleeps
-// (`sleep`, `sleepSystemMax`) and where `random` starts (`randomStart`).
-
 import { test } from 'vitest'
 import { t } from './assertions.js'
 import type { AutoOsCalls, MontyDate, MontyDateTime } from '@pydantic/monty'
@@ -9,13 +5,10 @@ import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
 
-/** Runs `code` in a session configured with `autoOsCalls`. */
 const runWith = (code: string, autoOsCalls: AutoOsCalls, os?: (name: string, args: unknown[]) => unknown) =>
   run(code, { autoOsCalls, ...(os === undefined ? {} : { os }) })
 
-// =============================================================================
 // datetime and timezone
-// =============================================================================
 
 test('the worker clock answers by default, with no os callback', async () => {
   const before = Date.now() / 1000 - 60
@@ -117,9 +110,7 @@ test('invalid datetime and timezone values are rejected before the checkout', as
   })
 })
 
-// =============================================================================
 // sleep
-// =============================================================================
 
 test('zero returns at once', async () => {
   const started = performance.now()
@@ -138,7 +129,7 @@ test('sleepSystemMax cuts a system sleep short', async () => {
 
 test('gathered sandbox sleeps overlap', async () => {
   const code = [
-    // overlap is an ordering: every sleep starts before any of them finishes
+    // Verify overlap by ordering, without requiring a precise wall-clock duration.
     'import asyncio, time',
     'starts, ends = [], []',
     'async def w(n):',
@@ -178,16 +169,13 @@ test('invalid sleep options are rejected before the checkout', async () => {
   await t.throwsAsync(() => pool().checkout({ autoOsCalls: { sleepSystemMax: NaN } }), {
     instanceOf: RangeError,
   })
-  // a cap only makes sense for a sleep the worker performs
   await t.throwsAsync(() => pool().checkout({ autoOsCalls: { sleep: 'zero', sleepSystemMax: 1 } }), {
     instanceOf: RangeError,
     message: "sleepSystemMax only applies to sleep: 'system', not 'zero'",
   })
 })
 
-// =============================================================================
 // randomStart
-// =============================================================================
 
 // CPython: random.seed(s); random.random(), random.randint(1, 100)
 const SEEDS: [number | bigint | string | Uint8Array, [number, number]][] = [
@@ -233,7 +221,6 @@ test('call_host asks the os callback for one state vector', async () => {
     calls.push([name, args])
     return Uint8Array.from({ length: args[0] as number }, (_, i) => i % 256)
   }
-  // the first draw seeds from the 2496-byte reply; seeded draws never call out
   t.deepEqual(
     await runWith('import random\n[random.random(), random.Random(1).random()]', { randomStart: 'call_host' }, os),
     [0.2469864874493971, 0.13436424411240122],

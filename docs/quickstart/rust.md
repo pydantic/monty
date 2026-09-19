@@ -209,11 +209,10 @@ assert!(err.to_string().contains("feed time limit exceeded"));
 
 ### The clock, sleeping and entropy
 
-The sandbox answers `date.today()`, `datetime.now()` and `time.time()` from this machine's clock and seeds an
-unseeded `random` from OS entropy, under `run` and `start` alike, with no host involved.
-`time.sleep()` and `asyncio.sleep()` are the host's to wait out, each call cut to ten seconds: `run`, its own host,
-waits inline, while under `start` they pause as `RunProgress::OsCall` carrying `OsFunctionCall::SystemSleep` (or
-`AsyncSystemSleep`) for you to wait out and answer with `None` (or a future for `asyncio.sleep()`):
+Both `run` and `start` answer clock calls from the system clock and seed unseeded generators from OS entropy.
+Sleeps are capped at ten seconds per call.
+`run` waits inline; `start` returns `RunProgress::OsCall` with `SystemSleep` or `AsyncSystemSleep`.
+Wait for the requested delay and answer with `None`, or a future for `asyncio.sleep()`:
 
 ```rust
 use monty::MontyRun;
@@ -225,11 +224,11 @@ let year = runner.run(vec![], ResourceTracker::default(), PrintWriter::Stdout).u
 assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
 ```
 
-`with_auto_os_calls` changes that, per call: `DateTimeSource::Fixed` freezes the clock, `SandboxTimeZone::Fixed`
-pins the zone naive calls read in, and `RandomStart::Seed` seeds `random` as `random.seed()` would, for runs that
-have to be reproducible; `SleepMode::Zero` skips the waits and `SleepMode::System(max)` changes their cut; and
-`CallHost` on any field hands those calls to the host's own handler instead — under `start` they pause as
-`RunProgress::OsCall`, and under `run`, which has no host, they raise `NotImplementedError`:
+`with_auto_os_calls` configures each operation.
+`DateTimeSource::Fixed` freezes the clock, `SandboxTimeZone::Fixed` sets the local UTC offset, and
+`RandomStart::Seed` seeds `random` for reproducible runs.
+`SleepMode::Zero` skips waits; `SleepMode::System(max)` sets their cap.
+`CallHost` delegates through `RunProgress::OsCall` under `start`, or raises `NotImplementedError` under `run`:
 
 ```rust
 use monty::MontyRun;

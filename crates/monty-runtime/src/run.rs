@@ -573,11 +573,10 @@ fn run_until_complete(
     }
 }
 
-/// The CLI-enforced `--max-total-sleep`, charged as the pools charge it: at the
-/// call, for the delay the CLI will wait, so the refusal is deterministic.
+/// Charges requested delays before waiting, so `--max-total-sleep` refusal is deterministic.
 struct SleepBudget {
     limit: Duration,
-    /// What the sleeps let through so far asked for.
+    /// Total duration of accepted sleeps.
     asked: Duration,
 }
 
@@ -589,8 +588,7 @@ impl SleepBudget {
         }
     }
 
-    /// Charges `delay`, or returns the uncatchable `TimeoutError` to abort
-    /// with once the total would go over; the message is the pools' too.
+    /// Charges `delay` or returns an uncatchable error with the same message as the pools.
     fn charge(&mut self, delay: Duration) -> Option<MontyException> {
         let total = self.asked.saturating_add(delay);
         if total > self.limit {
@@ -647,29 +645,22 @@ impl SuspensionBudget {
     }
 }
 
-/// What the CLI lends the sandbox as its host: the `-m` mounts, and the
-/// sleeps, waited out here under the `--max-sleep` cap and charged to
-/// `--max-total-sleep`.
+/// Handles CLI mounts and sleeps, enforcing per-sleep and total sleep limits.
 struct HostOs {
     mounts: Option<MountTable>,
     /// Longest wait a sleep performs; longer ones are cut short.
     max_sleep: Duration,
-    /// The `--max-total-sleep` budget, when given.
     sleep_budget: Option<SleepBudget>,
 }
 
 impl HostOs {
-    /// Whether OS calls reach the host at all (see `run_script`): they must for
-    /// a mount to answer them, and for a sleep budget to be charged here.
+    /// Mount dispatch and total sleep accounting require OS calls to reach the host.
     fn suspends(&self) -> bool {
         self.mounts.is_some() || self.sleep_budget.is_some()
     }
 
-    /// The defaults — this machine's clock, entropy-seeded `random`, sleeps
-    /// the CLI waits out itself with `--max-sleep` as the cap. A CLI run is
-    /// one local script expecting CPython's behaviour; without a mount or a
-    /// sleep budget the interpreter's standard execution performs the sleeps
-    /// instead.
+    /// Uses the system clock and entropy, with `--max-sleep` capping each sleep.
+    /// Without mounts or a sleep budget, the interpreter waits instead of the CLI.
     fn auto_os_calls(&self) -> AutoOsCalls {
         AutoOsCalls {
             sleep: SleepMode::System(self.max_sleep),
@@ -677,9 +668,8 @@ impl HostOs {
         }
     }
 
-    /// The exception to abort a sleep with once it would take the session past
-    /// `--max-total-sleep`; `None` charges it (cut to `--max-sleep`, as the wait
-    /// will be) and lets it through. Anything but a sleep is free.
+    /// Charges system sleeps after capping them at `--max-sleep`, or returns an error to abort the feed.
+    /// Other calls are free.
     fn refuse_sleep(&mut self, call: &OsFunctionCall) -> Option<MontyException> {
         match (call, self.sleep_budget.as_mut()) {
             (OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay), Some(budget)) => {
@@ -689,13 +679,8 @@ impl HostOs {
         }
     }
 
-    /// Answers an `OsCall`: a sleep is waited out here, cut to `--max-sleep`
-    /// again in case the sandbox did not; anything else goes to the mounts.
-    ///
-    /// Consumes the call (moving write payloads into the mount backend) and
-    /// returns the operation result as an `ExtFunctionResult` — either a
-    /// successful `MontyObject` or an exception for errors / unsupported
-    /// operations.
+    /// Waits for system sleeps, enforcing `--max-sleep` again in case the sandbox did not.
+    /// Other calls go to the mounts, transferring write payloads without copying.
     fn handle_os_call(&mut self, call: OsFunctionCall) -> ExtFunctionResult {
         if let OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) = call {
             thread::sleep(delay.min(self.max_sleep));

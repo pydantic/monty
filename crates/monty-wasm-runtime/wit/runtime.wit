@@ -168,8 +168,7 @@ interface worker {
         value: u32,
     }
 
-    /// Resource limits. The host enforces `max-suspensions`; the sandbox
-    /// enforces the others.
+    /// The host enforces suspension and total sleep limits; the sandbox enforces the others.
     record resource-limits {
         max-feed-duration-micros: option<u64>,
         max-turn-duration-micros: option<u64>,
@@ -177,7 +176,7 @@ interface worker {
         gc-interval: option<u64>,
         max-recursion-depth: option<u64>,
         max-suspensions: option<u64>,
-        /// Cumulative time the sandbox may spend waiting out sleeps itself.
+        /// Maximum cumulative system sleep duration, enforced by the host.
         max-total-sleep-micros: option<u64>,
     }
 
@@ -189,17 +188,17 @@ interface worker {
         microsecond: u32,
     }
 
-    /// A fixed offset from UTC, with a name if it has one.
+    /// A fixed UTC offset with an optional name.
     record fixed-time-zone {
         offset-seconds: s32,
         name: option<string>,
     }
 
-    /// The local zone naive `datetime.now()` and `date.today()` read in.
+    /// Local timezone for naive `datetime.now()` and `date.today()`.
     variant time-zone {
         /// The worker's local zone.
         system,
-        /// Suspend the calls that need the zone to the host.
+        /// Delegate calls requiring the local timezone to the host.
         call-host,
         fixed(fixed-time-zone),
     }
@@ -208,7 +207,7 @@ interface worker {
     variant datetime-source {
         /// The worker's own clock.
         system,
-        /// Suspend to the host, as every other OS call does.
+        /// Delegate clock calls to the host.
         call-host,
         /// One frozen instant.
         fixed(fixed-datetime),
@@ -216,8 +215,7 @@ interface worker {
 
     /// What `time.sleep()` and `asyncio.sleep()` do.
     variant sleep-mode {
-        /// Wait in the worker, each call capped at these microseconds
-        /// (absent = 10s).
+        /// Ask the host to wait, capped at this duration in microseconds (default 10s).
         system(option<u64>),
         call-host,
         /// Return at once without waiting.
@@ -244,8 +242,8 @@ interface worker {
         seed(random-seed),
     }
 
-    /// Which OS calls the sandbox answers itself; absent fields take their
-    /// defaults (system clock, sandbox sleeps capped at 10s, entropy).
+    /// Automatic OS call policy; absent fields use the system clock and timezone,
+    /// host sleeps capped at 10s, and OS entropy.
     record auto-os-calls {
         datetime: option<datetime-source>,
         timezone: option<time-zone>,
@@ -278,7 +276,7 @@ interface worker {
         /// How long the child may hold buffered print output. Absent takes its
         /// default; zero restores line buffering, one event per completed line.
         print-flush-interval-ms: option<u32>,
-        /// Which OS calls the sandbox answers itself; absent = every default.
+        /// Automatic OS call policy; absent uses defaults.
         auto-os-calls: option<auto-os-calls>,
     }
 
@@ -424,9 +422,8 @@ interface worker {
         /// As on `function-call-event`: the host may await its wait and answer
         /// with `resume-futures`. Only ever set on `asyncio.sleep`.
         allow-eager-await: bool,
-        /// Set on a sleep the host waits out itself (a `system` sleep): how
-        /// long, in seconds, already cut by the child. The host cuts it again
-        /// to its own cap and charges `max-total-sleep` before waiting.
+        /// System sleep duration for the host to await directly, in seconds.
+        /// The child caps it; the host must cap it again and charge `max-total-sleep` before waiting.
         system-sleep-secs: option<f64>,
     }
 
@@ -461,8 +458,7 @@ interface worker {
         /// The current session's suspension limit. A host uses this after
         /// `load`, whose dump replaces the configured session limits.
         max-suspensions: option<u64>,
-        /// The session's `max-total-sleep` in microseconds, when configured;
-        /// enforced by the host like `max-suspensions`, so reported the same way.
+        /// Session sleep limit in microseconds, reported for host enforcement after `load`.
         max-total-sleep-micros: option<u64>,
     }
 

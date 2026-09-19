@@ -92,14 +92,10 @@ impl MontyRun {
         &self.executor.program.code
     }
 
-    /// Chooses which OS calls the sandbox answers itself — the clock, the
-    /// sleeps and `random`'s first state — replacing the
-    /// [`AutoOsCalls::default()`] a runner starts with.
-    ///
-    /// Applies to every execution path: [`run`](Self::run) as well as
-    /// [`start`](Self::start), where a call marked `CallHost` suspends to the
-    /// host as any other OS call. Reading the wall clock is a weak but real
-    /// capability — see `docs/security.md`.
+    /// Replaces the default clock, sleep and random initialization policies.
+    /// Applies to [`run`](Self::run) and [`start`](Self::start); `CallHost`
+    /// suspends to the host. Wall-clock access exposes timing information;
+    /// see `docs/security.md`.
     ///
     /// ```
     /// use monty::MontyRun;
@@ -272,8 +268,7 @@ pub(crate) struct Program {
     /// The options the program was compiled with; `eval()` / `exec()` compile
     /// their snippets the same way.
     pub(crate) options: CompileOptions,
-    /// Which OS calls the sandbox answers itself (see [`MontyRun::with_auto_os_calls`]).
-    /// Shared with the REPL session like `script_name`.
+    /// OS-call policies shared with the REPL session; see [`MontyRun::with_auto_os_calls`].
     #[serde(default)]
     pub(crate) auto_os_calls: Arc<AutoOsCalls>,
     /// The user-facing script name (`main.py`), whose final component
@@ -305,7 +300,7 @@ pub(crate) struct VmEnv<'h> {
     pub(crate) assert_repr_max_bytes: u32,
     /// Compile options for code compiled at runtime by `eval()` / `exec()`.
     pub(crate) options: CompileOptions,
-    /// Which OS calls the sandbox answers itself instead of suspending.
+    /// Clock, sleep and random initialization policies.
     pub(crate) auto_os_calls: &'h AutoOsCalls,
 }
 
@@ -342,7 +337,7 @@ impl Default for VmEnv<'static> {
     }
 }
 
-/// The [`AutoOsCalls`] of a VM built without an executor, for [`VmEnv::default`].
+/// Policies for VMs constructed without an executor.
 static DEFAULT_AUTO_OS_CALLS: LazyLock<AutoOsCalls> = LazyLock::new(AutoOsCalls::default);
 
 /// The sandbox working directory used until a host sets one.
@@ -357,7 +352,7 @@ pub(crate) struct ReplSession<'a> {
     pub(crate) script_name: &'a Arc<str>,
     /// Absolute virtual working directory for the snippet.
     pub(crate) cwd: &'a Arc<str>,
-    /// Which OS calls the session answers itself.
+    /// Clock, sleep and random initialization policies.
     pub(crate) auto_os_calls: &'a Arc<AutoOsCalls>,
 }
 
@@ -752,9 +747,7 @@ impl Program {
                     args.drop_with(vm);
                     frame_exit_result = vm.resume_with_exception(err.into());
                 }
-                // Standard execution is its own host: a sleep it is asked to
-                // wait out is waited out here, off the execution clock, as the
-                // bindings do.
+                // Standard execution waits inline, excluding sleep from execution time.
                 Ok(FrameExit::OsCall {
                     function_call: OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay),
                     effect,

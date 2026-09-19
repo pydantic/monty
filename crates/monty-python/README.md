@@ -136,13 +136,13 @@ Setting `cwd` does not grant filesystem access; provide `mount=` or `os=` to han
 
 `OSAccess(max_urandom_bytes=...)` sets the largest `os.urandom()` request the default handler serves, 1 MiB by default.
 Larger requests raise `MemoryError` before allocating.
-An unseeded `random` generator makes that request only under `auto_os_calls={'random_start': 'call_host'}`; otherwise
-it seeds itself inside the worker, from OS entropy or from the seed given.
+Unseeded `random` generators request host entropy only under `auto_os_calls={'random_start': 'call_host'}`.
+Otherwise they use worker OS entropy or the configured seed.
 
-The clock (`date.today()`, `datetime.now()`, `time.time()`) is answered inside the worker by default, and the sleeps
-(`time.sleep()`, `asyncio.sleep()`) are waited out by the pool itself, each cut to `sleep_system_max`; `'call_host'`
-on the `datetime`, `timezone` or `sleep` keys of `checkout()`'s `auto_os_calls` sends them to the `os=` handler
-instead, where `OSAccess` answers them from the host process and caps each wait at its `max_sleep`.
+By default, `date.today()`, `datetime.now()` and `time.time()` read the worker's clock.
+The pool handles `time.sleep()` and `asyncio.sleep()`, capped per call by `sleep_system_max`.
+Setting `datetime`, `timezone` or `sleep` to `'call_host'` in `checkout(auto_os_calls=...)` routes those calls to `os=`.
+`OSAccess` answers from the host process and caps each wait at `max_sleep`.
 
 A `random.Random` instance or the `random.Random` class returned from the sandbox converts to its repr string.
 Return the generated values or `rng.getstate()` instead.

@@ -555,7 +555,6 @@ CALL_HOST_RANDOM: dict[str, Any] = {'auto_os_calls': {'random_start': 'call_host
 
 
 def test_random_unseeded_draws_never_call_the_host(monty_run: RunMonty):
-    """An unseeded generator seeds itself from the worker's entropy; two sessions disagree."""
 
     def os_handler(*, name: str, **_: Any) -> bytes:
         raise AssertionError(f'unexpected OS call {name}')
@@ -821,13 +820,10 @@ Path('/tmp/mydir/file.txt').read_text()
     )
 
 
-# =============================================================================
-# Auto OS calls: the `checkout()` kwargs choosing what the sandbox answers itself
-# =============================================================================
+# Auto OS calls
 
 
 def test_datetime_default_reads_worker_clock(monty_run: RunMonty):
-    """With no `os=` handler at all, the worker's own clock answers."""
     before = datetime.datetime.now()
     result = monty_run('from datetime import datetime\ndatetime.now()')
     after = datetime.datetime.now()
@@ -835,7 +831,6 @@ def test_datetime_default_reads_worker_clock(monty_run: RunMonty):
 
 
 def test_datetime_fixed_naive_is_utc(monty_run: RunMonty):
-    """A naive datetime is the sandbox's wall clock, in UTC, so it comes back exactly."""
     frozen = datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)
     code = (
         'import time\nfrom datetime import date, datetime, timezone\n'
@@ -854,7 +849,6 @@ def test_datetime_fixed_naive_is_utc(monty_run: RunMonty):
 
 
 def test_datetime_fixed_aware_uses_its_offset(monty_run: RunMonty):
-    """An aware datetime is that instant, with its offset as the sandbox's local zone."""
     frozen = datetime.datetime(2024, 1, 15, 10, 30, 5, tzinfo=datetime.timezone(datetime.timedelta(hours=2)))
     code = 'import time\nfrom datetime import datetime, timezone\n(datetime.now(), datetime.now(timezone.utc), time.time())'
     result = monty_run(code, checkout={'auto_os_calls': {'datetime': frozen}})
@@ -868,7 +862,7 @@ def test_datetime_fixed_aware_uses_its_offset(monty_run: RunMonty):
 
 
 def test_datetime_fixed_zoneinfo(monty_run: RunMonty):
-    """A zone that needs the date to resolve its offset works too."""
+    """Resolve date-dependent UTC offsets at the frozen instant."""
     frozen = datetime.datetime(2024, 7, 1, 12, 0, tzinfo=ZoneInfo('Europe/Paris'))
     code = 'from datetime import datetime, timezone\n(datetime.now(), datetime.now(timezone.utc))'
     result = monty_run(code, checkout={'auto_os_calls': {'datetime': frozen}})
@@ -906,7 +900,6 @@ def test_sleep_zero_returns_at_once(monty_run: RunMonty):
 
 
 def test_sleep_system_max(monty_run: RunMonty):
-    """The default waits in the worker; `sleep_system_max` cuts a long sleep short."""
     start = time.monotonic()
     code = "import asyncio, time\nt = time.time()\ntime.sleep(3600)\nasyncio.run(asyncio.sleep(3600, 'woken'))\ntime.time() >= t"
     assert monty_run(code, checkout={'auto_os_calls': {'sleep_system_max': 0.001}}) == snapshot(True)
@@ -918,8 +911,7 @@ def test_sleep_system_max(monty_run: RunMonty):
 
 
 def test_sandbox_sleeps_overlap(monty_run: RunMonty):
-    """Gathered sandbox sleeps are timers served while the other tasks run, so they overlap."""
-    # overlap is an ordering: every sleep starts before any of them finishes
+    # Verify overlap by ordering, without requiring a precise wall-clock duration.
     code = (
         'import asyncio, time\n'
         'starts, ends = [], []\n'
@@ -963,7 +955,6 @@ def test_sleep_system_max_contradicts_other_modes(pool: Monty, sleep: Any):
 
 
 def test_sleep_system_never_reaches_os(monty_run: RunMonty):
-    """The default sleeps are the pool's own waits: the `os=` handler is not consulted."""
     calls: list[Any] = []
 
     def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
@@ -1004,7 +995,6 @@ def test_sleep_invalid(pool: Monty, value: Any, error: type[Exception], message:
 
 @pytest.mark.parametrize('seed', [42, -42, 2**70, 1.5, 'abc', b'abc'])
 def test_random_start_seed_matches_random_seed(monty_run: RunMonty, seed: Any):
-    """`{'seed': s}` starts the module generator exactly as `random.seed(s)` would."""
     expected = random.Random(seed)
     code = 'import random\n[random.random(), random.randint(1, 100)]'
     assert monty_run(code, checkout={'auto_os_calls': {'random_start': {'seed': seed}}}) == [
@@ -1014,7 +1004,6 @@ def test_random_start_seed_matches_random_seed(monty_run: RunMonty, seed: Any):
 
 
 def test_random_start_seed_persists_and_is_overridable(pool: Monty):
-    """The seed applies to the first draw whichever feed makes it; `random.seed()` still wins."""
     with pool.checkout(auto_os_calls={'random_start': {'seed': 42}}) as session:
         session.feed_run('import random')
         assert session.feed_run('random.random()') == snapshot(0.6394267984578837)
@@ -1023,7 +1012,6 @@ def test_random_start_seed_persists_and_is_overridable(pool: Monty):
 
 
 def test_random_start_seed_instances_are_deterministic(monty_run: RunMonty):
-    """Unseeded instances take states derived from the seed: repeatable, but distinct."""
     code = 'import random\n[random.Random().random(), random.Random().random(), random.random()]'
     first = monty_run(code, checkout={'auto_os_calls': {'random_start': {'seed': 42}}})
     second = monty_run(code, checkout={'auto_os_calls': {'random_start': {'seed': 42}}})
@@ -1059,7 +1047,6 @@ def test_random_start_invalid(pool: Monty, value: Any, error: type[Exception], m
 
 
 def test_random_start_call_host_asks_the_host_for_entropy_once(monty_run: RunMonty):
-    """Under `'call_host'` the first draw asks for one 2496-byte state vector, then draws are local."""
     calls: list[Any] = []
 
     def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bytes:
@@ -1074,8 +1061,6 @@ def test_random_start_call_host_asks_the_host_for_entropy_once(monty_run: RunMon
 
 @pytest.mark.parametrize('with_callback', [True, False])
 def test_random_start_call_host_without_entropy_raises(monty_run: RunMonty, with_callback: bool):
-    """A missing or declining handler leaves an unseeded draw with no entropy."""
-
     def os_handler(**_: Any) -> object:
         return NOT_HANDLED
 
@@ -1093,9 +1078,7 @@ def test_random_start_call_host_rejects_short_entropy(monty_run: RunMonty):
     assert str(exc_info.value) == snapshot("RuntimeError: 'os.urandom' returned 3 bytes, expected 2496")
 
 
-# =============================================================================
 # Auto OS calls: timezone
-# =============================================================================
 
 
 def test_timezone_fixed_offset_and_name(monty_run: RunMonty):
@@ -1118,7 +1101,6 @@ def test_timezone_fixed_offset_and_name(monty_run: RunMonty):
 
 
 def test_timezone_system_with_a_fixed_instant(monty_run: RunMonty):
-    """`'system'` reads a fixed instant in the host's zone at that instant."""
     frozen = datetime.datetime(2024, 7, 1, 12, 0, tzinfo=datetime.timezone.utc)
     code = 'from datetime import datetime, timezone\n(datetime.now() - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()'
     result = monty_run(code, checkout={'auto_os_calls': {'datetime': frozen, 'timezone': 'system'}})

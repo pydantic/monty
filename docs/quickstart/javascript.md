@@ -232,10 +232,8 @@ The pool enforces `maxSuspensions`: the first suspension over the budget ends th
 `typeCheckFormat` picks a ty diagnostic format and `typeCheckColor` colours it with ANSI escapes.
 See [resource limits](../resource-limits.md) and [type checking](../type-checking.md).
 
-The clock, the sleeps and `random`'s seed are session options too.
-By default the sandbox reads the worker's clock and seeds `random` from the worker's entropy, and the pool waits out
-`time.sleep()` for it (ten seconds at most per call); `autoOsCalls` (`datetime`, `timezone`, `sleep`, `sleepSystemMax`
-and `randomStart`) changes that, so a run can be made reproducible:
+Sessions default to the worker's clock and entropy, with sleeps capped at ten seconds per call.
+For reproducible runs, `autoOsCalls` sets `datetime`, `timezone`, `sleep`, `sleepSystemMax` and `randomStart`:
 
 ```ts
 import { Monty } from '@pydantic/monty'

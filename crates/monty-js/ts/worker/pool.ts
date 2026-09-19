@@ -111,7 +111,7 @@ export class WorkerPool {
   /** Borrows a worker and returns a session bound to it. */
   async checkout(config: WorkerSessionConfig = {}): Promise<MontySession> {
     if (this.closed) throw new Error('pool is closed')
-    // validated before a worker is held, so a bad option never leaks a checkout
+    // Validate before acquiring a worker to avoid leaking a checkout.
     encodeAutoOsCalls(config.autoOsCalls ?? {})
     const slot = await this.acquire()
     let transport: WorkerTransport

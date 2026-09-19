@@ -1,6 +1,4 @@
-// The `checkout()` clock, sleep and `random` options through the wasm worker,
-// driven in Node so it needs no browser: they cross the component's
-// `configure` request rather than the subprocess wire.
+// Exercises checkout options through the component's `configure` request in Node.
 
 import { test } from 'vitest'
 

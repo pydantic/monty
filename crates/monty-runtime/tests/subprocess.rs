@@ -26,7 +26,6 @@ use monty_types::{
 /// long wait is how late that failure is reported on a slow CI machine.
 const DEATH_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// The `Configure` every test session starts from.
 fn configure() -> pb::Configure {
     pb::Configure {
         script_name: "main.py".to_owned(),
@@ -118,8 +117,6 @@ impl ChildProc {
         self.create_repl_with(configure());
     }
 
-    /// Creates a session whose clock, sleep and `random` calls are answered
-    /// as `auto_os_calls` says.
     fn create_repl_with_auto_os_calls(&mut self, auto_os_calls: &AutoOsCalls) {
         self.create_repl_with(pb::Configure {
             auto_os_calls: Some(auto_os_calls.into()),
@@ -543,15 +540,12 @@ fn external_function_not_found_raises_name_error() {
     child.shutdown();
 }
 
-/// By default the worker answers the clock and `random`'s seed itself, so
-/// neither reaches the parent, while each sleep crosses the wire already cut
-/// to the default ten-second maximum for the parent to wait out.
+/// Default sleeps reach the parent capped at ten seconds; clock and entropy calls stay in the worker.
 #[test]
 fn clock_and_entropy_are_answered_in_the_worker_by_default() {
     let mut child = ChildProc::spawn();
     child.create_repl();
 
-    // the worker's clock is this machine's: within a minute of ours, on the same calendar
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock before the epoch")
@@ -595,7 +589,6 @@ asyncio.run(asyncio.sleep(3600, 'woken'))",
     child.shutdown();
 }
 
-/// A fixed clock and a seed cross the wire and are answered exactly.
 #[test]
 fn fixed_clock_and_seed_are_answered_in_the_worker() {
     let mut child = ChildProc::spawn();
@@ -634,8 +627,7 @@ random.random()",
     child.shutdown();
 }
 
-/// A malformed `AutoOsCalls` is refused on the `Configure` turn; the child
-/// stays usable.
+/// Rejecting malformed `AutoOsCalls` leaves the worker usable.
 #[test]
 fn invalid_auto_os_calls_is_rejected_on_configure() {
     let mut child = ChildProc::spawn();
@@ -661,7 +653,6 @@ fn invalid_auto_os_calls_is_rejected_on_configure() {
     child.shutdown();
 }
 
-/// With `CallHost` the clock calls cross the wire for the parent to answer.
 #[test]
 fn clock_calls_bubble_to_parent_under_call_host() {
     let mut child = ChildProc::spawn();
@@ -713,9 +704,7 @@ fn clock_calls_bubble_to_parent_under_call_host() {
     child.shutdown();
 }
 
-/// Under `CallHost` neither sleep waits in the worker: both cross the wire so
-/// the parent can decide how long a wait it will perform, and `time.sleep()`
-/// evaluates to `None` whatever the parent answers with.
+/// `CallHost` lets the parent choose the wait; `time.sleep()` returns `None` regardless of its answer.
 #[test]
 fn sleep_calls_bubble_to_parent_under_call_host() {
     let mut child = ChildProc::spawn();

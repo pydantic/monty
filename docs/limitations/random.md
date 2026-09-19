@@ -19,26 +19,21 @@ platform (see the note on floats below).
 An unseeded generator seeds itself on its first draw from the session's `random_start`
 (`auto_os_calls` on `checkout()` in the bindings, `AutoOsCalls::random_start` in Rust):
 
-- `'system'`, the default, reads 2496 bytes of OS entropy — the 624 32-bit words of one MT19937 state vector, what
-    CPython's `seed(None)` reads — so unseeded draws are unpredictable, as in CPython. If the OS entropy source
-    fails, the draw raises an uncatchable `OSError: OS entropy source unavailable: <reason>` and the run ends; CPython
-    falls back to seeding from the time and process id instead.
-- A seed (`{'seed': s}` in Python, `{ seed }` in JavaScript, `RandomStart::Seed` in Rust; any int, a float, a `str` or
-    `bytes`) starts the module-level generator exactly as `random.seed(s)` would, so its draws are CPython's for that
-    seed (except a NaN float; see below). An unseeded `random.Random()` instance takes a state derived from the seed instead — deterministic from run
-    to run, but distinct from the module generator's and from other instances' — where CPython would read fresh
-    entropy for each. `random.seed()` and `random.seed(None)` take the next such derived state rather than entropy.
-- `'call_host'` suspends the first draw with an `os.urandom` host call for the 2496 bytes, and the reply seeds the
-    generator as CPython's `seed(None)` does from the same bytes. `random.seed()` and `random.seed(None)` make the
-    same call. A host that answers with fixed bytes makes unseeded runs reproducible; a reply of any other length,
-    or one that is not `bytes`, raises `RuntimeError`. Where nothing answers the call — a pool session without an
-    `os=` handler, or one whose handler returns `NOT_HANDLED` — the first unseeded draw raises
-    `RuntimeError: 'os.urandom' is not supported in this environment`; under Rust's non-suspending `MontyRun::run`
-    it raises `NotImplementedError`, as every unanswered OS call does there.
+- `'system'` reads 2496 bytes of OS entropy, the 624 32-bit words of an MT19937 state vector.
+    If entropy is unavailable, the run ends with an uncatchable `OSError: OS entropy source unavailable: <reason>`.
+    CPython instead falls back to the time and process ID.
+- A configured seed initializes the module generator as `random.seed(s)` would.
+    Unseeded `Random()` instances and calls to `seed(None)` receive successive states derived from that seed.
+    These states are reproducible and distinct; CPython reads fresh entropy for each.
+    See [entropy configuration](../security.md#entropy) and the seed type restrictions below.
+- `'call_host'` requests 2496 bytes through `os.urandom` on the first draw or a `seed(None)` call.
+    The bytes seed the generator as CPython's `seed(None)` would; fixed bytes make runs reproducible.
+    A reply with another type or length raises `RuntimeError`.
+    An unanswered request raises `RuntimeError: 'os.urandom' is not supported in this environment` in the pools,
+    or `NotImplementedError` in non-suspending Rust execution.
 
-Code that seeds with a value (`random.seed(s)`) behaves the same under every start; `random.seed()` and
-`random.seed(None)` follow the start as described above, so only a value makes a run reproducible.
-`getstate()` on a never-seeded generator seeds it first, since there is no state to report until then.
+`random.seed(s)` with an explicit value overrides the session policy.
+`random.seed()` and `random.seed(None)` use that policy; `getstate()` also seeds a never-seeded generator first.
 
 The module-level generator is session state like the globals: a seed set in one `feed_run` applies to the next, and
 it is included in a dump, as is the session's `random_start`.

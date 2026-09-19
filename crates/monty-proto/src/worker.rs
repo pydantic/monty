@@ -170,8 +170,7 @@ pub struct SessionBudget {
     /// Maximum suspensions the host may service; enforced outside the child.
     /// `None` only when no session exists.
     pub max_suspensions: Option<usize>,
-    /// The session's `max_total_sleep`, enforced outside the child too;
-    /// `None` when unlimited, or when no session exists.
+    /// Host-enforced sleep budget; `None` when unlimited or no session exists.
     pub max_total_sleep: Option<Duration>,
 }
 
@@ -212,8 +211,7 @@ pub struct Child {
     /// `Configure`. `Duration::ZERO` means line buffering (see the field's
     /// documentation in the schema).
     print_flush_interval: Duration,
-    /// Which OS calls the session answers itself, from its `Configure`;
-    /// applied when the repl is materialized.
+    /// OS call policy from `Configure`, applied when creating the REPL.
     auto_os_calls: AutoOsCalls,
 }
 
@@ -451,7 +449,7 @@ impl Child {
             self.print_flush_interval = configure
                 .print_flush_interval_ms
                 .map_or(DEFAULT_PRINT_FLUSH_INTERVAL, |ms| Duration::from_millis(u64::from(ms)));
-            // Converted on arrival so a bad value is answered on this turn.
+            // Reject invalid settings on the Configure turn.
             self.auto_os_calls = match configure.auto_os_calls.clone().map(AutoOsCalls::try_from) {
                 None => AutoOsCalls::default(),
                 Some(Ok(auto_os_calls)) => auto_os_calls,
@@ -803,10 +801,8 @@ impl Child {
         event
     }
 
-    /// Drives execution until it needs the parent, returning the turn-ending
-    /// event. Every OS call the session's `AutoOsCalls` does not answer
-    /// surfaces to the parent — the child performs no filesystem I/O (mounts
-    /// are serviced parent-side).
+    /// Runs until a turn-ending event. OS calls not answered by `AutoOsCalls`
+    /// go to the parent, including all filesystem I/O.
     fn drive(&mut self, result: Result<ReplProgress, Box<ReplStartError>>) -> pb::ChildEvent {
         match result {
             Ok(ReplProgress::Complete { repl, value }) => {

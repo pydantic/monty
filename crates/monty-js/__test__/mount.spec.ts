@@ -1001,7 +1001,6 @@ test('os.urandom is answered by the os handler; an unseeded random draw never ca
   }
   const bytes = (await run('import os\nos.urandom(3)', { os })) as Uint8Array
   t.deepEqual([...bytes], [0, 1, 2])
-  // the first draw seeds from the worker's own entropy; a seeded draw is CPython's
   const [unseeded, seeded] = (await run('import random\n[random.random(), random.Random(1).random()]', {
     os,
   })) as [number, number]

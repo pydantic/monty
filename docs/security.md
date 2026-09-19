@@ -200,12 +200,12 @@ anything.
     ```
 
 A separate `os=` callback handles operations no mount covers: the remaining `pathlib` operations, `os.getenv`,
-`os.environ`, `os.urandom()`, and — only when the session asks for it — the clock and the waits (see
-[the clock](#the-clock) and [waiting](#waiting) below).
+`os.environ`, `os.urandom()`, and clock and sleep calls configured with `'call_host'`
+(see [the clock](#the-clock) and [waiting](#waiting)).
 [`AbstractOS`][pydantic_monty.AbstractOS] is the typed form of that callback; [`OSAccess`][pydantic_monty.OSAccess] implements it over in-memory files and an `environ` mapping
 you supply, and overriding one of its methods replaces one operation.
 JavaScript has only the callback form, so the TypeScript tab answers the same two operations by hand.
-The clock here is frozen by the session itself, with no handler involved:
+The session freezes the clock:
 
 === "Python"
 
@@ -279,16 +279,18 @@ resolved inside the sandbox and reaches a mount as an absolute virtual path.
 ### The clock
 
 `date.today()`, `datetime.now()` and `time.time()` are the only calls that read a clock.
-By default the sandbox reads this machine's clock and local timezone (UTC in the wasm worker), in every session and
-every embedding — the pools, the CLI and an in-process Rust run alike.
+All sessions default to the system clock and local timezone (UTC in the wasm worker).
 The session's `auto_os_calls` ([`AutoOSCalls`][pydantic_monty.AutoOSCalls] on
 [`Monty.checkout`][pydantic_monty.Monty.checkout] in Python, `autoOsCalls` on `checkout()` in JavaScript,
-`AutoOsCalls` in Rust) chooses otherwise, for the instant (`datetime`) and the zone (`timezone`) separately:
+`AutoOsCalls` in Rust) configures the instant (`datetime`) and local zone (`timezone`) separately:
 
-- `'call_host'` sends each call to your `os=` handler as an OS call like any other, so you decide what the sandbox
-    sees, and a handler that answers none of them makes all three raise;
-- a fixed instant — a `datetime.datetime`, a `Date`, `DateTimeSource::Fixed` — freezes the clock, for runs that
-    have to be reproducible, and a fixed `timezone` (an offset and a name) pins the zone naive calls read in.
+- `'call_host'` delegates to your `os=` handler; unanswered calls raise.
+- A fixed instant (`datetime.datetime`, `Date` or `DateTimeSource::Fixed`) freezes the clock.
+    A fixed `timezone` sets the offset and name used by naive calls.
+
+System timezone offsets are evaluated at the selected instant, including historical daylight-saving changes.
+A fixed zone uses `{'offset_seconds': ..., 'name': ...}` in Python, `{ offsetSeconds, name }` in JavaScript,
+or `SandboxTimeZone::Fixed` in Rust.
 
 Wall-clock time is a weak capability, but it is one — it is what makes elapsed time measurable from inside the sandbox,
 and a naive `datetime.now()` is read in the host's local zone, which discloses its UTC offset.
@@ -304,35 +306,32 @@ Python's default `AbstractOS.urandom()` raises `MemoryError` before allocating w
 `max_urandom_bytes`, 1 MiB by default; `OSAccess(max_urandom_bytes=...)` sets the cap.
 A custom handler allocates in the host process, outside the worker's memory limit, so it must apply its own cap.
 
-The `random` module makes that call only when the session's `random_start` is `'call_host'`.
-Otherwise an unseeded generator seeds itself inside the sandbox, from the worker's own OS entropy, or, when
-`random_start` gives a seed (`{'seed': ...}` in Python, `{ seed }` in JavaScript, `RandomStart::Seed` in Rust),
-exactly as `random.seed(...)` would — the way to make a run reproducible.
-Seeded code (`random.seed(42)`) behaves the same whatever the start.
+The `random` module calls the handler only under `random_start='call_host'`.
+By default it uses worker OS entropy.
+For reproducible runs, configure a seed: `{'seed': ...}` in Python, `{ seed }` in JavaScript, or `RandomStart::Seed` in Rust.
+An explicit `random.seed(42)` overrides this policy.
 See [random](limitations/random.md).
 
 ### Waiting
 
-`time.sleep()` and `asyncio.sleep()` never wait inside the sandbox: each call suspends to the host, which performs
-the wait.
-By default (`sleep: 'system'`) the host is this process itself, without your `os=` handler: the sandbox cuts each
-call to `sleep_system_max` — ten seconds unless you say otherwise (`--max-sleep` in the CLI) — and the pool waits
-that long, on the calling thread under `Monty`, as a timer under `AsyncMonty` and in JavaScript (the browser worker
-included).
-Gathered `asyncio.sleep()` calls overlap: every pool answers them as futures, so the sandbox's other tasks run while
-a sleep is pending.
+Default system sleeps bypass your `os=` handler.
+The sandbox caps each delay at `sleep_system_max`, ten seconds by default (`--max-sleep` in the CLI).
+The pool waits on the calling thread under `Monty`, or with a timer under `AsyncMonty` and JavaScript, including browsers.
+All pools answer `asyncio.sleep()` with futures, so gathered sleeps overlap and other sandbox tasks can run meanwhile.
+Manual suspension drivers receive capped `system.sleep` or `system.async_sleep` calls.
+`'call_host'` handlers instead receive `time.sleep` or `asyncio.sleep`.
 
 A wait costs nothing against the duration limits, which measure execution time and stop while the sandbox is
 suspended.
-Each sleep is a suspension (one per sleep, two when an `asyncio.sleep()` answered with a future is awaited later), so
-`max_suspensions` bounds a session that sleeps in a loop, and `max_total_sleep_secs` bounds the cumulative time it
-may ask for: the pool charges each sleep before waiting and refuses the one that would take the total over with an
-uncatchable `TimeoutError`, so the limit holds whatever the worker reports.
+Each nonzero system sleep costs a suspension, plus another if an async future is awaited later.
+`max_suspensions` therefore bounds sleeping loops.
+The pool also enforces `max_total_sleep_secs`, charging capped delays before waiting and raising an uncatchable
+`TimeoutError` if a sleep would exceed the total, independently of the worker's checks.
 See [resource limits](resource-limits.md).
 
-The session's `sleep` setting chooses otherwise: `'call_host'` sends both calls to your `os=` handler, uncut and
-uncharged, which decides how long a wait it is willing to perform — cap it, scale it, or refuse it — and one that
-answers neither leaves both raising; `'zero'` makes both calls return at once.
+With `sleep='call_host'`, your `os=` handler receives uncapped delays, uncharged to `max_total_sleep_secs`.
+The handler decides how long to wait; unanswered calls raise.
+With `sleep='zero'`, both calls return immediately.
 [`OSAccess`][pydantic_monty.OSAccess] caps every wait at its `max_sleep`, ten seconds unless you say otherwise.
 
 Under [`AsyncMonty`][pydantic_monty.AsyncMonty] and in JavaScript a `'call_host'` handler may be `async`.

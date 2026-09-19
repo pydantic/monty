@@ -11,8 +11,7 @@ use monty_types::{
     SleepMode, dir_stat, file_stat,
 };
 
-/// A runner whose clock and sleep calls reach the host, so the tests below
-/// see them as OS calls rather than answered in the sandbox.
+/// Expose clock and sleep calls to the mock host.
 fn host_runner(code: &str) -> MontyRun {
     let auto_os_calls = AutoOsCalls {
         datetime: DateTimeSource::CallHost,

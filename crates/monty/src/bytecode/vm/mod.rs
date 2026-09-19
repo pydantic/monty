@@ -71,12 +71,9 @@ enum AwaitResult {
     Yield(Vec<CallId>),
 }
 
-/// Yields to the host when an exception left no task to run.
-///
-/// A spawned task whose exception nobody could receive is discarded with no
-/// successor loaded, leaving the parked frame `cleanup_current_task` installs,
-/// which dispatch must not execute. See [`VM::pending_futures_exit`] for what
-/// is handed back.
+/// Yields when an unhandled task exception leaves `cleanup_current_task`'s
+/// parked frame with no successor. Dispatch must not execute that frame.
+/// [`VM::pending_futures_exit`] returns surviving tasks' pending calls.
 macro_rules! yield_if_parked {
     ($self:expr) => {
         if $self.current_frame.is_parked {
@@ -889,11 +886,8 @@ pub struct VM<'h> {
     /// snapshotted (a pure performance cache), so default-initialized on restore.
     pub(crate) re_pattern_cache: RePatternCache,
 
-    /// The session's `random` state: the module-level generator behind
-    /// `random.random()` and friends, and where unseeded generators start.
-    /// Session state like the globals: it travels in snapshots and, through
-    /// the REPL, from one feed to the next, so a `random.seed()` keeps
-    /// governing later draws.
+    /// Module generator and state for initializing unseeded generators.
+    /// Preserved across snapshots and REPL feeds, including `random.seed()` changes.
     pub(crate) random: SessionRandom,
 
     /// Working directory, `__file__` inputs and the assert-repr cap for this
@@ -2095,9 +2089,7 @@ impl<'h> VM<'h> {
                 obj
             }
         };
-        // An entropy reply that cannot be imported at all (an output-only
-        // value) gets the `os.urandom` contract's error, raised at the draw
-        // like any other non-`bytes` reply, rather than the generic one.
+        // Output-only entropy replies must raise the os.urandom contract error at the draw.
         let seeding = matches!(
             self.pending_effect,
             Some(PendingEffect::Post(PostConversionEffect::SeedRandom { .. }))
@@ -2354,14 +2346,10 @@ impl<'h> VM<'h> {
         self.scheduler.cleanup(self.heap);
     }
 
-    /// Hands the surviving tasks' pending calls back to the host: for
-    /// [`yield_if_parked`] when dispatch has no frame left to run, and
-    /// whenever every task is blocked on the host.
-    ///
-    /// Those tasks are parked on external calls, so there is normally
-    /// something to hand over. With nothing pending there is no way forward
-    /// either: resuming would fail the same way one round-trip later, blaming
-    /// the scheduler rather than the discarded task that emptied it.
+    /// Returns surviving tasks' pending calls when every task is blocked
+    /// or [`yield_if_parked`] detects that dispatch has no runnable frame.
+    /// With no pending calls, report the stall now: resuming cannot progress
+    /// and would obscure the discarded task that caused it.
     pub(super) fn pending_futures_exit(&self) -> Result<FrameExit, RunError> {
         let pending_call_ids = self.scheduler.pending_call_ids();
         if pending_call_ids.is_empty() {

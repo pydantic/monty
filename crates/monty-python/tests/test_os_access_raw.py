@@ -229,7 +229,6 @@ def test_abstract_filesystem_exists_missing(monty_run: RunMonty):
 
 
 def test_abstract_os_date_today(monty_run: RunMonty):
-    """AbstractOS.date_today() is dispatched through the os callback under `datetime='call_host'`."""
     fs = TestOS()
 
     result = monty_run('from datetime import date; date.today()', os=fs, checkout=CALL_HOST)
@@ -238,7 +237,6 @@ def test_abstract_os_date_today(monty_run: RunMonty):
 
 
 def test_abstract_os_urandom_default(monty_run: RunMonty, monkeypatch: pytest.MonkeyPatch):
-    """AbstractOS.urandom() answers `os.urandom()` from the host's entropy by default."""
     fs = TestOS()
 
     result = monty_run('import os\nlen(os.urandom(8))', os=fs)

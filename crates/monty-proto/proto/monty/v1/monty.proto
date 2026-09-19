@@ -375,7 +375,7 @@ message ResourceLimits {
   // resets at each feed, the turn budget at each feed and each resume.
   optional uint64 max_feed_duration_micros = 6;
   optional uint64 max_turn_duration_micros = 7;
-  // Cumulative time the sandbox may spend waiting out sleeps itself.
+  // Cumulative budget for system sleeps, enforced by the parent.
   optional uint64 max_total_sleep_micros = 8;
 }
 
@@ -386,7 +386,7 @@ message AutoOsCalls {
   oneof datetime {
     // The child's clock.
     Unit system = 2;
-    // Suspend to the parent, as every other OS call does.
+    // Suspend to the parent's OS handler.
     Unit call_host = 1;
     // One frozen instant, for reproducible runs.
     FixedDateTime fixed = 3;
@@ -395,7 +395,7 @@ message AutoOsCalls {
   // Absent (or with no arm set) = the child's local zone.
   SandboxTimeZone timezone = 9;
   // What `time.sleep()` and `asyncio.sleep()` do.
-  // Absent (or with no arm set) = a sleep in the child with the default maximum.
+  // Absent (or with no arm set) = system sleep with the default maximum.
   SleepMode sleep = 4;
   // Where an unseeded `random` generator gets its first state.
   oneof random_start {
@@ -423,7 +423,7 @@ message SandboxTimeZone {
 // Mirrors monty's `SleepMode`.
 message SleepMode {
   oneof mode {
-    // Wait in the child.
+    // The parent waits without invoking its OS handler.
     SystemSleep system = 1;
     // Suspend to the parent, which performs the wait.
     Unit call_host = 2;
@@ -432,7 +432,7 @@ message SleepMode {
   }
 }
 
-// A sleep the child performs itself.
+// A sleep capped by the child and performed by the parent.
 message SystemSleep {
   // Longest wait one call performs; longer sleeps are cut short. Absent = 10s.
   optional uint64 max_micros = 1;
@@ -449,8 +449,7 @@ message FixedDateTime {
 // A `random.seed()` argument: the types CPython accepts.
 message RandomSeed {
   oneof value {
-    // Two's-complement little-endian bytes (`BigInt::to_signed_bytes_le`),
-    // any size.
+    // Arbitrary-size two's-complement little-endian bytes (`BigInt::to_signed_bytes_le`).
     bytes int = 1;
     // Must be finite.
     double float = 2;
@@ -577,11 +576,8 @@ message Configure {
   // Output is always flushed before a turn-ending event whatever this says, so
   // the field trades streaming latency for event volume and nothing else.
   optional uint32 print_flush_interval_ms = 10;
-  // Which OS calls the child answers itself instead of suspending to the
-  // parent. Absent = every default (`AutoOsCalls::default()` in monty-types):
-  // the child's own clock, sleeps waited out in the child capped at 10s, and
-  // an unseeded `random` seeded from the child's entropy. A `Load` restores
-  // the dump's own settings instead, as it does for `limits`.
+  // Absent = `AutoOsCalls::default()`: the child's clock, local zone and entropy,
+  // with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
   optional AutoOsCalls auto_os_calls = 11;
 }
 
@@ -750,8 +746,7 @@ message ChildEvent {
   // bytes) still learns its budgets.
   optional uint64 max_feed_duration_micros = 25;
   optional uint64 max_turn_duration_micros = 26;
-  // The session's `max_total_sleep` in microseconds, when configured: the
-  // parent-enforced sleep budget, reported for the same reason.
+  // Parent-enforced sleep budget, also reported on `Load`.
   optional uint64 max_total_sleep_micros = 27;
 
   // The session's script name, surfaced on a `Load` reply so a parent that
@@ -858,9 +853,8 @@ message OsCall {
     Unit time = 26; // time.time()
     Sleep sleep = 27; // time.sleep(seconds) under `call_host`: the handler waits
     AsyncSleep async_sleep = 28; // asyncio.sleep(delay) under `call_host`
-    // The same two under `system`: the parent itself waits, cut to the mode's
-    // maximum by the child, charged to `max_total_sleep` by the parent, never
-    // consulting its `os` handler. Distinct so the parent keeps no sleep policy.
+    // System sleeps: capped by the child, charged to `max_total_sleep` and
+    // waited out by the parent without invoking its OS handler.
     Sleep system_sleep = 29;
     AsyncSleep async_system_sleep = 30;
   }

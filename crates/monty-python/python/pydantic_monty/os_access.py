@@ -146,26 +146,19 @@ class StatResult(NamedTuple):
 
 
 class AbstractOS(ABC):
-    """Abstract base class for implementing virtual filesystems and host OS access.
+    """Base class for virtual filesystems and host OS callbacks.
 
-    Subclass this and implement the abstract methods to provide a custom
-    filesystem and selected host-backed operations that Monty code can interact
-    with via `pathlib.Path`, `os`, and (under `call_host`) the clock and the sleeps.
-
-    Pass an instance to `feed_run(code, os=...)`.
+    Implement the abstract methods and pass an instance to `feed_run(code, os=...)`.
+    Clock and sleep callbacks require `auto_os_calls` to select `'call_host'`.
     """
 
     max_urandom_bytes: int = MAX_URANDOM_BYTES_DEFAULT
     """Maximum host allocation per `urandom()` call; defaults to 1 MiB."""
 
     max_sleep: float | None = 10
-    """Longest wait `sleep()` and `async_sleep()` perform, in seconds.
-
-    A longer `time.sleep()` or `asyncio.sleep()` is cut short to this, so
-    sandboxed code cannot hold the host for longer; `None` waits the full time.
-    Only reached under `auto_os_calls={'sleep': 'call_host'}`: by default the
-    sandbox waits itself, capped by `sleep_system_max`.
-    """
+    """Maximum seconds per host sleep; `None` waits the full requested time.
+    Applies to `'call_host'` sleeps and manually dispatched `feed_start` sleeps.
+    Default `'system'` sleeps use the pool's `sleep_system_max` instead."""
 
     def __call__(
         self,
@@ -278,7 +271,7 @@ class AbstractOS(ABC):
                 return self.urandom(*args)
             case 'time.time':
                 return self.time()
-            # the sleeps the pool would wait out itself, as a `feed_start` caller sees them
+            # `feed_start` callers can dispatch system sleeps manually.
             case 'time.sleep' | 'system.sleep':
                 return self.sleep(*args)
             case 'asyncio.sleep' | 'system.async_sleep':
@@ -589,21 +582,16 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     def date_today(self) -> datetime.date:
-        """Return today's date for Monty's `date.today()` host callback.
+        """Return the host's date when `auto_os_calls` routes the clock or zone to the host.
 
-        Reached only under `auto_os_calls` routing the clock or its zone to
-        the host; a fixed clock is simpler to set with `auto_os_calls`.
-        The default implementation proxies to the host Python process.
+        Use `auto_os_calls` directly to configure a fixed clock.
         """
         return datetime.date.today()
 
     def datetime_now(self, tz: datetime.tzinfo | None = None) -> datetime.datetime:
-        """Return the current datetime for Monty's `datetime.now(tz=...)` callback.
+        """Return host `datetime.now(tz)` when `auto_os_calls` routes the clock or zone to the host.
 
-        Reached only under `auto_os_calls` routing the clock or its zone to
-        the host; a fixed clock is simpler to set with `auto_os_calls`.
-        The default implementation proxies to the host Python process and passes
-        any provided timezone through to `datetime.datetime.now()`.
+        Use `auto_os_calls` directly to configure a fixed clock.
         """
         return datetime.datetime.now(tz=tz)
 
@@ -611,7 +599,7 @@ class AbstractOS(ABC):
         """Return `size` random bytes for Monty's `os.urandom(size)` host callback.
 
         Raises `MemoryError` before allocating if `size` exceeds `max_urandom_bytes`.
-        An unseeded `random` generator requests 2496 bytes on its first draw.
+        Under `random_start='call_host'`, an unseeded generator requests 2496 bytes on its first draw.
         An override that allocates host memory must apply its own limit.
         """
         if size > self.max_urandom_bytes:
@@ -627,27 +615,19 @@ class AbstractOS(ABC):
         return time.time()
 
     def sleep(self, seconds: float) -> None:
-        """Wait for Monty's `time.sleep()` callback, for at most `max_sleep`.
+        """Block this thread for at most `max_sleep` seconds.
 
-        Reached only under `auto_os_calls={'sleep': 'call_host'}`.
-
-        The wait happens in the host process, blocking this thread: override it
-        to scale or refuse (raise, or return `NOT_HANDLED`) the waits sandboxed
-        code asks for, beyond the cap `max_sleep` already applies.
+        Used for `'call_host'` sleeps and manually dispatched `feed_start` system sleeps.
+        Override to scale or refuse waits, by raising or returning `NOT_HANDLED`.
         """
         time.sleep(self._capped(seconds))
 
     def async_sleep(self, delay: float, *, is_async: bool) -> Coroutine[Any, Any, None] | None:
-        """Wait for Monty's `asyncio.sleep()` callback, under `auto_os_calls={'sleep': 'call_host'}`.
+        """Handle host-routed or manually dispatched `asyncio.sleep()`, capped by `max_sleep`.
 
-        Under `AsyncMonty` (`is_async` is true) the default returns
-        `asyncio.sleep(delay)`, which the pool awaits while the sandbox's other
-        tasks keep running, so gathered sleeps overlap. Under `Monty`, which has
-        no event loop, it waits with `sleep()` and the sandbox is blocked for the
-        delay. An override may return `None` once it has waited, or a coroutine
-        (not a `Future` or `Task`, which the bridge does not recognise) when
-        `is_async` is true. What the coroutine returns is ignored: the sandbox
-        keeps the `result` argument of `asyncio.sleep()`.
+        Returns a coroutine under `AsyncMonty`, allowing gathered sleeps to overlap; otherwise blocks via `sleep()`.
+        Overrides may return `None` after waiting, or a coroutine when `is_async` (not a `Future` or `Task`).
+        The coroutine's return is ignored; the sandbox retains its `asyncio.sleep()` result argument.
         """
         if is_async:
             return asyncio.sleep(self._capped(delay))

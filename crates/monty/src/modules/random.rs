@@ -7,11 +7,10 @@
 //! module-level functions and the `random.Random` methods share one
 //! dispatcher, [`random_dispatch`], parameterised by the [`RandomTarget`].
 //!
-//! An unseeded generator takes its first state from the session's
-//! `RandomStart` on its first draw — OS entropy, a state derived from a
-//! host-chosen seed, or under `CallHost` the host's reply to an `os.urandom`
-//! suspension, whose resume ([`apply_seed_random`]) seeds it and re-runs the
-//! draw. See `limitations/random.md` for the divergences.
+//! The first draw seeds an unseeded generator according to `RandomStart`:
+//! OS entropy, a session seed, or an `os.urandom` host call. For host calls,
+//! [`apply_seed_random`] seeds the generator and retries the draw on resume.
+//! See `limitations/random.md` for divergences.
 
 use std::{
     cmp::Ordering,
@@ -137,10 +136,8 @@ pub(super) fn call(vm: &mut VM<'_>, function: RandomFunctions, args: ArgValues) 
 /// Runs `function` against `target`'s generator, for module functions and
 /// `Random` methods alike.
 ///
-/// An unseeded generator is seeded first from the session's `RandomStart`;
-/// under `CallHost` that means suspending for host entropy, stashing the
-/// call in a [`RandomRetry`] that the resume replays once the generator is
-/// seeded. Only `seed(x)` and `setstate()` skip that.
+/// Unseeded generators initialize from `RandomStart`, except for `seed(x)` and
+/// `setstate()`. `CallHost` stores the call in a [`RandomRetry`] to replay after seeding.
 pub(crate) fn random_dispatch(
     target: RandomTarget,
     function: RandomFunctions,
@@ -301,10 +298,8 @@ struct SeedArgs {
     version: Value,
 }
 
-/// `seed(a=None, version=2)`: `None` takes a fresh state from the session's
-/// `RandomStart` (entropy, the next state derived from the session seed, or
-/// under `CallHost` the host's reply to an `os.urandom` suspension); anything
-/// else seeds as `random.py` does.
+/// `seed(a=None, version=2)`: `None` takes a fresh state according to `RandomStart`;
+/// explicit seeds follow `random.py`.
 fn seed(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let SeedArgs { a, version } = SeedArgs::from_args(args, vm)?;
     defer_drop!(a, vm);

@@ -3,7 +3,7 @@
 //! Provides a minimal implementation of Python's `asyncio` module with:
 //! - `run(coro)`: Runs a coroutine to completion, equivalent to `await coro`
 //! - `gather(*awaitables)`: Collects coroutines for concurrent execution
-//! - `sleep(delay, result=None)`: Waits as the session's `SleepMode` says, as an awaitable
+//! - `sleep(delay, result=None)`: An awaitable governed by the session's `SleepMode`
 //!
 //! Other asyncio functions (`create_task`, `wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
@@ -71,12 +71,10 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
     }
 }
 
-/// `asyncio.sleep(delay, result=None)` — an awaitable producing `result` once
-/// the wait is over. Unlike CPython the wait starts at the call: a suspension
-/// the host answers with a pending future or inline ([`host_sleep`] says who
-/// and for how long), [`PostConversionEffect::SleepResult`] keeping `result`
-/// here; a zero delay, and every delay under `Zero`, is settled at once. See
-/// `limitations/asyncio.md`.
+/// Returns an awaitable producing `result`, retained by [`PostConversionEffect::SleepResult`].
+/// Unlike CPython, waiting starts at the call. The host answers with a future
+/// or inline; [`host_sleep`] determines the destination and delay.
+/// `Zero` and zero-length system sleeps settle immediately. See `limitations/asyncio.md`.
 fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let SleepArgs { delay, result } = SleepArgs::from_args(args, vm)?;
     // `result` outlives `delay`: it moves into the awaitable once the delay is valid.
@@ -93,8 +91,7 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let (result, vm) = result_guard.into_parts();
     let call = match delay {
         Some(HostSleep::CallHost(delay)) => OsFunctionCall::AsyncSleep(delay),
-        // A zero delay the host itself would wait out is a round trip for
-        // nothing: the sandbox settles it.
+        // Avoid a host round trip for a zero-length system sleep.
         Some(HostSleep::System(delay)) if !delay.is_zero() => OsFunctionCall::AsyncSystemSleep(delay),
         _ => return Ok(CallResult::Value(vm.settled_awaitable(result))),
     };

@@ -126,7 +126,15 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
 - `FunctionCall::object_id` and `NameLookup::object_id` identify the host receiver for routed calls and lookups,
   including class construction via `__call__`.
   Plain calls and lookups carry `None`.
-- `MontyRun::with_auto_os_calls` / `MontyRepl::with_auto_os_calls` — choose which OS calls the sandbox answers itself, on every path: the instant `date.today()`, `datetime.now()` and `time.time()` read (`DateTimeSource`: this machine's clock, a frozen instant, or the host) and the zone naive calls read it in (`SandboxTimeZone`: this machine's zone, a fixed offset and name, or the host), what `time.sleep()` and `asyncio.sleep()` do (`SleepMode`: wait in the sandbox up to a maximum, `System(Duration)`, the host, or return at once), and where an unseeded `random` starts (`RandomStart`: OS entropy, a seed as `random.seed()` would take it, or the host's `os.urandom` reply). `AutoOsCalls::default()` answers all four in the sandbox; a field set to `CallHost` surfaces those calls as `RunProgress::OsCall`.
+- `MontyRun::with_auto_os_calls` / `MontyRepl::with_auto_os_calls` configure clocks, sleeps and initial random state on every
+  execution path.
+  `DateTimeSource` selects the system clock, a fixed instant or the host; `SandboxTimeZone` independently selects the local
+  zone, a fixed offset and name or the host.
+  `SleepMode` selects capped system sleeps, a host handler or no wait; `RandomStart` selects OS entropy, a seed with
+  `random.seed()` semantics or host entropy.
+  Defaults use the system clock, local zone and OS entropy, with sleeps capped at ten seconds.
+  System sleeps suspend for the host to wait without its `os` handler; standard execution waits inline.
+  `CallHost` delegates to the host through `RunProgress::OsCall`.
 
 ## Monty crates
 

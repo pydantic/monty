@@ -1,11 +1,6 @@
-//! [`AutoOsCalls`]: the OS calls the sandbox answers itself — the clock, the
-//! sleeps and `random`'s first state — on every execution path.
-//!
-//! The clock expectations can't live in `test_cases/`, which runs every
-//! fixture against a real CPython whose clock keeps moving. The values below
-//! were therefore diffed against CPython 3.14 by hand: naive `now()` and
-//! `today()` read local wall time, and `now(tz)` converts the instant into
-//! the argument. `random`'s seeding is covered in `random_module.rs`.
+//! Clock and sleep policies across execution paths. Fixed-clock expectations
+//! were checked against CPython 3.14; `test_cases/` uses a moving clock.
+//! Random initialization is covered in `random_module.rs`.
 
 use std::time::{Duration, Instant};
 
@@ -17,30 +12,24 @@ use monty_types::{
     ResourceTracker, SandboxTimeZone, SleepMode,
 };
 
-/// 2023-11-14 22:13:20 UTC — the instant the datatest fixtures already freeze
-/// to, reused so both harnesses tell the same story.
+/// 2023-11-14 22:13:20 UTC, shared with the datatest fixtures.
 const FIXTURE_SECONDS: i64 = 1_700_000_000;
 
-/// 2023-11-14 22:13:59 UTC, i.e. [`FIXTURE_SECONDS`] moved onto the last
-/// second of its minute — the only place chrono will read a microsecond past a
-/// full second as a leap second instead of rejecting it.
+/// 2023-11-14 22:13:59 UTC, where chrono accepts leap-second fractions.
 const LAST_SECOND_OF_A_MINUTE: i64 = 1_700_000_039;
 
-/// A clock frozen at [`FIXTURE_SECONDS`].
 const FIXED: DateTimeSource = DateTimeSource::Fixed {
     unix_seconds: FIXTURE_SECONDS,
     microsecond: 123_456,
 };
 
-/// A UTC+02:00 local zone, which puts [`FIXED`]'s local date one day ahead of
-/// the UTC one.
+/// UTC+02:00 puts FIXED on the next calendar day.
 const PLUS_TWO: SandboxTimeZone = SandboxTimeZone::Fixed {
     offset_seconds: 7_200,
     name: None,
 };
 
-/// The defaults with `datetime` replaced; a fixed instant is read in
-/// [`PLUS_TWO`] so its expectations do not depend on the host's zone.
+/// Use UTC+02:00 for fixed instants to make expectations independent of the host zone.
 fn with_datetime(datetime: DateTimeSource) -> AutoOsCalls {
     let timezone = match datetime {
         DateTimeSource::Fixed { .. } => PLUS_TWO,
@@ -53,7 +42,6 @@ fn with_datetime(datetime: DateTimeSource) -> AutoOsCalls {
     }
 }
 
-/// The defaults with `sleep` replaced.
 fn with_sleep(sleep: SleepMode) -> AutoOsCalls {
     AutoOsCalls {
         sleep,
@@ -61,7 +49,6 @@ fn with_sleep(sleep: SleepMode) -> AutoOsCalls {
     }
 }
 
-/// Every call marked for the host.
 fn call_host() -> AutoOsCalls {
     AutoOsCalls {
         datetime: DateTimeSource::CallHost,
@@ -70,43 +57,35 @@ fn call_host() -> AutoOsCalls {
     }
 }
 
-/// A runner for `code` under `calls`.
 fn runner(code: &str, calls: AutoOsCalls) -> MontyRun {
     MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
         .unwrap()
         .with_auto_os_calls(calls)
 }
 
-/// Runs `code` under `calls` and returns its result, or the last line of the
-/// error (`Type: message`, without the traceback).
+/// Returns errors as `Type: message`, without tracebacks.
 fn run(code: &str, calls: AutoOsCalls) -> Result<MontyObject, String> {
     runner(code, calls)
         .run_no_limits(vec![])
         .map_err(|err| err.to_string().lines().last().unwrap_or_default().to_owned())
 }
 
-/// Runs a `datetime` expression under `datetime` and returns its `repr()`.
 fn run_repr(expr: &str, datetime: DateTimeSource) -> String {
     run_repr_under(expr, with_datetime(datetime))
 }
 
-/// Runs a `datetime` expression under `calls` and returns its `repr()`.
 fn run_repr_under(expr: &str, calls: AutoOsCalls) -> String {
     let code = format!("from datetime import date, datetime, timedelta, timezone\nrepr({expr})");
     let obj = run(&code, calls).unwrap();
     (&obj).try_into().unwrap()
 }
 
-/// Runs `code` under `calls` and returns its result with the wall time it took.
 fn timed_run(code: &str, calls: AutoOsCalls) -> (MontyObject, Duration) {
     let started = Instant::now();
     let result = run(code, calls).unwrap();
     (result, started.elapsed())
 }
 
-/// A runner that was never configured answers the clock itself: standard
-/// execution has no host to ask, so denying by default is what made ordinary
-/// date-handling scripts raise.
 #[test]
 fn the_system_clock_is_the_default() {
     let code = "from datetime import date, datetime\n(date.today().year, datetime.now().year)";
@@ -123,8 +102,6 @@ fn the_system_clock_is_the_default() {
     }
 }
 
-/// `CallHost` hands the calls to the host; standard execution has none, so
-/// they fail exactly as every other unanswered OS call does there.
 #[test]
 fn call_host_refuses_every_clock_call_under_standard_execution() {
     let calls = with_datetime(DateTimeSource::CallHost);
@@ -142,8 +119,7 @@ fn call_host_refuses_every_clock_call_under_standard_execution() {
     );
 }
 
-/// `time.time()` is the same instant as `datetime.now()`, read as epoch
-/// seconds rather than as local wall time — no timezone applies to it.
+/// Epoch seconds are independent of the session timezone.
 #[test]
 fn fixed_clock_reads_epoch_seconds() {
     assert_eq!(run("import time\ntime.time()", with_datetime(FIXED)).unwrap(), {
@@ -174,7 +150,6 @@ fn fixed_clock_converts_into_the_requested_timezone() {
     );
 }
 
-/// The `tz` argument itself is attached, as CPython does, so identity holds.
 #[test]
 fn now_attaches_the_timezone_argument() {
     let code = "from datetime import datetime, timedelta, timezone\n\
@@ -183,8 +158,6 @@ fn now_attaches_the_timezone_argument() {
     assert_eq!(run(code, with_datetime(FIXED)).unwrap(), MontyObject::bool(true));
 }
 
-/// An aware `now(tz)` and a naive one are the same instant, whatever the
-/// clock's own local offset is.
 #[test]
 fn aware_and_naive_agree_on_the_instant() {
     let code = "from datetime import datetime, timezone\n\
@@ -192,8 +165,6 @@ fn aware_and_naive_agree_on_the_instant() {
     assert_eq!(run(code, with_datetime(FIXED)).unwrap(), MontyObject::int(22));
 }
 
-/// A fixed instant outside `datetime`'s 1..=9999 years raises rather than
-/// producing an out-of-range value.
 #[test]
 fn unrepresentable_fixed_instant_raises() {
     let far_future = with_datetime(DateTimeSource::Fixed {
@@ -211,9 +182,7 @@ fn unrepresentable_fixed_instant_raises() {
     );
 }
 
-/// An instant the sandbox owns but cannot represent in the requested zone
-/// raises too, rather than falling back to the host's clock: the last second
-/// of year 9999 UTC is year 10000 one hour east.
+/// Converting year 9999 UTC to UTC+01:00 overflows without falling back to the host.
 #[test]
 fn unrepresentable_fixed_instant_in_a_timezone_raises() {
     let last_second = with_datetime(DateTimeSource::Fixed {
@@ -241,9 +210,7 @@ fn out_of_range_microsecond_raises() {
         "OverflowError: date value out of range"
     );
 
-    // On the last second of a minute chrono reads nanoseconds past a full
-    // second as a leap second and accepts them, so `from_timestamp` alone does
-    // not bound this — only `read()`'s own check does.
+    // Chrono accepts leap seconds, so read() must reject them explicitly.
     let leap_second = with_datetime(DateTimeSource::Fixed {
         unix_seconds: LAST_SECOND_OF_A_MINUTE,
         microsecond: 1_500_000,
@@ -254,9 +221,7 @@ fn out_of_range_microsecond_raises() {
     );
 }
 
-/// The zone is the session's own: a fixed instant read in the system zone
-/// lands on the host's wall clock, and `CallHost` on the zone alone sends
-/// only the calls that need it — naive `now()` and `today()` — to the host.
+/// A CallHost zone delegates only naive now() and today(); time() and now(tz) stay local.
 #[test]
 fn the_zone_is_chosen_separately_from_the_instant() {
     let system_zone = AutoOsCalls {
@@ -303,7 +268,6 @@ fn the_zone_is_chosen_separately_from_the_instant() {
 
 #[test]
 fn system_clock_returns_a_plausible_now() {
-    // Written 2026; a system clock that reads before then is broken, not stale.
     let code = "from datetime import date, datetime\n\
                 date.today() == datetime.now().date() and datetime.now().year >= 2026";
     assert_eq!(run(code, with_datetime(DateTimeSource::System)).unwrap(), {
@@ -311,8 +275,6 @@ fn system_clock_returns_a_plausible_now() {
     });
 }
 
-/// The sandbox answers the clock on the suspending path too; only `CallHost`
-/// lets the host see (and so deny or fake) the call.
 #[test]
 fn iterative_execution_answers_the_clock_unless_told_to_call_the_host() {
     let code = "from datetime import date\nrepr(date.today())";
@@ -345,8 +307,6 @@ fn repl_sessions_take_the_configuration_too() {
     assert_eq!(result, MontyObject::string("datetime.date(2023, 11, 15)".to_owned()));
 }
 
-/// The configuration is the session's, so which entry point runs the code
-/// must not change what the code can do.
 #[test]
 fn call_function_takes_the_session_configuration_too() {
     let mut repl = MontyRepl::new("<test>", ResourceTracker::default(), CompileOptions::default())
@@ -362,7 +322,6 @@ fn call_function_takes_the_session_configuration_too() {
     assert_eq!(result, MontyObject::string("datetime.date(2023, 11, 15)".to_owned()));
 }
 
-/// `CallHost` refuses through `call_function` too, which has no host either.
 #[test]
 fn call_function_honours_call_host_too() {
     let mut repl = MontyRepl::new("<test>", ResourceTracker::default(), CompileOptions::default())
@@ -387,8 +346,6 @@ fn call_function_honours_call_host_too() {
     "#);
 }
 
-/// The configuration is part of the serialized session, so a restored dump
-/// must still answer with it.
 #[test]
 fn the_configuration_survives_a_dump() {
     let mut repl = MontyRepl::new("<test>", ResourceTracker::default(), CompileOptions::default())
@@ -414,8 +371,7 @@ fn the_configuration_survives_a_dump() {
 // Sleeping
 // ---------------------------------------------------------------------------
 
-/// A sandbox sleep really waits, off the execution clock: `max_feed_duration` is
-/// far shorter than the sleep and does not trip.
+/// The sleep exceeds max_feed_duration but must not count toward it.
 #[test]
 fn sandbox_sleep_waits_without_spending_execution_time() {
     let code = "import time\ntime.sleep(0.05)\n'awake'";
@@ -444,8 +400,6 @@ fn the_system_maximum_cuts_a_long_sleep_short() {
     assert!(elapsed < Duration::from_secs(1), "took {elapsed:?}");
 }
 
-/// Under `CallHost` neither sleep is served in-process; standard execution
-/// then refuses them like any other OS call.
 #[test]
 fn call_host_refuses_sleeping_under_standard_execution() {
     assert_eq!(
@@ -462,7 +416,6 @@ fn call_host_refuses_sleeping_under_standard_execution() {
     );
 }
 
-/// The argument is validated the same way whatever the mode.
 #[test]
 fn sleep_arguments_are_validated_in_every_mode() {
     for calls in [AutoOsCalls::default(), with_sleep(SleepMode::Zero), call_host()] {
@@ -477,10 +430,7 @@ fn sleep_arguments_are_validated_in_every_mode() {
     }
 }
 
-/// A gathered `asyncio.sleep` reaches the host as an `asyncio.sleep` OS call
-/// it may answer with a future, so the other tasks run while it waits and
-/// the host decides whether sleeps overlap; the delay arrives already cut to
-/// the mode's maximum.
+/// The host receives capped delays and may resolve them as futures to overlap sleeps.
 #[test]
 fn gathered_sleeps_are_the_hosts_to_overlap() {
     let code = "import asyncio\n\
@@ -535,9 +485,7 @@ fn sandbox_sleep_result_need_not_be_convertible() {
     assert_eq!(run(code, AutoOsCalls::default()).unwrap(), MontyObject::int(84));
 }
 
-/// Under `System` a sleep reaches the host already cut to the maximum, and
-/// only that: `max_total_sleep` is the host's to enforce, so the interpreter
-/// stores it for the host to read back and lets every sleep through.
+/// The interpreter caps individual delays; the host enforces max_total_sleep.
 #[test]
 fn system_sleeps_reach_the_host_cut_but_uncharged() {
     let code = "import time\ntime.sleep(3600)\ntime.sleep(3600)";
@@ -561,8 +509,7 @@ fn system_sleeps_reach_the_host_cut_but_uncharged() {
     assert!(matches!(progress, RunProgress::Complete(_)), "got {progress:?}");
 }
 
-/// A sleep created in one feed is waited out at the call, so awaiting it in
-/// a later feed finds it settled.
+/// Waiting starts at the call, so a later feed awaits an already-settled sleep.
 #[test]
 fn a_sleep_saved_across_repl_feeds_is_settled() {
     let mut repl = MontyRepl::new("<test>", ResourceTracker::default(), CompileOptions::default());

@@ -52,35 +52,21 @@ time (see [language.md](language.md)).
 ## `asyncio.sleep()` waits at the call, not at the `await`
 
 CPython's `asyncio.sleep()` returns a coroutine that does nothing until it is
-awaited. Monty's starts the wait at the call itself, and the `await` then
-produces `result` once the wait is over. What the wait is depends on the
-session's `sleep` setting (see [time.md](time.md)):
+awaited. Monty starts waiting at the call; `await` produces `result` when the wait finishes.
+The session's `sleep` setting determines concurrency (see [time.md](time.md)):
 
-- `'system'`, the default: the call suspends with the delay cut to
-    `sleep_system_max` (10 seconds unless changed), and the host waits it out
-    itself, without its `os` handler. Every pool answers it with a future —
-    `Monty`, `AsyncMonty` and `@pydantic/monty` alike — so sibling tasks run
-    while it is pending and gathered sleeps overlap: `gather(sleep(1), sleep(1))`
-    takes one second. Standard Rust execution (`run`, `feed_run`, the CLI
-    without a mount) is its own host and waits inline, so there gathered
-    sleeps run one after another. A sleep awaited at once with nothing else
-    to run may be answered eagerly, with the wait already done.
-- `'call_host'`: the call suspends uncut to the host's `os` handler, which
-    performs the wait. A handler that answers with a pending future lets
-    sibling tasks run while the delay elapses: `AsyncMonty` and
-    `@pydantic/monty` do this when the `os` callback is async (`OSAccess` is,
-    by default, under `AsyncMonty`). One that waits inline — the sync `Monty`,
-    a sync callback — runs gathered sleeps one after another. Either way the
-    results are the same.
-- `'zero'`: the awaitable is settled immediately; nothing waits and no other
-    task runs meanwhile, so `sleep(0)` does not yield as CPython's does. A zero
-    delay under `'system'` is settled the same way, without a round trip; under
-    `'call_host'` it is the host's answer that decides, and one answering with
-    a pending future lets sibling tasks run.
+- `'system'`: all pools answer with futures, so gathered sleeps overlap and sibling tasks can run meanwhile.
+    Standard Rust execution and the CLI wait inline, making gathered sleeps sequential.
+    An immediately awaited sleep may be answered eagerly if no other task can run.
+- `'call_host'`: async handlers in `AsyncMonty` and JavaScript allow gathered sleeps to overlap.
+    `OSAccess` is async by default under `AsyncMonty`.
+    Sync handlers, including `Monty` callbacks, wait sequentially; results are unchanged.
+- `'zero'`: the awaitable settles immediately without yielding to sibling tasks, unlike CPython's `sleep(0)`.
+    Zero-delay system sleeps also settle without a round trip.
+    Under `'call_host'`, a handler returning a pending future allows sibling tasks to run even for zero delay.
 
-A sleep is a suspension, counted by `max_suspensions`, and under `'system'`
-is charged to `max_total_sleep`; neither is charged to `max_feed_duration` or
-`max_turn_duration` (see [time.md](time.md)).
+Suspending sleeps count against `max_suspensions`; system sleeps also count against `max_total_sleep`.
+Waiting consumes neither execution-time limit (see [time.md](time.md)).
 
 What follows from waiting at the call:
 

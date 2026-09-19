@@ -198,21 +198,14 @@ indistinguishable from a stack overflow.
 
 ## Sleep
 
-- `max_total_sleep` (`max_total_sleep_secs` in the bindings, `--max-total-sleep`
-    in the CLI) bounds the cumulative time `time.sleep()` and `asyncio.sleep()`
-    may ask the host to wait under the default `sleep` mode (see
-    [time.md](time.md)). A sleep costs nothing against the duration limits, so
-    without it a sleeping loop is bounded only by `max_suspensions`, one per sleep.
-- It is off by default. Like `max_suspensions`, the interpreter only stores
-    it: the host waiting out the sleeps (the pools, the CLI, the wasm pool)
-    charges each one and refuses the sleep that would take the total over,
-    before waiting, with an uncatchable
-    `TimeoutError: sleep limit exceeded: <total> > <limit>`; the total
-    reported includes the refused sleep. A sleep is charged as announced, for
-    the delay asked (after the `sleep_system_max` cut), so an
-    `asyncio.sleep()` costs its whole delay when created, however long the
-    host really waits. Rust's non-suspending `MontyRun::run`, which waits
-    inline, applies no total.
+- `max_total_sleep` bounds cumulative system sleep durations (see [time.md](time.md)).
+    It is disabled by default; sleeping loops remain bounded by `max_suspensions`.
+    Bindings expose `max_total_sleep_secs` or `maxTotalSleepSecs`; the CLI uses `--max-total-sleep`.
+- Pools and the CLI charge each capped delay before waiting.
+    Exceeding the total raises an uncatchable `TimeoutError: sleep limit exceeded: <total> > <limit>`.
+    The reported total includes the refused sleep and uses Rust `Duration` formatting, such as `1.5s > 1s`.
+    An `asyncio.sleep()` costs its full capped delay when created, regardless of how long the host waits.
+    Non-suspending `MontyRun::run` enforces no total sleep limit.
 - The time already slept travels in dumps with the limit, like execution time,
     so a restored session resumes its budget rather than restarting from zero.
 - Sleeps handed to the host under `'call_host'` are not charged to it.

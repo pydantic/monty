@@ -167,12 +167,9 @@ pub struct ResourceLimits {
     /// [`DEFAULT_MAX_SUSPENSIONS`]; always bounded, like recursion depth).
     /// The interpreter only stores this limit; hosts must enforce it.
     pub max_suspensions: usize,
-    /// Maximum cumulative time `time.sleep()` and `asyncio.sleep()` may ask
-    /// of the host under `SleepMode::System`. Like `max_suspensions`, the
-    /// interpreter only stores this limit; the host performing the waits
-    /// enforces it. A sleep costs nothing against the duration limits, so
-    /// without this a sleeping loop is bounded only by `max_suspensions` and
-    /// a host deadline. Defaulted on deserialization like `max_feed_duration`.
+    /// Maximum cumulative sleep under `SleepMode::System`, enforced by the host.
+    /// Sleeps do not count toward execution duration; without this limit, sleeping
+    /// loops need `max_suspensions` or a host deadline. Defaults on deserialization.
     #[serde(default)]
     pub max_total_sleep: Option<Duration>,
 }
@@ -412,8 +409,7 @@ impl ResourceTracker {
         self.limits.max_suspensions
     }
 
-    /// Returns the configured maximum cumulative sleep, if any; enforced by
-    /// the host, which reads it back from here for a restored session.
+    /// Cumulative sleep limit for the host to enforce, including after restore.
     #[must_use]
     pub fn max_total_sleep(&self) -> Option<Duration> {
         self.limits.max_total_sleep
@@ -701,14 +697,9 @@ impl ResourceTracker {
         self.turn_execution_time.set(Duration::ZERO);
     }
 
-    /// Blocks for `duration` with the execution clock stopped: how standard
-    /// execution, its own host, waits out a `SleepMode::System` sleep at no
-    /// cost against `max_feed_duration`, exactly as a host-performed one. The
-    /// clock restarts only if it was running, so this is safe outside an
-    /// execution window too.
-    ///
-    /// The one place the interpreter waits, so a platform without a blocking
-    /// sleep has a single function to adapt (see `block_for`).
+    /// Performs a standard-execution sleep without charging `max_feed_duration`.
+    /// Restarts the execution clock only if it was running before the wait.
+    /// All interpreter waits use `block_for` for platform-specific blocking.
     pub fn sandbox_sleep(&self, duration: Duration) {
         let was_running = self.running_since.get().is_some();
         self.on_execution_stop();
@@ -754,7 +745,6 @@ fn probe_memory() -> usize {
         .saturating_sub(BASELINE_MEMORY.load(Ordering::Relaxed))
 }
 
-/// Blocks the calling thread for `duration`.
 #[cfg(not(target_arch = "wasm32"))]
 fn block_for(duration: Duration) {
     thread::sleep(duration);

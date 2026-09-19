@@ -70,23 +70,21 @@ Only the file argument's name is used, so `monty ./scripts/run.py` and `monty /a
 ## The clock, sleeping and entropy
 
 `date.today()` and `datetime.now()` read the machine's clock and local timezone; `time.time()` reads the machine's clock as Unix epoch seconds.
-`time.sleep()` and `asyncio.sleep()` are waited out by the CLI, each call cut short at `--max-sleep` (10 seconds
-unless changed, `inf` for no cap) and, when `--max-total-sleep` is given, all of them together bounded by it, in
-every run — script, `-c` and REPL, with or without a mount.
-An unseeded `random` draw seeds the generator from the machine's entropy, as CPython does.
-These are the defaults every embedding gets; the CLI has no flag to freeze the clock, skip the sleeps or seed
-`random` — `MontyRun::with_auto_os_calls` is how a Rust embedder chooses otherwise, and `checkout()` how the pools do
-(see [the clock](security.md#the-clock)).
+`--max-sleep` caps each `time.sleep()` and `asyncio.sleep()` at ten seconds by default (`inf` removes the cap).
+`--max-total-sleep` optionally bounds their cumulative duration.
+Both limits apply to scripts, `-c` and the REPL, with or without mounts.
+Unseeded random generators use system entropy.
+To freeze the clock or configure random seeds, use the [session options](security.md#the-clock) in Rust or the pools;
+the CLI has no flags for them.
 
 ```console
 $ monty -c "from datetime import datetime; print(datetime.now())"
 2026-09-03 21:02:32.871568
 ```
 
-Nothing answers `os.urandom()` in the CLI, so it fails.
-Without `--mount` the script runs in-process and the call raises
-`NotImplementedError: OS function 'os.urandom' not implemented with standard execution`; with a mount it goes
-through the host loop and raises `RuntimeError: 'os.urandom' is not supported in this environment`.
+The CLI has no `os.urandom()` handler.
+It raises `NotImplementedError: OS function 'os.urandom' not implemented with standard execution`, or
+`RuntimeError: 'os.urandom' is not supported in this environment` when mounts or `--max-total-sleep` require a host loop.
 See [`limitations/datetime.md`](https://github.com/pydantic/monty/blob/main/limitations/datetime.md),
 [`limitations/time.md`](https://github.com/pydantic/monty/blob/main/limitations/time.md) and
 [`limitations/random.md`](https://github.com/pydantic/monty/blob/main/limitations/random.md).

@@ -164,15 +164,12 @@ class ResourceLimits(TypedDict, total=False):
     session remains usable. Restoring a dump resets the count."""
 
     max_total_sleep_secs: float | None
-    """Maximum cumulative time `time.sleep()` and `asyncio.sleep()` may ask the pool to wait, in seconds.
-
-    A sleep costs nothing against the duration limits, so this is what bounds a sleeping loop. The pool charges
-    each `'system'` sleep before waiting it out; a sleep that would go over is refused with an uncatchable
-    `TimeoutError` instead."""
+    """Maximum cumulative seconds of `'system'` sleep, excluded from execution duration limits.
+    The pool charges each sleep before waiting; exceeding the limit raises an uncatchable `TimeoutError`."""
 
 
 class TimeZone(TypedDict):
-    """A fixed offset from UTC, as `datetime.timezone(offset, name)` carries it: not an IANA zone."""
+    """A fixed UTC offset and optional name, as in `datetime.timezone`; IANA zones are unsupported."""
 
     offset_seconds: int
     """Offset from UTC, in seconds."""
@@ -182,54 +179,41 @@ class TimeZone(TypedDict):
 
 
 class RandomSeed(TypedDict):
-    """`AutoOSCalls['random_start']`: start the sandbox's `random` as `random.seed(seed)` would."""
+    """Initial seed for the sandbox's `random` module."""
 
     seed: int | float | str | bytes
-    """An int of any size, a float, a `str` or `bytes`, as `random.seed(seed)` takes them."""
 
 
 class AutoOSCalls(TypedDict, total=False):
-    """`checkout(auto_os_calls=...)`: which OS calls the worker answers itself, for the life of the session.
+    """Clock, sleep and random initialization policies for the session.
 
-    Every key is optional; an omitted key keeps its default. `'call_host'` on a key sends those calls to the
-    `os=` handler instead, as OS calls like any other.
+    Omitted keys keep their defaults; `'call_host'` routes calls to the `os=` handler.
     """
 
     datetime: Literal['system', 'call_host'] | datetime.datetime
-    """The instant `date.today()`, `datetime.now()` and `time.time()` read.
-
-    `'system'` (the default) is the worker's clock; a `datetime.datetime` freezes the clock at that instant and,
-    unless `timezone` is given, sets the zone too — its `utcoffset()` and `tzname()`, or UTC when naive — so
-    `datetime.now()` returns it exactly."""
+    """Clock for `date.today()`, `datetime.now()` and `time.time()`; defaults to the worker's clock.
+    A `datetime` freezes the instant and, unless `timezone` is set, uses its `utcoffset()` and `tzname()`
+    (UTC if naive). Naive `datetime.now()` then returns its wall time."""
 
     timezone: Literal['system', 'call_host'] | TimeZone
-    """The local zone naive `datetime.now()` and `date.today()` read in.
-
-    `'system'` (the default) is the worker's local zone; `'call_host'` sends the calls that need the zone to the
-    `os=` handler; a `TimeZone` is a fixed offset."""
+    """Zone for naive `datetime.now()` and `date.today()`; defaults to the worker's local zone.
+    `'call_host'` routes calls requiring the zone to `os=`; a `TimeZone` supplies a fixed offset."""
 
     sleep: Literal['system', 'call_host', 'zero']
-    """What `time.sleep()` and `asyncio.sleep()` do.
-
-    `'system'` (the default) has the pool wait, without the `os=` handler, each call cut to `sleep_system_max`,
-    and gathered `asyncio.sleep()` calls overlap; `'call_host'` sends both to the `os=` handler, which performs the
-    wait; `'zero'` returns at once."""
+    """Policy for `time.sleep()` and `asyncio.sleep()`; defaults to `'system'`.
+    `'system'` waits in the pool, capped per call by `sleep_system_max`; gathered async sleeps overlap.
+    `'call_host'` delegates waits to `os=`; `'zero'` returns immediately."""
 
     sleep_system_max: float
-    """Longest wait a `'system'` performs per call, in seconds (default 10; `inf` for no cap).
-
-    Given alongside any other `sleep` it is a `ValueError`, not ignored.
-
-    A wait costs nothing against the duration limits; each sleep is one suspension, and `max_total_sleep_secs`
-    bounds their sum."""
+    """Maximum seconds per `'system'` sleep (default 10; `inf` disables the cap).
+    Raises `ValueError` with other sleep modes. Each sleep counts as one suspension and toward
+    `max_total_sleep_secs`, but not execution duration limits."""
 
     random_start: Literal['system', 'call_host'] | RandomSeed
-    """Where an unseeded `random` generator gets its first state.
-
-    `'system'` (the default) seeds from the worker's OS entropy; `'call_host'` sends an `os.urandom` request for
-    2496 bytes to the `os=` handler on the first draw; `{'seed': s}` starts the module-level generator exactly as
-    `random.seed(s)` would (any int, float, str or bytes), with unseeded `random.Random()` instances taking
-    deterministic states derived from it. `random.seed()` in the sandbox still applies afterwards."""
+    """Initial `random` state; defaults to the worker's OS entropy.
+    `'call_host'` requests 2496 bytes from `os.urandom` via `os=` on the first draw.
+    `{'seed': s}` initializes the module as `random.seed(s)` and derives deterministic states for unseeded
+    `random.Random()` instances. Sandbox calls to `random.seed()` still override the state."""
 
 
 class ExternalReturnValue(TypedDict):

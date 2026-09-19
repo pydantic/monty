@@ -277,18 +277,14 @@ struct DatetimeInitArgs {
     fold: i32,
 }
 
-/// Classmethod implementation for `datetime.now(tz=None)`: the session's
-/// clock in its zone (naive) or in `tz`, with the argument attached so
-/// `now(tz).tzinfo is tz`. When the instant, or the zone a naive result
-/// needs, is the host's, it yields a `DateTimeNow` OS call carrying `tz` as a
-/// validated [`Option<MontyTimeZone>`], never an arbitrary object.
+/// Reads `datetime.now(tz=None)` from the session clock, preserving `tz` identity.
+/// Naive results use the session zone. If the clock or required zone uses
+/// `CallHost`, yields `DateTimeNow` with a validated [`Option<MontyTimeZone>`].
 pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let NowArgs { tz } = NowArgs::from_args(args, vm)?;
     defer_drop!(tz, vm);
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
-    // `None` here means only "the host's to answer": an instant the sandbox
-    // owns but cannot represent in the requested zone raises instead, so a
-    // fixed clock never falls back to the host's.
+    // Invalid fixed instants raise; only CallHost falls back to the host's clock.
     let local = match (sandbox_instant(vm)?, &tz) {
         (Some(utc), Some(tz)) => Some(
             from_utc_naive_with_timezone_parts(utc, tz.offset_seconds, tz.name.clone())
@@ -311,10 +307,8 @@ pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
     Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt)))))
 }
 
-/// Reads the session's clock as a UTC wall clock, for `date.today()`,
-/// `datetime.now()` and `time.time()`: `None` means the instant is the
-/// host's and the call must suspend. A `Fixed` instant no Python `datetime`
-/// can hold raises `OverflowError`, keeping the three calls all-or-nothing.
+/// Reads the session clock in UTC; `None` means `CallHost` and requires suspension.
+/// Unrepresentable fixed instants raise `OverflowError` for all three clock calls.
 pub(crate) fn sandbox_instant(vm: &VM<'_>) -> RunResult<Option<NaiveDateTime>> {
     match vm.env.auto_os_calls.datetime {
         DateTimeSource::CallHost => Ok(None),
@@ -322,9 +316,8 @@ pub(crate) fn sandbox_instant(vm: &VM<'_>) -> RunResult<Option<NaiveDateTime>> {
     }
 }
 
-/// `utc` as the wall clock in the session's zone, for a naive `now()` or
-/// `today()`: `None` means the zone is the host's and the call must suspend.
-/// A wall clock outside `datetime`'s year range raises `OverflowError`.
+/// Converts UTC to the session zone for naive `now()` and `today()`.
+/// Returns `None` for `CallHost`; out-of-range years raise `OverflowError`.
 pub(crate) fn sandbox_local_wall_clock(vm: &VM<'_>, utc: NaiveDateTime) -> RunResult<Option<NaiveDateTime>> {
     match vm.env.auto_os_calls.timezone.offset_seconds(utc) {
         None => Ok(None),
@@ -332,7 +325,6 @@ pub(crate) fn sandbox_local_wall_clock(vm: &VM<'_>, utc: NaiveDateTime) -> RunRe
     }
 }
 
-/// The `OverflowError` for an instant outside `datetime`'s year range.
 fn date_out_of_range() -> RunError {
     SimpleException::new_msg(ExcType::OverflowError, DATE_OUT_OF_RANGE).into()
 }

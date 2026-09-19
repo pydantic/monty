@@ -117,7 +117,7 @@ async def test_inputs_and_async_external_function_over_websocket(ws_url: str):
 
 
 async def test_auto_os_calls_over_websocket(ws_url: str):
-    # the checkout's clock, sleep and seed settings travel in the session's `Configure`
+    # Options must survive serialization in `Configure`.
     frozen = datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)
     async with AsyncMontyWebsocket(ws_url, request_timeout=30.0) as pool:
         async with pool.checkout(
@@ -128,7 +128,6 @@ async def test_auto_os_calls_over_websocket(ws_url: str):
             assert await session.feed_run(code) == snapshot(
                 (datetime.datetime(2024, 1, 15, 10, 30, 5, 123456), 0.6394267984578837)
             )
-            # a `'zero'` sleep returns at once; the default would wait out `sleep_system_max`
             assert time.monotonic() - started < 5
 
 
