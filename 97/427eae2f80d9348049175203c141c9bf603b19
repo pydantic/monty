@@ -1,0 +1,98 @@
+crates/monty-wasm-runtime/wit/runtime.wit
+  s_440a7ea0ee4e52::t_8aa789c949bb93 427-430
+crates/monty-pool/src/checkout.rs
+  s_440a7ea0ee4e52::t_8aa789c949bb93 1528-1534
+  s_440a7ea0ee4e52::t_376606e5a4e57d 79-81,263-268,437-441,459-462,477,519-525,528-529,534,545-549,1221,1547
+crates/monty-proto/src/convert/os_call.rs
+  s_440a7ea0ee4e52::t_376606e5a4e57d 107-112,171-174
+crates/monty-pool/src/telemetry/tracing.rs
+  s_440a7ea0ee4e52::t_376606e5a4e57d 751-752
+crates/monty-proto/tests/roundtrip.rs
+  s_440a7ea0ee4e52::t_8aa789c949bb93 946-947
+  s_440a7ea0ee4e52::t_227e909367f45c 1,884,952-961
+crates/monty-pool/src/telemetry/metrics.rs
+  s_440a7ea0ee4e52::t_376606e5a4e57d 817-818
+crates/monty/src/modules/time.rs
+  s_440a7ea0ee4e52::t_376606e5a4e57d 73-74,91-98,102-113,115-116
+crates/monty-runtime/tests/subprocess.rs
+  s_440a7ea0ee4e52::t_12e7c041775532 584-586
+  s_440a7ea0ee4e52::t_8aa789c949bb93 571
+crates/monty-python/src/snapshot.rs
+  s_440a7ea0ee4e52::t_12e7c041775532 304
+crates/monty-js/ts/native.ts
+  s_440a7ea0ee4e52::t_3bf25c90d9cd66 72-77
+  s_440a7ea0ee4e52::t_669f2a26af4014 82,85
+crates/monty-js/ts/worker/pool.ts
+  s_440a7ea0ee4e52::t_d1b84469aeb0fd 19,115,125
+crates/monty-js/src/pool.rs
+  s_440a7ea0ee4e52::t_8aa789c949bb93 930,934-936
+crates/monty-pool/README.md
+  s_440a7ea0ee4e52::t_d1b84469aeb0fd 76
+crates/monty-python/src/pool.rs
+  s_440a7ea0ee4e52::t_c3f765a9fff3b1 1733
+  s_440a7ea0ee4e52::t_12e7c041775532 1447-1457,1459-1467
+  s_440a7ea0ee4e52::t_8aa789c949bb93 1445,1721,1723
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_440a7ea0ee4e52::t_376606e5a4e57d 859-865
+crates/monty-js/ts/options.ts
+  s_440a7ea0ee4e52::t_d1b84469aeb0fd 171-174,176-177
+crates/monty-runtime/src/run.rs
+  s_440a7ea0ee4e52::t_8aa789c949bb93 685,700
+crates/monty-pool/tests/pool_test.rs
+  s_440a7ea0ee4e52::t_8aa789c949bb93 1881-1882,1901-1907
+  s_440a7ea0ee4e52::t_669f2a26af4014 1918-1919
+crates/monty-js/ts/session.ts
+  s_440a7ea0ee4e52::t_d1b84469aeb0fd 190,209,382,708-710,713
+docs/quickstart/rust.md
+  s_440a7ea0ee4e52::t_f6b7f702fc0930 215-216
+crates/monty/tests/auto_os_calls.rs
+  s_440a7ea0ee4e52::t_8aa789c949bb93 502,554
+crates/monty-wasm-runtime/src/lib.rs
+  s_440a7ea0ee4e52::t_8aa789c949bb93 212-213,226-231,248
+crates/monty-js/ts/worker/component/interfaces/pydantic-monty-worker.d.ts
+  s_440a7ea0ee4e52::t_3bf25c90d9cd66 512
+crates/monty-python/python/pydantic_monty/os_access.py
+  s_440a7ea0ee4e52::t_669f2a26af4014 69-70,281-282,284
+crates/monty/tests/os_tests.rs
+  s_440a7ea0ee4e52::t_8aa789c949bb93 85-88
+crates/monty-proto/src/generated/monty.v1.rs
+  s_440a7ea0ee4e52::t_402d3aefd304f4 1028,1210,1213,1216-1222
+crates/monty-js/ts/pool.ts
+  s_440a7ea0ee4e52::t_d1b84469aeb0fd 215
+crates/monty-js/ts/worker/transport.ts
+  s_440a7ea0ee4e52::t_d1b84469aeb0fd 18,116-117,142,374-376,380-381,456-461,469
+crates/monty/src/modules/asyncio.rs
+  s_440a7ea0ee4e52::t_af39944e5d2f3e 11
+  s_440a7ea0ee4e52::t_376606e5a4e57d 23-26,76-77,91,94-103
+crates/monty-fs/src/dispatch.rs
+  s_440a7ea0ee4e52::t_376606e5a4e57d 175-177
+crates/monty-datatest/src/main.rs
+  s_440a7ea0ee4e52::t_12e7c041775532 952-954
+  s_440a7ea0ee4e52::t_376606e5a4e57d 947-948
+crates/monty/src/run.rs
+  s_440a7ea0ee4e52::t_af39944e5d2f3e 10
+  s_440a7ea0ee4e52::t_376606e5a4e57d 755-757,759,762
+crates/monty-types/src/os.rs
+  s_440a7ea0ee4e52::t_669f2a26af4014 134-136,149,158-160,163
+  s_440a7ea0ee4e52::t_376606e5a4e57d 126-128,131-133,137,146-148,150,213-215,321-323,368-370
+docs/limitations/time.md
+  s_440a7ea0ee4e52::t_669f2a26af4014 8-11
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_440a7ea0ee4e52::t_402d3aefd304f4 1032,1203,1206,1209-1215
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "97427eae2f80d9348049175203c141c9bf603b19",
+  "prompts": {},
+  "sessions": {
+    "s_440a7ea0ee4e52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a9754f7-13d8-42d0-a0e4-9657814a0b0c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
