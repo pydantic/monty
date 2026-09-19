@@ -1,9 +1,9 @@
 /// <reference types="vite/client" />
 // xkcd 353 in the browser: the PyScript antigravity program, running in a Monty
-// sandbox. The sandbox has no DOM, so the five things the program imports —
-// `random`, `pydom`, `DOMParser`, `open_url` and `set_interval` — are provided
-// by this file instead. Everything the program does to the page goes through
-// them, and they allow only what the flight needs.
+// sandbox. `random` and `time.sleep` are the sandbox's own; the DOM is not, so
+// the three names the program takes from PyScript — `pydom`, `DOMParser` and
+// `open_url` — are provided by this file instead. Everything the program does
+// to the page goes through them, and they allow only what the flight needs.
 
 import { ClassInstance, Monty } from '@pydantic/monty/wasm'
 
@@ -11,16 +11,9 @@ import antigravityPy from './antigravity.py?raw'
 
 const canvas = document.getElementById('canvas')!
 const status = document.getElementById('status')!
+let started = ''
 
 // ---- What the sandbox gets in place of its imports ----
-
-/** `import random`: a sandbox has no randomness of its own, so the host provides it. */
-class Random {
-  normalvariate(mu: number, sigma: number): number {
-    const radius = Math.sqrt(-2 * Math.log(1 - Math.random()))
-    return mu + sigma * radius * Math.cos(2 * Math.PI * Math.random())
-  }
-}
 
 /** A DOM element the sandbox may use. These three methods are all it gets. */
 class Node {
@@ -37,7 +30,7 @@ class Node {
   setAttribute(name: string, value: string): void {
     if (name !== 'transform') throw new Error(`the sandbox may only set transform, not ${name}`)
     this.#element.setAttribute(name, value)
-    drawTrail(value)
+    tick()
   }
 
   append(child: Node): void {
@@ -92,16 +85,15 @@ function node(element: Element): ClassInstance {
   return wrapped
 }
 
-/** Draws the flight path from the transforms the program sets on the figure. */
-const trail: string[] = []
+/** The program sets the figure's transform once per tick, so counting them times the flight. */
+let ticks = 0
+let flightStartedAt = 0
 
-function drawTrail(transform: string): void {
-  const match = /translate\((.+), (.+)\)/.exec(transform)
-  if (match === null) return
-  // (167.2, 131) is where the figure starts, in the SVG's own coordinates
-  trail.push(`${167.2 + Number(match[1])},${131 + Number(match[2])}`)
-  if (trail.length > 2000) trail.shift()
-  canvas.querySelector('#trail')?.setAttribute('points', trail.join(' '))
+function tick(): void {
+  ticks += 1
+  if (ticks === 1) flightStartedAt = performance.now()
+  const msPerTick = ((performance.now() - flightStartedAt) / ticks).toFixed(2)
+  status.textContent = `${started} · ${ticks} ticks, ${msPerTick} ms per tick`
 }
 
 // ---- Running the program ----
@@ -111,15 +103,12 @@ try {
 
   const startedAt = performance.now()
   await using pool = await Monty.create()
-  // Every call from the sandbox to a host object is a "suspension", and the
-  // default budget of 1000 would end the flight after a few hundred ticks.
+  // Every call from the sandbox to a host object, and every `time.sleep`, is a
+  // "suspension"; the default budget of 1000 would end the flight after a few
+  // hundred ticks.
   await using session = await pool.checkout({ limits: { maxSuspensions: 100_000 } })
-  const startMs = (performance.now() - startedAt).toFixed(0)
-  status.textContent = `started in ${startMs} ms`
-
-  // The rate `set_interval` asks for. The sandbox can't hand its `self.move`
-  // callback to the host, so the host runs the loop itself instead.
-  let intervalMs = 10
+  started = `started in ${(performance.now() - startedAt).toFixed(0)} ms`
+  status.textContent = started
 
   const hostFunctions = {
     // `from pyodide.http import open_url`: the one file this page will serve.
@@ -127,34 +116,22 @@ try {
       if (url !== './antigravity.svg') throw new Error(`open_url will not fetch ${url}`)
       return expose(new Response(svgText))
     },
-    // `from pyodide.ffi.wrappers import set_interval`
-    set_interval: (_callback: unknown, ms: number): void => {
-      intervalMs = ms
-    },
   }
 
   // Running the file builds `_auto`, which fetches, parses and appends the SVG.
   await session.feedRun(antigravityPy, {
     inputs: {
-      random: expose(new Random()),
       DOMParser: expose(new DomParser()),
       // `from pyweb import pydom`: `pydom["body"][0]` is where the SVG is appended.
       pydom: { body: [node(canvas)] },
     },
     externalLookup: hostFunctions,
   })
-  // What PyScript's main.py calls; it reaches `set_interval` above.
+  // What PyScript's main.py calls. The whole flight is this one feed: `fly`
+  // moves the figure and sleeps 10 ms, over and over, until the suspension
+  // budget runs out. Each sleep suspends the sandbox and the worker waits it
+  // out in the page, so the tab stays responsive.
   await session.feedRun('fly()', { externalLookup: hostFunctions })
-
-  // The session keeps `_auto` alive between feeds, so each tick is one call.
-  let feedTime = 0
-  for (let ticks = 1; ; ticks++) {
-    const before = performance.now()
-    await session.feedRun('_auto.move()', { externalLookup: hostFunctions })
-    feedTime += performance.now() - before
-    status.textContent = `started in ${startMs} ms · ${ticks} ticks, ${(feedTime / ticks).toFixed(2)} ms per feed`
-    await new Promise((resolve) => setTimeout(resolve, intervalMs))
-  }
 } catch (error) {
   status.textContent = `stopped: ${error}`
   console.error(error)

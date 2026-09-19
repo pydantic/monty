@@ -106,9 +106,9 @@ Each directory under [`examples/`](https://github.com/pydantic/monty/tree/main/e
 - [`antigravity`](https://github.com/pydantic/monty/tree/main/examples/antigravity): [xkcd 353](https://xkcd.com/353/)
     ported from [PyScript](https://github.com/pyscript/examples/tree/main/antigravity), running in the browser on the
     WebAssembly build.
-    The PyScript file runs unchanged apart from its imports: [host objects](host-objects.md) stand in for `random`,
-    `DOMParser` and the DOM element the program moves, and [host functions](host-functions.md) for `open_url` and
-    `set_interval`, all under [resource limits](resource-limits.md).
+    The PyScript file keeps `import random` and sleeps between ticks with `time.sleep()`, both served by the sandbox;
+    [host objects](host-objects.md) stand in for `DOMParser` and the DOM element the program moves, and a
+    [host function](host-functions.md) for `open_url`, all under [resource limits](resource-limits.md).
 - [`classes`](https://github.com/pydantic/monty/tree/main/examples/classes): one short file per behaviour of [host
     objects](host-objects.md), in Python and TypeScript: explicit policies, lazy attributes, sandbox-side copies,
     `convert_value` hooks, constructing host classes from the sandbox, and round-tripping sandbox-defined classes.
