@@ -142,7 +142,7 @@ The [session clock](../security.md#the-clock) has separate `datetime` and `timez
 - A fixed zone is a UTC offset with an optional name and no DST rules.
     `astimezone()`, `%Z` and `time.tzname` report the name (`UTC±HH:MM` when there is none).
 - An IANA name (`'Europe/London'`) is resolved in the worker against its tz database: the OS copy under `TZDIR` or
-    `/usr/share/zoneinfo`, or the copy bundled into the binary when the OS has none (Windows, and always in the wasm
+    `/usr/share/zoneinfo`, or the copy bundled into the binary when the worker can read none (Windows, and the wasm
     worker).
     The offset and abbreviation then follow the instant, so the results depend on that database's version, as
     CPython's do on the host's.

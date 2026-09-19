@@ -390,9 +390,13 @@ fn zone_names_are_resolved_or_refused() {
     for name in [
         "",
         "Mars/Olympus",
+        ".",
         "../zoneinfo/UTC",
+        "Europe/../UTC",
         "Europe//London",
         "Europe/London\0",
+        // jiff's nameless placeholder zone, which nothing could re-resolve by name
+        "Etc/Unknown",
     ] {
         assert_eq!(
             SandboxTimeZone::named(name).unwrap_err().to_string(),

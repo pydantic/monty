@@ -47,7 +47,8 @@ python = ["dep:pyo3"]
 # Enables the `worker` module: the child-side Child state machine that drives
 # the interpreter. Off by default so host-side consumers (monty-pool, the
 # bindings) never link the interpreter itself.
-worker = ["dep:monty", "dep:monty-type-checking"]
+# `tzdb-bundled` so every worker resolves zone names; native binaries add `tzdb` for the OS copy.
+worker = ["dep:monty", "dep:monty-type-checking", "monty-types/tzdb-bundled"]
 
 [[bin]]
 name = "generate-proto"

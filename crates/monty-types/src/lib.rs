@@ -22,7 +22,7 @@ mod virtual_path;
 
 pub use crate::{
     auto_os_calls::{
-        AutoOsCalls, DateTimeSource, RandomSeed, RandomStart, SandboxTimeZone, SleepMode, UnknownTimeZone,
+        AutoOsCalls, DateTimeSource, NamedZone, RandomSeed, RandomStart, SandboxTimeZone, SleepMode, UnknownTimeZone,
         ZoneConstants, local_wall_clock, unix_seconds,
     },
     builtins::BuiltinsFunctions,

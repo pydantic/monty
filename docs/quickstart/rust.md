@@ -225,7 +225,7 @@ assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
 ```
 
 `with_auto_os_calls` configures each operation.
-`DateTimeSource::Fixed` freezes the clock, `SandboxTimeZone::Fixed` sets the local UTC offset (`SandboxTimeZone::named` an IANA zone), and
+`DateTimeSource::Fixed` freezes the clock, `SandboxTimeZone::Fixed` sets the local UTC offset, `SandboxTimeZone::named` takes an IANA zone name, and
 `RandomStart::Seed` seeds `random` for reproducible runs.
 `SleepMode::Zero` skips waits; `SleepMode::System(max)` sets their cap.
 `CallHost` delegates through `RunProgress::OsCall` under `start`, or raises `NotImplementedError` under `run`:

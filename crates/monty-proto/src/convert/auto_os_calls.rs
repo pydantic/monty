@@ -37,13 +37,7 @@ impl From<&AutoOsCalls> for pb::AutoOsCalls {
         };
         let zone = match &calls.timezone {
             zone if *zone == SandboxTimeZone::utc() => Zone::Utc(pb::Unit {}),
-            SandboxTimeZone::Named(_) => Zone::Named(
-                calls
-                    .timezone
-                    .iana_name()
-                    .expect("a named zone comes from the database, which names it")
-                    .to_owned(),
-            ),
+            SandboxTimeZone::Named(zone) => Zone::Named(zone.name().to_owned()),
             SandboxTimeZone::Fixed { offset_seconds, name } => Zone::Fixed(pb::TimeZone {
                 offset_seconds: *offset_seconds,
                 name: name.clone(),

@@ -77,10 +77,10 @@ pub enum SandboxTimeZone {
         /// The zone's name, if it has one.
         name: Option<String>,
     },
-    /// An IANA zone with its transition rules, resolved by [`named`](Self::named)
-    /// from the tz database of the process that built it. Serialises as its name,
-    /// so each side of the wire resolves it against its own database.
-    Named(#[serde(with = "jiff::fmt::serde::tz::required")] TimeZone),
+    /// An IANA zone with its transition rules, built only by [`named`](Self::named).
+    /// Serialises as its name, so each side of the wire resolves it against its
+    /// own database.
+    Named(NamedZone),
 }
 
 impl Default for SandboxTimeZone {
@@ -100,22 +100,10 @@ impl SandboxTimeZone {
     }
 
     /// Resolves an IANA zone name such as `Europe/London` against the tz database
-    /// the `tzdb` or `tzdb-bundled` feature provides. Without either feature, or
-    /// for a name the database lacks, returns [`UnknownTimeZone`].
+    /// the `tzdb` or `tzdb-bundled` feature provides. Without either, or for a
+    /// name the database lacks, returns [`UnknownTimeZone`].
     pub fn named(name: &str) -> Result<Self, UnknownTimeZone> {
-        // The chars IANA keys use; anything else (`..`, separators) is refused
-        // before the database turns the name into a path.
-        let valid = !name.is_empty()
-            && name.len() <= 100
-            && name.split('/').all(|part| {
-                !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
-            });
-        let unknown = || UnknownTimeZone(name.to_owned());
-        if valid {
-            TimeZone::get(name).map(Self::Named).map_err(|_| unknown())
-        } else {
-            Err(unknown())
-        }
+        NamedZone::resolve(name).map(Self::Named)
     }
 
     /// The IANA name of a [`Named`](Self::Named) zone; `None` for a fixed offset.
@@ -123,7 +111,7 @@ impl SandboxTimeZone {
     pub fn iana_name(&self) -> Option<&str> {
         match self {
             Self::Fixed { .. } => None,
-            Self::Named(tz) => tz.iana_name(),
+            Self::Named(zone) => Some(zone.name()),
         }
     }
 
@@ -137,8 +125,8 @@ impl SandboxTimeZone {
                 offset_seconds: *offset_seconds,
                 name: name.clone(),
             },
-            Self::Named(tz) => {
-                let info = tz.to_offset_info(timestamp(utc));
+            Self::Named(zone) => {
+                let info = zone.zone.to_offset_info(timestamp(utc));
                 MontyTimeZone {
                     offset_seconds: info.offset().seconds(),
                     name: Some(info.abbreviation().to_owned()),
@@ -154,8 +142,9 @@ impl SandboxTimeZone {
     #[must_use]
     pub fn utc_from_local(&self, local: NaiveDateTime) -> Option<NaiveDateTime> {
         match self {
-            Self::Fixed { offset_seconds, .. } => local_wall_clock(local, -offset_seconds),
-            Self::Named(tz) => {
+            Self::Fixed { offset_seconds, .. } => local_wall_clock(local, offset_seconds.checked_neg()?),
+            Self::Named(zone) => {
+                let tz = &zone.zone;
                 let instant = tz.to_ambiguous_timestamp(civil_datetime(local)?).compatible().ok()?;
                 let utc =
                     DateTime::from_timestamp(instant.as_second(), u32::try_from(instant.subsec_nanosecond()).ok()?)?;
@@ -193,6 +182,53 @@ impl SandboxTimeZone {
             standard,
             daylight_zone: daylight,
         })
+    }
+}
+
+/// A zone resolved from the tz database by [`SandboxTimeZone::named`], which is
+/// the only way to build one: every value carries the database's name for it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct NamedZone {
+    name: String,
+    zone: TimeZone,
+}
+
+impl NamedZone {
+    /// The zone's IANA name as the database spells it.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn resolve(name: &str) -> Result<Self, UnknownTimeZone> {
+        // The chars IANA keys use, with no `.`/`..` components, so nothing
+        // traversal-shaped reaches the database's path lookup.
+        let valid_part = |part: &str| {
+            !matches!(part, "" | "." | "..") && part.bytes().all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
+        };
+        let unknown = || UnknownTimeZone(name.to_owned());
+        if name.len() > 100 || !name.split('/').all(valid_part) {
+            return Err(unknown());
+        }
+        let zone = TimeZone::get(name).map_err(|_| unknown())?;
+        // `Etc/Unknown` resolves to jiff's nameless placeholder zone.
+        let name = zone.iana_name().ok_or_else(unknown)?.to_owned();
+        Ok(Self { name, zone })
+    }
+}
+
+impl TryFrom<String> for NamedZone {
+    type Error = UnknownTimeZone;
+
+    fn try_from(name: String) -> Result<Self, Self::Error> {
+        Self::resolve(&name)
+    }
+}
+
+impl From<NamedZone> for String {
+    fn from(zone: NamedZone) -> Self {
+        zone.name
     }
 }
 

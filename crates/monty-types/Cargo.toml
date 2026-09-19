@@ -41,10 +41,11 @@ serde_json = { workspace = true }
 # exercise production behavior (e.g. `ResourceTracker::lower_recursion_limit`
 # backing `sys.setrecursionlimit`). Forwarded by monty's own `test-hooks`.
 test-hooks = []
-# Where `SandboxTimeZone::named` finds IANA zone rules. `tzdb` reads the OS
-# database (`TZDIR`, `/usr/share/zoneinfo`) and falls back to the bundled copy;
-# `tzdb-bundled` uses only the bundled copy, for wasm. Enable one per binary.
-tzdb = ["jiff/tzdb-zoneinfo", "jiff/tzdb-bundle-always"]
+# Where `SandboxTimeZone::named` finds IANA zone rules. `tzdb-bundled` is the
+# copy compiled into the binary, which needs no filesystem (the wasm worker);
+# `tzdb` prefers the OS database (`TZDIR`, `/usr/share/zoneinfo`) and falls
+# back to that copy. Without either every name is unknown.
+tzdb = ["jiff/tzdb-zoneinfo", "tzdb-bundled"]
 tzdb-bundled = ["jiff/tzdb-bundle-always"]
 
 [lints]

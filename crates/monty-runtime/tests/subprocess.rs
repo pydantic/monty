@@ -1117,7 +1117,9 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `math.lcm` of two large coprime ints is a product, preflighted like `*`.
         ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_297_439),
         ("('a' * 1000).replace('a', 'b' * 2000)", 2_045_422),
-        // Every `%Z` copies the zone name, so the rewritten format is built against the tracker.
+        // Every `%Z` copies the zone name into a `StringBuilder`, refused at a
+        // capacity doubling like the formatter cases above: fixed-size pushes
+        // make that step deterministic.
         (
             "from datetime import datetime, timezone, timedelta\ntz = timezone(timedelta(0), 'n' * 100_000)\ndatetime(2024, 1, 1, tzinfo=tz).strftime('%Z' * 5_000)",
             1_254_024,
