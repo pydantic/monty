@@ -36,7 +36,7 @@ pub(crate) fn extract_auto_os_calls(options: &NativeCheckoutOptions) -> Result<A
     };
     let timezone = match options.timezone_kind.as_deref() {
         None => defaults.timezone,
-        Some("system") => SandboxTimeZone::System,
+        Some("utc") => SandboxTimeZone::utc(),
         Some("call_host") => SandboxTimeZone::CallHost,
         Some("fixed") => SandboxTimeZone::Fixed {
             offset_seconds: options

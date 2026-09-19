@@ -411,8 +411,8 @@ message AutoOsCalls {
 // Mirrors monty's `SandboxTimeZone`.
 message SandboxTimeZone {
   oneof zone {
-    // The child's local zone.
-    Unit system = 1;
+    // UTC, the default: the child's own zone is never read.
+    Unit utc = 1;
     // Suspend the calls that need the zone to the parent.
     Unit call_host = 2;
     // A fixed offset from UTC, with a name if it has one.
@@ -857,6 +857,9 @@ message OsCall {
     // waited out by the parent without invoking its OS handler.
     Sleep system_sleep = 29;
     AsyncSleep async_system_sleep = 30;
+    // datetime.astimezone(tz) when the sandbox zone is `call_host` and the
+    // conversion needs it: `tz` absent, or a naive datetime.
+    DateTimeAsTimeZone date_time_astimezone = 31;
   }
 
   // The arena any value-typed argument (`Getenv.default`) indexes.
@@ -900,6 +903,12 @@ message OsCall {
   message DateTimeNow {
     // Fixed-offset timezone for an aware result; absent for a naive one.
     optional TimeZone tz = 1;
+  }
+  // datetime.astimezone(tz) — the datetime being converted and the target
+  // zone; absent means the host's local zone. Answered with an aware datetime.
+  message DateTimeAsTimeZone {
+    DateTime datetime = 1;
+    optional TimeZone tz = 2;
   }
   // os.urandom(size) — the byte count the sandbox validated; unsigned so
   // a negative count cannot be expressed on the wire.

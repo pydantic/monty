@@ -466,7 +466,7 @@ uncatchable `RuntimeError`.
 
 ## Clock, sleeping and entropy
 
-By default, `date.today()`, `datetime.now()` and `time.time()` read the worker's clock.
+By default, `date.today()`, `datetime.now()` and `time.time()` read the worker's clock in UTC; the worker's own zone is never read.
 The pool handles `time.sleep()` and `asyncio.sleep()`, capped per call by `sleepSystemMax` (10 seconds).
 Gathered async sleeps overlap.
 Sleeps count toward suspensions and `maxTotalSleepSecs`, but not execution duration limits.
@@ -484,8 +484,10 @@ const fixed = await pool.checkout({
 })
 ```
 
-A `Date` freezes the instant and defaults the local zone to UTC unless `timezone` is supplied.
-`timezone` controls naive `datetime.now()` and `date.today()` using a fixed UTC offset, without IANA zone rules.
+A `Date` freezes the instant; `timezone` is `'utc'` (the default), `'call_host'` or a fixed UTC offset with an
+optional name, without IANA zone rules.
+The zone shifts naive `datetime.now()` and `date.today()`, and is what `astimezone()`, `strftime('%Z')` and the
+`time.timezone` / `time.tzname` constants report.
 `sleep: 'zero'` returns immediately; `sleepSystemMax: Infinity` disables the per-call cap.
 `{ seed }` initializes the module as `random.seed(seed)` and derives deterministic states for unseeded `random.Random()`
 instances.

@@ -17,7 +17,7 @@ use crate::{
     file_mode::FileMode,
     format::StringRepr,
     graph::{MontyGraph, MontyNode, NodeId},
-    object::{CallArgs, MontyObject, MontyTimeZone},
+    object::{CallArgs, MontyDateTime, MontyObject, MontyTimeZone},
     unstable::{self, PushValue},
     virtual_path::normalize_virtual_path,
 };
@@ -115,6 +115,11 @@ pub enum OsFunctionCall {
     /// Carries the timezone argument, `None` for a naive result.
     #[strum(serialize = "datetime.now")]
     DateTimeNow(Option<MontyTimeZone>),
+    /// `datetime.astimezone(tz)` under `SandboxTimeZone::CallHost`, when the
+    /// conversion needs the local zone: `tz` is `None`, or the datetime is naive.
+    /// Answered with the converted aware datetime, as CPython's `astimezone` returns.
+    #[strum(serialize = "datetime.astimezone")]
+    DateTimeAsTimeZone(DateTimeAsTimeZoneArgs),
     /// Read `size` bytes of entropy from the host (for `os.urandom(size)`, and
     /// how the `random` module seeds an unseeded generator).
     #[strum(serialize = "os.urandom")]
@@ -204,6 +209,11 @@ impl OsFunctionCall {
             // Unit & single-value non-FS variants.
             Self::GetEnviron | Self::DateToday | Self::Time => CallArgs::new(),
             Self::DateTimeNow(tz) => single_arg(tz.map_or(MontyNode::None, MontyNode::TimeZone)),
+            Self::DateTimeAsTimeZone(a) => {
+                let mut call = single_arg(MontyNode::DateTime(a.datetime));
+                unstable::push_arg(&mut call, a.tz.map_or(MontyNode::None, MontyNode::TimeZone));
+                call
+            }
             Self::Sleep(delay) | Self::SystemSleep(delay) | Self::AsyncSleep(delay) | Self::AsyncSystemSleep(delay) => {
                 single_arg(MontyNode::Float(delay.as_secs_f64()))
             }
@@ -309,6 +319,7 @@ impl OsFunctionCall {
             | Self::GetEnviron
             | Self::DateToday
             | Self::DateTimeNow(_)
+            | Self::DateTimeAsTimeZone(_)
             | Self::Urandom(_)
             | Self::Time
             | Self::Sleep(_)
@@ -356,6 +367,7 @@ impl OsFunctionCall {
             | Self::GetEnviron
             | Self::DateToday
             | Self::DateTimeNow(_)
+            | Self::DateTimeAsTimeZone(_)
             | Self::Urandom(_)
             | Self::Time
             | Self::Sleep(_)
@@ -455,6 +467,15 @@ pub struct RenameCallArgs {
 pub struct GetenvArgs {
     pub key: String,
     pub default: MontyObject,
+}
+
+/// `datetime.astimezone(tz)` shape: the datetime being converted (naive or
+/// aware) and the target zone, `None` for the host's local zone. Both are
+/// validated by the interpreter before it suspends.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DateTimeAsTimeZoneArgs {
+    pub datetime: MontyDateTime,
+    pub tz: Option<MontyTimeZone>,
 }
 
 /// `os.urandom(size)` shape. The interpreter rejects a negative `size` before

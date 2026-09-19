@@ -79,6 +79,68 @@ test('call_host on the timezone sends only the naive calls to the os callback', 
   t.deepEqual(calls, ['date.today'])
 })
 
+test('astimezone and the time constants read the sandbox zone, UTC by default', async () => {
+  const code = [
+    'import time',
+    'from datetime import datetime, timezone',
+    '(datetime(2024, 6, 15, 12, 30).astimezone().strftime("%H:%M %Z %z"), time.timezone, time.tzname)',
+  ].join('\n')
+  t.deepEqual(await runWith(code, {}), ['12:30 UTC +0000', 0, ['UTC', 'UTC']])
+  t.deepEqual(await runWith(code, { timezone: 'utc' }), ['12:30 UTC +0000', 0, ['UTC', 'UTC']])
+  t.deepEqual(await runWith(code, { timezone: { offsetSeconds: 7200, name: 'EET' } }), [
+    '12:30 EET +0200',
+    -7200,
+    ['EET', 'EET'],
+  ])
+})
+
+test('call_host on the timezone sends astimezone to the os callback with the datetime and zone', async () => {
+  const calls: unknown[] = []
+  const answer: MontyDateTime = {
+    __monty_type__: 'DateTime',
+    year: 2024,
+    month: 6,
+    day: 15,
+    hour: 14,
+    minute: 30,
+    second: 0,
+    microsecond: 0,
+    offsetSeconds: 7200,
+    timezoneName: 'EET',
+  }
+  const code = [
+    'from datetime import datetime, timedelta, timezone',
+    'aware = datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc)',
+    '(aware.astimezone(), aware.astimezone(timezone(timedelta(hours=1))).hour)',
+  ].join('\n')
+  const [converted, explicit] = (await runWith(code, { timezone: 'call_host' }, (name, args) => {
+    calls.push([name, args])
+    return answer
+  })) as [MontyDateTime, number]
+  t.deepEqual(converted, answer)
+  // the explicit zone needs no local zone, so it is answered in the worker
+  t.is(explicit, 13)
+  t.deepEqual(calls, [
+    [
+      'datetime.astimezone',
+      [
+        {
+          __monty_type__: 'DateTime',
+          year: 2024,
+          month: 6,
+          day: 15,
+          hour: 12,
+          minute: 30,
+          second: 0,
+          microsecond: 0,
+          offsetSeconds: 0,
+        },
+        null,
+      ],
+    ],
+  ])
+})
+
 test('call_host sends the clock to the os callback', async () => {
   const calls: unknown[] = []
   const result = await runWith('import time\ntime.time()', { datetime: 'call_host' }, (name, args) => {
@@ -101,7 +163,7 @@ test('invalid datetime and timezone values are rejected before the checkout', as
     instanceOf: RangeError,
     message: 'timezone offsetSeconds must be an integer number of seconds',
   })
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { name: 'CET' } as unknown as 'system' } }), {
+  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { name: 'CET' } as unknown as 'utc' } }), {
     instanceOf: TypeError,
   })
   await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { offsetSeconds: 86_400 } } }), {

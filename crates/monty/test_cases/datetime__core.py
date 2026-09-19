@@ -126,6 +126,45 @@ assert datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.timezone.utc) == dat
 #         'aware/naive subtraction message should match CPython'
 #     )
 
+# === astimezone between fixed offsets ===
+# conversions to an explicit zone need no local zone, so they agree on any host
+_eet = datetime.timezone(datetime.timedelta(hours=2), 'EET')
+_aware = datetime.datetime(2024, 6, 15, 12, 30, 5, 123456, tzinfo=_eet)
+assert repr(_aware.astimezone(datetime.timezone.utc)) == (
+    'datetime.datetime(2024, 6, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc)'
+)
+assert repr(_aware.astimezone(tz=datetime.timezone(datetime.timedelta(hours=-5)))) == (
+    'datetime.datetime(2024, 6, 15, 5, 30, 5, 123456, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=68400)))'
+)
+_target = datetime.timezone(datetime.timedelta(hours=1), 'X')
+assert _aware.astimezone(_target).tzinfo is _target
+assert _aware.astimezone(_target) == _aware
+assert _aware.astimezone(_target).tzname() == 'X'
+# the sandbox zone is fixed, so a naive value converts without raising and comes back aware
+_local = datetime.datetime(2024, 6, 15, 12, 30).astimezone()
+assert _local.tzinfo is not None
+assert _local.utcoffset() is not None
+assert datetime.datetime(2024, 6, 15, 12, 30).astimezone(datetime.timezone.utc).tzinfo is datetime.timezone.utc
+# the same day near the year boundary needs the date to roll with the offset
+assert repr(datetime.datetime(2024, 1, 1, 1, 0, tzinfo=_eet).astimezone(datetime.timezone.utc)) == (
+    'datetime.datetime(2023, 12, 31, 23, 0, tzinfo=datetime.timezone.utc)'
+)
+try:
+    _aware.astimezone(1)
+    assert False, 'astimezone(1) should raise TypeError'
+except TypeError as e:
+    assert str(e) == "tzinfo argument must be None or of a tzinfo subclass, not type 'int'"
+try:
+    _aware.astimezone(datetime.timezone.utc, datetime.timezone.utc)
+    assert False, 'astimezone with two positionals should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'astimezone() takes at most 1 argument (2 given)'
+try:
+    _aware.astimezone(tz=datetime.timezone.utc, x=1)
+    assert False, 'astimezone with an unknown kwarg should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'astimezone() takes at most 1 keyword argument (2 given)'
+
 # === timezone validations and constant ===
 assert datetime.timezone.utc == datetime.timezone(datetime.timedelta(0))
 # TODO(timezone): add a GC-stability regression ensuring `timezone.utc` identity

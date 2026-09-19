@@ -7,11 +7,11 @@ use monty_proto::{
     named_values_to_proto, os_call_from_proto, os_call_to_proto, pb,
 };
 use monty_types::{
-    AutoOsCalls, CodeLoc, CompileOptions, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs,
-    JsonErrorData, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
-    MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult,
-    NamedValues, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RandomSeed, RandomStart,
-    RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, StackFrame, UnicodeErrorData, UrandomArgs,
+    AutoOsCalls, CodeLoc, CompileOptions, DateTimeAsTimeZoneArgs, DateTimeSource, ExcData, ExcType, ExtFunctionResult,
+    GetenvArgs, JsonErrorData, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException,
+    MontyFileHandle, MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
+    NameLookupResult, NamedValues, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RandomSeed,
+    RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, StackFrame, UnicodeErrorData, UrandomArgs,
     sleep_duration, sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
@@ -611,6 +611,15 @@ fn auto_os_calls_round_trip() {
         };
         assert_eq!(AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap(), calls);
     }
+    // the UTC default has its own arm, so an explicit UTC survives a parent with a different default
+    let utc = pb::AutoOsCalls::from(&AutoOsCalls::default());
+    assert_eq!(
+        utc.timezone,
+        Some(pb::SandboxTimeZone {
+            zone: Some(pb::sandbox_time_zone::Zone::Utc(pb::Unit {})),
+        })
+    );
+    assert_eq!(AutoOsCalls::try_from(utc).unwrap().timezone, SandboxTimeZone::utc());
 }
 
 #[test]
@@ -935,6 +944,37 @@ fn os_calls_round_trip_all_variants() {
             offset_seconds: 3600,
             name: Some("CET".to_owned()),
         })),
+        OsFunctionCall::DateTimeAsTimeZone(DateTimeAsTimeZoneArgs {
+            datetime: MontyDateTime {
+                year: 2024,
+                month: 6,
+                day: 15,
+                hour: 12,
+                minute: 30,
+                second: 5,
+                microsecond: 123_456,
+                offset_seconds: None,
+                timezone_name: None,
+            },
+            tz: None,
+        }),
+        OsFunctionCall::DateTimeAsTimeZone(DateTimeAsTimeZoneArgs {
+            datetime: MontyDateTime {
+                year: 2024,
+                month: 6,
+                day: 15,
+                hour: 12,
+                minute: 30,
+                second: 5,
+                microsecond: 123_456,
+                offset_seconds: Some(7_200),
+                timezone_name: Some("EET".to_owned()),
+            },
+            tz: Some(MontyTimeZone {
+                offset_seconds: 0,
+                name: None,
+            }),
+        }),
         OsFunctionCall::Urandom(UrandomArgs { size: 2496 }),
         OsFunctionCall::Time,
         OsFunctionCall::Sleep(Duration::ZERO),

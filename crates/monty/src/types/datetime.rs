@@ -12,7 +12,9 @@ use std::{
 use chrono::{
     Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike, format::StrftimeItems,
 };
-use monty_types::{DateTimeSource, MontyTimeZone, OsFunctionCall, local_wall_clock};
+use monty_types::{
+    DateTimeAsTimeZoneArgs, DateTimeSource, MontyDateTime, MontyTimeZone, OsFunctionCall, local_wall_clock,
+};
 
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
@@ -215,6 +217,23 @@ pub(crate) fn to_components(datetime: &DateTime) -> Option<(i32, u8, u8, u8, u8,
     ))
 }
 
+/// The host-value form of a datetime, or `None` when its year is outside 1..=9999.
+#[must_use]
+pub(crate) fn to_monty_datetime(datetime: &DateTime) -> Option<MontyDateTime> {
+    let (year, month, day, hour, minute, second, microsecond) = to_components(datetime)?;
+    Some(MontyDateTime {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        microsecond,
+        offset_seconds: datetime.offset_seconds,
+        timezone_name: datetime.timezone_name.clone(),
+    })
+}
+
 /// Constructor for `datetime(...)`.
 pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let DatetimeInitArgs {
@@ -307,6 +326,54 @@ pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
     Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt)))))
 }
 
+/// `datetime.astimezone(tz=None)`: the same instant in `tz`, or in the sandbox
+/// zone when `tz` is `None`. A naive value is read as sandbox-local wall time,
+/// as CPython reads it in the host's zone. Suspends with `DateTimeAsTimeZone`
+/// when the sandbox zone is needed and it is `CallHost`.
+fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let AstimezoneArgs { tz } = AstimezoneArgs::from_args(args, vm)?;
+    defer_drop!(tz, vm);
+    let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
+    let zone = &vm.env.auto_os_calls.timezone;
+    let utc = match dt.offset_seconds {
+        Some(_) => Some(to_utc_naive(dt).ok_or_else(date_out_of_range)?),
+        None => zone
+            .offset_seconds()
+            .map(|offset| local_wall_clock(dt.naive, -offset).ok_or_else(date_out_of_range))
+            .transpose()?,
+    };
+    let target = match &tz {
+        Some(tz) => Some((tz.offset_seconds, tz.name.clone())),
+        None => zone
+            .offset_seconds()
+            .map(|offset| (offset, zone.name().map(str::to_owned))),
+    };
+    let (Some(utc), Some((offset_seconds, name))) = (utc, target) else {
+        let datetime = to_monty_datetime(dt).ok_or_else(date_out_of_range)?;
+        let tz = tz.map(|tz| MontyTimeZone {
+            offset_seconds: tz.offset_seconds,
+            name: tz.name,
+        });
+        return Ok(CallResult::OsCall(OsFunctionCall::DateTimeAsTimeZone(
+            DateTimeAsTimeZoneArgs { datetime, tz },
+        )));
+    };
+    let mut converted = from_utc_naive_with_timezone_parts(utc, offset_seconds, name).ok_or_else(date_out_of_range)?;
+    attach_or_allocate_tzinfo_ref(&mut converted, tz_ref, vm.heap);
+    Ok(CallResult::Value(Value::Ref(
+        vm.heap.allocate(HeapData::DateTime(converted)),
+    )))
+}
+
+/// Argument shape for `datetime.astimezone(tz=None)`, checked like [`NowArgs`]:
+/// `at_most_total` gives CPython's `astimezone() takes at most 1 argument (2 given)`.
+#[derive(FromArgs)]
+#[from_args(name = "astimezone", at_most_total)]
+struct AstimezoneArgs {
+    #[from_args(default = Value::None)]
+    tz: Value,
+}
+
 /// Reads the session clock in UTC; `None` means `CallHost` and requires suspension.
 /// Unrepresentable fixed instants raise `OverflowError` for all three clock calls.
 pub(crate) fn sandbox_instant(vm: &VM<'_>) -> RunResult<Option<NaiveDateTime>> {
@@ -319,7 +386,7 @@ pub(crate) fn sandbox_instant(vm: &VM<'_>) -> RunResult<Option<NaiveDateTime>> {
 /// Converts UTC to the session zone for naive `now()` and `today()`.
 /// Returns `None` for `CallHost`; out-of-range years raise `OverflowError`.
 pub(crate) fn sandbox_local_wall_clock(vm: &VM<'_>, utc: NaiveDateTime) -> RunResult<Option<NaiveDateTime>> {
-    match vm.env.auto_os_calls.timezone.offset_seconds(utc) {
+    match vm.env.auto_os_calls.timezone.offset_seconds() {
         None => Ok(None),
         Some(offset) => local_wall_clock(utc, offset).map(Some).ok_or_else(date_out_of_range),
     }
@@ -816,9 +883,11 @@ fn year_in_python_range(year: i32) -> bool {
 /// Uses the naive (wall-clock) components, mirroring `chrono`'s formatting of
 /// `NaiveDateTime`, with the **lenient** parser so an unrecognised directive is
 /// passed through verbatim to match glibc/Linux CPython (see
-/// [`date::format_date_strftime`]).
+/// [`date::format_date_strftime`]). The zone directives are substituted from
+/// the offset and name first (`%z` and `%Z` are empty for a naive value).
 pub(crate) fn format_datetime_strftime(dt: &DateTime, format: &str) -> RunResult<String> {
-    let format = date::rewrite_microsecond_directive(format);
+    let format = date::rewrite_zone_directives(format, dt.offset_seconds, dt.timezone_name.as_deref());
+    let format = date::rewrite_microsecond_directive(&format);
     date::render_strftime(dt.naive.format_with_items(StrftimeItems::new_lenient(&format)))
         .ok_or_else(date::invalid_strftime_error)
 }
@@ -1105,6 +1174,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
                 let ts = compute_timestamp(&dt);
                 Ok(CallResult::Value(Value::Float(ts)))
             }
+            Some(StaticStrings::Astimezone) => astimezone(&dt, vm, args),
             Some(StaticStrings::Utcoffset) => {
                 args.check_zero_args("datetime.utcoffset", vm.heap)?;
                 Ok(CallResult::Value(timezone::utcoffset_value(dt.offset_seconds, vm.heap)))

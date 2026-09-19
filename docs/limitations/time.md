@@ -1,7 +1,8 @@
 # `time` module
 
-Monty implements two functions from `time`: `time.time()` and `time.sleep()`.
-The session's [automatic OS call policy](../security.md#the-clock) selects the clock and sleep behavior.
+Monty implements two functions from `time`, `time.time()` and `time.sleep()`, and the four zone constants
+`timezone`, `altzone`, `daylight` and `tzname`.
+The session's [automatic OS call policy](../security.md#the-clock) selects the clock, zone and sleep behavior.
 
 `asyncio.sleep()` is documented in [asyncio.md](asyncio.md); it shares
 `time.sleep()`'s sleep mode, while its delay argument follows CPython's `asyncio.sleep()` (a negative delay waits
@@ -9,11 +10,19 @@ zero seconds rather than raising).
 
 ## Module surface
 
-Only `time` and `sleep` exist. Every other name — the monotonic clocks
+Only `time`, `sleep`, `timezone`, `altzone`, `daylight` and `tzname` exist. Every other name — the monotonic clocks
 (`monotonic`, `perf_counter`, `process_time`, `thread_time` and their `_ns`
 forms), `time_ns`, `struct_time`, `localtime`, `gmtime`, `mktime`, `strftime`,
-`strptime`, `asctime`, `ctime`, `tzset`, `timezone`, `altzone`, `daylight`,
-`tzname` — raises `AttributeError` rather than being stubbed.
+`strptime`, `asctime`, `ctime`, `tzset` — raises `AttributeError` rather than being stubbed.
+
+## Zone constants
+
+The constants describe the [session zone](datetime.md#reading-the-clock), a fixed offset, where CPython reads the
+host's zone from the C library.
+`timezone` and `altzone` are both the offset in seconds west of UTC, `daylight` is `0` and `tzname` repeats the
+zone's name (`UTC±HH:MM` when it has none), so the default session reports `0, 0, 0, ('UTC', 'UTC')`.
+Under `timezone='call_host'` the four names are absent and raise `AttributeError`: the module is created when it is
+imported, without suspending to the host.
 
 ## `time.time()`
 

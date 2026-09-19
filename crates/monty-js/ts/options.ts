@@ -80,11 +80,12 @@ export function encodeAssertMessageAnnotations(value: AssertMessageAnnotations |
 export type DateTimeSource = 'system' | 'call_host' | Date
 
 /**
- * Zone for naive `datetime.now()` and `date.today()`; defaults to the worker's local zone.
+ * The sandbox's local zone, read by naive `datetime.now()` and `date.today()`, `astimezone()`,
+ * `time.timezone`/`time.tzname` and `%Z`; defaults to `'utc'`, never the worker's own zone.
  * `'call_host'` delegates calls requiring the zone to `os`; an object supplies a fixed UTC offset
  * and optional name, as in `datetime.timezone`. IANA zones are unsupported.
  */
-export type TimeZone = 'system' | 'call_host' | { offsetSeconds: number; name?: string }
+export type TimeZone = 'utc' | 'call_host' | { offsetSeconds: number; name?: string }
 
 /**
  * Sleep policy: `'system'` (default) waits in the pool, capped per call by `sleepSystemMax`;
@@ -136,7 +137,7 @@ export type EncodedRandomSeed = { int: Uint8Array } | { float: number } | { str:
  */
 export interface EncodedAutoOsCalls {
   datetime?: 'system' | 'call_host' | FixedDateTime
-  timezone?: 'system' | 'call_host' | FixedTimeZone
+  timezone?: 'utc' | 'call_host' | FixedTimeZone
   sleep?: SleepMode
   /** Seconds; `Infinity` lifts the cap. */
   sleepSystemMaxSecs?: number
@@ -170,8 +171,8 @@ export function encodeAutoOsCalls(options: AutoOsCalls): EncodedAutoOsCalls {
   const encoded: EncodedAutoOsCalls = {}
   if (options.datetime !== undefined) {
     encoded.datetime = encodeDateTime(options.datetime)
-    // a Date is read as UTC unless the zone is given explicitly
-    if (options.datetime instanceof Date) encoded.timezone = { offsetSeconds: 0 }
+    // a Date is read in the UTC default unless the zone is given explicitly
+    if (options.datetime instanceof Date) encoded.timezone = { offsetSeconds: 0, name: 'UTC' }
   }
   if (options.timezone !== undefined) {
     encoded.timezone = encodeTimeZone(options.timezone)
@@ -214,9 +215,9 @@ function encodeDateTime(datetime: DateTimeSource): 'system' | 'call_host' | Fixe
   return { unixSeconds: BigInt(seconds), microsecond: (ms - seconds * 1000) * 1000 }
 }
 
-function encodeTimeZone(timezone: TimeZone): 'system' | 'call_host' | FixedTimeZone {
-  if (timezone === 'system' || timezone === 'call_host') return timezone
-  const shape = "timezone must be 'system', 'call_host' or { offsetSeconds: number, name?: string }"
+function encodeTimeZone(timezone: TimeZone): 'utc' | 'call_host' | FixedTimeZone {
+  if (timezone === 'utc' || timezone === 'call_host') return timezone
+  const shape = "timezone must be 'utc', 'call_host' or { offsetSeconds: number, name?: string }"
   if (typeof timezone !== 'object' || timezone === null || !Object.hasOwn(timezone, 'offsetSeconds')) {
     throw new TypeError(shape)
   }

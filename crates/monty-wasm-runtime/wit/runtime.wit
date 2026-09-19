@@ -194,10 +194,10 @@ interface worker {
         name: option<string>,
     }
 
-    /// Local timezone for naive `datetime.now()` and `date.today()`.
+    /// The sandbox's local zone; UTC unless set.
     variant time-zone {
-        /// The worker's local zone.
-        system,
+        /// UTC, the default.
+        utc,
         /// Delegate calls requiring the local timezone to the host.
         call-host,
         fixed(fixed-time-zone),
@@ -242,7 +242,7 @@ interface worker {
         seed(random-seed),
     }
 
-    /// Automatic OS call policy; absent fields use the system clock and timezone,
+    /// Automatic OS call policy; absent fields use the system clock, UTC,
     /// host sleeps capped at 10s, and OS entropy.
     record auto-os-calls {
         datetime: option<datetime-source>,

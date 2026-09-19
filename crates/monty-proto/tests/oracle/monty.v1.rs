@@ -523,9 +523,9 @@ pub struct SandboxTimeZone {
 pub mod sandbox_time_zone {
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Zone {
-        /// The child's local zone.
+        /// UTC, the default: the child's own zone is never read.
         #[prost(message, tag = "1")]
-        System(super::Unit),
+        Utc(super::Unit),
         /// Suspend the calls that need the zone to the parent.
         #[prost(message, tag = "2")]
         CallHost(super::Unit),
@@ -1024,7 +1024,7 @@ pub struct OsCall {
     pub allow_eager_await: bool,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -1084,6 +1084,15 @@ pub mod os_call {
     pub struct DateTimeNow {
         /// Fixed-offset timezone for an aware result; absent for a naive one.
         #[prost(message, optional, tag = "1")]
+        pub tz: ::core::option::Option<super::TimeZone>,
+    }
+    /// datetime.astimezone(tz) — the datetime being converted and the target
+    /// zone; absent means the host's local zone. Answered with an aware datetime.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct DateTimeAsTimeZone {
+        #[prost(message, optional, tag = "1")]
+        pub datetime: ::core::option::Option<super::DateTime>,
+        #[prost(message, optional, tag = "2")]
         pub tz: ::core::option::Option<super::TimeZone>,
     }
     /// os.urandom(size) — the byte count the sandbox validated; unsigned so
@@ -1207,6 +1216,10 @@ pub mod os_call {
         SystemSleep(Sleep),
         #[prost(message, tag = "30")]
         AsyncSystemSleep(AsyncSleep),
+        /// datetime.astimezone(tz) when the sandbox zone is `call_host` and the
+        /// conversion needs it: `tz` absent, or a naive datetime.
+        #[prost(message, tag = "31")]
+        DateTimeAstimezone(DateTimeAsTimeZone),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether

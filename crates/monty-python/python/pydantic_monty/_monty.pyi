@@ -586,7 +586,7 @@ class Monty:
                 how far live output may lag — never what arrives, or in what
                 order.
             auto_os_calls: Session clock, sleep and random initialization policies;
-                see `AutoOSCalls`. Defaults to the worker's clock, local zone and
+                see `AutoOSCalls`. Defaults to the worker's clock in UTC and its
                 entropy, with sleeps handled by the pool and capped at ten seconds.
         """
 

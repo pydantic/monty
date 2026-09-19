@@ -36,8 +36,8 @@ impl From<&AutoOsCalls> for pb::AutoOsCalls {
             }),
         };
         let zone = match &calls.timezone {
-            SandboxTimeZone::System => Zone::System(pb::Unit {}),
             SandboxTimeZone::CallHost => Zone::CallHost(pb::Unit {}),
+            zone if *zone == SandboxTimeZone::utc() => Zone::Utc(pb::Unit {}),
             SandboxTimeZone::Fixed { offset_seconds, name } => Zone::Fixed(pb::TimeZone {
                 offset_seconds: *offset_seconds,
                 name: name.clone(),
@@ -88,7 +88,7 @@ impl TryFrom<pb::AutoOsCalls> for AutoOsCalls {
         };
         let timezone = match calls.timezone.and_then(|timezone| timezone.zone) {
             None => defaults.timezone,
-            Some(Zone::System(_)) => SandboxTimeZone::System,
+            Some(Zone::Utc(_)) => SandboxTimeZone::utc(),
             Some(Zone::CallHost(_)) => SandboxTimeZone::CallHost,
             Some(Zone::Fixed(fixed)) => {
                 if !(MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&fixed.offset_seconds) {

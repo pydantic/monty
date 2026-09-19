@@ -76,8 +76,15 @@ the stored value: Monty does not track DST-fold disambiguation.
 Attributes: `year`, `month`, `day`, `hour`, `minute`, `second`,
 `microsecond`, `tzinfo`.
 Methods: `isoformat(sep='T', timespec='auto')`, `strftime`, `replace`,
-`weekday`, `isoweekday`, `date`, `time`, `timetz`, `timestamp`,
+`weekday`, `isoweekday`, `date`, `time`, `timetz`, `timestamp`, `astimezone(tz=None)`,
 `utcoffset`, `tzname`, `dst`.
+
+`astimezone()` converts to the [session zone](#reading-the-clock), a fixed offset, so the result's `tzinfo` is a
+`timezone` and `dst()` is `None`; CPython's result is the host's zone with its DST name at that instant.
+The default zone is `timezone(timedelta(0), 'UTC')`, what CPython reports under `TZ=UTC`, so
+`datetime.now().astimezone().tzinfo == timezone.utc` holds but it is not the `timezone.utc` singleton.
+A naive value is read in the session zone, as CPython reads it in the host's.
+`dt.astimezone(dt.tzinfo)` returns an equal copy, not `dt` itself.
 
 `fold` is not readable: `datetime(2020, 1, 1, fold=1).fold` raises
 `AttributeError`, where CPython returns `1`.
@@ -129,11 +136,16 @@ The [session clock](../security.md#the-clock) has separate `datetime` and `timez
 
 `timezone`:
 
-- The wasm worker's system timezone is UTC.
+- The default is UTC, not the host's zone, so a naive `datetime.now()` is the UTC wall clock and `astimezone()`
+    attaches `timezone(timedelta(0), 'UTC')`.
 - A fixed zone is a UTC offset with an optional name, without IANA timezone or DST rules.
-    The name is retained but cannot yet be exposed through `astimezone()`, `time.tzname` or naive `%Z` formatting.
-- `'call_host'` delegates `date.today()` and naive `datetime.now()`, which require the local zone.
-    `time.time()` and `datetime.now(tz)` still use the sandbox clock unless `datetime='call_host'` too.
+    `astimezone()`, `%Z` and `time.tzname` report the name (`UTC±HH:MM` when there is none).
+- `'call_host'` delegates `date.today()`, naive `datetime.now()`, `astimezone()` with no argument and
+    `astimezone(tz)` on a naive value, the calls that require the local zone (`OSAccess.datetime_astimezone()` in
+    Python).
+    `time.time()`, `datetime.now(tz)` and an aware `astimezone(tz)` are answered in the sandbox.
+    `time.timezone`, `time.altzone`, `time.daylight` and `time.tzname` are absent under `'call_host'`, since the
+    module is created without suspending; see [time.md](time.md#zone-constants).
 
 ## `time`
 
@@ -225,14 +237,13 @@ pass-through applies to f-string and `str.format()` formatting (below).
 
 A directive that is *recognised* but can't be rendered for the given value
 raises `ValueError: Invalid format string` rather than substituting a default
-the way CPython does. The known cases:
+the way CPython does. The known case is `%+`, which chrono renders as the
+RFC 3339 form and so needs an offset the naive components lack.
 
-- `%z` / `%Z` on a naive `date`, `datetime` or `time`: Monty raises; CPython
-    yields `''`.
-- `%z` / `%Z` on an **aware** `datetime` or `time`: Monty formats the wall-clock
-    (naive) components and so raises rather than emitting the offset/name; CPython
-    yields `'+0200'` / `'CEST'`. Passing the timezone to the formatter is not yet
-    implemented.
+`%z`, `%:z` and `%Z` are filled from `utcoffset()` and `tzname()` as in
+CPython: empty for a naive `date`, `datetime` or `time`, and `'+0200'`,
+`'+02:00'` and the zone name for an aware value. The name of an unnamed zone
+is `UTC±HH:MM`, and a sub-minute offset renders its seconds (`'+023015'`).
 
 f-strings and `str.format()` format `date`, `datetime` and `time` values through
 `strftime`, matching CPython's `__format__`: `f'{dt:%Y-%m-%d}'` and

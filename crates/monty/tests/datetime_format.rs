@@ -56,14 +56,14 @@ fn fstring_unknown_directive_passes_through_verbatim() {
     );
 }
 
-/// A directive that *parses* but can't be rendered for the value (a time
-/// directive on a bare `date`, which Monty stores without a time component)
-/// raises `ValueError` — and, critically, must NOT panic the host:
-/// `chrono`'s `DelayedFormat::to_string()` panics here, which would be a
-/// sandbox escape on untrusted input.
+/// A directive that *parses* but can't be rendered for the value (`%+`, the
+/// RFC 3339 form, needs an offset the naive components lack) raises
+/// `ValueError` — and, critically, must NOT panic the host: `chrono`'s
+/// `DelayedFormat::to_string()` panics here, which would be a sandbox escape
+/// on untrusted input.
 #[test]
 fn unrenderable_directive_raises_not_panics() {
-    let msg = run_err("from datetime import date\ndate(2024, 6, 15).strftime('%z')");
+    let msg = run_err("from datetime import date\ndate(2024, 6, 15).strftime('%+')");
     assert!(
         msg.contains("ValueError") && msg.contains("Invalid format string"),
         "expected ValueError: Invalid format string, got: {msg}"

@@ -299,7 +299,7 @@ f'{datetime.now():%Y-%m-%d %H:%M} {random.random():.4f}'
 """
 
 # datetime: 'system' (default), 'call_host' or a datetime
-# timezone: 'system' (default), 'call_host' or {'offset_seconds': int, 'name': str}
+# timezone: 'utc' (default), 'call_host' or {'offset_seconds': int, 'name': str}
 # sleep: 'system' (default), 'call_host' or 'zero'
 # sleep_system_max: seconds per 'system' sleep; float('inf') for no cap
 # random_start: 'system' (default), 'call_host' or {'seed': int | float | str | bytes}
@@ -319,7 +319,8 @@ with Monty() as pool:
 
 A `datetime` freezes the clock and, unless `timezone` is explicit, sets the zone from its `utcoffset()` and
 `tzname()` (UTC for a naive value).
-`timezone` is a fixed offset used by naive `datetime.now()` and `date.today()`, with no IANA zone rules.
+`timezone` is a fixed offset with no IANA zone rules: it shifts naive `datetime.now()` and `date.today()`, and is
+what `astimezone()`, `strftime('%Z')` and the `time.timezone` / `time.tzname` constants report.
 `'zero'` skips both sleeps.
 `{'seed': s}` initializes the module generator as `random.seed(s)` would; unseeded `random.Random()` instances
 receive deterministic states derived from it.

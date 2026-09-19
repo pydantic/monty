@@ -279,22 +279,25 @@ resolved inside the sandbox and reaches a mount as an absolute virtual path.
 ### The clock
 
 `date.today()`, `datetime.now()` and `time.time()` are the only calls that read a clock.
-All sessions default to the system clock and local timezone (UTC in the wasm worker).
+All sessions default to the system clock read in UTC; the host's own timezone is never read.
 The session's `auto_os_calls` ([`AutoOSCalls`][pydantic_monty.AutoOSCalls] on
 [`Monty.checkout`][pydantic_monty.Monty.checkout] in Python, `autoOsCalls` on `checkout()` in JavaScript,
 `AutoOsCalls` in Rust) configures the instant (`datetime`) and local zone (`timezone`) separately:
 
 - `'call_host'` delegates to your `os=` handler; unanswered calls raise.
 - A fixed instant (`datetime.datetime`, `Date` or `DateTimeSource::Fixed`) freezes the clock.
-    A fixed `timezone` sets the offset and name used by naive calls.
+    A fixed `timezone` sets the offset and name that naive `datetime.now()` and `date.today()` use and that
+    `astimezone()`, `strftime('%Z')` and the `time.timezone` / `time.tzname` constants report.
 
-System timezone offsets are evaluated at the selected instant, including historical daylight-saving changes.
 A fixed zone uses `{'offset_seconds': ..., 'name': ...}` in Python, `{ offsetSeconds, name }` in JavaScript,
 or `SandboxTimeZone::Fixed` in Rust.
 
-Wall-clock time is a weak capability, but it is one — it is what makes elapsed time measurable from inside the sandbox,
-and a naive `datetime.now()` is read in the host's local zone, which discloses its UTC offset.
-A fixed instant and a fixed zone give away neither.
+Wall-clock time is a weak capability, but it is one: it is what makes elapsed time measurable from inside the sandbox.
+A fixed instant removes it.
+With the default or a fixed zone, sandboxed code learns only the zone you configure, so the host's own UTC offset
+never reaches it.
+Under `'call_host'` it learns whatever your handler answers; the default
+[`OSAccess`][pydantic_monty.OSAccess] handler answers with the host's real clock and zone.
 See [datetime](limitations/datetime.md#reading-the-clock).
 
 ### Entropy

@@ -48,7 +48,7 @@ monty --help
 - `--max-total-sleep 30` — maximum cumulative time the host waits for those
   sleeps, in seconds; a sleep that would go over is refused (off unless given)
 
-`date.today()` and `datetime.now()` use the system clock and local timezone; `time.time()` returns Unix epoch seconds.
+`date.today()` and `datetime.now()` use the system clock in UTC, the zone `astimezone()` and `time.tzname` also report; `time.time()` returns Unix epoch seconds.
 `time.sleep()` and `asyncio.sleep()` wait for at most `--max-sleep` seconds each.
 An unseeded `random` draw uses system entropy.
 Rust embedders can change these defaults with `MontyRun::with_auto_os_calls`; the CLI only exposes the sleep limits.

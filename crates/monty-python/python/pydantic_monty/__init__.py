@@ -195,8 +195,9 @@ class AutoOSCalls(TypedDict, total=False):
     A `datetime` freezes the instant and, unless `timezone` is set, uses its `utcoffset()` and `tzname()`
     (UTC if naive). Naive `datetime.now()` then returns its wall time."""
 
-    timezone: Literal['system', 'call_host'] | TimeZone
-    """Zone for naive `datetime.now()` and `date.today()`; defaults to the worker's local zone.
+    timezone: Literal['utc', 'call_host'] | TimeZone
+    """The sandbox's local zone, read by naive `datetime.now()` and `date.today()`, `astimezone()`,
+    `time.timezone`/`time.tzname` and `%Z`; defaults to `'utc'`, never the worker's own zone.
     `'call_host'` routes calls requiring the zone to `os=`; a `TimeZone` supplies a fixed offset."""
 
     sleep: Literal['system', 'call_host', 'zero']
