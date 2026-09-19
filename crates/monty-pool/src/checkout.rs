@@ -424,8 +424,8 @@ struct SessionBudget {
     /// Parent-enforced ceiling on each system sleep, even from a compromised worker.
     /// Uses the configured maximum, or the default for other modes because a restored dump may sleep.
     system_sleep_max: Duration,
-    /// Cumulative capped system sleep durations, bounded by `sleep_limit`.
-    sleep_asked: Duration,
+    /// Capped system sleep accepted so far; `charge_sleep` refuses a sleep that would exceed `sleep_limit`.
+    sleep_used: Duration,
 }
 
 impl SessionBudget {
@@ -439,7 +439,7 @@ impl SessionBudget {
             suspension_limit: limits.map_or(DEFAULT_MAX_SUSPENSIONS as u64, |limits| limits.max_suspensions as u64),
             suspensions_seen: 0,
             sleep_limit: limits.and_then(|limits| limits.max_total_sleep),
-            sleep_asked: Duration::ZERO,
+            sleep_used: Duration::ZERO,
             system_sleep_max: match repl.auto_os_calls.sleep {
                 SleepMode::System(max) => max,
                 SleepMode::CallHost | SleepMode::Zero => SleepMode::DEFAULT_MAX,
@@ -457,7 +457,7 @@ impl SessionBudget {
             suspension_limit: self.suspension_limit,
             suspensions_seen: 0,
             sleep_limit: self.sleep_limit,
-            sleep_asked: Duration::ZERO,
+            sleep_used: Duration::ZERO,
             system_sleep_max: self.system_sleep_max,
         };
     }
@@ -510,11 +510,11 @@ impl SessionBudget {
             _ => return None,
         };
         let delay = self.cap_system_sleep(Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX));
-        let total = self.sleep_asked.saturating_add(delay);
+        let total = self.sleep_used.saturating_add(delay);
         match self.sleep_limit {
             Some(limit) if total > limit => Some((limit, total)),
             _ => {
-                self.sleep_asked = total;
+                self.sleep_used = total;
                 None
             }
         }

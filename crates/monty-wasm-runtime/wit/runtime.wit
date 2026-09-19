@@ -215,7 +215,7 @@ interface worker {
 
     /// What `time.sleep()` and `asyncio.sleep()` do.
     variant sleep-mode {
-        /// Ask the host to wait, capped at this duration in microseconds (default 10s).
+        /// The host waits, capped at this duration in microseconds (default 10s).
         system(option<u64>),
         call-host,
         /// Return at once without waiting.

@@ -120,7 +120,7 @@ export class WorkerTransport {
    */
   private readonly configuredSleepLimitMicros: bigint | undefined
   private sleepLimitMicros: bigint | undefined
-  private sleepAskedMicros = 0n
+  private sleepUsedMicros = 0n
 
   /** Reports whether the worker can return to its pool when the session ends. */
   onFinish?: (reusable: boolean) => void
@@ -373,11 +373,11 @@ export class WorkerTransport {
   private chargeSleep(turn: NativeTurn): string | null {
     if (turn.kind !== 'osCall' || turn.systemSleepSecs === undefined) return null
     const micros = BigInt(Math.round(turn.systemSleepSecs * 1_000_000))
-    const total = this.sleepAskedMicros + micros
+    const total = this.sleepUsedMicros + micros
     if (this.sleepLimitMicros !== undefined && total > this.sleepLimitMicros) {
       return `sleep limit exceeded: ${durationDebug(total)} > ${durationDebug(this.sleepLimitMicros)}`
     }
-    this.sleepAskedMicros = total
+    this.sleepUsedMicros = total
     return null
   }
 
@@ -401,7 +401,7 @@ export class WorkerTransport {
         this.suspensionLimit = result.maxSuspensions
         this.suspensionsSeen = 0n
         this.sleepLimitMicros = tighter(this.configuredSleepLimitMicros, result.maxTotalSleepMicros)
-        this.sleepAskedMicros = 0n
+        this.sleepUsedMicros = 0n
       }
       events = result.events
     } catch {

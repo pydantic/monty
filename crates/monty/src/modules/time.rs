@@ -96,7 +96,7 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 pub(crate) enum HostSleep {
     /// The host itself, for a delay already cut to the mode's maximum.
     System(Duration),
-    /// The host's `os` handler, for the delay asked, uncut.
+    /// The host's `os` handler, with the requested delay uncapped.
     CallHost(Duration),
 }
 

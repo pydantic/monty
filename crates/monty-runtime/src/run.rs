@@ -576,28 +576,28 @@ fn run_until_complete(
 /// Charges requested delays before waiting, so `--max-total-sleep` refusal is deterministic.
 struct SleepBudget {
     limit: Duration,
-    /// Total duration of accepted sleeps.
-    asked: Duration,
+    /// Capped delays accepted so far, checked against `limit`.
+    used: Duration,
 }
 
 impl SleepBudget {
     fn new(limit: Duration) -> Self {
         Self {
             limit,
-            asked: Duration::ZERO,
+            used: Duration::ZERO,
         }
     }
 
     /// Charges `delay` or returns an uncatchable error with the same message as the pools.
     fn charge(&mut self, delay: Duration) -> Option<MontyException> {
-        let total = self.asked.saturating_add(delay);
+        let total = self.used.saturating_add(delay);
         if total > self.limit {
             Some(MontyException::new(
                 ExcType::TimeoutError,
                 Some(format!("sleep limit exceeded: {total:?} > {:?}", self.limit)),
             ))
         } else {
-            self.asked = total;
+            self.used = total;
             None
         }
     }

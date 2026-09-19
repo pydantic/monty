@@ -244,7 +244,7 @@ impl ResourceLimits {
         self
     }
 
-    /// Sets the maximum cumulative time the sandbox may ask to sleep.
+    /// Sets the maximum cumulative time hosts wait on system sleeps; each capped delay is charged before the wait.
     #[must_use]
     pub fn max_total_sleep(mut self, limit: Duration) -> Self {
         self.max_total_sleep = Some(limit);

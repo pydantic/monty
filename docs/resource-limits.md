@@ -54,7 +54,7 @@ Monty enforces hard limits on memory, execution time and recursion depth, config
 | `max_recursion_depth`    | Maximum function call stack depth (default 1000)                                                                      |
 | `gc_interval`            | Run garbage collection every N allocations                                                                            |
 | `max_suspensions`        | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000) |
-| `max_total_sleep_secs`   | Maximum cumulative time `time.sleep()` and `asyncio.sleep()` may ask the host to wait, in seconds                     |
+| `max_total_sleep_secs`   | Maximum cumulative time the host waits on `time.sleep()` and `asyncio.sleep()`, in seconds                            |
 
 Every key is optional.
 Omit `max_memory`, either duration key or `max_total_sleep_secs`, or set them to `None`, to disable that limit.
