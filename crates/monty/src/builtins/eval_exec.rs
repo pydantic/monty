@@ -14,7 +14,7 @@ use crate::{
     expressions::{Identifier, Node},
     function::Function,
     heap::{DropGuard, HeapData, HeapId},
-    intern::{CompileInterns, FunctionId, StaticStrings},
+    intern::{CompileInterns, FunctionId, SnippetSource, StaticStrings},
     name_map::NameMap,
     parse::{CodeRange, parse_expression_with_interner, parse_module_with_filename_id},
     prepare::{SnippetNames, prepare_snippet},
@@ -140,7 +140,7 @@ fn compile_and_push(
     let mut namespace_guard = DropGuard::new(namespace, vm);
     let (_, vm) = namespace_guard.as_parts_mut();
     let mut overlay = CompileInterns::new(vm.interns);
-    let filename_id = overlay.add_eval_source(Arc::clone(source));
+    let filename_id = overlay.add_snippet_source(SnippetSource::eval(Arc::clone(source)));
     let nodes = match builtin {
         Builtin::Exec => parse_module_with_filename_id(source, filename_id, &mut overlay),
         Builtin::Eval => {

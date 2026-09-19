@@ -9,11 +9,11 @@ use crate::{
     bytecode::{Code, CodeBuilder, Compiler, FrameExit, Opcode, VM},
     exception_private::{ExcTypeExt, RunError, RunResult},
     heap::{DropWithContext, Heap, HeapReader},
-    intern::{CompileInterns, Interns, StringId},
+    intern::{CompileInterns, Interns, SnippetSource, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     object_bridge::MontyObjectExt,
-    parse::{CodeRange, parse_with_interner},
+    parse::{CodeRange, parse_module_with_filename_id},
     prepare::prepare_with_existing_names,
     run_progress::{
         RunProgress, answer_unserved_lookups, build_run_progress, check_snapshot_from_converted, convert_frame_exit,
@@ -358,11 +358,14 @@ impl Executor {
         check_identifier(&input_names)?;
         let mut interns = Interns::new(&code);
         let mut globals = NameMap::new();
+        let mut compile_interns = CompileInterns::direct(&mut interns);
+        let filename_id = compile_interns.intern(script_name);
         let (module_code, _) = compile_module_source(
             &code,
             script_name,
+            filename_id,
             &mut globals,
-            CompileInterns::direct(&mut interns),
+            compile_interns,
             input_names,
             options,
         )?;
@@ -402,8 +405,10 @@ impl Executor {
 
     /// Compiles privately against the session's existing IDs and global slots.
     /// On success the tables move into the executor; on failure they remain unchanged.
-    /// `script_name` identifies this feed's source; `session` supplies the user-facing
-    /// filename and working directory.
+    /// `script_name` is this feed's `<python-input-N>` name, registered with `code`
+    /// as a snippet source (see [`CompileInterns::add_snippet_source`]) so it
+    /// never takes a `u16`-addressable string id; `session` supplies the
+    /// user-facing filename and working directory.
     pub(crate) fn new_repl_snippet(
         code: Arc<str>,
         script_name: &str,
@@ -417,11 +422,14 @@ impl Executor {
 
         // Preparation assigns provisional global slots alongside the private intern IDs.
         let globals_len = globals.len();
+        let mut compile_interns = CompileInterns::new(interns);
+        let filename_id = compile_interns.add_snippet_source(SnippetSource::named(script_name, Arc::clone(&code)));
         let compiled = compile_module_source(
             &code,
             script_name,
+            filename_id,
             globals,
-            CompileInterns::new(interns),
+            compile_interns,
             input_names,
             options,
         );
@@ -455,9 +463,10 @@ impl Executor {
     /// The argument tuple occupies a namespace slot named `<monty-call-args>`,
     /// which no Python source can spell; the caller commits the map back after
     /// the call (the function may have bound new globals) and clears that slot,
-    /// so it is reused by the next call. The session's [`Interns`] are extended
-    /// in place (two ids, no parse) and moved into the executor on success; on
-    /// failure they stay with the caller.
+    /// so it is reused by the next call. The session's [`Interns`] gain the
+    /// synthetic source (a snippet source, like a fed input) and at most one
+    /// string, and move into the executor on success; on failure they stay
+    /// with the caller.
     #[expect(
         clippy::too_many_arguments,
         reason = "synthetic calls combine existing REPL and call-site metadata"
@@ -475,13 +484,13 @@ impl Executor {
     ) -> Result<Self, MontyException> {
         const CALL_ARGS_NAME: &str = "<monty-call-args>";
 
-        let code = if arg_count == 0 {
-            format!("{name}()")
+        let code: Arc<str> = if arg_count == 0 {
+            Arc::from(format!("{name}()"))
         } else {
-            format!("{name}(...)")
+            Arc::from(format!("{name}(...)"))
         };
         let mut overlay = CompileInterns::new(interns);
-        let filename = overlay.intern(script_name);
+        let filename = overlay.add_snippet_source(SnippetSource::named(script_name, Arc::clone(&code)));
         let range = CodeRange {
             filename,
             start_byte: 0,
@@ -519,7 +528,7 @@ impl Executor {
             tables,
             program: Program {
                 module_code: Arc::new(module_code),
-                code: Arc::from(code),
+                code,
                 input_slots: vec![args_slot],
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
                 options,
@@ -886,9 +895,13 @@ pub struct RefCountOutput {
 
 /// Compiles module source through the supplied tables, committing any overlay on success.
 /// On failure the caller restores provisional global slots or discards a fresh program's tables.
+///
+/// `filename_id` is what the code's ranges carry, already assigned by the
+/// caller in `interns`; `script_name` is only used to format compile errors.
 fn compile_module_source(
     code: &str,
     script_name: &str,
+    filename_id: StringId,
     globals: &mut NameMap,
     mut interns: CompileInterns<'_>,
     input_names: impl IntoIterator<Item = impl AsRef<str>>,
@@ -903,8 +916,8 @@ fn compile_module_source(
             .map_err(|e| e.into_python_exc(script_name, code))?;
         input_slots.push(slot);
     }
-    let nodes =
-        parse_with_interner(code, script_name, &mut interns).map_err(|e| e.into_python_exc(script_name, code))?;
+    let nodes = parse_module_with_filename_id(code, filename_id, &mut interns)
+        .map_err(|e| e.into_python_exc(script_name, code))?;
     let nodes =
         prepare_with_existing_names(nodes, &interns, globals).map_err(|e| e.into_python_exc(script_name, code))?;
     let module_code = Compiler::compile_module(&nodes, &mut interns, globals, options)

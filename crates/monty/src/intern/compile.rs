@@ -1,11 +1,11 @@
 //! Compiler access to session tables, with private overlays for recoverable compilation.
 
-use std::sync::Arc;
-
 use ahash::AHashMap;
 use num_bigint::BigInt;
 
-use super::{BytesId, InternedString, Interns, LongIntId, SOURCE_ID_BASE, StaticStrings, StringId, next_string_id};
+use super::{
+    BytesId, InternedString, Interns, LongIntId, SOURCE_ID_BASE, SnippetSource, StaticStrings, StringId, next_string_id,
+};
 use crate::{function::Function, hash::WithHash};
 
 /// Compilation tables with final IDs assigned before execution.
@@ -26,7 +26,7 @@ struct PendingInterns {
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Function>,
-    sources: Vec<Arc<str>>,
+    sources: Vec<SnippetSource>,
 }
 
 impl<'i> CompileInterns<'i> {
@@ -70,7 +70,7 @@ impl<'i> CompileInterns<'i> {
                 self.base.functions.push(Box::new(entry));
             }
             for source in pending.sources.drain(..) {
-                self.base.eval_sources.push(source);
+                self.base.snippet_sources.push(Box::new(source));
             }
         }
     }
@@ -173,15 +173,21 @@ impl<'i> CompileInterns<'i> {
         }
     }
 
-    /// Records source separately from canonical strings, preserving equal-string ID equality.
-    pub(crate) fn add_eval_source(&mut self, source: Arc<str>) -> StringId {
+    /// Records a snippet's source and returns the filename ID its code ranges carry.
+    ///
+    /// The ID comes from the separate [`SOURCE_ID_BASE`] range rather than
+    /// `strings`, so equal-string ID equality is preserved and, since every
+    /// snippet gets a fresh ID, a long-lived session cannot exhaust the `u16`
+    /// ids that name-bearing opcodes address. Like everything else in an
+    /// overlay, the entry is only published if compilation commits.
+    pub(crate) fn add_snippet_source(&mut self, source: SnippetSource) -> StringId {
         let pending_len = self.pending.as_ref().map_or(0, |pending| pending.sources.len());
-        let index = SOURCE_ID_BASE + self.base.eval_sources.len() + pending_len;
+        let index = SOURCE_ID_BASE + self.base.snippet_sources.len() + pending_len;
         let id = StringId(index.try_into().expect("source ID overflow"));
         if let Some(pending) = &mut self.pending {
             pending.sources.push(source);
         } else {
-            self.base.eval_sources.push(source);
+            self.base.snippet_sources.push(Box::new(source));
         }
         id
     }
