@@ -581,6 +581,54 @@ fn hand_call_payloads_match_generated_encoding() {
         decode_frame::<pb::OsCall>(generated_now.encode_to_vec().as_slice()).expect("generated now call decodes"),
         hand_now
     );
+
+    // `DateTimeAsTimeZone` nests the top-level `DateTime` message.
+    let hand_astimezone = pb::OsCall {
+        call_id: 10,
+        values: None,
+        allow_eager_await: false,
+        call: Some(pb::os_call::Call::DateTimeAstimezone(pb::os_call::DateTimeAsTimeZone {
+            datetime: Some(pb::DateTime {
+                year: 2024,
+                month: 6,
+                day: 15,
+                hour: 12,
+                minute: 30,
+                second: 5,
+                microsecond: 123_456,
+                offset_seconds: Some(7_200),
+                timezone_name: Some("EET".to_owned()),
+            }),
+            tz: None,
+        })),
+    };
+    let generated_astimezone = oracle::OsCall {
+        call_id: 10,
+        values: None,
+        allow_eager_await: false,
+        call: Some(oracle::os_call::Call::DateTimeAstimezone(
+            oracle::os_call::DateTimeAsTimeZone {
+                datetime: Some(oracle::DateTime {
+                    year: 2024,
+                    month: 6,
+                    day: 15,
+                    hour: 12,
+                    minute: 30,
+                    second: 5,
+                    microsecond: 123_456,
+                    offset_seconds: Some(7_200),
+                    timezone_name: Some("EET".to_owned()),
+                }),
+                tz: None,
+            },
+        )),
+    };
+    assert_eq!(hand_astimezone.encode_to_vec(), generated_astimezone.encode_to_vec());
+    assert_eq!(
+        decode_frame::<pb::OsCall>(generated_astimezone.encode_to_vec().as_slice())
+            .expect("generated astimezone call decodes"),
+        hand_astimezone
+    );
 }
 
 /// A cyclic, shared value exported by real execution must agree byte-for-byte

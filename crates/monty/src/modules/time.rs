@@ -1,13 +1,15 @@
 //! Implementation of the `time` module.
 //!
-//! `time()` and `sleep()` follow the session's `AutoOsCalls` policies.
-//! Monotonic clocks and the `struct_time` family raise `AttributeError`.
+//! `time()` and `sleep()` follow the session's `AutoOsCalls` policies, and the
+//! zone constants (`timezone`, `altzone`, `daylight`, `tzname`) describe its
+//! zone. Monotonic clocks and the `struct_time` family raise `AttributeError`.
 //! See `limitations/time.md` for CPython divergences.
 
 use std::time::Duration;
 
-use monty_types::{OsFunctionCall, SleepError, SleepMode, sleep_duration, unix_seconds};
+use monty_types::{OsFunctionCall, SandboxTimeZone, SleepError, SleepMode, sleep_duration, unix_seconds};
 use num_traits::ToPrimitive;
+use smallvec::smallvec;
 
 use crate::{
     args::ArgValues,
@@ -17,7 +19,10 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
-    types::{Module, PyTrait, datetime::sandbox_instant},
+    types::{
+        Module, PyTrait, datetime::sandbox_instant, str::allocate_string, timezone::tzname_string,
+        tuple::allocate_tuple,
+    },
     value::Value,
 };
 
@@ -43,8 +48,27 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::ModuleFunction(ModuleFunctions::Time(TimeFunctions::Sleep)),
         vm,
     );
+    set_zone_constants(&mut module, vm);
 
     vm.heap.allocate(HeapData::Module(Box::new(module)))
+}
+
+/// Sets `timezone`, `altzone`, `daylight` and `tzname` from the sandbox zone,
+/// the values CPython reads from libc. A fixed zone has no DST, so both offsets
+/// and both names agree. `CallHost` leaves them unset: module creation cannot
+/// suspend for the host's answer.
+fn set_zone_constants(module: &mut Module, vm: &mut VM<'_>) {
+    let SandboxTimeZone::Fixed { offset_seconds, name } = vm.env.auto_os_calls.timezone.clone() else {
+        return;
+    };
+    // `time.timezone` is seconds *west* of UTC, the opposite sign to `utcoffset()`.
+    let west = Value::Int(-i64::from(offset_seconds));
+    module.set_attr(StaticStrings::Timezone, west.clone_with_heap(vm.heap), vm);
+    module.set_attr(StaticStrings::Altzone, west, vm);
+    module.set_attr(StaticStrings::Daylight, Value::Int(0), vm);
+    let name = allocate_string(tzname_string(offset_seconds, name.as_deref()), vm.heap);
+    let tzname = allocate_tuple(smallvec![name.clone_with_heap(vm.heap), name], vm.heap);
+    module.set_attr(StaticStrings::Tzname, tzname, vm);
 }
 
 /// Dispatches a call to a `time` module function.

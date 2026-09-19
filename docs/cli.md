@@ -69,7 +69,7 @@ Only the file argument's name is used, so `monty ./scripts/run.py` and `monty /a
 
 ## The clock, sleeping and entropy
 
-`date.today()` and `datetime.now()` read the machine's clock and local timezone; `time.time()` reads the machine's clock as Unix epoch seconds.
+`date.today()` and `datetime.now()` read the machine's clock in UTC, the zone `astimezone()` and `time.tzname` also report; `time.time()` reads the machine's clock as Unix epoch seconds.
 `--max-sleep` caps each `time.sleep()` and `asyncio.sleep()` at ten seconds by default (`inf` removes the cap).
 `--max-total-sleep` optionally bounds their cumulative duration.
 Both limits apply to scripts, `-c` and the REPL, with or without mounts.

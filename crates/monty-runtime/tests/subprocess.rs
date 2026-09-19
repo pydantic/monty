@@ -618,6 +618,22 @@ repr(datetime.now())",
 time.time()",
     );
     assert_eq!(expect_complete(event), MontyObject::float(1_700_000_000.123_456));
+    // the zone is also what `astimezone()`, `%Z` and the `time` constants report
+    let (_, event) = child.feed(
+        "import time
+(datetime.now().astimezone().strftime('%H:%M %Z'), time.timezone, time.tzname)",
+    );
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::tuple([
+            MontyObject::string("00:13 UTC+02:00".to_owned()),
+            MontyObject::int(-7_200),
+            MontyObject::tuple([
+                MontyObject::string("UTC+02:00".to_owned()),
+                MontyObject::string("UTC+02:00".to_owned()),
+            ]),
+        ])
+    );
     // CPython: random.seed(42); random.random()
     let (_, event) = child.feed(
         "import random

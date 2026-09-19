@@ -169,6 +169,7 @@ pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
         | OsFunctionCall::GetEnviron
         | OsFunctionCall::DateToday
         | OsFunctionCall::DateTimeNow(_)
+        | OsFunctionCall::DateTimeAsTimeZone(_)
         | OsFunctionCall::Urandom(_)
         | OsFunctionCall::Time
         | OsFunctionCall::Sleep(_)

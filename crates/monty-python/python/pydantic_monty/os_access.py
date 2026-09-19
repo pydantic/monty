@@ -62,6 +62,7 @@ OsFunction = Literal[
     'os.environ',
     'date.today',
     'datetime.now',
+    'datetime.astimezone',
     'os.urandom',
     'time.time',
     'time.sleep',
@@ -267,6 +268,8 @@ class AbstractOS(ABC):
                 return self.date_today()
             case 'datetime.now':
                 return self.datetime_now(*args)
+            case 'datetime.astimezone':
+                return self.datetime_astimezone(*args)
             case 'os.urandom':
                 return self.urandom(*args)
             case 'time.time':
@@ -594,6 +597,14 @@ class AbstractOS(ABC):
         Use `auto_os_calls` directly to configure a fixed clock.
         """
         return datetime.datetime.now(tz=tz)
+
+    def datetime_astimezone(self, dt: datetime.datetime, tz: datetime.tzinfo | None = None) -> datetime.datetime:
+        """Return host `dt.astimezone(tz)` when `auto_os_calls` routes the zone to the host.
+
+        Reached for `astimezone()` with no zone and for a naive `dt`, the two forms that need the local zone.
+        Override alongside `date_today()` and `datetime_now()` for a virtual zone.
+        """
+        return dt.astimezone(tz)
 
     def urandom(self, size: int) -> bytes:
         """Return `size` random bytes for Monty's `os.urandom(size)` host callback.

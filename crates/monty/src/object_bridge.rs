@@ -360,25 +360,10 @@ impl GraphExporter {
                     day: u8::try_from(day).expect("day is always 1..=31"),
                 })
             }
-            HeapReadOutput::DateTime(dt) => {
-                if let Some((year, month, day, hour, minute, second, microsecond)) =
-                    datetime_type::to_components(dt.get(vm.heap))
-                {
-                    MontyNode::DateTime(MontyDateTime {
-                        year,
-                        month,
-                        day,
-                        hour,
-                        minute,
-                        second,
-                        microsecond,
-                        offset_seconds: datetime_type::offset_seconds(dt.get(vm.heap)),
-                        timezone_name: datetime_type::timezone_info(dt.get(vm.heap)).and_then(|tz| tz.name),
-                    })
-                } else {
-                    repr_node(value, vm)
-                }
-            }
+            HeapReadOutput::DateTime(dt) => match datetime_type::to_monty_datetime(dt.get(vm.heap)) {
+                Some(datetime) => MontyNode::DateTime(datetime),
+                None => repr_node(value, vm),
+            },
             HeapReadOutput::Time(t) => {
                 let time = t.get(vm.heap);
                 let (hour, minute, second, microsecond, fold) = time.to_components();
