@@ -1,0 +1,22 @@
+crates/monty-js/ts/worker/channel.ts
+  s_440a7ea0ee4e52::t_2463dfadd1b80c 84-90
+crates/monty-js/__test__/wasm_auto_os_calls.spec.ts
+  s_440a7ea0ee4e52::t_a920f482b38c7d 42,45,52
+  s_440a7ea0ee4e52::t_6d38d267411313 41,43-44,46-51,53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6c30cb218bbac8c8b5c87cbccb243c678b3d0789",
+  "prompts": {},
+  "sessions": {
+    "s_440a7ea0ee4e52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a9754f7-13d8-42d0-a0e4-9657814a0b0c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
