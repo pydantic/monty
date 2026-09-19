@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashMap, mem, time::Duration};
 
 use insta::assert_snapshot;
 use monty::MontyRun;
@@ -881,6 +881,7 @@ fn assert_os_call_round_trip(call: OsFunctionCall) {
 
 #[test]
 fn os_calls_round_trip_all_variants() {
+    let mut kinds_by_name = HashMap::new();
     let p = || MontyPath::new("/mnt/data/f.txt".to_owned());
     for call in [
         OsFunctionCall::Exists(p()),
@@ -942,10 +943,22 @@ fn os_calls_round_trip_all_variants() {
         OsFunctionCall::Sleep(Duration::from_millis(1_500)),
         OsFunctionCall::AsyncSleep(Duration::ZERO),
         OsFunctionCall::AsyncSleep(Duration::from_secs_f64(0.25)),
+        OsFunctionCall::SystemSleep(Duration::from_millis(1_500)),
+        OsFunctionCall::AsyncSystemSleep(Duration::from_secs_f64(0.25)),
         // the longest length either sleep accepts survives the f64 seconds on the wire
         OsFunctionCall::Sleep(sleep_duration(MAX_SLEEP_SECONDS).unwrap()),
         OsFunctionCall::AsyncSleep(sleep_duration_saturating(f64::INFINITY).unwrap()),
     ] {
+        // hosts dispatch on the name, so it must identify the kind
+        let kind = kinds_by_name
+            .entry(call.name())
+            .or_insert_with(|| mem::discriminant(&call));
+        assert_eq!(
+            *kind,
+            mem::discriminant(&call),
+            "two call kinds share the name {}",
+            call.name()
+        );
         assert_os_call_round_trip(call);
     }
 }

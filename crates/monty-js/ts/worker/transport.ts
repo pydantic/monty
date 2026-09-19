@@ -11,12 +11,11 @@ import {
   type AutoOsCalls,
   type EncodedAutoOsCalls,
   type EncodedRandomSeed,
-  type SystemSleep,
   type TypeCheckFormat,
   encodeAssertMessageAnnotations,
   encodeAutoOsCalls,
   encodeTypeCheckFormat,
-  systemSleepOf,
+  systemSleepCapOf,
 } from '../options.js'
 import type {
   Arena,
@@ -114,8 +113,8 @@ export class WorkerTransport {
   private suspensionLimit: bigint | undefined
   private suspensionsSeen = 0n
 
-  /** The sleeps this session's host waits out itself, with their cap; see `SystemSleep`. */
-  private systemSleep: SystemSleep | null = null
+  /** The ceiling on one `'system'` sleep; see `systemSleepCapOf`. */
+  private systemSleepMaxSecs = 0
   /**
    * `maxTotalSleepSecs` in microseconds: the configured limit, only ever
    * tightened by what the component reports (a dump's, on load), since the
@@ -140,7 +139,7 @@ export class WorkerTransport {
     const transport = new WorkerTransport(dispatcher, encodeLimits(config.limits ?? {}).maxTotalSleepMicros)
     const assertMessageAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
     const encodedAutoOsCalls = encodeAutoOsCalls(config.autoOsCalls ?? {})
-    transport.systemSleep = systemSleepOf(encodedAutoOsCalls)
+    transport.systemSleepMaxSecs = systemSleepCapOf(encodedAutoOsCalls)
     const autoOsCalls = componentAutoOsCalls(encodedAutoOsCalls)
     await transport.control(
       {
@@ -372,17 +371,14 @@ export class WorkerTransport {
   }
 
   /**
-   * Charges a `'system'` sleep to `maxTotalSleepSecs`, cut to the cap as the
-   * session's wait will be: the message to refuse it with once the total
-   * would go over, else `null`. Mirrors monty-pool's `SessionBudget`, message
+   * Charges a `'system'` sleep (already cut to the ceiling by `toTurn`) to
+   * `maxTotalSleepSecs`: the message to refuse it with once the total would
+   * go over, else `null`. Mirrors monty-pool's `SessionBudget`, message
    * included, so the wasm and native paths raise the same `TimeoutError`.
    */
   private chargeSleep(turn: NativeTurn): string | null {
-    if (this.systemSleep === null || turn.kind !== 'osCall') return null
-    if (turn.functionName !== 'time.sleep' && turn.functionName !== 'asyncio.sleep') return null
-    const asked = turn.args[0]
-    const secs = Math.min(typeof asked === 'number' && asked > 0 ? asked : 0, this.systemSleep.maxSecs)
-    const micros = Number.isFinite(secs) ? BigInt(Math.round(secs * 1_000_000)) : 0xffff_ffff_ffff_ffffn
+    if (turn.kind !== 'osCall' || turn.systemSleepSecs === undefined) return null
+    const micros = BigInt(Math.round(turn.systemSleepSecs * 1_000_000))
     const total = this.sleepAskedMicros + micros
     if (this.sleepLimitMicros !== undefined && total > this.sleepLimitMicros) {
       return `sleep limit exceeded: ${durationDebug(total)} > ${durationDebug(this.sleepLimitMicros)}`
@@ -457,6 +453,12 @@ export class WorkerTransport {
         this.pendingCallId = event.val.callId
         this.pendingFunctionName = event.val.functionName
         const get = decodeArena(event.val.values)
+        // the component's number is cut to this host's ceiling, never trusted
+        const asked = event.val.systemSleepSecs
+        const systemSleepSecs =
+          asked === undefined
+            ? undefined
+            : Math.min(Number.isFinite(asked) && asked > 0 ? asked : 0, this.systemSleepMaxSecs)
         return {
           kind: 'osCall',
           functionName: event.val.functionName,
@@ -464,6 +466,7 @@ export class WorkerTransport {
           kwargs: event.val.kwargs.map(({ key, value }) => [get(key), get(value)]),
           callId: event.val.callId,
           allowEagerAwait: event.val.allowEagerAwait,
+          ...(systemSleepSecs === undefined ? {} : { systemSleepSecs }),
         }
       }
       case 'name-lookup':

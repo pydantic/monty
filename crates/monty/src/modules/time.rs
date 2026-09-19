@@ -70,8 +70,8 @@ fn time(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     }
 }
 
-/// `time.sleep(seconds)` — a wait the host performs ([`host_sleep_delay`]
-/// says for how long), [`PostConversionEffect::DiscardResult`] making the
+/// `time.sleep(seconds)` — a wait the host performs ([`host_sleep`] says
+/// who and for how long), [`PostConversionEffect::DiscardResult`] making the
 /// call `None` whatever it answered; under `Zero` nothing waits. The
 /// argument is validated the same way in every mode.
 fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
@@ -88,24 +88,32 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     });
     seconds.drop_with(vm.heap);
     let duration = result?;
-    Ok(match host_sleep_delay(vm, duration) {
-        Some(duration) => CallResult::OsCallWithEffect {
-            call: OsFunctionCall::Sleep(duration),
-            effect: PostConversionEffect::DiscardResult.into(),
-        },
-        None => CallResult::Value(Value::None),
+    let call = match host_sleep(vm, duration) {
+        Some(HostSleep::System(delay)) => OsFunctionCall::SystemSleep(delay),
+        Some(HostSleep::CallHost(delay)) => OsFunctionCall::Sleep(delay),
+        None => return Ok(CallResult::Value(Value::None)),
+    };
+    Ok(CallResult::OsCallWithEffect {
+        call,
+        effect: PostConversionEffect::DiscardResult.into(),
     })
 }
 
-/// The delay a sleep hands to the host, or `None` when nothing waits
-/// (`SleepMode::Zero`). Under `System` the delay is cut to the mode's maximum;
-/// the host then charges it to `max_total_sleep` and waits it out without
-/// consulting its own `os` handler. Under `CallHost` it is the delay asked,
-/// uncut.
-pub(crate) fn host_sleep_delay(vm: &VM<'_>, delay: Duration) -> Option<Duration> {
+/// Who waits out a sleep, and for how long; see [`host_sleep`].
+pub(crate) enum HostSleep {
+    /// The host itself, for a delay already cut to the mode's maximum.
+    System(Duration),
+    /// The host's `os` handler, for the delay asked, uncut.
+    CallHost(Duration),
+}
+
+/// The wait a sleep suspends with, or `None` when nothing waits
+/// (`SleepMode::Zero`). The call kind says who waits, so no host needs a
+/// copy of the sandbox's sleep policy to answer it.
+pub(crate) fn host_sleep(vm: &VM<'_>, delay: Duration) -> Option<HostSleep> {
     match vm.env.auto_os_calls.sleep {
-        SleepMode::System(max) => Some(delay.min(max)),
-        SleepMode::CallHost => Some(delay),
+        SleepMode::System(max) => Some(HostSleep::System(delay.min(max))),
+        SleepMode::CallHost => Some(HostSleep::CallHost(delay)),
         SleepMode::Zero => None,
     }
 }

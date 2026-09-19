@@ -944,10 +944,13 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
         OsFunctionCall::DateToday | OsFunctionCall::DateTimeNow(_) | OsFunctionCall::Time => {
             unreachable!("{} is answered in the sandbox", call.name())
         }
-        // The sleeps are the host's to wait out, already cut and budgeted.
-        OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay) => {
+        // The sleeps are the host's to wait out, already cut by the sandbox.
+        OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) => {
             thread::sleep(*delay);
             MontyObject::none().into()
+        }
+        OsFunctionCall::Sleep(_) | OsFunctionCall::AsyncSleep(_) => {
+            unreachable!("{} is the host's own wait under AutoOsCalls::default()", call.name())
         }
         OsFunctionCall::GetEnviron => {
             let env_dict = vec![

@@ -8,7 +8,7 @@
 //! Other asyncio functions (`create_task`, `wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
 
-use monty_types::{OsFunctionCall, SleepMode, sleep_duration_saturating};
+use monty_types::{OsFunctionCall, sleep_duration_saturating};
 use num_traits::ToPrimitive;
 
 use crate::{
@@ -20,7 +20,10 @@ use crate::{
     heap::{Heap, HeapData, HeapId},
     heap_traits::DropGuard,
     intern::StaticStrings,
-    modules::{ModuleFunctions, time::host_sleep_delay},
+    modules::{
+        ModuleFunctions,
+        time::{HostSleep, host_sleep},
+    },
     os_dispatch::PostConversionEffect,
     types::Module,
     value::Value,
@@ -70,8 +73,8 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
 
 /// `asyncio.sleep(delay, result=None)` — an awaitable producing `result` once
 /// the wait is over. Unlike CPython the wait starts at the call: a suspension
-/// the host answers with a pending future or inline ([`host_sleep_delay`]
-/// says for how long), [`PostConversionEffect::SleepResult`] keeping `result`
+/// the host answers with a pending future or inline ([`host_sleep`] says who
+/// and for how long), [`PostConversionEffect::SleepResult`] keeping `result`
 /// here; a zero delay, and every delay under `Zero`, is settled at once. See
 /// `limitations/asyncio.md`.
 fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
@@ -85,18 +88,19 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         // NaN is the one delay CPython refuses; the rest clamp.
         let delay = sleep_duration_saturating(seconds)
             .map_err(|_| ExcType::value_error("Invalid delay: NaN (not a number)"))?;
-        host_sleep_delay(vm, delay)
+        host_sleep(vm, delay)
     };
     let (result, vm) = result_guard.into_parts();
-    Ok(match delay {
-        // A zero delay is a round trip for nothing: the sandbox answers it.
-        Some(delay) if !delay.is_zero() || matches!(vm.env.auto_os_calls.sleep, SleepMode::CallHost) => {
-            CallResult::OsCallWithEffect {
-                call: OsFunctionCall::AsyncSleep(delay),
-                effect: PostConversionEffect::SleepResult { result }.into(),
-            }
-        }
-        _ => CallResult::Value(vm.settled_awaitable(result)),
+    let call = match delay {
+        Some(HostSleep::CallHost(delay)) => OsFunctionCall::AsyncSleep(delay),
+        // A zero delay the host itself would wait out is a round trip for
+        // nothing: the sandbox settles it.
+        Some(HostSleep::System(delay)) if !delay.is_zero() => OsFunctionCall::AsyncSystemSleep(delay),
+        _ => return Ok(CallResult::Value(vm.settled_awaitable(result))),
+    };
+    Ok(CallResult::OsCallWithEffect {
+        call,
+        effect: PostConversionEffect::SleepResult { result }.into(),
     })
 }
 

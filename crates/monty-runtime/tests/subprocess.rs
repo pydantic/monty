@@ -568,7 +568,7 @@ abs(time.time() - {now}) < 60 and date.today().year == datetime.now().year"
     };
     assert_eq!(
         call.call,
-        Some(pb::os_call::Call::Sleep(pb::os_call::Sleep { seconds: 10.0 }))
+        Some(pb::os_call::Call::SystemSleep(pb::os_call::Sleep { seconds: 10.0 }))
     );
     let (_, event) = child.resume_return(call.call_id, MontyObject::none());
     assert_eq!(expect_complete(event), MontyObject::none());
@@ -581,7 +581,9 @@ asyncio.run(asyncio.sleep(3600, 'woken'))",
     };
     assert_eq!(
         call.call,
-        Some(pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep { delay: 10.0 }))
+        Some(pb::os_call::Call::AsyncSystemSleep(pb::os_call::AsyncSleep {
+            delay: 10.0
+        }))
     );
     let (_, event) = child.resume_return(call.call_id, MontyObject::none());
     assert_eq!(expect_complete(event), MontyObject::string("woken"));

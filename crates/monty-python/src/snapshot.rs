@@ -301,6 +301,7 @@ pub(crate) fn build_snapshot(
             args,
             call_id,
             allow_eager_await,
+            ..
         } => {
             let call = FunctionCallData {
                 function_name,

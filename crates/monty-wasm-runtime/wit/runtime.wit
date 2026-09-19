@@ -424,6 +424,10 @@ interface worker {
         /// As on `function-call-event`: the host may await its wait and answer
         /// with `resume-futures`. Only ever set on `asyncio.sleep`.
         allow-eager-await: bool,
+        /// Set on a sleep the host waits out itself (a `system` sleep): how
+        /// long, in seconds, already cut by the child. The host cuts it again
+        /// to its own cap and charges `max-total-sleep` before waiting.
+        system-sleep-secs: option<f64>,
     }
 
     /// A finished feed's value: an index into its arena.

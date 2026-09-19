@@ -7,7 +7,7 @@ use std::{
 
 use monty_types::{
     AssertMessageAnnotations, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall, PrintWriter,
-    ResourceTracker, SleepMode,
+    ResourceTracker,
 };
 pub use monty_types::{AutoOsCalls, CompileOptions};
 use ruff_python_stdlib::identifiers::is_identifier;
@@ -752,14 +752,14 @@ impl Program {
                     args.drop_with(vm);
                     frame_exit_result = vm.resume_with_exception(err.into());
                 }
-                // Standard execution is its own host: a sleep it answers is
-                // waited out here, off the execution clock, as the bindings
-                // do under `SleepMode::System`.
+                // Standard execution is its own host: a sleep it is asked to
+                // wait out is waited out here, off the execution clock, as the
+                // bindings do.
                 Ok(FrameExit::OsCall {
-                    function_call: OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay),
+                    function_call: OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay),
                     effect,
                     ..
-                }) if matches!(vm.env.auto_os_calls.sleep, SleepMode::System(_)) => {
+                }) => {
                     vm.pending_effect = effect;
                     vm.heap.tracker.sandbox_sleep(delay);
                     frame_exit_result = resume_with_result(vm, ExtFunctionResult::Return(MontyObject::none()), None);

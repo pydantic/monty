@@ -1442,30 +1442,29 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                 function_name,
                 call_id,
                 allow_eager_await,
+                system_sleep: Some(delay),
                 ..
-            } if let Some(delay) = py.detach(|| block_on_sync(pending_system_sleep(&checkout)))? => {
-                match CoroutineMode::for_os_call(&function_name, allow_eager_await) {
-                    CoroutineMode::Future => {
-                        sleep_ids.insert(call_id);
-                        sleeps.spawn_on(
-                            async move {
-                                tokio_sleep(delay).await;
-                                (call_id, ExtFunctionResult::Return(MontyObject::none()))
-                            },
-                            get_runtime().handle(),
-                        );
-                        TurnAnswer::Call(ResumeValue::Future)
-                    }
-                    CoroutineMode::Eager => {
-                        py.detach(|| thread::sleep(delay));
-                        TurnAnswer::Eager(call_id, ResumeValue::Return(MontyObject::none()))
-                    }
-                    CoroutineMode::AsValue => {
-                        py.detach(|| thread::sleep(delay));
-                        TurnAnswer::Call(ResumeValue::Return(MontyObject::none()))
-                    }
+            } => match CoroutineMode::for_os_call(&function_name, allow_eager_await) {
+                CoroutineMode::Future => {
+                    sleep_ids.insert(call_id);
+                    sleeps.spawn_on(
+                        async move {
+                            tokio_sleep(delay).await;
+                            (call_id, ExtFunctionResult::Return(MontyObject::none()))
+                        },
+                        get_runtime().handle(),
+                    );
+                    TurnAnswer::Call(ResumeValue::Future)
                 }
-            }
+                CoroutineMode::Eager => {
+                    py.detach(|| thread::sleep(delay));
+                    TurnAnswer::Eager(call_id, ResumeValue::Return(MontyObject::none()))
+                }
+                CoroutineMode::AsValue => {
+                    py.detach(|| thread::sleep(delay));
+                    TurnAnswer::Call(ResumeValue::Return(MontyObject::none()))
+                }
+            },
             // Only the loop's own sleeps can be pending under `Monty`: any other
             // id would never be answered, so it is a bug here, not a stall.
             TurnEvent::ResolveFutures { pending_call_ids } if !sleeps.is_empty() => {
@@ -1719,8 +1718,9 @@ async fn drive_async_inner(
                 function_name,
                 call_id,
                 allow_eager_await,
+                system_sleep: Some(delay),
                 ..
-            } if let Some(delay) = pending_system_sleep(&checkout).await => {
+            } => {
                 let mode = CoroutineMode::for_os_call(&function_name, allow_eager_await);
                 dispatched_answer(dispatch_system_sleep(delay, call_id, mode, &mut join_set), call_id).await?
             }
@@ -1730,6 +1730,7 @@ async fn drive_async_inner(
                 args,
                 call_id,
                 allow_eager_await,
+                ..
             } => {
                 let mounted = run_turn_async(
                     &checkout,
@@ -1869,12 +1870,6 @@ enum TurnAnswer {
     Eager(u32, ResumeValue),
     /// Settled futures answering a `ResolveFutures` suspension.
     Futures(Vec<(u32, ResumeValue)>),
-}
-
-/// The wait the pending suspension asks of the drive loop itself (see
-/// `Checkout::system_sleep`): `None` for anything but a `'system'` sleep.
-async fn pending_system_sleep(checkout: &SharedCheckout) -> Option<Duration> {
-    checkout.lock().await.as_ref().and_then(Checkout::system_sleep)
 }
 
 /// What a turn helper may return, so one implementation serves both an

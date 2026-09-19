@@ -69,14 +69,20 @@ export interface OsCallTurn extends CallbackTurn {
   callId: number
   /** As on `FunctionCallTurn`: the wait may settle before replying with `resolveFutures`. Only set on `asyncio.sleep`. */
   allowEagerAwait?: boolean
+  /**
+   * Set on a sleep this process waits out itself (a `'system'` sleep): how
+   * long, in seconds, already cut to the cap and charged to `maxTotalSleepSecs`
+   * by the layer below. Absent when the `os` callback decides.
+   */
+  systemSleepSecs?: number
 }
 
 /**
  * Whether `resumeFuture` is a valid answer to an OS call: only `asyncio.sleep`, which the
- * sandbox awaits. Mirrors `OsFunctionCall::accepts_future` in `monty-types`.
+ * sandbox awaits, under either sleep mode. Mirrors `OsFunctionCall::accepts_future` in `monty-types`.
  */
 export function osCallAcceptsFuture(functionName: string): boolean {
-  return functionName === 'asyncio.sleep'
+  return functionName === 'asyncio.sleep' || functionName === 'system.async_sleep'
 }
 
 /** The sandbox read an undefined name — answer with `resumeNameLookup`. */

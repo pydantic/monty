@@ -66,6 +66,8 @@ OsFunction = Literal[
     'time.time',
     'time.sleep',
     'asyncio.sleep',
+    'system.sleep',
+    'system.async_sleep',
 ]
 
 MAX_URANDOM_BYTES_DEFAULT: int = 1_048_576
@@ -276,9 +278,10 @@ class AbstractOS(ABC):
                 return self.urandom(*args)
             case 'time.time':
                 return self.time()
-            case 'time.sleep':
+            # the sleeps the pool would wait out itself, as a `feed_start` caller sees them
+            case 'time.sleep' | 'system.sleep':
                 return self.sleep(*args)
-            case 'asyncio.sleep':
+            case 'asyncio.sleep' | 'system.async_sleep':
                 return self.async_sleep(*args, is_async=is_async)
             case _:  # pyright: ignore[reportUnnecessaryComparison]
                 raise NotImplementedError(f'Unknown OS function: {function_name}')

@@ -212,8 +212,8 @@ assert!(err.to_string().contains("feed time limit exceeded"));
 The sandbox answers `date.today()`, `datetime.now()` and `time.time()` from this machine's clock and seeds an
 unseeded `random` from OS entropy, under `run` and `start` alike, with no host involved.
 `time.sleep()` and `asyncio.sleep()` are the host's to wait out, each call cut to ten seconds: `run`, its own host,
-waits inline, while under `start` they pause as `RunProgress::OsCall` for you to wait out and answer with `None`
-(or a future for `asyncio.sleep()`):
+waits inline, while under `start` they pause as `RunProgress::OsCall` carrying `OsFunctionCall::SystemSleep` (or
+`AsyncSystemSleep`) for you to wait out and answer with `None` (or a future for `asyncio.sleep()`):
 
 ```rust
 use monty::MontyRun;

@@ -927,9 +927,13 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             args,
             call_id,
             allow_eager_await,
+            system_sleep,
         }) => {
             obj.set("kind", "osCall")?;
             obj.set("functionName", function_name)?;
+            if let Some(delay) = system_sleep {
+                obj.set("systemSleepSecs", delay.as_secs_f64())?;
+            }
             let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&args);
             let arena = DecodedArena::new(graph, env)?;
             obj.set("args", values_to_js(env, &arena, arg_ids)?)?;

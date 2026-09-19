@@ -168,18 +168,13 @@ const MAX_TIMEZONE_OFFSET_SECONDS = 86_399
 const MAX_WIRE_SECS = 18_446_744_073_709
 
 /**
- * The sleeps this process waits out itself, without the `os` callback:
- * `sleep: 'system'` (the default) with its cap in seconds. `null` when the
- * `os` callback (`'call_host'`) or nothing (`'zero'`) answers them.
+ * The ceiling on one `'system'` sleep the wasm transport applies, in seconds:
+ * the configured `sleepSystemMax`, else the default (a restored dump may
+ * sleep under any checkout). The worker cuts its own sleeps; this cut is the
+ * host's, so a worker's number is never trusted.
  */
-export interface SystemSleep {
-  readonly maxSecs: number
-}
-
-/** The sleep policy the encoded options imply for the session's host; see `SystemSleep`. */
-export function systemSleepOf(calls: EncodedAutoOsCalls): SystemSleep | null {
-  if (calls.sleep !== undefined && calls.sleep !== 'system') return null
-  return { maxSecs: calls.sleepSystemMaxSecs ?? DEFAULT_SLEEP_SYSTEM_MAX_SECS }
+export function systemSleepCapOf(calls: EncodedAutoOsCalls): number {
+  return calls.sleepSystemMaxSecs ?? DEFAULT_SLEEP_SYSTEM_MAX_SECS
 }
 
 /**

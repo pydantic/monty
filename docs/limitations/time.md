@@ -5,6 +5,10 @@ Monty implements two functions from `time`: `time.time()` and `time.sleep()`.
 host's wait, as the session's `AutoOsCalls` say (`auto_os_calls` on `checkout()` in the bindings, `AutoOsCalls` in
 Rust).
 
+A `'system'` sleep reaches a host driving suspensions itself (`feed_start`, `RunProgress::OsCall`, the JavaScript
+turn objects) as the OS call `system.sleep` (`system.async_sleep` for `asyncio.sleep()`), already cut to the maximum,
+distinct from the `time.sleep` / `asyncio.sleep` calls a `'call_host'` handler receives.
+
 `asyncio.sleep()` is documented in [asyncio.md](asyncio.md); it shares
 `time.sleep()`'s sleep mode, while its delay argument follows CPython's `asyncio.sleep()` (a negative delay waits
 zero seconds rather than raising).

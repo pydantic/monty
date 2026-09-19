@@ -104,6 +104,12 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
         OsFunctionCall::AsyncSleep(delay) => Call::AsyncSleep(os_call::AsyncSleep {
             delay: delay.as_secs_f64(),
         }),
+        OsFunctionCall::SystemSleep(delay) => Call::SystemSleep(os_call::Sleep {
+            seconds: delay.as_secs_f64(),
+        }),
+        OsFunctionCall::AsyncSystemSleep(delay) => Call::AsyncSystemSleep(os_call::AsyncSleep {
+            delay: delay.as_secs_f64(),
+        }),
     };
     (call, values)
 }
@@ -162,6 +168,10 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             os_call::Call::Time(_) => Self::Time,
             os_call::Call::Sleep(s) => Self::Sleep(field_sleep_duration(s.seconds, "Sleep.seconds")?),
             os_call::Call::AsyncSleep(s) => Self::AsyncSleep(field_sleep_duration(s.delay, "AsyncSleep.delay")?),
+            os_call::Call::SystemSleep(s) => Self::SystemSleep(field_sleep_duration(s.seconds, "Sleep.seconds")?),
+            os_call::Call::AsyncSystemSleep(s) => {
+                Self::AsyncSystemSleep(field_sleep_duration(s.delay, "AsyncSleep.delay")?)
+            }
         })
     }
 }

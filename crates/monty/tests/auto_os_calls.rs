@@ -499,7 +499,7 @@ fn gathered_sleeps_are_the_hosts_to_overlap() {
             panic!("expected asyncio.sleep, got {progress:?}")
         };
         assert!(
-            matches!(call.function_call, OsFunctionCall::AsyncSleep(delay) if delay == Duration::from_millis(20)),
+            matches!(call.function_call, OsFunctionCall::AsyncSystemSleep(delay) if delay == Duration::from_millis(20)),
             "got {:?}",
             call.function_call
         );
@@ -551,7 +551,7 @@ fn system_sleeps_reach_the_host_cut_but_uncharged() {
             panic!("expected time.sleep, got {progress:?}")
         };
         assert!(
-            matches!(call.function_call, OsFunctionCall::Sleep(delay) if delay == Duration::from_millis(100)),
+            matches!(call.function_call, OsFunctionCall::SystemSleep(delay) if delay == Duration::from_millis(100)),
             "got {:?}",
             call.function_call
         );

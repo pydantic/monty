@@ -82,7 +82,10 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
             day: 14,
         }),
         OsFunctionCall::Time => MontyObject::float(1_700_000_000.0),
-        OsFunctionCall::Sleep(_) | OsFunctionCall::AsyncSleep(_) => MontyObject::none(),
+        OsFunctionCall::Sleep(_)
+        | OsFunctionCall::SystemSleep(_)
+        | OsFunctionCall::AsyncSleep(_)
+        | OsFunctionCall::AsyncSystemSleep(_) => MontyObject::none(),
         OsFunctionCall::DateTimeNow(_) => MontyObject::datetime(MontyDateTime {
             year: 2023,
             month: 11,

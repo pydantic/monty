@@ -682,7 +682,7 @@ impl HostOs {
     /// will be) and lets it through. Anything but a sleep is free.
     fn refuse_sleep(&mut self, call: &OsFunctionCall) -> Option<MontyException> {
         match (call, self.sleep_budget.as_mut()) {
-            (OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay), Some(budget)) => {
+            (OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay), Some(budget)) => {
                 budget.charge((*delay).min(self.max_sleep))
             }
             _ => None,
@@ -697,7 +697,7 @@ impl HostOs {
     /// successful `MontyObject` or an exception for errors / unsupported
     /// operations.
     fn handle_os_call(&mut self, call: OsFunctionCall) -> ExtFunctionResult {
-        if let OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay) = call {
+        if let OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) = call {
             thread::sleep(delay.min(self.max_sleep));
             return MontyObject::none().into();
         }

@@ -856,8 +856,13 @@ message OsCall {
     // os.urandom(size), also how `random` seeds an unseeded generator.
     Urandom urandom = 25;
     Unit time = 26; // time.time()
-    Sleep sleep = 27; // time.sleep(seconds)
-    AsyncSleep async_sleep = 28; // asyncio.sleep(delay)
+    Sleep sleep = 27; // time.sleep(seconds) under `call_host`: the handler waits
+    AsyncSleep async_sleep = 28; // asyncio.sleep(delay) under `call_host`
+    // The same two under `system`: the parent itself waits, cut to the mode's
+    // maximum by the child, charged to `max_total_sleep` by the parent, never
+    // consulting its `os` handler. Distinct so the parent keeps no sleep policy.
+    Sleep system_sleep = 29;
+    AsyncSleep async_system_sleep = 30;
   }
 
   // The arena any value-typed argument (`Getenv.default`) indexes.

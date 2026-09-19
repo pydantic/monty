@@ -509,6 +509,7 @@ export interface OsCallEvent {
   kwargs: Array<NodePair>
   callId: number
   allowEagerAwait: boolean
+  systemSleepSecs?: number
 }
 export interface CompleteEvent {
   values: Arena

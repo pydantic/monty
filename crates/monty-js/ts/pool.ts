@@ -14,7 +14,6 @@ import {
   type TypeCheckFormat,
   encodeAssertMessageAnnotations,
   encodeAutoOsCalls,
-  systemSleepOf,
 } from './options.js'
 import { MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
@@ -213,7 +212,7 @@ export class Monty {
     })
     const telemetryContext = captureTelemetryContext()
     await native.enter(telemetryContext)
-    return new MontySession(native, systemSleepOf(autoOsCalls))
+    return new MontySession(native)
   }
 
   /**

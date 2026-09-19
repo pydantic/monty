@@ -748,6 +748,8 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64
         Some(Call::Time(_)) => os_call!("time"),
         Some(Call::Sleep(s)) => os_call!("sleep", args.seconds = s.seconds),
         Some(Call::AsyncSleep(s)) => os_call!("async_sleep", args.delay = s.delay),
+        Some(Call::SystemSleep(s)) => os_call!("system_sleep", args.seconds = s.seconds),
+        Some(Call::AsyncSystemSleep(s)) => os_call!("async_system_sleep", args.delay = s.delay),
         None => os_call!(MISSING),
     });
     if args_cut {

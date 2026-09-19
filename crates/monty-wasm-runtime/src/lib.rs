@@ -209,6 +209,8 @@ struct PreparedOsEvent {
     args: CallArgs,
     call_id: u32,
     allow_eager_await: bool,
+    /// The wait a `'system'` sleep asks the host to perform itself, in seconds.
+    system_sleep_secs: Option<f64>,
 }
 
 impl PreparedOsEvent {
@@ -221,6 +223,12 @@ impl PreparedOsEvent {
             function_name: call.name().to_owned(),
             // The eager bit is only meaningful on a call a future may answer.
             allow_eager_await: eager_bit && OsFunctionCall::accepts_future(call.name()),
+            system_sleep_secs: match call {
+                OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) => {
+                    Some(delay.as_secs_f64())
+                }
+                _ => None,
+            },
             args: call.to_args(),
             call_id,
         })
@@ -237,6 +245,7 @@ impl PreparedOsEvent {
         Event::OsCall(OsCallEvent {
             function_name: self.function_name,
             allow_eager_await: self.allow_eager_await,
+            system_sleep_secs: self.system_sleep_secs,
             values: value::into_component(graph.into_nodes()),
             args: value::raw_ids(args),
             kwargs: value::raw_pairs(kwargs),

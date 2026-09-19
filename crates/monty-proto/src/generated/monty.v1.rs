@@ -1025,7 +1025,7 @@ pub struct OsCall {
     pub allow_eager_await: bool,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -1207,12 +1207,19 @@ pub mod os_call {
         /// time.time()
         #[prost(message, tag = "26")]
         Time(super::Unit),
-        /// time.sleep(seconds)
+        /// time.sleep(seconds) under `call_host`: the handler waits
         #[prost(message, tag = "27")]
         Sleep(Sleep),
-        /// asyncio.sleep(delay)
+        /// asyncio.sleep(delay) under `call_host`
         #[prost(message, tag = "28")]
         AsyncSleep(AsyncSleep),
+        /// The same two under `system`: the parent itself waits, cut to the mode's
+        /// maximum by the child, charged to `max_total_sleep` by the parent, never
+        /// consulting its `os` handler. Distinct so the parent keeps no sleep policy.
+        #[prost(message, tag = "29")]
+        SystemSleep(Sleep),
+        #[prost(message, tag = "30")]
+        AsyncSystemSleep(AsyncSleep),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether

@@ -76,10 +76,9 @@ pub struct ReplConfig {
     /// The default answers the clock from the worker's and seeds `random`
     /// from its entropy; a field set to `CallHost` delivers those calls as
     /// [`TurnEvent::OsCall`] instead. Every sleep is a [`TurnEvent::OsCall`]:
-    /// under the default `SleepMode::System` it arrives cut to the mode's
-    /// maximum for the caller to wait out itself, without consulting its own
-    /// `os` handler (see [`Checkout::system_sleep`]); under `CallHost` the
-    /// handler decides.
+    /// under the default `SleepMode::System` it carries `system_sleep`, the
+    /// wait the caller performs itself without consulting its own `os`
+    /// handler; under `CallHost` the handler decides.
     pub auto_os_calls: AutoOsCalls,
 }
 
@@ -261,6 +260,12 @@ pub enum TurnEvent {
         /// the wait and answer with [`Checkout::resume_futures`]. Only set on
         /// a call `OsFunctionCall::accepts_future` allows a future for.
         allow_eager_await: bool,
+        /// `Some` for a sleep the caller waits out itself (a `'system'` sleep):
+        /// how long, then answer `ResumeValue::Return(MontyObject::none())`,
+        /// as a future for `asyncio.sleep`. Cut to the configured maximum here
+        /// too, so the worker's value is never trusted, and already charged to
+        /// `max_total_sleep`. `None` means the `os` handler decides.
+        system_sleep: Option<Duration>,
     },
     /// The sandbox read an undefined name, or — when `object_id` is set — a
     /// lazy attribute on the host-backed object with that uuid (a class
@@ -384,8 +389,6 @@ pub struct Checkout {
     /// Consulted only by [`Checkout::resume_from_mounts`]. Dropped when the
     /// feed ends so overlay writes never leak into the next feed.
     feed_mounts: Option<MountTable>,
-    /// The session's sleep mode, for [`Checkout::system_sleep`].
-    sleep: SleepMode,
     /// Whether the session's working directory has been established (a feed
     /// chose it, or a restored dump carried it). Until then a feed without an
     /// explicit `cwd` sends the mount-derived default; afterwards it sends
@@ -431,6 +434,11 @@ struct SessionBudget {
     /// The session's `max_total_sleep` in force: the configured one, only
     /// ever tightened by what the worker reports.
     sleep_limit: Option<Duration>,
+    /// Ceiling on one `'system'` sleep: the configured `sleep_system_max`, or
+    /// the default when the checkout configured another mode (a restored dump
+    /// may still sleep). The worker cuts its own sleeps; this cut is the
+    /// parent's, so a compromised worker cannot make it wait longer.
+    system_sleep_max: Duration,
     /// Time the `SleepMode::System` sleeps seen so far asked for, each cut to
     /// the mode's maximum; what `sleep_limit` bounds.
     sleep_asked: Duration,
@@ -448,6 +456,10 @@ impl SessionBudget {
             suspensions_seen: 0,
             sleep_limit: limits.and_then(|limits| limits.max_total_sleep),
             sleep_asked: Duration::ZERO,
+            system_sleep_max: match repl.auto_os_calls.sleep {
+                SleepMode::System(max) => max,
+                SleepMode::CallHost | SleepMode::Zero => SleepMode::DEFAULT_MAX,
+            },
         }
     }
 
@@ -462,6 +474,7 @@ impl SessionBudget {
             suspensions_seen: 0,
             sleep_limit: self.sleep_limit,
             sleep_asked: Duration::ZERO,
+            system_sleep_max: self.system_sleep_max,
         };
     }
 
@@ -503,25 +516,22 @@ impl SessionBudget {
         (is_suspension(event) && self.suspensions_seen > self.suspension_limit).then_some(self.suspension_limit)
     }
 
-    /// Charges a `SleepMode::System` sleep announcement to `max_total_sleep`,
-    /// cut to the mode's maximum as the caller's wait will be. A sleep that
-    /// would take the total over is not charged; `Some((limit, total))` says
-    /// to refuse it. Any other event, and any sleep under another mode, is
-    /// free. The delay is the worker's number, so a nonsense value counts as
-    /// the maximum rather than being trusted.
-    fn charge_sleep(&mut self, event: &pb::ChildEvent, sleep: SleepMode) -> Option<(Duration, Duration)> {
-        let SleepMode::System(max) = sleep else {
-            return None;
-        };
+    /// Charges a `'system'` sleep announcement to `max_total_sleep`, cut to
+    /// the ceiling as the caller's wait will be. A sleep that would take the
+    /// total over is not charged; `Some((limit, total))` says to refuse it.
+    /// Any other event, a `'call_host'` sleep included, is free. The delay is
+    /// the worker's number, so a nonsense value counts as the ceiling rather
+    /// than being trusted.
+    fn charge_sleep(&mut self, event: &pb::ChildEvent) -> Option<(Duration, Duration)> {
         let seconds = match &event.kind {
             Some(pb::child_event::Kind::OsCall(call)) => match call.call {
-                Some(pb::os_call::Call::Sleep(pb::os_call::Sleep { seconds })) => seconds,
-                Some(pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep { delay })) => delay,
+                Some(pb::os_call::Call::SystemSleep(pb::os_call::Sleep { seconds })) => seconds,
+                Some(pb::os_call::Call::AsyncSystemSleep(pb::os_call::AsyncSleep { delay })) => delay,
                 _ => return None,
             },
             _ => return None,
         };
-        let delay = Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX).min(max);
+        let delay = self.cap_system_sleep(Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX));
         let total = self.sleep_asked.saturating_add(delay);
         match self.sleep_limit {
             Some(limit) if total > limit => Some((limit, total)),
@@ -530,6 +540,11 @@ impl SessionBudget {
                 None
             }
         }
+    }
+
+    /// Cuts a `'system'` sleep to this checkout's ceiling; see `system_sleep_max`.
+    fn cap_system_sleep(&self, delay: Duration) -> Duration {
+        delay.min(self.system_sleep_max)
     }
 
     /// Returns the tighter of the two duration backstops: what each configured
@@ -673,7 +688,6 @@ impl Checkout {
             armed_deadline: None,
             restored_script_name: None,
             feed_mounts: None,
-            sleep: repl.auto_os_calls.sleep,
             cwd_set: false,
             request_sent: false,
             #[cfg(feature = "telemetry")]
@@ -868,32 +882,6 @@ impl Checkout {
         // `request_turn` surfaces it with the suspension still answerable.
         // Every turn-ending reply overwrites `pending` anyway.
         self.expect_turn(&request, on_print).await
-    }
-
-    /// The wait the pending [`TurnEvent::OsCall`] asks the caller to perform
-    /// itself: `Some(delay)` for a `time.sleep` or `asyncio.sleep` under
-    /// `SleepMode::System`, cut to the mode's maximum here as well as in the
-    /// worker, so a caller need not trust the worker's arithmetic, and already
-    /// charged to `max_total_sleep` (a sleep over that budget never reaches
-    /// the caller: the feed is aborted with `TimeoutError` instead). The caller
-    /// waits that long — inline, or as a future for `asyncio.sleep` — and
-    /// answers `ResumeValue::Return(MontyObject::none())` without consulting
-    /// its own `os` handler. `None` for every other call, and for every call
-    /// under another sleep mode, where the handler decides.
-    #[must_use]
-    pub fn system_sleep(&self) -> Option<Duration> {
-        let SleepMode::System(max) = self.sleep else {
-            return None;
-        };
-        match &self.pending {
-            Some(Pending::Call {
-                os_call: Some(call), ..
-            }) => match **call {
-                OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay) => Some(delay.min(max)),
-                _ => None,
-            },
-            _ => None,
-        }
     }
 
     /// Answers a pending [`TurnEvent::OsCall`] from this feed's mounts, when
@@ -1230,7 +1218,7 @@ impl Checkout {
             .map(suspension_limit_exceeded)
             .or_else(|| {
                 self.budget
-                    .charge_sleep(event, self.sleep)
+                    .charge_sleep(event)
                     .map(|(limit, total)| sleep_limit_exceeded(limit, total))
             });
         let Some(exception) = exceeded else {
@@ -1537,6 +1525,13 @@ impl Checkout {
                     // The child is untrusted: an eager bit on a call no future
                     // may answer is dropped rather than exposed.
                     allow_eager_await = allow_eager_await && OsFunctionCall::accepts_future(function_call.name());
+                    // the call kind says whether this caller waits, cut to its own ceiling
+                    let system_sleep = match function_call {
+                        OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) => {
+                            Some(self.budget.cap_system_sleep(delay))
+                        }
+                        _ => None,
+                    };
                     let args = function_call.clone().to_args();
                     self.pending = Some(Pending::Call {
                         call_id,
@@ -1549,6 +1544,7 @@ impl Checkout {
                         args,
                         call_id,
                         allow_eager_await,
+                        system_sleep,
                     }));
                 }
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {
