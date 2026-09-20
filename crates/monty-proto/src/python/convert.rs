@@ -64,7 +64,7 @@ pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
 }
 
 /// The host class for a Monty [`MontyType`] crossing the boundary as a value, or
-/// `None` for a type outside the allowlist, which decodes to a `MontyBuiltinProxy`.
+/// `None` for a type outside the allowlist, which decodes to a `MontyStdTypeProxy`.
 ///
 /// The allowlist is the inert data types: constructing one, or using an instance,
 /// runs no host code beyond the value itself. Types that are callable with side

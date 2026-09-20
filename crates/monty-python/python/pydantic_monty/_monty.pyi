@@ -30,9 +30,9 @@ __all__ = [
     'CollectString',
     'Frame',
     'Monty',
-    'MontyBuiltinProxy',
     'MontyClassProxy',
     'MontyClassTypeProxy',
+    'MontyStdTypeProxy',
     'MontyConversionError',
     'MontyCrashedError',
     'MontyDisconnectError',
@@ -424,7 +424,7 @@ class MontyClassTypeProxy:
     def __eq__(self, value: object, /) -> bool: ...
 
 @final
-class MontyBuiltinProxy:
+class MontyStdTypeProxy:
     """Read-only proxy for a builtin function, or a type object outside the
     data-type allowlist, returned from the sandbox: `open`, `type(print)`,
     `functools.partial`. Only the name crosses, so the host never holds a live

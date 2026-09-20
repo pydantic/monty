@@ -19,7 +19,6 @@ use pyo3::{
 };
 
 use super::{
-    builtin_proxy::PyMontyBuiltinProxy,
     class_instance::{
         ClassHeader, InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy, is_class_instance_wrapper,
         is_class_type_wrapper, wrapper_uuid,
@@ -29,6 +28,7 @@ use super::{
         py_datetime_to_monty, py_time_to_monty, py_timedelta_to_monty, py_timezone_to_monty, py_type_object_to_monty,
     },
     exceptions::{exc_py_to_monty, exc_to_monty_node},
+    std_type_proxy::PyMontyStdTypeProxy,
 };
 
 /// Encodes one host value as its own arena; unsupported types raise `TypeError`.
@@ -248,7 +248,7 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
                 identity: Some(obj.clone()),
                 register: None,
             })
-        } else if let Ok(proxy) = obj.cast::<PyMontyBuiltinProxy>() {
+        } else if let Ok(proxy) = obj.cast::<PyMontyStdTypeProxy>() {
             // a proxy handed out by decode re-enters as the builtin it stands for
             Ok(self.leaf(proxy.get().inner.to_node()))
         } else if obj.is_instance(get_pure_posix_path(py)?)? {

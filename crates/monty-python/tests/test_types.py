@@ -13,7 +13,7 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import MontyBuiltinProxy, MontyConversionError, MontyRuntimeError
+from pydantic_monty import MontyConversionError, MontyRuntimeError, MontyStdTypeProxy
 
 
 def test_none_input(monty_run: RunMonty):
@@ -130,12 +130,12 @@ def test_set_output(monty_run: RunMonty):
 
 
 def test_builtin_function_output(monty_run: RunMonty):
-    """A builtin function reaching the host is a `MontyBuiltinProxy` carrying its
+    """A builtin function reaching the host is a `MontyStdTypeProxy` carrying its
     name, never the host's own callable, and crosses back in as the builtin."""
     proxy = monty_run('open')
-    assert isinstance(proxy, MontyBuiltinProxy)
+    assert isinstance(proxy, MontyStdTypeProxy)
     assert (proxy.kind, proxy.name) == snapshot(('function', 'open'))
-    assert repr(proxy) == snapshot("MontyBuiltinProxy(kind='function', name='open')")
+    assert repr(proxy) == snapshot("MontyStdTypeProxy(kind='function', name='open')")
     assert not callable(proxy)
     assert [p.name for p in monty_run('[getattr, exec, object.__setattr__]')] == snapshot(
         ['getattr', 'exec', 'object.__setattr__']
@@ -145,7 +145,7 @@ def test_builtin_function_output(monty_run: RunMonty):
     assert {proxy, monty_run('open')} == {proxy}
 
     def check(f: object) -> bool:
-        return isinstance(f, MontyBuiltinProxy) and f.name == 'len'
+        return isinstance(f, MontyStdTypeProxy) and f.name == 'len'
 
     assert monty_run('check(len)', external_lookup={'check': check}) is True
 
@@ -236,10 +236,10 @@ PROXIED_TYPES: list[tuple[str, str]] = [
 
 @pytest.mark.parametrize(('expression', 'name'), PROXIED_TYPES, ids=[name for _, name in PROXIED_TYPES])
 def test_type_object_proxy_output(monty_run: RunMonty, expression: str, name: str):
-    """A type object outside the allowlist crosses out as a `MontyBuiltinProxy`
+    """A type object outside the allowlist crosses out as a `MontyStdTypeProxy`
     naming the type, never the host class, and re-enters as the sandbox type."""
     proxy = monty_run(f'import functools, itertools\n{expression}')
-    assert isinstance(proxy, MontyBuiltinProxy)
+    assert isinstance(proxy, MontyStdTypeProxy)
     assert (proxy.kind, proxy.name) == ('type', name)
     assert monty_run(f'import functools, itertools\nx is {expression}', inputs={'x': proxy}) is True
 

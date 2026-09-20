@@ -14,20 +14,20 @@ use pyo3::prelude::*;
 /// host-class allowlist (see `host_type_object`), returned from the sandbox.
 /// Only the name crosses, so the host never holds a live callable built from
 /// sandbox output; passed back in, the proxy re-enters as the builtin itself.
-#[pyclass(name = "MontyBuiltinProxy", module = "pydantic_monty", frozen)]
-pub struct PyMontyBuiltinProxy {
+#[pyclass(name = "MontyStdTypeProxy", module = "pydantic_monty", frozen)]
+pub struct PyMontyStdTypeProxy {
     /// The builtin it stands for, kept typed so it crosses back losslessly.
-    pub(super) inner: BuiltinRef,
+    pub(super) inner: StdTypeRef,
 }
 
 #[pymethods]
-impl PyMontyBuiltinProxy {
+impl PyMontyStdTypeProxy {
     /// `'function'` for a builtin function, `'type'` for a type object.
     #[getter]
     fn kind(&self) -> &'static str {
         match self.inner {
-            BuiltinRef::Type(_) => "type",
-            BuiltinRef::Function(_) => "function",
+            StdTypeRef::Type(_) => "type",
+            StdTypeRef::Function(_) => "function",
         }
     }
 
@@ -37,9 +37,9 @@ impl PyMontyBuiltinProxy {
         self.inner.to_string()
     }
 
-    /// `MontyBuiltinProxy(kind='function', name='open')`
+    /// `MontyStdTypeProxy(kind='function', name='open')`
     fn __repr__(&self) -> String {
-        format!("MontyBuiltinProxy(kind='{}', name='{}')", self.kind(), self.inner)
+        format!("MontyStdTypeProxy(kind='{}', name='{}')", self.kind(), self.inner)
     }
 
     /// Equal when standing for the same builtin.
@@ -57,14 +57,14 @@ impl PyMontyBuiltinProxy {
     }
 }
 
-/// What a [`PyMontyBuiltinProxy`] stands for.
+/// What a [`PyMontyStdTypeProxy`] stands for.
 #[derive(PartialEq)]
-pub(super) enum BuiltinRef {
+pub(super) enum StdTypeRef {
     Type(MontyType),
     Function(BuiltinsFunctions),
 }
 
-impl BuiltinRef {
+impl StdTypeRef {
     /// The node the proxy crosses back into the sandbox as.
     pub(super) fn to_node(&self) -> MontyNode {
         match self {
@@ -74,7 +74,7 @@ impl BuiltinRef {
     }
 }
 
-impl fmt::Display for BuiltinRef {
+impl fmt::Display for StdTypeRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Type(t) => t.fmt(f),
