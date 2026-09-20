@@ -93,8 +93,10 @@ A name present in both is served by the eager `inputs` binding.
 
 `None`, `bool`, `int` (arbitrary precision), `float`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`, `frozenset`,
 `Ellipsis`, `NotImplemented`, `datetime.date`, `datetime.datetime`, `datetime.timedelta`, `datetime.timezone`, named
-tuples, exception instances, and the type objects Monty models (`int`, `str`, `datetime.date`, ...) all convert in both
-directions.
+tuples, exception instances, and the type objects of the data types Monty models (`int`, `str`, `datetime.date`, ...)
+all convert in both directions.
+Builtin functions and other type objects come out as a read-only [`MontyBuiltinProxy`][pydantic_monty.MontyBuiltinProxy]
+carrying the name; see [host-value limitations](../limitations/host-values.md#lossy-outputs).
 Class instances differ in each direction: a host instance enters only wrapped in [`ClassInstance`][pydantic_monty.ClassInstance], and a sandbox-defined
 instance comes out as a read-only [`MontyClassProxy`][pydantic_monty.MontyClassProxy].
 See [host objects](../host-objects.md).

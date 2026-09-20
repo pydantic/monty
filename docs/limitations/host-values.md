@@ -23,6 +23,18 @@ Rust hosts can distinguish the corresponding `MontyNode` variants.
 Sandbox-defined class *instances* instead return structured proxies;
 see [classes](classes.md#crossing-the-host-boundary-pydantic_monty-pydanticmonty).
 
+Builtin functions and type objects outside the data-type allowlist never resolve to the host's own objects.
+Python receives a read-only [`MontyBuiltinProxy`][pydantic_monty.MontyBuiltinProxy] with `kind` and `name`,
+JavaScript a `{ __monty_type__, value }` marker; either re-enters the sandbox as the builtin it names.
+The allowlist is `type`, `object`, `bool`, `int`, `float`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`,
+`frozenset`, `range`, `slice`, `NoneType`, `ellipsis`, `NotImplementedType`, the `datetime` classes,
+`collections.deque`, `collections.namedtuple`, `re.Pattern`, `re.Match`, `types.GenericAlias`, `types.UnionType`,
+`pathlib.PurePosixPath` and the exception classes.
+So `open`, `functools.partial` and `type(iter([]))` reach a Python host as proxies, while `int` and `datetime.date`
+are the host classes.
+A host class outside the allowlist passed *in*, such as `functools.partial` or an `itertools` adaptor, is an
+unmodelled class and enters as a host function.
+
 A self-referential container replaces the cycle with a placeholder string such as `[...]`, `{...}`, `(...)` or `...`.
 Rust receives a `Cycle` node, which cannot be sent back as an input.
 Cyclic host inputs are rejected: Python raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError]
