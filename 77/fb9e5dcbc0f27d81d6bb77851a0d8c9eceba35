@@ -1,0 +1,21 @@
+crates/monty-python/tests/test_types.py
+  s_063447cc103291::t_28e83c54a805ef 234,242,245
+docs/limitations/host-values.md
+  s_063447cc103291::t_28e83c54a805ef 33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "77fb9e5dcbc0f27d81d6bb77851a0d8c9eceba35",
+  "prompts": {},
+  "sessions": {
+    "s_063447cc103291": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e023e8fb-a847-4354-a1a6-59cf32558feb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
