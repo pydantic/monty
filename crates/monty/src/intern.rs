@@ -585,6 +585,8 @@ pub enum StaticStrings {
     /// `re.ASCII` flag
     #[strum(serialize = "ASCII")]
     AsciiFlag,
+    /// `time.asctime()` function.
+    Asctime,
     /// `math.asin()` function.
     Asin,
     /// `math.asinh()` function.
@@ -762,6 +764,8 @@ pub enum StaticStrings {
     /// `binascii.crc_hqx()` function.
     #[strum(serialize = "crc_hqx")]
     CrcHqx,
+    /// `time.ctime()` function.
+    Ctime,
     /// `cum_weights` parameter of `random.choices()`.
     CumWeights,
     /// `os.curdir` constant name.
@@ -772,6 +776,8 @@ pub enum StaticStrings {
     Cycle,
     /// `data` keyword argument of `itertools.compress()`.
     Data,
+    /// `time.strptime()` parameter name `data_string`.
+    DataString,
     /// `dataclasses.dataclass` decorator.
     Dataclass,
     /// The `__dataclass_fields__` class attribute `@dataclass` writes: the
@@ -1068,6 +1074,8 @@ pub enum StaticStrings {
     Getstate,
     /// `globals` parameter of eval/exec.
     Globals,
+    /// `time.gmtime()` function.
+    Gmtime,
     /// `match.group()` method
     Group,
     /// `itertools.groupby()` function.
@@ -1262,6 +1270,8 @@ pub enum StaticStrings {
     Loads,
     /// `locals` parameter of eval/exec.
     Locals,
+    /// `time.localtime()` function.
+    Localtime,
     /// `math.log()` function.
     Log,
     /// `math.log10()` function.
@@ -1353,6 +1363,8 @@ pub enum StaticStrings {
     Minutes,
     /// `Path.mkdir()` and `os.mkdir()` — yields a host call.
     Mkdir,
+    /// `time.mktime()` function.
+    Mktime,
     /// `file.mode` attribute and the `open(mode=...)` kwarg.
     Mode,
     /// `math.modf()` function.
@@ -1363,6 +1375,10 @@ pub enum StaticStrings {
     /// `namedtuple(..., module=...)` keyword argument.
     #[strum(serialize = "module")]
     ModuleKwarg,
+    /// `time.monotonic()` function.
+    Monotonic,
+    /// `time.monotonic_ns()` function.
+    MonotonicNs,
     /// `date` / `datetime` `month` attribute and constructor kwarg.
     Month,
     /// Value of `sys.platform`.
@@ -1490,6 +1506,10 @@ pub enum StaticStrings {
     /// `re.PatternError` exception
     #[strum(serialize = "PatternError")]
     PatternError,
+    /// `time.perf_counter()` function.
+    PerfCounter,
+    /// `time.perf_counter_ns()` function.
+    PerfCounterNs,
     /// `math.perm()` function.
     Perm,
     /// `itertools.permutations()` function.
@@ -1514,6 +1534,10 @@ pub enum StaticStrings {
     Pow,
     /// `sys.prefix` attribute.
     Prefix,
+    /// `time.process_time()` function.
+    ProcessTime,
+    /// `time.process_time_ns()` function.
+    ProcessTimeNs,
     /// `math.prod()` function.
     Prod,
     /// `itertools.product()` function.
@@ -1754,6 +1778,9 @@ pub enum StaticStrings {
     Strip,
     /// `datetime.strptime()` classmethod.
     Strptime,
+    /// Named-tuple type name of a `time` module `struct_time`.
+    #[strum(serialize = "time.struct_time")]
+    StructTime,
     /// `re.sub()` / `pattern.sub()` method
     Sub,
     /// `Counter.subtract()` method.
@@ -1799,8 +1826,14 @@ pub enum StaticStrings {
     TeeType,
     /// `file.tell()` method.
     Tell,
+    /// `time.thread_time()` function.
+    ThreadTime,
+    /// `time.thread_time_ns()` function.
+    ThreadTimeNs,
     /// `datetime.time` class name.
     Time,
+    /// `time.time_ns()` function.
+    TimeNs,
     /// The `datetime.timedelta` type.
     Timedelta,
     /// `times` keyword argument of `itertools.repeat()`.
@@ -1815,6 +1848,28 @@ pub enum StaticStrings {
     Timezone,
     /// `title()` method, shared by `str` and `bytes`.
     Title,
+    /// `struct_time.tm_gmtoff` field.
+    TmGmtoff,
+    /// `struct_time.tm_hour` field.
+    TmHour,
+    /// `struct_time.tm_isdst` field.
+    TmIsdst,
+    /// `struct_time.tm_mday` field.
+    TmMday,
+    /// `struct_time.tm_min` field.
+    TmMin,
+    /// `struct_time.tm_mon` field.
+    TmMon,
+    /// `struct_time.tm_sec` field.
+    TmSec,
+    /// `struct_time.tm_wday` field.
+    TmWday,
+    /// `struct_time.tm_yday` field.
+    TmYday,
+    /// `struct_time.tm_year` field.
+    TmYear,
+    /// `struct_time.tm_zone` field.
+    TmZone,
     /// `date.today()` / `datetime.today()` classmethod.
     Today,
     /// `Counter.total()` method.

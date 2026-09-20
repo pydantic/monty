@@ -483,6 +483,10 @@ pub struct AutoOsCalls {
     /// Where an unseeded `random` generator gets its first state.
     #[prost(oneof = "auto_os_calls::RandomStart", tags = "6, 7, 8")]
     pub random_start: ::core::option::Option<auto_os_calls::RandomStart>,
+    /// What `time.process_time()` and `time.thread_time()` report.
+    /// Absent (or with no arm set) = zero.
+    #[prost(oneof = "auto_os_calls::ProcessTime", tags = "9, 10")]
+    pub process_time: ::core::option::Option<auto_os_calls::ProcessTime>,
 }
 /// Nested message and enum types in `AutoOsCalls`.
 pub mod auto_os_calls {
@@ -511,6 +515,17 @@ pub mod auto_os_calls {
         /// As `random.seed(seed)` would, for reproducible runs.
         #[prost(message, tag = "8")]
         Seed(super::RandomSeed),
+    }
+    /// What `time.process_time()` and `time.thread_time()` report.
+    /// Absent (or with no arm set) = zero.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum ProcessTime {
+        /// Always 0.0, so elapsed execution time is not observable in the sandbox.
+        #[prost(message, tag = "9")]
+        ProcessTimeZero(super::Unit),
+        /// The session's accumulated execution time.
+        #[prost(message, tag = "10")]
+        ProcessTimeElapsed(super::Unit),
     }
 }
 /// Mirrors monty's `SandboxTimeZone`.
@@ -1077,6 +1092,14 @@ pub mod os_call {
         #[prost(uint32, tag = "2")]
         pub default: u32,
     }
+    /// A `time`-module clock read. `caller` names the Python function that asked
+    /// (`time.time`, `time.monotonic`, ...), so a parent may answer them
+    /// differently; they all share the `time.time` call name.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct TimeCall {
+        #[prost(string, tag = "1")]
+        pub caller: ::prost::alloc::string::String,
+    }
     /// datetime.now(tz) — the VM validates the argument to None-or-timezone
     /// before suspending, so the wire carries a typed TimeZone rather than an
     /// arbitrary MontyObject.
@@ -1192,9 +1215,9 @@ pub mod os_call {
         /// os.urandom(size), also how `random` seeds an unseeded generator.
         #[prost(message, tag = "25")]
         Urandom(Urandom),
-        /// time.time()
+        /// time.time() and the other time-module clock reads
         #[prost(message, tag = "26")]
-        Time(super::Unit),
+        Time(TimeCall),
         /// time.sleep(seconds) under `call_host`: the handler waits
         #[prost(message, tag = "27")]
         Sleep(Sleep),

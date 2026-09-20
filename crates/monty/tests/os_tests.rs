@@ -80,7 +80,7 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
             month: 11,
             day: 14,
         }),
-        OsFunctionCall::Time => MontyObject::float(1_700_000_000.0),
+        OsFunctionCall::Time(_) => MontyObject::float(1_700_000_000.0),
         OsFunctionCall::Sleep(_)
         | OsFunctionCall::SystemSleep(_)
         | OsFunctionCall::AsyncSleep(_)
@@ -1371,11 +1371,60 @@ some_external('x')
 // time.time() / time.sleep() / asyncio.sleep() when they reach the host
 // =============================================================================
 
+/// Every clock reader shares the `time.time` call, naming itself as the caller
+/// so a host can answer them differently.
 #[test]
-fn time_time_yields_oscall() {
-    let (func, args) = run_to_oscall("import time\ntime.time()");
+fn time_clocks_yield_one_oscall_naming_the_caller() {
+    for caller in [
+        "time.time",
+        "time.time_ns",
+        "time.monotonic",
+        "time.monotonic_ns",
+        "time.perf_counter",
+        "time.perf_counter_ns",
+        "time.gmtime",
+        "time.localtime",
+        "time.asctime",
+        "time.ctime",
+    ] {
+        let (func, args) = run_to_oscall(&format!("import time\n{caller}()"));
+        assert_eq!(func, "time.time", "{caller}");
+        assert_eq!(args, vec![MontyObject::string(caller)], "{caller}");
+    }
+    // strftime reaches it only when it was given no time of its own
+    let (func, args) = run_to_oscall("import time\ntime.strftime('%Y')");
     assert_eq!(func, "time.time");
-    assert!(args.is_empty(), "time.time() takes no arguments, got {args:?}");
+    assert_eq!(args, vec![MontyObject::string("time.strftime")]);
+}
+
+/// The host answers epoch seconds; the conversion still happens in the sandbox.
+#[test]
+fn time_conversions_reshape_the_hosts_answer() {
+    let epoch = MontyObject::float(1_700_000_000.5);
+    for (code, expected) in [
+        ("time.gmtime().tm_year", MontyObject::int(2023)),
+        // the fraction survives the reshape; the broken-down fields floor it
+        ("time.time_ns()", MontyObject::int(1_700_000_000_500_000_000)),
+        ("time.gmtime().tm_sec", MontyObject::int(20)),
+        ("time.ctime()", MontyObject::string("Tue Nov 14 22:13:20 2023")),
+        ("time.strftime(\'%Y-%m-%d\')", MontyObject::string("2023-11-14")),
+    ] {
+        let (_, _, result) = run_oscall_with_result(&format!("import time\n{code}"), epoch.clone());
+        assert_eq!(result, expected, "{code}");
+    }
+}
+
+/// The process clocks follow their own policy, so they never reach the host.
+#[test]
+fn process_time_does_not_reach_the_host() {
+    let runner = host_runner("import time\ntime.process_time()");
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(
+        progress.into_complete().expect("answered in the sandbox"),
+        MontyObject::float(0.0)
+    );
 }
 
 #[test]

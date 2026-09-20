@@ -242,13 +242,22 @@ interface worker {
         seed(random-seed),
     }
 
+    /// What `time.process_time()` and `time.thread_time()` report.
+    variant process-time {
+        /// Always zero, so elapsed execution time is not observable in the sandbox.
+        zero,
+        /// The session's accumulated execution time.
+        elapsed,
+    }
+
     /// Automatic OS call policy; absent fields use the system clock, UTC,
-    /// host sleeps capped at 10s, and OS entropy.
+    /// host sleeps capped at 10s, OS entropy, and a zero process clock.
     record auto-os-calls {
         datetime: option<datetime-source>,
         timezone: option<time-zone>,
         sleep: option<sleep-mode>,
         random-start: option<random-start>,
+        process-time: option<process-time>,
     }
 
     /// Available renderings for type-check diagnostics.

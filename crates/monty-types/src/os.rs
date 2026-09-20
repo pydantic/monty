@@ -120,9 +120,10 @@ pub enum OsFunctionCall {
     #[strum(serialize = "os.urandom")]
     Urandom(UrandomArgs),
     /// Read the host clock as `time.time()` does: seconds since the Unix
-    /// epoch, answered with [`MontyObject::float`].
+    /// epoch, answered with [`MontyObject::float`]. Every clock-reading `time`
+    /// function arrives here; [`TimeCaller`], the call's only argument, says which.
     #[strum(serialize = "time.time")]
-    Time,
+    Time(TimeCaller),
     /// `time.sleep(seconds)` under `SleepMode::CallHost` — the host's `os`
     /// handler waits, then answers with any value (`time.sleep` discards it
     /// and evaluates to `None`).
@@ -202,7 +203,8 @@ impl OsFunctionCall {
             Self::Getenv(a) => a.to_args(),
             Self::Urandom(a) => a.to_args(),
             // Unit & single-value non-FS variants.
-            Self::GetEnviron | Self::DateToday | Self::Time => CallArgs::new(),
+            Self::GetEnviron | Self::DateToday => CallArgs::new(),
+            Self::Time(caller) => single_arg(caller),
             Self::DateTimeNow(tz) => single_arg(tz.map_or(MontyNode::None, MontyNode::TimeZone)),
             Self::Sleep(delay) | Self::SystemSleep(delay) | Self::AsyncSleep(delay) | Self::AsyncSystemSleep(delay) => {
                 single_arg(MontyNode::Float(delay.as_secs_f64()))
@@ -310,7 +312,7 @@ impl OsFunctionCall {
             | Self::DateToday
             | Self::DateTimeNow(_)
             | Self::Urandom(_)
-            | Self::Time
+            | Self::Time(_)
             | Self::Sleep(_)
             | Self::SystemSleep(_)
             | Self::AsyncSleep(_)
@@ -357,7 +359,7 @@ impl OsFunctionCall {
             | Self::DateToday
             | Self::DateTimeNow(_)
             | Self::Urandom(_)
-            | Self::Time
+            | Self::Time(_)
             | Self::Sleep(_)
             | Self::SystemSleep(_)
             | Self::AsyncSleep(_)
@@ -394,6 +396,75 @@ impl fmt::Display for OsFunctionCall {
         f.write_str(self.name())
     }
 }
+
+/// Which `time` function is reading the clock in an [`OsFunctionCall::Time`].
+///
+/// All share the `time.time` call name since all want the current instant as epoch
+/// seconds; the caller, passed as the call's single positional argument spelled as
+/// the Python function (`"time.perf_counter"`), lets a host that cares answer them
+/// differently (say a virtual clock advancing only for `time.monotonic`).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::EnumIter,
+    strum::EnumString,
+    strum::IntoStaticStr,
+)]
+pub enum TimeCaller {
+    /// `time.time()`.
+    #[strum(serialize = "time.time")]
+    Time,
+    /// `time.time_ns()`.
+    #[strum(serialize = "time.time_ns")]
+    TimeNs,
+    /// `time.monotonic()`.
+    #[strum(serialize = "time.monotonic")]
+    Monotonic,
+    /// `time.monotonic_ns()`.
+    #[strum(serialize = "time.monotonic_ns")]
+    MonotonicNs,
+    /// `time.perf_counter()`.
+    #[strum(serialize = "time.perf_counter")]
+    PerfCounter,
+    /// `time.perf_counter_ns()`.
+    #[strum(serialize = "time.perf_counter_ns")]
+    PerfCounterNs,
+    /// `time.gmtime()` with no argument.
+    #[strum(serialize = "time.gmtime")]
+    Gmtime,
+    /// `time.localtime()` with no argument.
+    #[strum(serialize = "time.localtime")]
+    Localtime,
+    /// `time.asctime()` with no argument.
+    #[strum(serialize = "time.asctime")]
+    Asctime,
+    /// `time.ctime()` with no argument.
+    #[strum(serialize = "time.ctime")]
+    Ctime,
+    /// `time.strftime(format)` with no time argument.
+    #[strum(serialize = "time.strftime")]
+    Strftime,
+}
+
+impl TimeCaller {
+    /// The Python function's name, as the host receives it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        self.into()
+    }
+}
+
+impl fmt::Display for TimeCaller {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A call with one positional argument.
 fn single_arg(value: impl PushValue) -> CallArgs {
     let mut call = CallArgs::new();

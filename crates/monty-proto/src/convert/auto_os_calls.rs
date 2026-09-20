@@ -6,8 +6,8 @@
 use std::time::Duration;
 
 use monty_types::{
-    AutoOsCalls, DateTimeSource, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, RandomSeed, RandomStart,
-    SandboxTimeZone, SleepMode,
+    AutoOsCalls, DateTimeSource, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, ProcessTime, RandomSeed,
+    RandomStart, SandboxTimeZone, SleepMode,
 };
 use num_bigint::BigInt;
 
@@ -15,7 +15,7 @@ use crate::{
     convert::ProtoConvertError,
     pb::{
         self,
-        auto_os_calls::{Datetime, RandomStart as WireRandomStart},
+        auto_os_calls::{Datetime, ProcessTime as WireProcessTime, RandomStart as WireRandomStart},
         random_seed::Value,
         sandbox_time_zone::Zone,
         sleep_mode::Mode,
@@ -55,11 +55,16 @@ impl From<&AutoOsCalls> for pb::AutoOsCalls {
             RandomStart::CallHost => WireRandomStart::RandomCallHost(pb::Unit {}),
             RandomStart::Seed(seed) => WireRandomStart::Seed(seed.into()),
         };
+        let process_time = match calls.process_time {
+            ProcessTime::Zero => WireProcessTime::ProcessTimeZero(pb::Unit {}),
+            ProcessTime::Elapsed => WireProcessTime::ProcessTimeElapsed(pb::Unit {}),
+        };
         Self {
             datetime: Some(datetime),
             timezone: Some(pb::SandboxTimeZone { zone: Some(zone) }),
             sleep: Some(pb::SleepMode { mode: Some(mode) }),
             random_start: Some(random_start),
+            process_time: Some(process_time),
         }
     }
 }
@@ -125,10 +130,16 @@ impl TryFrom<pb::AutoOsCalls> for AutoOsCalls {
             Some(WireRandomStart::RandomCallHost(_)) => RandomStart::CallHost,
             Some(WireRandomStart::Seed(seed)) => RandomStart::Seed(seed.try_into()?),
         };
+        let process_time = match calls.process_time {
+            None => defaults.process_time,
+            Some(WireProcessTime::ProcessTimeZero(_)) => ProcessTime::Zero,
+            Some(WireProcessTime::ProcessTimeElapsed(_)) => ProcessTime::Elapsed,
+        };
         Ok(Self {
             datetime,
             timezone,
             sleep,
+            process_time,
             random_start,
         })
     }

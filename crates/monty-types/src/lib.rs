@@ -22,8 +22,8 @@ mod virtual_path;
 
 pub use crate::{
     auto_os_calls::{
-        AutoOsCalls, DateTimeSource, NamedZone, RandomSeed, RandomStart, SandboxTimeZone, SleepMode, UnknownTimeZone,
-        ZoneConstants, local_wall_clock, unix_seconds,
+        AutoOsCalls, DateTimeSource, NamedZone, ProcessTime, RandomSeed, RandomStart, SandboxTimeZone, SleepMode,
+        UnknownTimeZone, ZoneConstants, local_wall_clock, unix_seconds,
     },
     builtins::BuiltinsFunctions,
     exceptions::{
@@ -43,7 +43,7 @@ pub use crate::{
     },
     os::{
         GetenvArgs, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
-        PathStringDataArgs, RenameCallArgs, SleepError, UrandomArgs, dir_stat, file_stat, sleep_duration,
+        PathStringDataArgs, RenameCallArgs, SleepError, TimeCaller, UrandomArgs, dir_stat, file_stat, sleep_duration,
         sleep_duration_saturating, stat_result, symlink_stat,
     },
     resource::{

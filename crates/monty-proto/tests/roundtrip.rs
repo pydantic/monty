@@ -10,13 +10,14 @@ use monty_types::{
     AutoOsCalls, CodeLoc, CompileOptions, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs,
     JsonErrorData, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
     MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult,
-    NamedValues, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RandomSeed, RandomStart,
-    RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, StackFrame, UnicodeErrorData, UrandomArgs,
-    sleep_duration, sleep_duration_saturating,
+    NamedValues, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, ProcessTime, RandomSeed,
+    RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, StackFrame, TimeCaller, UnicodeErrorData,
+    UrandomArgs, sleep_duration, sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
 use prost::Message;
+use strum::IntoEnumIterator;
 
 /// Asserts `graph` survives `MontyGraph -> wire bytes -> MontyGraph` through
 /// the hand-written `WireArena` codec (both directions).
@@ -597,6 +598,7 @@ fn auto_os_calls_round_trip() {
                 name: Some("EST".to_owned()),
             },
             sleep: SleepMode::System(Duration::from_millis(250)),
+            process_time: ProcessTime::Elapsed,
             random_start: RandomStart::Seed(seed),
         };
         let back = AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap();
@@ -607,6 +609,7 @@ fn auto_os_calls_round_trip() {
             datetime: DateTimeSource::CallHost,
             timezone: SandboxTimeZone::named("Europe/London").unwrap(),
             sleep,
+            process_time: ProcessTime::Zero,
             random_start: RandomStart::CallHost,
         };
         assert_eq!(AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap(), calls);
@@ -966,7 +969,6 @@ fn os_calls_round_trip_all_variants() {
             name: Some("CET".to_owned()),
         })),
         OsFunctionCall::Urandom(UrandomArgs { size: 2496 }),
-        OsFunctionCall::Time,
         OsFunctionCall::Sleep(Duration::ZERO),
         OsFunctionCall::Sleep(Duration::from_nanos(1)),
         OsFunctionCall::Sleep(Duration::from_millis(1_500)),
@@ -977,7 +979,11 @@ fn os_calls_round_trip_all_variants() {
         // the longest length either sleep accepts survives the f64 seconds on the wire
         OsFunctionCall::Sleep(sleep_duration(MAX_SLEEP_SECONDS).unwrap()),
         OsFunctionCall::AsyncSleep(sleep_duration_saturating(f64::INFINITY).unwrap()),
-    ] {
+    ]
+    .into_iter()
+    // every caller, so a new one cannot be added without a wire round trip
+    .chain(TimeCaller::iter().map(OsFunctionCall::Time))
+    {
         // hosts dispatch on the name, so it must identify the kind
         let kind = kinds_by_name
             .entry(call.name())

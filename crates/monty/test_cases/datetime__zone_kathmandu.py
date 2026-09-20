@@ -106,3 +106,10 @@ try:
     assert False, 'expected ValueError'
 except ValueError as exc:
     assert str(exc) == 'year must be in 1..9999, not 0'
+
+# === localtime() and mktime() read the fractional offset ===
+local = time.localtime(1718451000)
+assert (local.tm_hour, local.tm_min) == (17, 15)
+assert (local.tm_isdst, local.tm_zone, local.tm_gmtoff) == (0, '+0545', 20700)
+assert time.strftime('%H:%M %Z %z', local) == '17:15 +0545 +0545'
+assert time.mktime(local) == 1718451000.0

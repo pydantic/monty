@@ -14,9 +14,9 @@ use crate::object::MontyTimeZone;
 /// Policies for clocks, sleeps and initial random state on every execution path.
 /// `CallHost` suspends to the host, or raises `NotImplementedError` without one;
 /// the zone is always resolved in the sandbox.
-/// Defaults use the system clock, the UTC zone, OS entropy, and sleeps capped at
-/// ten seconds. Hosts perform those sleeps without their `os` handler; standard
-/// execution waits inline.
+/// Defaults use the system clock, the UTC zone, OS entropy, a zero process clock,
+/// and sleeps capped at ten seconds. Hosts perform those sleeps without their
+/// `os` handler; standard execution waits inline.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct AutoOsCalls {
     /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
@@ -26,6 +26,9 @@ pub struct AutoOsCalls {
     pub timezone: SandboxTimeZone,
     /// What `time.sleep()` and `asyncio.sleep()` do.
     pub sleep: SleepMode,
+    /// What `time.process_time()` and `time.thread_time()` report.
+    #[serde(default)]
+    pub process_time: ProcessTime,
     /// Where an unseeded `random` generator gets its first state.
     pub random_start: RandomStart,
 }
@@ -328,6 +331,20 @@ impl Default for SleepMode {
     fn default() -> Self {
         Self::System(Self::DEFAULT_MAX)
     }
+}
+
+/// What `time.process_time()` and `time.thread_time()` report.
+///
+/// Separate from [`DateTimeSource`] because these clocks exclude sleeps and
+/// time suspended on the host, which no wall clock can express.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ProcessTime {
+    /// Always zero, so a [`DateTimeSource::Fixed`] session stays blind to time passing.
+    #[default]
+    Zero,
+    /// The session's accumulated execution time, as `ResourceTracker::elapsed`
+    /// measures it. Wall time while running, not CPU time.
+    Elapsed,
 }
 
 /// Where an unseeded `random` generator gets its first state.

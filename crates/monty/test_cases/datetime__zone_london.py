@@ -105,3 +105,17 @@ try:
     assert False, 'expected ValueError'
 except ValueError as exc:
     assert str(exc) == 'year must be in 1..9999, not 0'
+
+# === localtime() and mktime() read the same zone ===
+summer = time.localtime(1718451000)
+winter = time.localtime(1705321800)
+assert (summer.tm_hour, summer.tm_isdst, summer.tm_zone, summer.tm_gmtoff) == (12, 1, 'BST', 3600)
+assert (winter.tm_hour, winter.tm_isdst, winter.tm_zone, winter.tm_gmtoff) == (12, 0, 'GMT', 0)
+assert time.strftime('%H:%M %Z %z', summer) == '12:30 BST +0100'
+assert time.strftime('%H:%M %Z %z', winter) == '12:30 GMT +0000'
+assert time.mktime(summer) == 1718451000.0
+assert time.mktime(winter) == 1705321800.0
+assert time.ctime(1718451000) == 'Sat Jun 15 12:30:00 2024'
+# gmtime ignores the zone entirely
+assert time.gmtime(1718451000).tm_hour == 11
+assert time.strftime('%Z %z', time.gmtime(1718451000)) == 'UTC +0000'

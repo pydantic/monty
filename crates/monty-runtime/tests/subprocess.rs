@@ -713,7 +713,12 @@ fn clock_calls_bubble_to_parent_under_call_host() {
     let pb::child_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
-    assert_eq!(call.call, Some(pb::os_call::Call::Time(pb::Unit {})));
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::Time(pb::os_call::TimeCall {
+            caller: "time.time".to_owned(),
+        }))
+    );
     let (_, event) = child.resume_return(call.call_id, MontyObject::float(1_700_000_000.5));
     assert_eq!(expect_complete(event), MontyObject::float(1_700_000_000.5));
 

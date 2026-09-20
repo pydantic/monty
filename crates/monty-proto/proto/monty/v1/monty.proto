@@ -406,6 +406,14 @@ message AutoOsCalls {
     // As `random.seed(seed)` would, for reproducible runs.
     RandomSeed seed = 8;
   }
+  // What `time.process_time()` and `time.thread_time()` report.
+  // Absent (or with no arm set) = zero.
+  oneof process_time {
+    // Always 0.0, so elapsed execution time is not observable in the sandbox.
+    Unit process_time_zero = 9;
+    // The session's accumulated execution time.
+    Unit process_time_elapsed = 10;
+  }
 }
 
 // Mirrors monty's `SandboxTimeZone`.
@@ -850,7 +858,7 @@ message OsCall {
     DateTimeNow date_time_now = 24;
     // os.urandom(size), also how `random` seeds an unseeded generator.
     Urandom urandom = 25;
-    Unit time = 26; // time.time()
+    TimeCall time = 26; // time.time() and the other time-module clock reads
     Sleep sleep = 27; // time.sleep(seconds) under `call_host`: the handler waits
     AsyncSleep async_sleep = 28; // asyncio.sleep(delay) under `call_host`
     // System sleeps: capped by the child, charged to `max_total_sleep` and
@@ -893,6 +901,12 @@ message OsCall {
   message Getenv {
     string key = 1;
     uint32 default = 2;
+  }
+  // A `time`-module clock read. `caller` names the Python function that asked
+  // (`time.time`, `time.monotonic`, ...), so a parent may answer them
+  // differently; they all share the `time.time` call name.
+  message TimeCall {
+    string caller = 1;
   }
   // datetime.now(tz) — the VM validates the argument to None-or-timezone
   // before suspending, so the wire carries a typed TimeZone rather than an

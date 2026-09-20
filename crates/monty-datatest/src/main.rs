@@ -970,7 +970,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
         // Fixed bytes for `os.urandom()`; fixtures assert invariants because CPython reads real entropy.
         OsFunctionCall::Urandom(args) => MontyObject::bytes(fixture_entropy(args.size)).into(),
         // `AutoOsCalls::default()` answers the clock and initial random seed in the sandbox.
-        OsFunctionCall::DateToday | OsFunctionCall::DateTimeNow(_) | OsFunctionCall::Time => {
+        OsFunctionCall::DateToday | OsFunctionCall::DateTimeNow(_) | OsFunctionCall::Time(_) => {
             unreachable!("{} is answered in the sandbox", call.name())
         }
         // The sandbox has already capped these delays.

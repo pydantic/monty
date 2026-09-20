@@ -71,6 +71,25 @@ fn unrenderable_directive_raises_not_panics() {
     );
 }
 
+/// `time.strftime` shares `datetime`'s lenient formatter: unknown directives
+/// pass through, unrenderable ones raise, and `%f` renders zeros where glibc
+/// CPython echoes it — platform-dependent, so not a `test_cases/` case.
+/// See limitations/time.md.
+#[test]
+fn time_strftime_shares_the_lenient_formatter() {
+    assert_eq!(run_str("import time\ntime.strftime('%Q', time.gmtime(0))"), "%Q");
+    assert_eq!(run_str("import time\ntime.strftime('%f', time.gmtime(0))"), "000000");
+    assert_eq!(
+        run_str("import time\ntime.strftime('%Y-%m-%dT%H:%M:%S.%f%z', time.gmtime(0))"),
+        "1970-01-01T00:00:00.000000+0000"
+    );
+    let msg = run_err("import time\ntime.strftime('%+', time.gmtime(0))");
+    assert!(
+        msg.contains("ValueError") && msg.contains("Invalid format string"),
+        "expected ValueError: Invalid format string, got: {msg}"
+    );
+}
+
 /// CPython 3.14 added `time.strptime`; Monty does not implement it, so this
 /// cannot live in `test_cases/` — the harness's reference CPython succeeds.
 /// See limitations/datetime.md.

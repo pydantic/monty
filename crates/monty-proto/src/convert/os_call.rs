@@ -95,7 +95,9 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
             tz: tz.map(timezone_to_proto),
         }),
         OsFunctionCall::Urandom(a) => Call::Urandom(os_call::Urandom { size: a.size }),
-        OsFunctionCall::Time => Call::Time(Unit {}),
+        OsFunctionCall::Time(caller) => Call::Time(os_call::TimeCall {
+            caller: caller.as_str().to_owned(),
+        }),
         OsFunctionCall::Sleep(delay) => Call::Sleep(os_call::Sleep {
             seconds: delay.as_secs_f64(),
         }),
@@ -160,7 +162,11 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             // timezone here, mirroring the VM's validation of `datetime.now`
             os_call::Call::DateTimeNow(now) => Self::DateTimeNow(now.tz.map(timezone_from_proto).transpose()?),
             os_call::Call::Urandom(u) => Self::Urandom(UrandomArgs { size: u.size }),
-            os_call::Call::Time(_) => Self::Time,
+            os_call::Call::Time(t) => Self::Time(
+                t.caller
+                    .parse()
+                    .map_err(|_| ProtoConvertError::InvalidTimeCaller(t.caller))?,
+            ),
             os_call::Call::Sleep(s) => Self::Sleep(field_sleep_duration(s.seconds, "Sleep.seconds")?),
             os_call::Call::AsyncSleep(s) => Self::AsyncSleep(field_sleep_duration(s.delay, "AsyncSleep.delay")?),
             os_call::Call::SystemSleep(s) => Self::SystemSleep(field_sleep_duration(s.seconds, "Sleep.seconds")?),

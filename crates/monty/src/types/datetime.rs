@@ -654,6 +654,34 @@ fn parse_iso_datetime(s: &str, heap: &mut Heap) -> Option<DateTime> {
     }
 }
 
+/// Parses a `time.strptime()` input, whose unset fields default to 1900-01-01.
+///
+/// `datetime.strptime` needs a date; `time.strptime('12:30', '%H:%M')` does not,
+/// so a format that matched nothing is retried with the default date prefixed to
+/// both sides — the anchor CPython fills those fields from.
+pub(crate) fn parse_time_strptime(date_string: &str, fmt: &str) -> RunResult<NaiveDateTime> {
+    reject_bad_strptime_directive(fmt)?;
+    let anchored = || {
+        let dated = format!("{DEFAULT_STRPTIME_DATE} {date_string}");
+        parse_strptime(&dated, &format!("%Y-%m-%d {fmt}"))
+    };
+    match parse_strptime(date_string, fmt).or_else(anchored) {
+        Some(parsed) => parsed.map(|(naive, _)| naive),
+        None => Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!(
+                "time data {} does not match format {}",
+                StringRepr(date_string),
+                StringRepr(fmt)
+            ),
+        )
+        .into()),
+    }
+}
+
+/// The date `time.strptime` leaves in fields its format did not set.
+const DEFAULT_STRPTIME_DATE: &str = "1900-01-01";
+
 /// Parses a `strptime` input into naive components plus the offset a `%z`
 /// directive asked for, `None` when nothing in the input matches the format.
 ///

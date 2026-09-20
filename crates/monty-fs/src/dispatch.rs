@@ -170,7 +170,7 @@ pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
         | OsFunctionCall::DateToday
         | OsFunctionCall::DateTimeNow(_)
         | OsFunctionCall::Urandom(_)
-        | OsFunctionCall::Time
+        | OsFunctionCall::Time(_)
         | OsFunctionCall::Sleep(_)
         | OsFunctionCall::SystemSleep(_)
         | OsFunctionCall::AsyncSleep(_)

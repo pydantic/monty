@@ -30,8 +30,8 @@ mod value;
 
 use bindings::exports::pydantic::monty::worker::{
     AutoOsCalls, CallResult, CompleteEvent, ConfigureRequest, DatetimeSource, DispatchResult, Event, FunctionCallEvent,
-    Guest, NameLookupEvent, NameLookupResult, OsCallEvent, PrintEvent, RaisedError, RaisedException, RandomSeed,
-    RandomStart, Request, SleepMode, StackFrame, Status, TimeZone, TypeCheckFormat,
+    Guest, NameLookupEvent, NameLookupResult, OsCallEvent, PrintEvent, ProcessTime, RaisedError, RaisedException,
+    RandomSeed, RandomStart, Request, SleepMode, StackFrame, Status, TimeZone, TypeCheckFormat,
 };
 
 thread_local! {
@@ -384,10 +384,15 @@ fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
             }),
         }),
     });
+    let process_time = calls.process_time.map(|source| match source {
+        ProcessTime::Zero => pb::auto_os_calls::ProcessTime::ProcessTimeZero(pb::Unit {}),
+        ProcessTime::Elapsed => pb::auto_os_calls::ProcessTime::ProcessTimeElapsed(pb::Unit {}),
+    });
     pb::AutoOsCalls {
         datetime,
         timezone,
         sleep,
+        process_time,
         random_start,
     }
 }

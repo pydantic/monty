@@ -55,6 +55,8 @@ pub enum ProtoConvertError {
     UnknownBuiltinFunction(String),
     /// A file handle mode string that is not a supported `open()` mode.
     InvalidFileMode(String),
+    /// A `time.time` caller name that no `TimeCaller` spells.
+    InvalidTimeCaller(String),
     /// A field value was out of range or otherwise malformed.
     InvalidValue {
         /// The offending field, e.g. `"Date.month"`.
@@ -72,6 +74,7 @@ impl fmt::Display for ProtoConvertError {
             Self::UnknownType(name) => write!(f, "unknown type name {name:?}"),
             Self::UnknownBuiltinFunction(name) => write!(f, "unknown builtin function {name:?}"),
             Self::InvalidFileMode(mode) => write!(f, "invalid file mode {mode:?}"),
+            Self::InvalidTimeCaller(caller) => write!(f, "invalid time caller {caller:?}"),
             Self::InvalidValue { field, reason } => write!(f, "invalid value for {field}: {reason}"),
         }
     }

@@ -105,3 +105,13 @@ try:
     assert False, 'expected ValueError'
 except ValueError as exc:
     assert str(exc) == 'year must be in 1..9999, not 0'
+
+# === localtime() and mktime() read the same zone, with the DST halves swapped ===
+june = time.localtime(1718451000)
+january = time.localtime(1705321800)
+assert (june.tm_hour, june.tm_isdst, june.tm_zone, june.tm_gmtoff) == (21, 0, 'AEST', 36000)
+assert (january.tm_hour, january.tm_isdst, january.tm_zone, january.tm_gmtoff) == (23, 1, 'AEDT', 39600)
+assert time.strftime('%H:%M %Z %z', june) == '21:30 AEST +1000'
+assert time.strftime('%H:%M %Z %z', january) == '23:30 AEDT +1100'
+assert time.mktime(june) == 1718451000.0
+assert time.mktime(january) == 1705321800.0

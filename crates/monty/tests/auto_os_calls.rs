@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    AutoOsCalls, CompileOptions, DateTimeSource, MontyObject, OsFunctionCall, PrintWriter, ResourceLimits,
+    AutoOsCalls, CompileOptions, DateTimeSource, MontyObject, OsFunctionCall, PrintWriter, ProcessTime, ResourceLimits,
     ResourceTracker, SandboxTimeZone, SleepMode,
 };
 
@@ -124,6 +124,66 @@ fn fixed_clock_reads_epoch_seconds() {
     assert_eq!(run("import time\ntime.time()", with_datetime(FIXED)).unwrap(), {
         MontyObject::float(1_700_000_000.123_456)
     });
+}
+
+/// Every wall clock in the module reads the same session instant, so a fixed
+/// clock pins `monotonic` and `perf_counter` too (see `limitations/time.md`).
+#[test]
+fn fixed_clock_pins_every_wall_clock() {
+    for clock in ["time.time()", "time.monotonic()", "time.perf_counter()"] {
+        assert_eq!(
+            run(&format!("import time\n{clock}"), with_datetime(FIXED)).unwrap(),
+            MontyObject::float(1_700_000_000.123_456),
+            "{clock}"
+        );
+    }
+    for clock in ["time.time_ns()", "time.monotonic_ns()", "time.perf_counter_ns()"] {
+        assert_eq!(
+            run(&format!("import time\n{clock}"), with_datetime(FIXED)).unwrap(),
+            MontyObject::int(1_700_000_000_123_456_000),
+            "{clock}"
+        );
+    }
+}
+
+/// The conversion functions read the same clock, and the session zone.
+#[test]
+fn fixed_clock_feeds_the_conversion_functions() {
+    // UTC+02:00, so the local wall clock is on the next day.
+    let local = "time.struct_time(tm_year=2023, tm_mon=11, tm_mday=15, tm_hour=0, tm_min=13, tm_sec=20, tm_wday=2, tm_yday=319, tm_isdst=0, tm_gmtoff=7200, tm_zone='UTC+02:00')";
+    let utc = "time.struct_time(tm_year=2023, tm_mon=11, tm_mday=14, tm_hour=22, tm_min=13, tm_sec=20, tm_wday=1, tm_yday=318, tm_isdst=0, tm_gmtoff=0, tm_zone='UTC')";
+    assert_eq!(run_repr("time.localtime()", FIXED), local);
+    assert_eq!(run_repr("time.gmtime()", FIXED), utc);
+    assert_eq!(run_repr("time.ctime()", FIXED), "'Wed Nov 15 00:13:20 2023'");
+    assert_eq!(run_repr("time.asctime()", FIXED), "'Wed Nov 15 00:13:20 2023'");
+    assert_eq!(
+        run_repr("time.strftime('%Y-%m-%d %H:%M %Z')", FIXED),
+        "'2023-11-15 00:13 UTC+02:00'"
+    );
+}
+
+/// `process_time` has its own policy, so a fixed clock does not pin it and the
+/// default keeps elapsed execution time out of the sandbox entirely.
+#[test]
+fn the_process_clocks_default_to_zero() {
+    let expr = "(time.process_time(), time.thread_time(), time.process_time_ns(), time.thread_time_ns())";
+    assert_eq!(run_repr_under(expr, AutoOsCalls::default()), "(0.0, 0.0, 0, 0)");
+    // a fixed wall clock changes nothing: the two policies are independent
+    assert_eq!(run_repr(expr, FIXED), "(0.0, 0.0, 0, 0)");
+}
+
+#[test]
+fn the_process_clocks_report_execution_time_when_asked() {
+    let calls = AutoOsCalls {
+        process_time: ProcessTime::Elapsed,
+        ..AutoOsCalls::default()
+    };
+    // the clock only advances while the VM runs, so burn some instructions
+    let code = "import time\nstart = time.process_time()\nfor _ in range(200000):\n    pass\n(time.process_time() > start, time.process_time_ns() > 0)";
+    assert_eq!(
+        run(code, calls).unwrap(),
+        MontyObject::tuple([MontyObject::bool(true), MontyObject::bool(true)])
+    );
 }
 
 #[test]
@@ -623,8 +683,12 @@ fn call_function_honours_call_host_too() {
 
 #[test]
 fn the_configuration_survives_a_dump() {
-    let mut repl = MontyRepl::new("<test>", ResourceTracker::default(), CompileOptions::default())
-        .with_auto_os_calls(with_datetime(FIXED));
+    let calls = AutoOsCalls {
+        process_time: ProcessTime::Elapsed,
+        ..with_datetime(FIXED)
+    };
+    let mut repl =
+        MontyRepl::new("<test>", ResourceTracker::default(), CompileOptions::default()).with_auto_os_calls(calls);
     repl.feed_run("x = 1", vec![], PrintWriter::Disabled).unwrap();
 
     let bytes = dump("<test>", None, SessionRef::Idle(&repl)).unwrap();
@@ -640,6 +704,11 @@ fn the_configuration_survives_a_dump() {
         )
         .unwrap();
     assert_eq!(result, MontyObject::string("datetime.date(2023, 11, 15)".to_owned()));
+    // the process clock is a policy of its own, so it must survive too
+    let elapsed = restored
+        .feed_run("import time\ntime.process_time() > 0.0", vec![], PrintWriter::Disabled)
+        .unwrap();
+    assert_eq!(elapsed, MontyObject::bool(true));
 }
 
 // ---------------------------------------------------------------------------

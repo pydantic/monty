@@ -39,7 +39,9 @@ use crate::{
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
-    modules::{StandardLib, json::JsonStringCache, random::apply_seed_random, re::RePatternCache},
+    modules::{
+        StandardLib, json::JsonStringCache, random::apply_seed_random, re::RePatternCache, time::apply_clock_reading,
+    },
     name_map::NameMap,
     object_bridge::MontyObjectExt,
     os_dispatch::{
@@ -2125,6 +2127,9 @@ impl<'h> VM<'h> {
             Some(PendingEffect::Post(PostConversionEffect::SeedRandom { target, retry })) => {
                 apply_seed_random(target, retry, value, self)
             }
+            Some(PendingEffect::Post(PostConversionEffect::ClockReading { reading })) => {
+                apply_clock_reading(reading, value, self)
+            }
             // The sleeps were answered above; any pre-conversion effect was consumed.
             Some(
                 PendingEffect::Post(PostConversionEffect::DiscardResult | PostConversionEffect::SleepResult { .. })
@@ -2187,7 +2192,11 @@ impl<'h> VM<'h> {
                 PendingEffect::Post(PostConversionEffect::SleepResult { result }) => result.drop_with(self),
                 // Hold no state or heap references — nothing to roll back.
                 PendingEffect::Pre(_)
-                | PendingEffect::Post(PostConversionEffect::OpenName { .. } | PostConversionEffect::DiscardResult) => {}
+                | PendingEffect::Post(
+                    PostConversionEffect::OpenName { .. }
+                    | PostConversionEffect::DiscardResult
+                    | PostConversionEffect::ClockReading { .. },
+                ) => {}
             }
         }
         // Use the normal exception handling mechanism
