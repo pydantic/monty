@@ -1886,9 +1886,9 @@ fn checked_cwd(cwd: &str) -> Result<String, PoolError> {
 /// Builds the parent-side [`MountTable`] for one feed from its (non-empty)
 /// specs. Free of filesystem I/O: each spec already carries its opened
 /// directory, so this only pairs those descriptors with a per-feed mode. Specs
-/// whose host directories overlap are rejected here — as a session-preserving
-/// [`PoolError::Runtime`], since specs are built independently and only meet
-/// at feed time.
+/// that overlap (see [`MountTable::push_mount`]) are rejected here — as a
+/// session-preserving [`PoolError::Runtime`], since specs are built
+/// independently and only meet at feed time.
 fn build_mount_table(mounts: Vec<MountSpec>) -> Result<MountTable, PoolError> {
     let mut table = MountTable::new();
     for mount in mounts {

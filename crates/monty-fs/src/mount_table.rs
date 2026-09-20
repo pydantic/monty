@@ -4,11 +4,13 @@
 //! virtual path to a real host directory with a specific access mode.
 
 use std::{
-    fs,
+    fs, io,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
+#[cfg(unix)]
+use cap_std::fs::MetadataExt;
 use cap_std::{ambient_authority, fs::Dir};
 use monty_types::{MontyObject, OsFunctionCall, normalize_virtual_path};
 
@@ -70,8 +72,8 @@ impl MountTable {
     /// the host path doesn't exist or isn't a directory, or it cannot be opened
     /// — on macOS/BSD that includes a search-only (`0o111`) directory, which
     /// Linux accepts because it opens directories with `O_PATH`.
-    /// Returns [`MountError::OverlappingMounts`] if the host directory overlaps
-    /// an already-registered mount's (see [`Self::push_mount`]).
+    /// Returns [`MountError::OverlappingMounts`] if the mount overlaps an
+    /// already-registered one (see [`Self::push_mount`]).
     pub fn mount(
         &mut self,
         virtual_path: &str,
@@ -88,24 +90,22 @@ impl MountTable {
     ///
     /// # Errors
     ///
-    /// Returns [`MountError::OverlappingMounts`] if the mount's canonical host
-    /// directory equals, contains, or is contained by an existing mount's.
-    /// Access mode is checked only against the mount the *virtual* path
-    /// selects, so a host file reachable through two mounts would take the
-    /// weaker mode — e.g. a read-write mount of a directory silently defeats a
-    /// read-only mount of its subdirectory. Mounting disjoint host directories
-    /// at nested virtual paths (`/data`, `/data/sub`) remains fine: the
-    /// longest-prefix rule routes each path to exactly one mount.
+    /// Returns [`MountError::OverlappingMounts`] if the mount's host directory
+    /// is an existing mount's, contains it or lies inside it, or if its virtual
+    /// path is already mounted. Access mode is checked only against the mount
+    /// the *virtual* path selects, so a host file reachable through two mounts
+    /// would take the weaker mode — e.g. a read-write mount of a directory
+    /// silently defeats a read-only mount of its subdirectory — and a second
+    /// mount on the same virtual path would never be reached at all. Mounting
+    /// disjoint host directories at nested virtual paths (`/data`, `/data/sub`)
+    /// remains fine: the longest-prefix rule routes each path to exactly one
+    /// mount.
     pub fn push_mount(&mut self, mount: Mount) -> Result<(), MountError> {
         // Canonical host paths cannot see two routes to the same file through a
         // hard link or bind mount, but the sandbox can create neither — that
         // would need pre-existing host state, i.e. a hostile *host*, which
         // mount configuration already trusts.
-        if let Some(existing) = self
-            .mounts
-            .iter()
-            .find(|existing| host_paths_overlap(existing.host_path(), mount.host_path()))
-        {
+        if let Some(existing) = self.mounts.iter().find(|existing| mounts_overlap(existing, &mount)) {
             return Err(MountError::OverlappingMounts {
                 virtual_path: mount.virtual_path().to_owned(),
                 host_path: mount.host_path().to_owned(),
@@ -362,6 +362,9 @@ pub struct MountRoot {
     /// Canonical host directory path. Diagnostics and the overlap check only —
     /// operations resolve through `dir`, never this path.
     host_path: PathBuf,
+    /// Identity of the opened directory, so the overlap check recognises the
+    /// same directory under two labels; see [`dir_identity`].
+    identity: Option<DirIdentity>,
     /// Descriptor for the mounted directory — the sandbox boundary, which
     /// resolution cannot leave. Shared, so every mount built from this root is
     /// the same directory rather than the same name resolved again.
@@ -403,10 +406,13 @@ impl MountRoot {
         let canonical_host = fs::canonicalize(host_path).map_err(|e| {
             MountError::InvalidMount(format!("cannot resolve host path '{}': {e}", host_path.display()))
         })?;
+        let identity = dir_identity(&dir)
+            .map_err(|e| MountError::InvalidMount(format!("cannot stat host path '{}': {e}", host_path.display())))?;
 
         Ok(Self {
             virtual_path: normalized_virtual.into_owned(),
             host_path: canonical_host,
+            identity,
             dir: Arc::new(dir),
         })
     }
@@ -425,10 +431,36 @@ impl MountRoot {
     }
 }
 
-/// Whether two canonical host paths name the same directory or nest one inside
-/// the other. Component-wise, so `/a/bc` does not overlap `/a/b`.
-fn host_paths_overlap(a: &Path, b: &Path) -> bool {
-    a.starts_with(b) || b.starts_with(a)
+/// Device and inode of an opened directory: the identity that survives a rename.
+type DirIdentity = (u64, u64);
+
+/// Reads the opened directory's identity from its descriptor, or `None` where
+/// the label needs no backing: on Windows the open handle blocks renames, so a
+/// root's canonical path stays true for as long as the root exists, whereas
+/// on Unix the directory can be renamed under its label between two opens.
+#[cfg(unix)]
+fn dir_identity(dir: &Dir) -> io::Result<Option<DirIdentity>> {
+    let metadata = dir.dir_metadata()?;
+    Ok(Some((metadata.dev(), metadata.ino())))
+}
+
+/// See the Unix variant.
+#[cfg(not(unix))]
+fn dir_identity(_dir: &Dir) -> io::Result<Option<DirIdentity>> {
+    Ok(None)
+}
+
+/// Whether two mounts collide: the same opened directory (by identity, so a
+/// rename between opens cannot hide it), host paths that nest or coincide, or
+/// the same virtual path. Host nesting is checked component-wise on canonical
+/// labels, so `/a/bc` does not overlap `/a/b`; a handle cannot express
+/// ancestry, so that part stays lexical.
+fn mounts_overlap(a: &Mount, b: &Mount) -> bool {
+    let same_dir = a.root().identity.is_some() && a.root().identity == b.root().identity;
+    same_dir
+        || a.host_path().starts_with(b.host_path())
+        || b.host_path().starts_with(a.host_path())
+        || a.virtual_path() == b.virtual_path()
 }
 
 /// Checks whether `normalized_path` falls under `mount_virtual_path`.

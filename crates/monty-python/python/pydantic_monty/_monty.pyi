@@ -95,9 +95,10 @@ class MountDir:
     that same directory — so build one and reuse it. `'overlay'` writes live in
     each feed's own table and are discarded when the feed ends.
 
-    Mounts passed to one feed must cover disjoint host directories: a mount
-    whose host directory overlaps another's (the same directory, or one inside
-    the other) is rejected with `ValueError` when the feed starts, since the
+    Mounts passed to one feed must have distinct virtual paths and cover
+    disjoint host directories: a mount whose host directory overlaps another's
+    (the same directory, or one inside the other), or that repeats a virtual
+    path, is rejected with `ValueError` when the feed starts, since the
     stricter mount's mode could otherwise be bypassed through the other
     mount's paths.
 

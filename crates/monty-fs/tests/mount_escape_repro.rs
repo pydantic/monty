@@ -126,8 +126,8 @@ fn overlapping_host_mounts_are_rejected() {
     assert_eq!(
         err.into_exception().message().unwrap(),
         format!(
-            "cannot mount '{0}' at '/ro': its host directory overlaps the mount of '{0}' at '/m', which would \
-             let the less restrictive mount's mode apply to the other's files",
+            "cannot mount '{0}' at '/ro': it overlaps the mount of '{0}' at '/m'; mounts must have distinct \
+             virtual paths and disjoint host directories",
             canonical_base.display()
         )
     );
@@ -163,6 +163,54 @@ fn assert_overlap(err: &MountError, added: &str, existing: &str) {
         }
         other => panic!("expected OverlappingMounts, got {other:?}"),
     }
+}
+
+/// The overlap check keys on the opened directory, not its label: a root
+/// opened under one name and the same directory opened again after a rename
+/// carry different canonical paths, and would otherwise both register. (Only
+/// Unix can rename a directory a mount holds open; Windows refuses, so there
+/// the label alone is reliable.)
+#[cfg(unix)]
+#[test]
+fn same_directory_under_a_new_name_is_rejected() {
+    let base = TempDir::new().unwrap();
+    let shared = base.path().join("shared");
+    fs::create_dir(&shared).unwrap();
+    let first = Mount::new("/first", &shared, MountMode::ReadWrite, None).unwrap();
+
+    let renamed = base.path().join("renamed");
+    fs::rename(&shared, &renamed).unwrap();
+    let second = Mount::new("/second", &renamed, MountMode::ReadOnly, None).unwrap();
+    assert_ne!(
+        first.host_path(),
+        second.host_path(),
+        "the labels must differ for this to test anything"
+    );
+
+    let mut mt = MountTable::new();
+    mt.push_mount(first).unwrap();
+    let err = mt.push_mount(second).unwrap_err();
+    assert_overlap(&err, "/second", "/first");
+}
+
+/// A second mount on an already-mounted virtual path is refused even over a
+/// disjoint host directory: prefix routing picks one of them, so the other
+/// would be silently unreachable.
+#[test]
+fn duplicate_virtual_path_is_rejected() {
+    let base = TempDir::new().unwrap();
+    let sub = base.path().join("sub");
+    let sub2 = base.path().join("sub2");
+    fs::create_dir(&sub).unwrap();
+    fs::create_dir(&sub2).unwrap();
+
+    let mut mt = MountTable::new();
+    mt.mount("/data", &sub, MountMode::ReadWrite, None).unwrap();
+    // Normalisation applies before the comparison, so a spelling variant is
+    // the same virtual path.
+    let err = mt.mount("/data/", &sub2, MountMode::ReadOnly, None).unwrap_err();
+    assert_overlap(&err, "/data", "/data");
+    assert_eq!(mt.len(), 1);
 }
 
 /// Overlap means the same host directory or an ancestor of one, measured in

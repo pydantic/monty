@@ -27,12 +27,13 @@ Each mount is configured by the host as one of:
     pool, the changes are discarded when the feed ends; each feed starts with
     a fresh overlay.
 
-### Overlapping host directories cannot both be mounted
+### Overlapping mounts cannot both be registered
 
 A mount whose host directory is the same as, contains, or is contained by
-another mount's is refused with a `ValueError` naming both mounts — at
-registration, which via the pool means when the feed starts, since that is
-where the per-feed mount table is assembled.
+another mount's, or whose virtual path is already mounted, is refused with a
+`ValueError` naming both mounts — at registration, which via the pool means
+when the feed starts, since that is where the per-feed mount table is
+assembled.
 
 The access mode is checked against whichever mount the *virtual* path selects
 (longest prefix), so a host file reachable through two mounts would take the
@@ -43,7 +44,13 @@ that configuration is rejected rather than half-honoured. To expose parts of
 a tree with different modes, mount disjoint directories.
 
 Disjoint host directories at nested virtual paths (`/data`, `/data/sub`)
-remain fine: each virtual path routes to exactly one mount.
+remain fine: each virtual path routes to exactly one mount. Two mounts on the
+*same* virtual path are refused because only one of them could ever be
+reached.
+
+The same-directory check uses the opened directory's identity on Unix, so a
+directory renamed between two mounts is still recognised; the nesting check is
+lexical over canonical paths, since an open directory cannot name its parent.
 
 ## Only regular files can be read, written, or opened
 

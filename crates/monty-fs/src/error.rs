@@ -67,11 +67,12 @@ pub enum MountError {
     /// Invalid mount configuration (e.g., host path doesn't exist or isn't a directory).
     InvalidMount(String),
 
-    /// Two mounts' host directories overlap (equal, or one inside the other).
-    /// Refused at registration: access is checked against whichever mount the
-    /// *virtual* path selects, so a file reachable through two mounts would get
-    /// the weaker mount's mode — a read-write mount over a read-only one
-    /// silently defeats the protection the caller thought they had configured.
+    /// Two mounts overlap: their host directories are equal or nested, or they
+    /// share a virtual path. Refused at registration: access is checked against
+    /// whichever mount the *virtual* path selects, so a file reachable through
+    /// two mounts would get the weaker mount's mode — a read-write mount over a
+    /// read-only one silently defeats the protection the caller thought they
+    /// had configured — and a second mount on one virtual path is unreachable.
     OverlappingMounts {
         /// Virtual path of the mount being added.
         virtual_path: String,
@@ -169,9 +170,9 @@ impl MountError {
             .with_data(data),
             Self::InvalidMount(msg) => MontyException::new(ExcType::TypeError, Some(msg)),
             // The caller's intent (e.g. "keep this subdirectory read-only") is
-            // reasonable, so the message must say why the configuration cannot
-            // deliver it. This error reaches the host configuring the mounts,
-            // never sandboxed code, so naming host paths is fine.
+            // reasonable, so the message must state the rule the configuration
+            // breaks. This error reaches the host configuring the mounts, never
+            // sandboxed code, so naming host paths is fine.
             Self::OverlappingMounts {
                 virtual_path,
                 host_path,
@@ -180,9 +181,9 @@ impl MountError {
             } => MontyException::new(
                 ExcType::ValueError,
                 Some(format!(
-                    "cannot mount '{}' at '{virtual_path}': its host directory overlaps the mount of '{}' at \
-                     '{existing_virtual_path}', which would let the less restrictive mount's mode apply to the \
-                     other's files",
+                    "cannot mount '{}' at '{virtual_path}': it overlaps the mount of '{}' at \
+                     '{existing_virtual_path}'; mounts must have distinct virtual paths and disjoint host \
+                     directories",
                     host_path.display(),
                     existing_host_path.display(),
                 )),

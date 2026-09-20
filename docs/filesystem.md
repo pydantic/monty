@@ -59,6 +59,10 @@ Mounts are per-feed, and all arguments are keyword-only:
     ```
 
 Pass a list to `mount=` for several at once.
+The mounts of one feed must have distinct virtual paths and cover disjoint host directories; a feed that mounts a
+directory and one inside it, the same directory twice, or two directories at one virtual path fails before it starts
+with a `ValueError`, since the stricter mount's mode could otherwise be bypassed through the other mount's paths.
+See [`limitations/filesystem.md`](limitations/filesystem.md#overlapping-mounts-cannot-both-be-registered).
 In JavaScript `MountDir` comes from the `@pydantic/monty/node` subpath and `using` closes it at the end of scope; the
 WebAssembly build rejects mounts outright, because a browser has no host filesystem.
 

@@ -431,9 +431,8 @@ def test_overlapping_mounts_rejected(monty_run: RunMonty, test_dir: Path):
         monty_run('1', mount=mounts)
     resolved = test_dir.resolve()
     assert str(exc_info.value) == (
-        f"ValueError: cannot mount '{resolved / 'subdir'}' at '/m/subdir': its host directory overlaps the "
-        f"mount of '{resolved}' at '/m', which would let the less restrictive mount's mode apply to the "
-        "other's files"
+        f"ValueError: cannot mount '{resolved / 'subdir'}' at '/m/subdir': it overlaps the mount of "
+        f"'{resolved}' at '/m'; mounts must have distinct virtual paths and disjoint host directories"
     )
 
 

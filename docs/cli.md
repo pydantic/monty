@@ -56,6 +56,8 @@ The separator is `::` rather than `:` so Windows drive letters stay unambiguous.
 $ monty -m ./data::/data::ro -c "from pathlib import Path; print(Path('/data').iterdir())"
 ```
 
+Repeat `-m` for several mounts; they must have distinct virtual paths and disjoint host directories, or `monty` exits
+before running anything.
 Without a mount, the sandbox has no filesystem at all.
 See [filesystem access](filesystem.md).
 
