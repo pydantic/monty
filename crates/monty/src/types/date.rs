@@ -42,9 +42,7 @@ pub(crate) struct Date(pub(crate) NaiveDate);
 /// Error messages match CPython 3.14 format exactly.
 pub(crate) fn from_ymd(year: i32, month: i32, day: i32) -> RunResult<Date> {
     if !(1..=9999).contains(&year) {
-        return Err(
-            SimpleException::new_msg(ExcType::ValueError, format!("year must be in 1..9999, not {year}")).into(),
-        );
+        return Err(year_out_of_range(year));
     }
     if !(1..=12).contains(&month) {
         return Err(
@@ -64,6 +62,12 @@ pub(crate) fn from_ymd(year: i32, month: i32, day: i32) -> RunResult<Date> {
         return Err(day_out_of_range_error(day, month, year));
     };
     Ok(Date(date))
+}
+
+/// `date`'s year-range error, raised both by construction and by the probe
+/// [`datetime.astimezone`](super::datetime) makes a day either side of a value.
+pub(crate) fn year_out_of_range(year: i32) -> RunError {
+    SimpleException::new_msg(ExcType::ValueError, format!("year must be in 1..9999, not {year}")).into()
 }
 
 /// Produces a CPython-compatible error for an invalid day value.

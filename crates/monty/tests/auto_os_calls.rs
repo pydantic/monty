@@ -416,6 +416,45 @@ fn a_named_zone_spans_the_full_datetime_range() {
     );
 }
 
+/// CPython renders the days either side of a naive value to find its local
+/// offset, so `astimezone()` refuses the first and last representable days in
+/// every zone; an aware value on those days converts. Expectations were checked
+/// against CPython under `TZ=UTC` and `TZ=Europe/London`.
+#[test]
+fn naive_astimezone_refuses_the_first_and_last_day() {
+    for zone in [SandboxTimeZone::utc(), SandboxTimeZone::named("Europe/London").unwrap()] {
+        let calls = AutoOsCalls {
+            datetime: FIXED,
+            timezone: zone,
+            ..AutoOsCalls::default()
+        };
+        let refused = |expr: &str| {
+            let code = format!("from datetime import datetime, timezone\n{expr}");
+            run(&code, calls.clone()).unwrap_err()
+        };
+        assert_eq!(
+            refused("datetime(9999, 12, 31, 12, 0).astimezone(timezone.utc)"),
+            "ValueError: year must be in 1..9999, not 10000"
+        );
+        assert_eq!(
+            refused("datetime(1, 1, 1, 12, 0).astimezone(timezone.utc)"),
+            "ValueError: year must be in 1..9999, not 0"
+        );
+        // the day either side is fine, and an aware value never probes
+        assert_eq!(
+            run_repr_under("datetime(9999, 12, 30, 12, 0).astimezone(timezone.utc)", calls.clone()),
+            "datetime.datetime(9999, 12, 30, 12, 0, tzinfo=datetime.timezone.utc)"
+        );
+        assert_eq!(
+            run_repr_under(
+                "datetime(9999, 12, 31, 12, 0, tzinfo=timezone.utc).astimezone(timezone.utc)",
+                calls
+            ),
+            "datetime.datetime(9999, 12, 31, 12, 0, tzinfo=datetime.timezone.utc)"
+        );
+    }
+}
+
 /// Zone names are validated before the database sees them, and the database
 /// answers for `UTC` and every IANA key.
 #[test]

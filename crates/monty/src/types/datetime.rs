@@ -10,7 +10,8 @@ use std::{
 };
 
 use chrono::{
-    Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike, format::StrftimeItems,
+    Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike,
+    format::StrftimeItems,
 };
 use monty_types::{DateTimeSource, MontyDateTime, MontyTimeZone, OsFunctionCall, ResourceTracker, local_wall_clock};
 
@@ -328,9 +329,11 @@ fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Call
     let zone = &vm.env.auto_os_calls.timezone;
     // CPython forms `self - utcoffset()` as a datetime, so the UTC intermediate
     // must be in range as well as the result.
-    let utc = match dt.offset_seconds {
-        Some(_) => to_utc_naive(dt).filter(|utc| year_in_python_range(utc.year())),
-        None => zone.utc_from_local(dt.naive),
+    let utc = if dt.offset_seconds.is_some() {
+        to_utc_naive(dt).filter(|utc| year_in_python_range(utc.year()))
+    } else {
+        probe_neighbouring_days(dt.naive.date())?;
+        zone.utc_from_local(dt.naive)
     }
     .ok_or_else(date_out_of_range)?;
     let target = match tz {
@@ -346,6 +349,22 @@ fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Call
     Ok(CallResult::Value(Value::Ref(
         vm.heap.allocate(HeapData::DateTime(converted)),
     )))
+}
+
+/// CPython finds a naive value's local offset by rendering the days either side
+/// of it, so the first and last representable days raise before any conversion
+/// happens — in every zone, including UTC. Monty needs no such probe, but the
+/// error is observable, so it is reproduced.
+fn probe_neighbouring_days(date: NaiveDate) -> RunResult<()> {
+    // chrono's own range is far wider than Python's, so the years are what decide.
+    let in_range = |day: Option<NaiveDate>| day.is_some_and(|day| year_in_python_range(day.year()));
+    if !in_range(date.pred_opt()) {
+        Err(date::year_out_of_range(0))
+    } else if !in_range(date.succ_opt()) {
+        Err(date::year_out_of_range(10_000))
+    } else {
+        Ok(())
+    }
 }
 
 /// Argument shape for `datetime.astimezone(tz=None)`, checked like [`NowArgs`]:
