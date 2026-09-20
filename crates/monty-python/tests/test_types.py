@@ -3,6 +3,7 @@ from __future__ import annotations
 import collections
 import datetime
 import itertools
+import json
 import pathlib
 import re
 import types
@@ -211,6 +212,8 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         re.Match,
         collections.deque,
         types.GenericAlias,
+        ValueError,
+        json.JSONDecodeError,
     ]
     for ty in type_objects:
         # The pathlib family all collapses to a single Monty path type, which
@@ -220,6 +223,8 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
     # The type of `int | None`: `types.UnionType` on every host, which is
     # `typing.Union` itself from 3.14 (and a `_SpecialForm` before it).
     assert monty_run('x', inputs={'x': types.UnionType}) is types.UnionType
+    # an exception class passed in is usable as one
+    assert monty_run('isinstance(ValueError(), x)', inputs={'x': ValueError}) is True
 
 
 # Type objects outside the data-type allowlist, with the name each crosses out as.
@@ -523,8 +528,11 @@ def test_return_int(monty_run: RunMonty):
 def test_return_exception(monty_run: RunMonty):
     assert monty_run('x = ValueError()\ntype(x)') is ValueError
     assert monty_run('ValueError') is ValueError
-    # a stdlib exception class resolves from its module, not `builtins`
+    # a stdlib exception class resolves from its module, not `builtins`, and
+    # one whose instances need a payload still resolves as its own class
     assert monty_run('import re\nre.error') is re.error
+    assert monty_run('import json\njson.JSONDecodeError') is json.JSONDecodeError
+    assert monty_run('UnicodeDecodeError') is UnicodeDecodeError
 
 
 # === BigInt (arbitrary precision integers) ===

@@ -5,8 +5,8 @@
 use std::borrow::Cow;
 
 use monty_types::{
-    FileMode, MontyDateTime, MontyException, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
-    StringRepr, unstable::MontyNode,
+    ExcType, FileMode, MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, StringRepr,
+    unstable::MontyNode,
 };
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
@@ -18,9 +18,9 @@ use pyo3::{
         PyTzInfoAccess,
     },
 };
-use strum::IntoEnumIterator;
+use strum::{IntoEnumIterator, VariantNames};
 
-use super::exceptions::exc_monty_to_py;
+use super::exceptions::exc_class_to_py;
 
 /// Inverse of [`host_type_object`]: maps a host class passed *into* the sandbox
 /// to the Monty [`MontyType`] it represents, so it round-trips instead of degrading to
@@ -48,10 +48,16 @@ pub(super) fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option
 fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, MontyType)>> {
     static TABLE: PyOnceLock<Vec<(Py<PyAny>, MontyType)>> = PyOnceLock::new();
     TABLE.get_or_try_init(py, || {
-        // iteration yields only `Exception`'s default variant, and exception
-        // classes are not modelled inbound, so the variant is skipped outright
+        // iteration yields only `Exception`'s default variant, so the
+        // exception classes are appended from `ExcType`'s own name table
         MontyType::iter()
             .filter(|t| !matches!(t, MontyType::Exception(_)))
+            .chain(
+                ExcType::VARIANTS
+                    .iter()
+                    .filter_map(|name| name.parse().ok())
+                    .map(MontyType::Exception),
+            )
             .filter_map(|t| host_type_object(py, t).map(|obj| obj.map(|obj| (obj, t))).transpose())
             .collect()
     })
@@ -115,12 +121,8 @@ pub(super) fn host_type_object(py: Python<'_>, t: MontyType) -> PyResult<Option<
         // `types.UnionType` is the type of `int | None` on every supported host;
         // on 3.14+ it is the same object as `typing.Union`.
         MontyType::Union => cached!("types", "UnionType"),
-        // the class an instance of this `ExcType` decodes to, so stdlib
-        // exceptions (`re.error`, `binascii.Error`) resolve as well as builtins
-        MontyType::Exception(exc_type) => Ok(exc_monty_to_py(py, MontyException::new(exc_type, None))
-            .get_type(py)
-            .into_any()
-            .unbind()),
+        // stdlib exceptions (`re.error`, `json.JSONDecodeError`) resolve as well as builtins
+        MontyType::Exception(exc_type) => exc_class_to_py(py, exc_type),
         _ => return Ok(None),
     };
     obj.map(Some)
