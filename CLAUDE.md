@@ -779,6 +779,10 @@ You may mark python files with:
 
 - `# call-external` to support calling external functions
 - `# run-async` to support running async code
+- `# timezone=Europe/London` to run the case in an IANA zone rather than the UTC default:
+    it sets `AutoOsCalls::timezone` for Monty and `TZ` for CPython, so `astimezone()`,
+    a naive `timestamp()`, `%Z`/`%z` and the `time` zone constants can be compared.
+    The CPython side is skipped on Windows, which has no `time.tzset`.
 
 NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!! INSTEAD FIX THE BEHAVIOR SO THAT THE TEST PASSES.
 
