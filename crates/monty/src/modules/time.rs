@@ -373,14 +373,15 @@ fn mktime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let value = args
         .reject_kwargs("time.mktime", vm.heap)?
         .get_one_arg("time.mktime", vm.heap)?;
-    let fields = time_fields(&value, "mktime", vm);
+    // Only the wall clock matters, and CPython does not range-check the
+    // weekday or year day here as `asctime`/`strftime` do.
+    let wall = time_tuple_parts(&value, "mktime", vm).and_then(|(items, _)| naive_from_time_tuple(&items));
     value.drop_with(vm.heap);
-    let fields = fields?;
     let utc = vm
         .env
         .auto_os_calls
         .timezone
-        .utc_from_local(fields.wall)
+        .utc_from_local(wall?)
         .ok_or_else(ExcType::mktime_out_of_range)?;
     Ok(CallResult::Value(Value::Float(unix_seconds(utc).floor())))
 }
@@ -723,12 +724,22 @@ fn struct_time_value(fields: &TimeFields, vm: &mut VM<'_>) -> Value {
 fn time_fields(value: &Value, name: &str, vm: &mut VM<'_>) -> RunResult<TimeFields> {
     let (items, own_zone) = time_tuple_parts(value, name, vm)?;
     let wall = naive_from_time_tuple(&items)?;
+    // CPython's `checktm`, which `mktime` skips: a weekday below -1 goes
+    // negative after its Sunday-first shift, and a year day is 0..=366 with 0
+    // read as the first day. Bounding both here also keeps the `%U`/`%W`
+    // arithmetic in range, so a hostile tuple cannot overflow it.
+    if items[6] < -1 {
+        return Err(ExcType::value_error("day of week out of range"));
+    }
+    if !(0..=366).contains(&items[7]) {
+        return Err(ExcType::value_error("day of year out of range"));
+    }
     let isdst = items[8].clamp(-1, 1);
     let zone = own_zone.or_else(|| tuple_zone(wall.year(), isdst, vm));
     Ok(TimeFields {
         wall,
         weekday: items[6],
-        yearday: items[7],
+        yearday: items[7].max(1),
         isdst,
         zone,
     })

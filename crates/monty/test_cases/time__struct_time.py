@@ -46,8 +46,9 @@ assert time.asctime((1, 1, 1, 0, 0, 0, 0, 1, 0)) == 'Mon Jan  1 00:00:00 1'
 assert time.strftime('%Y-%m-%d %H:%M:%S', epoch) == '1970-01-01 00:00:00'
 assert time.strftime('', epoch) == ''
 assert time.strftime('%%Y literal', epoch) == '%Y literal'
-# gmtime always reports UTC, whatever the session zone is
-assert time.strftime('%Z %z', epoch) == 'UTC +0000'
+# gmtime's offset is always zero; its zone *name* is platform-dependent on CPython
+# (glibc says GMT), so that lives in datetime_format.rs
+assert time.strftime('%z', epoch) == '+0000'
 # tm_wday and tm_yday are printed as given, not recomputed from the date --
 # this tuple claims Monday, day 1 of the year, for a date that is a Saturday
 claimed = (2024, 6, 15, 12, 30, 0, 0, 1, 0)
@@ -104,4 +105,15 @@ check(
 )
 check(lambda: time.strftime('%Y', (2024, 13, 15, 12, 30, 0, 0, 1, 0)), 'ValueError: month out of range')
 check(lambda: time.asctime((2024, 13, 15, 12, 30, 0, 0, 1, 0)), 'ValueError: month out of range')
+# tm_wday folds mod 7 from -1 up; tm_yday is 0..=366 with 0 printed as day 1.
+# mktime reads only the wall clock and skips these checks entirely
+assert time.strftime('%a', (2024, 1, 1, 0, 0, 0, -1, 1, -1)) == 'Sun'
+assert time.strftime('%a', (2024, 1, 1, 0, 0, 0, 100, 1, -1)) == 'Wed'
+assert time.strftime('%j', (2024, 1, 1, 0, 0, 0, 0, 0, -1)) == '001'
+assert time.strftime('%j', (2024, 1, 1, 0, 0, 0, 0, 366, -1)) == '366'
+check(lambda: time.strftime('%a', (2024, 1, 1, 0, 0, 0, -2, 1, -1)), 'ValueError: day of week out of range')
+check(lambda: time.asctime((2024, 1, 1, 0, 0, 0, -2, 1, -1)), 'ValueError: day of week out of range')
+check(lambda: time.strftime('%j', (2024, 1, 1, 0, 0, 0, 0, 367, -1)), 'ValueError: day of year out of range')
+check(lambda: time.strftime('%Y', (2024, 1, 1, 0, 0, 0, 0, -5, -1)), 'ValueError: day of year out of range')
+assert time.mktime((2024, 1, 1, 0, 0, 0, -2, 367, -1)) == time.mktime((2024, 1, 1, 0, 0, 0, 0, 1, -1))
 check(lambda: time.strptime('nope', '%Y'), "ValueError: time data 'nope' does not match format '%Y'")

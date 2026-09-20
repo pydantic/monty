@@ -57,7 +57,7 @@ Monty has no threads, so `thread_time()` is the same clock as `process_time()`.
 
 ## `struct_time`
 
-`gmtime()`, `localtime()` and `strptime()` return a named tuple that prints as `time.struct_time(...)` with CPython's
+`gmtime()` names its zone `UTC` (in `tm_zone` and `%Z`); glibc CPython says `GMT`.
 eleven attributes.
 It differs from CPython's structseq in two ways:
 

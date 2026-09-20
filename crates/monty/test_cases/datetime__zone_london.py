@@ -118,4 +118,4 @@ assert time.mktime(winter) == 1705321800.0
 assert time.ctime(1718451000) == 'Sat Jun 15 12:30:00 2024'
 # gmtime ignores the zone entirely
 assert time.gmtime(1718451000).tm_hour == 11
-assert time.strftime('%Z %z', time.gmtime(1718451000)) == 'UTC +0000'
+assert time.strftime('%z', time.gmtime(1718451000)) == '+0000'

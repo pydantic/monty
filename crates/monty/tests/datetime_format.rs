@@ -90,6 +90,49 @@ fn time_strftime_shares_the_lenient_formatter() {
     );
 }
 
+/// A time tuple's `tm_wday`/`tm_yday` are `i64` in Monty where CPython takes a
+/// C `int`, so CPython refuses these at conversion and the fixture cannot hold
+/// them. Monty must bound them without the `%U`/`%W` arithmetic overflowing.
+#[test]
+fn hostile_time_tuple_fields_raise_instead_of_panicking() {
+    let big = i64::MAX;
+    let small = i64::MIN;
+    for (expr, expected) in [
+        (
+            format!("time.strftime('%j %U %W', (2024, 1, 1, 0, 0, 0, 0, {small}, -1))"),
+            "day of year out of range",
+        ),
+        (
+            format!("time.strftime('%j %U %W', (2024, 1, 1, 0, 0, 0, 0, {big}, -1))"),
+            "day of year out of range",
+        ),
+        (
+            format!("time.asctime((2024, 1, 1, 0, 0, 0, {small}, 1, -1))"),
+            "day of week out of range",
+        ),
+    ] {
+        let msg = run_err(&format!("import time\n{expr}"));
+        assert!(msg.contains(expected), "{expr}: {msg}");
+    }
+    // a huge non-negative weekday folds mod 7, as CPython's `(wday + 1) % 7`
+    // would if a C `int` could hold it: `i64::MAX` is a multiple of 7, so Monday
+    assert_eq!(
+        run_str(&format!(
+            "import time\ntime.strftime('%a %U', (2024, 1, 1, 0, 0, 0, {big}, 1, -1))"
+        )),
+        "Mon 00"
+    );
+}
+
+/// `gmtime()` names its zone `UTC`, as macOS CPython does; glibc CPython says
+/// `GMT`, so the name cannot be asserted in a dual-run fixture. See
+/// limitations/time.md.
+#[test]
+fn gmtime_zone_is_named_utc() {
+    assert_eq!(run_str("import time\ntime.strftime('%Z', time.gmtime(0))"), "UTC");
+    assert_eq!(run_str("import time\ntime.gmtime(0).tm_zone"), "UTC");
+}
+
 /// CPython 3.14 added `time.strptime`; Monty does not implement it, so this
 /// cannot live in `test_cases/` — the harness's reference CPython succeeds.
 /// See limitations/datetime.md.
