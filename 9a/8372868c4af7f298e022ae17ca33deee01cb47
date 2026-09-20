@@ -1,0 +1,42 @@
+crates/monty-proto/src/python/builtin_proxy.rs
+  s_063447cc103291::t_f80a5659e47361 1-84
+crates/monty-proto/src/python/mod.rs
+  s_063447cc103291::t_36fad934184610 16,23
+crates/monty-python/python/pydantic_monty/__init__.py
+  s_063447cc103291::t_5f0815379c409b 84
+  s_063447cc103291::t_0cd8c59ca23eee 23
+crates/monty-python/src/lib.rs
+  s_063447cc103291::t_97e0c0658de578 87-90
+docs/api/python/host_objects.md
+  s_063447cc103291::t_b48192dbe29d7d 21
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_063447cc103291::t_4ab46a27a4391b 427-445
+  s_063447cc103291::t_380971a07ef906 33
+crates/monty-proto/src/python/decode.rs
+  s_063447cc103291::t_5d0c4274bd87ad 16,19-20
+  s_063447cc103291::t_c937f631f4845e 7,135-137
+  s_063447cc103291::t_2a1325056907f4 138
+  s_063447cc103291::t_15b16dc83e27c6 238-242
+crates/monty-proto/src/python/encode.rs
+  s_063447cc103291::t_c284e8797237ef 22
+  s_063447cc103291::t_ca11abede0ea13 251-253
+crates/monty-python/tests/test_types.py
+  s_063447cc103291::t_b78b76f1103cbe 133-153
+  s_063447cc103291::t_ac89008c16b11c 17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9a8372868c4af7f298e022ae17ca33deee01cb47",
+  "prompts": {},
+  "sessions": {
+    "s_063447cc103291": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e023e8fb-a847-4354-a1a6-59cf32558feb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
