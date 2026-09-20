@@ -33,7 +33,7 @@ pub(super) fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option
     let py = ty.py();
     for (obj, t) in round_trip_type_table(py)? {
         if ty.is(obj) {
-            return Ok(Some(t.clone()));
+            return Ok(Some(*t));
         }
     }
     // pathlib's concrete path classes (PurePath, PosixPath, …) all subclass
@@ -52,7 +52,7 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
         // classes are not modelled inbound, so the variant is skipped outright
         MontyType::iter()
             .filter(|t| !matches!(t, MontyType::Exception(_)))
-            .filter_map(|t| host_type_object(py, &t).map(|obj| obj.map(|obj| (obj, t))).transpose())
+            .filter_map(|t| host_type_object(py, t).map(|obj| obj.map(|obj| (obj, t))).transpose())
             .collect()
     })
 }
@@ -72,7 +72,7 @@ pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
 /// reachable only through host internals (iterator and view types, `function`,
 /// `module`) stay proxies. The same list decides which host classes round-trip
 /// *into* the sandbox by identity ([`round_trip_type_table`]).
-pub(super) fn host_type_object(py: Python<'_>, t: &MontyType) -> PyResult<Option<Py<PyAny>>> {
+pub(super) fn host_type_object(py: Python<'_>, t: MontyType) -> PyResult<Option<Py<PyAny>>> {
     // Each expansion gets a distinct hygienic `LOCK` static, so every arm caches
     // its own resolved type object. `PyOnceLock::import` imports + getattrs once.
     macro_rules! cached {
@@ -119,7 +119,7 @@ pub(super) fn host_type_object(py: Python<'_>, t: &MontyType) -> PyResult<Option
         MontyType::Union => cached!("types", "UnionType"),
         // the class an instance of this `ExcType` decodes to, so stdlib
         // exceptions (`re.error`, `binascii.Error`) resolve as well as builtins
-        MontyType::Exception(exc_type) => Ok(exc_monty_to_py(py, MontyException::new(*exc_type, None))
+        MontyType::Exception(exc_type) => Ok(exc_monty_to_py(py, MontyException::new(exc_type, None))
             .get_type(py)
             .into_any()
             .unbind()),

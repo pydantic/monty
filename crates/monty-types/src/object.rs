@@ -1164,9 +1164,14 @@ fn push_pairs(
 /// the runtime `Type` enum, minus class types, which cross as their own
 /// [`class_type`](MontyObject::class_type) value. Serializable and
 /// displayable without heap access.
+///
+/// Every runtime type is mirrored, not only those a host materialises as its
+/// own class: the rest cross as a named proxy so the same type object can
+/// round-trip back into the sandbox.
 #[derive(
     Debug,
     Clone,
+    Copy,
     PartialEq,
     Eq,
     serde::Serialize,

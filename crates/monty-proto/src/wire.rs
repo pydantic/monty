@@ -409,7 +409,7 @@ fn encode_node(node: &MontyNode, buf: &mut impl BufMut) {
             encode_str(1, &name, buf);
             encode_opt_str(2, arg.as_deref(), buf);
         }
-        MontyNode::Type(t) => encoding::message::encode(tag::TYPE, &builtin_type_to_pb(t), buf),
+        MontyNode::Type(t) => encoding::message::encode(tag::TYPE, &builtin_type_to_pb(*t), buf),
         MontyNode::ClassType(class) => {
             encode_message_key(tag::TYPE, class_type_len(class), buf);
             encode_class_type(class, buf);
@@ -482,7 +482,7 @@ fn node_len(node: &MontyNode) -> usize {
             let name = exc_type.to_string();
             submessage_len(tag::EXCEPTION, str_len(1, &name) + opt_str_len(2, arg.as_deref()))
         }
-        MontyNode::Type(t) => encoding::message::encoded_len(tag::TYPE, &builtin_type_to_pb(t)),
+        MontyNode::Type(t) => encoding::message::encoded_len(tag::TYPE, &builtin_type_to_pb(*t)),
         MontyNode::ClassType(class) => submessage_len(tag::TYPE, class_type_len(class)),
         MontyNode::ClassInstance {
             class_type,
@@ -977,7 +977,7 @@ fn pb_uuid_to_monty(uuid: &pb::Uuid, field: &'static str) -> Result<MontyUuid, D
 /// Encodes a builtin [`MontyType`] as the wire `Type` message: only its
 /// Display name (origin BUILTIN, no id). Class types are [`ClassTypeNode`]s
 /// and encode via [`encode_class_type`].
-fn builtin_type_to_pb(t: &MontyType) -> pb::Type {
+fn builtin_type_to_pb(t: MontyType) -> pb::Type {
     pb::Type {
         name: t.to_string(),
         origin: pb::TypeOrigin::Builtin as i32,

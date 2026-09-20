@@ -132,9 +132,9 @@ impl Decoder<'_, '_> {
                 .map(Bound::unbind),
             MontyNode::TimeZone(timezone) => monty_timezone_to_py(py, timezone),
             // a data type resolves to the host class; anything else is a proxy
-            MontyNode::Type(t) => match host_type_object(py, t)? {
+            MontyNode::Type(t) => match host_type_object(py, *t)? {
                 Some(ty) => Ok(ty),
-                None => std_type_proxy(py, StdTypeRef::Type(t.clone())),
+                None => std_type_proxy(py, StdTypeRef::Type(*t)),
             },
             // `type` is the one builtin function on the host-class allowlist; every
             // other one crosses as a proxy carrying its name, never the host's callable

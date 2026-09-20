@@ -72,7 +72,7 @@ impl StdTypeRef {
     /// The node the proxy crosses back into the sandbox as.
     pub(super) fn to_node(&self) -> MontyNode {
         match self {
-            Self::Type(t) => MontyNode::Type(t.clone()),
+            Self::Type(t) => MontyNode::Type(*t),
             Self::Function(f) => MontyNode::BuiltinFunction(*f),
         }
     }
