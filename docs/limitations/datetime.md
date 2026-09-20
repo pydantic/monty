@@ -101,6 +101,9 @@ Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
     (`strptime('12:30', '%H:%M')`) raises
     `ValueError: time data '12:30' does not match format '%H:%M'`, where
     CPython defaults the missing date to 1900-01-01.
+- `strptime()`'s `%z` takes a sign, hours and minutes with an optional colon, optional seconds, or a bare `Z`,
+    but not CPython's fractional form: `'+010203.123456'` does not match, where CPython attaches an offset carrying
+    those microseconds, which no Monty offset can hold (see [`timezone`](#timezone)).
 - `utcnow()` (the deprecated class method) and `today()` are not
     implemented.
 - `fromtimestamp()`, `fromordinal()` and `utcfromtimestamp()` are not
@@ -214,6 +217,10 @@ instant.
 base class. Only fixed offsets can be constructed, so on `timezone`,
 `datetime` and `time` alike, `utcoffset()` is constant over time and
 `dst()` is always `None`.
+
+An offset is a whole number of seconds: `timezone(timedelta(seconds=1, microseconds=1))` raises
+`ValueError: offset must be a timedelta representing a whole number of seconds`, CPython's own message before 3.7,
+where CPython now accepts it.
 
 One error-ordering corner: `timezone('x', offset=td)` (a non-`timedelta`
 positional *and* an `offset` kwarg) raises the name-and-position conflict in

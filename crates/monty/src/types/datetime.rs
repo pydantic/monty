@@ -426,10 +426,12 @@ pub(crate) fn class_strptime(heap: &mut Heap, args: ArgValues, interns: &Interns
     let date_string = date_string?;
     let fmt = fmt?;
 
+    reject_bad_strptime_directive(&fmt)?;
+
     // Python's `%f` accepts 1..=6 digits and right-pads with zeros, while chrono
     // requires an explicit width. Try all valid `%f` widths before reporting a
     // mismatch so `datetime.strptime(..., '%f')` matches CPython.
-    let Some(naive) = parse_strptime_naive(&date_string, &fmt) else {
+    let Some((naive, offset_seconds)) = parse_strptime(&date_string, &fmt) else {
         return Err(SimpleException::new_msg(
             ExcType::ValueError,
             format!("time data '{date_string}' does not match format '{fmt}'"),
@@ -440,14 +442,37 @@ pub(crate) fn class_strptime(heap: &mut Heap, args: ArgValues, interns: &Interns
     if !year_in_python_range(naive.date().year()) {
         return Err(SimpleException::new_msg(ExcType::ValueError, "year is out of range").into());
     }
+    if let Some(offset_seconds) = offset_seconds {
+        timezone::check_offset_seconds(offset_seconds)?;
+    }
 
     let dt = DateTime {
         naive,
-        offset_seconds: None,
+        offset_seconds,
         timezone_name: None,
         tzinfo_ref: None,
     };
     Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))))
+}
+
+/// CPython's `strptime` has no `%:z`, so the `:` reads as a directive of its own.
+/// Monty's `strftime` does accept `%:z`, which makes silently parsing it here the
+/// wrong kind of asymmetry.
+fn reject_bad_strptime_directive(fmt: &str) -> RunResult<()> {
+    let mut chars = fmt.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '%'
+            && let Some(next) = chars.next()
+            && next == ':'
+        {
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                format!("'{next}' is a bad directive in format '{fmt}'"),
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 /// Classmethod `datetime.fromisoformat(date_string)`.
@@ -626,6 +651,94 @@ fn parse_iso_datetime(s: &str, heap: &mut Heap) -> Option<DateTime> {
         )
         .ok()
     }
+}
+
+/// Parses a `strptime` input into naive components plus the offset a `%z`
+/// directive asked for, `None` when the format has no `%z`.
+fn parse_strptime(date_string: &str, fmt: &str) -> Option<(NaiveDateTime, Option<i32>)> {
+    let Some(without_zone) = strip_zone_directive(fmt) else {
+        return parse_strptime_naive(date_string, fmt).map(|naive| (naive, None));
+    };
+    // Chrono cannot express CPython's `%z` — an optional colon, optional seconds,
+    // or a bare `Z` — so the token is lifted out of the input and what is left is
+    // parsed without it. The leftmost token that lets the whole string parse wins,
+    // as CPython's leftmost regex match does.
+    date_string.char_indices().find_map(|(at, _)| {
+        let (offset_seconds, len) = strptime_offset_at(&date_string[at..])?;
+        let mut without_offset = String::with_capacity(date_string.len() - len);
+        without_offset.push_str(&date_string[..at]);
+        without_offset.push_str(&date_string[at + len..]);
+        parse_strptime_naive(&without_offset, &without_zone).map(|naive| (naive, Some(offset_seconds)))
+    })
+}
+
+/// The format with its `%z` directive removed, or `None` when it has none.
+/// `%%z` is a literal `z` and leaves the format alone.
+fn strip_zone_directive(fmt: &str) -> Option<String> {
+    let mut rest = fmt;
+    let mut without_zone = String::with_capacity(fmt.len());
+    while let Some(at) = rest.find('%') {
+        let (literal, directive) = rest.split_at(at);
+        without_zone.push_str(literal);
+        let mut chars = directive.chars();
+        chars.next();
+        match chars.next() {
+            Some('z') => {
+                without_zone.push_str(chars.as_str());
+                return Some(without_zone);
+            }
+            Some(other) => {
+                without_zone.push('%');
+                without_zone.push(other);
+                rest = chars.as_str();
+            }
+            None => return None,
+        }
+    }
+    None
+}
+
+/// CPython's `%z` token at the start of `s`: a bare `Z`, or a sign, two hour
+/// digits and a colon-optional minute pair, optionally followed by a second
+/// pair. Returns the offset in seconds and the token's length. A fractional
+/// part is not accepted; see `limitations/datetime.md`.
+fn strptime_offset_at(s: &str) -> Option<(i32, usize)> {
+    let bytes = s.as_bytes();
+    if bytes.first() == Some(&b'Z') {
+        return Some((0, 1));
+    }
+    let sign = match bytes.first()? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let (hours, at) = two_digits(bytes, 1)?;
+    let (minutes, at) = colon_pair(bytes, at)?;
+    // CPython's pattern caps minutes and seconds at 59 and leaves the hour to the
+    // `timezone` range check, so an out-of-range minute is simply not a match.
+    if minutes > 59 {
+        return None;
+    }
+    let (seconds, at) = match colon_pair(bytes, at) {
+        Some((seconds, next)) if seconds <= 59 => (seconds, next),
+        _ => (0, at),
+    };
+    let total = i32::try_from(hours * 3600 + minutes * 60 + seconds).ok()?;
+    Some((sign * total, at))
+}
+
+/// Two decimal digits at `at`, with the index just past them.
+fn two_digits(bytes: &[u8], at: usize) -> Option<(u32, usize)> {
+    let pair = bytes.get(at..at.checked_add(2)?)?;
+    pair.iter()
+        .all(u8::is_ascii_digit)
+        .then(|| (u32::from(pair[0] - b'0') * 10 + u32::from(pair[1] - b'0'), at + 2))
+}
+
+/// An optional `:` then two digits, the separator `%z` allows between its parts.
+fn colon_pair(bytes: &[u8], at: usize) -> Option<(u32, usize)> {
+    let at = if bytes.get(at) == Some(&b':') { at + 1 } else { at };
+    two_digits(bytes, at)
 }
 
 /// Parses a `datetime.strptime()` input using chrono format strings expanded for

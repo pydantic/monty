@@ -138,3 +138,60 @@ assert format(_dt, '%H:%M') == '10:30'
 assert format(datetime.time(10, 30, 45), '%H-%M-%S') == '10-30-45'
 assert format(_d) == '2024-06-15'
 assert format(_dt, '') == '2024-06-15 10:30:45'
+
+# === strptime %z: a sign, hours and minutes with an optional colon, or a bare Z ===
+assert repr(datetime.datetime.strptime('2024-06-15 12:30 +0100', '%Y-%m-%d %H:%M %z')) == (
+    'datetime.datetime(2024, 6, 15, 12, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600)))'
+)
+assert datetime.datetime.strptime('2024-06-15 12:30 +01:00', '%Y-%m-%d %H:%M %z').utcoffset() == datetime.timedelta(
+    hours=1
+)
+assert datetime.datetime.strptime('2024-06-15 12:30 -0530', '%Y-%m-%d %H:%M %z').utcoffset() == datetime.timedelta(
+    hours=-5, minutes=-30
+)
+# seconds are allowed too, with or without their own colon
+assert datetime.datetime.strptime('2024-06-15 12:30 +010203', '%Y-%m-%d %H:%M %z').utcoffset() == datetime.timedelta(
+    seconds=3723
+)
+assert datetime.datetime.strptime('2024-06-15 12:30 +01:02:03', '%Y-%m-%d %H:%M %z').utcoffset() == datetime.timedelta(
+    seconds=3723
+)
+# +0000, -0000 and Z all give the UTC singleton
+assert datetime.datetime.strptime('2024-06-15 12:30 +0000', '%Y-%m-%d %H:%M %z').tzinfo is datetime.timezone.utc
+assert datetime.datetime.strptime('2024-06-15 12:30 -0000', '%Y-%m-%d %H:%M %z').tzinfo is datetime.timezone.utc
+assert datetime.datetime.strptime('2024-06-15 12:30 Z', '%Y-%m-%d %H:%M %z').tzinfo is datetime.timezone.utc
+# a format without %z stays naive, and %%z is a literal
+assert datetime.datetime.strptime('2024-06-15 12:30', '%Y-%m-%d %H:%M').tzinfo is None
+assert datetime.datetime.strptime('2024-06-15 %z', '%Y-%m-%d %%z').tzinfo is None
+# %Z matches a name and discards it, as CPython does for a name it cannot resolve
+assert datetime.datetime.strptime('2024-06-15 12:30 UTC', '%Y-%m-%d %H:%M %Z').tzinfo is None
+# strftime and strptime round trip through the offset
+_rt = datetime.datetime(2024, 6, 15, 12, 30, tzinfo=datetime.timezone(datetime.timedelta(hours=-5)))
+assert datetime.datetime.strptime(_rt.strftime('%Y-%m-%d %H:%M %z'), '%Y-%m-%d %H:%M %z') == _rt
+
+# === strptime %z rejections ===
+# lowercase z, a missing sign, a bare hour and a minute above 59 are all no match
+for _bad in ['z', '0100', '+01', '+0160']:
+    try:
+        datetime.datetime.strptime('2024-06-15 ' + _bad, '%Y-%m-%d %z')
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        assert str(exc) == f"time data '2024-06-15 {_bad}' does not match format '%Y-%m-%d %z'"
+# the hour is only bounded by the timezone range, so 23:59 parses and 24:00 does not
+assert datetime.datetime.strptime('2024-06-15 +2359', '%Y-%m-%d %z').utcoffset() == datetime.timedelta(
+    hours=23, minutes=59
+)
+try:
+    datetime.datetime.strptime('2024-06-15 +2400', '%Y-%m-%d %z')
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == (
+        'offset must be a timedelta strictly between -timedelta(hours=24) and '
+        'timedelta(hours=24), not datetime.timedelta(days=1)'
+    )
+# %:z formats but does not parse, so the colon reads as a directive of its own
+try:
+    datetime.datetime.strptime('2024-06-15 +01:00', '%Y-%m-%d %:z')
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == "':' is a bad directive in format '%Y-%m-%d %:z'"
