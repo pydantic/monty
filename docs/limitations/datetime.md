@@ -86,6 +86,8 @@ The default zone is `timezone(timedelta(0), 'UTC')`, what CPython reports under 
 A naive value is read in the session zone, as CPython reads it in the host's, at its first occurrence in a DST fold
 and with the offset from before a DST gap: CPython's `fold=0` reading, since `fold` is not stored (below).
 `dt.astimezone(dt.tzinfo)` returns an equal copy, not `dt` itself.
+A naive value on 9999-12-31 converts, where CPython raises `ValueError: year must be in 1..9999, not 10000`
+in any zone, because it probes the following day to find the local offset.
 
 `fold` is not readable: `datetime(2020, 1, 1, fold=1).fold` raises
 `AttributeError`, where CPython returns `1`.

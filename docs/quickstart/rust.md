@@ -5,7 +5,7 @@
 For running untrusted code, use [`monty-pool`](https://crates.io/crates/monty-pool):
 
 ```bash
-cargo add monty-pool monty-types tokio --features tokio/macros,tokio/rt-multi-thread
+cargo add monty-pool monty-types tokio --features tokio/macros,tokio/rt-multi-thread,monty-types/tzdb
 ```
 
 Workers are `monty` CLI binaries: build one with `cargo build -p monty-runtime` from the
@@ -15,7 +15,7 @@ Workers are `monty` CLI binaries: build one with `cargo build -p monty-runtime` 
 The in-process interpreter is the [`monty`](https://crates.io/crates/monty) crate:
 
 ```bash
-cargo add monty monty-types
+cargo add monty monty-types --features monty-types/tzdb
 ```
 
 | Crate                                                                 | What it is                                                  |
@@ -227,6 +227,9 @@ assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
 `with_auto_os_calls` configures each operation.
 `DateTimeSource::Fixed` freezes the clock, `SandboxTimeZone::Fixed` sets the local UTC offset, `SandboxTimeZone::named` takes an IANA zone name, and
 `RandomStart::Seed` seeds `random` for reproducible runs.
+`named` needs a tz database, which is a `monty-types` feature: `tzdb` reads the OS copy (`TZDIR`, `/usr/share/zoneinfo`)
+and falls back to a bundled one, `tzdb-bundled` uses only the bundle.
+Without either, every name is unknown.
 `SleepMode::Zero` skips waits; `SleepMode::System(max)` sets their cap.
 `CallHost` delegates through `RunProgress::OsCall` under `start`, or raises `NotImplementedError` under `run`:
 

@@ -3,7 +3,10 @@
 use std::{error::Error, fmt, time::Duration};
 
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Timelike, Utc};
-use jiff::{Timestamp, civil, tz::TimeZone};
+use jiff::{
+    Timestamp, civil,
+    tz::{AmbiguousOffset, TimeZone},
+};
 use num_bigint::BigInt;
 
 use crate::object::MontyTimeZone;
@@ -144,12 +147,15 @@ impl SandboxTimeZone {
         match self {
             Self::Fixed { offset_seconds, .. } => local_wall_clock(local, offset_seconds.checked_neg()?),
             Self::Named(zone) => {
-                let tz = &zone.zone;
-                let instant = tz.to_ambiguous_timestamp(civil_datetime(local)?).compatible().ok()?;
-                let utc =
-                    DateTime::from_timestamp(instant.as_second(), u32::try_from(instant.subsec_nanosecond()).ok()?)?;
-                // range check only: the offset is already applied
-                local_wall_clock(utc.naive_utc(), 0)
+                // Read the offset rather than the instant: jiff's timestamps stop short
+                // of the last day a `datetime` holds. `before` on either ambiguous branch
+                // is CPython's `fold=0`.
+                let offset = match zone.zone.to_ambiguous_timestamp(civil_datetime(local)?).offset() {
+                    AmbiguousOffset::Unambiguous { offset }
+                    | AmbiguousOffset::Gap { before: offset, .. }
+                    | AmbiguousOffset::Fold { before: offset, .. } => offset,
+                };
+                local_wall_clock(local, offset.seconds().checked_neg()?)
             }
         }
     }
@@ -256,15 +262,15 @@ pub struct ZoneConstants {
     pub daylight: bool,
 }
 
-/// `utc` as a jiff instant. Python's year range is well inside jiff's, so the
-/// conversion cannot fail for a value a `datetime` can hold.
+/// `utc` as a jiff instant, clamped to jiff's range: its timestamps end about a
+/// day before `datetime`'s do, so that every offset still renders as a civil
+/// datetime. No zone changes offset on 31 December, so the clamp reports the
+/// same offset and name the instant itself would.
 fn timestamp(utc: NaiveDateTime) -> Timestamp {
     let utc = utc.and_utc();
-    Timestamp::new(
-        utc.timestamp(),
-        i32::try_from(utc.timestamp_subsec_nanos()).unwrap_or(0),
-    )
-    .unwrap_or(Timestamp::UNIX_EPOCH)
+    let seconds = utc.timestamp();
+    let nanoseconds = i32::try_from(utc.timestamp_subsec_nanos()).unwrap_or(0);
+    Timestamp::new(seconds, nanoseconds).unwrap_or(if seconds < 0 { Timestamp::MIN } else { Timestamp::MAX })
 }
 
 /// `local` as a jiff civil datetime, `None` outside jiff's year range.

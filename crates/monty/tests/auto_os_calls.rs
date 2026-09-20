@@ -374,6 +374,48 @@ fn a_named_zone_applies_its_dst_rules() {
     );
 }
 
+/// A named zone covers `datetime`'s whole range, where the instants sit outside
+/// what jiff's own timestamps hold: before the epoch, where its sub-second
+/// component is negative, and on the last day, past its maximum timestamp.
+/// Expectations were checked against CPython under `TZ=Europe/London`.
+#[test]
+fn a_named_zone_spans_the_full_datetime_range() {
+    let london = AutoOsCalls {
+        datetime: FIXED,
+        timezone: SandboxTimeZone::named("Europe/London").unwrap(),
+        ..AutoOsCalls::default()
+    };
+    assert_eq!(
+        run_repr_under(
+            "datetime(1960, 6, 15, 12, 30, 0, 123456).astimezone(timezone.utc)",
+            london.clone()
+        ),
+        "datetime.datetime(1960, 6, 15, 11, 30, 0, 123456, tzinfo=datetime.timezone.utc)"
+    );
+    assert_eq!(
+        run_repr_under(
+            "datetime(1960, 1, 15, 12, 30, 0, 123456).astimezone(timezone.utc)",
+            london.clone()
+        ),
+        "datetime.datetime(1960, 1, 15, 12, 30, 0, 123456, tzinfo=datetime.timezone.utc)"
+    );
+    // December is GMT; jiff's last timestamp is a day earlier, but no zone changes then
+    assert_eq!(
+        run_repr_under(
+            "datetime(9999, 12, 31, 12, 0, tzinfo=timezone.utc).astimezone()",
+            london.clone()
+        ),
+        "datetime.datetime(9999, 12, 31, 12, 0, tzinfo=datetime.timezone(datetime.timedelta(0), 'GMT'))"
+    );
+    assert_eq!(
+        run_repr_under(
+            "datetime(9999, 12, 31, 12, 0, tzinfo=timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M %Z %z')",
+            london
+        ),
+        "'9999-12-31 12:00 GMT +0000'"
+    );
+}
+
 /// Zone names are validated before the database sees them, and the database
 /// answers for `UTC` and every IANA key.
 #[test]
