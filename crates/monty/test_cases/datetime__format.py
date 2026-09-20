@@ -177,6 +177,14 @@ for _bad in ['z', '0100', '+01', '+0160']:
         assert False, 'expected ValueError'
     except ValueError as exc:
         assert str(exc) == f"time data '2024-06-15 {_bad}' does not match format '%Y-%m-%d %z'"
+# the minute and second separators have to agree: a mixed pair matches, then is refused
+# (the mirrored '+0102:03' is rejected by both, with different wording — see limitations/datetime.md)
+for _mixed in ['+01:0203', '-01:0203']:
+    try:
+        datetime.datetime.strptime('2024-06-15 ' + _mixed, '%Y-%m-%d %z')
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        assert str(exc) == f'Inconsistent use of : in {_mixed}'
 # the hour is only bounded by the timezone range, so 23:59 parses and 24:00 does not
 assert datetime.datetime.strptime('2024-06-15 +2359', '%Y-%m-%d %z').utcoffset() == datetime.timedelta(
     hours=23, minutes=59

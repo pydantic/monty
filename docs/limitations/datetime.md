@@ -104,6 +104,11 @@ Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
 - `strptime()`'s `%z` takes a sign, hours and minutes with an optional colon, optional seconds, or a bare `Z`,
     but not CPython's fractional form: `'+010203.123456'` does not match, where CPython attaches an offset carrying
     those microseconds, which no Monty offset can hold (see [`timezone`](#timezone)).
+- A `%z` offset whose minute and second separators disagree is rejected by both, but `'+0102:03'` (a colon before
+    the seconds only) raises `ValueError: Inconsistent use of : in +0102:03` in Monty, where CPython leaks
+    `ValueError: invalid literal for int() with base 10: ':0'`. The mirrored `'+01:0203'` matches CPython exactly.
+- Input the format does not consume raises `ValueError: time data '...' does not match format '...'`,
+    where CPython distinguishes trailing input with `ValueError: unconverted data remains: ...`.
 - `utcnow()` (the deprecated class method) and `today()` are not
     implemented.
 - `fromtimestamp()`, `fromordinal()` and `utcfromtimestamp()` are not

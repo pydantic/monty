@@ -113,3 +113,21 @@ fn strptime_gaps_on_date_and_datetime() {
     "#
     );
 }
+
+/// A `%z` offset carrying a colon before its seconds only. Both interpreters
+/// refuse it, but CPython's own check never runs — it goes on to `int(':0')`
+/// and lets that error out — so the wording cannot be shared with a fixture in
+/// `test_cases/`. See limitations/datetime.md.
+#[test]
+fn strptime_rejects_a_colon_before_the_seconds_only() {
+    assert_snapshot!(
+        run_err("from datetime import datetime\ndatetime.strptime('2024-06-15 +0102:03', '%Y-%m-%d %z')"),
+        @r#"
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        datetime.strptime('2024-06-15 +0102:03', '%Y-%m-%d %z')
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ValueError: Inconsistent use of : in +0102:03
+    "#
+    );
+}

@@ -431,13 +431,14 @@ pub(crate) fn class_strptime(heap: &mut Heap, args: ArgValues, interns: &Interns
     // Python's `%f` accepts 1..=6 digits and right-pads with zeros, while chrono
     // requires an explicit width. Try all valid `%f` widths before reporting a
     // mismatch so `datetime.strptime(..., '%f')` matches CPython.
-    let Some((naive, offset_seconds)) = parse_strptime(&date_string, &fmt) else {
+    let Some(parsed) = parse_strptime(&date_string, &fmt) else {
         return Err(SimpleException::new_msg(
             ExcType::ValueError,
             format!("time data '{date_string}' does not match format '{fmt}'"),
         )
         .into());
     };
+    let (naive, offset_seconds) = parsed?;
 
     if !year_in_python_range(naive.date().year()) {
         return Err(SimpleException::new_msg(ExcType::ValueError, "year is out of range").into());
@@ -654,21 +655,32 @@ fn parse_iso_datetime(s: &str, heap: &mut Heap) -> Option<DateTime> {
 }
 
 /// Parses a `strptime` input into naive components plus the offset a `%z`
-/// directive asked for, `None` when the format has no `%z`.
-fn parse_strptime(date_string: &str, fmt: &str) -> Option<(NaiveDateTime, Option<i32>)> {
+/// directive asked for, `None` when nothing in the input matches the format.
+///
+/// The outer `Option` is the match, the inner `Result` what the matched `%z`
+/// token turned out to be: CPython only rejects a mismatched pair of separators
+/// once the rest of the format has matched, so that error cannot be reported
+/// until the match is settled.
+fn parse_strptime(date_string: &str, fmt: &str) -> Option<RunResult<(NaiveDateTime, Option<i32>)>> {
     let Some(without_zone) = strip_zone_directive(fmt) else {
-        return parse_strptime_naive(date_string, fmt).map(|naive| (naive, None));
+        return parse_strptime_naive(date_string, fmt).map(|naive| Ok((naive, None)));
     };
     // Chrono cannot express CPython's `%z` — an optional colon, optional seconds,
     // or a bare `Z` — so the token is lifted out of the input and what is left is
     // parsed without it. The leftmost token that lets the whole string parse wins,
     // as CPython's leftmost regex match does.
     date_string.char_indices().find_map(|(at, _)| {
-        let (offset_seconds, len) = strptime_offset_at(&date_string[at..])?;
-        let mut without_offset = String::with_capacity(date_string.len() - len);
+        let token = strptime_offset_at(&date_string[at..])?;
+        let mut without_offset = String::with_capacity(date_string.len() - token.len);
         without_offset.push_str(&date_string[..at]);
-        without_offset.push_str(&date_string[at + len..]);
-        parse_strptime_naive(&without_offset, &without_zone).map(|naive| (naive, Some(offset_seconds)))
+        without_offset.push_str(&date_string[at + token.len..]);
+        let naive = parse_strptime_naive(&without_offset, &without_zone)?;
+        Some(if token.colons_agree {
+            Ok((naive, Some(token.offset_seconds)))
+        } else {
+            let matched = &date_string[at..at + token.len];
+            Err(SimpleException::new_msg(ExcType::ValueError, format!("Inconsistent use of : in {matched}")).into())
+        })
     })
 }
 
@@ -698,14 +710,28 @@ fn strip_zone_directive(fmt: &str) -> Option<String> {
     None
 }
 
+/// A `%z` token matched at some position in a `strptime` input.
+struct ZoneToken {
+    offset_seconds: i32,
+    /// The token's length in bytes, so the caller can lift it out of the input.
+    len: usize,
+    /// Whether the minute and second separators agree. `+01:02:03` and
+    /// `+010203` do, `+01:0203` and `+0102:03` do not — CPython matches the
+    /// mixed pair and then rejects it, rather than reading a shorter token.
+    colons_agree: bool,
+}
+
 /// CPython's `%z` token at the start of `s`: a bare `Z`, or a sign, two hour
 /// digits and a colon-optional minute pair, optionally followed by a second
-/// pair. Returns the offset in seconds and the token's length. A fractional
-/// part is not accepted; see `limitations/datetime.md`.
-fn strptime_offset_at(s: &str) -> Option<(i32, usize)> {
+/// pair. A fractional part is not accepted; see `limitations/datetime.md`.
+fn strptime_offset_at(s: &str) -> Option<ZoneToken> {
     let bytes = s.as_bytes();
     if bytes.first() == Some(&b'Z') {
-        return Some((0, 1));
+        return Some(ZoneToken {
+            offset_seconds: 0,
+            len: 1,
+            colons_agree: true,
+        });
     }
     let sign = match bytes.first()? {
         b'+' => 1,
@@ -713,18 +739,24 @@ fn strptime_offset_at(s: &str) -> Option<(i32, usize)> {
         _ => return None,
     };
     let (hours, at) = two_digits(bytes, 1)?;
+    let minute_colon = bytes.get(at) == Some(&b':');
     let (minutes, at) = colon_pair(bytes, at)?;
     // CPython's pattern caps minutes and seconds at 59 and leaves the hour to the
     // `timezone` range check, so an out-of-range minute is simply not a match.
     if minutes > 59 {
         return None;
     }
-    let (seconds, at) = match colon_pair(bytes, at) {
-        Some((seconds, next)) if seconds <= 59 => (seconds, next),
-        _ => (0, at),
+    let second_colon = bytes.get(at) == Some(&b':');
+    let (seconds, at, colons_agree) = match colon_pair(bytes, at) {
+        Some((seconds, next)) if seconds <= 59 => (seconds, next, second_colon == minute_colon),
+        _ => (0, at, true),
     };
     let total = i32::try_from(hours * 3600 + minutes * 60 + seconds).ok()?;
-    Some((sign * total, at))
+    Some(ZoneToken {
+        offset_seconds: sign * total,
+        len: at,
+        colons_agree,
+    })
 }
 
 /// Two decimal digits at `at`, with the index just past them.
