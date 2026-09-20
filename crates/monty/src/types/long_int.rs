@@ -779,7 +779,7 @@ impl<'h> HeapRead<'h, LongInt> {
 
 /// Work above which `modular_pow` polls the time limit between exponent bits.
 ///
-/// Measured in exponent bits × modulus words², the cost of square-and-multiply with a
+/// Measured in exponent bits × modulus digits², the cost of square-and-multiply with a
 /// quadratic reduction. Below it `num-bigint`'s monolithic `modpow` runs uninterrupted,
 /// about 0.2 s on a 2024 laptop and well inside the pool's grace on slower hosts.
 const MODPOW_UNPOLLED_WORK: u64 = 1 << 27;
@@ -807,7 +807,8 @@ pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, heap
     // Reducing first keeps the base non-negative and no larger than the modulus.
     let base = base.mod_floor(&modulus_abs);
     let (base, exponent, modulus_mag) = (base.magnitude(), exponent.magnitude(), modulus_abs.magnitude());
-    let words = modulus_mag.bits().div_ceil(64);
+    // A `num-bigint` digit is pointer-sized, so wasm32 counts twice as many words.
+    let words = modulus_mag.bits().div_ceil(u64::from(usize::BITS));
     let work = exponent.bits().saturating_mul(words.saturating_mul(words));
     let result = if work <= MODPOW_UNPOLLED_WORK {
         base.modpow(exponent, modulus_mag)
