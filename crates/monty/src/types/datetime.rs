@@ -1405,16 +1405,13 @@ impl<'h> HeapObjectRead<'h, DateTime> {
         } = DatetimeReplaceArgs::from_args(args, vm)?;
 
         // `tzinfo` is `Some(v)` only when the caller actually passed the kwarg;
-        // absent → preserve existing tzinfo. When present, the inner `Value` owns
-        // the input ref and must be kept alive across `tzinfo_from_value` and
-        // `from_components` so the heap-allocated TimeZone isn't freed before
-        // `from_components` takes its own reference.
-        let (new_tz, new_tz_ref) = match tzinfo {
+        // absent → preserve existing tzinfo. The guard has to span `from_components`,
+        // which is where the new datetime takes its own reference: an argument built
+        // in the call, `replace(tzinfo=timezone(...))`, has no other holder until then.
+        defer_drop_mut!(tzinfo, vm);
+        let (new_tz, new_tz_ref) = match &*tzinfo {
             None => (current_tz, current_tz_ref),
-            Some(tzinfo_value) => {
-                defer_drop_mut!(tzinfo_value, vm);
-                tzinfo_from_value(tzinfo_value, vm.heap, vm.interns)?
-            }
+            Some(tzinfo_value) => tzinfo_from_value(tzinfo_value, vm.heap, vm.interns)?,
         };
 
         let new_dt = from_components(

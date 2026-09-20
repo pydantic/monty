@@ -473,6 +473,15 @@ assert datetime.datetime(2024, 6, 15, 10, 30).replace(hour=0, minute=0) == datet
 assert datetime.datetime(2024, 6, 15, 10, 30).replace(tzinfo=datetime.timezone.utc) == datetime.datetime(
     2024, 6, 15, 10, 30, tzinfo=datetime.timezone.utc
 )
+# a zone built in the call is held by nothing else, so the new datetime has to
+# take its reference before the argument is released
+assert datetime.datetime(2024, 6, 15, 10, 30).replace(
+    tzinfo=datetime.timezone(datetime.timedelta(hours=4))
+) == datetime.datetime(2024, 6, 15, 10, 30, tzinfo=datetime.timezone(datetime.timedelta(hours=4)))
+assert (
+    repr(datetime.datetime(2024, 6, 15, 10, 30).replace(tzinfo=datetime.timezone(datetime.timedelta(hours=-4), 'Q')))
+    == "datetime.datetime(2024, 6, 15, 10, 30, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=72000), 'Q'))"
+)
 
 # === weekday / isoweekday ===
 
