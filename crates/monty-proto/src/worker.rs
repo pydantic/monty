@@ -211,7 +211,7 @@ pub struct Child {
     /// `Configure`. `Duration::ZERO` means line buffering (see the field's
     /// documentation in the schema).
     print_flush_interval: Duration,
-    /// OS call policy from `Configure`, applied when creating the REPL.
+    /// The session's `OsPolicy` from `Configure`, applied when creating the REPL.
     os_policy: OsPolicy,
 }
 

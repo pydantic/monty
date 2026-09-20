@@ -450,7 +450,8 @@ pub struct ResourceLimits {
     #[prost(uint64, optional, tag = "8")]
     pub max_total_sleep_micros: ::core::option::Option<u64>,
 }
-/// Mirrors monty's `OsPolicy`: which OS calls the sandbox answers itself.
+/// Mirrors monty's `OsPolicy`: the clock, zone, sleep, process clock and
+/// initial randomness a session gets, and which of those it asks the host for.
 /// Each unset arm means that field's default.
 #[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]

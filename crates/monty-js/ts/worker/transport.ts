@@ -94,7 +94,7 @@ export interface WorkerSessionConfig {
    * frame, and a print collector charges its `maxBytes` cap per frame.
    */
   printFlushInterval?: number
-  /** Which OS calls the worker answers itself; see `OsPolicy`. */
+  /** The session's clock, zone, sleep, process-clock and randomness policies; see `OsPolicy`. */
   osPolicy?: OsPolicy
 }
 
