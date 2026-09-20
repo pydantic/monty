@@ -806,17 +806,17 @@ pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, heap
     let modulus_abs = modulus.abs();
     // Reducing first keeps the base non-negative and no larger than the modulus.
     let base = base.mod_floor(&modulus_abs);
-    let (base, exponent, modulus_abs) = (base.magnitude(), exponent.magnitude(), modulus_abs.magnitude());
-    let words = modulus_abs.bits().div_ceil(64);
+    let (base, exponent, modulus_mag) = (base.magnitude(), exponent.magnitude(), modulus_abs.magnitude());
+    let words = modulus_mag.bits().div_ceil(64);
     let work = exponent.bits().saturating_mul(words.saturating_mul(words));
     let result = if work <= MODPOW_UNPOLLED_WORK {
-        base.modpow(exponent, modulus_abs)
+        base.modpow(exponent, modulus_mag)
     } else {
-        polled_modpow(base, exponent, modulus_abs, &heap.tracker)?
+        polled_modpow(base, exponent, modulus_mag, &heap.tracker)?
     };
     let mut result = BigInt::from(result);
     if modulus.is_negative() && !result.is_zero() {
-        result -= BigInt::from(modulus_abs.clone());
+        result -= modulus_abs;
     }
     Ok(Some(LongInt::new(result).into_value(heap)))
 }
