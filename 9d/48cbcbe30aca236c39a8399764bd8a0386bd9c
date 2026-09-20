@@ -1,0 +1,59 @@
+crates/monty-python/python/pydantic_monty/os_access.py
+  s_301d26b8fa778c::t_3cf873f77ff2ed 634
+  s_301d26b8fa778c::t_37ae5f0acf54a9 32,74-86,88,91-92,293,629,635-636
+  s_301d26b8fa778c::t_4bebd5cdd50044 87,89-90
+  s_301d26b8fa778c::t_60a016eed7112e 630,637-638
+crates/monty-python/src/auto_os_calls.rs
+  s_301d26b8fa778c::t_4b2fd08ae26559 58,63,228-237
+  s_301d26b8fa778c::t_257bc42a03e556 8-9
+crates/monty-python/tests/test_os_calls.py
+  s_301d26b8fa778c::t_062a4f5eb112f2 467-500,1031-1069,1295
+  s_301d26b8fa778c::t_88497588279c1d 456,460
+  s_301d26b8fa778c::t_25ceac6ae5081e 21
+crates/monty-js/__test__/wasm_auto_os_calls.spec.ts
+  s_301d26b8fa778c::t_eec93c8fb6403b 26-41
+crates/monty-js/ts/options.ts
+  s_301d26b8fa778c::t_55f5e732ab3218 106-112,126,157-158,162,219-225
+  s_301d26b8fa778c::t_d72c2fc13c7346 113-114
+crates/monty-js/README.md
+  s_301d26b8fa778c::t_fa0b143ee65869 497,499-500
+  s_301d26b8fa778c::t_c233059839ed0c 469-470
+crates/monty-python/README.md
+  s_301d26b8fa778c::t_415bd2e7df9cc3 143-144
+  s_301d26b8fa778c::t_f9b68a66e19f86 142,147-149
+crates/monty-js/ts/pool.ts
+  s_301d26b8fa778c::t_5cce0c21d80ce3 268
+  s_301d26b8fa778c::t_d72c2fc13c7346 107
+crates/monty-typeshed/custom/time.pyi
+  s_301d26b8fa778c::t_c0271977ba5d95 63
+  s_301d26b8fa778c::t_20a192c1889862 1-6,13-45,47-55,57-62
+crates/monty-python/python/pydantic_monty/__init__.py
+  s_301d26b8fa778c::t_ee8ab89d38d7d3 192,220-223
+  s_301d26b8fa778c::t_48c60a7d4f3922 198-199
+  s_301d26b8fa778c::t_f8a38e3752937e 50,108
+crates/monty-js/__test__/auto_os_calls.spec.ts
+  s_301d26b8fa778c::t_eec93c8fb6403b 107-153
+  s_301d26b8fa778c::t_88497588279c1d 104
+crates/monty-js/ts/worker/transport.ts
+  s_301d26b8fa778c::t_5cce0c21d80ce3 508
+crates/monty-js/src/auto_os_calls.rs
+  s_301d26b8fa778c::t_4c67fa01aab731 7,67-71,82
+crates/monty-js/src/pool.rs
+  s_301d26b8fa778c::t_4c67fa01aab731 166-167
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9d48cbcbe30aca236c39a8399764bd8a0386bd9c",
+  "prompts": {},
+  "sessions": {
+    "s_301d26b8fa778c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b77ee845-eda8-47cf-8f10-62cf45c15d18",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
