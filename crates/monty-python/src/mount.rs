@@ -24,9 +24,9 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyTuple};
 ///
 /// Mounts passed to one feed must have distinct virtual paths and cover
 /// disjoint host directories: overlap (the same directory, or one inside the
-/// other) or a repeated virtual path is rejected with `ValueError` when the
-/// feed starts, since the stricter mount's mode could otherwise be bypassed
-/// through the other mount's paths.
+/// other) or a repeated virtual path is rejected when the feed starts with a
+/// `MontyRuntimeError` wrapping a `ValueError`, since the stricter mount's
+/// mode could otherwise be bypassed through the other mount's paths.
 ///
 /// The `mode` controls sandbox access:
 /// - `'read-only'` — sandbox can read but not write

@@ -429,6 +429,7 @@ def test_overlapping_mounts_rejected(monty_run: RunMonty, test_dir: Path):
     ]
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run('1', mount=mounts)
+    assert isinstance(exc_info.value.exception(), ValueError)
     resolved = test_dir.resolve()
     assert str(exc_info.value) == (
         f"ValueError: cannot mount '{resolved / 'subdir'}' at '/m/subdir': it overlaps the mount of "

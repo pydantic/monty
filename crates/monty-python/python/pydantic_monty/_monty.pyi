@@ -98,9 +98,9 @@ class MountDir:
     Mounts passed to one feed must have distinct virtual paths and cover
     disjoint host directories: a mount whose host directory overlaps another's
     (the same directory, or one inside the other), or that repeats a virtual
-    path, is rejected with `ValueError` when the feed starts, since the
-    stricter mount's mode could otherwise be bypassed through the other
-    mount's paths.
+    path, is rejected when the feed starts with a `MontyRuntimeError` wrapping
+    a `ValueError`, since the stricter mount's mode could otherwise be bypassed
+    through the other mount's paths.
 
     **Warning: `mode='read-write'` writes files from untrusted code to your
     real filesystem.**

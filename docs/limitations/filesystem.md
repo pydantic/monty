@@ -33,7 +33,8 @@ A mount whose host directory is the same as, contains, or is contained by
 another mount's, or whose virtual path is already mounted, is refused with a
 `ValueError` naming both mounts — at registration, which via the pool means
 when the feed starts, since that is where the per-feed mount table is
-assembled.
+assembled. The bindings surface it as a `MontyRuntimeError` wrapping that
+`ValueError`, like any other feed-time failure.
 
 The access mode is checked against whichever mount the *virtual* path selects
 (longest prefix), so a host file reachable through two mounts would take the
