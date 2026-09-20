@@ -1,0 +1,29 @@
+crates/monty-js/ts/mountDir.ts
+  s_74944c479c1f03::t_0fd3a664f0028e 21-23
+docs/filesystem.md
+  s_74944c479c1f03::t_0fd3a664f0028e 64-65
+docs/limitations/filesystem.md
+  s_74944c479c1f03::t_0fd3a664f0028e 36-37
+crates/monty-python/tests/test_mount_table.py
+  s_74944c479c1f03::t_0fd3a664f0028e 432
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_74944c479c1f03::t_0fd3a664f0028e 101-103
+crates/monty-python/src/mount.rs
+  s_74944c479c1f03::t_0fd3a664f0028e 27-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3d0136a93356efc808f99ddff2b71313bf274741",
+  "prompts": {},
+  "sessions": {
+    "s_74944c479c1f03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19b0d33c-5351-43fa-88b8-bcb38965d131",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
