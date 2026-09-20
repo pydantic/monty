@@ -25,8 +25,8 @@ use std::{
 use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    AssertMessageAnnotations, AutoOsCalls, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject,
-    OsFunctionCall, PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, TypeCheckState,
+    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
+    OsPolicy, PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, TypeCheckState,
     TypeCheckingConfig,
 };
 
@@ -212,7 +212,7 @@ pub struct Child {
     /// documentation in the schema).
     print_flush_interval: Duration,
     /// OS call policy from `Configure`, applied when creating the REPL.
-    auto_os_calls: AutoOsCalls,
+    os_policy: OsPolicy,
 }
 
 impl Default for Child {
@@ -223,7 +223,7 @@ impl Default for Child {
             type_checker: TypeChecker::default(),
             type_check: None,
             print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
-            auto_os_calls: AutoOsCalls::default(),
+            os_policy: OsPolicy::default(),
         }
     }
 }
@@ -450,10 +450,10 @@ impl Child {
                 .print_flush_interval_ms
                 .map_or(DEFAULT_PRINT_FLUSH_INTERVAL, |ms| Duration::from_millis(u64::from(ms)));
             // Reject invalid settings on the Configure turn.
-            self.auto_os_calls = match configure.auto_os_calls.clone().map(AutoOsCalls::try_from) {
-                None => AutoOsCalls::default(),
-                Some(Ok(auto_os_calls)) => auto_os_calls,
-                Some(Err(err)) => return protocol_violation(&format!("invalid auto_os_calls: {err}")),
+            self.os_policy = match configure.os_policy.clone().map(OsPolicy::try_from) {
+                None => OsPolicy::default(),
+                Some(Ok(os_policy)) => os_policy,
+                Some(Err(err)) => return protocol_violation(&format!("invalid os_policy: {err}")),
             };
             self.state = SessionState::Configured(Some(Box::new(configure)));
             ok_event()
@@ -495,7 +495,7 @@ impl Child {
             // applied when the `Configure` arrived, so a `Load` honors it too
             print_flush_interval_ms: _,
             // validated and stored when the `Configure` arrived
-            auto_os_calls: _,
+            os_policy: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;
@@ -512,7 +512,7 @@ impl Child {
             ),
         };
         let repl = MontyRepl::new(&self.script_name, ResourceTracker::new(limits), options)
-            .with_auto_os_calls(self.auto_os_calls.clone());
+            .with_os_policy(self.os_policy.clone());
         self.state = SessionState::Ready(Box::new(repl));
         Ok(())
     }
@@ -801,7 +801,7 @@ impl Child {
         event
     }
 
-    /// Runs until a turn-ending event. OS calls not answered by `AutoOsCalls`
+    /// Runs until a turn-ending event. OS calls not answered by `OsPolicy`
     /// go to the parent, including all filesystem I/O.
     fn drive(&mut self, result: Result<ReplProgress, Box<ReplStartError>>) -> pb::ChildEvent {
         match result {
@@ -895,7 +895,7 @@ impl Child {
         self.type_check = None;
         self.script_name = String::new();
         self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;
-        self.auto_os_calls = AutoOsCalls::default();
+        self.os_policy = OsPolicy::default();
         self.type_checker.reset()
     }
 }

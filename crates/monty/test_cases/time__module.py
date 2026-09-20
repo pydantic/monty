@@ -33,7 +33,7 @@ for clock in (time.monotonic, time.perf_counter):
 
 # === the process clocks ===
 # only the shape here: Monty's default `process_time='zero'` makes these constant,
-# which CPython cannot match, so auto_os_calls.rs asserts the values
+# which CPython cannot match, so os_policy.rs asserts the values
 for process_clock in (time.process_time, time.thread_time):
     assert isinstance(process_clock(), float)
     assert process_clock() >= 0.0

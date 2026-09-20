@@ -1,7 +1,7 @@
 //! Implementation of the `time` module.
 //!
 //! The clocks (`time`, `monotonic`, `perf_counter` and their `_ns` forms) all
-//! read the session's `AutoOsCalls` clock, so a `call_host` host sees one
+//! read the session's `OsPolicy` clock, so a `call_host` host sees one
 //! `time.time` call distinguished by its [`TimeCaller`]. `process_time` and
 //! `thread_time` follow the separate `process_time` policy, since they exclude
 //! sleeps. The conversion functions and the zone constants read the session zone.
@@ -101,8 +101,8 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 /// year. A named zone needs that year from the session clock, so the four are
 /// unset when the clock is `CallHost`: module creation cannot suspend.
 fn set_zone_constants(module: &mut Module, vm: &mut VM<'_>) {
-    let year = vm.env.auto_os_calls.datetime.read().map(|utc| utc.year());
-    let Some(constants) = vm.env.auto_os_calls.timezone.constants(year) else {
+    let year = vm.env.os_policy.datetime.read().map(|utc| utc.year());
+    let Some(constants) = vm.env.os_policy.timezone.constants(year) else {
         return;
     };
     // `time.timezone` is seconds *west* of UTC, the opposite sign to `utcoffset()`.
@@ -275,7 +275,7 @@ pub(crate) fn apply_clock_reading(reading: ClockReading, reply: Value, vm: &mut 
 /// is the process clock.
 fn process_time(vm: &mut VM<'_>, args: ArgValues, function: TimeFunctions, nanoseconds: bool) -> RunResult<CallResult> {
     args.check_zero_args(&format!("time.{function}"), vm.heap)?;
-    let elapsed = match vm.env.auto_os_calls.process_time {
+    let elapsed = match vm.env.os_policy.process_time {
         ProcessTime::Zero => Duration::ZERO,
         ProcessTime::Elapsed => vm.heap.tracker.elapsed(),
     };
@@ -327,7 +327,7 @@ pub(crate) enum HostSleep {
 /// Applies the sleep policy, returning `None` for `SleepMode::Zero`.
 /// The call kind tells the host who waits without needing the session policy.
 pub(crate) fn host_sleep(vm: &VM<'_>, delay: Duration) -> Option<HostSleep> {
-    match vm.env.auto_os_calls.sleep {
+    match vm.env.os_policy.sleep {
         SleepMode::System(max) => Some(HostSleep::System(delay.min(max))),
         SleepMode::CallHost => Some(HostSleep::CallHost(delay)),
         SleepMode::Zero => None,
@@ -379,7 +379,7 @@ fn mktime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     value.drop_with(vm.heap);
     let utc = vm
         .env
-        .auto_os_calls
+        .os_policy
         .timezone
         .utc_from_local(wall?)
         .ok_or_else(ExcType::mktime_out_of_range)?;
@@ -651,8 +651,8 @@ fn localtime_value(utc: NaiveDateTime, vm: &mut VM<'_>) -> RunResult<Value> {
 /// The session zone's reading of `utc`, with `tm_isdst` set from whether the
 /// zone is on its daylight half at that instant.
 fn local_fields(utc: NaiveDateTime, vm: &VM<'_>) -> RunResult<TimeFields> {
-    let zone = vm.env.auto_os_calls.timezone.at(utc);
-    let isdst = i64::from(is_daylight(&vm.env.auto_os_calls.timezone, utc, &zone));
+    let zone = vm.env.os_policy.timezone.at(utc);
+    let isdst = i64::from(is_daylight(&vm.env.os_policy.timezone, utc, &zone));
     let wall = sandbox_local_wall_clock(vm, utc)?;
     Ok(TimeFields::zoned(wall, zone, isdst))
 }
@@ -817,7 +817,7 @@ fn naive_from_time_tuple(items: &[i64; 9]) -> RunResult<NaiveDateTime> {
 /// The zone a bare 9-element tuple denotes: the session zone's standard half,
 /// or its daylight half when `tm_isdst` is 1.
 fn tuple_zone(year: i32, isdst: i64, vm: &VM<'_>) -> Option<MontyTimeZone> {
-    let constants = vm.env.auto_os_calls.timezone.constants(Some(year))?;
+    let constants = vm.env.os_policy.timezone.constants(Some(year))?;
     Some(if isdst == 1 {
         constants.daylight_zone
     } else {

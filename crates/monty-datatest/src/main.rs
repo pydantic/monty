@@ -29,8 +29,8 @@ use monty::{Dump, Session, SessionRef, dump};
 use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
-    AutoOsCalls, CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle,
-    MontyObject, MontyUuid, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker,
+    CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject,
+    MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker,
     SandboxTimeZone, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -76,7 +76,7 @@ fn default_test_limits() -> ResourceLimits {
 /// they belong in `crates/monty/tests/assert_messages.rs`.
 fn new_monty_run(code: &str, test_name: &str, config: &TestConfig) -> Result<MontyRun, MontyException> {
     MontyRun::new(code.to_owned(), test_name, vec![], CompileOptions::default())
-        .map(|run| run.with_auto_os_calls(config.auto_os_calls.clone()))
+        .map(|run| run.with_os_policy(config.os_policy.clone()))
 }
 
 /// Test configuration parsed from directive comments.
@@ -98,7 +98,7 @@ fn new_monty_run(code: &str, test_name: &str, config: &TestConfig) -> Result<Mon
 ///
 /// ## Session zone
 /// - `timezone=Europe/London` - Run both sides in that IANA zone: Monty's
-///   `AutoOsCalls::timezone`, and `TZ` for CPython. CPython is skipped on
+///   `OsPolicy::timezone`, and `TZ` for CPython. CPython is skipped on
 ///   Windows, which has no `time.tzset`.
 #[derive(Debug, Clone)]
 #[expect(clippy::struct_excessive_bools)]
@@ -133,7 +133,7 @@ struct TestConfig {
     limits: ResourceLimits,
     /// Session policies for this test's Monty run; the `# timezone=<NAME>`
     /// directive sets the zone, which `cpython_timezone` mirrors onto `TZ`.
-    auto_os_calls: AutoOsCalls,
+    os_policy: OsPolicy,
     /// The zone `# timezone=<NAME>` named, for the CPython side and the
     /// Windows skip. `None` leaves both sides on their default.
     timezone: Option<String>,
@@ -150,7 +150,7 @@ impl Default for TestConfig {
             skip_cpython_windows: false,
             cpython_main_module: false,
             limits: default_test_limits(),
-            auto_os_calls: AutoOsCalls::default(),
+            os_policy: OsPolicy::default(),
             timezone: None,
         }
     }
@@ -255,7 +255,7 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
 
     // `# timezone=<IANA name>` runs the case in that zone on both sides.
     if let Some(name) = parse_str_directive(&comment_lines, "timezone=") {
-        config.auto_os_calls.timezone =
+        config.os_policy.timezone =
             SandboxTimeZone::named(name).unwrap_or_else(|e| panic!("invalid # timezone={name:?} directive: {e}"));
         config.timezone = Some(name.to_owned());
     }
@@ -969,7 +969,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
     match call {
         // Fixed bytes for `os.urandom()`; fixtures assert invariants because CPython reads real entropy.
         OsFunctionCall::Urandom(args) => MontyObject::bytes(fixture_entropy(args.size)).into(),
-        // `AutoOsCalls::default()` answers the clock and initial random seed in the sandbox.
+        // `OsPolicy::default()` answers the clock and initial random seed in the sandbox.
         OsFunctionCall::DateToday | OsFunctionCall::DateTimeNow(_) | OsFunctionCall::Time(_) => {
             unreachable!("{} is answered in the sandbox", call.name())
         }
@@ -979,7 +979,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
             MontyObject::none().into()
         }
         OsFunctionCall::Sleep(_) | OsFunctionCall::AsyncSleep(_) => {
-            unreachable!("{} is the host's own wait under AutoOsCalls::default()", call.name())
+            unreachable!("{} is the host's own wait under OsPolicy::default()", call.name())
         }
         OsFunctionCall::GetEnviron => {
             let env_dict = vec![

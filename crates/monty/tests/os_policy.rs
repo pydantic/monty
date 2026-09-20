@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    AutoOsCalls, CompileOptions, DateTimeSource, MontyObject, OsFunctionCall, PrintWriter, ProcessTime, ResourceLimits,
+    CompileOptions, DateTimeSource, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ProcessTime, ResourceLimits,
     ResourceTracker, SandboxTimeZone, SleepMode,
 };
 
@@ -29,41 +29,41 @@ const PLUS_TWO: SandboxTimeZone = SandboxTimeZone::Fixed {
 };
 
 /// Fixed instants use UTC+02:00, so the date-changing offset is exercised; the rest keep the UTC default.
-fn with_datetime(datetime: DateTimeSource) -> AutoOsCalls {
+fn with_datetime(datetime: DateTimeSource) -> OsPolicy {
     let timezone = match datetime {
         DateTimeSource::Fixed { .. } => PLUS_TWO,
         DateTimeSource::CallHost | DateTimeSource::System => SandboxTimeZone::default(),
     };
-    AutoOsCalls {
+    OsPolicy {
         datetime,
         timezone,
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     }
 }
 
-fn with_sleep(sleep: SleepMode) -> AutoOsCalls {
-    AutoOsCalls {
+fn with_sleep(sleep: SleepMode) -> OsPolicy {
+    OsPolicy {
         sleep,
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     }
 }
 
-fn call_host() -> AutoOsCalls {
-    AutoOsCalls {
+fn call_host() -> OsPolicy {
+    OsPolicy {
         datetime: DateTimeSource::CallHost,
         sleep: SleepMode::CallHost,
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     }
 }
 
-fn runner(code: &str, calls: AutoOsCalls) -> MontyRun {
+fn runner(code: &str, calls: OsPolicy) -> MontyRun {
     MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
         .unwrap()
-        .with_auto_os_calls(calls)
+        .with_os_policy(calls)
 }
 
 /// Returns errors as `Type: message`, without tracebacks.
-fn run(code: &str, calls: AutoOsCalls) -> Result<MontyObject, String> {
+fn run(code: &str, calls: OsPolicy) -> Result<MontyObject, String> {
     runner(code, calls)
         .run_no_limits(vec![])
         .map_err(|err| err.to_string().lines().last().unwrap_or_default().to_owned())
@@ -73,13 +73,13 @@ fn run_repr(expr: &str, datetime: DateTimeSource) -> String {
     run_repr_under(expr, with_datetime(datetime))
 }
 
-fn run_repr_under(expr: &str, calls: AutoOsCalls) -> String {
+fn run_repr_under(expr: &str, calls: OsPolicy) -> String {
     let code = format!("import time\nfrom datetime import date, datetime, timedelta, timezone\nrepr({expr})");
     let obj = run(&code, calls).unwrap();
     (&obj).try_into().unwrap()
 }
 
-fn timed_run(code: &str, calls: AutoOsCalls) -> (MontyObject, Duration) {
+fn timed_run(code: &str, calls: OsPolicy) -> (MontyObject, Duration) {
     let started = Instant::now();
     let result = run(code, calls).unwrap();
     (result, started.elapsed())
@@ -167,16 +167,16 @@ fn fixed_clock_feeds_the_conversion_functions() {
 #[test]
 fn the_process_clocks_default_to_zero() {
     let expr = "(time.process_time(), time.thread_time(), time.process_time_ns(), time.thread_time_ns())";
-    assert_eq!(run_repr_under(expr, AutoOsCalls::default()), "(0.0, 0.0, 0, 0)");
+    assert_eq!(run_repr_under(expr, OsPolicy::default()), "(0.0, 0.0, 0, 0)");
     // a fixed wall clock changes nothing: the two policies are independent
     assert_eq!(run_repr(expr, FIXED), "(0.0, 0.0, 0, 0)");
 }
 
 #[test]
 fn the_process_clocks_report_execution_time_when_asked() {
-    let calls = AutoOsCalls {
+    let calls = OsPolicy {
         process_time: ProcessTime::Elapsed,
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     };
     // the clock only advances while the VM runs, so burn some instructions
     let code = "import time\nstart = time.process_time()\nfor _ in range(200000):\n    pass\n(time.process_time() > start, time.process_time_ns() > 0)";
@@ -284,19 +284,19 @@ fn out_of_range_microsecond_raises() {
 /// naive now() and today(), while time() and now(tz) stay UTC.
 #[test]
 fn the_zone_is_chosen_separately_from_the_instant() {
-    let utc_zone = AutoOsCalls {
+    let utc_zone = OsPolicy {
         datetime: FIXED,
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     };
     let code = "from datetime import datetime, timezone\n\
                 (datetime.now() - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()";
     assert_eq!(run(code, utc_zone).unwrap(), MontyObject::float(0.0));
 
     // a named zone applies its rules at the instant: London is on GMT in November
-    let london = AutoOsCalls {
+    let london = OsPolicy {
         datetime: FIXED,
         timezone: SandboxTimeZone::named("Europe/London").unwrap(),
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     };
     assert_eq!(
         run("import time\ntime.time()", london.clone()).unwrap(),
@@ -317,7 +317,7 @@ fn the_zone_is_chosen_separately_from_the_instant() {
 /// unless configured, with the configured name.
 #[test]
 fn astimezone_and_the_time_constants_read_the_sandbox_zone() {
-    let utc = AutoOsCalls::default();
+    let utc = OsPolicy::default();
     assert_eq!(
         run_repr_under("datetime(2024, 6, 15, 12, 30).astimezone()", utc.clone()),
         "datetime.datetime(2024, 6, 15, 12, 30, tzinfo=datetime.timezone(datetime.timedelta(0), 'UTC'))"
@@ -327,13 +327,13 @@ fn astimezone_and_the_time_constants_read_the_sandbox_zone() {
         "(0, 0, 0, ('UTC', 'UTC'))"
     );
 
-    let eet = AutoOsCalls {
+    let eet = OsPolicy {
         datetime: FIXED,
         timezone: SandboxTimeZone::Fixed {
             offset_seconds: 7_200,
             name: Some("EET".to_owned()),
         },
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     };
     assert_eq!(
         run_repr_under("datetime(2024, 6, 15, 12, 30).astimezone()", eet.clone()),
@@ -371,10 +371,10 @@ fn astimezone_and_the_time_constants_read_the_sandbox_zone() {
 /// `TZ=Australia/Sydney`.
 #[test]
 fn a_named_zone_applies_its_dst_rules() {
-    let london = AutoOsCalls {
+    let london = OsPolicy {
         datetime: FIXED,
         timezone: SandboxTimeZone::named("Europe/London").unwrap(),
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     };
     assert_eq!(
         run_repr_under(
@@ -409,20 +409,20 @@ fn a_named_zone_applies_its_dst_rules() {
         "(0, -3600, 1, ('GMT', 'BST'))"
     );
     // south of the equator January is the daylight half, so the halves swap
-    let sydney = AutoOsCalls {
+    let sydney = OsPolicy {
         datetime: FIXED,
         timezone: SandboxTimeZone::named("Australia/Sydney").unwrap(),
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     };
     assert_eq!(
         run_repr_under("(time.timezone, time.altzone, time.daylight, time.tzname)", sydney),
         "(-36000, -39600, 1, ('AEST', 'AEDT'))"
     );
     // the constants need the clock's year, which a CallHost clock cannot give at import
-    let no_clock = AutoOsCalls {
+    let no_clock = OsPolicy {
         datetime: DateTimeSource::CallHost,
         timezone: SandboxTimeZone::named("Europe/London").unwrap(),
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     };
     assert_eq!(
         run("import time\ntime.tzname", no_clock).unwrap_err(),
@@ -440,10 +440,10 @@ fn a_named_zone_applies_its_dst_rules() {
 /// Expectations were checked against CPython under `TZ=Europe/London`.
 #[test]
 fn a_named_zone_spans_the_full_datetime_range() {
-    let london = AutoOsCalls {
+    let london = OsPolicy {
         datetime: FIXED,
         timezone: SandboxTimeZone::named("Europe/London").unwrap(),
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     };
     assert_eq!(
         run_repr_under(
@@ -483,10 +483,10 @@ fn a_named_zone_spans_the_full_datetime_range() {
 #[test]
 fn naive_astimezone_refuses_the_first_and_last_day() {
     for zone in [SandboxTimeZone::utc(), SandboxTimeZone::named("Europe/London").unwrap()] {
-        let calls = AutoOsCalls {
+        let calls = OsPolicy {
             datetime: FIXED,
             timezone: zone,
-            ..AutoOsCalls::default()
+            ..OsPolicy::default()
         };
         let refused = |expr: &str| {
             let code = format!("from datetime import datetime, timezone\n{expr}");
@@ -521,10 +521,10 @@ fn naive_astimezone_refuses_the_first_and_last_day() {
 /// checked against CPython under `TZ=Europe/London` and `TZ=Asia/Kathmandu`.
 #[test]
 fn naive_timestamp_reads_the_session_zone() {
-    let under = |zone: SandboxTimeZone| AutoOsCalls {
+    let under = |zone: SandboxTimeZone| OsPolicy {
         datetime: FIXED,
         timezone: zone,
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     };
     let london = under(SandboxTimeZone::named("Europe/London").unwrap());
     // BST, so an hour earlier in UTC than the same wall clock read as UTC
@@ -544,7 +544,7 @@ fn naive_timestamp_reads_the_session_zone() {
         ),
         "1718454600.0"
     );
-    let refused = |expr: &str, calls: AutoOsCalls| {
+    let refused = |expr: &str, calls: OsPolicy| {
         let code = format!("from datetime import datetime, timezone\n{expr}");
         run(&code, calls).unwrap_err()
     };
@@ -631,7 +631,7 @@ fn iterative_execution_answers_the_clock_unless_told_to_call_the_host() {
 #[test]
 fn repl_sessions_take_the_configuration_too() {
     let mut repl = MontyRepl::new("<test>", ResourceTracker::default(), CompileOptions::default())
-        .with_auto_os_calls(with_datetime(FIXED));
+        .with_os_policy(with_datetime(FIXED));
     let result = repl
         .feed_run(
             "from datetime import date\nrepr(date.today())",
@@ -645,7 +645,7 @@ fn repl_sessions_take_the_configuration_too() {
 #[test]
 fn call_function_takes_the_session_configuration_too() {
     let mut repl = MontyRepl::new("<test>", ResourceTracker::default(), CompileOptions::default())
-        .with_auto_os_calls(with_datetime(FIXED));
+        .with_os_policy(with_datetime(FIXED));
     repl.feed_run(
         "from datetime import date\ndef when():\n    return repr(date.today())",
         vec![],
@@ -660,7 +660,7 @@ fn call_function_takes_the_session_configuration_too() {
 #[test]
 fn call_function_honours_call_host_too() {
     let mut repl = MontyRepl::new("<test>", ResourceTracker::default(), CompileOptions::default())
-        .with_auto_os_calls(with_datetime(DateTimeSource::CallHost));
+        .with_os_policy(with_datetime(DateTimeSource::CallHost));
     repl.feed_run(
         "from datetime import date\ndef when():\n    return date.today()",
         vec![],
@@ -683,12 +683,12 @@ fn call_function_honours_call_host_too() {
 
 #[test]
 fn the_configuration_survives_a_dump() {
-    let calls = AutoOsCalls {
+    let calls = OsPolicy {
         process_time: ProcessTime::Elapsed,
         ..with_datetime(FIXED)
     };
     let mut repl =
-        MontyRepl::new("<test>", ResourceTracker::default(), CompileOptions::default()).with_auto_os_calls(calls);
+        MontyRepl::new("<test>", ResourceTracker::default(), CompileOptions::default()).with_os_policy(calls);
     repl.feed_run("x = 1", vec![], PrintWriter::Disabled).unwrap();
 
     let bytes = dump("<test>", None, SessionRef::Idle(&repl)).unwrap();
@@ -721,7 +721,7 @@ fn sandbox_sleep_waits_without_spending_execution_time() {
     let code = "import time\ntime.sleep(0.05)\n'awake'";
     let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::from_millis(20)));
     let started = Instant::now();
-    let result = runner(code, AutoOsCalls::default())
+    let result = runner(code, OsPolicy::default())
         .run(vec![], tracker, PrintWriter::Disabled)
         .unwrap();
     assert_eq!(result, MontyObject::string("awake"));
@@ -762,7 +762,7 @@ fn call_host_refuses_sleeping_under_standard_execution() {
 
 #[test]
 fn sleep_arguments_are_validated_in_every_mode() {
-    for calls in [AutoOsCalls::default(), with_sleep(SleepMode::Zero), call_host()] {
+    for calls in [OsPolicy::default(), with_sleep(SleepMode::Zero), call_host()] {
         assert_eq!(
             run("import time\ntime.sleep(-1)", calls.clone()).unwrap_err(),
             "ValueError: sleep length must be non-negative"
@@ -826,7 +826,7 @@ fn sandbox_sleep_result_need_not_be_convertible() {
                     fs = await asyncio.gather(asyncio.sleep(0.01, f), asyncio.sleep(0.02, f))\n    \
                     return fs[0]() + fs[1]()\n\
                 asyncio.run(main())";
-    assert_eq!(run(code, AutoOsCalls::default()).unwrap(), MontyObject::int(84));
+    assert_eq!(run(code, OsPolicy::default()).unwrap(), MontyObject::int(84));
 }
 
 /// The interpreter caps individual delays; the host enforces max_total_sleep.

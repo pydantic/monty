@@ -32,7 +32,7 @@ use monty_pool::{
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
 use monty_types::{
-    AutoOsCalls, CallArgs, DateTimeSource, ExcType, MontyException, MontyObject, NameLookupResult, PrintStream,
+    CallArgs, DateTimeSource, ExcType, MontyException, MontyObject, NameLookupResult, OsPolicy, PrintStream,
     RandomSeed, RandomStart, ResourceLimits, SleepMode, TypeCheckingConfig, TypeCheckingFormat,
     unstable::{self, MontyNode},
 };
@@ -1879,13 +1879,13 @@ async fn suspension_time_does_not_consume_the_duration_budget() {
 /// Clock and entropy requests cost no turns; system sleeps reach the caller capped.
 /// Fixed clocks and seeds survive `Configure` unchanged.
 #[tokio::test]
-async fn auto_os_calls_are_answered_in_the_worker() {
+async fn os_policy_are_answered_in_the_worker() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
-            auto_os_calls: AutoOsCalls {
+            os_policy: OsPolicy {
                 sleep: SleepMode::System(Duration::from_millis(10)),
-                ..AutoOsCalls::default()
+                ..OsPolicy::default()
             },
             ..ReplConfig::default()
         })
@@ -1930,14 +1930,14 @@ async fn auto_os_calls_are_answered_in_the_worker() {
 
     let mut session = pool
         .checkout(&ReplConfig {
-            auto_os_calls: AutoOsCalls {
+            os_policy: OsPolicy {
                 datetime: DateTimeSource::Fixed {
                     unix_seconds: 1_700_000_000,
                     microsecond: 0,
                 },
                 sleep: SleepMode::Zero,
                 random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
-                ..AutoOsCalls::default()
+                ..OsPolicy::default()
             },
             ..ReplConfig::default()
         })
@@ -1961,10 +1961,10 @@ async fn call_host_delivers_clock_and_sleeps_as_os_calls() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
-            auto_os_calls: AutoOsCalls {
+            os_policy: OsPolicy {
                 datetime: DateTimeSource::CallHost,
                 sleep: SleepMode::CallHost,
-                ..AutoOsCalls::default()
+                ..OsPolicy::default()
             },
             ..ReplConfig::default()
         })

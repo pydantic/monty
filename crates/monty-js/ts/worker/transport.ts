@@ -8,18 +8,18 @@
 import type { NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
 import {
   type AssertMessageAnnotations,
-  type AutoOsCalls,
-  type EncodedAutoOsCalls,
+  type OsPolicy,
+  type EncodedOsPolicy,
   type EncodedRandomSeed,
   type TypeCheckFormat,
   encodeAssertMessageAnnotations,
-  encodeAutoOsCalls,
+  encodeOsPolicy,
   encodeTypeCheckFormat,
   systemSleepCapOf,
 } from '../options.js'
 import type {
   Arena,
-  AutoOsCalls as ComponentAutoOsCalls,
+  OsPolicy as ComponentOsPolicy,
   CallResult,
   Event as ComponentEvent,
   NameLookupRequest,
@@ -94,8 +94,8 @@ export interface WorkerSessionConfig {
    * frame, and a print collector charges its `maxBytes` cap per frame.
    */
   printFlushInterval?: number
-  /** Which OS calls the worker answers itself; see `AutoOsCalls`. */
-  autoOsCalls?: AutoOsCalls
+  /** Which OS calls the worker answers itself; see `OsPolicy`. */
+  osPolicy?: OsPolicy
 }
 
 /** A session-shaped adapter over one semantic component dispatcher. */
@@ -136,9 +136,9 @@ export class WorkerTransport {
   static async create(dispatcher: Dispatcher, config: WorkerSessionConfig = {}): Promise<WorkerTransport> {
     const transport = new WorkerTransport(dispatcher, encodeLimits(config.limits ?? {}).maxTotalSleepMicros)
     const assertMessageAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
-    const encodedAutoOsCalls = encodeAutoOsCalls(config.autoOsCalls ?? {})
-    transport.systemSleepMaxSecs = systemSleepCapOf(encodedAutoOsCalls)
-    const autoOsCalls = componentAutoOsCalls(encodedAutoOsCalls)
+    const encodedOsPolicy = encodeOsPolicy(config.osPolicy ?? {})
+    transport.systemSleepMaxSecs = systemSleepCapOf(encodedOsPolicy)
+    const osPolicy = componentOsPolicy(encodedOsPolicy)
     await transport.control(
       {
         tag: 'configure',
@@ -153,7 +153,7 @@ export class WorkerTransport {
           ...(config.printFlushInterval === undefined
             ? {}
             : { printFlushIntervalMs: flushIntervalMs(config.printFlushInterval) }),
-          ...(autoOsCalls === undefined ? {} : { autoOsCalls }),
+          ...(osPolicy === undefined ? {} : { osPolicy }),
         },
       },
       'ok',
@@ -484,11 +484,11 @@ function componentTypeCheckFormat(format: TypeCheckFormat): ComponentTypeCheckFo
 }
 
 /**
- * Maps the normalized options onto the WIT `auto-os-calls` record, or
+ * Maps the normalized options onto the WIT `os-policy` record, or
  * `undefined` when every field is the worker's default.
  */
-function componentAutoOsCalls(calls: EncodedAutoOsCalls): ComponentAutoOsCalls | undefined {
-  const record: ComponentAutoOsCalls = {}
+function componentOsPolicy(calls: EncodedOsPolicy): ComponentOsPolicy | undefined {
+  const record: ComponentOsPolicy = {}
   if (calls.datetime === 'system') record.datetime = { tag: 'system' }
   else if (calls.datetime === 'call_host') record.datetime = { tag: 'call-host' }
   else if (calls.datetime !== undefined) record.datetime = { tag: 'fixed', val: calls.datetime }
@@ -509,7 +509,7 @@ function componentAutoOsCalls(calls: EncodedAutoOsCalls): ComponentAutoOsCalls |
   return Object.keys(record).length === 0 ? undefined : record
 }
 
-function componentTimeZone(timezone: NonNullable<EncodedAutoOsCalls['timezone']>): ComponentTimeZone {
+function componentTimeZone(timezone: NonNullable<EncodedOsPolicy['timezone']>): ComponentTimeZone {
   if (timezone === 'utc') return { tag: 'utc' }
   if (typeof timezone === 'string') return { tag: 'named', val: timezone }
   return { tag: 'fixed', val: { offsetSeconds: timezone.offsetSeconds, name: timezone.name } }

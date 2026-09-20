@@ -47,8 +47,8 @@ use monty_pool::{
 };
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value};
 use monty_types::{
-    AssertMessageAnnotations, AutoOsCalls, CallArgs, ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
-    NamedValues, PrintStream, TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, CallArgs, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, NamedValues,
+    OsPolicy, PrintStream, TypeCheckingConfig, TypeCheckingFormat,
 };
 use pyo3::{
     Borrowed,
@@ -68,7 +68,6 @@ use crate::{
     async_dispatch::{
         CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_system_sleep, wait_for_futures,
     },
-    auto_os_calls::AutoOsCallsArg,
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
@@ -78,6 +77,7 @@ use crate::{
     get_not_handled,
     limits::extract_limits,
     mount::PyMountDir,
+    os_policy::OsPolicyArg,
     print_target::PrintTarget,
     snapshot::{DriveContext, build_snapshot, feed_start_async, feed_start_sync},
     telemetry::{capture_otel_context, capture_telemetry_context, pool_metrics},
@@ -192,7 +192,7 @@ impl PyMonty {
         type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
-        auto_os_calls = None,
+        os_policy = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -206,7 +206,7 @@ impl PyMonty {
         type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
-        auto_os_calls: Option<AutoOsCallsArg>,
+        os_policy: Option<OsPolicyArg>,
     ) -> PyResult<PyMontySession> {
         Ok(PyMontySession {
             pool: Arc::clone(&self.pool),
@@ -222,7 +222,7 @@ impl PyMonty {
                 },
                 assert_message_annotations,
                 print_flush_interval,
-                auto_os_calls.unwrap_or_default().0,
+                os_policy.unwrap_or_default().0,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -585,7 +585,7 @@ impl PyAsyncMonty {
         type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
-        auto_os_calls = None,
+        os_policy = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -599,7 +599,7 @@ impl PyAsyncMonty {
         type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
-        auto_os_calls: Option<AutoOsCallsArg>,
+        os_policy: Option<OsPolicyArg>,
     ) -> PyResult<PyAsyncMontySession> {
         Ok(PyAsyncMontySession {
             pool: Arc::clone(&self.pool),
@@ -615,7 +615,7 @@ impl PyAsyncMonty {
                 },
                 assert_message_annotations,
                 print_flush_interval,
-                auto_os_calls.unwrap_or_default().0,
+                os_policy.unwrap_or_default().0,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -733,7 +733,7 @@ impl PyAsyncMontyWebsocket {
         type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
-        auto_os_calls = None,
+        os_policy = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -747,7 +747,7 @@ impl PyAsyncMontyWebsocket {
         type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
-        auto_os_calls: Option<AutoOsCallsArg>,
+        os_policy: Option<OsPolicyArg>,
     ) -> PyResult<PyAsyncMontySession> {
         Ok(PyAsyncMontySession {
             pool: Arc::clone(&self.pool),
@@ -763,7 +763,7 @@ impl PyAsyncMontyWebsocket {
                 },
                 assert_message_annotations,
                 print_flush_interval,
-                auto_os_calls.unwrap_or_default().0,
+                os_policy.unwrap_or_default().0,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -1240,7 +1240,7 @@ pub(crate) fn parse_repl_config(
     type_check_config: TypeCheckingConfig,
     assert_message_annotations: AssertAnnotationsArg,
     print_flush_interval: Option<f64>,
-    auto_os_calls: AutoOsCalls,
+    os_policy: OsPolicy,
 ) -> PyResult<ReplConfig> {
     Ok(ReplConfig {
         script_name: script_name.to_owned(),
@@ -1252,7 +1252,7 @@ pub(crate) fn parse_repl_config(
         print_flush_interval: print_flush_interval
             .map(|secs| duration_from_secs("print_flush_interval", secs))
             .transpose()?,
-        auto_os_calls,
+        os_policy,
     })
 }
 

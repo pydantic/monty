@@ -319,7 +319,7 @@ export interface ProcessTimeZero {
 export interface ProcessTimeElapsed {
   tag: 'elapsed'
 }
-export interface AutoOsCalls {
+export interface OsPolicy {
   datetime?: DatetimeSource
   timezone?: TimeZone
   sleep?: SleepMode
@@ -366,7 +366,7 @@ export interface ConfigureRequest {
   typeCheckFormat: TypeCheckFormat
   typeCheckColor: boolean
   printFlushIntervalMs?: number
-  autoOsCalls?: AutoOsCalls
+  osPolicy?: OsPolicy
 }
 export interface FeedRequest {
   code: string

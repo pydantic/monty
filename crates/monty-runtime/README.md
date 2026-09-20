@@ -53,7 +53,7 @@ monty --help
 `time.process_time()` is always `0.0`.
 `time.sleep()` and `asyncio.sleep()` wait for at most `--max-sleep` seconds each.
 An unseeded `random` draw uses system entropy.
-Rust embedders can change these defaults with `MontyRun::with_auto_os_calls`; the CLI only exposes the sleep limits.
+Rust embedders can change these defaults with `MontyRun::with_os_policy`; the CLI only exposes the sleep limits.
 `os.urandom()` raises `NotImplementedError` (or `RuntimeError` under `--mount`) because the CLI has no handler for it.
 
 ## Worker mode

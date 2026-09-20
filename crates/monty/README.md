@@ -126,7 +126,7 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
 - `FunctionCall::object_id` and `NameLookup::object_id` identify the host receiver for routed calls and lookups,
   including class construction via `__call__`.
   Plain calls and lookups carry `None`.
-- `MontyRun::with_auto_os_calls` / `MontyRepl::with_auto_os_calls` configure clocks, sleeps and initial random state on every
+- `MontyRun::with_os_policy` / `MontyRepl::with_os_policy` configure clocks, sleeps and initial random state on every
   execution path.
   `DateTimeSource` selects the system clock, a fixed instant or the host; `SandboxTimeZone` independently selects UTC, a
   fixed offset and name, or an IANA zone (`SandboxTimeZone::named`, resolved from the tz database that `monty-types`'

@@ -233,7 +233,7 @@ The pool enforces `maxSuspensions`: the first suspension over the budget ends th
 See [resource limits](../resource-limits.md) and [type checking](../type-checking.md).
 
 Sessions default to the worker's clock and entropy, with sleeps capped at ten seconds per call.
-For reproducible runs, `autoOsCalls` sets `datetime`, `timezone`, `sleep`, `sleepSystemMax` and `randomStart`:
+For reproducible runs, `osPolicy` sets `datetime`, `timezone`, `sleep`, `sleepSystemMax` and `randomStart`:
 
 ```ts
 import { Monty } from '@pydantic/monty'
@@ -247,7 +247,7 @@ f'{datetime.now():%Y-%m-%d %H:%M} {random.random():.4f}'
 
 await using pool = await Monty.create()
 await using session = await pool.checkout({
-  autoOsCalls: { datetime: new Date('2026-01-01T09:30:00Z'), sleep: 'zero', randomStart: { seed: 42 } },
+  osPolicy: { datetime: new Date('2026-01-01T09:30:00Z'), sleep: 'zero', randomStart: { seed: 42 } },
 })
 console.log(await session.feedRun(code)) // 2026-01-01 09:30 0.6394
 ```

@@ -18,7 +18,7 @@ use crate::object::MontyTimeZone;
 /// and sleeps capped at ten seconds. Hosts perform those sleeps without their
 /// `os` handler; standard execution waits inline.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
-pub struct AutoOsCalls {
+pub struct OsPolicy {
     /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
     pub datetime: DateTimeSource,
     /// The local zone: naive `datetime.now()` and `date.today()` read it,

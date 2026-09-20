@@ -224,7 +224,7 @@ let year = runner.run(vec![], ResourceTracker::default(), PrintWriter::Stdout).u
 assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
 ```
 
-`with_auto_os_calls` configures each operation.
+`with_os_policy` configures each operation.
 `DateTimeSource::Fixed` freezes the clock, `SandboxTimeZone::Fixed` sets the local UTC offset, `SandboxTimeZone::named` takes an IANA zone name, and
 `RandomStart::Seed` seeds `random` for reproducible runs.
 `named` needs a tz database, which is a `monty-types` feature: `tzdb` reads the OS copy (`TZDIR`, `/usr/share/zoneinfo`)
@@ -238,11 +238,11 @@ execution time.
 ```rust
 use monty::MontyRun;
 use monty_types::{
-    AutoOsCalls, CompileOptions, DateTimeSource, MontyObject, PrintWriter, ProcessTime, RandomSeed, RandomStart,
+    OsPolicy, CompileOptions, DateTimeSource, MontyObject, PrintWriter, ProcessTime, RandomSeed, RandomStart,
     ResourceTracker, SandboxTimeZone, SleepMode,
 };
 
-let calls = AutoOsCalls {
+let calls = OsPolicy {
     datetime: DateTimeSource::Fixed { unix_seconds: 1_700_000_000, microsecond: 0 },
     timezone: SandboxTimeZone::Fixed { offset_seconds: 0, name: Some("UTC".to_owned()) },
     sleep: SleepMode::Zero,
@@ -252,13 +252,13 @@ let calls = AutoOsCalls {
 let code = "import random, time\nfrom datetime import date\ntime.sleep(3600)\n(date.today().year, random.random())";
 let mut runner = MontyRun::new(code.to_owned(), "fixed.py", vec![], CompileOptions::default())
     .unwrap()
-    .with_auto_os_calls(calls);
+    .with_os_policy(calls);
 let result = runner.run(vec![], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
 // CPython: random.seed(42); random.random()
 assert_eq!(result, MontyObject::tuple([MontyObject::int(2023), MontyObject::float(0.6394267984578837)]));
 ```
 
-Every pool session takes the same struct as `ReplConfig::auto_os_calls` (see [the clock](../security.md#the-clock)).
+Every pool session takes the same struct as `ReplConfig::os_policy` (see [the clock](../security.md#the-clock)).
 `os.urandom()` is the one call with no in-process answer: under `run` it raises `NotImplementedError`, under `start`
 it pauses for the host (see [random](../limitations/random.md)).
 

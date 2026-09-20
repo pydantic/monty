@@ -116,12 +116,12 @@ async def test_inputs_and_async_external_function_over_websocket(ws_url: str):
     assert result == snapshot(41)
 
 
-async def test_auto_os_calls_over_websocket(ws_url: str):
+async def test_os_policy_over_websocket(ws_url: str):
     # Options must survive serialization in `Configure`.
     frozen = datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)
     async with AsyncMontyWebsocket(ws_url, request_timeout=30.0) as pool:
         async with pool.checkout(
-            auto_os_calls={'datetime': frozen, 'sleep': 'zero', 'random_start': {'seed': 42}}
+            os_policy={'datetime': frozen, 'sleep': 'zero', 'random_start': {'seed': 42}}
         ) as session:
             code = 'import random, time\nfrom datetime import datetime\ntime.sleep(3600)\n(datetime.now(), random.random())'
             started = time.monotonic()

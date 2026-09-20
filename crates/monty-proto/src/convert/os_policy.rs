@@ -1,4 +1,4 @@
-//! `AutoOsCalls` ↔ `pb::AutoOsCalls` conversions.
+//! `OsPolicy` ↔ `pb::OsPolicy` conversions.
 //!
 //! Unset wire arms use field defaults for compatibility with older parents.
 //! Encoding sets every arm; decoding validates microseconds, zone offsets and seeds.
@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use monty_types::{
-    AutoOsCalls, DateTimeSource, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, ProcessTime, RandomSeed,
+    DateTimeSource, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, OsPolicy, ProcessTime, RandomSeed,
     RandomStart, SandboxTimeZone, SleepMode,
 };
 use num_bigint::BigInt;
@@ -15,15 +15,15 @@ use crate::{
     convert::ProtoConvertError,
     pb::{
         self,
-        auto_os_calls::{Datetime, ProcessTime as WireProcessTime, RandomStart as WireRandomStart},
+        os_policy::{Datetime, ProcessTime as WireProcessTime, RandomStart as WireRandomStart},
         random_seed::Value,
         sandbox_time_zone::Zone,
         sleep_mode::Mode,
     },
 };
 
-impl From<&AutoOsCalls> for pb::AutoOsCalls {
-    fn from(calls: &AutoOsCalls) -> Self {
+impl From<&OsPolicy> for pb::OsPolicy {
+    fn from(calls: &OsPolicy) -> Self {
         let datetime = match calls.datetime {
             DateTimeSource::System => Datetime::System(pb::Unit {}),
             DateTimeSource::CallHost => Datetime::CallHost(pb::Unit {}),
@@ -69,10 +69,10 @@ impl From<&AutoOsCalls> for pb::AutoOsCalls {
     }
 }
 
-impl TryFrom<pb::AutoOsCalls> for AutoOsCalls {
+impl TryFrom<pb::OsPolicy> for OsPolicy {
     type Error = ProtoConvertError;
 
-    fn try_from(calls: pb::AutoOsCalls) -> Result<Self, ProtoConvertError> {
+    fn try_from(calls: pb::OsPolicy) -> Result<Self, ProtoConvertError> {
         let defaults = Self::default();
         let datetime = match calls.datetime {
             None => defaults.datetime,

@@ -152,7 +152,7 @@ class AbstractOS(ABC):
     """Base class for virtual filesystems and host OS callbacks.
 
     Implement the abstract methods and pass an instance to `feed_run(code, os=...)`.
-    Clock and sleep callbacks require `auto_os_calls` to select `'call_host'`.
+    Clock and sleep callbacks require `os_policy` to select `'call_host'`.
     """
 
     max_urandom_bytes: int = MAX_URANDOM_BYTES_DEFAULT
@@ -585,16 +585,16 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     def date_today(self) -> datetime.date:
-        """Return the host's date when `auto_os_calls` routes the clock or zone to the host.
+        """Return the host's date when `os_policy` routes the clock or zone to the host.
 
-        Use `auto_os_calls` directly to configure a fixed clock.
+        Use `os_policy` directly to configure a fixed clock.
         """
         return datetime.date.today()
 
     def datetime_now(self, tz: datetime.tzinfo | None = None) -> datetime.datetime:
-        """Return host `datetime.now(tz)` when `auto_os_calls` routes the clock or zone to the host.
+        """Return host `datetime.now(tz)` when `os_policy` routes the clock or zone to the host.
 
-        Use `auto_os_calls` directly to configure a fixed clock.
+        Use `os_policy` directly to configure a fixed clock.
         """
         return datetime.datetime.now(tz=tz)
 
@@ -612,7 +612,7 @@ class AbstractOS(ABC):
     def time(self, caller: TimeCaller = 'time.time') -> float:
         """Return the epoch seconds for Monty's `time` module clocks.
 
-        Reached only under `auto_os_calls={'datetime': 'call_host'}`; override it
+        Reached only under `os_policy={'datetime': 'call_host'}`; override it
         alongside `date_today()` and `datetime_now()` for a virtual clock.
         An override must accept `caller`: the dispatcher passes it positionally.
 

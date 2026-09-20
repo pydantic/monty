@@ -149,7 +149,7 @@ pub(crate) fn random_dispatch(
         RandomFunctions::Setstate => setstate(target, args, vm).map(CallResult::Value),
         _ => {
             if !target.is_seeded(vm) {
-                match vm.random.first_state(target, &vm.env.auto_os_calls.random_start) {
+                match vm.random.first_state(target, &vm.env.os_policy.random_start) {
                     Ok(Some(state)) => target.reseed(vm, state),
                     Ok(None) => return Ok(request_entropy(target, Some(RandomRetry { function, args }), vm)),
                     Err(err) => {
@@ -305,7 +305,7 @@ fn seed(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Cal
     defer_drop!(a, vm);
     defer_drop!(version, vm);
     let state = if matches!(a, Value::None) {
-        match vm.random.fresh_state(&vm.env.auto_os_calls.random_start)? {
+        match vm.random.fresh_state(&vm.env.os_policy.random_start)? {
             Some(state) => state,
             None => return Ok(request_entropy(target, None, vm)),
         }

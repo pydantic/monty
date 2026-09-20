@@ -52,9 +52,9 @@ use opentelemetry::{trace::TraceContextExt, Context};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
-    auto_os_calls::extract_auto_os_calls,
     convert::{js_to_monty, monty_to_js, DecodedArena, GraphEncoder},
     limits::{extract_limits, JsResourceLimits},
+    os_policy::extract_os_policy,
     telemetry::{configured_adapter, configured_tracing_adapter},
 };
 
@@ -291,7 +291,7 @@ impl NativePool {
     #[napi]
     pub fn checkout(&self, options: NativeCheckoutOptions) -> Result<NativeSession> {
         let limits = options.limits.map(extract_limits).transpose()?;
-        let auto_os_calls = extract_auto_os_calls(&options)?;
+        let os_policy = extract_os_policy(&options)?;
         Ok(NativeSession {
             pool: Arc::clone(&self.pool),
             repl_config: ReplConfig {
@@ -314,7 +314,7 @@ impl NativePool {
                     .print_flush_interval_ms
                     .map(|ms| duration_from_ms("printFlushInterval", ms))
                     .transpose()?,
-                auto_os_calls,
+                os_policy,
             },
             checkout: Arc::new(AsyncMutex::new(None)),
         })

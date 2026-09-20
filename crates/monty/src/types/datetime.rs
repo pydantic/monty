@@ -328,7 +328,7 @@ fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Call
     let AstimezoneArgs { tz } = AstimezoneArgs::from_args(args, vm)?;
     defer_drop!(tz, vm);
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
-    let zone = &vm.env.auto_os_calls.timezone;
+    let zone = &vm.env.os_policy.timezone;
     // CPython forms `self - utcoffset()` as a datetime, so the UTC intermediate
     // must be in range as well as the result.
     let utc = if dt.offset_seconds.is_some() {
@@ -381,7 +381,7 @@ struct AstimezoneArgs {
 /// Reads the session clock in UTC; `None` means `CallHost` and requires suspension.
 /// Unrepresentable fixed instants raise `OverflowError` for all three clock calls.
 pub(crate) fn sandbox_instant(vm: &VM<'_>) -> RunResult<Option<NaiveDateTime>> {
-    match vm.env.auto_os_calls.datetime {
+    match vm.env.os_policy.datetime {
         DateTimeSource::CallHost => Ok(None),
         source => source.read().map(Some).ok_or_else(date_out_of_range),
     }
@@ -390,7 +390,7 @@ pub(crate) fn sandbox_instant(vm: &VM<'_>) -> RunResult<Option<NaiveDateTime>> {
 /// Converts UTC to the session zone's wall clock for naive `now()` and `today()`;
 /// out-of-range years raise `OverflowError`.
 pub(crate) fn sandbox_local_wall_clock(vm: &VM<'_>, utc: NaiveDateTime) -> RunResult<NaiveDateTime> {
-    let offset = vm.env.auto_os_calls.timezone.at(utc).offset_seconds;
+    let offset = vm.env.os_policy.timezone.at(utc).offset_seconds;
     local_wall_clock(utc, offset).ok_or_else(date_out_of_range)
 }
 
@@ -1386,7 +1386,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
             }
             Some(StaticStrings::Timestamp) => {
                 args.check_zero_args("datetime.timestamp", vm.heap)?;
-                let ts = compute_timestamp(&dt, &vm.env.auto_os_calls.timezone)?;
+                let ts = compute_timestamp(&dt, &vm.env.os_policy.timezone)?;
                 Ok(CallResult::Value(Value::Float(ts)))
             }
             Some(StaticStrings::Astimezone) => astimezone(&dt, vm, args),

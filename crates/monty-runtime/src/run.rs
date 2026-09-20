@@ -24,8 +24,8 @@ use monty::{MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    AutoOsCalls, CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MontyException,
-    MontyObject, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, SleepMode,
+    CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MontyException, MontyObject,
+    NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker, SleepMode,
     TypeCheckingConfig, memory_limit_with_headroom, validate_cwd,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
@@ -232,7 +232,7 @@ fn run_script(
     let inputs = vec![];
 
     let mut runner = match MontyRun::new(code, file_path, input_names, CompileOptions::default()) {
-        Ok(ex) => ex.with_auto_os_calls(host.auto_os_calls()),
+        Ok(ex) => ex.with_os_policy(host.os_policy()),
         Err(err) => {
             eprintln!("{BOLD_RED}error{BOLD_RED:#}:\n{err}");
             return ExitCode::FAILURE;
@@ -309,8 +309,7 @@ fn run_script(
 /// initialization or I/O errors.
 fn run_repl(file_path: &str, code: &str, tracker: ResourceTracker, mut host: HostOs, cwd: &str) -> ExitCode {
     let mut suspensions = SuspensionBudget::new(&tracker);
-    let mut repl =
-        MontyRepl::new(file_path, tracker, CompileOptions::default()).with_auto_os_calls(host.auto_os_calls());
+    let mut repl = MontyRepl::new(file_path, tracker, CompileOptions::default()).with_os_policy(host.os_policy());
     repl.set_cwd(cwd);
     let mut repl = Some(repl);
 
@@ -661,10 +660,10 @@ impl HostOs {
 
     /// Uses the system clock and entropy, with `--max-sleep` capping each sleep.
     /// Without mounts or a sleep budget, the interpreter waits instead of the CLI.
-    fn auto_os_calls(&self) -> AutoOsCalls {
-        AutoOsCalls {
+    fn os_policy(&self) -> OsPolicy {
+        OsPolicy {
             sleep: SleepMode::System(self.max_sleep),
-            ..AutoOsCalls::default()
+            ..OsPolicy::default()
         }
     }
 

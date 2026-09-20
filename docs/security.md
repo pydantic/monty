@@ -225,9 +225,7 @@ The session freezes the clock:
     """
 
     with Monty() as pool:
-        with pool.checkout(
-            auto_os_calls={'datetime': datetime(2026, 1, 1, 9, 30)}
-        ) as session:
+        with pool.checkout(os_policy={'datetime': datetime(2026, 1, 1, 9, 30)}) as session:
             print(session.feed_run(code, os=fs))
             #> test test 09:30
     ```
@@ -254,7 +252,7 @@ The session freezes the clock:
     `
 
     await using pool = await Monty.create()
-    await using session = await pool.checkout({ autoOsCalls: { datetime: new Date('2026-01-01T09:30:00Z') } })
+    await using session = await pool.checkout({ osPolicy: { datetime: new Date('2026-01-01T09:30:00Z') } })
     console.log(await session.feedRun(code, { os: fs })) // test test 09:30
     ```
 
@@ -281,9 +279,9 @@ resolved inside the sandbox and reaches a mount as an absolute virtual path.
 `date.today()`, `datetime.now()` and the `time` module's wall clocks (`time()`, `monotonic()`, `perf_counter()` and
 the conversion functions called without a time) are the only calls that read a clock.
 All sessions default to the system clock read in UTC.
-The session's `auto_os_calls` ([`AutoOSCalls`][pydantic_monty.AutoOSCalls] on
-[`Monty.checkout`][pydantic_monty.Monty.checkout] in Python, `autoOsCalls` on `checkout()` in JavaScript,
-`AutoOsCalls` in Rust) configures the instant (`datetime`) and local zone (`timezone`) separately:
+The session's `os_policy` ([`OSPolicy`][pydantic_monty.OSPolicy] on
+[`Monty.checkout`][pydantic_monty.Monty.checkout] in Python, `osPolicy` on `checkout()` in JavaScript,
+`OsPolicy` in Rust) configures the instant (`datetime`) and local zone (`timezone`) separately:
 
 - `datetime='call_host'` delegates the clock calls to your `os=` handler; unanswered calls raise.
     Every `time` module clock arrives as the one OS function `time.time`, with the asking function's name
@@ -364,7 +362,7 @@ The handler's `is_async` argument says which pool is calling, and
 
 
     with Monty() as pool:
-        with pool.checkout(auto_os_calls={'sleep': 'call_host'}) as session:
+        with pool.checkout(os_policy={'sleep': 'call_host'}) as session:
             print(session.feed_run('import time\ntime.sleep(30)\n"awake"', os=host_os))
             #> awake
     ```
@@ -382,7 +380,7 @@ The handler's `is_async` argument says which pool is calling, and
     }
 
     await using pool = await Monty.create()
-    await using session = await pool.checkout({ autoOsCalls: { sleep: 'call_host' } })
+    await using session = await pool.checkout({ osPolicy: { sleep: 'call_host' } })
     console.log(await session.feedRun('import time\ntime.sleep(30)\n"awake"', { os: hostOs })) // awake
     ```
 

@@ -7,10 +7,10 @@ use monty_proto::{
     named_values_to_proto, os_call_from_proto, os_call_to_proto, pb,
 };
 use monty_types::{
-    AutoOsCalls, CodeLoc, CompileOptions, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs,
-    JsonErrorData, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
-    MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult,
-    NamedValues, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, ProcessTime, RandomSeed,
+    CodeLoc, CompileOptions, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData,
+    MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
+    MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues,
+    OpenCallArgs, OsFunctionCall, OsPolicy, PathBytesDataArgs, PathStringDataArgs, ProcessTime, RandomSeed,
     RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, StackFrame, TimeCaller, UnicodeErrorData,
     UrandomArgs, sleep_duration, sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
@@ -579,7 +579,7 @@ fn resource_limits_round_trip() {
 }
 
 #[test]
-fn auto_os_calls_round_trip() {
+fn os_policy_round_trip() {
     let seeds = [
         RandomSeed::Int(BigInt::from(-7)),
         RandomSeed::Int(BigInt::from(2u8).pow(70)),
@@ -588,7 +588,7 @@ fn auto_os_calls_round_trip() {
         RandomSeed::Bytes(b"abc".to_vec()),
     ];
     for seed in seeds {
-        let calls = AutoOsCalls {
+        let calls = OsPolicy {
             datetime: DateTimeSource::Fixed {
                 unix_seconds: 1_700_000_000,
                 microsecond: 999_999,
@@ -601,32 +601,32 @@ fn auto_os_calls_round_trip() {
             process_time: ProcessTime::Elapsed,
             random_start: RandomStart::Seed(seed),
         };
-        let back = AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap();
+        let back = OsPolicy::try_from(pb::OsPolicy::from(&calls)).unwrap();
         assert_eq!(back, calls);
     }
     for sleep in [SleepMode::CallHost, SleepMode::Zero] {
-        let calls = AutoOsCalls {
+        let calls = OsPolicy {
             datetime: DateTimeSource::CallHost,
             timezone: SandboxTimeZone::named("Europe/London").unwrap(),
             sleep,
             process_time: ProcessTime::Zero,
             random_start: RandomStart::CallHost,
         };
-        assert_eq!(AutoOsCalls::try_from(pb::AutoOsCalls::from(&calls)).unwrap(), calls);
+        assert_eq!(OsPolicy::try_from(pb::OsPolicy::from(&calls)).unwrap(), calls);
     }
     // the UTC default has its own arm, so an explicit UTC survives a parent with a different default
-    let utc = pb::AutoOsCalls::from(&AutoOsCalls::default());
+    let utc = pb::OsPolicy::from(&OsPolicy::default());
     assert_eq!(
         utc.timezone,
         Some(pb::SandboxTimeZone {
             zone: Some(pb::sandbox_time_zone::Zone::Utc(pb::Unit {})),
         })
     );
-    assert_eq!(AutoOsCalls::try_from(utc).unwrap().timezone, SandboxTimeZone::utc());
+    assert_eq!(OsPolicy::try_from(utc).unwrap().timezone, SandboxTimeZone::utc());
     // a named zone crosses as its IANA name, which the child resolves against its own database
-    let london = pb::AutoOsCalls::from(&AutoOsCalls {
+    let london = pb::OsPolicy::from(&OsPolicy {
         timezone: SandboxTimeZone::named("Europe/London").unwrap(),
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     });
     assert_eq!(
         london.timezone,
@@ -634,48 +634,48 @@ fn auto_os_calls_round_trip() {
             zone: Some(pb::sandbox_time_zone::Zone::Named("Europe/London".to_owned())),
         })
     );
-    let unknown = pb::AutoOsCalls {
+    let unknown = pb::OsPolicy {
         timezone: Some(pb::SandboxTimeZone {
             zone: Some(pb::sandbox_time_zone::Zone::Named("Mars/Olympus".to_owned())),
         }),
-        ..pb::AutoOsCalls::default()
+        ..pb::OsPolicy::default()
     };
     assert_eq!(
-        AutoOsCalls::try_from(unknown).unwrap_err().to_string(),
+        OsPolicy::try_from(unknown).unwrap_err().to_string(),
         "invalid value for SandboxTimeZone.named: unknown timezone 'Mars/Olympus'"
     );
 }
 
 #[test]
-fn empty_auto_os_calls_is_the_default() {
-    let back = AutoOsCalls::try_from(pb::AutoOsCalls::default()).unwrap();
-    assert_eq!(back, AutoOsCalls::default());
+fn empty_os_policy_is_the_default() {
+    let back = OsPolicy::try_from(pb::OsPolicy::default()).unwrap();
+    assert_eq!(back, OsPolicy::default());
     assert_eq!(back.sleep, SleepMode::System(Duration::from_secs(10)));
     // An explicit system mode can also omit its maximum.
-    let sandbox = pb::AutoOsCalls {
+    let sandbox = pb::OsPolicy {
         sleep: Some(pb::SleepMode {
             mode: Some(pb::sleep_mode::Mode::System(pb::SystemSleep::default())),
         }),
         ..Default::default()
     };
-    assert_eq!(AutoOsCalls::try_from(sandbox).unwrap(), AutoOsCalls::default());
+    assert_eq!(OsPolicy::try_from(sandbox).unwrap(), OsPolicy::default());
 }
 
 #[test]
-fn malformed_auto_os_calls_are_rejected() {
-    let fixed = pb::AutoOsCalls {
-        datetime: Some(pb::auto_os_calls::Datetime::Fixed(pb::FixedDateTime {
+fn malformed_os_policy_are_rejected() {
+    let fixed = pb::OsPolicy {
+        datetime: Some(pb::os_policy::Datetime::Fixed(pb::FixedDateTime {
             unix_seconds: 0,
             microsecond: 1_000_000,
         })),
         ..Default::default()
     };
     assert_snapshot!(
-        AutoOsCalls::try_from(fixed).unwrap_err().to_string(),
+        OsPolicy::try_from(fixed).unwrap_err().to_string(),
         @"invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
     );
     // a fixed zone is bounded like `datetime.timezone`: strictly within a day of UTC
-    let zone = pb::AutoOsCalls {
+    let zone = pb::OsPolicy {
         timezone: Some(pb::SandboxTimeZone {
             zone: Some(pb::sandbox_time_zone::Zone::Fixed(pb::TimeZone {
                 offset_seconds: 86_400,
@@ -684,23 +684,23 @@ fn malformed_auto_os_calls_are_rejected() {
         }),
         ..Default::default()
     };
-    assert_snapshot!(AutoOsCalls::try_from(zone).unwrap_err().to_string(), @"invalid value for TimeZone.offset_seconds: 86400 is outside the range -86399..=86399");
-    let seed = pb::AutoOsCalls {
-        random_start: Some(pb::auto_os_calls::RandomStart::Seed(pb::RandomSeed {
+    assert_snapshot!(OsPolicy::try_from(zone).unwrap_err().to_string(), @"invalid value for TimeZone.offset_seconds: 86400 is outside the range -86399..=86399");
+    let seed = pb::OsPolicy {
+        random_start: Some(pb::os_policy::RandomStart::Seed(pb::RandomSeed {
             value: Some(pb::random_seed::Value::Float(f64::NAN)),
         })),
         ..Default::default()
     };
     assert_snapshot!(
-        AutoOsCalls::try_from(seed).unwrap_err().to_string(),
+        OsPolicy::try_from(seed).unwrap_err().to_string(),
         @"invalid value for RandomSeed.float: NaN is not finite"
     );
-    let empty_seed = pb::AutoOsCalls {
-        random_start: Some(pb::auto_os_calls::RandomStart::Seed(pb::RandomSeed { value: None })),
+    let empty_seed = pb::OsPolicy {
+        random_start: Some(pb::os_policy::RandomStart::Seed(pb::RandomSeed { value: None })),
         ..Default::default()
     };
     assert_snapshot!(
-        AutoOsCalls::try_from(empty_seed).unwrap_err().to_string(),
+        OsPolicy::try_from(empty_seed).unwrap_err().to_string(),
         @"missing required field RandomSeed.value"
     );
 }

@@ -379,9 +379,9 @@ message ResourceLimits {
   optional uint64 max_total_sleep_micros = 8;
 }
 
-// Mirrors monty's `AutoOsCalls`: which OS calls the sandbox answers itself.
+// Mirrors monty's `OsPolicy`: which OS calls the sandbox answers itself.
 // Each unset arm means that field's default.
-message AutoOsCalls {
+message OsPolicy {
   // The instant `date.today()`, `datetime.now()` and `time.time()` read.
   oneof datetime {
     // The child's clock.
@@ -584,9 +584,9 @@ message Configure {
   // Output is always flushed before a turn-ending event whatever this says, so
   // the field trades streaming latency for event volume and nothing else.
   optional uint32 print_flush_interval_ms = 10;
-  // Absent = `AutoOsCalls::default()`: the child's clock in UTC and its entropy,
+  // Absent = `OsPolicy::default()`: the child's clock in UTC and its entropy,
   // with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
-  optional AutoOsCalls auto_os_calls = 11;
+  optional OsPolicy os_policy = 11;
 }
 
 // Rendering of the typing diagnostics a `TypingError` carries; mirrors ty's

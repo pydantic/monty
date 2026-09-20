@@ -125,7 +125,7 @@ export { WorkerTransport } from './transport.js'
 export type { ResourceLimits, WorkerSessionConfig } from './transport.js'
 export type {
   AssertMessageAnnotations,
-  AutoOsCalls,
+  OsPolicy,
   DateTimeSource,
   RandomStart,
   SleepMode,

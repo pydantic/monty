@@ -29,8 +29,8 @@ mod bindings {
 mod value;
 
 use bindings::exports::pydantic::monty::worker::{
-    AutoOsCalls, CallResult, CompleteEvent, ConfigureRequest, DatetimeSource, DispatchResult, Event, FunctionCallEvent,
-    Guest, NameLookupEvent, NameLookupResult, OsCallEvent, PrintEvent, ProcessTime, RaisedError, RaisedException,
+    CallResult, CompleteEvent, ConfigureRequest, DatetimeSource, DispatchResult, Event, FunctionCallEvent, Guest,
+    NameLookupEvent, NameLookupResult, OsCallEvent, OsPolicy, PrintEvent, ProcessTime, RaisedError, RaisedException,
     RandomSeed, RandomStart, Request, SleepMode, StackFrame, Status, TimeZone, TypeCheckFormat,
 };
 
@@ -341,16 +341,16 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         // boundaries survive it: the host gets one print callback per frame,
         // and a print collector charges its cap per frame.
         print_flush_interval_ms: request.print_flush_interval_ms,
-        auto_os_calls: request.auto_os_calls.map(auto_os_calls_from_component),
+        os_policy: request.os_policy.map(os_policy_from_component),
     }
 }
 
 /// Protocol conversion validates these component settings as untrusted parent input.
-fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
+fn os_policy_from_component(calls: OsPolicy) -> pb::OsPolicy {
     let datetime = calls.datetime.map(|source| match source {
-        DatetimeSource::System => pb::auto_os_calls::Datetime::System(pb::Unit {}),
-        DatetimeSource::CallHost => pb::auto_os_calls::Datetime::CallHost(pb::Unit {}),
-        DatetimeSource::Fixed(fixed) => pb::auto_os_calls::Datetime::Fixed(pb::FixedDateTime {
+        DatetimeSource::System => pb::os_policy::Datetime::System(pb::Unit {}),
+        DatetimeSource::CallHost => pb::os_policy::Datetime::CallHost(pb::Unit {}),
+        DatetimeSource::Fixed(fixed) => pb::os_policy::Datetime::Fixed(pb::FixedDateTime {
             unix_seconds: fixed.unix_seconds,
             microsecond: fixed.microsecond,
         }),
@@ -373,9 +373,9 @@ fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
         }),
     });
     let random_start = calls.random_start.map(|start| match start {
-        RandomStart::System => pb::auto_os_calls::RandomStart::RandomSystem(pb::Unit {}),
-        RandomStart::CallHost => pb::auto_os_calls::RandomStart::RandomCallHost(pb::Unit {}),
-        RandomStart::Seed(seed) => pb::auto_os_calls::RandomStart::Seed(pb::RandomSeed {
+        RandomStart::System => pb::os_policy::RandomStart::RandomSystem(pb::Unit {}),
+        RandomStart::CallHost => pb::os_policy::RandomStart::RandomCallHost(pb::Unit {}),
+        RandomStart::Seed(seed) => pb::os_policy::RandomStart::Seed(pb::RandomSeed {
             value: Some(match seed {
                 RandomSeed::Int(bytes) => pb::random_seed::Value::Int(bytes.into()),
                 RandomSeed::Float(f) => pb::random_seed::Value::Float(f),
@@ -385,10 +385,10 @@ fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
         }),
     });
     let process_time = calls.process_time.map(|source| match source {
-        ProcessTime::Zero => pb::auto_os_calls::ProcessTime::Zero(pb::Unit {}),
-        ProcessTime::Elapsed => pb::auto_os_calls::ProcessTime::Elapsed(pb::Unit {}),
+        ProcessTime::Zero => pb::os_policy::ProcessTime::Zero(pb::Unit {}),
+        ProcessTime::Elapsed => pb::os_policy::ProcessTime::Elapsed(pb::Unit {}),
     });
-    pb::AutoOsCalls {
+    pb::OsPolicy {
         datetime,
         timezone,
         sleep,

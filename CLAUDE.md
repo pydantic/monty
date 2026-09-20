@@ -780,7 +780,7 @@ You may mark python files with:
 - `# call-external` to support calling external functions
 - `# run-async` to support running async code
 - `# timezone=Europe/London` to run the case in an IANA zone rather than the UTC default:
-    it sets `AutoOsCalls::timezone` for Monty and `TZ` for CPython, so `astimezone()`,
+    it sets `OsPolicy::timezone` for Monty and `TZ` for CPython, so `astimezone()`,
     a naive `timestamp()`, `%Z`/`%z` and the `time` zone constants can be compared.
     The CPython side is skipped on Windows, which has no `time.tzset`.
     Without the marker both sides run in UTC — except on Windows, where the harness
@@ -1082,7 +1082,7 @@ where they are. Change one and you must change all of them:
 - **Default resource limits** (1000 recursion frames, 1000 suspensions, 100 MB per-mount memory, 10 MiB
     print collectors, 1s duration grace) — `limitations/resource_limits.md`,
     `docs/resource-limits.md`, and the binding docstrings.
-- **`AutoOsCalls` defaults** (system clock, UTC zone, host-serviced sleeps capped at 10 s, a zero `process_time`,
+- **`OsPolicy` defaults** (system clock, UTC zone, host-serviced sleeps capped at 10 s, a zero `process_time`,
     OS entropy for `random`)
     and `call_host` — `limitations/time.md`, `limitations/datetime.md`,
     `limitations/random.md`, `docs/security.md` (the clock / entropy / waiting), `docs/cli.md` and

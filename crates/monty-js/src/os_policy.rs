@@ -1,17 +1,17 @@
-//! Converts flattened `NativeCheckoutOptions` into `AutoOsCalls`.
+//! Converts flattened `NativeCheckoutOptions` into `OsPolicy`.
 //! `ts/options.ts` validates public options; this module checks wire representability.
 //! Missing fields retain worker defaults.
 
 use std::time::Duration;
 
-use monty_types::{AutoOsCalls, DateTimeSource, ProcessTime, RandomSeed, RandomStart, SandboxTimeZone, SleepMode};
+use monty_types::{DateTimeSource, OsPolicy, ProcessTime, RandomSeed, RandomStart, SandboxTimeZone, SleepMode};
 use napi::{bindgen_prelude::BigInt, Error, Result, Status};
 use num_bigint::BigInt as NumBigInt;
 
 use crate::pool::NativeCheckoutOptions;
 
-pub(crate) fn extract_auto_os_calls(options: &NativeCheckoutOptions) -> Result<AutoOsCalls> {
-    let defaults = AutoOsCalls::default();
+pub(crate) fn extract_os_policy(options: &NativeCheckoutOptions) -> Result<OsPolicy> {
+    let defaults = OsPolicy::default();
     let datetime = match options.datetime_kind.as_deref() {
         None => defaults.datetime,
         Some("system") => DateTimeSource::System,
@@ -75,7 +75,7 @@ pub(crate) fn extract_auto_os_calls(options: &NativeCheckoutOptions) -> Result<A
         Some("seed") => RandomStart::Seed(random_seed(options)?),
         Some(other) => return Err(invalid(&format!("randomStart: unknown start '{other}'"))),
     };
-    Ok(AutoOsCalls {
+    Ok(OsPolicy {
         datetime,
         timezone,
         sleep,

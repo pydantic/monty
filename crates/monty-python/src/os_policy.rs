@@ -1,11 +1,11 @@
-//! Converts the `auto_os_calls` dict to [`AutoOsCalls`], retaining omitted defaults.
+//! Converts the `os_policy` dict to [`OsPolicy`], retaining omitted defaults.
 //! Unknown keys raise `ValueError` so typos cannot silently change call routing.
 
 use std::time::Duration;
 
 use chrono::NaiveDate;
 use monty_types::{
-    AutoOsCalls, DateTimeSource, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, ProcessTime, RandomSeed,
+    DateTimeSource, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, OsPolicy, ProcessTime, RandomSeed,
     RandomStart, SandboxTimeZone, SleepMode,
 };
 use num_bigint::BigInt;
@@ -21,28 +21,28 @@ use pyo3::{
 
 use crate::pool::duration_from_secs;
 
-/// Python checkout argument; omitted keys retain `AutoOsCalls` defaults.
+/// Python checkout argument; omitted keys retain `OsPolicy` defaults.
 #[derive(Clone, Default)]
-pub(crate) struct AutoOsCallsArg(pub AutoOsCalls);
+pub(crate) struct OsPolicyArg(pub OsPolicy);
 
-impl<'a, 'py> FromPyObject<'a, 'py> for AutoOsCallsArg {
+impl<'a, 'py> FromPyObject<'a, 'py> for OsPolicyArg {
     type Error = PyErr;
 
     fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         let Ok(dict) = ob.cast::<PyDict>() else {
             return Err(PyTypeError::new_err(format!(
-                "auto_os_calls must be a dict, not {}",
+                "os_policy must be a dict, not {}",
                 ob.get_type().name()?
             )));
         };
-        let mut calls = AutoOsCalls::default();
+        let mut calls = OsPolicy::default();
         // Apply `timezone` last so it overrides the fixed datetime's implied zone.
         let mut timezone = None;
         let mut max = None;
         for (key, value) in dict.iter() {
             let key = key
                 .cast::<PyString>()
-                .map_err(|_| PyTypeError::new_err("auto_os_calls keys must be str"))?
+                .map_err(|_| PyTypeError::new_err("os_policy keys must be str"))?
                 .to_cow()?;
             match &*key {
                 "datetime" => {
@@ -59,7 +59,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for AutoOsCallsArg {
                 "random_start" => calls.random_start = random_start(&value)?,
                 other => {
                     return Err(PyValueError::new_err(format!(
-                        "unknown auto_os_calls key '{other}', expected one of: \
+                        "unknown os_policy key '{other}', expected one of: \
                          datetime, timezone, sleep, sleep_system_max, process_time, random_start"
                     )));
                 }

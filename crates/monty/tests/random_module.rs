@@ -4,7 +4,7 @@
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    AutoOsCalls, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyType, OsFunctionCall,
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyType, OsFunctionCall, OsPolicy,
     PrintWriter, RandomSeed, RandomStart, ResourceTracker, UrandomArgs,
     unstable::{self, MontyNode},
 };
@@ -24,13 +24,13 @@ fn pattern() -> MontyObject {
 const PATTERN_FIRST_RANDOM: f64 = 0.246_986_487_449_397_1;
 
 fn runner_with(code: &str, start: RandomStart) -> MontyRun {
-    let auto_os_calls = AutoOsCalls {
+    let os_policy = OsPolicy {
         random_start: start,
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     };
     MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
         .unwrap()
-        .with_auto_os_calls(auto_os_calls)
+        .with_os_policy(os_policy)
 }
 
 fn run_seeded(code: &str, seed: RandomSeed) -> MontyObject {
@@ -395,12 +395,12 @@ fn the_module_generator_persists_across_repl_feeds() {
 
 #[test]
 fn a_session_seed_applies_across_repl_feeds_and_dumps() {
-    let auto_os_calls = AutoOsCalls {
+    let os_policy = OsPolicy {
         random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     };
-    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default())
-        .with_auto_os_calls(auto_os_calls);
+    let mut repl =
+        MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default()).with_os_policy(os_policy);
     repl.feed_run("import random", vec![], PrintWriter::Stdout).unwrap();
     let bytes = dump("test.py", None, SessionRef::Idle(&repl)).unwrap();
     let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {

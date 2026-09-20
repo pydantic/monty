@@ -718,7 +718,7 @@ async def test_async_resume_auto_awaits_asyncio_sleep_eagerly():
         await asyncio.sleep(args[0])
 
     async with AsyncMonty() as pool:
-        async with pool.checkout(auto_os_calls={'sleep': 'call_host'}) as session:
+        async with pool.checkout(os_policy={'sleep': 'call_host'}) as session:
             snap = await session.feed_start("import asyncio\nawait asyncio.sleep(0.001, 'woken')", os=handle_os)
             assert isinstance(snap, AsyncFunctionSnapshot)
             assert snap.is_os_function
@@ -773,7 +773,7 @@ async def test_async_resume_auto_gathered_asyncio_sleeps_are_futures():
 
     code = "import asyncio\nawait asyncio.gather(asyncio.sleep(0.002, 'a'), asyncio.sleep(0.001, 'b'))"
     async with AsyncMonty() as pool:
-        async with pool.checkout(auto_os_calls={'sleep': 'call_host'}) as session:
+        async with pool.checkout(os_policy={'sleep': 'call_host'}) as session:
             snap: Any = await session.feed_start(code, os=handle_os)
             kinds: list[str] = []
             while not isinstance(snap, MontyComplete):

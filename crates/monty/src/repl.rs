@@ -13,7 +13,7 @@ use std::{mem, sync::Arc};
 
 use ahash::AHashMap;
 use monty_types::{
-    AutoOsCalls, CallArgs, ExcType, MontyException, MontyObject, MontyUuid, NamedValues, OsFunctionCall, PrintWriter,
+    CallArgs, ExcType, MontyException, MontyObject, MontyUuid, NamedValues, OsFunctionCall, OsPolicy, PrintWriter,
     ResourceTracker,
     unstable::{self, MontyGraph, NodeId},
 };
@@ -80,9 +80,9 @@ pub struct MontyRepl {
     #[serde(default)]
     options: CompileOptions,
     /// OS-call policies shared with each snippet's executor.
-    /// See [`with_auto_os_calls`](Self::with_auto_os_calls).
+    /// See [`with_os_policy`](Self::with_os_policy).
     #[serde(default)]
-    auto_os_calls: Arc<AutoOsCalls>,
+    os_policy: Arc<OsPolicy>,
     /// Sandbox working directory the next snippet starts in: what
     /// [`set_cwd`](Self::set_cwd) chose, then whatever `os.chdir` left the
     /// last snippet in — the directory is session state, like the globals.
@@ -117,7 +117,7 @@ impl MontyRepl {
             interns: Interns::default(),
             sources: AHashMap::new(),
             options,
-            auto_os_calls: Arc::new(AutoOsCalls::default()),
+            os_policy: Arc::new(OsPolicy::default()),
             cwd: Arc::from(DEFAULT_CWD),
             random: SessionRandom::default(),
             heap,
@@ -127,10 +127,10 @@ impl MontyRepl {
 
     /// Replaces the default clock, sleep and random initialization policies
     /// on every path, including [`feed_start`](Self::feed_start). See
-    /// [`MontyRun::with_auto_os_calls`](crate::MontyRun::with_auto_os_calls).
+    /// [`MontyRun::with_os_policy`](crate::MontyRun::with_os_policy).
     #[must_use]
-    pub fn with_auto_os_calls(mut self, auto_os_calls: AutoOsCalls) -> Self {
-        self.auto_os_calls = Arc::new(auto_os_calls);
+    pub fn with_os_policy(mut self, os_policy: OsPolicy) -> Self {
+        self.os_policy = Arc::new(os_policy);
         self
     }
 
@@ -211,7 +211,7 @@ impl MontyRepl {
         let session = ReplSession {
             script_name: &this.script_name,
             cwd: &this.cwd,
-            auto_os_calls: &this.auto_os_calls,
+            os_policy: &this.os_policy,
         };
         let mut executor = match Executor::new_repl_snippet(
             code,
@@ -303,7 +303,7 @@ impl MontyRepl {
         let session = ReplSession {
             script_name: &self.script_name,
             cwd: &self.cwd,
-            auto_os_calls: &self.auto_os_calls,
+            os_policy: &self.os_policy,
         };
         let mut executor = Executor::new_repl_snippet(
             code,
@@ -406,7 +406,7 @@ impl MontyRepl {
             ReplSession {
                 script_name: &self.script_name,
                 cwd: &self.cwd,
-                auto_os_calls: &self.auto_os_calls,
+                os_policy: &self.os_policy,
             },
         )?;
         self.sources.insert(input_script_name, executor.program.code.clone());

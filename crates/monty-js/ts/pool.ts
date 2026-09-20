@@ -9,11 +9,11 @@ import { NativePool } from '../native-addon.js'
 import { findMontyBinary } from './binary.js'
 import {
   type AssertMessageAnnotations,
-  type AutoOsCalls,
-  type EncodedAutoOsCalls,
+  type OsPolicy,
+  type EncodedOsPolicy,
   type TypeCheckFormat,
   encodeAssertMessageAnnotations,
-  encodeAutoOsCalls,
+  encodeOsPolicy,
 } from './options.js'
 import { MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
@@ -104,11 +104,11 @@ export interface CheckoutOptions {
    */
   printFlushInterval?: number
   /**
-   * Session clock, sleep, process-clock and random initialization policies; see `AutoOsCalls`.
+   * Session clock, sleep, process-clock and random initialization policies; see `OsPolicy`.
    * Defaults to the worker's clock in UTC and its entropy, with pool-managed sleeps capped at ten seconds.
    * Sleeps count toward suspensions and `maxTotalSleepSecs`, but not execution duration limits.
    */
-  autoOsCalls?: AutoOsCalls
+  osPolicy?: OsPolicy
 }
 
 /**
@@ -191,7 +191,7 @@ export class Monty {
       throw new Error('the pool is closed — create a new Monty pool')
     }
     const assertAnnotations = encodeAssertMessageAnnotations(options.assertMessageAnnotations)
-    const autoOsCalls = encodeAutoOsCalls(options.autoOsCalls ?? {})
+    const osPolicy = encodeOsPolicy(options.osPolicy ?? {})
     const native = this.native.checkout({
       scriptName: options.scriptName ?? 'main.py',
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
@@ -201,7 +201,7 @@ export class Monty {
       ...(options.typeCheckColor !== undefined ? { typeCheckColor: options.typeCheckColor } : {}),
       ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
       ...(options.printFlushInterval !== undefined ? { printFlushIntervalMs: options.printFlushInterval * 1000 } : {}),
-      ...nativeAutoOsCalls(autoOsCalls),
+      ...nativeOsPolicy(osPolicy),
     })
     const telemetryContext = captureTelemetryContext()
     await native.enter(telemetryContext)
@@ -234,7 +234,7 @@ function graceMs(key: string, seconds: number | null | undefined): Record<string
 }
 
 /** Flattens normalized options into native binding fields. */
-function nativeAutoOsCalls(calls: EncodedAutoOsCalls): Record<string, unknown> {
+function nativeOsPolicy(calls: EncodedOsPolicy): Record<string, unknown> {
   const fields: Record<string, unknown> = {}
   if (typeof calls.datetime === 'string') {
     fields.datetimeKind = calls.datetime

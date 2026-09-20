@@ -17,7 +17,7 @@ platform (see the note on floats below).
 ## Entropy
 
 An unseeded generator seeds itself on its first draw from the session's `random_start`
-(`auto_os_calls` on `checkout()` in the bindings, `AutoOsCalls::random_start` in Rust):
+(`os_policy` on `checkout()` in the bindings, `OsPolicy::random_start` in Rust):
 
 - `'system'` reads 2496 bytes of OS entropy, the 624 32-bit words of an MT19937 state vector.
     If entropy is unavailable, the run ends with an uncatchable `OSError: OS entropy source unavailable: <reason>`.

@@ -15,7 +15,7 @@ export {
 } from './classInstance.js'
 export {
   type AssertMessageAnnotations,
-  type AutoOsCalls,
+  type OsPolicy,
   type DateTimeSource,
   type RandomStart,
   type SleepMode,

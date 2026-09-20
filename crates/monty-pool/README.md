@@ -67,7 +67,7 @@ async fn main() -> Result<(), PoolError> {
 
 `ReplConfig` sets per-session `ResourceLimits`, type checking of every snippet, and `print_flush_interval`.
 The flush interval batches `print()` output; `Duration::ZERO` sends one event per completed line.
-Its `auto_os_calls` sets the clock, timezone, initial random state and sleep policy for the session.
+Its `os_policy` sets the clock, timezone, initial random state and sleep policy for the session.
 `CallHost` delegates calls to the caller's OS handler through `TurnEvent::OsCall`.
 The default `SleepMode::System` sets `system_sleep` to the capped delay for the caller to await directly.
 `SleepMode::Zero` returns immediately.

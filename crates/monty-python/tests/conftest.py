@@ -38,7 +38,7 @@ class RunMonty(Protocol):
     ) -> Any: ...
 
 
-CALL_HOST: dict[str, Any] = {'auto_os_calls': {'datetime': 'call_host', 'sleep': 'call_host'}}
+CALL_HOST: dict[str, Any] = {'os_policy': {'datetime': 'call_host', 'sleep': 'call_host'}}
 """`checkout=` kwargs routing the clock and the sleeps to the `os=` handler."""
 
 

@@ -113,7 +113,7 @@ export type ProcessTime = 'zero' | 'elapsed'
  * Session clock, sleep, process-clock and random initialization policies. Omitted fields retain their
  * defaults.
  */
-export interface AutoOsCalls {
+export interface OsPolicy {
   datetime?: DateTimeSource
   timezone?: TimeZone
   sleep?: SleepMode
@@ -145,7 +145,7 @@ export type EncodedRandomSeed = { int: Uint8Array } | { float: number } | { str:
  * The options normalized to their wire shapes, shared by the napi binding
  * and the wasm transport. An absent field is the worker's default.
  */
-export interface EncodedAutoOsCalls {
+export interface EncodedOsPolicy {
   datetime?: 'system' | 'call_host' | FixedDateTime
   /** `'utc'`, an IANA zone name, or a fixed offset. */
   timezone?: string | FixedTimeZone
@@ -174,15 +174,15 @@ const MAX_WIRE_SECS = 18_446_744_073_709
  * Host-enforced cap in seconds, applied even when a restored dump requests system sleeps.
  * The worker's own cap cannot be trusted at this boundary.
  */
-export function systemSleepCapOf(calls: EncodedAutoOsCalls): number {
+export function systemSleepCapOf(calls: EncodedOsPolicy): number {
   return calls.sleepSystemMaxSecs ?? DEFAULT_SLEEP_SYSTEM_MAX_SECS
 }
 
 /**
  * Validates options at runtime before wire encoding; callers need not obey TypeScript types.
  */
-export function encodeAutoOsCalls(options: AutoOsCalls): EncodedAutoOsCalls {
-  const encoded: EncodedAutoOsCalls = {}
+export function encodeOsPolicy(options: OsPolicy): EncodedOsPolicy {
+  const encoded: EncodedOsPolicy = {}
   if (options.datetime !== undefined) {
     encoded.datetime = encodeDateTime(options.datetime)
     // a Date is read in the UTC default unless the zone is given explicitly

@@ -10,13 +10,13 @@
 //! supports coroutine external functions.
 
 mod async_dispatch;
-mod auto_os_calls;
 mod build;
 mod callback_context;
 pub mod exceptions;
 mod external;
 mod limits;
 mod mount;
+mod os_policy;
 mod pool;
 mod print_target;
 mod snapshot;

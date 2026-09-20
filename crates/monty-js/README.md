@@ -400,7 +400,7 @@ await session.feedRun('import os\nos.getenv("HOME")', {
 })
 ```
 
-Under `autoOsCalls: { sleep: 'call_host' }`, an async `os` callback lets other sandbox tasks run during `asyncio.sleep`.
+Under `osPolicy: { sleep: 'call_host' }`, an async `os` callback lets other sandbox tasks run during `asyncio.sleep`.
 With no other tasks, the pool awaits it in place, as it does for every other OS call.
 
 Callback-backed virtual files return a `MontyFileHandle` marker from the
@@ -472,11 +472,11 @@ The pool handles `time.sleep()` and `asyncio.sleep()`, capped per call by `sleep
 Gathered async sleeps overlap.
 Sleeps count toward suspensions and `maxTotalSleepSecs`, but not execution duration limits.
 Unseeded `random` generators use worker OS entropy.
-Configure these policies per session with `autoOsCalls`:
+Configure these policies per session with `osPolicy`:
 
 ```ts
 const fixed = await pool.checkout({
-  autoOsCalls: {
+  osPolicy: {
     datetime: new Date('2026-01-01T09:30:00Z'),
     timezone: { offsetSeconds: 3600, name: 'CET' },
     sleepSystemMax: 0.5,

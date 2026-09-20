@@ -20,8 +20,8 @@ use monty_proto::{
     os_call_from_proto, pb, validate_requirement,
 };
 use monty_types::{
-    AssertMessageAnnotations, AutoOsCalls, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult,
-    MONTY_VERSION, MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, PrintStream,
+    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION,
+    MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
     ResourceLimits, SleepMode, TypeCheckingConfig, validate_cwd,
 };
 #[cfg(feature = "telemetry")]
@@ -74,7 +74,7 @@ pub struct ReplConfig {
     /// Session clock, initial random state and sleep policy; defaults use the worker's clock and entropy.
     /// `CallHost` delegates to the caller's OS handler through [`TurnEvent::OsCall`].
     /// `System` sleeps set `system_sleep` for the caller to await directly; `Zero` sleeps return immediately.
-    pub auto_os_calls: AutoOsCalls,
+    pub os_policy: OsPolicy,
 }
 
 impl Default for ReplConfig {
@@ -87,7 +87,7 @@ impl Default for ReplConfig {
             type_check_config: TypeCheckingConfig::default(),
             assert_message_annotations: AssertMessageAnnotations::default(),
             print_flush_interval: None,
-            auto_os_calls: AutoOsCalls::default(),
+            os_policy: OsPolicy::default(),
         }
     }
 }
@@ -440,7 +440,7 @@ impl SessionBudget {
             suspensions_seen: 0,
             sleep_limit: limits.and_then(|limits| limits.max_total_sleep),
             sleep_used: Duration::ZERO,
-            system_sleep_max: match repl.auto_os_calls.sleep {
+            system_sleep_max: match repl.os_policy.sleep {
                 SleepMode::System(max) => max,
                 SleepMode::CallHost | SleepMode::Zero => SleepMode::DEFAULT_MAX,
             },
@@ -650,7 +650,7 @@ impl Checkout {
             // Diagnostic only, so a rejection can report both builds.
             monty_version: MONTY_VERSION.to_owned(),
             print_flush_interval_ms: repl.print_flush_interval.map(flush_interval_ms),
-            auto_os_calls: Some((&repl.auto_os_calls).into()),
+            os_policy: Some((&repl.os_policy).into()),
         }));
         let mut this = Self {
             worker: Some(worker),

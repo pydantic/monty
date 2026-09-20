@@ -2,7 +2,7 @@
 
 Monty implements the `time` module's clocks, `sleep()`, the conversion functions and the four zone constants
 `timezone`, `altzone`, `daylight` and `tzname`.
-The session's [automatic OS call policy](../security.md#the-clock) selects the clock, zone, sleep and process-clock
+The session's [OS policy](../security.md#the-clock) selects the clock, zone, sleep and process-clock
 behavior.
 
 `asyncio.sleep()` is documented in [asyncio.md](asyncio.md); it shares

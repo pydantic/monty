@@ -450,11 +450,11 @@ pub struct ResourceLimits {
     #[prost(uint64, optional, tag = "8")]
     pub max_total_sleep_micros: ::core::option::Option<u64>,
 }
-/// Mirrors monty's `AutoOsCalls`: which OS calls the sandbox answers itself.
+/// Mirrors monty's `OsPolicy`: which OS calls the sandbox answers itself.
 /// Each unset arm means that field's default.
 #[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
-pub struct AutoOsCalls {
+pub struct OsPolicy {
     /// The zone naive `datetime.now()` and `date.today()` read in, and that
     /// `astimezone()`, `%Z` and the `time` constants report. Absent = UTC.
     #[prost(message, optional, tag = "4")]
@@ -464,18 +464,18 @@ pub struct AutoOsCalls {
     #[prost(message, optional, tag = "5")]
     pub sleep: ::core::option::Option<SleepMode>,
     /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
-    #[prost(oneof = "auto_os_calls::Datetime", tags = "1, 2, 3")]
-    pub datetime: ::core::option::Option<auto_os_calls::Datetime>,
+    #[prost(oneof = "os_policy::Datetime", tags = "1, 2, 3")]
+    pub datetime: ::core::option::Option<os_policy::Datetime>,
     /// Where an unseeded `random` generator gets its first state.
-    #[prost(oneof = "auto_os_calls::RandomStart", tags = "6, 7, 8")]
-    pub random_start: ::core::option::Option<auto_os_calls::RandomStart>,
+    #[prost(oneof = "os_policy::RandomStart", tags = "6, 7, 8")]
+    pub random_start: ::core::option::Option<os_policy::RandomStart>,
     /// What `time.process_time()` and `time.thread_time()` report.
     /// Absent (or with no arm set) = zero.
-    #[prost(oneof = "auto_os_calls::ProcessTime", tags = "9, 10")]
-    pub process_time: ::core::option::Option<auto_os_calls::ProcessTime>,
+    #[prost(oneof = "os_policy::ProcessTime", tags = "9, 10")]
+    pub process_time: ::core::option::Option<os_policy::ProcessTime>,
 }
-/// Nested message and enum types in `AutoOsCalls`.
-pub mod auto_os_calls {
+/// Nested message and enum types in `OsPolicy`.
+pub mod os_policy {
     /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Oneof)]
     #[prost(prost_path = "crate::budgeted_prost")]
@@ -770,10 +770,10 @@ pub struct Configure {
     /// the field trades streaming latency for event volume and nothing else.
     #[prost(uint32, optional, tag = "10")]
     pub print_flush_interval_ms: ::core::option::Option<u32>,
-    /// Absent = `AutoOsCalls::default()`: the child's clock in UTC and its entropy,
+    /// Absent = `OsPolicy::default()`: the child's clock in UTC and its entropy,
     /// with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
     #[prost(message, optional, tag = "11")]
-    pub auto_os_calls: ::core::option::Option<AutoOsCalls>,
+    pub os_policy: ::core::option::Option<OsPolicy>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.

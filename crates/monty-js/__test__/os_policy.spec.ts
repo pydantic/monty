@@ -1,13 +1,13 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
-import type { AutoOsCalls, MontyDate, MontyDateTime } from '@pydantic/monty'
+import type { OsPolicy, MontyDate, MontyDateTime } from '@pydantic/monty'
 import { kind } from './env.js'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
 
-const runWith = (code: string, autoOsCalls: AutoOsCalls, os?: (name: string, args: unknown[]) => unknown) =>
-  run(code, { autoOsCalls, ...(os === undefined ? {} : { os }) })
+const runWith = (code: string, osPolicy: OsPolicy, os?: (name: string, args: unknown[]) => unknown) =>
+  run(code, { osPolicy, ...(os === undefined ? {} : { os }) })
 
 // datetime and timezone
 
@@ -147,35 +147,35 @@ test("processTime: 'elapsed' reports execution time and never reaches os", async
 })
 
 test('an invalid processTime is rejected before the checkout', async () => {
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { processTime: 'cpu' as never } }), {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { processTime: 'cpu' as never } }), {
     instanceOf: RangeError,
     message: "unknown processTime 'cpu', expected one of: zero, elapsed",
   })
 })
 
 test('invalid datetime and timezone values are rejected before the checkout', async () => {
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { datetime: new Date('nope') } }), {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { datetime: new Date('nope') } }), {
     instanceOf: RangeError,
     message: "datetime must be 'system', 'call_host' or a valid Date",
   })
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { datetime: 'later' as 'system' } }), {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { datetime: 'later' as 'system' } }), {
     instanceOf: RangeError,
   })
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { offsetSeconds: 1.5 } } }), {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { timezone: { offsetSeconds: 1.5 } } }), {
     instanceOf: RangeError,
     message: 'timezone offsetSeconds must be an integer number of seconds',
   })
   // the native binding resolves the name before spawning; the wasm worker is the first to see it
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: 'Mars/Olympus' } }), {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { timezone: 'Mars/Olympus' } }), {
     message:
       kind === 'browser'
-        ? "Configure failed: protocol violation: invalid auto_os_calls: invalid value for SandboxTimeZone.named: unknown timezone 'Mars/Olympus'"
+        ? "Configure failed: protocol violation: invalid os_policy: invalid value for SandboxTimeZone.named: unknown timezone 'Mars/Olympus'"
         : "timezone: unknown timezone 'Mars/Olympus'",
   })
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { name: 'CET' } as unknown as 'utc' } }), {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { timezone: { name: 'CET' } as unknown as 'utc' } }), {
     instanceOf: TypeError,
   })
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { timezone: { offsetSeconds: 86_400 } } }), {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { timezone: { offsetSeconds: 86_400 } } }), {
     instanceOf: RangeError,
     message: 'timezone offsetSeconds must be within ±86399, got 86400',
   })
@@ -230,17 +230,17 @@ test('system sleeps are waited out here without the os callback', async () => {
 })
 
 test('invalid sleep options are rejected before the checkout', async () => {
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { sleep: 'forever' as 'zero' } }), {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { sleep: 'forever' as 'zero' } }), {
     instanceOf: RangeError,
   })
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { sleepSystemMax: -1 } }), {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { sleepSystemMax: -1 } }), {
     instanceOf: RangeError,
     message: 'sleepSystemMax must be a non-negative number of seconds (Infinity for no cap)',
   })
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { sleepSystemMax: NaN } }), {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { sleepSystemMax: NaN } }), {
     instanceOf: RangeError,
   })
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { sleep: 'zero', sleepSystemMax: 1 } }), {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { sleep: 'zero', sleepSystemMax: 1 } }), {
     instanceOf: RangeError,
     message: "sleepSystemMax only applies to sleep: 'system', not 'zero'",
   })
@@ -266,7 +266,7 @@ test('a seed starts random exactly as random.seed would', async () => {
 })
 
 test('a seed persists across feeds and random.seed still wins', async () => {
-  const session = await pool().checkout({ autoOsCalls: { randomStart: { seed: 42 } } })
+  const session = await pool().checkout({ osPolicy: { randomStart: { seed: 42 } } })
   try {
     await session.feedRun('import random')
     t.is(await session.feedRun('random.random()'), 0.6394267984578837)
@@ -300,14 +300,14 @@ test('call_host asks the os callback for one state vector', async () => {
 })
 
 test('an invalid randomStart is rejected before the checkout', async () => {
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { randomStart: { seed: true as unknown as number } } }), {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { randomStart: { seed: true as unknown as number } } }), {
     instanceOf: TypeError,
     message: "randomStart must be 'system', 'call_host' or { seed: number | bigint | string | Uint8Array }",
   })
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { randomStart: { sead: 1 } as unknown as 'system' } }), {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { randomStart: { sead: 1 } as unknown as 'system' } }), {
     instanceOf: TypeError,
   })
-  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { randomStart: { seed: Number.NaN } } }), {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { randomStart: { seed: Number.NaN } } }), {
     instanceOf: RangeError,
     message: 'randomStart seed must be finite, got NaN',
   })

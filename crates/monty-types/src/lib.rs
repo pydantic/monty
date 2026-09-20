@@ -4,7 +4,6 @@
 pub const MONTY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod args;
-mod auto_os_calls;
 mod builtins;
 mod exceptions;
 mod file_mode;
@@ -13,6 +12,7 @@ mod graph;
 mod io;
 mod object;
 mod os;
+mod os_policy;
 mod resource;
 mod results;
 mod run_options;
@@ -21,10 +21,6 @@ mod uuid;
 mod virtual_path;
 
 pub use crate::{
-    auto_os_calls::{
-        AutoOsCalls, DateTimeSource, NamedZone, ProcessTime, RandomSeed, RandomStart, SandboxTimeZone, SleepMode,
-        UnknownTimeZone, ZoneConstants, local_wall_clock, unix_seconds,
-    },
     builtins::BuiltinsFunctions,
     exceptions::{
         CodeLoc, ExcData, ExcType, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject,
@@ -45,6 +41,10 @@ pub use crate::{
         GetenvArgs, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
         PathStringDataArgs, RenameCallArgs, SleepError, TimeCaller, UrandomArgs, dir_stat, file_stat, sleep_duration,
         sleep_duration_saturating, stat_result, symlink_stat,
+    },
+    os_policy::{
+        DateTimeSource, NamedZone, OsPolicy, ProcessTime, RandomSeed, RandomStart, SandboxTimeZone, SleepMode,
+        UnknownTimeZone, ZoneConstants, local_wall_clock, unix_seconds,
     },
     resource::{
         BASELINE_MEMORY, DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MAX_SUSPENSIONS, LARGE_RESULT_THRESHOLD, LIVE_MEMORY,

@@ -9,7 +9,7 @@ use monty_types::{
     AssertMessageAnnotations, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall, PrintWriter,
     ResourceTracker,
 };
-pub use monty_types::{AutoOsCalls, CompileOptions};
+pub use monty_types::{CompileOptions, OsPolicy};
 use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
@@ -99,17 +99,17 @@ impl MontyRun {
     ///
     /// ```
     /// use monty::MontyRun;
-    /// use monty_types::{AutoOsCalls, CompileOptions, DateTimeSource, MontyObject};
+    /// use monty_types::{OsPolicy, CompileOptions, DateTimeSource, MontyObject};
     ///
     /// let code = "from datetime import date\ndate.today().year".to_owned();
     /// let datetime = DateTimeSource::Fixed { unix_seconds: 1_700_000_000, microsecond: 0 };
-    /// let calls = AutoOsCalls { datetime, ..AutoOsCalls::default() };
-    /// let mut runner = MontyRun::new(code, "today.py", vec![], CompileOptions::default()).unwrap().with_auto_os_calls(calls);
+    /// let calls = OsPolicy { datetime, ..OsPolicy::default() };
+    /// let mut runner = MontyRun::new(code, "today.py", vec![], CompileOptions::default()).unwrap().with_os_policy(calls);
     /// assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::int(2023));
     /// ```
     #[must_use]
-    pub fn with_auto_os_calls(mut self, auto_os_calls: AutoOsCalls) -> Self {
-        self.executor.program.auto_os_calls = Arc::new(auto_os_calls);
+    pub fn with_os_policy(mut self, os_policy: OsPolicy) -> Self {
+        self.executor.program.os_policy = Arc::new(os_policy);
         self
     }
 
@@ -268,9 +268,9 @@ pub(crate) struct Program {
     /// The options the program was compiled with; `eval()` / `exec()` compile
     /// their snippets the same way.
     pub(crate) options: CompileOptions,
-    /// OS-call policies shared with the REPL session; see [`MontyRun::with_auto_os_calls`].
+    /// OS-call policies shared with the REPL session; see [`MontyRun::with_os_policy`].
     #[serde(default)]
-    pub(crate) auto_os_calls: Arc<AutoOsCalls>,
+    pub(crate) os_policy: Arc<OsPolicy>,
     /// The user-facing script name (`main.py`), whose final component
     /// `__file__` is derived from. For REPL snippets this is the session's
     /// name (shared with it, not copied per feed), not the `<python-input-N>`
@@ -301,7 +301,7 @@ pub(crate) struct VmEnv<'h> {
     /// Compile options for code compiled at runtime by `eval()` / `exec()`.
     pub(crate) options: CompileOptions,
     /// Clock, sleep and random initialization policies.
-    pub(crate) auto_os_calls: &'h AutoOsCalls,
+    pub(crate) os_policy: &'h OsPolicy,
 }
 
 impl VmEnv<'_> {
@@ -332,13 +332,13 @@ impl Default for VmEnv<'static> {
             script_name: "",
             assert_repr_max_bytes: AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             options: CompileOptions::default(),
-            auto_os_calls: &DEFAULT_AUTO_OS_CALLS,
+            os_policy: &DEFAULT_OS_POLICY,
         }
     }
 }
 
 /// Policies for VMs constructed without an executor.
-static DEFAULT_AUTO_OS_CALLS: LazyLock<AutoOsCalls> = LazyLock::new(AutoOsCalls::default);
+static DEFAULT_OS_POLICY: LazyLock<OsPolicy> = LazyLock::new(OsPolicy::default);
 
 /// The sandbox working directory used until a host sets one.
 pub(crate) const DEFAULT_CWD: &str = "/";
@@ -353,7 +353,7 @@ pub(crate) struct ReplSession<'a> {
     /// Absolute virtual working directory for the snippet.
     pub(crate) cwd: &'a Arc<str>,
     /// Clock, sleep and random initialization policies.
-    pub(crate) auto_os_calls: &'a Arc<AutoOsCalls>,
+    pub(crate) os_policy: &'a Arc<OsPolicy>,
 }
 
 impl Executor {
@@ -388,7 +388,7 @@ impl Executor {
                 input_slots: Vec::new(),
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
                 options,
-                auto_os_calls: Arc::new(AutoOsCalls::default()),
+                os_policy: Arc::new(OsPolicy::default()),
                 script_name: Arc::from(script_name),
                 cwd: Arc::from(DEFAULT_CWD),
             },
@@ -443,7 +443,7 @@ impl Executor {
                 input_slots,
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
                 options,
-                auto_os_calls: Arc::clone(session.auto_os_calls),
+                os_policy: Arc::clone(session.os_policy),
                 script_name: Arc::clone(session.script_name),
                 cwd: Arc::clone(session.cwd),
             },
@@ -524,7 +524,7 @@ impl Executor {
                 input_slots: vec![args_slot],
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
                 options,
-                auto_os_calls: Arc::clone(session.auto_os_calls),
+                os_policy: Arc::clone(session.os_policy),
                 script_name: Arc::clone(session.script_name),
                 cwd: Arc::clone(session.cwd),
             },
@@ -694,7 +694,7 @@ impl Program {
             script_name: &self.script_name,
             assert_repr_max_bytes: self.assert_repr_max_bytes,
             options: self.options,
-            auto_os_calls: &self.auto_os_calls,
+            os_policy: &self.os_policy,
         }
     }
 
@@ -707,7 +707,7 @@ impl Program {
             input_slots: Vec::new(),
             assert_repr_max_bytes: AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             options: CompileOptions::default(),
-            auto_os_calls: Arc::new(AutoOsCalls::default()),
+            os_policy: Arc::new(OsPolicy::default()),
             script_name: Arc::from(""),
             cwd: Arc::from(DEFAULT_CWD),
         }

@@ -53,7 +53,7 @@ from .os_access import (
 __all__ = (
     # this file
     'ResourceLimits',
-    'AutoOSCalls',
+    'OSPolicy',
     'RandomSeed',
     'TimeZone',
     'TimeCaller',
@@ -189,7 +189,7 @@ class RandomSeed(TypedDict):
     seed: int | float | str | bytes
 
 
-class AutoOSCalls(TypedDict, total=False):
+class OSPolicy(TypedDict, total=False):
     """Clock, sleep, process-clock and random initialization policies for the session.
 
     Omitted keys keep their defaults; `'call_host'` routes calls to the `os=` handler.

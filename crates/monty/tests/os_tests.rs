@@ -6,21 +6,21 @@
 
 use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
 use monty_types::{
-    AutoOsCalls, CallArgs, CompileOptions, DateTimeSource, ExcType, ExtFunctionResult, FileMode, MontyDate,
-    MontyDateTime, MontyException, MontyFileHandle, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker,
-    SleepMode, dir_stat, file_stat,
+    CallArgs, CompileOptions, DateTimeSource, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime,
+    MontyException, MontyFileHandle, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ResourceTracker, SleepMode,
+    dir_stat, file_stat,
 };
 
 /// Expose clock and sleep calls to the mock host.
 fn host_runner(code: &str) -> MontyRun {
-    let auto_os_calls = AutoOsCalls {
+    let os_policy = OsPolicy {
         datetime: DateTimeSource::CallHost,
         sleep: SleepMode::CallHost,
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     };
     MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
         .unwrap()
-        .with_auto_os_calls(auto_os_calls)
+        .with_os_policy(os_policy)
 }
 
 /// Helper to run code and extract the OsCall progress.

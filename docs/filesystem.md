@@ -262,7 +262,7 @@ The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `
 `Path.read_text`, `Path.read_bytes`, `Path.write_text`, `Path.write_bytes`, `Path.append_text`, `Path.append_bytes`,
 `Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.stat`, `Path.rename`, `Path.resolve`, `Path.absolute`,
 `os.getenv`, `os.environ` and `os.urandom`.
-With `auto_os_calls` configured to call the host, the handler also receives clock and sleep calls
+With `os_policy` configured to call the host, the handler also receives clock and sleep calls
 (see [the clock](security.md#the-clock)).
 Unseeded random generators and `random.seed()` call `os.urandom` only under `random_start='call_host'`
 (see [random](limitations/random.md)).

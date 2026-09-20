@@ -16,8 +16,8 @@ use monty_proto::{
     WireFunctionCall, exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
 };
 use monty_types::{
-    AutoOsCalls, CallArgs, DateTimeSource, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult,
-    NamedValues, RandomSeed, RandomStart, SandboxTimeZone, SleepMode,
+    CallArgs, DateTimeSource, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult, NamedValues,
+    OsPolicy, RandomSeed, RandomStart, SandboxTimeZone, SleepMode,
     unstable::{self, MontyNode},
 };
 
@@ -40,11 +40,11 @@ fn configure() -> pb::Configure {
 }
 
 /// The clock and the sleeps routed to the parent.
-fn call_host() -> AutoOsCalls {
-    AutoOsCalls {
+fn call_host() -> OsPolicy {
+    OsPolicy {
         datetime: DateTimeSource::CallHost,
         sleep: SleepMode::CallHost,
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     }
 }
 
@@ -117,9 +117,9 @@ impl ChildProc {
         self.create_repl_with(configure());
     }
 
-    fn create_repl_with_auto_os_calls(&mut self, auto_os_calls: &AutoOsCalls) {
+    fn create_repl_with_os_policy(&mut self, os_policy: &OsPolicy) {
         self.create_repl_with(pb::Configure {
-            auto_os_calls: Some(auto_os_calls.into()),
+            os_policy: Some(os_policy.into()),
             ..configure()
         });
     }
@@ -592,7 +592,7 @@ asyncio.run(asyncio.sleep(3600, 'woken'))",
 #[test]
 fn fixed_clock_and_seed_are_answered_in_the_worker() {
     let mut child = ChildProc::spawn();
-    child.create_repl_with_auto_os_calls(&AutoOsCalls {
+    child.create_repl_with_os_policy(&OsPolicy {
         datetime: DateTimeSource::Fixed {
             unix_seconds: 1_700_000_000,
             microsecond: 123_456,
@@ -602,7 +602,7 @@ fn fixed_clock_and_seed_are_answered_in_the_worker() {
             name: None,
         },
         random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
-        ..AutoOsCalls::default()
+        ..OsPolicy::default()
     });
 
     let (_, event) = child.feed(
@@ -643,13 +643,13 @@ random.random()",
     child.shutdown();
 }
 
-/// Rejecting malformed `AutoOsCalls` leaves the worker usable.
+/// Rejecting malformed `OsPolicy` leaves the worker usable.
 #[test]
-fn invalid_auto_os_calls_is_rejected_on_configure() {
+fn invalid_os_policy_is_rejected_on_configure() {
     let mut child = ChildProc::spawn();
     child.send(pb::parent_request::Kind::Configure(pb::Configure {
-        auto_os_calls: Some(pb::AutoOsCalls {
-            datetime: Some(pb::auto_os_calls::Datetime::Fixed(pb::FixedDateTime {
+        os_policy: Some(pb::OsPolicy {
+            datetime: Some(pb::os_policy::Datetime::Fixed(pb::FixedDateTime {
                 unix_seconds: 0,
                 microsecond: 1_000_000,
             })),
@@ -661,7 +661,7 @@ fn invalid_auto_os_calls_is_rejected_on_configure() {
     assert_eq!(
         error.message.as_deref(),
         Some(
-            "protocol violation: invalid auto_os_calls: invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
+            "protocol violation: invalid os_policy: invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
         )
     );
     child.create_repl();
@@ -672,7 +672,7 @@ fn invalid_auto_os_calls_is_rejected_on_configure() {
 #[test]
 fn clock_calls_bubble_to_parent_under_call_host() {
     let mut child = ChildProc::spawn();
-    child.create_repl_with_auto_os_calls(&call_host());
+    child.create_repl_with_os_policy(&call_host());
 
     let today = MontyDate {
         year: 2024,
@@ -729,7 +729,7 @@ fn clock_calls_bubble_to_parent_under_call_host() {
 #[test]
 fn sleep_calls_bubble_to_parent_under_call_host() {
     let mut child = ChildProc::spawn();
-    child.create_repl_with_auto_os_calls(&call_host());
+    child.create_repl_with_os_policy(&call_host());
 
     let (_, event) = child.feed("import time\ntime.sleep(1.5)");
     let pb::child_event::Kind::OsCall(call) = event else {

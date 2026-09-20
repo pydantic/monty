@@ -27,7 +27,7 @@ test('the wasm pool passes processTime through to the component', async (ctx) =>
   skipIfBrowser(ctx)
   const pool = await Monty.create()
   const hidden = await pool.checkout()
-  const elapsed = await pool.checkout({ autoOsCalls: { processTime: 'elapsed' } })
+  const elapsed = await pool.checkout({ osPolicy: { processTime: 'elapsed' } })
   try {
     const code = 'import time\nfor _ in range(200000):\n    pass\ntime.process_time() > 0.0'
     t.is(await hidden.feedRun(code), false)
@@ -76,7 +76,7 @@ test('a fixed clock, zero sleeps and a seed reach the wasm worker', async (ctx) 
   skipIfBrowser(ctx)
   const pool = await Monty.create()
   const session = await pool.checkout({
-    autoOsCalls: {
+    osPolicy: {
       datetime: new Date('2024-01-15T10:30:05.123Z'),
       timezone: { offsetSeconds: 3600, name: 'CET' },
       sleep: 'zero',
@@ -108,7 +108,7 @@ test('a named zone resolves from the tz database bundled into the wasm worker', 
   skipIfBrowser(ctx)
   const pool = await Monty.create()
   const session = await pool.checkout({
-    autoOsCalls: { datetime: new Date('2024-06-15T12:30:00Z'), timezone: 'Europe/London' },
+    osPolicy: { datetime: new Date('2024-06-15T12:30:00Z'), timezone: 'Europe/London' },
   })
   try {
     const code =

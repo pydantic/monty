@@ -180,7 +180,7 @@ interface worker {
         max-total-sleep-micros: option<u64>,
     }
 
-    /// A frozen clock reading (see `auto-os-calls`).
+    /// A frozen clock reading (see `os-policy`).
     record fixed-datetime {
         /// Seconds since the Unix epoch, UTC.
         unix-seconds: s64,
@@ -252,7 +252,7 @@ interface worker {
 
     /// Automatic OS call policy; absent fields use the system clock, UTC,
     /// host sleeps capped at 10s, OS entropy, and a zero process clock.
-    record auto-os-calls {
+    record os-policy {
         datetime: option<datetime-source>,
         timezone: option<time-zone>,
         sleep: option<sleep-mode>,
@@ -286,7 +286,7 @@ interface worker {
         /// default; zero restores line buffering, one event per completed line.
         print-flush-interval-ms: option<u32>,
         /// Automatic OS call policy; absent uses defaults.
-        auto-os-calls: option<auto-os-calls>,
+        os-policy: option<os-policy>,
     }
 
     /// One Python snippet and its host inputs.

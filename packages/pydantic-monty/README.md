@@ -284,7 +284,7 @@ By default, clock calls read the worker's clock, and unseeded `random` generator
 The pool handles sleeps without an `os=` handler, capping each at `sleep_system_max` (10 seconds).
 Gathered `asyncio.sleep()` calls overlap.
 Suspending sleeps count against `max_suspensions` and `max_total_sleep_secs`, but not the execution-time limits.
-Set `checkout(auto_os_calls=...)` to change these defaults for the session:
+Set `checkout(os_policy=...)` to change these defaults for the session:
 
 ```python
 from datetime import datetime
@@ -305,7 +305,7 @@ f'{datetime.now():%Y-%m-%d %H:%M} {random.random():.4f}'
 # random_start: 'system' (default), 'call_host' or {'seed': int | float | str | bytes}
 with Monty() as pool:
     with pool.checkout(
-        auto_os_calls={
+        os_policy={
             'datetime': datetime(2026, 1, 1, 9, 30),
             'timezone': {'offset_seconds': 3600, 'name': 'CET'},
             'sleep': 'system',
