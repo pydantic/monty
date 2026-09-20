@@ -408,6 +408,33 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// `PyArg_ParseTuple`'s wording for a fixed arity, which it uses whenever
+    /// min == max: `{name}() takes exactly {n} argument ({actual} given)`
+    /// (plural for `n != 1`; the digit, unlike `METH_O`'s `exactly one`).
+    #[must_use]
+    fn type_error_method_exact(name: &str, n: usize, actual: usize) -> RunError {
+        let plural = if n == 1 { "" } else { "s" };
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{name}() takes exactly {n} argument{plural} ({actual} given)"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for too few arguments to a `PyArg_ParseTuple` call:
+    /// `{name}() takes at least {min} argument(s) ({actual} given)`. Unlike
+    /// [`type_error_at_least_positional`] there is no `positional` qualifier —
+    /// these functions accept no keywords, so CPython never distinguishes.
+    #[must_use]
+    fn type_error_method_at_least(name: &str, min: usize, actual: usize) -> RunError {
+        let plural = if min == 1 { "" } else { "s" };
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{name}() takes at least {min} argument{plural} ({actual} given)"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for too few positional arguments to a method-style call.
     ///
     /// Matches CPython's format used by methods like `str.replace`:
@@ -976,6 +1003,28 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn sleep_too_long() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range for C PyTime_t").into()
+    }
+
+    /// The `OverflowError` the `time` conversion functions raise for epoch
+    /// seconds outside the range a broken-down time can hold:
+    /// `timestamp out of range for platform time_t`.
+    #[must_use]
+    fn timestamp_out_of_range() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range for platform time_t").into()
+    }
+
+    /// `time.mktime()`'s `OverflowError` for a wall clock it cannot place on
+    /// the epoch: `mktime argument out of range`.
+    #[must_use]
+    fn mktime_out_of_range() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "mktime argument out of range").into()
+    }
+
+    /// The `TypeError` the `time` conversion functions raise for a time tuple of
+    /// the wrong length: `{name}(): illegal time tuple argument`.
+    #[must_use]
+    fn illegal_time_tuple(name: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("{name}(): illegal time tuple argument")).into()
     }
 
     /// Creates a TypeError for bytes() constructor with invalid type.
