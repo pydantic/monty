@@ -27,7 +27,6 @@ pub struct AutoOsCalls {
     /// What `time.sleep()` and `asyncio.sleep()` do.
     pub sleep: SleepMode,
     /// What `time.process_time()` and `time.thread_time()` report.
-    #[serde(default)]
     pub process_time: ProcessTime,
     /// Where an unseeded `random` generator gets its first state.
     pub random_start: RandomStart,

@@ -385,8 +385,8 @@ fn auto_os_calls_from_component(calls: AutoOsCalls) -> pb::AutoOsCalls {
         }),
     });
     let process_time = calls.process_time.map(|source| match source {
-        ProcessTime::Zero => pb::auto_os_calls::ProcessTime::ProcessTimeZero(pb::Unit {}),
-        ProcessTime::Elapsed => pb::auto_os_calls::ProcessTime::ProcessTimeElapsed(pb::Unit {}),
+        ProcessTime::Zero => pb::auto_os_calls::ProcessTime::Zero(pb::Unit {}),
+        ProcessTime::Elapsed => pb::auto_os_calls::ProcessTime::Elapsed(pb::Unit {}),
     });
     pb::AutoOsCalls {
         datetime,

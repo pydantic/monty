@@ -410,9 +410,9 @@ message AutoOsCalls {
   // Absent (or with no arm set) = zero.
   oneof process_time {
     // Always 0.0, so elapsed execution time is not observable in the sandbox.
-    Unit process_time_zero = 9;
+    Unit zero = 9;
     // The session's accumulated execution time.
-    Unit process_time_elapsed = 10;
+    Unit elapsed = 10;
   }
 }
 

@@ -56,8 +56,8 @@ impl From<&AutoOsCalls> for pb::AutoOsCalls {
             RandomStart::Seed(seed) => WireRandomStart::Seed(seed.into()),
         };
         let process_time = match calls.process_time {
-            ProcessTime::Zero => WireProcessTime::ProcessTimeZero(pb::Unit {}),
-            ProcessTime::Elapsed => WireProcessTime::ProcessTimeElapsed(pb::Unit {}),
+            ProcessTime::Zero => WireProcessTime::Zero(pb::Unit {}),
+            ProcessTime::Elapsed => WireProcessTime::Elapsed(pb::Unit {}),
         };
         Self {
             datetime: Some(datetime),
@@ -132,8 +132,8 @@ impl TryFrom<pb::AutoOsCalls> for AutoOsCalls {
         };
         let process_time = match calls.process_time {
             None => defaults.process_time,
-            Some(WireProcessTime::ProcessTimeZero(_)) => ProcessTime::Zero,
-            Some(WireProcessTime::ProcessTimeElapsed(_)) => ProcessTime::Elapsed,
+            Some(WireProcessTime::Zero(_)) => ProcessTime::Zero,
+            Some(WireProcessTime::Elapsed(_)) => ProcessTime::Elapsed,
         };
         Ok(Self {
             datetime,

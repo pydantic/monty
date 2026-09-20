@@ -47,7 +47,6 @@ from .os_access import (
     OSAccess,
     OsFunction,
     StatResult,
-    TimeCaller,
 )
 
 __all__ = (
@@ -56,6 +55,7 @@ __all__ = (
     'AutoOSCalls',
     'RandomSeed',
     'TimeZone',
+    'TimeCaller',
     'ExternalResult',
     'ExternalSettledResult',
     'ExternalReturnValue',
@@ -105,7 +105,6 @@ __all__ = (
     # os_access
     'StatResult',
     'OsFunction',
-    'TimeCaller',
     'NOT_HANDLED',
     'AbstractOS',
     'AbstractFile',
@@ -337,6 +336,26 @@ SyncSnapshot: TypeAlias = FunctionSnapshot | NameLookupSnapshot | FutureSnapshot
 
 AsyncSnapshot: TypeAlias = AsyncFunctionSnapshot | AsyncNameLookupSnapshot | AsyncFutureSnapshot | MontyComplete
 """What `AsyncMontySession.feed_start` (and each async `resume` / `resume_auto`) yields."""
+
+
+TimeCaller = Literal[
+    'time.time',
+    'time.time_ns',
+    'time.monotonic',
+    'time.monotonic_ns',
+    'time.perf_counter',
+    'time.perf_counter_ns',
+    'time.gmtime',
+    'time.localtime',
+    'time.asctime',
+    'time.ctime',
+    'time.strftime',
+]
+"""The `time` function that asked `AbstractOS.time()` for the clock.
+
+All of them arrive under the one OS function name `'time.time'` and want epoch seconds;
+a handler can answer each differently or ignore the distinction.
+"""
 
 
 class OsHandler(Protocol):

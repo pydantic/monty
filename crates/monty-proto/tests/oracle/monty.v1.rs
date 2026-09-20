@@ -522,10 +522,10 @@ pub mod auto_os_calls {
     pub enum ProcessTime {
         /// Always 0.0, so elapsed execution time is not observable in the sandbox.
         #[prost(message, tag = "9")]
-        ProcessTimeZero(super::Unit),
+        Zero(super::Unit),
         /// The session's accumulated execution time.
         #[prost(message, tag = "10")]
-        ProcessTimeElapsed(super::Unit),
+        Elapsed(super::Unit),
     }
 }
 /// Mirrors monty's `SandboxTimeZone`.

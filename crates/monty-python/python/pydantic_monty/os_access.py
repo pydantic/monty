@@ -27,9 +27,11 @@ if TYPE_CHECKING:
     # Self is 3.11+, hence this
     from typing import Self
 
+    # only an annotation here; importing at runtime would be circular
+    from . import TimeCaller
+
 __all__ = (
     'OsFunction',
-    'TimeCaller',
     'AbstractOS',
     'AbstractFile',
     'MemoryFile',
@@ -70,25 +72,6 @@ OsFunction = Literal[
     'system.sleep',
     'system.async_sleep',
 ]
-
-TimeCaller = Literal[
-    'time.time',
-    'time.time_ns',
-    'time.monotonic',
-    'time.monotonic_ns',
-    'time.perf_counter',
-    'time.perf_counter_ns',
-    'time.gmtime',
-    'time.localtime',
-    'time.asctime',
-    'time.ctime',
-    'time.strftime',
-]
-"""The `time` function that asked `AbstractOS.time()` for the clock.
-
-All of them arrive under the one OS function name `'time.time'` and want epoch seconds;
-a handler can answer each differently or ignore the distinction.
-"""
 
 MAX_URANDOM_BYTES_DEFAULT: int = 1_048_576
 """Default maximum host allocation per `urandom()` call. 1 MiB."""
