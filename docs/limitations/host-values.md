@@ -25,7 +25,9 @@ see [classes](classes.md#crossing-the-host-boundary-pydantic_monty-pydanticmonty
 
 Builtin functions and type objects outside the data-type allowlist never resolve to the host's own objects.
 Python receives a read-only [`MontyStdTypeProxy`][pydantic_monty.MontyStdTypeProxy] with `kind` and `name`,
-JavaScript a `{ __monty_type__, value }` marker; either re-enters the sandbox as the builtin it names.
+JavaScript a `{ __monty_type__, value }` marker.
+The Python proxy re-enters the sandbox as the builtin it names, as does a JavaScript `Type` marker;
+a JavaScript `BuiltinFunction` marker passed back becomes its repr string.
 The allowlist is `type`, `object`, `bool`, `int`, `float`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`,
 `frozenset`, `range`, `slice`, `NoneType`, `ellipsis`, `NotImplementedType`, the `datetime` classes,
 `collections.deque`, `collections.namedtuple`, `re.Pattern`, `re.Match`, `types.GenericAlias`, `types.UnionType`,

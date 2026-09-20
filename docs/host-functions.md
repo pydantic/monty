@@ -169,7 +169,7 @@ Arguments come the other way, out of the sandbox.
 A sandbox-defined class instance arrives as a read-only [`MontyClassProxy`][pydantic_monty.MontyClassProxy]; see
 [host objects](host-objects.md#sandbox-instances).
 A builtin function or a non-data type object arrives as a [`MontyStdTypeProxy`][pydantic_monty.MontyStdTypeProxy]
-naming it, never the host's own `open` or `exec`.
+naming it, never the host's own `open` or `exec`; `type` is the one builtin function that arrives as the host class.
 Not every value crosses unchanged: unsupported sandbox values become strings, and cycles and deeply nested values
 are truncated.
 See [host-value limitations](limitations/host-values.md) for conversion failures, identity rules and size caps.
