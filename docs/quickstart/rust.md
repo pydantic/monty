@@ -231,19 +231,22 @@ assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
 and falls back to a bundled one, `tzdb-bundled` uses only the bundle.
 Without either, every name is unknown.
 `SleepMode::Zero` skips waits; `SleepMode::System(max)` sets their cap.
+`ProcessTime::Zero` (the default) keeps `time.process_time()` at zero; `ProcessTime::Elapsed` reports the session's
+execution time.
 `CallHost` delegates through `RunProgress::OsCall` under `start`, or raises `NotImplementedError` under `run`:
 
 ```rust
 use monty::MontyRun;
 use monty_types::{
-    AutoOsCalls, CompileOptions, DateTimeSource, MontyObject, PrintWriter, RandomSeed, RandomStart, ResourceTracker,
-    SandboxTimeZone, SleepMode,
+    AutoOsCalls, CompileOptions, DateTimeSource, MontyObject, PrintWriter, ProcessTime, RandomSeed, RandomStart,
+    ResourceTracker, SandboxTimeZone, SleepMode,
 };
 
 let calls = AutoOsCalls {
     datetime: DateTimeSource::Fixed { unix_seconds: 1_700_000_000, microsecond: 0 },
     timezone: SandboxTimeZone::Fixed { offset_seconds: 0, name: Some("UTC".to_owned()) },
     sleep: SleepMode::Zero,
+    process_time: ProcessTime::Zero,
     random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
 };
 let code = "import random, time\nfrom datetime import date\ntime.sleep(3600)\n(date.today().year, random.random())";

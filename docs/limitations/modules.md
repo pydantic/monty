@@ -64,7 +64,7 @@ are unimplemented and may appear over time.
 
 Some available modules cover only part of their CPython surface: `functools`
 implements only `reduce` and `partial`, `copy` only `copy()` and `deepcopy()`,
-`time` only `time()` and `sleep()`, and `collections` only the four types above.
+`time` everything but `tzset` and the `clock_*` family, and `collections` only the four types above.
 The absent names are missing from
 the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime; see each module's page for the specifics.

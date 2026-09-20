@@ -129,7 +129,8 @@ in Monty raises `TypeError: replace expected at most 0 arguments, got N`.
 ## Reading the clock
 
 The [session clock](../security.md#the-clock) has separate `datetime` and `timezone` settings.
-`time.time()` shares the `datetime` source (see [time.md](time.md)).
+The `time` module's wall clocks share the `datetime` source, and its conversion functions the `timezone`
+(see [time.md](time.md)).
 
 `datetime`:
 

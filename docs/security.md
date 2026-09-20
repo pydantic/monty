@@ -278,13 +278,16 @@ resolved inside the sandbox and reaches a mount as an absolute virtual path.
 
 ### The clock
 
-`date.today()`, `datetime.now()` and `time.time()` are the only calls that read a clock.
+`date.today()`, `datetime.now()` and the `time` module's wall clocks (`time()`, `monotonic()`, `perf_counter()` and
+the conversion functions called without a time) are the only calls that read a clock.
 All sessions default to the system clock read in UTC.
 The session's `auto_os_calls` ([`AutoOSCalls`][pydantic_monty.AutoOSCalls] on
 [`Monty.checkout`][pydantic_monty.Monty.checkout] in Python, `autoOsCalls` on `checkout()` in JavaScript,
 `AutoOsCalls` in Rust) configures the instant (`datetime`) and local zone (`timezone`) separately:
 
 - `datetime='call_host'` delegates the clock calls to your `os=` handler; unanswered calls raise.
+    Every `time` module clock arrives as the one OS function `time.time`, with the asking function's name
+    (`'time.monotonic'`, `'time.localtime'`, ...) as its argument, so a handler can tell them apart.
 - A fixed instant (`datetime.datetime`, `Date` or `DateTimeSource::Fixed`) freezes the clock.
 - `timezone` sets the zone that naive `datetime.now()` and `date.today()` use and that `astimezone()`,
     `strftime('%Z')` and the `time.timezone` / `time.tzname` constants report: `'utc'`, an IANA name such as
@@ -294,7 +297,9 @@ A fixed zone uses `{'offset_seconds': ..., 'name': ...}` in Python, `{ offsetSec
 or `SandboxTimeZone::Fixed` in Rust; a named one is `SandboxTimeZone::named(...)` in Rust.
 
 Wall-clock time is a weak capability, but it is one: it is what makes elapsed time measurable from inside the sandbox.
-A fixed instant removes it.
+A fixed instant removes it, and pins `time.monotonic()` and `time.perf_counter()` too, since they read the same clock.
+`time.process_time()` is governed separately by `process_time`, which defaults to `'zero'`; `'elapsed'` deliberately
+hands elapsed execution time back to the sandbox.
 Under `datetime='call_host'` it learns whatever your handler answers; the default
 [`OSAccess`][pydantic_monty.OSAccess] handler answers with the host's real clock and zone.
 See [datetime](limitations/datetime.md#reading-the-clock).

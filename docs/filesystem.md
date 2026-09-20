@@ -336,6 +336,8 @@ For anything more specific, subclass `OSAccess` and override the methods you wan
 abstract method of `AbstractOS` yourself; the optional hooks (`path_open`, the append methods, `date_today`,
 `datetime_now`, `time`, `sleep`, `async_sleep`) report [`NOT_HANDLED`][pydantic_monty.NOT_HANDLED] to Monty if you make
 them raise `NotImplementedError`.
+`time` receives the name of the `time` function that asked (`'time.time'`, `'time.monotonic'`, `'time.localtime'`,
+...) so one hook can serve every clock or give each its own answer.
 
 ## Rust
 

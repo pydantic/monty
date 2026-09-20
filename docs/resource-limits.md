@@ -110,6 +110,8 @@ Both duration limits count **execution time**, not wall clock:
     `max_suspensions` bounds a sleeping loop as well. Under `'call_host'` the host waits uncharged, and a `'zero'`
     sleep does not suspend at all. See [security](security.md#waiting).
 - There is no way for sandboxed code to observe a budget or the time remaining.
+    `auto_os_calls={'process_time': 'elapsed'}` exposes this same execution clock as `time.process_time()`; the
+    default `'zero'` keeps it hidden.
 
 They read the same clock and differ only in when it restarts:
 
