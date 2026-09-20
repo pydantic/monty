@@ -16,8 +16,8 @@ use super::{
     builtin_proxy::{BuiltinRef, PyMontyBuiltinProxy},
     class_instance::{ClassHeader, InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy},
     convert::{
-        PyMontyFileHandle, get_namedtuple, get_pure_posix_path, import_builtins, monty_datetime_to_py,
-        monty_time_to_py, monty_timezone_to_py, type_object_to_py,
+        PyMontyFileHandle, get_namedtuple, get_pure_posix_path, host_type_object, import_builtins,
+        monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py,
     },
     exceptions::exc_monty_to_py,
 };
@@ -131,7 +131,11 @@ impl Decoder<'_, '_> {
                 .map(Bound::into_any)
                 .map(Bound::unbind),
             MontyNode::TimeZone(timezone) => monty_timezone_to_py(py, timezone),
-            MontyNode::Type(t) => type_object_to_py(py, t),
+            // a data type resolves to the host class; anything else is a proxy
+            MontyNode::Type(t) => match host_type_object(py, t)? {
+                Some(ty) => Ok(ty),
+                None => builtin_proxy(py, BuiltinRef::Type(t.clone())),
+            },
             // `type` is the one builtin function on the host-class allowlist; every
             // other one crosses as a proxy carrying its name, never the host's callable
             MontyNode::BuiltinFunction(BuiltinsFunctions::Type) => import_builtins(py)?.getattr(py, "type"),

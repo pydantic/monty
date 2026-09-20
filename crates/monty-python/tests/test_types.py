@@ -5,7 +5,6 @@ import datetime
 import itertools
 import pathlib
 import re
-import sys
 import types
 import zoneinfo
 from typing import NamedTuple
@@ -159,7 +158,7 @@ import datetime, re
 from pathlib import Path
 from collections import deque
 [
-    int, str, type, type(None), type(...), type(iter([])), type(iter(lambda: 0, 0)),
+    int, str, type, object, type(None), type(...), type(NotImplemented),
     type(Path('/x')), Path,
     datetime.datetime, datetime.date, datetime.time, datetime.timedelta, datetime.timezone,
     type(re.compile('a')), type(re.match('a', 'a')),
@@ -171,10 +170,10 @@ from collections import deque
         int,
         str,
         type,
+        object,
         type(None),
         type(...),
-        type(iter([])),
-        type(iter(lambda: 0, 0)),
+        type(NotImplemented),
         pathlib.PurePosixPath,
         pathlib.PurePosixPath,
         datetime.datetime,
@@ -195,11 +194,11 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         int,
         str,
         type,
+        object,
         bool,
         type(None),
         type(...),
-        type(iter([])),
-        type(iter(lambda: 0, 0)),
+        type(NotImplemented),
         datetime.datetime,
         datetime.date,
         datetime.time,
@@ -223,65 +222,34 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
     assert monty_run('x', inputs={'x': types.UnionType}) is types.UnionType
 
 
-@pytest.mark.skipif(sys.version_info >= (3, 12), reason='batched round-trips like the rest from 3.12')
-def test_itertools_batched_type_on_older_host(monty_run: RunMonty):
-    """The sandbox can still build a `batched` on a host too old to have one, so its
-    type object crossing out names the type it cannot supply rather than raising a bare
-    `AttributeError` from the import behind it."""
-    with pytest.raises(TypeError) as exc_info:
-        monty_run('import itertools\ntype(itertools.batched([1, 2], 1))')
-    assert exc_info.value.args[0] == 'Cannot convert itertools.batched to a host type: this Python does not define it'
-
-
-# Every `itertools` adaptor Monty models, paired with the expression that builds
-# one inside the sandbox. `batched` is 3.12+, so on an older host it is neither
-# importable here nor present in the round-trip table.
-ITERTOOLS_TYPES: list[tuple[type[object], str]] = [
-    (itertools.accumulate, 'itertools.accumulate([1, 2])'),
-    (itertools.chain, 'itertools.chain([1], [2])'),
-    (itertools.combinations, 'itertools.combinations([1, 2], 2)'),
-    (
-        itertools.combinations_with_replacement,
-        'itertools.combinations_with_replacement([1, 2], 2)',
-    ),
-    (itertools.compress, 'itertools.compress([1, 2], [1, 0])'),
-    (itertools.count, 'itertools.count()'),
-    (itertools.cycle, 'itertools.cycle([1, 2])'),
-    (itertools.dropwhile, 'itertools.dropwhile(bool, [1, 2])'),
-    (itertools.filterfalse, 'itertools.filterfalse(bool, [1, 2])'),
-    (itertools.groupby, 'itertools.groupby([1, 1, 2])'),
-    (itertools.islice, 'itertools.islice([1, 2], 1)'),
-    (itertools.pairwise, 'itertools.pairwise([1, 2])'),
-    (itertools.permutations, 'itertools.permutations([1, 2])'),
-    (itertools.product, 'itertools.product([1], [2])'),
-    (itertools.repeat, 'itertools.repeat(1)'),
-    (itertools.starmap, 'itertools.starmap(max, [(1, 2)])'),
-    (itertools.takewhile, 'itertools.takewhile(bool, [1, 2])'),
-    (itertools.zip_longest, 'itertools.zip_longest([1], [2])'),
+# Type objects outside the data-type allowlist, with the name each crosses out as.
+PROXIED_TYPES: list[tuple[str, str]] = [
+    ('type(print)', 'builtin_function_or_method'),
+    ('type(lambda: 0)', 'function'),
+    ('type({}.keys())', 'dict_keys'),
+    ('type(iter([]))', 'list_iterator'),
+    ('type(iter(lambda: 0, 0))', 'callable_iterator'),
+    ('type(itertools.chain([1]))', 'itertools.chain'),
+    ('functools.partial', 'functools.partial'),
 ]
-if sys.version_info >= (3, 12):
-    ITERTOOLS_TYPES.append((itertools.batched, 'itertools.batched([1, 2], 1)'))
-
-# The private types are reached through what hands them out rather than by
-# name, since only CPython lets you build one directly.
-ITERTOOLS_TYPES.append((type(next(itertools.groupby([1]))[1]), 'next(itertools.groupby([1]))[1]'))
-ITERTOOLS_TYPES.append((type(itertools.tee([1])[0]), 'itertools.tee([1])[0]'))
 
 
-@pytest.mark.parametrize(('ty', 'build'), ITERTOOLS_TYPES, ids=[ty.__name__ for ty, _ in ITERTOOLS_TYPES])
-def test_itertools_type_object_roundtrip(monty_run: RunMonty, ty: type[object], build: str):
-    """Each adaptor's type object survives both directions: recognised by identity
-    on the way in, and rebuilt as the same host class on the way out."""
-    assert monty_run('x', inputs={'x': ty}) is ty
-    assert monty_run(f'import itertools\ntype({build})') is ty
+@pytest.mark.parametrize(('expression', 'name'), PROXIED_TYPES, ids=[name for _, name in PROXIED_TYPES])
+def test_type_object_proxy_output(monty_run: RunMonty, expression: str, name: str):
+    """A type object outside the allowlist crosses out as a `MontyBuiltinProxy`
+    naming the type, never the host class, and re-enters as the sandbox type."""
+    proxy = monty_run(f'import functools, itertools\n{expression}')
+    assert isinstance(proxy, MontyBuiltinProxy)
+    assert (proxy.kind, proxy.name) == ('type', name)
+    assert monty_run(f'import functools, itertools\nx is {expression}', inputs={'x': proxy}) is True
 
 
-@pytest.mark.parametrize(('ty', 'build'), ITERTOOLS_TYPES, ids=[ty.__name__ for ty, _ in ITERTOOLS_TYPES])
-def test_itertools_type_object_isinstance(monty_run: RunMonty, ty: type[object], build: str):
-    """An adaptor type passed in is usable against an instance built in the sandbox,
-    which is what identity recognition is actually for."""
-    code = f'import itertools\nisinstance({build}, t)'
-    assert monty_run(code, inputs={'t': ty}) is True
+def test_proxied_type_input_becomes_callable(monty_run: RunMonty):
+    """A host class outside the allowlist is not modelled, so like any other
+    unmodelled class it enters as a host function."""
+    assert monty_run('(type(x).__name__, repr(x))', inputs={'x': itertools.chain}) == snapshot(
+        ('function', "<function 'chain' external>")
+    )
 
 
 def test_generic_alias_crosses_as_repr(monty_run: RunMonty):
@@ -554,6 +522,8 @@ def test_return_int(monty_run: RunMonty):
 def test_return_exception(monty_run: RunMonty):
     assert monty_run('x = ValueError()\ntype(x)') is ValueError
     assert monty_run('ValueError') is ValueError
+    # a stdlib exception class resolves from its module, not `builtins`
+    assert monty_run('import re\nre.error') is re.error
 
 
 # === BigInt (arbitrary precision integers) ===

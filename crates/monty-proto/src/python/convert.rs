@@ -5,8 +5,8 @@
 use std::borrow::Cow;
 
 use monty_types::{
-    FileMode, MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, StringRepr,
-    unstable::MontyNode,
+    FileMode, MontyDateTime, MontyException, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
+    StringRepr, unstable::MontyNode,
 };
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
@@ -14,12 +14,15 @@ use pyo3::{
     prelude::*,
     sync::PyOnceLock,
     types::{
-        PyDateAccess, PyDateTime, PyDelta, PyDeltaAccess, PyList, PyModule, PyTime, PyTimeAccess, PyTuple, PyType,
-        PyTzInfo, PyTzInfoAccess,
+        PyDateAccess, PyDateTime, PyDelta, PyDeltaAccess, PyModule, PyTime, PyTimeAccess, PyTuple, PyType, PyTzInfo,
+        PyTzInfoAccess,
     },
 };
+use strum::IntoEnumIterator;
 
-/// Inverse of [`type_object_to_py`]: maps a host class passed *into* the sandbox
+use super::exceptions::exc_monty_to_py;
+
+/// Inverse of [`host_type_object`]: maps a host class passed *into* the sandbox
 /// to the Monty [`MontyType`] it represents, so it round-trips instead of degrading to
 /// a callable. Matches by type-object **identity**, not `__module__`/`__name__` —
 /// the latter is spoofable and churns across Python versions (e.g. `pathlib` paths
@@ -39,94 +42,19 @@ pub(super) fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option
 }
 
 /// Host type objects that round-trip into the sandbox, each paired with its Monty
-/// [`MontyType`]. Built once and cached. Identities are taken from [`type_object_to_py`]
+/// [`MontyType`]. Built once and cached. Identities are taken from [`host_type_object`]
 /// so the two directions stay in lock-step. [`MontyType::Path`] is handled separately
 /// (by subclass check) since pathlib exposes several concrete path classes.
-///
-/// The whole table is built in one go, so an entry the host cannot resolve would
-/// fail every lookup, not just its own — [`host_has_type`] keeps those out.
 fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, MontyType)>> {
     static TABLE: PyOnceLock<Vec<(Py<PyAny>, MontyType)>> = PyOnceLock::new();
     TABLE.get_or_try_init(py, || {
-        [
-            MontyType::NoneType,
-            MontyType::Ellipsis,
-            MontyType::Bool,
-            MontyType::Int,
-            MontyType::Float,
-            MontyType::Str,
-            MontyType::Bytes,
-            MontyType::List,
-            MontyType::Deque,
-            MontyType::ListIterator,
-            MontyType::CallableIterator,
-            MontyType::ItertoolsCount,
-            MontyType::ItertoolsRepeat,
-            MontyType::Partial,
-            MontyType::GenericAlias,
-            MontyType::Union,
-            MontyType::ItertoolsPairwise,
-            MontyType::ItertoolsCompress,
-            MontyType::ItertoolsIslice,
-            MontyType::ItertoolsChain,
-            MontyType::ItertoolsCycle,
-            MontyType::ItertoolsTakeWhile,
-            MontyType::ItertoolsDropWhile,
-            MontyType::ItertoolsFilterFalse,
-            MontyType::ItertoolsStarMap,
-            MontyType::ItertoolsAccumulate,
-            MontyType::ItertoolsBatched,
-            MontyType::ItertoolsZipLongest,
-            MontyType::ItertoolsCombinations,
-            MontyType::ItertoolsCombinationsWithReplacement,
-            MontyType::ItertoolsPermutations,
-            MontyType::ItertoolsProduct,
-            MontyType::ItertoolsGroupBy,
-            MontyType::ItertoolsGrouper,
-            MontyType::ItertoolsTee,
-            MontyType::ItertoolsTeeDataObject,
-            MontyType::Tuple,
-            MontyType::Dict,
-            MontyType::Set,
-            MontyType::FrozenSet,
-            MontyType::Range,
-            MontyType::Slice,
-            MontyType::Type,
-            MontyType::Property,
-            MontyType::Date,
-            MontyType::DateTime,
-            MontyType::Time,
-            MontyType::TimeDelta,
-            MontyType::TimeZone,
-            MontyType::RePattern,
-            MontyType::ReMatch,
-            MontyType::TextIOWrapper,
-            MontyType::BufferedReader,
-            MontyType::BufferedWriter,
-            MontyType::BufferedRandom,
-            MontyType::SpecialForm,
-        ]
-        .into_iter()
-        .filter(|t| host_has_type(py, t))
-        .map(|t| Ok((type_object_to_py(py, &t)?, t)))
-        .collect()
+        // iteration yields only `Exception`'s default variant, and exception
+        // classes are not modelled inbound, so the variant is skipped outright
+        MontyType::iter()
+            .filter(|t| !matches!(t, MontyType::Exception(_)))
+            .filter_map(|t| host_type_object(py, &t).map(|obj| obj.map(|obj| (obj, t))).transpose())
+            .collect()
     })
-}
-
-/// Whether this host's Python is new enough to define `t`'s type object.
-///
-/// A type the host does not have can never be the class being looked up, so it
-/// is left out of [`round_trip_type_table`] rather than failing the build of it.
-/// Outbound it is the guard in [`type_object_to_py`], which has a real value to
-/// reject rather than a table entry to skip.
-/// Runtime version check (not `cfg!(Py_3_12)`): this crate has no
-/// pyo3-build-config build script, so the version cfgs don't exist.
-fn host_has_type(py: Python<'_>, t: &MontyType) -> bool {
-    match t {
-        // `itertools.batched` is 3.12+, below the packages' 3.10 floor.
-        MontyType::ItertoolsBatched => py.version_info() >= (3, 12),
-        _ => true,
-    }
 }
 
 pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
@@ -135,25 +63,16 @@ pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
     BUILTINS.get_or_try_init(py, || py.import("builtins").map(Bound::unbind))
 }
 
-/// Reconstructs the host Python *type object* for a Monty [`MontyType`] crossing the
-/// boundary as a value (e.g. sandbox code passing `type(Path('/x'))` to a host call).
+/// The host class for a Monty [`MontyType`] crossing the boundary as a value, or
+/// `None` for a type outside the allowlist, which decodes to a `MontyBuiltinProxy`.
 ///
-/// Genuine builtins resolve from `builtins`; modeled stdlib types resolve from their
-/// real defining module (the `Path` class maps to `PurePosixPath`, like its instances).
-/// The import path can differ from [`MontyType`]'s `Display` (io types show `_io.*` but
-/// live in `io`). Unmodeled types fall through to `builtins` and raise `AttributeError`.
-/// Each modeled type's host class is cached in its own `PyOnceLock` (imported once).
-pub(super) fn type_object_to_py(py: Python<'_>, t: &MontyType) -> PyResult<Py<PyAny>> {
-    // A type this host's Python is too old to define has no object to hand back.
-    // Say which type that was, rather than leaving the arm's import to raise a
-    // bare `AttributeError` naming neither. Same predicate as the filter in
-    // `round_trip_type_table`, so both directions agree on what this host holds.
-    if !host_has_type(py, t) {
-        return Err(PyTypeError::new_err(format!(
-            "Cannot convert {t} to a host type: this Python does not define it"
-        )));
-    }
-
+/// The allowlist is the inert data types: constructing one, or using an instance,
+/// runs no host code beyond the value itself. Types that are callable with side
+/// effects (`functools.partial`, the `io` classes, the `itertools` adaptors) or
+/// reachable only through host internals (iterator and view types, `function`,
+/// `module`) stay proxies. The same list decides which host classes round-trip
+/// *into* the sandbox by identity ([`round_trip_type_table`]).
+pub(super) fn host_type_object(py: Python<'_>, t: &MontyType) -> PyResult<Option<Py<PyAny>>> {
     // Each expansion gets a distinct hygienic `LOCK` static, so every arm caches
     // its own resolved type object. `PyOnceLock::import` imports + getattrs once.
     macro_rules! cached {
@@ -162,82 +81,51 @@ pub(super) fn type_object_to_py(py: Python<'_>, t: &MontyType) -> PyResult<Py<Py
             LOCK.import(py, $module, $name).map(|b| b.clone().unbind())
         }};
     }
-    match t {
+    let obj = match t {
+        MontyType::Type
+        | MontyType::Object
+        | MontyType::Bool
+        | MontyType::Int
+        | MontyType::Float
+        | MontyType::Str
+        | MontyType::Bytes
+        | MontyType::List
+        | MontyType::Tuple
+        | MontyType::Dict
+        | MontyType::Set
+        | MontyType::FrozenSet
+        | MontyType::Range
+        | MontyType::Slice => import_builtins(py)?.getattr(py, t.to_string()),
+        // not `builtins` attributes; taken from the singletons instead
+        MontyType::NoneType => Ok(py.None().bind(py).get_type().into_any().unbind()),
+        MontyType::Ellipsis => Ok(py.Ellipsis().bind(py).get_type().into_any().unbind()),
+        MontyType::NotImplementedType => Ok(py.NotImplemented().bind(py).get_type().into_any().unbind()),
         MontyType::Date => cached!("datetime", "date"),
         MontyType::DateTime => cached!("datetime", "datetime"),
         MontyType::Time => cached!("datetime", "time"),
-        MontyType::Deque => cached!("collections", "deque"),
         MontyType::TimeDelta => cached!("datetime", "timedelta"),
         MontyType::TimeZone => cached!("datetime", "timezone"),
-        MontyType::ListIterator => get_list_iterator_type(py).map(|b| b.clone().unbind()),
-        MontyType::CallableIterator => get_callable_iterator_type(py).map(|b| b.clone().unbind()),
-        MontyType::ItertoolsCount => cached!("itertools", "count"),
-        MontyType::ItertoolsRepeat => cached!("itertools", "repeat"),
-        MontyType::Partial => cached!("functools", "partial"),
-        MontyType::GenericAlias => cached!("types", "GenericAlias"),
-        // `types.UnionType` is the type of `int | None` on every supported host;
-        // on 3.14+ it is the same object as `typing.Union`.
-        MontyType::Union => cached!("types", "UnionType"),
-        MontyType::ItertoolsPairwise => cached!("itertools", "pairwise"),
-        MontyType::ItertoolsCompress => cached!("itertools", "compress"),
-        MontyType::ItertoolsIslice => cached!("itertools", "islice"),
-        MontyType::ItertoolsChain => cached!("itertools", "chain"),
-        MontyType::ItertoolsCycle => cached!("itertools", "cycle"),
-        MontyType::ItertoolsTakeWhile => cached!("itertools", "takewhile"),
-        MontyType::ItertoolsDropWhile => cached!("itertools", "dropwhile"),
-        MontyType::ItertoolsFilterFalse => cached!("itertools", "filterfalse"),
-        MontyType::ItertoolsStarMap => cached!("itertools", "starmap"),
-        MontyType::ItertoolsAccumulate => cached!("itertools", "accumulate"),
-        MontyType::ItertoolsBatched => cached!("itertools", "batched"),
-        MontyType::ItertoolsZipLongest => cached!("itertools", "zip_longest"),
-        MontyType::ItertoolsCombinations => cached!("itertools", "combinations"),
-        MontyType::ItertoolsCombinationsWithReplacement => cached!("itertools", "combinations_with_replacement"),
-        MontyType::ItertoolsPermutations => cached!("itertools", "permutations"),
-        MontyType::ItertoolsProduct => cached!("itertools", "product"),
-        MontyType::ItertoolsGroupBy => cached!("itertools", "groupby"),
-        MontyType::ItertoolsGrouper => cached!("itertools", "_grouper"),
-        MontyType::ItertoolsTee => cached!("itertools", "_tee"),
-        MontyType::ItertoolsTeeDataObject => cached!("itertools", "_tee_dataobject"),
+        MontyType::Deque => cached!("collections", "deque"),
+        // the factory: a namedtuple *class* is built per instance by `decode`
+        MontyType::NamedTuple => get_namedtuple(py).map(|b| b.clone().unbind()),
         // Consistent with the Path *instance* arm, which marshals as PurePosixPath
         // and is instantiable on every host OS (unlike PosixPath on Windows).
         MontyType::Path => get_pure_posix_path(py).map(|b| b.clone().unbind()),
         MontyType::RePattern => cached!("re", "Pattern"),
         MontyType::ReMatch => cached!("re", "Match"),
-        MontyType::TextIOWrapper => cached!("io", "TextIOWrapper"),
-        MontyType::BufferedReader => cached!("io", "BufferedReader"),
-        MontyType::BufferedWriter => cached!("io", "BufferedWriter"),
-        MontyType::BufferedRandom => cached!("io", "BufferedRandom"),
-        MontyType::SpecialForm => cached!("typing", "_SpecialForm"),
-        MontyType::Field => cached!("dataclasses", "Field"),
-        // `NoneType` and `ellipsis` aren't `builtins` attributes; take them from
-        // the singletons (`type(None)` / `type(...)`).
-        MontyType::NoneType => Ok(py.None().bind(py).get_type().into_any().unbind()),
-        MontyType::Ellipsis => Ok(py.Ellipsis().bind(py).get_type().into_any().unbind()),
-        _ => import_builtins(py)?.getattr(py, t.to_string()),
-    }
-}
-
-/// Returns CPython's private `list_iterator` type without relying on a module attribute.
-fn get_list_iterator_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
-    static TYPE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
-    TYPE.get_or_try_init(py, || Ok(PyList::empty(py).try_iter()?.get_type().into_any().unbind()))
-        .map(|ty| ty.bind(py))
-}
-
-/// Returns CPython's private `callable_iterator` type, which — like
-/// `list_iterator` — is not reachable as a `builtins` attribute, so it is taken
-/// from the type of a throwaway two-argument `iter()`.
-fn get_callable_iterator_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
-    static TYPE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
-    TYPE.get_or_try_init(py, || {
-        // `iter(callable, sentinel)` does not call `callable` until advanced, and
-        // this iterator never is — so any callable serves, and a builtin avoids
-        // compiling a throwaway lambda.
-        let callable = import_builtins(py)?.getattr(py, "id")?;
-        let iterator = import_builtins(py)?.getattr(py, "iter")?.call1(py, (callable, 0))?;
-        Ok(iterator.bind(py).get_type().into_any().unbind())
-    })
-    .map(|ty| ty.bind(py))
+        MontyType::GenericAlias => cached!("types", "GenericAlias"),
+        // `types.UnionType` is the type of `int | None` on every supported host;
+        // on 3.14+ it is the same object as `typing.Union`.
+        MontyType::Union => cached!("types", "UnionType"),
+        // the class an instance of this `ExcType` decodes to, so stdlib
+        // exceptions (`re.error`, `binascii.Error`) resolve as well as builtins
+        MontyType::Exception(exc_type) => Ok(exc_monty_to_py(py, MontyException::new(*exc_type, None))
+            .get_type(py)
+            .into_any()
+            .unbind()),
+        _ => return Ok(None),
+    };
+    obj.map(Some)
 }
 
 /// Converts a native Python `datetime.timedelta` to Monty's carrier representation.
