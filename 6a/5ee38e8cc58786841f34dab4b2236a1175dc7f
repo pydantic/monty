@@ -1,0 +1,19 @@
+crates/monty-proto/src/python/std_type_proxy.rs
+  s_063447cc103291::t_a352f1bd4daa19 10,42-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6a5ee38e8cc58786841f34dab4b2236a1175dc7f",
+  "prompts": {},
+  "sessions": {
+    "s_063447cc103291": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e023e8fb-a847-4354-a1a6-59cf32558feb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
