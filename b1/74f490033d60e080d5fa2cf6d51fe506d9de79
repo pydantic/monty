@@ -1,0 +1,138 @@
+crates/monty-wasm-runtime/src/lib.rs
+  s_301d26b8fa778c::t_99237f0eb76b94 33-34,387-390,395
+crates/monty-fs/src/dispatch.rs
+  s_301d26b8fa778c::t_84f10ac38643ea 173
+crates/monty/tests/datetime_format.rs
+  s_301d26b8fa778c::t_170b0a21643f20 74-76
+  s_301d26b8fa778c::t_ac86c37e61cc23 77-92
+crates/monty-proto/src/convert/os_call.rs
+  s_301d26b8fa778c::t_3078767953c798 98-100,165-169
+crates/monty/test_cases/time__module.py
+  s_301d26b8fa778c::t_87b37cc65a0639 35-36
+  s_301d26b8fa778c::t_6ca842ed8e2aba 37-42,71-81
+  s_301d26b8fa778c::t_f09a2e0eabf01d 2-3,23-34,43,82-84
+crates/monty-types/src/os.rs
+  s_301d26b8fa778c::t_e35c65e480a7c7 407-416
+  s_301d26b8fa778c::t_21082d6a4e3661 315,362
+  s_301d26b8fa778c::t_6116cd18d66f70 399
+  s_301d26b8fa778c::t_86616fa14e671c 400-401,406,417-467
+  s_301d26b8fa778c::t_dc6a536af48b2e 402-405
+  s_301d26b8fa778c::t_d8146568e7d4e9 206-207
+  s_301d26b8fa778c::t_95903379c8c48d 123-124
+  s_301d26b8fa778c::t_e2c2672e90895f 126
+crates/monty/src/types/namedtuple.rs
+  ai_agent 92-96
+crates/monty-runtime/tests/subprocess.rs
+  s_301d26b8fa778c::t_c57ee052eb109b 716-721
+crates/monty-datatest/src/main.rs
+  s_301d26b8fa778c::t_a6d573b7d93486 973
+crates/monty/tests/os_tests.rs
+  s_301d26b8fa778c::t_718747fe4ad4a1 1374-1395,1397-1402,1404-1405,1409-1427
+  s_301d26b8fa778c::t_a49da83a51a866 1403,1406-1408
+  s_301d26b8fa778c::t_14f27386a5ecf5 83
+crates/monty/src/bytecode/vm/mod.rs
+  s_301d26b8fa778c::t_e18d869fdffc03 2195-2199
+  s_301d26b8fa778c::t_18d01e763cb869 42-44,2130-2131
+crates/monty-proto/tests/roundtrip.rs
+  s_301d26b8fa778c::t_7c49e9375871c9 13-14,601,612
+  s_301d26b8fa778c::t_ab5bf976d4ac81 15
+  s_301d26b8fa778c::t_c57ee052eb109b 20
+  s_301d26b8fa778c::t_ea01dae869c2b1 982-986
+crates/monty/src/intern.rs
+  s_301d26b8fa778c::t_edec64d16f1817 588-589,767-768,1077-1078,1273-1274,1366-1367,1378-1381,1509-1512,1537-1540,1781-1783,1829-1832,1835-1836,1851-1872
+  s_301d26b8fa778c::t_35767b35d02c6b 779-780
+crates/monty-proto/src/convert/auto_os_calls.rs
+  s_301d26b8fa778c::t_a5f348feee95d3 9-10,142
+  s_301d26b8fa778c::t_5a1f284ca410bf 18,58-61,67,133-136
+crates/monty-types/src/object/unstable.rs
+  s_301d26b8fa778c::t_ab5bf976d4ac81 11
+  s_301d26b8fa778c::t_e8652e5c978d1c 200-201
+crates/monty-proto/src/generated/monty.v1.rs
+  s_301d26b8fa778c::t_5a1f284ca410bf 472-475,507-517
+  s_301d26b8fa778c::t_1797cc972175c5 1098-1106,1227,1229
+crates/monty/tests/auto_os_calls.rs
+  s_301d26b8fa778c::t_6949d3f5e0a679 686-691,707-711
+  s_301d26b8fa778c::t_be2be62fe4b512 153-156,159-162,169-172,181-182
+  s_301d26b8fa778c::t_7d6c3071c46836 183-186
+  s_301d26b8fa778c::t_871b502cf13f15 10,129-152,157-158,163-168,173-180
+crates/monty/test_cases/datetime__zone_new_york.py
+  s_301d26b8fa778c::t_9505ac025d93e3 112-114
+  s_301d26b8fa778c::t_677a3920e7c2b3 108-111,115-117
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_301d26b8fa778c::t_361bf77d2f0f65 409-416
+  s_301d26b8fa778c::t_44194d1dfc15a9 861,905-909
+crates/monty/test_cases/time__struct_time.py
+  s_301d26b8fa778c::t_c0271977ba5d95 97-99,101-104
+  s_301d26b8fa778c::t_e259d4308637c1 1-23,25-96,100,105-107
+  s_301d26b8fa778c::t_548c2582ee69f4 24
+crates/monty-types/src/lib.rs
+  s_301d26b8fa778c::t_25bbc1aa0983bc 25-26
+  s_301d26b8fa778c::t_ab5bf976d4ac81 46
+crates/monty/src/modules/time.rs
+  s_301d26b8fa778c::t_e18d869fdffc03 12
+  s_301d26b8fa778c::t_6ba2cff12bdd94 254-255
+  s_301d26b8fa778c::t_e802f66a00606c 410
+  s_301d26b8fa778c::t_c642011e31b94c 487-515,522-539,541-551,556-560,563,565-567,632-723,726,728-736,740,743-745,747,771,804-818,820-822,825,848-850,880-884,886
+  s_301d26b8fa778c::t_5aa53d65ca0fa3 66-87,91-93,126,128-141
+  s_301d26b8fa778c::t_f46ebbe7445d66 337-338
+  s_301d26b8fa778c::t_aab87e982f98d6 13,16,24,30-33,36,40-42,44,48-63
+  s_301d26b8fa778c::t_3645adc6a9b3f2 21
+  s_301d26b8fa778c::t_a543537a08d66c 568-570
+  s_301d26b8fa778c::t_5a624422864777 178-179
+  s_301d26b8fa778c::t_6a059b6a82b8c8 170-172,174,268,384,476-481,724-725,727,737-739,741-742,746,748-770,772-784,791,793-794,797,799,802-803,819,824,885
+  s_301d26b8fa778c::t_c994ae20d8b776 145-148
+  s_301d26b8fa778c::t_989ab84365fd1b 3-7
+  s_301d26b8fa778c::t_8c947b27fb4f91 369-383,385-394,396-409,411-458,461-475,482-486
+  s_301d26b8fa778c::t_f6a1296df2f88e 552-555
+  s_301d26b8fa778c::t_9d4a9863d6c57b 339-348,361,823,826-847
+  s_301d26b8fa778c::t_a49da83a51a866 851-862,867,873-879
+  s_301d26b8fa778c::t_440ae5048dd757 10,14-15,28,561-562,564,571-589,592-593,595-631
+  s_301d26b8fa778c::t_8946ae3344228c 149-156,160-162,173,175-177,180-181,199-217,220-253,256-267,269-289
+  s_301d26b8fa778c::t_9911bc2811d1b4 395,516-521,540,590-591,594,785-790,792,795-796,798,800-801
+  s_301d26b8fa778c::t_8688184d85e36e 218-219
+  s_301d26b8fa778c::t_861a76caf43f2e 163-169,182-198
+  s_301d26b8fa778c::t_62f6e15ce0cef0 459-460
+  s_301d26b8fa778c::t_ac53582a291c33 863-866,868-872
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_301d26b8fa778c::t_1797cc972175c5 1095-1102,1218,1220
+  s_301d26b8fa778c::t_5a1f284ca410bf 486-489,519-528
+crates/monty/src/types/datetime.rs
+  s_301d26b8fa778c::t_dbe1a8a16d93e7 657-661
+  s_301d26b8fa778c::t_9d4a9863d6c57b 672-676
+crates/monty/test_cases/datetime__zone_london.py
+  s_301d26b8fa778c::t_677a3920e7c2b3 108-111,113,115-117,119,121
+  s_301d26b8fa778c::t_9505ac025d93e3 112,114,118,120
+crates/monty-types/src/auto_os_calls.rs
+  s_301d26b8fa778c::t_2bbec0e3a18990 339,342
+  s_301d26b8fa778c::t_524679ae77e2bf 29-31,336-338,340-341,343-347
+  s_301d26b8fa778c::t_d9ffbd6bee39b3 17-19
+crates/monty-proto/src/convert/mod.rs
+  s_301d26b8fa778c::t_055386237b0292 58-59,77
+crates/monty/test_cases/datetime__zone_sydney.py
+  s_301d26b8fa778c::t_677a3920e7c2b3 108-111,116-117
+  s_301d26b8fa778c::t_9505ac025d93e3 112-115
+crates/monty/test_cases/datetime__zone_kathmandu.py
+  s_301d26b8fa778c::t_9505ac025d93e3 112,114
+  s_301d26b8fa778c::t_677a3920e7c2b3 109-111,113,115
+crates/monty-wasm-runtime/wit/runtime.wit
+  s_301d26b8fa778c::t_60706eb51d6c59 245-252,254,260
+crates/monty/src/os_dispatch.rs
+  s_301d26b8fa778c::t_18d01e763cb869 82-84
+  s_301d26b8fa778c::t_b2c0eec18dc61b 37,197-200,216
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b174f490033d60e080d5fa2cf6d51fe506d9de79",
+  "prompts": {},
+  "sessions": {
+    "s_301d26b8fa778c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b77ee845-eda8-47cf-8f10-62cf45c15d18",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
