@@ -11,7 +11,7 @@ use std::{
 
 use chrono::{
     Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike,
-    format::StrftimeItems,
+    format::{Parsed, StrftimeItems, parse as chrono_parse, parse_and_remainder},
 };
 use monty_types::{
     DateTimeSource, MontyDateTime, MontyTimeZone, OsFunctionCall, ResourceTracker, SandboxTimeZone, local_wall_clock,
@@ -662,46 +662,66 @@ fn parse_iso_datetime(s: &str, heap: &mut Heap) -> Option<DateTime> {
 /// once the rest of the format has matched, so that error cannot be reported
 /// until the match is settled.
 fn parse_strptime(date_string: &str, fmt: &str) -> Option<RunResult<(NaiveDateTime, Option<i32>)>> {
-    let Some(without_zone) = strip_zone_directive(fmt) else {
+    let Some((before, after)) = split_zone_directive(fmt) else {
         return parse_strptime_naive(date_string, fmt).map(|naive| Ok((naive, None)));
     };
     // Chrono cannot express CPython's `%z` — an optional colon, optional seconds,
-    // or a bare `Z` — so the token is lifted out of the input and what is left is
-    // parsed without it. The leftmost token that lets the whole string parse wins,
-    // as CPython's leftmost regex match does.
-    date_string.char_indices().find_map(|(at, _)| {
-        let token = strptime_offset_at(&date_string[at..])?;
-        let mut without_offset = String::with_capacity(date_string.len() - token.len);
-        without_offset.push_str(&date_string[..at]);
-        without_offset.push_str(&date_string[at + token.len..]);
-        let naive = parse_strptime_naive(&without_offset, &without_zone)?;
-        Some(if token.colons_agree {
-            Ok((naive, Some(token.offset_seconds)))
-        } else {
-            let matched = &date_string[at..at + token.len];
-            Err(SimpleException::new_msg(ExcType::ValueError, format!("Inconsistent use of : in {matched}")).into())
-        })
-    })
+    // or a bare `Z` — so the directives either side of it are parsed in turn and the
+    // token is read from between them, sharing one `Parsed` as chrono's own
+    // `parse_from_str` does. Chrono reports where the leading directives stopped,
+    // which is the only place the token can begin: hunting for it through the input
+    // instead would cost a parse of the whole string per candidate position.
+    for before_fmt in chrono_strptime_formats(&before) {
+        let mut parsed = Parsed::new();
+        let Ok(rest) = parse_and_remainder(&mut parsed, date_string, StrftimeItems::new(&before_fmt)) else {
+            continue;
+        };
+        let Some(token) = strptime_offset_at(rest) else {
+            continue;
+        };
+        for after_fmt in chrono_strptime_formats(&after) {
+            let mut parsed = parsed.clone();
+            if chrono_parse(&mut parsed, &rest[token.len..], StrftimeItems::new(&after_fmt)).is_err() {
+                continue;
+            }
+            let Some(naive) = naive_from_parsed(&parsed) else {
+                continue;
+            };
+            return Some(if token.colons_agree {
+                Ok((naive, Some(token.offset_seconds)))
+            } else {
+                let matched = &rest[..token.len];
+                Err(SimpleException::new_msg(ExcType::ValueError, format!("Inconsistent use of : in {matched}")).into())
+            });
+        }
+    }
+    None
 }
 
-/// The format with its `%z` directive removed, or `None` when it has none.
-/// `%%z` is a literal `z` and leaves the format alone.
-fn strip_zone_directive(fmt: &str) -> Option<String> {
+/// The datetime chrono accumulated, defaulting a date-only format to midnight as
+/// [`parse_strptime_naive`] does.
+fn naive_from_parsed(parsed: &Parsed) -> Option<NaiveDateTime> {
+    parsed
+        .to_naive_datetime_with_offset(0)
+        .ok()
+        .or_else(|| parsed.to_naive_date().ok()?.and_hms_opt(0, 0, 0))
+}
+
+/// The format either side of its `%z` directive, or `None` when it has none.
+/// `%%z` is a literal `z` and is not the directive.
+fn split_zone_directive(fmt: &str) -> Option<(String, String)> {
     let mut rest = fmt;
-    let mut without_zone = String::with_capacity(fmt.len());
+    let mut before = String::with_capacity(fmt.len());
     while let Some(at) = rest.find('%') {
         let (literal, directive) = rest.split_at(at);
-        without_zone.push_str(literal);
+        before.push_str(literal);
         let mut chars = directive.chars();
         chars.next();
         match chars.next() {
-            Some('z') => {
-                without_zone.push_str(chars.as_str());
-                return Some(without_zone);
-            }
+            Some('z') => return Some((before, chars.as_str().to_owned())),
             Some(other) => {
-                without_zone.push('%');
-                without_zone.push(other);
+                before.push('%');
+                before.push(other);
                 rest = chars.as_str();
             }
             None => return None,

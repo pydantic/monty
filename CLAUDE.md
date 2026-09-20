@@ -783,6 +783,9 @@ You may mark python files with:
     it sets `AutoOsCalls::timezone` for Monty and `TZ` for CPython, so `astimezone()`,
     a naive `timestamp()`, `%Z`/`%z` and the `time` zone constants can be compared.
     The CPython side is skipped on Windows, which has no `time.tzset`.
+    Without the marker both sides run in UTC — except on Windows, where the harness
+    cannot move CPython, so a case asserting zone values needs `# skip-cpython-windows`
+    (see `datetime__zone_default.py`).
 
 NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!! INSTEAD FIX THE BEHAVIOR SO THAT THE TEST PASSES.
 

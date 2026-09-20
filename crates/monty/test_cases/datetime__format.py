@@ -197,6 +197,14 @@ except ValueError as exc:
         'offset must be a timedelta strictly between -timedelta(hours=24) and '
         'timedelta(hours=24), not datetime.timedelta(days=1)'
     )
+# the leading directives decide where %z can start, so a long run of offset-shaped
+# text costs one parse rather than one per position it could have begun at
+_long = '+0000' * 2000
+try:
+    datetime.datetime.strptime(_long, '%Y-%m-%d %z')
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == f"time data '{_long}' does not match format '%Y-%m-%d %z'"
 # %:z formats but does not parse, so the colon reads as a directive of its own
 try:
     datetime.datetime.strptime('2024-06-15 +01:00', '%Y-%m-%d %:z')
