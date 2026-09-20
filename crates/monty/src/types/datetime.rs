@@ -13,7 +13,9 @@ use chrono::{
     Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike,
     format::StrftimeItems,
 };
-use monty_types::{DateTimeSource, MontyDateTime, MontyTimeZone, OsFunctionCall, ResourceTracker, local_wall_clock};
+use monty_types::{
+    DateTimeSource, MontyDateTime, MontyTimeZone, OsFunctionCall, ResourceTracker, SandboxTimeZone, local_wall_clock,
+};
 
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
@@ -955,24 +957,44 @@ fn isoformat_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<char> {
     }
 }
 
-/// Computes the POSIX timestamp for a datetime.
-///
-/// For naive datetimes, treats them as local time and computes the UTC epoch
-/// assuming the local wall clock matches UTC (CPython's `datetime.timestamp()`
-/// for naive datetimes actually uses the system timezone, but since Monty runs
-/// in a sandbox with no timezone database, treating naive as UTC is the best
-/// approximation).
-///
-/// For aware datetimes, converts to UTC first via the stored offset.
-fn compute_timestamp(dt: &DateTime) -> f64 {
-    let utc_naive = if dt.offset_seconds.is_some() {
-        to_utc_naive(dt).unwrap_or(dt.naive)
+/// `datetime.timestamp()`: seconds since the Unix epoch. An aware value converts
+/// through its own offset; a naive one is read as session-local wall time, as
+/// CPython reads it in the host's zone, at its first occurrence in a DST fold.
+fn compute_timestamp(dt: &DateTime, zone: &SandboxTimeZone) -> RunResult<f64> {
+    let offset = if let Some(offset) = dt.offset_seconds {
+        offset
     } else {
-        dt.naive
+        probe_local_offset(dt.naive, zone)?;
+        zone.offset_for_local(dt.naive).ok_or_else(date_out_of_range)?
     };
-    let secs = utc_naive.and_utc().timestamp();
-    let micros = utc_naive.and_utc().timestamp_subsec_micros();
-    secs as f64 + f64::from(micros) / 1_000_000.0
+    // Seconds, not a datetime: the instant may fall outside the range a `datetime`
+    // holds at either end of it, and CPython still returns the number.
+    let local = dt.naive.and_utc();
+    let seconds = local.timestamp() - i64::from(offset);
+    Ok(seconds as f64 + f64::from(local.timestamp_subsec_micros()) / 1_000_000.0)
+}
+
+/// CPython solves a naive value's instant by rendering two candidates as civil
+/// datetimes: the value shifted by the zone's offset, and the day before it.
+/// Either can leave `datetime`'s range at the ends of it, where CPython's own
+/// error escapes, so it is reproduced. Unlike [`probe_neighbouring_days`] this
+/// depends on the offset: at the last representable day only a zone east of UTC
+/// shifts past the end.
+fn probe_local_offset(naive: NaiveDateTime, zone: &SandboxTimeZone) -> RunResult<()> {
+    let offset = ChronoTimeDelta::seconds(i64::from(zone.at(naive).offset_seconds));
+    // chrono's range is far wider than Python's, so a shift of at most a day lands.
+    let shifted = naive.checked_add_signed(offset).unwrap_or(naive).year();
+    if naive
+        .date()
+        .pred_opt()
+        .is_none_or(|day| !year_in_python_range(day.year()))
+    {
+        Err(date::year_out_of_range(0))
+    } else if year_in_python_range(shifted) {
+        Ok(())
+    } else {
+        Err(date::year_out_of_range(shifted))
+    }
 }
 
 impl HeapItem for DateTime {
@@ -1171,7 +1193,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
             }
             Some(StaticStrings::Timestamp) => {
                 args.check_zero_args("datetime.timestamp", vm.heap)?;
-                let ts = compute_timestamp(&dt);
+                let ts = compute_timestamp(&dt, &vm.env.auto_os_calls.timezone)?;
                 Ok(CallResult::Value(Value::Float(ts)))
             }
             Some(StaticStrings::Astimezone) => astimezone(&dt, vm, args),

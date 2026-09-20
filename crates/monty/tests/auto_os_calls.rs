@@ -455,6 +455,60 @@ fn naive_astimezone_refuses_the_first_and_last_day() {
     }
 }
 
+/// A naive `timestamp()` reads the session zone, and reproduces the range error
+/// CPython's own solve raises: always on the first representable day, and on the
+/// last only where the zone shifts past the end of the range. Expectations were
+/// checked against CPython under `TZ=Europe/London` and `TZ=Asia/Kathmandu`.
+#[test]
+fn naive_timestamp_reads_the_session_zone() {
+    let under = |zone: SandboxTimeZone| AutoOsCalls {
+        datetime: FIXED,
+        timezone: zone,
+        ..AutoOsCalls::default()
+    };
+    let london = under(SandboxTimeZone::named("Europe/London").unwrap());
+    // BST, so an hour earlier in UTC than the same wall clock read as UTC
+    assert_eq!(
+        run_repr_under("datetime(2024, 6, 15, 12, 30).timestamp()", london.clone()),
+        "1718451000.0"
+    );
+    assert_eq!(
+        run_repr_under("datetime(2024, 1, 15, 12, 30).timestamp()", london.clone()),
+        "1705321800.0"
+    );
+    // an aware value carries its own offset and never consults the zone
+    assert_eq!(
+        run_repr_under(
+            "datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc).timestamp()",
+            london.clone()
+        ),
+        "1718454600.0"
+    );
+    let refused = |expr: &str, calls: AutoOsCalls| {
+        let code = format!("from datetime import datetime, timezone\n{expr}");
+        run(&code, calls).unwrap_err()
+    };
+    assert_eq!(
+        refused("datetime(1, 1, 1, 12, 0).timestamp()", london.clone()),
+        "ValueError: year must be in 1..9999, not 0"
+    );
+    // GMT in December, so the last day still lands inside the range
+    assert_eq!(
+        run_repr_under("datetime(9999, 12, 31, 23, 0).timestamp()", london),
+        "253402297200.0"
+    );
+    // +05:45 pushes 9999-12-31 19:00 into year 10000, but 18:00 stays inside
+    let kathmandu = under(SandboxTimeZone::named("Asia/Kathmandu").unwrap());
+    assert_eq!(
+        refused("datetime(9999, 12, 31, 19, 0).timestamp()", kathmandu.clone()),
+        "ValueError: year must be in 1..9999, not 10000"
+    );
+    assert_eq!(
+        run_repr_under("datetime(9999, 12, 31, 18, 0).timestamp()", kathmandu),
+        "253402258500.0"
+    );
+}
+
 /// Zone names are validated before the database sees them, and the database
 /// answers for `UTC` and every IANA key.
 #[test]

@@ -79,8 +79,9 @@ Methods: `isoformat(sep='T', timespec='auto')`, `strftime`, `replace`,
 `weekday`, `isoweekday`, `date`, `time`, `timetz`, `timestamp`, `astimezone(tz=None)`,
 `utcoffset`, `tzname`, `dst`.
 
-`astimezone()` converts to the [session zone](#reading-the-clock) where CPython uses the host's; as in CPython the
-result's `tzinfo` is a `timezone` carrying the offset and abbreviation at that instant (`BST`).
+`astimezone()` and a naive `timestamp()` read the [session zone](#reading-the-clock) where CPython uses the host's;
+as in CPython the `tzinfo` `astimezone()` attaches is a `timezone` carrying the offset and abbreviation at that
+instant (`BST`).
 The default zone is `timezone(timedelta(0), 'UTC')`, what CPython reports under `TZ=UTC`, so
 `datetime.now().astimezone().tzinfo == timezone.utc` holds but it is not the `timezone.utc` singleton.
 A naive value is read in the session zone, as CPython reads it in the host's, at its first occurrence in a DST fold

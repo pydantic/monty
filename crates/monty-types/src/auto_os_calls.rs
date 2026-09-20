@@ -138,26 +138,29 @@ impl SandboxTimeZone {
         }
     }
 
+    /// The offset in force for a naive wall-clock time in this zone. An ambiguous
+    /// time (a DST fold) takes its first occurrence and a skipped time (a gap) the
+    /// offset from before it, CPython's `fold=0` reading. `None` only outside the
+    /// civil year range, which is wider than `datetime`'s.
+    #[must_use]
+    pub fn offset_for_local(&self, local: NaiveDateTime) -> Option<i32> {
+        match self {
+            Self::Fixed { offset_seconds, .. } => Some(*offset_seconds),
+            // The offset rather than the instant: jiff's timestamps stop short of the
+            // last day a `datetime` holds, and `timestamp()` reaches past it anyway.
+            Self::Named(zone) => match zone.zone.to_ambiguous_timestamp(civil_datetime(local)?).offset() {
+                AmbiguousOffset::Unambiguous { offset }
+                | AmbiguousOffset::Gap { before: offset, .. }
+                | AmbiguousOffset::Fold { before: offset, .. } => Some(offset.seconds()),
+            },
+        }
+    }
+
     /// The UTC instant a naive wall-clock time in this zone denotes, or `None`
-    /// outside years 1..=9999. An ambiguous time (a DST fold) takes its first
-    /// occurrence and a skipped time (a gap) the offset from before it, CPython's
-    /// `fold=0` reading.
+    /// outside years 1..=9999.
     #[must_use]
     pub fn utc_from_local(&self, local: NaiveDateTime) -> Option<NaiveDateTime> {
-        match self {
-            Self::Fixed { offset_seconds, .. } => local_wall_clock(local, offset_seconds.checked_neg()?),
-            Self::Named(zone) => {
-                // Read the offset rather than the instant: jiff's timestamps stop short
-                // of the last day a `datetime` holds. `before` on either ambiguous branch
-                // is CPython's `fold=0`.
-                let offset = match zone.zone.to_ambiguous_timestamp(civil_datetime(local)?).offset() {
-                    AmbiguousOffset::Unambiguous { offset }
-                    | AmbiguousOffset::Gap { before: offset, .. }
-                    | AmbiguousOffset::Fold { before: offset, .. } => offset,
-                };
-                local_wall_clock(local, offset.seconds().checked_neg()?)
-            }
-        }
+        local_wall_clock(local, self.offset_for_local(local)?.checked_neg()?)
     }
 
     /// The `time` module's `timezone`, `altzone`, `daylight` and `tzname`, read
