@@ -1,0 +1,34 @@
+crates/monty/src/types/datetime.rs
+  s_d7bc871534e90e::t_31f5515d70d6b8 656-743
+  s_d7bc871534e90e::t_ecdd758999e2fc 429-430,434,445-447,451,458-475
+crates/monty/src/types/timezone.rs
+  s_d7bc871534e90e::t_0f7f0c13b05682 177-178
+  s_d7bc871534e90e::t_f3c93ecc98f5a9 171-176,179-188
+docs/limitations/datetime.md
+  s_74944c479c1f03::t_2a2eb2ac6e0ea5 106,221-223
+  s_d7bc871534e90e::t_9c2a812fef9f70 104-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4328b1e6e0710578e8558218e9b90cfe01e23629",
+  "prompts": {},
+  "sessions": {
+    "s_74944c479c1f03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19b0d33c-5351-43fa-88b8-bcb38965d131",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_d7bc871534e90e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d891a62b-af67-4621-82cf-acdd5d5c7f71",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
