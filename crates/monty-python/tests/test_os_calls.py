@@ -18,7 +18,7 @@ import pytest
 from conftest import CALL_HOST, RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import NOT_HANDLED, Monty, MontyFileHandle, MontyRuntimeError, StatResult
+from pydantic_monty import NOT_HANDLED, Monty, MontyFileHandle, MontyRuntimeError, OSAccess, StatResult, TimeCaller
 
 # =============================================================================
 # Basic os= callback dispatch
@@ -453,15 +453,49 @@ def test_datetime_now_callback_with_timezone(monty_run: RunMonty):
 
 
 def test_time_time_callback(monty_run: RunMonty):
-    """time.time() reaches the callback with no arguments and returns a float."""
+    """time.time() reaches the callback naming itself as the caller, and returns a float."""
 
     def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> float | None:
         if name == 'time.time':
-            assert args == ()
+            assert args == ('time.time',)
             return 1700000000.5
         return None
 
     assert monty_run('import time; time.time()', os=os_handler, checkout=CALL_HOST) == snapshot(1700000000.5)
+
+
+def test_time_clocks_share_one_call_naming_their_caller(monty_run: RunMonty):
+    """Every clock reaches `time.time`; the caller argument lets a handler answer each one differently."""
+    answers = {'time.time': 1000.0, 'time.monotonic': 5.0, 'time.perf_counter': 0.25, 'time.gmtime': 0.0}
+    calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append((name, args))
+        if name == 'time.time':
+            return answers[args[0]]
+        return NOT_HANDLED
+
+    code = 'import time; (time.time(), time.monotonic(), time.perf_counter(), time.gmtime().tm_year)'
+    assert monty_run(code, os=os_handler, checkout=CALL_HOST) == snapshot((1000.0, 5.0, 0.25, 1970))
+    assert calls == snapshot(
+        [
+            ('time.time', ('time.time',)),
+            ('time.time', ('time.monotonic',)),
+            ('time.time', ('time.perf_counter',)),
+            ('time.time', ('time.gmtime',)),
+        ]
+    )
+
+
+def test_abstract_os_time_receives_the_caller(monty_run: RunMonty):
+    """`AbstractOS.time()` gets the caller, so a subclass can give each clock its own reading."""
+
+    class Clocks(OSAccess):
+        def time(self, caller: TimeCaller = 'time.time') -> float:
+            return {'time.time': 1000.0, 'time.monotonic': 5.0}.get(caller, -1.0)
+
+    code = 'import time; (time.time(), time.monotonic(), time.perf_counter())'
+    assert monty_run(code, os=Clocks(), checkout=CALL_HOST) == snapshot((1000.0, 5.0, -1.0))
 
 
 # =============================================================================
@@ -994,6 +1028,45 @@ def test_sleep_invalid(pool: Monty, value: Any, error: type[Exception], message:
     assert str(exc_info.value) == message
 
 
+def test_process_time_defaults_to_zero(monty_run: RunMonty):
+    code = 'import time; (time.process_time(), time.thread_time(), time.process_time_ns(), time.thread_time_ns())'
+    assert monty_run(code) == snapshot((0.0, 0.0, 0, 0))
+    assert monty_run(code, checkout={'auto_os_calls': {'process_time': 'zero'}}) == snapshot((0.0, 0.0, 0, 0))
+
+
+def test_process_time_elapsed_reports_execution_time(monty_run: RunMonty):
+    """`'elapsed'` is the session's execution clock: it advances while the sandbox runs and never reaches `os=`."""
+    code = """
+import time
+start = time.process_time()
+for _ in range(200_000):
+    pass
+(time.process_time() > start, time.process_time_ns() > 0, time.thread_time() > 0.0)
+"""
+    calls: list[str] = []
+
+    def os_handler(*, name: str, **_: Any) -> Any:
+        calls.append(name)
+        return NOT_HANDLED
+
+    checkout = {'auto_os_calls': {'process_time': 'elapsed', 'datetime': 'call_host'}}
+    assert monty_run(code, os=os_handler, checkout=checkout) == snapshot((True, True, True))
+    assert calls == snapshot([])
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        ('cpu', ValueError, "process_time must be 'zero' or 'elapsed', got 'cpu'"),
+        (0, TypeError, 'process_time must be a str'),
+    ],
+)
+def test_process_time_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(auto_os_calls={'process_time': value})
+    assert str(exc_info.value) == message
+
+
 @pytest.mark.parametrize('seed', [42, -42, 2**70, 1.5, 'abc', b'abc'])
 def test_random_start_seed_matches_random_seed(monty_run: RunMonty, seed: Any):
     expected = random.Random(seed)
@@ -1219,7 +1292,7 @@ def test_auto_os_calls_rejects_unknown_keys(pool: Monty):
     with pytest.raises(ValueError) as exc_info:
         pool.checkout(auto_os_calls={'sleeps': 'zero'})  # pyright: ignore[reportArgumentType]
     assert str(exc_info.value) == snapshot(
-        "unknown auto_os_calls key 'sleeps', expected one of: datetime, timezone, sleep, sleep_system_max, random_start"
+        "unknown auto_os_calls key 'sleeps', expected one of: datetime, timezone, sleep, sleep_system_max, process_time, random_start"
     )
     with pytest.raises(TypeError) as exc_info:
         pool.checkout(auto_os_calls='zero')  # pyright: ignore[reportArgumentType]

@@ -466,7 +466,8 @@ uncatchable `RuntimeError`.
 
 ## Clock, sleeping and entropy
 
-By default, `date.today()`, `datetime.now()` and `time.time()` read the worker's clock in UTC.
+By default, `date.today()`, `datetime.now()` and the `time` module's clocks read the worker's clock in UTC.
+`time.process_time()` reports `0.0`.
 The pool handles `time.sleep()` and `asyncio.sleep()`, capped per call by `sleepSystemMax` (10 seconds).
 Gathered async sleeps overlap.
 Sleeps count toward suspensions and `maxTotalSleepSecs`, but not execution duration limits.
@@ -493,7 +494,10 @@ The zone shifts naive `datetime.now()` and `date.today()`, and is what `astimezo
 `{ seed }` initializes the module as `random.seed(seed)` and derives deterministic states for unseeded `random.Random()`
 instances.
 Seeds accept `number`, `bigint`, `string` and `Uint8Array`; sandbox calls to `random.seed()` still override the state.
+`processTime: 'elapsed'` makes `time.process_time()` report the session's execution time instead of `0.0`.
 `'call_host'` delegates the selected clock, sleep or initial-entropy calls to `os`.
+Every `time` module clock then arrives as the one function `time.time`, with the asking function's name
+(`'time.monotonic'`, ...) as its argument.
 Explicit `os.urandom()` calls always reach `os`.
 
 ## Assert message annotations

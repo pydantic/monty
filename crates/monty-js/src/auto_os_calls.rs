@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use monty_types::{AutoOsCalls, DateTimeSource, RandomSeed, RandomStart, SandboxTimeZone, SleepMode};
+use monty_types::{AutoOsCalls, DateTimeSource, ProcessTime, RandomSeed, RandomStart, SandboxTimeZone, SleepMode};
 use napi::{bindgen_prelude::BigInt, Error, Result, Status};
 use num_bigint::BigInt as NumBigInt;
 
@@ -64,6 +64,11 @@ pub(crate) fn extract_auto_os_calls(options: &NativeCheckoutOptions) -> Result<A
         Some("call_host") => SleepMode::CallHost,
         Some(other) => return Err(invalid(&format!("sleep: unknown mode '{other}'"))),
     };
+    let process_time = match options.process_time.as_deref() {
+        None | Some("zero") => ProcessTime::Zero,
+        Some("elapsed") => ProcessTime::Elapsed,
+        Some(other) => return Err(invalid(&format!("processTime: unknown source '{other}'"))),
+    };
     let random_start = match options.random_start_kind.as_deref() {
         None | Some("system") => RandomStart::System,
         Some("call_host") => RandomStart::CallHost,
@@ -74,6 +79,7 @@ pub(crate) fn extract_auto_os_calls(options: &NativeCheckoutOptions) -> Result<A
         datetime,
         timezone,
         sleep,
+        process_time,
         random_start,
     })
 }

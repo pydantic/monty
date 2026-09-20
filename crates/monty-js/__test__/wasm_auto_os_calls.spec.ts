@@ -23,6 +23,22 @@ test('the wasm pool charges system sleeps to maxTotalSleepSecs', async (ctx) => 
   }
 })
 
+test('the wasm pool passes processTime through to the component', async (ctx) => {
+  skipIfBrowser(ctx)
+  const pool = await Monty.create()
+  const hidden = await pool.checkout()
+  const elapsed = await pool.checkout({ autoOsCalls: { processTime: 'elapsed' } })
+  try {
+    const code = 'import time\nfor _ in range(200000):\n    pass\ntime.process_time() > 0.0'
+    t.is(await hidden.feedRun(code), false)
+    t.is(await elapsed.feedRun(code), true)
+  } finally {
+    await hidden.close()
+    await elapsed.close()
+    await pool.close()
+  }
+})
+
 test('the wasm pool keeps its sleep limit as a ceiling across a load', async (ctx) => {
   skipIfBrowser(ctx)
   const pool = await Monty.create()

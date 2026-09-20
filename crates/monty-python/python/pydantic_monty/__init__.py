@@ -47,6 +47,7 @@ from .os_access import (
     OSAccess,
     OsFunction,
     StatResult,
+    TimeCaller,
 )
 
 __all__ = (
@@ -104,6 +105,7 @@ __all__ = (
     # os_access
     'StatResult',
     'OsFunction',
+    'TimeCaller',
     'NOT_HANDLED',
     'AbstractOS',
     'AbstractFile',
@@ -187,13 +189,14 @@ class RandomSeed(TypedDict):
 
 
 class AutoOSCalls(TypedDict, total=False):
-    """Clock, sleep and random initialization policies for the session.
+    """Clock, sleep, process-clock and random initialization policies for the session.
 
     Omitted keys keep their defaults; `'call_host'` routes calls to the `os=` handler.
     """
 
     datetime: Literal['system', 'call_host'] | datetime.datetime
-    """Clock for `date.today()`, `datetime.now()` and `time.time()`; defaults to the worker's clock.
+    """Clock for `date.today()`, `datetime.now()` and the `time` module's clocks, `monotonic()` and
+    `perf_counter()` included (only `process_time` is separate); defaults to the worker's clock.
     A `datetime` freezes the instant and, unless `timezone` is set, uses its `utcoffset()` and `tzname()`
     (UTC if naive). Naive `datetime.now()` then returns its wall time."""
 
@@ -213,6 +216,11 @@ class AutoOSCalls(TypedDict, total=False):
     """Maximum seconds per `'system'` sleep (default 10; `inf` disables the cap).
     Raises `ValueError` with other sleep modes. Each sleep counts as one suspension and toward
     `max_total_sleep_secs`, but not execution duration limits."""
+
+    process_time: Literal['zero', 'elapsed']
+    """What `time.process_time()` and `time.thread_time()` report; defaults to `'zero'`.
+    `'zero'` keeps elapsed execution time unobservable in the sandbox. `'elapsed'` reports the
+    session's accumulated execution time, which excludes sleeps and time suspended on the host."""
 
     random_start: Literal['system', 'call_host'] | RandomSeed
     """Initial `random` state; defaults to the worker's OS entropy.

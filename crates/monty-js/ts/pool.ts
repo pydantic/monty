@@ -104,7 +104,7 @@ export interface CheckoutOptions {
    */
   printFlushInterval?: number
   /**
-   * Session clock, sleep and random initialization policies; see `AutoOsCalls`.
+   * Session clock, sleep, process-clock and random initialization policies; see `AutoOsCalls`.
    * Defaults to the worker's clock in UTC and its entropy, with pool-managed sleeps capped at ten seconds.
    * Sleeps count toward suspensions and `maxTotalSleepSecs`, but not execution duration limits.
    */
@@ -265,5 +265,6 @@ function nativeAutoOsCalls(calls: EncodedAutoOsCalls): Record<string, unknown> {
     else if ('str' in seed) fields.randomSeedStr = seed.str
     else fields.randomSeedBytes = Buffer.from(seed.bytes)
   }
+  if (calls.processTime !== undefined) fields.processTime = calls.processTime
   return fields
 }

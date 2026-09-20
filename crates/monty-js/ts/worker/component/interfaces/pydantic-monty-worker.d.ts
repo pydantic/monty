@@ -312,11 +312,19 @@ export interface RandomStartSeed {
   tag: 'seed'
   val: RandomSeed
 }
+export type ProcessTime = ProcessTimeZero | ProcessTimeElapsed
+export interface ProcessTimeZero {
+  tag: 'zero'
+}
+export interface ProcessTimeElapsed {
+  tag: 'elapsed'
+}
 export interface AutoOsCalls {
   datetime?: DatetimeSource
   timezone?: TimeZone
   sleep?: SleepMode
   randomStart?: RandomStart
+  processTime?: ProcessTime
 }
 /**
  * # Variants

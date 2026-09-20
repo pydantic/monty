@@ -139,9 +139,14 @@ Larger requests raise `MemoryError` before allocating.
 Unseeded `random` generators request host entropy only under `auto_os_calls={'random_start': 'call_host'}`.
 Otherwise they use worker OS entropy or the configured seed.
 
-By default, `date.today()`, `datetime.now()` and `time.time()` read the worker's clock.
+By default, `date.today()`, `datetime.now()` and the `time` module's clocks read the worker's clock.
+`time.process_time()` reports `0.0` unless `auto_os_calls={'process_time': 'elapsed'}` opts into the session's
+execution time.
 The pool handles `time.sleep()` and `asyncio.sleep()`, capped per call by `sleep_system_max`.
 Setting `datetime` or `sleep` to `'call_host'` in `checkout(auto_os_calls=...)` routes those calls to `os=`.
+Every `time` module clock then reaches `AbstractOS.time(caller)` as the one OS function `time.time`, with `caller`
+naming the function that asked (`'time.monotonic'`, `'time.localtime'`, ...).
+A subclass that overrides `def time(self)` without the `caller` parameter raises `TypeError` on any clock read.
 `OSAccess` answers from the host process and caps each wait at `max_sleep`.
 
 A `random.Random` instance or the `random.Random` class returned from the sandbox converts to its repr string.

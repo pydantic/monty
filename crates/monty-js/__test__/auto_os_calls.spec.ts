@@ -101,7 +101,56 @@ test('call_host sends the clock to the os callback', async () => {
     return 7.5
   })
   t.is(result, 7.5)
-  t.deepEqual(calls, [['time.time', []]])
+  t.deepEqual(calls, [['time.time', ['time.time']]])
+})
+
+test('every time module clock shares the call, naming its caller', async () => {
+  const answers: Record<string, number> = { 'time.time': 1000, 'time.monotonic': 5, 'time.perf_counter': 0.25 }
+  const calls: unknown[] = []
+  const code = 'import time\n(time.time(), time.monotonic(), time.perf_counter(), time.gmtime().tm_year)'
+  const result = await runWith(code, { datetime: 'call_host' }, (name, args) => {
+    calls.push([name, args])
+    return answers[args[0] as string] ?? 0
+  })
+  t.deepEqual(result, [1000, 5, 0.25, 1970])
+  t.deepEqual(calls, [
+    ['time.time', ['time.time']],
+    ['time.time', ['time.monotonic']],
+    ['time.time', ['time.perf_counter']],
+    ['time.time', ['time.gmtime']],
+  ])
+})
+
+// processTime
+
+test('the process clocks report zero unless the session opts in', async () => {
+  const code = 'import time\n(time.process_time(), time.thread_time(), time.process_time_ns(), time.thread_time_ns())'
+  t.deepEqual(await run(code), [0, 0, 0, 0])
+  t.deepEqual(await runWith(code, { processTime: 'zero' }), [0, 0, 0, 0])
+})
+
+test("processTime: 'elapsed' reports execution time and never reaches os", async () => {
+  const calls: unknown[] = []
+  const code = [
+    'import time',
+    'start = time.process_time()',
+    'for _ in range(200000):',
+    '    pass',
+    '(time.process_time() > start, time.process_time_ns() > 0)',
+  ].join('\n')
+  const result = await runWith(code, { processTime: 'elapsed', datetime: 'call_host' }, (name) => {
+    calls.push(name)
+    return 0
+  })
+  t.deepEqual(result, [true, true])
+  t.deepEqual(calls, [])
+})
+
+test('an invalid processTime is rejected before the checkout', async () => {
+  await t.throwsAsync(() => pool().checkout({ autoOsCalls: { processTime: 'cpu' as never } }), {
+    instanceOf: RangeError,
+    message: "unknown processTime 'cpu', expected one of: zero, elapsed",
+  })
 })
 
 test('invalid datetime and timezone values are rejected before the checkout', async () => {

@@ -505,6 +505,7 @@ function componentAutoOsCalls(calls: EncodedAutoOsCalls): ComponentAutoOsCalls |
   else if (calls.randomStart !== undefined) {
     record.randomStart = { tag: 'seed', val: componentRandomSeed(calls.randomStart.seed) }
   }
+  if (calls.processTime !== undefined) record.processTime = { tag: calls.processTime }
   return Object.keys(record).length === 0 ? undefined : record
 }
 

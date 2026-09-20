@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 __all__ = (
     'OsFunction',
+    'TimeCaller',
     'AbstractOS',
     'AbstractFile',
     'MemoryFile',
@@ -69,6 +70,25 @@ OsFunction = Literal[
     'system.sleep',
     'system.async_sleep',
 ]
+
+TimeCaller = Literal[
+    'time.time',
+    'time.time_ns',
+    'time.monotonic',
+    'time.monotonic_ns',
+    'time.perf_counter',
+    'time.perf_counter_ns',
+    'time.gmtime',
+    'time.localtime',
+    'time.asctime',
+    'time.ctime',
+    'time.strftime',
+]
+"""The `time` function that asked `AbstractOS.time()` for the clock.
+
+All of them arrive under the one OS function name `'time.time'` and want epoch seconds;
+a handler can answer each differently or ignore the distinction.
+"""
 
 MAX_URANDOM_BYTES_DEFAULT: int = 1_048_576
 """Default maximum host allocation per `urandom()` call. 1 MiB."""
@@ -270,7 +290,7 @@ class AbstractOS(ABC):
             case 'os.urandom':
                 return self.urandom(*args)
             case 'time.time':
-                return self.time()
+                return self.time(*args)
             # `feed_start` callers can dispatch system sleeps manually.
             case 'time.sleep' | 'system.sleep':
                 return self.sleep(*args)
@@ -606,11 +626,16 @@ class AbstractOS(ABC):
             raise MemoryError(f'os.urandom() size exceeds max_urandom_bytes ({self.max_urandom_bytes})')
         return os.urandom(size)
 
-    def time(self) -> float:
-        """Return the epoch seconds for Monty's `time.time()` callback.
+    def time(self, caller: TimeCaller = 'time.time') -> float:
+        """Return the epoch seconds for Monty's `time` module clocks.
 
         Reached only under `auto_os_calls={'datetime': 'call_host'}`; override it
         alongside `date_today()` and `datetime_now()` for a virtual clock.
+        An override must accept `caller`: the dispatcher passes it positionally.
+
+        Args:
+            caller: The `time` function that asked, e.g. `'time.monotonic'`; ignore it
+                unless each clock should read differently.
         """
         return time.time()
 

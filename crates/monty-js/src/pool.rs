@@ -163,6 +163,8 @@ pub struct NativeCheckoutOptions {
     pub sleep: Option<String>,
     /// Maximum seconds per system sleep (default 10); `Infinity` disables the cap.
     pub sleep_system_max_secs: Option<f64>,
+    /// What `time.process_time()` reports: `'zero'` (default) or `'elapsed'`.
+    pub process_time: Option<String>,
     /// Where `random` starts: `'system'`, `'call_host'` or `'seed'` (with
     /// exactly one `random_seed_*` field below). Absent: `'system'`.
     pub random_start_kind: Option<String>,

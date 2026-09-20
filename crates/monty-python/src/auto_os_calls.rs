@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use chrono::NaiveDate;
 use monty_types::{
-    AutoOsCalls, DateTimeSource, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, RandomSeed, RandomStart,
-    SandboxTimeZone, SleepMode,
+    AutoOsCalls, DateTimeSource, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, ProcessTime, RandomSeed,
+    RandomStart, SandboxTimeZone, SleepMode,
 };
 use num_bigint::BigInt;
 use pyo3::{
@@ -55,11 +55,12 @@ impl<'a, 'py> FromPyObject<'a, 'py> for AutoOsCallsArg {
                 "timezone" => timezone = Some(time_zone(&value)?),
                 "sleep" => calls.sleep = sleep_mode(&value)?,
                 "sleep_system_max" => max = Some(sleep_system_max(&value)?),
+                "process_time" => calls.process_time = process_time(&value)?,
                 "random_start" => calls.random_start = random_start(&value)?,
                 other => {
                     return Err(PyValueError::new_err(format!(
                         "unknown auto_os_calls key '{other}', expected one of: \
-                         datetime, timezone, sleep, sleep_system_max, random_start"
+                         datetime, timezone, sleep, sleep_system_max, process_time, random_start"
                     )));
                 }
             }
@@ -221,6 +222,19 @@ fn sleep_system_max(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
         Ok(Duration::MAX)
     } else {
         duration_from_secs("sleep_system_max", seconds)
+    }
+}
+
+fn process_time(value: &Bound<'_, PyAny>) -> PyResult<ProcessTime> {
+    let name = value
+        .cast::<PyString>()
+        .map_err(|_| PyTypeError::new_err("process_time must be a str"))?;
+    match &*name.to_cow()? {
+        "zero" => Ok(ProcessTime::Zero),
+        "elapsed" => Ok(ProcessTime::Elapsed),
+        other => Err(PyValueError::new_err(format!(
+            "process_time must be 'zero' or 'elapsed', got '{other}'"
+        ))),
     }
 }
 

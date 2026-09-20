@@ -103,7 +103,15 @@ export type SleepMode = 'system' | 'call_host' | 'zero'
 export type RandomStart = 'system' | 'call_host' | { seed: number | bigint | string | Uint8Array }
 
 /**
- * Session clock, sleep and random initialization policies. Omitted fields retain their defaults.
+ * What `time.process_time()` and `time.thread_time()` report: `'zero'` (default) keeps elapsed
+ * execution time unobservable in the sandbox; `'elapsed'` reports the session's accumulated
+ * execution time, which excludes sleeps and time suspended on the host.
+ */
+export type ProcessTime = 'zero' | 'elapsed'
+
+/**
+ * Session clock, sleep, process-clock and random initialization policies. Omitted fields retain their
+ * defaults.
  */
 export interface AutoOsCalls {
   datetime?: DateTimeSource
@@ -115,6 +123,7 @@ export interface AutoOsCalls {
    */
   sleepSystemMax?: number
   randomStart?: RandomStart
+  processTime?: ProcessTime
 }
 
 /** A frozen clock reading, as the wire carries it. */
@@ -145,9 +154,12 @@ export interface EncodedAutoOsCalls {
   sleepSystemMaxSecs?: number
   /** Absent means `'system'`. */
   randomStart?: 'call_host' | { seed: EncodedRandomSeed }
+  /** Absent means `'zero'`. */
+  processTime?: ProcessTime
 }
 
 const SLEEP_MODES: readonly SleepMode[] = ['system', 'call_host', 'zero']
+const PROCESS_TIMES: readonly ProcessTime[] = ['zero', 'elapsed']
 
 /** Mirrors monty-types' `SleepMode::DEFAULT_MAX`: the cap on one `'system'` sleep, in seconds. */
 const DEFAULT_SLEEP_SYSTEM_MAX_SECS = 10
@@ -203,6 +215,14 @@ export function encodeAutoOsCalls(options: AutoOsCalls): EncodedAutoOsCalls {
     encoded.randomStart = 'call_host'
   } else if (options.randomStart !== undefined && options.randomStart !== 'system') {
     encoded.randomStart = { seed: encodeRandomSeed(options.randomStart) }
+  }
+  if (options.processTime !== undefined) {
+    if (!PROCESS_TIMES.includes(options.processTime)) {
+      throw new RangeError(
+        `unknown processTime '${String(options.processTime)}', expected one of: ${PROCESS_TIMES.join(', ')}`,
+      )
+    }
+    encoded.processTime = options.processTime
   }
   return encoded
 }
