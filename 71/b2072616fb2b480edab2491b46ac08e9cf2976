@@ -1,0 +1,19 @@
+crates/monty-proto/proto/monty/v1/monty.proto
+  ai_agent 382-383
+crates/monty-proto/src/worker.rs
+  ai_agent 214
+crates/monty-proto/src/generated/monty.v1.rs
+  ai_agent 453-454
+crates/monty-js/ts/worker/transport.ts
+  ai_agent 97
+crates/monty-proto/tests/oracle/monty.v1.rs
+  ai_agent 468-469
+crates/monty-wasm-runtime/wit/runtime.wit
+  ai_agent 253-255,289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "71b2072616fb2b480edab2491b46ac08e9cf2976",
+  "prompts": {}
+}
