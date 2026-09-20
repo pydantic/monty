@@ -7,7 +7,7 @@ use std::{
     hash::{DefaultHasher, Hash, Hasher},
 };
 
-use monty_types::{BuiltinsFunctions, MontyType, unstable::MontyNode};
+use monty_types::{BuiltinsFunctions, MontyType, StringRepr, unstable::MontyNode};
 use pyo3::prelude::*;
 
 /// Read-only proxy for a builtin function, or a type object outside the
@@ -39,7 +39,11 @@ impl PyMontyStdTypeProxy {
 
     /// `MontyStdTypeProxy(kind='function', name='open')`
     fn __repr__(&self) -> String {
-        format!("MontyStdTypeProxy(kind='{}', name='{}')", self.kind(), self.inner)
+        format!(
+            "MontyStdTypeProxy(kind={}, name={})",
+            StringRepr(self.kind()),
+            StringRepr(&self.name())
+        )
     }
 
     /// Equal when standing for the same builtin.
