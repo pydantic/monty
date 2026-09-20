@@ -1,0 +1,26 @@
+crates/monty/src/types/long_int.rs
+  s_8f91ae9628e48e::t_f0d6376adb907e 831-836
+  s_8f91ae9628e48e::t_ad5dccbcfb97d8 780-786,788-791,807-817,819,824-830,837-845
+crates/monty/tests/resource_limits.rs
+  s_8f91ae9628e48e::t_f0d6376adb907e 523-532
+crates/monty/test_cases/builtin__math_funcs.py
+  s_8f91ae9628e48e::t_f0d6376adb907e 251-258
+docs/limitations/resource_limits.md
+  s_8f91ae9628e48e::t_f0d6376adb907e 136-139
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1dfb01e051e786e7c796e40318f129e3b44843c3",
+  "prompts": {},
+  "sessions": {
+    "s_8f91ae9628e48e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a5590aa-37ee-46f1-b34d-918b24f4aecf",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
