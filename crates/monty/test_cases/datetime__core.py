@@ -140,10 +140,13 @@ _target = datetime.timezone(datetime.timedelta(hours=1), 'X')
 assert _aware.astimezone(_target).tzinfo is _target
 assert _aware.astimezone(_target) == _aware
 assert _aware.astimezone(_target).tzname() == 'X'
-# the sandbox zone is fixed, so a naive value converts without raising and comes back aware
+# the sandbox zone is fixed, so a naive value converts without raising and comes back aware;
+# with no `# timezone=` marker that zone is UTC, which is what the CPython side runs in too
 _local = datetime.datetime(2024, 6, 15, 12, 30).astimezone()
-assert _local.tzinfo is not None
-assert _local.utcoffset() is not None
+assert repr(_local) == "datetime.datetime(2024, 6, 15, 12, 30, tzinfo=datetime.timezone(datetime.timedelta(0), 'UTC'))"
+assert _local.utcoffset() == datetime.timedelta(0)
+assert _local.tzname() == 'UTC'
+assert datetime.datetime(2024, 6, 15, 12, 30).timestamp() == 1718454600.0
 assert datetime.datetime(2024, 6, 15, 12, 30).astimezone(datetime.timezone.utc).tzinfo is datetime.timezone.utc
 # the same day near the year boundary needs the date to roll with the offset
 assert repr(datetime.datetime(2024, 1, 1, 1, 0, tzinfo=_eet).astimezone(datetime.timezone.utc)) == (

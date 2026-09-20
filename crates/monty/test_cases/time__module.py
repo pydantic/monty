@@ -20,15 +20,11 @@ assert 1_600_000_000.0 < start < 32_000_000_000.0
 assert time.time() >= start
 
 # === zone constants ===
-# the values depend on the zone (UTC in Monty), so only their shape is checked here
-assert type(time.timezone) is int
-assert type(time.altzone) is int
-assert time.daylight in (0, 1)
-assert -86400 < time.timezone < 86400
-assert -86400 < time.altzone < 86400
-assert type(time.tzname) is tuple
-assert len(time.tzname) == 2
-assert all(type(name) is str for name in time.tzname)
+# a case with no `# timezone=` marker runs in UTC on both sides
+assert time.timezone == 0
+assert time.altzone == 0
+assert time.daylight == 0
+assert time.tzname == ('UTC', 'UTC')
 
 # === time.sleep() ===
 assert time.sleep(0) is None

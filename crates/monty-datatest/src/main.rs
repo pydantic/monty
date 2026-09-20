@@ -2105,11 +2105,20 @@ struct CpythonTimeZone {
 }
 
 impl CpythonTimeZone {
-    /// Applies `zone`, remembering whatever `TZ` held. `None` does nothing.
+    /// Applies `zone`, remembering whatever `TZ` held.
+    ///
+    /// A case without a `# timezone=` marker gets UTC, the zone Monty defaults
+    /// to: leaving CPython on the host's zone would make the two sides disagree
+    /// on every unmarked case that reads the local zone, on whichever developer
+    /// machine or CI runner is not itself UTC.
     fn apply(zone: Option<&str>) -> Option<Self> {
-        let name = zone?;
+        // `time.tzset` is POSIX-only. Windows already skips the cases that name
+        // a zone, so there is nothing to apply and nothing to restore there.
+        if cfg!(windows) {
+            return None;
+        }
         Python::attach(|py| {
-            let previous = Self::set(py, Some(name));
+            let previous = Self::set(py, Some(zone.unwrap_or("UTC")));
             Some(Self { previous })
         })
     }
