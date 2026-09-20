@@ -1,0 +1,23 @@
+crates/monty/test_cases/datetime__core.py
+  s_d7bc871534e90e::t_fd78383157a3e3 143-144,146-149
+crates/monty/test_cases/time__module.py
+  s_d7bc871534e90e::t_fd78383157a3e3 23-27
+crates/monty-datatest/src/main.rs
+  s_d7bc871534e90e::t_e480daf8a21380 2108-2113,2115-2119,2121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "214c32330e28ff1b11f28001fabed8fe7df78476",
+  "prompts": {},
+  "sessions": {
+    "s_d7bc871534e90e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d891a62b-af67-4621-82cf-acdd5d5c7f71",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
