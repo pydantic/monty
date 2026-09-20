@@ -30,7 +30,7 @@ The Python proxy re-enters the sandbox as the builtin it names, as does a JavaSc
 a JavaScript `BuiltinFunction` marker passed back becomes its repr string.
 The allowlist is `type`, `object`, `bool`, `int`, `float`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`,
 `frozenset`, `range`, `slice`, `NoneType`, `ellipsis`, `NotImplementedType`, the `datetime` classes,
-`collections.deque`, `collections.namedtuple`, `re.Pattern`, `re.Match`, `types.GenericAlias`, `types.UnionType`,
+`collections.deque`, `re.Pattern`, `re.Match`, `types.GenericAlias`, `types.UnionType`,
 `pathlib.PurePosixPath` and the exception classes.
 So `open`, `functools.partial` and `type(iter([]))` reach a Python host as proxies, while `int` and `datetime.date`
 are the host classes.

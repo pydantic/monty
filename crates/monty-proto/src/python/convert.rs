@@ -106,8 +106,6 @@ pub(super) fn host_type_object(py: Python<'_>, t: MontyType) -> PyResult<Option<
         MontyType::TimeDelta => cached!("datetime", "timedelta"),
         MontyType::TimeZone => cached!("datetime", "timezone"),
         MontyType::Deque => cached!("collections", "deque"),
-        // the factory: a namedtuple *class* is built per instance by `decode`
-        MontyType::NamedTuple => get_namedtuple(py).map(|b| b.clone().unbind()),
         // Consistent with the Path *instance* arm, which marshals as PurePosixPath
         // and is instantiable on every host OS (unlike PosixPath on Windows).
         MontyType::Path => get_pure_posix_path(py).map(|b| b.clone().unbind()),

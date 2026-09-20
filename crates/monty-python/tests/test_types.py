@@ -231,6 +231,7 @@ PROXIED_TYPES: list[tuple[str, str]] = [
     ('type(iter(lambda: 0, 0))', 'callable_iterator'),
     ('type(itertools.chain([1]))', 'itertools.chain'),
     ('functools.partial', 'functools.partial'),
+    ('type(sys.version_info)', 'namedtuple'),
 ]
 
 
@@ -238,10 +239,10 @@ PROXIED_TYPES: list[tuple[str, str]] = [
 def test_type_object_proxy_output(monty_run: RunMonty, expression: str, name: str):
     """A type object outside the allowlist crosses out as a `MontyStdTypeProxy`
     naming the type, never the host class, and re-enters as the sandbox type."""
-    proxy = monty_run(f'import functools, itertools\n{expression}')
+    proxy = monty_run(f'import functools, itertools, sys\n{expression}')
     assert isinstance(proxy, MontyStdTypeProxy)
     assert (proxy.kind, proxy.name) == ('type', name)
-    assert monty_run(f'import functools, itertools\nx is {expression}', inputs={'x': proxy}) is True
+    assert monty_run(f'import functools, itertools, sys\nx is {expression}', inputs={'x': proxy}) is True
 
 
 def test_proxied_type_input_becomes_callable(monty_run: RunMonty):
