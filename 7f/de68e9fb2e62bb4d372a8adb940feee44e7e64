@@ -1,0 +1,26 @@
+docs/quickstart/rust.md
+  s_d7bc871534e90e::t_c07983ff7f08ce 8,18,230-232
+crates/monty/tests/auto_os_calls.rs
+  s_d7bc871534e90e::t_ff1f3b17c6abd8 412
+  s_d7bc871534e90e::t_2b769b03c81c43 377-411,413-418
+crates/monty-types/src/auto_os_calls.rs
+  s_d7bc871534e90e::t_89da2f001daa3b 6-9,150-158,265-268,271-273
+docs/limitations/datetime.md
+  s_d7bc871534e90e::t_168ae4bbc03f28 89-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7fde68e9fb2e62bb4d372a8adb940feee44e7e64",
+  "prompts": {},
+  "sessions": {
+    "s_d7bc871534e90e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d891a62b-af67-4621-82cf-acdd5d5c7f71",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
