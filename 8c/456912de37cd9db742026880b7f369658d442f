@@ -1,0 +1,47 @@
+crates/monty-python/tests/test_mount_table.py
+  s_74944c479c1f03::t_defa92c3f2b18c 434-435
+crates/monty-fs/tests/mount_escape_repro.rs
+  s_74944c479c1f03::t_defa92c3f2b18c 129-130,168-183,189-213
+  s_74944c479c1f03::t_12d29a853dd835 184-188
+crates/monty-js/ts/mountDir.ts
+  s_74944c479c1f03::t_defa92c3f2b18c 19-23
+crates/monty-pool/src/checkout.rs
+  s_74944c479c1f03::t_c2df1a4250e6fb 1889-1891
+crates/monty-fs/src/error.rs
+  s_74944c479c1f03::t_defa92c3f2b18c 70-75,173-175,184-186
+crates/monty-python/src/mount.rs
+  s_74944c479c1f03::t_defa92c3f2b18c 25-29
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_74944c479c1f03::t_defa92c3f2b18c 98-101
+docs/cli.md
+  s_74944c479c1f03::t_defa92c3f2b18c 59-60
+crates/monty-runtime/src/main.rs
+  s_74944c479c1f03::t_defa92c3f2b18c 55-57
+crates/monty-pool/README.md
+  s_74944c479c1f03::t_defa92c3f2b18c 75-76
+docs/filesystem.md
+  s_74944c479c1f03::t_defa92c3f2b18c 62-65
+crates/monty-fs/src/mount_table.rs
+  s_74944c479c1f03::t_defa92c3f2b18c 12-13,75-76,93-102,108,365-367,409-410,415,434-441,443-448,450-463
+  s_74944c479c1f03::t_02376aaa0d56f4 7,442,449
+crates/monty-runtime/README.md
+  s_74944c479c1f03::t_defa92c3f2b18c 40-41
+docs/limitations/filesystem.md
+  s_74944c479c1f03::t_defa92c3f2b18c 30,33-36,47-53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8c456912de37cd9db742026880b7f369658d442f",
+  "prompts": {},
+  "sessions": {
+    "s_74944c479c1f03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19b0d33c-5351-43fa-88b8-bcb38965d131",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
