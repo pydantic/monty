@@ -14,7 +14,7 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import MontyConversionError, MontyRuntimeError
+from pydantic_monty import MontyBuiltinProxy, MontyConversionError, MontyRuntimeError
 
 
 def test_none_input(monty_run: RunMonty):
@@ -128,6 +128,27 @@ def test_tuple_output(monty_run: RunMonty):
 
 def test_set_output(monty_run: RunMonty):
     assert monty_run('{1, 2, 3}') == snapshot({1, 2, 3})
+
+
+def test_builtin_function_output(monty_run: RunMonty):
+    """A builtin function reaching the host is a `MontyBuiltinProxy` carrying its
+    name, never the host's own callable, and crosses back in as the builtin."""
+    proxy = monty_run('open')
+    assert isinstance(proxy, MontyBuiltinProxy)
+    assert (proxy.kind, proxy.name) == snapshot(('function', 'open'))
+    assert repr(proxy) == snapshot("MontyBuiltinProxy(kind='function', name='open')")
+    assert not callable(proxy)
+    assert [p.name for p in monty_run('[getattr, exec, object.__setattr__]')] == snapshot(
+        ['getattr', 'exec', 'object.__setattr__']
+    )
+    assert monty_run('x is open', inputs={'x': proxy}) is True
+    assert monty_run('x', inputs={'x': proxy}) == proxy
+    assert {proxy, monty_run('open')} == {proxy}
+
+    def check(f: object) -> bool:
+        return isinstance(f, MontyBuiltinProxy) and f.name == 'len'
+
+    assert monty_run('check(len)', external_lookup={'check': check}) is True
 
 
 def test_type_object_output(monty_run: RunMonty):
@@ -533,10 +554,6 @@ def test_return_int(monty_run: RunMonty):
 def test_return_exception(monty_run: RunMonty):
     assert monty_run('x = ValueError()\ntype(x)') is ValueError
     assert monty_run('ValueError') is ValueError
-
-
-def test_return_builtin(monty_run: RunMonty):
-    assert monty_run('len') is len
 
 
 # === BigInt (arbitrary precision integers) ===

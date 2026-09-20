@@ -84,7 +84,10 @@ mod _monty {
     // `MontyClassProxy` / `MontyClassTypeProxy` are the read-only proxies the
     // conversion layer builds for class instances and classes with no original
     // host object (sandbox-defined, or returned after a session restore into a
-    // fresh session).
+    // fresh session); `MontyBuiltinProxy` stands in for builtin functions and
+    // type objects the host never materialises from sandbox output.
+    #[pymodule_export]
+    use monty_proto::python::PyMontyBuiltinProxy as MontyBuiltinProxy;
     #[pymodule_export]
     use monty_proto::python::PyMontyClassProxy as MontyClassProxy;
     #[pymodule_export]

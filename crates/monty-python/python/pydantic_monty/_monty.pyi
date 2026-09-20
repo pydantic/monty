@@ -30,6 +30,7 @@ __all__ = [
     'CollectString',
     'Frame',
     'Monty',
+    'MontyBuiltinProxy',
     'MontyClassProxy',
     'MontyClassTypeProxy',
     'MontyConversionError',
@@ -421,6 +422,26 @@ class MontyClassTypeProxy:
 
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
+
+@final
+class MontyBuiltinProxy:
+    """Read-only proxy for a builtin function, or a type object outside the
+    data-type allowlist, returned from the sandbox: `open`, `type(print)`,
+    `functools.partial`. Only the name crosses, so the host never holds a live
+    callable built from sandbox output. Passed back in, it is the builtin again.
+    """
+
+    @property
+    def kind(self) -> Literal['function', 'type']:
+        """`'function'` for a builtin function, `'type'` for a type object."""
+
+    @property
+    def name(self) -> str:
+        """The name the sandbox renders the builtin as (`'open'`, `'functools.partial'`)."""
+
+    def __repr__(self) -> str: ...
+    def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
 
 @final
 class MontyCrashedError(MontyError):

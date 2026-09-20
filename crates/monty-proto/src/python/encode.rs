@@ -19,6 +19,7 @@ use pyo3::{
 };
 
 use super::{
+    builtin_proxy::PyMontyBuiltinProxy,
     class_instance::{
         ClassHeader, InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy, is_class_instance_wrapper,
         is_class_type_wrapper, wrapper_uuid,
@@ -247,6 +248,9 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
                 identity: Some(obj.clone()),
                 register: None,
             })
+        } else if let Ok(proxy) = obj.cast::<PyMontyBuiltinProxy>() {
+            // a proxy handed out by decode re-enters as the builtin it stands for
+            Ok(self.leaf(proxy.get().inner.to_node()))
         } else if obj.is_instance(get_pure_posix_path(py)?)? {
             // pathlib.PurePosixPath and thereby pathlib.PosixPath
             Ok(self.leaf(MontyNode::Path(obj.str()?.extract()?)))

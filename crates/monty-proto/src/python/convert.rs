@@ -129,19 +129,6 @@ fn host_has_type(py: Python<'_>, t: &MontyType) -> bool {
     }
 }
 
-/// Resolves a builtin function's host object from the name Monty renders it as.
-///
-/// Nearly every name is a plain `builtins` attribute, but `object.__setattr__`
-/// is dotted — it lives on `object`, not on the module — so the name is walked
-/// segment by segment rather than looked up whole.
-pub(super) fn builtin_function_to_py(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
-    let mut obj: Py<PyAny> = import_builtins(py)?.clone_ref(py).into_any();
-    for segment in name.split('.') {
-        obj = obj.getattr(py, segment)?;
-    }
-    Ok(obj)
-}
-
 pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
     static BUILTINS: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
 

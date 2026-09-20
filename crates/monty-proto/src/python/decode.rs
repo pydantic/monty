@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use monty_types::{
-    MontyException, MontyObject,
+    BuiltinsFunctions, MontyException, MontyObject,
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use pyo3::{
@@ -13,10 +13,11 @@ use pyo3::{
 };
 
 use super::{
+    builtin_proxy::{BuiltinRef, PyMontyBuiltinProxy},
     class_instance::{ClassHeader, InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy},
     convert::{
-        PyMontyFileHandle, builtin_function_to_py, get_namedtuple, get_pure_posix_path, import_builtins,
-        monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py, type_object_to_py,
+        PyMontyFileHandle, get_namedtuple, get_pure_posix_path, import_builtins, monty_datetime_to_py,
+        monty_time_to_py, monty_timezone_to_py, type_object_to_py,
     },
     exceptions::exc_monty_to_py,
 };
@@ -131,7 +132,10 @@ impl Decoder<'_, '_> {
                 .map(Bound::unbind),
             MontyNode::TimeZone(timezone) => monty_timezone_to_py(py, timezone),
             MontyNode::Type(t) => type_object_to_py(py, t),
-            MontyNode::BuiltinFunction(f) => builtin_function_to_py(py, &f.to_string()),
+            // `type` is the one builtin function on the host-class allowlist; every
+            // other one crosses as a proxy carrying its name, never the host's callable
+            MontyNode::BuiltinFunction(BuiltinsFunctions::Type) => import_builtins(py)?.getattr(py, "type"),
+            MontyNode::BuiltinFunction(f) => builtin_proxy(py, BuiltinRef::Function(*f)),
             // a registered host class resolves to the original class object,
             // anything else to a read-only `MontyClassTypeProxy`
             MontyNode::ClassType(class) => {
@@ -229,6 +233,11 @@ impl Decoder<'_, '_> {
         self.namedtuple_types.insert(key, nt_type.clone_ref(py));
         Ok(nt_type)
     }
+}
+
+/// A [`PyMontyBuiltinProxy`] standing for `inner`, as a Python object.
+fn builtin_proxy(py: Python<'_>, inner: BuiltinRef) -> PyResult<Py<PyAny>> {
+    Ok(Py::new(py, PyMontyBuiltinProxy { inner })?.into_any())
 }
 
 /// The class as a proxy records it: the node's header without its attrs,

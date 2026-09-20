@@ -13,12 +13,14 @@
 //! the top-level crate decides how libpython is linked (e.g. maturin enables
 //! it for wheels).
 
+mod builtin_proxy;
 mod class_instance;
 mod convert;
 mod decode;
 mod encode;
 mod exceptions;
 
+pub use builtin_proxy::PyMontyBuiltinProxy;
 pub use class_instance::{InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy, uuid_to_py};
 pub use convert::PyMontyFileHandle;
 pub use decode::{DecodedArena, monty_to_py};
