@@ -777,7 +777,18 @@ impl<'h> HeapRead<'h, LongInt> {
     }
 }
 
+/// Work above which `modular_pow` polls the time limit between exponent bits.
+///
+/// Measured in exponent bits × modulus words², the cost of square-and-multiply with a
+/// quadratic reduction. Below it `num-bigint`'s monolithic `modpow` runs uninterrupted,
+/// about 0.2 s on a 2024 laptop and well inside the pool's grace on slower hosts.
+const MODPOW_UNPOLLED_WORK: u64 = 1 << 27;
+
 /// Performs modular exponentiation for integer values of any storage representation.
+///
+/// Small inputs take `num-bigint`'s Montgomery `modpow`; anything past
+/// `MODPOW_UNPOLLED_WORK` takes the slower [`polled_modpow`] so a time limit can
+/// interrupt it, as CPython computes these rather than rejecting them.
 pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, heap: &Heap) -> RunResult<Option<Value>> {
     let Some(exponent) = integer_value(exponent, heap) else {
         return Ok(None);
@@ -793,11 +804,45 @@ pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, heap
     }
 
     let modulus_abs = modulus.abs();
-    let mut result = base.modpow(exponent.as_ref(), &modulus_abs);
+    // Reducing first keeps the base non-negative and no larger than the modulus.
+    let base = base.mod_floor(&modulus_abs);
+    let (base, exponent, modulus_abs) = (base.magnitude(), exponent.magnitude(), modulus_abs.magnitude());
+    let words = modulus_abs.bits().div_ceil(64);
+    let work = exponent.bits().saturating_mul(words.saturating_mul(words));
+    let result = if work <= MODPOW_UNPOLLED_WORK {
+        base.modpow(exponent, modulus_abs)
+    } else {
+        polled_modpow(base, exponent, modulus_abs, &heap.tracker)?
+    };
+    let mut result = BigInt::from(result);
     if modulus.is_negative() && !result.is_zero() {
-        result -= modulus_abs;
+        result -= BigInt::from(modulus_abs.clone());
     }
     Ok(Some(LongInt::new(result).into_value(heap)))
+}
+
+/// Left-to-right square-and-multiply that polls the time limit before every exponent bit.
+///
+/// Slower than Montgomery reduction, so only the large inputs `modular_pow` routes here pay
+/// for it. Each step is one squaring and one reduction of a value no larger than the
+/// modulus, so intermediates stay within a constant multiple of already-tracked inputs.
+/// It polls every bit rather than every 64th because one step on a huge modulus can take
+/// most of a second on its own.
+fn polled_modpow(
+    base: &BigUint,
+    exponent: &BigUint,
+    modulus: &BigUint,
+    tracker: &ResourceTracker,
+) -> RunResult<BigUint> {
+    let mut result = BigUint::one() % modulus;
+    for bit in (0..exponent.bits()).rev() {
+        tracker.check_time()?;
+        result = &result * &result % modulus;
+        if exponent.bit(bit) {
+            result = result * base % modulus;
+        }
+    }
+    Ok(result)
 }
 
 /// Raises a long integer to another integer value.

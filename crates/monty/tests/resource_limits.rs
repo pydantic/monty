@@ -520,6 +520,16 @@ fn timeout_in_math_aggregations() {
     }
 }
 
+/// Three-argument `pow` past the unpolled work threshold polls the time limit
+/// between exponent bits instead of running `num-bigint`'s `modpow` to completion.
+#[test]
+fn timeout_in_three_arg_pow() {
+    assert_timeout_in_builtin(
+        "pow(3, 1 << 200000, (1 << 4096) + 1)",
+        "pow(3, 1 << 200000, (1 << 4096) + 1)",
+    );
+}
+
 /// Test that `list(range(huge))` respects the time limit.
 ///
 /// The `list()` constructor drains its concrete Python iterator.
