@@ -219,8 +219,8 @@ impl MontyRepl {
         inputs: impl Into<NamedValues>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
-        match source_nesting_exception(code, &self.script_name, self.options.source_scan_threshold) {
-            Ok(()) => self.feed_start_scanned(code, inputs, print),
+        match self.check_source(code) {
+            Ok(checked_code) => self.feed_start_checked(checked_code, inputs, print),
             Err(error) => Err(Box::new(ReplStartError { repl: self, error })),
         }
     }
@@ -236,16 +236,7 @@ impl MontyRepl {
         inputs: impl Into<NamedValues>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.feed_start_scanned(code.0, inputs, print)
-    }
-
-    /// The feed starters' shared body, past the nesting scan.
-    fn feed_start_scanned(
-        self,
-        code: &str,
-        inputs: impl Into<NamedValues>,
-        print: PrintWriter<'_>,
-    ) -> Result<ReplProgress, Box<ReplStartError>> {
+        let code = code.0;
         let mut this = self;
         if code.is_empty() {
             return Ok(ReplProgress::Complete {
