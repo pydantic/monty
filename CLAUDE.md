@@ -472,6 +472,7 @@ make lint-rs              Lint Rust code with clippy and import checks
 make clippy-fix           Fix Rust code with clippy
 make generate-proto       Regenerate monty-proto's checked-in code from the .proto schema
 make check-proto          Verify monty-proto's checked-in code matches the .proto schema
+make check-publish        Package every publishable crate as `cargo publish` would, without uploading
 make generate-api-docs    Generate the Rust API reference into docs/api/rust/ (gitignored) from rustdoc JSON
 make docs-dev             Preview this checkout in a sibling pydantic/unified-docs checkout (../unified-docs)
 make lint-py              Lint Python code with ruff
