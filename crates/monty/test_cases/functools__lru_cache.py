@@ -259,6 +259,24 @@ for _ in range(2):
 assert boom_calls == [1, 1]
 assert boom.cache_info() == (0, 2, None, 0)
 
+# a raising cached call must not disturb the operand stack it unwinds through:
+# the wrapper leaves its cache and key there for the duration of the call, so a
+# handler resuming in the same frame has to find its own operands where it left
+# them — `total` is live across the failing call here.
+
+
+def surrounding(start, step):
+    total = start
+    for n in range(2):
+        try:
+            total = total + boom(n) + step
+        except ValueError:
+            total = total + 10
+    return total
+
+
+assert surrounding(1, 100) == 21
+
 # === cached callables other than functions ===
 assert functools.cache(int)('10') == 10
 assert functools.cache(functools.partial(pow, 2))(3) == 8

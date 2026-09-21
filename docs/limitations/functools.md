@@ -54,7 +54,7 @@ These names are absent from the module namespace rather than stubbed, so they ar
     colliding keys, so a key whose `__eq__` has side effects can observe an eviction there — and re-enter the cache
     while it is in flight.
 - **A cached host function is never cached.** `cache(ext_fn)` calls the host on every call and counts every one as a
-    miss: the result comes back from the host after the frame that would have stored it is gone.
+    miss: the call suspends to the host instead of returning through the wrapper, so no result reaches it to store.
     A cached *Python* function that suspends part-way through — because it calls a host function or performs an `os`
     call — stores its result normally.
 - **`partial` objects have no `__dict__`, and neither do cached functions.** CPython allows arbitrary attributes on

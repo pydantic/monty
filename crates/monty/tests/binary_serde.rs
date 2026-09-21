@@ -425,10 +425,10 @@ ext_fn(0)
     assert_eq!(from_loaded.into_complete().unwrap(), expected);
 }
 
-/// A cached call suspended mid-flight keeps the pending cache store hung off
-/// its frame across a round-trip, so the result still lands in the cache and
-/// the repeat call is a hit — the only coverage that carries a live
-/// `CacheStore` through postcard.
+/// A cached call suspended mid-flight keeps its pending cache store across a
+/// round-trip, so the result still lands in the cache and the repeat call is a
+/// hit — the only coverage that carries a frame's parked store operands through
+/// postcard.
 #[test]
 fn run_progress_round_trip_preserves_pending_cache_store() {
     let code = r"

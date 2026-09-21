@@ -14,6 +14,7 @@ mod exceptions;
 mod format;
 mod namespace;
 mod recursion;
+mod return_effects;
 mod scheduler;
 
 use std::{borrow::Cow, mem};
@@ -24,6 +25,7 @@ pub(crate) use collections::unpack_exact;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
 pub(crate) use namespace::{FrameNamespace, function_namespace};
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
+pub(crate) use return_effects::ReturnEffects;
 use scheduler::Scheduler;
 
 use crate::{
@@ -52,7 +54,6 @@ use crate::{
     types::{
         Dict, LongInt, PyTrait, SessionRandom,
         file::{apply_buffer_store, apply_open_name, apply_write_position},
-        lru_cache::{CacheStore, CacheStores, store_results},
         random::SEED_BYTES,
         str::allocate_string,
     },
@@ -401,24 +402,14 @@ pub struct CallFrame<'code> {
     /// `cleanup_frame_state`, or taken by `serialize` for a snapshot.
     namespace: Option<Box<FrameNamespace>>,
 
-    /// Whether this frame is a class `__init__` running for `Foo(...)`.
+    /// Work owed to this frame's return value before the caller sees it — a
+    /// constructed instance to yield, caches to store into (see
+    /// [`ReturnEffects`]).
     ///
-    /// When `true`, the `ReturnValue` handler discards the frame's return value
-    /// (`__init__` returns `None`) and leaves the instance — pushed onto the
-    /// caller's operand stack before this frame was created — as the result of the
-    /// construction. Threaded through serialization (`SerializedFrame`) so a
-    /// suspended initializer resumes correctly.
-    is_initializer: bool,
-
-    /// One entry per `functools.lru_cache`-wrapped call this frame runs: the
-    /// return value is stored in each cache before it reaches the caller.
-    ///
-    /// Usually empty, and holds more than one only for stacked wrappers
-    /// (`cache(cache(f))`), which all tag the single frame `f` pushed. Each
-    /// entry owns a reference to its cache and to the key, so every path that
-    /// abandons a frame — a normal return, an unwind, task teardown — must
-    /// release them exactly once (see [`VM::cleanup_frame_state`]).
-    cache_stores: CacheStores,
+    /// Plain data, because the values each effect needs are parked on the
+    /// caller's operand stack rather than held here; threaded through
+    /// serialization so a call suspended mid-way still resolves correctly.
+    return_effects: ReturnEffects,
 }
 
 /// Narrows a VM stack index to the frame's `u32` field.
@@ -448,8 +439,7 @@ impl<'code> CallFrame<'code> {
             should_return: false,
             is_parked: false,
             namespace: None,
-            is_initializer: false,
-            cache_stores: CacheStores::default(),
+            return_effects: ReturnEffects::default(),
         }
     }
 
@@ -472,7 +462,7 @@ impl<'code> CallFrame<'code> {
         self.call_offset = None;
         self.should_return = false;
         self.is_parked = true;
-        self.is_initializer = false;
+        self.return_effects = ReturnEffects::default();
         debug_assert!(self.namespace.is_none(), "parked frame still owns a namespace");
     }
 
@@ -505,8 +495,7 @@ impl<'code> CallFrame<'code> {
             should_return: false,
             is_parked: false,
             namespace,
-            is_initializer: false,
-            cache_stores: CacheStores::default(),
+            return_effects: ReturnEffects::default(),
         }
     }
 }
@@ -634,30 +623,23 @@ pub struct SerializedFrame {
     /// `CallFrame.call_offset`.
     call_offset: Option<u32>,
 
-    /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
+    /// Work owed to this frame's return value (see `CallFrame.return_effects`).
     ///
-    /// Unlike `should_return`, an initializer frame can legitimately be live
-    /// across a suspend (an `__init__` that calls an external/OS function), so it
-    /// must round-trip — otherwise the resumed frame would push `__init__`'s
-    /// `None` instead of leaving the instance on the stack.
+    /// Unlike `should_return`, a frame carrying effects can legitimately be live
+    /// across a suspend — an `__init__` or a cached function that calls an
+    /// external/OS function — so it must round-trip, or the resumed frame would
+    /// push `__init__`'s `None` and store nothing.
     #[serde(default)]
-    is_initializer: bool,
+    return_effects: ReturnEffects,
 
     /// Frame namespace, with ownership of its dict references (see
     /// `CallFrame.namespace`).
     namespace: Option<Box<FrameNamespace>>,
-
-    /// The pending cache stores of this frame's cached calls (see
-    /// `CallFrame.cache_stores`). Round-trip for the same reason
-    /// `is_initializer` does: a cached function may suspend mid-call.
-    #[serde(default)]
-    cache_stores: CacheStores,
 }
 
 impl CallFrame<'_> {
-    /// Converts this frame to a serializable representation, moving the owned
-    /// references — the namespace and any pending cache stores — across so the
-    /// live frame releases nothing.
+    /// Converts this frame to a serializable representation, moving the
+    /// namespace's owned references across so the live frame releases nothing.
     fn serialize(&mut self) -> SerializedFrame {
         assert!(!self.is_parked, "cannot serialize a parked frame");
         assert!(
@@ -671,19 +653,17 @@ impl CallFrame<'_> {
             locals_count: self.locals_count,
             exception_stack_base: self.exception_stack_base(),
             call_offset: self.call_offset,
-            is_initializer: self.is_initializer,
+            return_effects: self.return_effects,
             namespace: mem::take(&mut self.namespace),
-            cache_stores: mem::take(&mut self.cache_stores),
         }
     }
 }
 
-/// Releases what a frame owns once its snapshot is abandoned: its namespace and
-/// its pending cache stores, since every other field is plain data.
+/// Releases what a frame owns once its snapshot is abandoned: its namespace,
+/// since every other field is plain data.
 impl<C: ContainsHeap> DropWithContext<C> for SerializedFrame {
     fn drop_with(self, heap: &mut C) {
         self.namespace.drop_with(heap);
-        self.cache_stores.drop_with(heap);
     }
 }
 
@@ -745,10 +725,10 @@ pub struct VMSnapshot {
 impl VMSnapshot {
     /// Discards the in-flight execution state of a snapshot that will never be
     /// restored, releasing every heap reference it holds (operand and exception
-    /// stacks, frames' namespaces and pending cache stores, scheduler tasks,
-    /// pending resume effects), and returns the globals, working directory and
-    /// `random` generator so an abandoned REPL snippet keeps its namespace, any
-    /// `os.chdir` it made and any seed it set. Mirrors `VM::drop`.
+    /// stacks, frames' namespaces, scheduler tasks, pending resume effects),
+    /// and returns the globals, working directory and `random` generator so an
+    /// abandoned REPL snippet keeps its namespace, any `os.chdir` it made and
+    /// any seed it set. Mirrors `VM::drop`.
     pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String, SessionRandom) {
         let Self {
             stack,
@@ -766,9 +746,10 @@ impl VMSnapshot {
             release_pending_effect(pending_effect, heap);
             pending_lookup_effect.drop_with(heap);
             exception_stack.drop_with(heap);
+            // The stack drain covers a suspended call's parked return-effect
+            // operands, so a cached call stores nothing, as a raising one does,
+            // and a frame's namespace is all it has left to release.
             stack.drop_with(heap);
-            // A suspended cached call stores nothing, as a raising one does,
-            // so its wrapper and key go here rather than into the cache.
             frames.drop_with(heap);
             scheduler.cleanup(heap);
         });
@@ -1003,8 +984,7 @@ impl<'h> VM<'h> {
                     should_return: false,
                     is_parked: false,
                     namespace: sf.namespace,
-                    is_initializer: sf.is_initializer,
-                    cache_stores: sf.cache_stores,
+                    return_effects: sf.return_effects,
                 }
             })
             .collect();
@@ -1981,30 +1961,27 @@ impl<'h> VM<'h> {
                         }
                         continue;
                     }
-                    // Read the initializer flag and take the pending cache
-                    // stores before popping the frame (popping releases them).
-                    let is_init = self.current_frame().is_initializer;
-                    let cache_stores = mem::take(&mut self.current_frame_mut().cache_stores);
+                    // Plain data, so reading this before the pop is a copy.
+                    let effects = self.current_frame().return_effects;
                     // Pop current frame; `stop` requests returning to the host
                     // (e.g. `evaluate_function`).
                     let stop = self.pop_frame();
-                    // An initializer's own return value is not the call's
-                    // result, so resolve it to the instance *before* anything
-                    // else looks at it — a cached `Foo(...)` must store what
-                    // its caller receives.
-                    let value = if is_init {
-                        match self.take_initializer_result(value) {
-                            Ok(instance) => instance,
+                    // Resolve the value the call actually yields, and store it
+                    // in any waiting cache before the caller sees it — so a
+                    // recursive cached function finds the inner results already
+                    // in place.
+                    let value = if effects.is_empty() {
+                        value
+                    } else {
+                        match effects.apply(value, self) {
+                            Ok(value) => value,
                             Err(err) => {
-                                // A constructor that raises caches nothing, as
-                                // any other raising call does.
-                                cache_stores.drop_with(self);
                                 if stop {
-                                    // The initializer was driven by `evaluate_function`
-                                    // and its frame boundary is already popped —
-                                    // propagate directly rather than unwinding into
-                                    // frames that must not observe this error. The
-                                    // pending instance left on the operand stack is
+                                    // Driven by `evaluate_function`, whose frame
+                                    // boundary is already popped — propagate
+                                    // directly rather than unwinding into frames
+                                    // that must not observe this error. Operands
+                                    // still parked on the operand stack are
                                     // reclaimed by the eventual `handle_exception`
                                     // stack drain (or final teardown).
                                     return Err(err);
@@ -2013,20 +1990,7 @@ impl<'h> VM<'h> {
                                 continue;
                             }
                         }
-                    } else {
-                        value
                     };
-                    // A cached call stores its result before the caller sees
-                    // it, so a recursive cached function finds the inner
-                    // results already in place.
-                    if let Err(err) = store_results(cache_stores, &value, self) {
-                        value.drop_with(self);
-                        if stop {
-                            return Err(err);
-                        }
-                        catch!(self, err);
-                        continue;
-                    }
                     if stop {
                         // This frame indicated evaluation should stop - return to host with value
                         // e.g. `evaluate_function`
@@ -2352,13 +2316,14 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// Releases what a finished frame owns: its stack region, namespace and any
-    /// pending cache stores.
+    /// Releases what a finished frame owns: its stack region — locals plus
+    /// operand stack, which includes any in-flight comprehension variables —
+    /// and its namespace.
+    ///
+    /// A pending return effect's operands are parked below `stack_base` and
+    /// belong to the caller, whose own unwind reclaims them.
     #[inline]
     fn cleanup_frame_state(&mut self, frame: CallFrame<'_>) {
-        // Clean up frame's stack region (locals + operand stack, which now
-        // includes any in-flight comprehension variables — the operand-stack
-        // drain naturally covers them).
         self.stack
             .drain(frame.stack_base()..)
             .for_each(|value| value.drop_with(&mut *self.heap));
@@ -2366,18 +2331,33 @@ impl<'h> VM<'h> {
         if let Some(namespace) = frame.namespace {
             namespace.drop_with(self.heap);
         }
-        // An abandoned frame stores nothing: a raising call leaves the cache
-        // untouched, as CPython's does.
-        frame.cache_stores.drop_with(&mut *self.heap);
     }
 
-    /// Tags the frame just pushed by a cached call, so its return value is
-    /// stored under `store`'s key on the way out.
+    /// Parks a pending cache store's operands on the operand stack, to be
+    /// claimed by the frame the wrapped call is about to push.
     ///
-    /// Appends rather than replaces: stacked wrappers (`cache(cache(f))`) each
-    /// tag the same frame, and every one of them expects the result.
-    pub(crate) fn push_frame_cache_store(&mut self, store: CacheStore) {
-        self.current_frame_mut().cache_stores.push(store);
+    /// Takes ownership of both: they live on the stack until the return path
+    /// applies the store, or an unwind drains them.
+    pub(crate) fn park_cache_store(&mut self, cache: Value, key: Value) {
+        self.push(cache);
+        self.push(key);
+    }
+
+    /// Takes back operands parked for a call that pushed no frame, returning
+    /// `(cache, key)`.
+    pub(crate) fn unpark_cache_store(&mut self) -> (Value, Value) {
+        let key = self.pop();
+        let cache = self.pop();
+        (cache, key)
+    }
+
+    /// Records on the frame just pushed by a cached call that one parked store
+    /// is waiting for its return value.
+    ///
+    /// Counts rather than replaces: stacked wrappers (`cache(cache(f))`) each
+    /// park against the single frame `f` pushed, and all of them expect the result.
+    pub(crate) fn claim_cache_store(&mut self) {
+        self.current_frame_mut().return_effects.push_cache_store();
     }
 
     /// Drops the current task's operand and exception stacks and discards its frames.
@@ -2385,14 +2365,12 @@ impl<'h> VM<'h> {
     pub(super) fn cleanup_current_task(&mut self) {
         self.stack.drain(..).drop_with(self.heap);
         self.exception_stack.drain(..).drop_with(self.heap);
-        // A frame parked mid-way through a cached call still owns its pending
-        // stores; abandoning the task drops them without storing anything.
+        // The stack drain above covers any parked return-effect operands, so
+        // a frame's namespace is all it has left to release.
         for frame in self.suspended_frames.drain(..) {
             frame.namespace.drop_with(self.heap);
-            frame.cache_stores.drop_with(self.heap);
         }
         self.current_frame.namespace.take().drop_with(self.heap);
-        mem::take(&mut self.current_frame.cache_stores).drop_with(self.heap);
         self.current_frame.park(self.module_code);
     }
 
