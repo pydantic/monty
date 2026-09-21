@@ -1,0 +1,31 @@
+crates/monty-python/src/lib.rs
+  s_14ddf37de6eec1::t_622cefac4a7e29 78
+crates/monty-js/Cargo.toml
+  s_14ddf37de6eec1::t_622cefac4a7e29 3
+docs/index.md
+  s_14ddf37de6eec1::t_84e4b426d28ac6 21-22
+crates/monty-runtime/src/main.rs
+  s_14ddf37de6eec1::t_622cefac4a7e29 21
+crates/monty-fs/README.md
+  s_14ddf37de6eec1::t_622cefac4a7e29 4
+crates/monty-runtime/README-crate.md
+  s_14ddf37de6eec1::t_622cefac4a7e29 4
+docs/server.md
+  s_14ddf37de6eec1::t_622cefac4a7e29 21,31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b0c357c27b7bb12f4843f6cb698b1dca42a2acfa",
+  "prompts": {},
+  "sessions": {
+    "s_14ddf37de6eec1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8c1a5dee-175e-42f0-a6e3-84bdc854eaf7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
