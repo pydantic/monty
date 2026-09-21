@@ -1,0 +1,19 @@
+crates/monty/test_cases/function__err_repeated_keyword.py
+  s_18aa622211bf03::t_b89b306a636d6b 1-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9af79e4857282ca2cfc1c2c92f0e8c5ff8da10a0",
+  "prompts": {},
+  "sessions": {
+    "s_18aa622211bf03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3eeb8d9f-c9f2-45a4-9635-0a8a42f7a68c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
