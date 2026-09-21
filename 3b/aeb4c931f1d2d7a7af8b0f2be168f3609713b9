@@ -1,0 +1,58 @@
+scripts/startup_latency_chart.py
+  s_14ddf37de6eec1::t_c51924a5a2aabe 18
+crates/monty-python/README.md
+  s_14ddf37de6eec1::t_c51924a5a2aabe 3
+crates/monty-js/package.json
+  s_14ddf37de6eec1::t_c51924a5a2aabe 5
+docs/cli.md
+  s_14ddf37de6eec1::t_c51924a5a2aabe 5
+packages/pydantic-monty/README.md
+  s_14ddf37de6eec1::t_c51924a5a2aabe 3
+crates/monty-types/README.md
+  s_14ddf37de6eec1::t_c51924a5a2aabe 4-5
+docs/limitations/index.md
+  s_14ddf37de6eec1::t_c51924a5a2aabe 3
+docs/index.md
+  s_14ddf37de6eec1::t_c51924a5a2aabe 69-71,73
+  s_14ddf37de6eec1::t_50ee7b04a3e334 3,18,20-23,31,40,60-61,74
+crates/monty-python/Cargo.toml
+  s_14ddf37de6eec1::t_c51924a5a2aabe 3
+crates/monty-runtime/README.md
+  s_14ddf37de6eec1::t_c51924a5a2aabe 4
+packages/pydantic-monty/pyproject.toml
+  s_14ddf37de6eec1::t_c51924a5a2aabe 7
+docs/img/startup-latency.svg
+  s_14ddf37de6eec1::t_ab2632b29d94c3 18
+mkdocs.yml
+  s_14ddf37de6eec1::t_c51924a5a2aabe 2
+crates/monty-js/README.md
+  s_14ddf37de6eec1::t_c51924a5a2aabe 4,7-8
+docs/alternatives.md
+  s_14ddf37de6eec1::t_c51924a5a2aabe 22,52-53,132,150,160
+Cargo.toml
+  s_14ddf37de6eec1::t_c51924a5a2aabe 31
+crates/monty/README.md
+  s_14ddf37de6eec1::t_c51924a5a2aabe 7
+README.md
+  s_14ddf37de6eec1::t_c51924a5a2aabe 5
+crates/monty-python/pyproject.toml
+  s_14ddf37de6eec1::t_c51924a5a2aabe 9
+docs/type-checking.md
+  s_14ddf37de6eec1::t_c51924a5a2aabe 43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3baeb4c931f1d2d7a7af8b0f2be168f3609713b9",
+  "prompts": {},
+  "sessions": {
+    "s_14ddf37de6eec1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8c1a5dee-175e-42f0-a6e3-84bdc854eaf7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
