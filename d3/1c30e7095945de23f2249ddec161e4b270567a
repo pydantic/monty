@@ -1,0 +1,20 @@
+crates/monty-python/exercise.py
+  s_d3a8e78402bedd::t_8506f63eae3c06 23
+  s_d3a8e78402bedd::t_80862236dce32f 26-28,43-44,53-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d31c30e7095945de23f2249ddec161e4b270567a",
+  "prompts": {},
+  "sessions": {
+    "s_d3a8e78402bedd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1237374c-805c-4d89-b4ab-e69061a76fa7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
