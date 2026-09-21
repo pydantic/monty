@@ -22,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump};
+use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump, source_within_nesting_bound};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
@@ -873,6 +873,12 @@ impl Child {
     /// proceed with execution.
     fn type_check_feed(&mut self, code: &str) -> Option<pb::ChildEvent> {
         let state = self.type_check.as_ref()?;
+        // Left to the compiler, whose SyntaxError carries a location; ty would parse it unguarded.
+        if let SessionState::Ready(repl) = &self.state
+            && !source_within_nesting_bound(code, repl.options().source_scan_threshold)
+        {
+            return None;
+        }
         let stubs =
             (!state.committed_stubs.is_empty()).then(|| SourceFile::new(&state.committed_stubs, "repl_type_stubs.pyi"));
         match self

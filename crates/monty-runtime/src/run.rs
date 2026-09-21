@@ -20,13 +20,16 @@ use std::{
 // output keeps using `std::println!` — it is program data, not our styling.
 use anstream::{AutoStream, ColorChoice, eprintln};
 use anstyle::{AnsiColor, Color, Style};
-use monty::{MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress, detect_repl_continuation_mode};
+use monty::{
+    MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress, detect_repl_continuation_mode,
+    source_within_nesting_bound,
+};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MontyException, MontyObject,
-    NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker, SleepMode,
-    TypeCheckingConfig, memory_limit_with_headroom, validate_cwd,
+    NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker, SOURCE_SCAN_THRESHOLD,
+    SleepMode, TypeCheckingConfig, memory_limit_with_headroom, validate_cwd,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
@@ -210,7 +213,10 @@ fn run_script(
     mut host: HostOs,
     cwd: &str,
 ) -> ExitCode {
-    if let Some(config) = type_check {
+    // A source the compiler will reject as too deeply nested skips the (unguarded) type checker.
+    if let Some(config) = type_check
+        && source_within_nesting_bound(&code, SOURCE_SCAN_THRESHOLD)
+    {
         let start = Instant::now();
         let mut checker = TypeChecker::default();
         if let Some(failure) = checker.run(&SourceFile::new(&code, file_path), None, config).unwrap() {

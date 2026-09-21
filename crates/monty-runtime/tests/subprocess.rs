@@ -2045,6 +2045,32 @@ fn install_dependencies_is_rejected_but_session_survives() {
 // Type checking
 // =============================================================================
 
+/// The type checker parses with no nesting limit, so a source the compiler
+/// will reject as too deeply nested must bypass it: the feed ends in the
+/// compiler's SyntaxError, not a crash, and the session survives.
+#[test]
+fn type_checked_session_skips_the_checker_for_deeply_nested_source() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: None,
+        type_check: true,
+        type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        assert_message_annotations: None,
+        ..Default::default()
+    });
+
+    let (_, event) = child.feed(&format!("{}1{}", "(".repeat(200_000), ")".repeat(200_000)));
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "SyntaxError");
+    assert_eq!(error.message.as_deref(), Some("Source is too deeply nested"));
+
+    assert_eq!(child.feed_complete("1"), MontyObject::int(1));
+    child.shutdown();
+}
+
 #[test]
 fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
     let mut child = ChildProc::spawn();
