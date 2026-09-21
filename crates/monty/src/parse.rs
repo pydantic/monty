@@ -1468,22 +1468,21 @@ impl<'a, 'i> Parser<'a, 'i> {
                 self.convert_range(y.range),
             )),
             AstExpr::Compare(ast::ExprCompare {
-                left,
-                ops,
-                comparators,
-                range,
-                ..
+                ops, operands, range, ..
             }) => {
                 let position = self.convert_range(range);
                 let ops_vec = ops.into_vec();
-                let comparators_vec = comparators.into_vec();
+                // `operands` holds every operand in source order, leftmost first.
+                let mut operands = operands.into_vec().into_iter();
+                let left = operands.next().expect("a comparison has a left operand");
+                let comparators_vec: Vec<AstExpr> = operands.collect();
 
                 // Simple case: single comparison (most common)
                 if ops_vec.len() == 1 {
                     return Ok(ExprLoc::new(
                         position,
                         Expr::CmpOp {
-                            left: Box::new(self.parse_expression(*left)?),
+                            left: Box::new(self.parse_expression(left)?),
                             op: convert_compare_op(ops_vec.into_iter().next().unwrap()),
                             right: Box::new(self.parse_expression(comparators_vec.into_iter().next().unwrap())?),
                         },
@@ -1491,25 +1490,24 @@ impl<'a, 'i> Parser<'a, 'i> {
                 }
 
                 // Chain comparison: transform to nested And expressions
-                self.parse_chain_comparison(*left, ops_vec, comparators_vec, position)
+                self.parse_chain_comparison(left, ops_vec, comparators_vec, position)
             }
             AstExpr::Call(call) => {
                 let position = self.convert_range(call.range());
                 let ast::ExprCall { func, arguments, .. } = call;
                 let ast::Arguments { args, keywords, .. } = arguments;
-                let args_vec = args.into_vec();
                 let keywords_vec: Vec<_> = keywords.into_iter().collect();
 
                 // Detect whether we need the generalized path (PEP 448):
                 // - multiple *args unpacks, OR
                 // - positional argument after *args, OR
                 // - multiple **kwargs unpacks
-                let needs_generalized = Self::needs_generalized_call(&args_vec, &keywords_vec);
+                let needs_generalized = Self::needs_generalized_call(&args, &keywords_vec);
 
                 let args = if needs_generalized {
-                    self.parse_generalized_call_args(args_vec, keywords_vec)?
+                    self.parse_generalized_call_args(args, keywords_vec)?
                 } else {
-                    self.parse_simple_call_args(args_vec, keywords_vec)?
+                    self.parse_simple_call_args(args, keywords_vec)?
                 };
                 match *func {
                     AstExpr::Name(ast::ExprName { id, range, .. }) => {
@@ -1721,13 +1719,13 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// fast path for the vast majority of function calls.
     fn parse_simple_call_args(
         &mut self,
-        args_vec: Vec<AstExpr>,
+        args: impl IntoIterator<Item = AstExpr>,
         keywords_vec: Vec<Keyword>,
     ) -> Result<ArgExprs, ParseError> {
         let mut positional_args = Vec::new();
         let mut var_args_expr: Option<ExprLoc> = None;
 
-        for arg_expr in args_vec {
+        for arg_expr in args {
             match arg_expr {
                 AstExpr::Starred(ast::ExprStarred { value, .. }) => {
                     var_args_expr = Some(self.parse_expression(*value)?);
@@ -1753,11 +1751,11 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// `ListAppend`/`ListExtend`/`DictMerge` sequences.
     fn parse_generalized_call_args(
         &mut self,
-        args_vec: Vec<AstExpr>,
+        args: impl IntoIterator<Item = AstExpr>,
         keywords_vec: Vec<Keyword>,
     ) -> Result<ArgExprs, ParseError> {
         let mut call_args = Vec::new();
-        for arg_expr in args_vec {
+        for arg_expr in args {
             match arg_expr {
                 AstExpr::Starred(ast::ExprStarred { value, .. }) => {
                     call_args.push(CallArg::Unpack(self.parse_expression(*value)?));
@@ -1956,7 +1954,7 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// (`for x in ...`) and tuple unpacking (`for x, y in ...`).
     fn parse_comprehension_generators(
         &mut self,
-        generators: Vec<ast::Comprehension>,
+        generators: impl IntoIterator<Item = ast::Comprehension>,
     ) -> Result<Vec<Comprehension>, ParseError> {
         generators
             .into_iter()
@@ -1981,15 +1979,15 @@ impl<'a, 'i> Parser<'a, 'i> {
 
     /// Parses an f-string value into expression parts.
     ///
-    /// F-strings in ruff AST are represented as `FStringValue` containing
-    /// `FStringPart`s, which can be either literal strings or `FString`
-    /// interpolated sections. Each `FString` contains `InterpolatedStringElements`.
+    /// F-strings in ruff AST are represented as `FStringValue`, whose parts are
+    /// either literal strings or `FString` interpolated sections. Each `FString`
+    /// contains `InterpolatedStringElements`.
     fn parse_fstring(&mut self, value: &ast::FStringValue, range: TextRange) -> Result<ExprLoc, ParseError> {
         let mut parts = Vec::new();
 
         for fstring_part in value {
             match fstring_part {
-                ast::FStringPart::Literal(lit) => {
+                ast::FStringPartRef::Literal(lit) => {
                     // Literal string segment - intern for use at runtime
                     let processed = lit.value.to_string();
                     if !processed.is_empty() {
@@ -1997,7 +1995,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                         parts.push(FStringPart::Literal(string_id));
                     }
                 }
-                ast::FStringPart::FString(fstring) => {
+                ast::FStringPartRef::FString(fstring) => {
                     // Interpolated f-string section
                     for element in &fstring.elements {
                         let part = self.parse_fstring_element(element)?;

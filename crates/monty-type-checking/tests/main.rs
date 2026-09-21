@@ -357,8 +357,11 @@ fn test_reveal_types() {
     assert_snapshot!(actual);
 }
 
+/// ruff grows its parser stack on demand, so the type checker accepts nesting
+/// the interpreter rejects; hosts skip it for such sources
+/// (`monty::source_within_nesting_bound`) rather than rely on a limit here.
 #[test]
-fn deeply_nested_parentheses_do_not_stack_overflow() {
+fn deeply_nested_parentheses_type_check_without_overflow() {
     let depth = 500;
     let mut code = String::with_capacity(depth * 2 + 1);
     for _ in 0..depth {
@@ -369,13 +372,7 @@ fn deeply_nested_parentheses_do_not_stack_overflow() {
         code.push(')');
     }
 
-    assert_snapshot!(
-        check_concise(&code, "main.py").unwrap(),
-        @"
-    main.py:1:203: error[invalid-syntax] Source is too deeply nested
-    main.py:1:1002: error[invalid-syntax] Expected `)`, found end of file
-    "
-    );
+    assert_eq!(check_concise(&code, "main.py"), None);
 }
 
 /// Regression test for issue #799: attribute access on a `TypedDict` value must
