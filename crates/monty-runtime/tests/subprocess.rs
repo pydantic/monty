@@ -2045,6 +2045,26 @@ fn install_dependencies_is_rejected_but_session_survives() {
 // Type checking
 // =============================================================================
 
+/// Stubs reach ty with every feed and nothing else scans them, so a
+/// `Configure` carrying deeply nested stubs is refused up front.
+#[test]
+fn deeply_nested_type_check_stubs_are_rejected_on_configure() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(pb::Configure {
+        type_check: true,
+        type_check_stubs: Some(format!("x: '{}1{}'", "(".repeat(5000), ")".repeat(5000))),
+        ..configure()
+    }));
+    let error = expect_error(child.recv());
+    assert_eq!(
+        error.message.as_deref(),
+        Some("protocol violation: invalid type_check_stubs: Source is too deeply nested")
+    );
+    child.create_repl();
+    child.feed_complete("1 + 1");
+    child.shutdown();
+}
+
 /// The type checker parses with no nesting limit, so a source the compiler
 /// will reject as too deeply nested must bypass it: the feed ends in the
 /// compiler's SyntaxError, not a crash, and the session survives.

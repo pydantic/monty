@@ -847,8 +847,8 @@ pub struct RefCountOutput {
 
 /// Compiles module source through the supplied tables, committing any overlay on success.
 /// On failure the caller restores provisional global slots or discards a fresh program's tables.
-/// The source must already have passed the nesting scan: `MontyRun::new` runs
-/// it, and REPL feeds rely on `MontyRepl::check_source`.
+/// The source must already have passed the nesting scan; `MontyRun::new` and
+/// the REPL feeds run it.
 fn compile_module_source(
     code: &str,
     script_name: &str,

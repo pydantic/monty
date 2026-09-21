@@ -46,7 +46,7 @@ pub use crate::run::RefCountOutput;
 pub use crate::{
     dump_format::{DUMP_VERSION, Dump, DumpError, MIN_SUPPORTED_DUMP_VERSION, Session, SessionRef, dump},
     repl::{
-        MontyRepl, ReplContinuationMode, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress,
+        CheckedSource, MontyRepl, ReplContinuationMode, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress,
         ReplResolveFutures, ReplStartError, detect_repl_continuation_mode,
     },
     run::MontyRun,

@@ -136,14 +136,16 @@ impl MontyRepl {
     /// Rejects a snippet whose nesting would let the parser grow its stack past
     /// the limit, with the `SyntaxError` compiling it would raise.
     ///
-    /// Run this before any other work on an untrusted snippet: the feeds do not
-    /// repeat the scan, so a host that skips it hands the parser unbounded input
-    /// (see `limitations/language.md`).
+    /// For hosts that want the verdict before doing other work on the snippet
+    /// (the worker type-checks after it); the returned [`CheckedSource`] lets
+    /// [`feed_start_checked`](Self::feed_start_checked) skip the scan. Plain
+    /// feeds scan for themselves (see `limitations/language.md`).
     ///
     /// # Errors
     /// The `SyntaxError: Source is too deeply nested` located in the snippet.
-    pub fn check_source(&self, code: &str) -> Result<(), MontyException> {
-        source_nesting_exception(code, &self.script_name, self.options.source_scan_threshold)
+    pub fn check_source<'a>(&self, code: &'a str) -> Result<CheckedSource<'a>, MontyException> {
+        source_nesting_exception(code, &self.script_name, self.options.source_scan_threshold)?;
+        Ok(CheckedSource(code))
     }
 
     /// Replaces the default clock, sleep and random initialization policies
@@ -205,12 +207,40 @@ impl MontyRepl {
     /// returned inside [`ReplStartError`] so the caller can continue feeding
     /// subsequent snippets against the same heap and namespace state.
     ///
-    /// The snippet is not scanned for nesting; see [`check_source`](Self::check_source).
+    /// The snippet is scanned for nesting first; [`feed_start_checked`](Self::feed_start_checked)
+    /// takes one [`check_source`](Self::check_source) already vetted.
     ///
     /// # Errors
     /// Returns a boxed [`ReplStartError`] for syntax, compile-time, or runtime
     /// failures — the REPL session is always preserved inside the error.
     pub fn feed_start(
+        self,
+        code: &str,
+        inputs: impl Into<NamedValues>,
+        print: PrintWriter<'_>,
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
+        match source_nesting_exception(code, &self.script_name, self.options.source_scan_threshold) {
+            Ok(()) => self.feed_start_scanned(code, inputs, print),
+            Err(error) => Err(Box::new(ReplStartError { repl: self, error })),
+        }
+    }
+
+    /// [`feed_start`](Self::feed_start) for a snippet [`check_source`](Self::check_source)
+    /// already vetted, so the scan is not repeated.
+    ///
+    /// # Errors
+    /// As [`feed_start`](Self::feed_start).
+    pub fn feed_start_checked(
+        self,
+        code: CheckedSource<'_>,
+        inputs: impl Into<NamedValues>,
+        print: PrintWriter<'_>,
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.feed_start_scanned(code.0, inputs, print)
+    }
+
+    /// The feed starters' shared body, past the nesting scan.
+    fn feed_start_scanned(
         self,
         code: &str,
         inputs: impl Into<NamedValues>,
@@ -301,7 +331,7 @@ impl MontyRepl {
     /// partially mutating globals, those mutations remain visible in later feeds,
     /// matching Python REPL semantics.
     ///
-    /// The snippet is not scanned for nesting; see [`check_source`](Self::check_source).
+    /// The snippet is scanned for nesting first.
     ///
     /// # Errors
     /// Returns [`MontyException`] for syntax/compile/runtime failures.
@@ -314,6 +344,7 @@ impl MontyRepl {
         if code.is_empty() {
             return Ok(MontyObject::none());
         }
+        source_nesting_exception(code, &self.script_name, self.options.source_scan_threshold)?;
 
         let (input_values, names) = unstable::into_named_values_parts(inputs.into());
         let (input_names, input_ids): (Vec<_>, Vec<_>) = names.into_iter().unzip();
@@ -575,6 +606,11 @@ impl MontyRepl {
         format!("<python-input-{input_id}>")
     }
 }
+
+/// A snippet [`MontyRepl::check_source`] found within the nesting bound,
+/// which [`MontyRepl::feed_start_checked`] therefore need not scan again.
+#[derive(Debug, Clone, Copy)]
+pub struct CheckedSource<'a>(&'a str);
 
 impl Drop for MontyRepl {
     fn drop(&mut self) {

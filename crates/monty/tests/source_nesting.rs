@@ -5,8 +5,10 @@
 //! shorter sources rely on the converter's exact check.
 
 use insta::assert_snapshot;
-use monty::{MontyRepl, MontyRun};
-use monty_types::{CompileOptions, ExcType, MontyException, MontyObject, ResourceTracker, SOURCE_SCAN_THRESHOLD};
+use monty::{MontyRepl, MontyRun, ReplProgress};
+use monty_types::{
+    CompileOptions, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker, SOURCE_SCAN_THRESHOLD,
+};
 
 /// Compiles `code` with the given options and returns the exception it fails with.
 fn parse_err_with(code: String, options: CompileOptions) -> MontyException {
@@ -201,4 +203,21 @@ fn repl_check_source_rejects_before_feeding() {
     assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
     assert_eq!(err.traceback()[0].filename, "main.py");
     assert!(repl.check_source("x = [-1, -2]").is_ok());
+}
+
+#[test]
+fn repl_feeds_scan_unless_given_a_checked_source() {
+    let mut repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
+    let deep = format!("{}1", "-".repeat(5000));
+    let flat = "x = [-1, -2]\n".repeat(400);
+
+    let err = repl
+        .feed_run(&deep, vec![], PrintWriter::Disabled)
+        .expect_err("expected the feed to reject");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(err.message().unwrap(), "Source is too deeply nested");
+
+    let checked = repl.check_source(&flat).unwrap();
+    let progress = repl.feed_start_checked(checked, vec![], PrintWriter::Disabled).unwrap();
+    assert!(matches!(progress, ReplProgress::Complete { .. }));
 }

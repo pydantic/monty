@@ -204,7 +204,7 @@ pub(crate) fn parse_with_interner(
     // leaving the parser to be built once, fully populated, after parsing.
     let filename_id = interner.intern(filename);
     // Module sources are scanned for nesting by their entry points
-    // (`MontyRun::new`, `MontyRepl::check_source`), not here.
+    // (`MontyRun::new`, the REPL feeds), not here.
     parse_module_with_filename_id(code, filename_id, interner, usize::MAX)
 }
 
