@@ -1,0 +1,81 @@
+crates/monty-proto/src/wire.rs
+  s_063447cc103291::t_222438da18a5d1 412,485,980
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_063447cc103291::t_380971a07ef906 33
+  s_063447cc103291::t_07066868ec0abb 427
+  s_063447cc103291::t_4ab46a27a4391b 428-445
+docs/quickstart/python.md
+  s_063447cc103291::t_eaede52d8ccec0 96-97,99
+  s_063447cc103291::t_07066868ec0abb 98
+crates/monty-proto/src/python/mod.rs
+  s_063447cc103291::t_36fad934184610 16,23
+  s_063447cc103291::t_2f75ea9f97d583 21,28
+crates/monty-proto/src/python/std_type_proxy.rs
+  s_063447cc103291::t_a352f1bd4daa19 10,42-46
+  s_063447cc103291::t_07066868ec0abb 17-18,24,40,60
+  s_063447cc103291::t_2f75ea9f97d583 20,29-30,62,67,77
+  s_063447cc103291::t_222438da18a5d1 75
+crates/monty-types/src/object.rs
+  s_063447cc103291::t_95c0c982a27ef4 1167-1170,1174
+crates/monty-proto/src/python/decode.rs
+  s_063447cc103291::t_c937f631f4845e 7,139-141
+  s_063447cc103291::t_5d0c4274bd87ad 16
+  s_063447cc103291::t_c3798876b71216 19-20,134,136,138
+  s_063447cc103291::t_2f75ea9f97d583 22,142,243
+  s_063447cc103291::t_222438da18a5d1 135,137
+  s_063447cc103291::t_07066868ec0abb 242,244
+  s_063447cc103291::t_15b16dc83e27c6 245-246
+crates/monty-python/tests/test_types.py
+  ai_agent 15
+  s_063447cc103291::t_b78b76f1103cbe 131,133-134,136,138-146,148-151
+  s_063447cc103291::t_07066868ec0abb 132,135,137,147,234
+  s_063447cc103291::t_4deead41fdd51e 160,172,175,196,200,222-228,232-233,235-236,238-239,242-247
+  s_063447cc103291::t_28e83c54a805ef 229,237,240
+  s_063447cc103291::t_e0a0da11708904 520
+  s_063447cc103291::t_afd22bf749c298 521
+crates/monty-python/src/lib.rs
+  s_063447cc103291::t_07066868ec0abb 87
+  s_063447cc103291::t_97e0c0658de578 88-90
+  s_063447cc103291::t_2f75ea9f97d583 95-96
+crates/monty-proto/src/python/encode.rs
+  s_063447cc103291::t_c284e8797237ef 22
+  s_063447cc103291::t_2f75ea9f97d583 31
+  s_063447cc103291::t_07066868ec0abb 251
+  s_063447cc103291::t_ca11abede0ea13 252-253
+docs/host-functions.md
+  s_063447cc103291::t_07066868ec0abb 171
+  s_063447cc103291::t_eaede52d8ccec0 172
+crates/monty-proto/Cargo.toml
+  s_063447cc103291::t_d226776188f3af 31-32,48
+crates/monty-proto/src/python/convert.rs
+  s_063447cc103291::t_c3798876b71216 17-18,24-25,45,53-54,60,63-68,78-96,102-104,110-114,117,124-126
+  s_063447cc103291::t_222438da18a5d1 36,69
+  s_063447cc103291::t_07066868ec0abb 61
+  s_063447cc103291::t_afd22bf749c298 115
+  s_063447cc103291::t_467febc557c253 116
+docs/limitations/host-values.md
+  s_063447cc103291::t_eaede52d8ccec0 26,28-32,34-37
+  s_063447cc103291::t_07066868ec0abb 27
+  s_063447cc103291::t_28e83c54a805ef 33
+docs/api/python/host_objects.md
+  s_063447cc103291::t_07066868ec0abb 21
+crates/monty-python/python/pydantic_monty/__init__.py
+  s_063447cc103291::t_0cd8c59ca23eee 23
+  s_063447cc103291::t_5f0815379c409b 85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a188807a38880f1dc052c1c7ec54c877a21d15a3",
+  "prompts": {},
+  "sessions": {
+    "s_063447cc103291": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e023e8fb-a847-4354-a1a6-59cf32558feb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
