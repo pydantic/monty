@@ -25,6 +25,14 @@ fn yield_expressions_return_not_implemented_error() {
 }
 
 #[test]
+fn repeated_class_keyword_returns_syntax_error() {
+    // CPython reports the repeat before considering the metaclass.
+    let err = get_parse_err("class C(metaclass=type, metaclass=type):\n    pass");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"keyword argument repeated: metaclass");
+}
+
+#[test]
 fn simple_classes_compile_successfully() {
     // Simple classes are supported; only the advanced forms below are rejected.
     let result = MontyRun::new(

@@ -1,5 +1,6 @@
 use std::{borrow::Cow, fmt};
 
+use ahash::AHashSet;
 use monty_types::{MontyException, StackFrame};
 use num_bigint::BigInt;
 use num_traits::Num;
@@ -818,14 +819,15 @@ impl<'a, 'i> Parser<'a, 'i> {
         let position = self.class_keyword_range(&class);
         let decorators = self.parse_decorators(class.decorator_list)?;
         // `class.arguments` carries base classes and metaclass keywords.
-        if class
-            .arguments
-            .is_some_and(|a| !a.args.is_empty() || !a.keywords.is_empty())
-        {
-            return Err(ParseError::not_implemented(
-                "class inheritance and metaclasses",
-                position,
-            ));
+        if let Some(arguments) = &class.arguments {
+            // CPython rejects the repeat before it would consider the metaclass.
+            self.check_repeated_keywords(&arguments.keywords)?;
+            if !arguments.args.is_empty() || !arguments.keywords.is_empty() {
+                return Err(ParseError::not_implemented(
+                    "class inheritance and metaclasses",
+                    position,
+                ));
+            }
         }
 
         let name = self.identifier(&class.name.id, class.name.range);
@@ -1497,6 +1499,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 let ast::ExprCall { func, arguments, .. } = call;
                 let ast::Arguments { args, keywords, .. } = arguments;
                 let keywords_vec: Vec<_> = keywords.into_iter().collect();
+                self.check_repeated_keywords(&keywords_vec)?;
 
                 // Detect whether we need the generalized path (PEP 448):
                 // - multiple *args unpacks, OR
@@ -1779,6 +1782,24 @@ impl<'a, 'i> Parser<'a, 'i> {
         }
 
         Ok(ArgExprs::new_generalized(call_args, call_kwargs))
+    }
+
+    /// Rejects `f(x=1, x=2)` as CPython's compiler does, pointing at the repeat.
+    ///
+    /// ruff reports this from its semantic checker, which Monty does not run, so
+    /// the parser alone would accept the call.
+    fn check_repeated_keywords(&self, keywords: &[Keyword]) -> Result<(), ParseError> {
+        let mut seen = AHashSet::with_capacity(keywords.len());
+        keywords
+            .iter()
+            .filter_map(|keyword| keyword.arg.as_ref().map(|arg| (arg.id.as_str(), keyword.range())))
+            .find(|(name, _)| !seen.insert(*name))
+            .map_or(Ok(()), |(name, range)| {
+                Err(ParseError::syntax(
+                    format!("keyword argument repeated: {name}"),
+                    self.convert_range(range),
+                ))
+            })
     }
 
     /// Parses keyword arguments, separating regular kwargs from var_kwargs (`**expr`).
