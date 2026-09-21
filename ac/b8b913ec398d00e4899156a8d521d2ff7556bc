@@ -1,0 +1,23 @@
+CLAUDE.md
+  s_82d8d8fdd07776::t_e7e165741872ec 475
+.github/workflows/ci.yml
+  s_82d8d8fdd07776::t_e7e165741872ec 89-94
+Makefile
+  s_82d8d8fdd07776::t_e7e165741872ec 253-256
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "acb8b913ec398d00e4899156a8d521d2ff7556bc",
+  "prompts": {},
+  "sessions": {
+    "s_82d8d8fdd07776": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0f64298-180a-4b93-8e02-cb2f53f2bfb2",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
