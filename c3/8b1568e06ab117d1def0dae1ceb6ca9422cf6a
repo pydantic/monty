@@ -1,0 +1,19 @@
+crates/monty-js/package-lock.json
+  ai_agent 3,9,43-47
+uv.lock
+  ai_agent 1788
+Cargo.toml
+  ai_agent 27,63-71
+crates/monty-js/package.json
+  ai_agent 3,108-112
+packages/pydantic-monty/pyproject.toml
+  ai_agent 36,38-39
+Cargo.lock
+  ai_agent 2463,2503,2510,2519,2536,2553,2563,2575,2585,2603,2613,2639,2659,2678,2698,2715,2725,3395
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c38b1568e06ab117d1def0dae1ceb6ca9422cf6a",
+  "prompts": {}
+}
