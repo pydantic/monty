@@ -75,7 +75,7 @@ pub(crate) fn get_not_handled(py: Python<'_>) -> PyResult<&Py<PyAny>> {
     NOT_HANDLED.get_or_try_init(py, || Py::new(py, NotHandledSentinel).map(Py::into_any))
 }
 
-/// Monty - A sandboxed Python interpreter written in Rust.
+/// Monty - a secure Python sandbox written in Rust.
 #[pymodule]
 mod _monty {
     // `MontyFileHandle` is produced by the value-conversion layer (in

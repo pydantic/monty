@@ -18,7 +18,7 @@ mod subprocess;
 #[global_allocator]
 static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 
-/// Monty — a sandboxed Python interpreter written in Rust.
+/// Monty — a secure Python sandbox written in Rust.
 ///
 /// Run `monty` to start an empty interactive REPL. Run a python file with `monty <file>`.
 /// Execute a command with `monty -c <cmd>`.

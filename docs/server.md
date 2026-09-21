@@ -18,7 +18,7 @@ The server is closed-source and distributed as a container image.
     [contact us](https://pydantic.dev/contact). We're currently offering Full Monty free to a select set of
     organizations while we finalize the commercial platform.
 
-## Why Monty over WebSocket
+## Why Full Monty over OSS Monty
 
 Running Monty on a remote server provides:
 
@@ -28,7 +28,7 @@ Running Monty on a remote server provides:
     execution, instead of every service running its own worker pool.
 - **Density**: Monty workers have a small baseline footprint (as little as 2MB), plus additional memory for limits and
     optional type checking, so a single machine can run hundreds.
-- **Same behavior as local Monty**: the wire protocol carries host callbacks, name lookups, async futures and mounted
+- **Same behavior as OSS Monty**: the wire protocol carries host callbacks, name lookups, async futures and mounted
     client directories, so code that runs against a local pool runs unchanged against the server.
 - **Full sandbox option**: a VM running CPython for code that needs dependencies, bash or a real filesystem,
     exposed through the same interface.

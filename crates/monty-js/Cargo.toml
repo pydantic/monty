@@ -1,6 +1,6 @@
 [package]
 name = "monty-js"
-description = "Node.js/TypeScript bindings for the Monty sandboxed Python interpreter"
+description = "Node.js/TypeScript bindings for the Monty sandbox"
 readme = "README.md"
 # Distributed as a napi-rs native addon on npm, not as a crate on crates.io.
 publish = false

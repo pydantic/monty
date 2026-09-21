@@ -1,7 +1,7 @@
 # monty-runtime
 
 The `monty` command-line binary for the
-[Monty](https://github.com/pydantic/monty) sandboxed Python interpreter.
+[Monty](https://github.com/pydantic/monty) sandbox.
 
 ```bash
 cargo install monty-runtime
