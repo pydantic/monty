@@ -69,7 +69,9 @@ insta = { workspace = true }
 monty = { workspace = true }
 monty-types = { workspace = true, features = ["tzdb"] }
 # Self dev-dependency enables budget instrumentation for tests, not normal builds.
-monty-proto = { workspace = true, features = ["test-util"] }
+# Path-only (no version) so `cargo publish` strips it: a versioned self-reference
+# cannot resolve while this version is not yet on crates.io.
+monty-proto = { path = ".", features = ["test-util"] }
 serde_json = { workspace = true }
 strum = { workspace = true }
 
