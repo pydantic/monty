@@ -1,0 +1,30 @@
+crates/monty/src/parse.rs
+  s_18aa622211bf03::t_a553fa96bfa93e 251-262
+crates/monty/src/run.rs
+  s_18aa622211bf03::t_6d39bc8bf9e937 377,423,431,852-854,862,873
+crates/monty-runtime/src/run.rs
+  s_18aa622211bf03::t_6d39bc8bf9e937 423-428
+crates/monty/tests/source_nesting.rs
+  s_18aa622211bf03::t_4b6d3c1539291e 8-9,172-184
+crates/monty/src/repl.rs
+  s_18aa622211bf03::t_6d39bc8bf9e937 136-148,208-209,304
+  s_18aa622211bf03::t_d153c15ed362c2 32
+crates/monty-proto/src/worker.rs
+  s_18aa622211bf03::t_6d39bc8bf9e937 25,522-524,529,532-537
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "53c2789f68bef56e6cb7e08597723e2bafd167d9",
+  "prompts": {},
+  "sessions": {
+    "s_18aa622211bf03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3eeb8d9f-c9f2-45a4-9635-0a8a42f7a68c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
