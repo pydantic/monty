@@ -74,6 +74,9 @@ exactly, except for the comprehension target restriction in
     branches and f-string format specs, so one expression holding more than 200 of those open at once, with no comma,
     newline or lower-precedence operator between them, is rejected even where CPython would accept it.
     A long literal such as `[-1, -2, ...]` releases the count at every comma.
+- The scan also enters string literals, because the type checker parses a forward-reference annotation such as
+    `x: "list[int]"` from the text between the quotes; a string holding more than 200 unbalanced brackets is rejected
+    the same way even when it is plain data.
 - Only Rust hosts can change the threshold, with `CompileOptions { source_scan_threshold: n, ..CompileOptions::default() }`
     (`0` scans every source, `usize::MAX` never scans); Python and JavaScript sessions use the default.
 

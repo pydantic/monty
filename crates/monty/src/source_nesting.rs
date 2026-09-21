@@ -30,19 +30,60 @@ pub fn source_within_nesting_bound(source: &str, source_scan_threshold: usize) -
 ///
 /// The estimate never undercounts a recursion point (see [`Scanner`]), so a
 /// source that passes cannot recurse more than `limit` plus a small constant
-/// for operator-precedence climbing.
+/// for operator-precedence climbing. String literals are scanned in turn,
+/// since the type checker parses a forward-reference annotation's contents.
 pub(crate) fn nesting_bound_exceeded(source: &str, mode: Mode, limit: u16) -> Option<TextRange> {
+    nesting_bound_exceeded_within(source, mode, u32::from(limit), 0)
+}
+
+/// How many string literals deep the scan follows before rejecting outright;
+/// a forward reference rarely quotes even one level inside another.
+const MAX_STRING_LITERAL_DEPTH: u8 = 8;
+
+/// [`nesting_bound_exceeded`] for the contents of a string literal
+/// `string_depth` literals deep.
+fn nesting_bound_exceeded_within(source: &str, mode: Mode, limit: u32, string_depth: u8) -> Option<TextRange> {
     let mut lexer = lex(source, mode);
-    let mut scanner = Scanner::new(u32::from(limit));
+    let mut scanner = Scanner::new(limit);
     loop {
         let kind = lexer.next_token();
+        let range = lexer.current_range();
         if kind == TokenKind::EndOfFile {
             return None;
         }
+        // ruff parses an annotation from the raw source between the quotes, so
+        // that slice gets the same estimate as the code around it.
+        if kind == TokenKind::String
+            && let Some((contents, mode)) = string_literal_contents(&source[range])
+            && (string_depth == MAX_STRING_LITERAL_DEPTH
+                || nesting_bound_exceeded_within(contents, mode, limit, string_depth + 1).is_some())
+        {
+            return Some(range);
+        }
         if scanner.observe(kind) {
-            return Some(lexer.current_range());
+            return Some(range);
         }
     }
+}
+
+/// The source between a string literal's quotes and the mode ruff parses an
+/// annotation in that form with; `None` for bytes literals, which are never
+/// annotations, and for anything the lexer left unterminated.
+fn string_literal_contents(literal: &str) -> Option<(&str, Mode)> {
+    let quote_start = literal.find(['\'', '"'])?;
+    if literal[..quote_start].contains(['b', 'B']) {
+        return None;
+    }
+    let quoted = &literal[quote_start..];
+    let quote = &quoted[..1];
+    let triple = quote.repeat(3);
+    let (closer, mode) = if quoted.starts_with(&triple) {
+        (triple.as_str(), Mode::ParenthesizedExpression)
+    } else {
+        (quote, Mode::Expression)
+    };
+    let inner = quoted.get(closer.len()..quoted.len().checked_sub(closer.len())?)?;
+    quoted.ends_with(closer).then_some((inner, mode))
 }
 
 /// Token-by-token model of the frames ruff's parser holds open.

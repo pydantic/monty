@@ -450,8 +450,10 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
 - Compilation of the fed source is not charged against the duration budgets.
     It has its own structural caps (AST nesting, bytecode operand sizes, comprehension nesting, `finally` expansion), but
     a host accepting untrusted source should still isolate compilation — as the subprocess and WebAssembly runtimes do.
-    The parser grows its native stack outside the allocator's accounting, so a source over 4 KiB is scanned for nesting
-    before it is parsed; a shorter one can add at most a few MiB of stack the memory limit does not see
+    The parser grows its native stack outside the allocator's accounting, so a source longer than
+    `CompileOptions::source_scan_threshold` (4 KiB by default, and fixed at that for Python and JavaScript hosts) is
+    scanned for nesting before it is parsed; a shorter one can add at most a few MiB of stack the memory limit does not
+    see, so a Rust host raising the threshold, or disabling the scan with `usize::MAX`, raises that exposure with it
     (see [source nesting depth](limitations/language.md#source-nesting-depth)).
     `eval()` and `exec()` compile inside the VM under the same caps, charged against the budget, and their code runs
     under the limits and host boundary of the code that called them.

@@ -74,6 +74,17 @@ fn indentation_chain_is_rejected() {
     assert_too_deeply_nested(code);
 }
 
+#[test]
+fn string_annotation_chain_is_rejected() {
+    // ty parses a forward reference from the text between the quotes.
+    assert_too_deeply_nested(format!("x: '{}1{}'", "(".repeat(5000), ")".repeat(5000)));
+}
+
+#[test]
+fn triple_quoted_string_annotation_chain_is_rejected() {
+    assert_too_deeply_nested(format!("x: \"\"\"\n{}1{}\"\"\"", "(".repeat(5000), ")".repeat(5000)));
+}
+
 // === long but flat sources the scan must not reject ===
 
 #[test]
@@ -94,6 +105,14 @@ fn lambda_dict_compiles() {
 #[test]
 fn power_list_compiles() {
     assert_compiles(format!("x = [{}]", "2 ** 2, ".repeat(2000)));
+}
+
+#[test]
+fn ordinary_strings_compile() {
+    let strings = "s = 'call(a, (b)) [x]'\nt = b'((((('\nu = \"\"\"((( '(((' )))\"\"\"\n";
+    assert_compiles(strings.repeat(200));
+    // Four quote styles is as deep as raw source can nest string literals.
+    assert_compiles(format!("x: \"\"\"'''\"'int'\"'''\"\"\"\n{}", "y = 1\n".repeat(1000)));
 }
 
 #[test]
