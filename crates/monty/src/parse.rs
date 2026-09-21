@@ -248,6 +248,18 @@ pub(crate) fn parse_expression_with_interner(
     parser.parse_expression(*parsed.into_syntax().body)
 }
 
+/// [`check_source_nesting`] for a host vetting a snippet before compiling it,
+/// producing the `SyntaxError` the compile would raise.
+pub(crate) fn source_nesting_exception(
+    code: &str,
+    script_name: &str,
+    source_scan_threshold: usize,
+) -> Result<(), MontyException> {
+    // The filename id is a compiler concern; the exception names the file itself.
+    check_source_nesting(code, Mode::Module, StringId::default(), source_scan_threshold)
+        .map_err(|e| e.into_python_exc(script_name, code))
+}
+
 /// Rejects a source over `source_scan_threshold` bytes whose estimated parser
 /// nesting exceeds [`MAX_NESTING_DEPTH`] before ruff can grow its stack on it.
 ///

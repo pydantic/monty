@@ -5,8 +5,8 @@
 //! shorter sources rely on the converter's exact check.
 
 use insta::assert_snapshot;
-use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyException, MontyObject, SOURCE_SCAN_THRESHOLD};
+use monty::{MontyRepl, MontyRun};
+use monty_types::{CompileOptions, ExcType, MontyException, MontyObject, ResourceTracker, SOURCE_SCAN_THRESHOLD};
 
 /// Compiles `code` with the given options and returns the exception it fails with.
 fn parse_err_with(code: String, options: CompileOptions) -> MontyException {
@@ -168,4 +168,18 @@ fn exec_of_a_long_flat_string_runs() {
     )
     .unwrap();
     assert_eq!(run.run_no_limits(vec![]).unwrap(), MontyObject::int(3000));
+}
+
+// === REPL sessions scan once, up front ===
+
+#[test]
+fn repl_check_source_rejects_before_feeding() {
+    let repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
+    let err = repl
+        .check_source(&format!("{}1", "-".repeat(5000)))
+        .expect_err("expected the scan to reject");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
+    assert_eq!(err.traceback()[0].filename, "main.py");
+    assert!(repl.check_source("x = [-1, -2]").is_ok());
 }

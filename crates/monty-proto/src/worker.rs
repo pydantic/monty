@@ -22,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump, source_within_nesting_bound};
+use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
@@ -519,15 +519,22 @@ impl Child {
         Ok(())
     }
 
-    /// Runs a `Feed` on the ready session: type-checks the snippet (unless
-    /// skipped), injects inputs, and drives execution to the turn-ending event.
+    /// Runs a `Feed` on the ready session: scans the snippet for nesting,
+    /// type-checks it (unless skipped), injects inputs, and drives execution to
+    /// the turn-ending event.
     fn handle_repl_feed(&mut self, feed: pb::Feed, sink: &mut dyn EventSink) -> pb::ChildEvent {
         if let Err(event) = self.ensure_repl() {
             return *event;
         }
-        if !matches!(self.state, SessionState::Ready(_)) {
+        let SessionState::Ready(repl) = &self.state else {
             // ensure_repl left it un-Ready only when mid-suspension
             return protocol_violation("Feed without a session ready for input");
+        };
+        // Before anything parses the snippet: neither ty nor the compile scan again.
+        if let Err(error) = repl.check_source(&feed.code) {
+            return event(pb::child_event::Kind::Error(pb::Error {
+                exception: Some((&error).into()),
+            }));
         }
         if !feed.skip_type_check
             && let Some(event) = self.type_check_feed(&feed.code)
@@ -873,12 +880,6 @@ impl Child {
     /// proceed with execution.
     fn type_check_feed(&mut self, code: &str) -> Option<pb::ChildEvent> {
         let state = self.type_check.as_ref()?;
-        // Left to the compiler, whose SyntaxError carries a location; ty would parse it unguarded.
-        if let SessionState::Ready(repl) = &self.state
-            && !source_within_nesting_bound(code, repl.options().source_scan_threshold)
-        {
-            return None;
-        }
         let stubs =
             (!state.committed_stubs.is_empty()).then(|| SourceFile::new(&state.committed_stubs, "repl_type_stubs.pyi"));
         match self

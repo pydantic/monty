@@ -420,6 +420,12 @@ fn execute_repl_snippet(
     suspensions: &mut SuspensionBudget,
 ) {
     let r = repl.take().expect("repl must be present");
+    // Feeds do not scan for nesting themselves.
+    if let Err(err) = r.check_source(snippet) {
+        eprintln!("{BOLD_RED}error{BOLD_RED:#}: {err}");
+        *repl = Some(r);
+        return;
+    }
 
     if host.suspends() {
         match execute_repl_with_mounts(r, snippet, host, suspensions) {

@@ -374,6 +374,7 @@ impl Executor {
             CompileInterns::direct(&mut interns),
             input_names,
             options,
+            options.source_scan_threshold,
         )?;
         let namespace_size = globals.len();
 
@@ -419,6 +420,7 @@ impl Executor {
 
         // Preparation assigns provisional global slots alongside the private intern IDs.
         let globals_len = globals.len();
+        // Already scanned by `MontyRepl::check_source`, so the compile does not repeat it.
         let compiled = compile_module_source(
             &code,
             script_name,
@@ -426,6 +428,7 @@ impl Executor {
             CompileInterns::new(interns),
             input_names,
             options,
+            usize::MAX,
         );
         if compiled.is_err() {
             globals.truncate(globals_len);
@@ -846,6 +849,9 @@ pub struct RefCountOutput {
 
 /// Compiles module source through the supplied tables, committing any overlay on success.
 /// On failure the caller restores provisional global slots or discards a fresh program's tables.
+/// `source_scan_threshold` is passed separately from `options` so a caller that
+/// already ran the nesting scan can disable it here without touching the
+/// options baked into the program (`eval`/`exec` still scan with them).
 fn compile_module_source(
     code: &str,
     script_name: &str,
@@ -853,6 +859,7 @@ fn compile_module_source(
     mut interns: CompileInterns<'_>,
     input_names: impl IntoIterator<Item = impl AsRef<str>>,
     options: CompileOptions,
+    source_scan_threshold: usize,
 ) -> Result<(Code, Vec<NamespaceId>), MontyException> {
     let input_names = input_names.into_iter();
     let mut input_slots = Vec::with_capacity(input_names.size_hint().0);
@@ -863,7 +870,7 @@ fn compile_module_source(
             .map_err(|e| e.into_python_exc(script_name, code))?;
         input_slots.push(slot);
     }
-    let nodes = parse_with_interner(code, script_name, &mut interns, options.source_scan_threshold)
+    let nodes = parse_with_interner(code, script_name, &mut interns, source_scan_threshold)
         .map_err(|e| e.into_python_exc(script_name, code))?;
     let nodes =
         prepare_with_existing_names(nodes, &interns, globals).map_err(|e| e.into_python_exc(script_name, code))?;
