@@ -837,6 +837,9 @@ The surface is `Monty` (sync pool) and `AsyncMonty` (async pool), each with
 ### Structure
 
 - `crates/monty-python/src/` - Rust source for PyO3 bindings
+- Rust futures cross to asyncio only through `py_future::future_into_py`, never
+    `pyo3_async_runtimes::future_into_py`: its delivery is counted so the `atexit` drain
+    can wait for it, which stops a segfault at interpreter exit on Python 3.13 and older
 - `crates/monty-python/python/pydantic_monty/_monty.pyi` - Type stubs for the Python module
 - `crates/monty-python/tests/` - Python tests using pytest
 - `crates/monty-python/README.md` - the `pydantic-monty-client` readme (binary

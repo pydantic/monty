@@ -12,6 +12,8 @@ def test_callback_context_telemetry_fallback(mode: str):
     subprocess.run(
         [
             sys.executable,
+            '-X',
+            'faulthandler',
             '-c',
             """
 import asyncio
@@ -94,6 +96,8 @@ def test_callback_contexts(transport: str):
     subprocess.run(
         [
             sys.executable,
+            '-X',
+            'faulthandler',
             '-c',
             """
 import asyncio
@@ -209,6 +213,8 @@ def test_uninstrumented_callback_context():
     subprocess.run(
         [
             sys.executable,
+            '-X',
+            'faulthandler',
             '-c',
             """
 import asyncio
@@ -254,6 +260,8 @@ def test_snapshot_callback_context():
     subprocess.run(
         [
             sys.executable,
+            '-X',
+            'faulthandler',
             '-c',
             """
 import asyncio
@@ -324,6 +332,8 @@ def test_synchronous_callback_exception_recording(kind: str, failure: str):
     subprocess.run(
         [
             sys.executable,
+            '-X',
+            'faulthandler',
             '-c',
             r"""
 import sys

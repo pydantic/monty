@@ -56,7 +56,7 @@ use pyo3::{
     prelude::*,
     types::{PyBool, PyBytes, PyDict, PyInt, PyList, PyString, PyTuple},
 };
-use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
+use pyo3_async_runtimes::tokio::get_runtime;
 use tokio::{
     runtime::{Handle, RuntimeFlavor},
     sync::Mutex as AsyncMutex,
@@ -79,6 +79,7 @@ use crate::{
     mount::PyMountDir,
     os_policy::OsPolicyArg,
     print_target::PrintTarget,
+    py_future::future_into_py,
     snapshot::{DriveContext, build_snapshot, feed_start_async, feed_start_sync},
     telemetry::{capture_otel_context, capture_telemetry_context, pool_metrics},
 };

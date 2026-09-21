@@ -19,6 +19,7 @@ mod mount;
 mod os_policy;
 mod pool;
 mod print_target;
+mod py_future;
 mod snapshot;
 mod telemetry;
 mod version;
@@ -153,6 +154,9 @@ mod _monty {
         let py = m.py();
         m.add("__version__", get_version())?;
         m.add("NOT_HANDLED", get_not_handled(py)?.clone_ref(py))?;
+        // see `py_future`: deliveries must finish before the interpreter finalizes
+        py.import("atexit")?
+            .call_method1("register", (wrap_pyfunction!(super::py_future::drain_deliveries, m)?,))?;
         Ok(())
     }
 }
