@@ -5,10 +5,21 @@ use std::{
     error::Error,
     fs, io,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use monty_pool::{Checkout, OnPrint, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent, on_print_sync};
 use monty_types::MontyObject;
+
+/// Cases whose type check never terminates: ty (crates 0.0.14) spins on a name
+/// rebound through `functools.partial` of itself in a loop. They train without
+/// type checking; remove them once a ty release finishes them.
+const TYPE_CHECK_HANGS: &[&str] = &["functools__partial.py", "refcount__partial_recursion_cleanup.py"];
+
+/// Kills a worker whose turn hangs. An instrumented worker only writes its
+/// profile at exit, so a kill discards everything it gathered: this exists to
+/// fail the build loudly, not to skip cases silently.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Runs Monty's test-case corpus through subprocess pool sessions.
 #[tokio::main]
@@ -16,7 +27,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let binary = find_monty_binary()?;
     println!("Training monty runtime at {}", binary.display());
 
-    let pool = Pool::new(PoolConfig::subprocess(binary)).await?;
+    let config = PoolConfig {
+        request_timeout: Some(REQUEST_TIMEOUT),
+        ..PoolConfig::subprocess(binary)
+    };
+    let pool = Pool::new(config).await?;
     let mut test_cases = test_cases()?;
     test_cases.sort();
 
@@ -24,20 +39,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut typing_errors = 0;
     for test_case in &test_cases {
         let code = fs::read_to_string(test_case)?;
+        let script_name = test_case
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("main.py")
+            .to_owned();
+        let skip_type_check = TYPE_CHECK_HANGS.contains(&script_name.as_str());
         let mut session = pool
             .checkout(&ReplConfig {
-                script_name: test_case
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("main.py")
-                    .to_owned(),
+                script_name: script_name.clone(),
                 type_check: true,
                 ..ReplConfig::default()
             })
             .await?;
         let mut on_print = on_print_sync(|_, _| {});
 
-        match run_code(&mut session, &code, false, &mut on_print).await {
+        match run_code(&mut session, &code, skip_type_check, &mut on_print).await {
             Ok(()) => {
                 completed += 1;
                 session.finish().await?;
@@ -50,11 +67,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         session.finish().await?;
                     }
                     Err(PoolError::Runtime(_)) => session.finish().await?,
-                    Err(error) => return Err(error.into()),
+                    Err(error) => return Err(format!("{script_name}: {error}").into()),
                 }
             }
             Err(PoolError::Runtime(_)) => session.finish().await?,
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(format!("{script_name}: {error}").into()),
         }
     }
 
