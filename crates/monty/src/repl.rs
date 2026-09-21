@@ -600,6 +600,9 @@ impl MontyRepl {
 
 /// A snippet [`MontyRepl::check_source`] found within the nesting bound,
 /// which [`MontyRepl::feed_start_checked`] therefore need not scan again.
+///
+/// The verdict used the checking REPL's `source_scan_threshold`, so feed it
+/// to that REPL (or one configured alike), as the worker does.
 #[derive(Debug, Clone, Copy)]
 pub struct CheckedSource<'a>(&'a str);
 

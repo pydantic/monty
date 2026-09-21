@@ -9,7 +9,7 @@
 
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{Mode, lexer::lex};
-use ruff_text_size::TextRange;
+use ruff_text_size::{TextLen, TextRange};
 
 use crate::parse::MAX_NESTING_DEPTH;
 
@@ -43,6 +43,15 @@ const MAX_STRING_LITERAL_DEPTH: u8 = 8;
 /// [`nesting_bound_exceeded`] for the contents of a string literal
 /// `string_depth` literals deep.
 fn nesting_bound_exceeded_within(source: &str, mode: Mode, limit: u32, string_depth: u8) -> Option<TextRange> {
+    // Every frame [`Scanner`] charges costs at least one byte of source, so a
+    // source no longer than the limit cannot exceed it; that spares nearly
+    // every string literal a second lexer.
+    if source.len() <= limit as usize {
+        return None;
+    }
+    if string_depth > MAX_STRING_LITERAL_DEPTH {
+        return Some(TextRange::up_to(source.text_len()));
+    }
     let mut lexer = lex(source, mode);
     let mut scanner = Scanner::new(limit);
     loop {
@@ -55,8 +64,7 @@ fn nesting_bound_exceeded_within(source: &str, mode: Mode, limit: u32, string_de
         // that slice gets the same estimate as the code around it.
         if kind == TokenKind::String
             && let Some((contents, mode)) = string_literal_contents(&source[range])
-            && (string_depth == MAX_STRING_LITERAL_DEPTH
-                || nesting_bound_exceeded_within(contents, mode, limit, string_depth + 1).is_some())
+            && nesting_bound_exceeded_within(contents, mode, limit, string_depth + 1).is_some()
         {
             return Some(range);
         }
@@ -76,9 +84,9 @@ fn string_literal_contents(literal: &str) -> Option<(&str, Mode)> {
     }
     let quoted = &literal[quote_start..];
     let quote = &quoted[..1];
-    let triple = quote.repeat(3);
-    let (closer, mode) = if quoted.starts_with(&triple) {
-        (triple.as_str(), Mode::ParenthesizedExpression)
+    let triple = if quote == "'" { "'''" } else { "\"\"\"" };
+    let (closer, mode) = if quoted.starts_with(triple) {
+        (triple, Mode::ParenthesizedExpression)
     } else {
         (quote, Mode::Expression)
     };
@@ -89,10 +97,10 @@ fn string_literal_contents(literal: &str) -> Option<(&str, Mode)> {
 /// Token-by-token model of the frames ruff's parser holds open.
 ///
 /// ruff recurses on every bracketed expression, prefix operator, `**` right
-/// operand, lambda body, conditional `else` branch, f-string format spec and
-/// indented block. Each is charged when its token arrives and released when a
-/// token proves the frame has returned; anything ambiguous stays charged, so
-/// the model only ever overcounts.
+/// operand, lambda body, conditional `else` branch, f-string format spec,
+/// indented block and `case` complex-literal pattern. Each is charged when its
+/// token arrives and released when a token proves the frame has returned;
+/// anything ambiguous stays charged, so the model only ever overcounts.
 struct Scanner {
     limit: u32,
     /// Open bracket levels, bottom entry being the module or expression itself.
@@ -102,6 +110,9 @@ struct Scanner {
     /// Whether the previous token can end an operand, making a following
     /// `-`, `+`, `*` or `not` binary rather than prefix.
     prev_ends_operand: bool,
+    /// Whether a `case` began the current logical line, so `+` and `-` join
+    /// complex-literal patterns, which recurse on their right operand.
+    in_pattern: bool,
     /// Open levels (excluding the bottom), indentation and every level's counts.
     total: u32,
 }
@@ -140,6 +151,7 @@ impl Scanner {
             levels: vec![Level::new(LevelKind::Top)],
             indent: 0,
             prev_ends_operand: false,
+            in_pattern: false,
             total: 0,
         }
     }
@@ -175,6 +187,8 @@ impl Scanner {
                 }
                 false
             }
+            // `case 1+1+1:` parses each `+` or `-` as a nested complex literal.
+            TokenKind::Minus | TokenKind::Plus if self.in_pattern => self.add_tight(1),
             // Binary after an operand (`a - b`, `a * b`, `a not in b`), prefix otherwise.
             TokenKind::Minus | TokenKind::Plus | TokenKind::Star | TokenKind::Not => {
                 if self.prev_ends_operand {
@@ -193,12 +207,22 @@ impl Scanner {
                 self.top().pending_lambdas += 1;
                 false
             }
+            // Also lexed for a variable named `case`, where the charge merely overcounts.
+            TokenKind::Case => {
+                self.in_pattern = true;
+                false
+            }
             TokenKind::Colon => self.observe_colon(),
             // The `orelse` branch recurses once itself and once for its expression.
             TokenKind::Else => self.add_loose(2),
             // A comma between `lambda` and its `:` separates parameters.
             TokenKind::Comma if self.top().pending_lambdas > 0 => false,
-            TokenKind::Comma | TokenKind::Newline | TokenKind::Semi => {
+            TokenKind::Comma => {
+                self.reset_level();
+                false
+            }
+            TokenKind::Newline | TokenKind::Semi => {
+                self.in_pattern = false;
                 self.reset_level();
                 false
             }

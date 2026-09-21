@@ -5,7 +5,7 @@
 //! shorter sources rely on the converter's exact check.
 
 use insta::assert_snapshot;
-use monty::{MontyRepl, MontyRun, ReplProgress};
+use monty::{MontyRepl, MontyRun, ReplProgress, source_within_nesting_bound};
 use monty_types::{
     CompileOptions, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker, SOURCE_SCAN_THRESHOLD,
 };
@@ -65,6 +65,14 @@ fn format_spec_chain_is_rejected() {
 }
 
 #[test]
+fn case_pattern_chain_is_rejected() {
+    let source = format!("match x:\n    case {}1j:\n        pass\n", "1+".repeat(3000));
+    // Monty rejects `match` itself, so check the scan's verdict directly too.
+    assert!(!source_within_nesting_bound(&source, 0));
+    assert_too_deeply_nested(source);
+}
+
+#[test]
 fn indentation_chain_is_rejected() {
     let mut code = String::new();
     for depth in 0..300 {
@@ -115,6 +123,18 @@ fn ordinary_strings_compile() {
     assert_compiles(strings.repeat(200));
     // Four quote styles is as deep as raw source can nest string literals.
     assert_compiles(format!("x: \"\"\"'''\"'int'\"'''\"\"\"\n{}", "y = 1\n".repeat(1000)));
+}
+
+#[test]
+fn case_variable_compiles() {
+    assert_compiles("case = case - 1 + case\n".repeat(400));
+}
+
+#[test]
+fn case_alternatives_pass_the_scan() {
+    // Monty rejects `match` itself, so only the scan's verdict is checked.
+    let source = format!("match x:\n    case {}1j:\n        pass\n", "1+1j | -1-".repeat(2000));
+    assert!(source_within_nesting_bound(&source, 0));
 }
 
 #[test]
