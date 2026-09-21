@@ -214,6 +214,12 @@ constructed instances are exposed, or `convertValue` to transform class
 attrs, static-method returns and (through `instanceWrapper`) every
 constructed instance's values.
 
+A builtin type or builtin function the sandbox returns crosses as a marker
+carrying only its name, never a JavaScript callable. Passing such a marker back
+in resolves it to the builtin it names, so `len` returned from one feed is `len`
+again when fed to the next. An unrecognized name is rejected with
+`unknown type name` or `unknown builtin function`.
+
 A host class the sandbox returns — the `ClassType` input itself, or
 `type(x)` of a wrapped instance — resolves to the class object when the
 session registered its id (any `ClassType` or `ClassInstance` crossing
@@ -658,6 +664,8 @@ Browser/WASM does not yet implement this instrumentation path.
 | `dict`            | `Map` (preserves key types and order)                  |
 | `set`/`frozenset` | `Set`                                                  |
 | datetime types    | marker objects (`{ __monty_type__: 'DateTime', ... }`) |
+| builtin types     | `{ __monty_type__: 'Type', value }`                    |
+| builtin functions | `{ __monty_type__: 'BuiltinFunction', value }`         |
 | file handles      | `MontyFileHandle`                                      |
 | class instances   | `ClassInstance` wrappers / `MontyClassProxy` stand-ins |
 
