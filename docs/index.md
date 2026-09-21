@@ -53,24 +53,21 @@ Learn more in the [comparison to alternatives](alternatives.md).
 
 ## Why Monty
 
-1. **Latency in microseconds, not seconds.** A sandbox plus ten REPL commands takes 5 ms against 900 ms for Docker and
-    1900 ms for a sandboxing service, because the sandbox is a subprocess, a command is one message each way, and the
+1. **Latency in milliseconds, not seconds.** A sandbox plus ten REPL commands takes 5 ms vs. 1900 ms for a
+    sandboxing service, because the sandbox is a subprocess, a command is one message each way, and the
     session persists so nothing is re-run.
     See [start latency](#latency).
-1. **Suspend and resume from bytes.** Every host call suspends the sandbox; `feed_start` returns the suspension and
-    `dump()` serialises the whole sandbox, paused call stack included, to bytes you can store and `load_snapshot`
-    later on another machine.
-    There are no file descriptors, sockets or threads inside the sandbox, so nothing has to be reconstructed.
+1. **Simple to deploy at massive scale.** Because you're not provisioning a new VM or container for every sandbox
+    you can run thousands of workers with minimal cost and complexity.
+1. **Suspend and resume from bytes.** Monty lets you dump the whole sandbox state to bytes at an external function call
+    or at the end of a repl snippet. This makes long external function calls and human-in-the-loop not only possible
+    but very cheap. It also makes extremely long running REPL sessions easy to implement.
     See [snapshots](snapshots.md).
-1. **Strict resource limits** `max_memory`, `max_feed_duration_secs` and `max_recursion_depth` are enforced by the VM
-    itself, and `max_suspensions` by the pool; `'x' * 10**12` raises `MemoryError` before the allocation is
-    attempted.
+1. **Strict resource limits** maximum memory and execution time are enforced by the VM itself
+    so `'x' * 10**12` raises `MemoryError` before the allocation is attempted.
     See [resource limits](resource-limits.md).
-1. **A package, not infrastructure.** OSS Monty is `uv add pydantic-monty`, `npm install @pydantic/monty` or
-    `cargo add monty-pool`: about 4.5 MB, no daemon, no image, no API key, and a worker baseline of about 2 MB so one
-    machine runs hundreds.
-    See [getting started](quickstart/python.md).
-1. **MIT licensed, with commercial options.** OSS Monty is open source: the sandbox, the pool and the bindings.
+1. **Local package for development, commercial option for scale.** OSS Monty provides packages for Python, JS and Rust,
+    making it trivial to get started with Monty. For greater security guards and larger scale deployments,
     [Full Monty](server.md) runs the same workers behind a WebSocket as a container image, adding OS-level isolation
     and horizontal scaling.
 
