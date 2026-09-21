@@ -1,0 +1,23 @@
+crates/monty-proto/src/python/convert.rs
+  s_063447cc103291::t_54ddaa7af0c08b 8-9,21,23,51-52,55-60,124-125
+crates/monty-proto/src/python/exceptions.rs
+  s_063447cc103291::t_54ddaa7af0c08b 113-127
+crates/monty-python/tests/test_types.py
+  s_063447cc103291::t_54ddaa7af0c08b 6,215-216,226-227,531-532,534-535
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b6145380af88b04dbc3807ded28ab6800145bf7b",
+  "prompts": {},
+  "sessions": {
+    "s_063447cc103291": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e023e8fb-a847-4354-a1a6-59cf32558feb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
