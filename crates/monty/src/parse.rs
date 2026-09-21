@@ -199,12 +199,13 @@ pub(crate) fn parse_with_interner(
     code: &str,
     filename: &str,
     interner: &mut CompileInterns<'_>,
-    source_scan_threshold: usize,
 ) -> Result<Vec<ParseNode>, ParseError> {
     // Interned up front so a syntax error can be located without a `Parser`,
     // leaving the parser to be built once, fully populated, after parsing.
     let filename_id = interner.intern(filename);
-    parse_module_with_filename_id(code, filename_id, interner, source_scan_threshold)
+    // Module sources are scanned for nesting by their entry points
+    // (`MontyRun::new`, `MontyRepl::check_source`), not here.
+    parse_module_with_filename_id(code, filename_id, interner, usize::MAX)
 }
 
 /// [`parse_with_interner`] for a filename already interned — an `exec()`
