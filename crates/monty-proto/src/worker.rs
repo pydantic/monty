@@ -26,8 +26,8 @@ use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, 
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
-    OsPolicy, PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, TypeCheckState,
-    TypeCheckingConfig,
+    OsPolicy, PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, SOURCE_SCAN_THRESHOLD,
+    TypeCheckState, TypeCheckingConfig,
 };
 
 use super::{
@@ -510,6 +510,8 @@ impl Child {
                 AssertMessageAnnotations::default,
                 AssertMessageAnnotations::from_max_bytes,
             ),
+            // Not on the wire: every host gets the default.
+            source_scan_threshold: SOURCE_SCAN_THRESHOLD,
         };
         let repl = MontyRepl::new(&self.script_name, ResourceTracker::new(limits), options)
             .with_os_policy(self.os_policy.clone());

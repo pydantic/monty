@@ -863,8 +863,8 @@ fn compile_module_source(
             .map_err(|e| e.into_python_exc(script_name, code))?;
         input_slots.push(slot);
     }
-    let nodes =
-        parse_with_interner(code, script_name, &mut interns).map_err(|e| e.into_python_exc(script_name, code))?;
+    let nodes = parse_with_interner(code, script_name, &mut interns, options.source_scan_threshold)
+        .map_err(|e| e.into_python_exc(script_name, code))?;
     let nodes =
         prepare_with_existing_names(nodes, &interns, globals).map_err(|e| e.into_python_exc(script_name, code))?;
     let module_code = Compiler::compile_module(&nodes, &mut interns, globals, options)

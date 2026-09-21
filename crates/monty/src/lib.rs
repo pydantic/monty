@@ -33,6 +33,7 @@ mod run;
 mod run_progress;
 mod sorting;
 mod source_map;
+mod source_nesting;
 mod str_format;
 mod string_builder;
 mod stringize;
@@ -50,4 +51,5 @@ pub use crate::{
     },
     run::MontyRun,
     run_progress::{FunctionCall, NameLookup, OsCall, ResolveFutures, RunProgress},
+    source_nesting::source_within_nesting_bound,
 };

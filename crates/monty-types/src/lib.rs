@@ -51,7 +51,7 @@ pub use crate::{
         OOM_EXIT_CODE, ResourceError, ResourceLimits, ResourceTracker, TimeLimitScope, memory_limit_with_headroom,
     },
     results::{ExtFunctionResult, NameLookupResult},
-    run_options::{AssertMessageAnnotations, CompileOptions},
+    run_options::{AssertMessageAnnotations, CompileOptions, SOURCE_SCAN_THRESHOLD},
     type_checking::{TypeCheckState, TypeCheckingConfig, TypeCheckingFormat},
     uuid::MontyUuid,
     virtual_path::{normalize_virtual_path, validate_cwd},

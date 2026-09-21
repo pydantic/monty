@@ -2,17 +2,40 @@
 //! [`AssertMessageAnnotations`] introspected-assert setting.
 
 use std::num::NonZeroU32;
+
+/// Byte length up to which a source is compiled without the pre-parse nesting
+/// scan; the default for [`CompileOptions::source_scan_threshold`].
+///
+/// ruff grows its parser stack on demand, outside the sandbox allocator, at
+/// roughly 2 KiB per nesting level, and a source cannot nest deeper than it is
+/// long. 4 KiB (about 40 lines of 100 characters) caps that untracked growth
+/// at ~8 MiB while sparing ordinary programs the extra lexer pass.
+pub const SOURCE_SCAN_THRESHOLD: usize = 4 * 1024;
+
 /// Options controlling how Monty behavior diverges from plain CPython.
 ///
 /// Consumed when code is compiled: a `MontyRun` bakes the choices into the
 /// program at construction, while a `MontyRepl` stores them so every snippet
 /// fed to the session compiles the same way.
-#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct CompileOptions {
     /// Give failed `assert` statements pytest-style introspected messages,
     /// deliberately diverging from CPython; see `limitations/assert.md`.
     /// On by default with a 120-byte operand-repr truncation.
     pub assert_message_annotations: AssertMessageAnnotations,
+    /// Sources longer than this many bytes are scanned for parser nesting
+    /// before ruff sees them (see `limitations/language.md`); `0` scans every
+    /// source and `usize::MAX` none. Defaults to [`SOURCE_SCAN_THRESHOLD`].
+    pub source_scan_threshold: usize,
+}
+
+impl Default for CompileOptions {
+    fn default() -> Self {
+        Self {
+            assert_message_annotations: AssertMessageAnnotations::default(),
+            source_scan_threshold: SOURCE_SCAN_THRESHOLD,
+        }
+    }
 }
 
 /// Controls the pytest-style introspected `assert` failure messages of

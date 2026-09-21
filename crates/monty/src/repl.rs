@@ -14,7 +14,7 @@ use std::{mem, sync::Arc};
 use ahash::AHashMap;
 use monty_types::{
     CallArgs, ExcType, MontyException, MontyObject, MontyUuid, NamedValues, OsFunctionCall, OsPolicy, PrintWriter,
-    ResourceTracker,
+    ResourceTracker, SOURCE_SCAN_THRESHOLD,
     unstable::{self, MontyGraph, NodeId},
 };
 use ruff_python_ast::token::TokenKind;
@@ -34,6 +34,7 @@ use crate::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
         resume_lookup, resume_with_result,
     },
+    source_nesting::source_within_nesting_bound,
     types::{SessionRandom, tuple::allocate_tuple},
     value::Value,
     virtual_path::canonical_cwd,
@@ -123,6 +124,12 @@ impl MontyRepl {
             heap,
             globals: Vec::new(),
         }
+    }
+
+    /// The [`CompileOptions`] every snippet fed to this session compiles with.
+    #[must_use]
+    pub fn options(&self) -> CompileOptions {
+        self.options
     }
 
     /// Replaces the default clock, sleep and random initialization policies
@@ -1068,6 +1075,10 @@ pub enum ReplContinuationMode {
 ///   syntax error that should be shown immediately).
 #[must_use]
 pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
+    // Complete because feeding it raises the SyntaxError; parsing it here would grow the stack unguarded.
+    if !source_within_nesting_bound(source, SOURCE_SCAN_THRESHOLD) {
+        return ReplContinuationMode::Complete;
+    }
     let Err(error) = parse_module(source) else {
         return ReplContinuationMode::Complete;
     };

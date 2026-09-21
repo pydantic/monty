@@ -11,7 +11,7 @@ use ruff_python_ast::{
     token::TokenKind,
     visitor::{Visitor, walk_expr},
 };
-use ruff_python_parser::{parse_expression, parse_module};
+use ruff_python_parser::{Mode, parse_expression, parse_module};
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
@@ -24,6 +24,7 @@ use crate::{
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     intern::{CompileInterns, StringId},
     source_map::{SourceMap, StackFrameExt},
+    source_nesting::nesting_bound_exceeded,
     stringize::stringize_annotation,
     types::long_int::INT_MAX_STR_DIGITS,
     value::EitherStr,
@@ -32,6 +33,10 @@ use crate::{
 /// Maximum nesting depth for AST structures during parsing.
 /// Matches CPython's limit of ~200 for nested parentheses.
 /// This prevents stack overflow from deeply nested structures like `((((x,),),),)`.
+///
+/// ruff itself no longer limits recursion, so this is Monty's single limit:
+/// enforced approximately by the pre-parse scan (`source_nesting`) on sources
+/// over `CompileOptions::source_scan_threshold`, and exactly by this converter.
 #[cfg(not(debug_assertions))]
 pub const MAX_NESTING_DEPTH: u16 = 200;
 /// In debug builds, we use a lower limit because stack frames are much larger
@@ -194,11 +199,12 @@ pub(crate) fn parse_with_interner(
     code: &str,
     filename: &str,
     interner: &mut CompileInterns<'_>,
+    source_scan_threshold: usize,
 ) -> Result<Vec<ParseNode>, ParseError> {
     // Interned up front so a syntax error can be located without a `Parser`,
     // leaving the parser to be built once, fully populated, after parsing.
     let filename_id = interner.intern(filename);
-    parse_module_with_filename_id(code, filename_id, interner)
+    parse_module_with_filename_id(code, filename_id, interner, source_scan_threshold)
 }
 
 /// [`parse_with_interner`] for a filename already interned — an `exec()`
@@ -208,7 +214,9 @@ pub(crate) fn parse_module_with_filename_id(
     code: &str,
     filename_id: StringId,
     interner: &mut CompileInterns<'_>,
+    source_scan_threshold: usize,
 ) -> Result<Vec<ParseNode>, ParseError> {
+    check_source_nesting(code, Mode::Module, filename_id, source_scan_threshold)?;
     let parsed =
         parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
     // Harvested before `into_syntax` drops the token stream.
@@ -230,12 +238,36 @@ pub(crate) fn parse_expression_with_interner(
     code: &str,
     filename_id: StringId,
     interner: &mut CompileInterns<'_>,
+    source_scan_threshold: usize,
 ) -> Result<ExprLoc, ParseError> {
+    check_source_nesting(code, Mode::Expression, filename_id, source_scan_threshold)?;
     let parsed = parse_expression(code)
         .map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
     // No `class` keywords can occur in a bare expression.
     let mut parser = Parser::new(code, filename_id, interner, Vec::new());
     parser.parse_expression(*parsed.into_syntax().body)
+}
+
+/// Rejects a source over `source_scan_threshold` bytes whose estimated parser
+/// nesting exceeds [`MAX_NESTING_DEPTH`] before ruff can grow its stack on it.
+///
+/// Same message as the converter's exact check, so either path reads alike.
+fn check_source_nesting(
+    code: &str,
+    mode: Mode,
+    filename_id: StringId,
+    source_scan_threshold: usize,
+) -> Result<(), ParseError> {
+    if code.len() > source_scan_threshold
+        && let Some(range) = nesting_bound_exceeded(code, mode, MAX_NESTING_DEPTH)
+    {
+        Err(ParseError::syntax(
+            "Source is too deeply nested",
+            code_range(filename_id, range),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// Parser for converting ruff AST to Monty's intermediate ParseNode representation.
