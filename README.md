@@ -2,7 +2,7 @@
   <h1>Monty</h1>
 </div>
 <div align="center">
-  <h3>A sandboxed Python interpreter, written in Rust, for code written by AI.</h3>
+  <h3>A secure Python sandbox, written in Rust, for code written by AI.</h3>
 </div>
 <div align="center">
   <a href="https://github.com/pydantic/monty/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/pydantic/monty/actions/workflows/ci.yml/badge.svg" alt="CI"></a>

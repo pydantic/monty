@@ -2,7 +2,7 @@
 
 The `monty` binary runs Python files and gives you an interactive REPL, with the same sandbox, resource limits and type
 checking the libraries use.
-It is the fastest way to see what the interpreter does with a piece of code.
+It is the fastest way to see what the sandbox does with a piece of code.
 
 It ships with `pydantic-monty` (through the [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/)
 dependency), or you can build it with `cargo build -p monty-runtime`.

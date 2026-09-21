@@ -15,7 +15,7 @@ from pathlib import Path
 # (label, milliseconds, is_monty): cold start plus a warm agent run of 10 REPL
 # commands, the "Combined" column of the table in docs/index.md
 ROWS: list[tuple[str, float, bool]] = [
-    ('Monty', 4.9, True),
+    ('OSS Monty', 4.9, True),
     ('Full Monty', 7.4, True),
     ('WASI / wasmtime', 200, False),
     ('Docker', 900, False),

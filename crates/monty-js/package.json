@@ -2,7 +2,7 @@
   "name": "@pydantic/monty",
   "version": "0.0.23",
   "type": "module",
-  "description": "Sandboxed Python interpreter running in crash-isolated subprocess workers",
+  "description": "Python sandbox running in crash-isolated subprocess workers",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

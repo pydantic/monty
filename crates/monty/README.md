@@ -4,7 +4,7 @@
 [![crates.io](https://img.shields.io/crates/v/monty.svg)](https://crates.io/crates/monty)
 [![license](https://img.shields.io/github/license/pydantic/monty.svg?v=2)](https://github.com/pydantic/monty/blob/main/LICENSE)
 
-The core interpreter crate of [Monty](https://github.com/pydantic/monty) — a sandboxed Python interpreter written in Rust for code written by AI.
+The core interpreter crate of [Monty](https://github.com/pydantic/monty) — a secure Python sandbox written in Rust for code written by AI.
 
 Monty runs Python code written by an LLM without the cost, latency and complexity of a container based sandbox. It parses Python with [Ruff](https://github.com/astral-sh/ruff)'s parser and executes it on its own bytecode VM — no CPython, no FFI, no C dependencies. Startup takes microseconds, not hundreds of milliseconds.
 

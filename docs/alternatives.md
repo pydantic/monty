@@ -19,7 +19,7 @@ The chart is the time to create a sandbox and then run ten REPL commands in it; 
 
 | Tech               | Language completeness      | Security          | Start latency           | FOSS       | Setup        | File mounting  | Snapshotting                |
 | ------------------ | -------------------------- | ----------------- | ----------------------- | ---------- | ------------ | -------------- | --------------------------- |
-| Monty              | partial                    | strict            | 0.08 ms warm, 5 ms cold | free / OSS | easy         | easy           | interpreter, kilobytes      |
+| OSS Monty          | partial                    | strict            | 0.08 ms warm, 5 ms cold | free / OSS | easy         | easy           | interpreter, kilobytes      |
 | Full Monty         | partial, or full via proxy | strict + OS-level | 2 ms warm, 4 ms cold    | not free   | easy         | easy           | interpreter, kilobytes      |
 | Docker             | full                       | good              | 195 ms                  | free / OSS | intermediate | easy           | CRIU image, experimental    |
 | Pyodide            | full                       | poor              | 2700 ms                 | free / OSS | intermediate | easy           | no                          |
@@ -49,8 +49,8 @@ ten REPL feeds against a sandbox that already exists, and the chart above adds t
 
 | Sandbox                                      | Cold start | Agent run, warm† | Combined |
 | -------------------------------------------- | ---------- | ---------------- | -------- |
-| Monty, warm pool                             | 0.08 ms    | 0.4 ms           | 0.5 ms   |
-| Monty, cold start                            | 5 ms       | 0.4 ms           | 5 ms     |
+| OSS Monty, warm pool                         | 0.08 ms    | 0.4 ms           | 0.5 ms   |
+| OSS Monty, cold start                        | 5 ms       | 0.4 ms           | 5 ms     |
 | Full Monty, client pool already open         | 2 ms       | 4 ms             | 6 ms     |
 | Full Monty, cold start                       | 4 ms       | 4 ms             | 7 ms     |
 | WASI / wasmtime, precompiled CPython         | 16 ms      | 180 ms           | 200 ms   |
@@ -129,7 +129,7 @@ The tables round the numbers; the measured cold-start values are in the text bel
     subprocess (about 30 ms).
     Replaying the agent run through ten subprocesses takes about 180 ms; ten `exec` calls into one namespace take 0.3 ms.
 
-## Monty
+## OSS Monty
 
 - **Language completeness**: no class inheritance, limited stdlib, no third-party libraries.
     See [the Python subset](limitations/index.md).
@@ -147,7 +147,7 @@ The tables round the numbers; the measured cold-start values are in the text bel
 
 [Full Monty](server.md) is the commercial server: the same `monty` workers behind a WebSocket, as a container image.
 
-- **Language completeness**: the same subset as Monty, or full CPython when the server proxies a session to a CPython
+- **Language completeness**: the same subset as OSS Monty, or full CPython when the server proxies a session to a CPython
     sandbox.
 - **Security**: the Monty sandbox plus OS-level isolation; escaping the sandbox reaches an empty container, not the
     machine running your application.
@@ -157,7 +157,7 @@ The tables round the numbers; the measured cold-start values are in the text bel
     package.
 - **Setup complexity**: run the container image with one environment variable, the dump-signing key.
 - **File mounting**: client directories are mounted over the wire, the same [`MountDir`][pydantic_monty.MountDir] as a local pool.
-- **Snapshotting**: as Monty, and a draining server hands each session a signed dump to restore elsewhere.
+- **Snapshotting**: as OSS Monty, and a draining server hands each session a signed dump to restore elsewhere.
 
 ## Docker
 

@@ -6,7 +6,7 @@ build-backend = "maturin"
 # the module is named `pydantic_monty`; the `pydantic-monty` distribution is the
 # metapackage in `packages/pydantic-monty` that pairs this with the runtime
 name = "pydantic-monty-client"
-description = "Python client for the Monty sandboxed Python interpreter"
+description = "Python client for the Monty sandbox"
 readme = "README.md"
 requires-python = ">=3.10"
 classifiers = [

@@ -1,11 +1,11 @@
 # @pydantic/monty
 
 Run untrusted Python safely from JavaScript. In Node.js this uses a pool of
-crash-isolated `monty` interpreter subprocesses; browser bundlers resolve the
+crash-isolated `monty` worker subprocesses; browser bundlers resolve the
 same public API to a Web Worker pool backed by a lean wasm build.
 
-[Monty](https://github.com/pydantic/monty) is a sandboxed Python interpreter
-written in Rust. A sandbox process can never be made fully crash-proof against
+[Monty](https://github.com/pydantic/monty) is a Python sandbox written in
+Rust. A sandbox process can never be made fully crash-proof against
 memory errors (stack overflow, allocator aborts), so the native binding
 (`@pydantic/monty`, `@pydantic/monty/node`) only runs the interpreter in worker
 subprocesses. A worker that crashes raises `MontyCrashedError` and is replaced

@@ -1,6 +1,6 @@
 # pydantic-monty
 
-Python bindings for the Monty sandboxed Python interpreter.
+Python bindings for Monty, a sandbox for Python code written by AI.
 
 Execution always happens in a pool of `monty` worker subprocesses: a monty
 process can never be made fully crash-proof against memory errors (stack

@@ -1,5 +1,5 @@
 site_name: Monty
-site_description: A sandboxed Python interpreter, written in Rust, for code written by AI.
+site_description: A secure Python sandbox, written in Rust, for code written by AI.
 
 theme:
   name: 'material'

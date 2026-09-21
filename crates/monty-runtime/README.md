@@ -1,7 +1,7 @@
 # pydantic-monty-runtime
 
 The `monty` command-line binary for the
-[Monty](https://github.com/pydantic/monty) sandboxed Python interpreter.
+[Monty](https://github.com/pydantic/monty) sandbox.
 
 Installing the wheel puts the compiled binary in the environment's scripts directory.
 
