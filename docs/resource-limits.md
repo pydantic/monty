@@ -204,6 +204,8 @@ caps the dump's, so a worker cannot report a looser one.
     budget; memory retained by compiled code does count toward `max_memory` in workers.
     Compilation has its own structural caps (AST nesting at 200 levels, bytecode operand sizes, comprehension nesting, and
     a 1,024-copy cap on `finally` expansion that raises `SyntaxError`).
+    The nesting cap is also checked before parsing for sources over 4 KiB, because the parser grows its native stack
+    outside the allocator's accounting; see [source nesting depth](limitations/language.md#source-nesting-depth).
     A host accepting untrusted source should still isolate compilation, as the subprocess and WebAssembly runtimes do.
     Source compiled at runtime by `eval()` / `exec()` is charged against the duration budget.
     Once a snippet starts executing, its compilation products stay allocated for the rest of the session;

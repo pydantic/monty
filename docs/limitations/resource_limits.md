@@ -12,7 +12,9 @@ bytecode compilation do not consume them. In workers, allocations retained by
 compiled code do count toward `max_memory`; transient compilation allocations
 are released before execution reaches its first memory checkpoint.
 Compilation has separate structural caps for parser nesting, bytecode operand
-sizes, comprehension nesting, and repeated `finally` expansion. A code object
+sizes, comprehension nesting, and repeated `finally` expansion. The parser
+grows its native stack outside the sandbox allocator, so a source over 4 KiB is
+scanned for nesting before it is parsed (see [language.md](language.md)). A code object
 requiring more than 1,024 emitted copies of `finally` bodies is rejected with
 `SyntaxError`; CPython has no equivalent limit. Production hosts should still
 isolate compilation when accepting untrusted source, as the subprocess and

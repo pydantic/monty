@@ -184,6 +184,9 @@ let result = runner.run(vec![MontyObject::int(10)], ResourceTracker::default(), 
 assert_eq!(result, MontyObject::int(55));
 ```
 
+[`CompileOptions`](../api/rust/monty-types.md#compileoptions) also carries `source_scan_threshold`, the source length in bytes
+above which a pre-parse nesting scan runs (4 KiB by default); see [source nesting depth](../limitations/language.md#source-nesting-depth).
+
 Errors come back as [`MontyException`](../api/rust/monty-types.md#montyexception), with a traceback matching what CPython would produce.
 [`PrintWriter`](../api/rust/monty-types.md#printwriter) controls where `print()` output goes: `Stdout`, `Disabled`, or collected — into a `String`, or into a
 `CollectedStreams` buffer whose `entries()` label each run `stdout` or `stderr`.

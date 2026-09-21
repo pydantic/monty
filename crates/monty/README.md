@@ -42,6 +42,8 @@ let result = runner.run(vec![MontyObject::int(10)], ResourceTracker::default(), 
 assert_eq!(result, MontyObject::int(55));
 ```
 
+`CompileOptions` also carries `source_scan_threshold`, the source length in bytes above which a pre-parse nesting scan runs (4 KiB by default); the docs' language limitations page describes the scan.
+
 Errors are returned as `MontyException`, with a traceback matching what CPython would produce. `PrintWriter` controls where `print()` output goes: `Stdout`, `Disabled`, or collected for the host to inspect — into a `String`, or into a `CollectedStreams` buffer whose `entries()` label each run `stdout` or `stderr`.
 
 ## Resource limits
