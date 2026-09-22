@@ -1,0 +1,33 @@
+Cargo.toml
+  s_324a1692494095::t_6acc26c95e5618 34
+pyproject.toml
+  s_324a1692494095::t_6acc26c95e5618 10-15
+crates/monty-server-tests/python/test_monty_server.py
+  s_324a1692494095::t_6acc26c95e5618 159-183
+CLAUDE.md
+  s_324a1692494095::t_6acc26c95e5618 56-63
+crates/monty-server/src/main.rs
+  s_324a1692494095::t_6acc26c95e5618 80-84,218-224
+crates/monty-cpython/src/pyexec.rs
+  s_324a1692494095::t_6acc26c95e5618 24,27,245-249,251,253,256-259,262-264
+crates/monty-server/README.md
+  s_324a1692494095::t_6acc26c95e5618 74,77-84
+crates/monty-cpython/tests/stdio_session.rs
+  s_324a1692494095::t_6acc26c95e5618 541-580
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "5905c4aa1cc2dc5eb04a37b5593ca9d6e7fe24e2",
+  "prompts": {},
+  "sessions": {
+    "s_324a1692494095": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "31646860-c080-4dfd-9a8e-bebb08e0d5f9",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
