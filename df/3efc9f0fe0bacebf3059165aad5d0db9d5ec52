@@ -1,0 +1,36 @@
+crates/monty-server/src/session.rs
+  s_324a1692494095::t_fb19d877f6e287 416-426,428-429
+  s_324a1692494095::t_14a1f5b2fff5cb 413-415
+crates/monty-server-tests/tests/wire/limits.rs
+  s_324a1692494095::t_e56c892f480b70 25
+crates/monty-server-tests/src/wire/client.rs
+  s_324a1692494095::t_fb19d877f6e287 117-121,123-130,503-511
+  s_324a1692494095::t_14a1f5b2fff5cb 122,502
+crates/monty-server-tests/tests/client/policy.rs
+  s_324a1692494095::t_e56c892f480b70 61,85,104
+crates/monty-server-tests/src/client/session.rs
+  s_324a1692494095::t_e56c892f480b70 241-242,244
+crates/monty-server-tests/tests/wire/mid_turn.rs
+  s_324a1692494095::t_e56c892f480b70 37,92,113,133
+crates/monty-server-tests/tests/wire/configure.rs
+  s_324a1692494095::t_14a1f5b2fff5cb 61-62,76,95-96
+  s_324a1692494095::t_fb19d877f6e287 63-75,77-94,97-110
+crates/monty-server-tests/python/test_monty_server.py
+  s_324a1692494095::t_e56c892f480b70 186-188
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "df3efc9f0fe0bacebf3059165aad5d0db9d5ec52",
+  "prompts": {},
+  "sessions": {
+    "s_324a1692494095": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "31646860-c080-4dfd-9a8e-bebb08e0d5f9",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
