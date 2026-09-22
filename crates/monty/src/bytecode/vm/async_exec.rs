@@ -512,7 +512,7 @@ impl<'h> VM<'h> {
                 locals_count: f.locals_count,
                 exception_stack_base: f.exception_stack_base(),
                 call_offset: f.call_offset,
-                is_initializer: f.is_initializer,
+                return_effects: f.return_effects,
                 namespace: f.namespace,
             })
             .collect();
@@ -525,7 +525,7 @@ impl<'h> VM<'h> {
             locals_count: current.locals_count,
             exception_stack_base: current.exception_stack_base(),
             call_offset: current.call_offset,
-            is_initializer: current.is_initializer,
+            return_effects: current.return_effects,
             namespace: mem::take(&mut current.namespace),
         });
 
@@ -597,7 +597,7 @@ impl<'h> VM<'h> {
                         should_return: false,
                         is_parked: false,
                         namespace: sf.namespace,
-                        is_initializer: sf.is_initializer,
+                        return_effects: sf.return_effects,
                     }
                 })
                 .collect();

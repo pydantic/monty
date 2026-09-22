@@ -10,7 +10,7 @@ use std::{collections::VecDeque, mem};
 use ahash::AHashMap;
 use smallvec::{SmallVec, smallvec};
 
-use super::FrameNamespace;
+use super::{FrameNamespace, ReturnEffects};
 use crate::{
     asyncio::{Awaiter, CallId, TaskId},
     exception_private::RunResult,
@@ -64,6 +64,9 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
     fn drop_with(mut self, heap: &mut C) {
         self.stack.drain(..).drop_with(heap);
         self.exception_stack.drain(..).drop_with(heap);
+        // The stack drain above covers any parked return-effect operands, so
+        // abandoning the task's frames stores nothing; only their namespaces
+        // are theirs to release.
         for frame in self.frames.drain(..) {
             frame.namespace.drop_with(heap);
         }
@@ -97,9 +100,9 @@ pub(crate) struct SerializedTaskFrame {
     /// Caller's bytecode offset at the call site (for tracebacks). See
     /// `CallFrame.call_offset`.
     pub call_offset: Option<u32>,
-    /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
+    /// Work owed to this frame's return value (see `CallFrame.return_effects`).
     #[serde(default)]
-    pub is_initializer: bool,
+    pub return_effects: ReturnEffects,
     /// Frame namespace, owning its dict references (see `CallFrame.namespace`).
     pub namespace: Option<Box<FrameNamespace>>,
 }

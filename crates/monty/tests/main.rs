@@ -1,8 +1,8 @@
 use std::mem;
 
-use monty::MontyRun;
+use monty::{MontyRun, RunProgress};
 use monty_types::{
-    CompileOptions, ExcType, MontyObject, MontyUuid,
+    CompileOptions, ExcType, MontyObject, MontyUuid, NameLookupResult, PrintWriter, ResourceTracker,
     unstable::{self, MontyNode},
 };
 
@@ -212,6 +212,58 @@ fn external_function_in_deepcopy_raises_not_implemented() {
     assert_eq!(
         err.to_string(),
         "Traceback (most recent call last):\n  File \"test.py\", line 6, in __deepcopy__\n    return ext_fn()\n           ~~~~~~~~\nNotImplementedError: __deepcopy__: external function 'ext_fn' is not yet supported in this context"
+    );
+}
+
+/// A cached *host* function is never cached: the call suspends to the host and
+/// its result comes back outside the frame that would have stored it, so every
+/// call reaches the host again (documented in `limitations/functools.md`).
+/// Rust-side because on CPython the external is a real function and the second
+/// call would be a hit.
+#[test]
+fn lru_cache_around_an_external_function_does_not_cache() {
+    let code = "\
+import functools
+
+cached = functools.cache(ext_fn)
+first = cached(1)
+[first, cached(1), cached.cache_info().hits, cached.cache_info().misses]";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+
+    // Answer the name lookup for `ext_fn`, then each call it makes.
+    let mut calls = 0;
+    let result = loop {
+        progress = match progress {
+            RunProgress::NameLookup(lookup) => {
+                let name = lookup.name.clone();
+                lookup
+                    .resume(
+                        NameLookupResult::Value(MontyObject::function(name, None)),
+                        PrintWriter::Stdout,
+                    )
+                    .unwrap()
+            }
+            RunProgress::FunctionCall(call) => {
+                calls += 1;
+                call.resume(MontyObject::int(100), PrintWriter::Stdout).unwrap()
+            }
+            RunProgress::Complete(result) => break result,
+            other => panic!("unexpected suspension: {other:?}"),
+        };
+    };
+
+    assert_eq!(calls, 2, "the host function should be called twice, not cached");
+    assert_eq!(
+        result,
+        MontyObject::list([
+            MontyObject::int(100),
+            MontyObject::int(100),
+            MontyObject::int(0),
+            MontyObject::int(2),
+        ])
     );
 }
 

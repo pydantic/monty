@@ -1094,75 +1094,75 @@ fn deep_copy_of_a_near_limit_dict_raises_rather_than_dying() {
 fn large_allocations_are_rejected_before_the_hard_limit() {
     // each case with the allocator usage it should be refused at
     let cases = [
-        ("'x' * 10_000_000", 10_041_930),
+        ("'x' * 10_000_000", 10_042_058),
         // Each formatter builder must fail softly before the worker reaches its hard ceiling.
-        ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_242_361),
-        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_442_393),
-        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_242_398),
+        ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_242_489),
+        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_442_521),
+        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_242_526),
         // `%` formatting: padding, float digits, integer zero-extension and output growth.
-        ("'%*d' % (2_000_000, 1)", 2_042_087),
-        ("'%.*f' % (1_000_000, 1.0)", 1_171_127),
-        ("'%.*d' % (2_000_000, 1)", 2_042_091),
-        ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_642_547),
-        ("b'%*d' % (2_000_000, 1)", 2_050_309),
-        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_650_770),
-        ("b'x' * 10_000_000", 10_050_164),
-        ("[None] * 1_000_000", 16_042_085),
-        ("2 ** 10_000_000", 10_041_929),
-        ("1 << 10_000_000", 1_291_930),
+        ("'%*d' % (2_000_000, 1)", 2_042_215),
+        ("'%.*f' % (1_000_000, 1.0)", 1_171_255),
+        ("'%.*d' % (2_000_000, 1)", 2_042_219),
+        ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_642_675),
+        ("b'%*d' % (2_000_000, 1)", 2_050_437),
+        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_650_898),
+        ("b'x' * 10_000_000", 10_050_292),
+        ("[None] * 1_000_000", 16_042_213),
+        ("2 ** 10_000_000", 10_042_057),
+        ("1 << 10_000_000", 1_292_058),
         // `int / int` scales one operand before dividing; both shift directions are
         // preflighted.
-        ("x = 1 << 3_000_000\nx / (x - 1)", 1_542_551),
-        ("x = 1 << 3_000_000\nx / (x >> 100)", 1_542_534),
+        ("x = 1 << 3_000_000\nx / (x - 1)", 1_542_679),
+        ("x = 1 << 3_000_000\nx / (x >> 100)", 1_542_662),
         // `math.factorial`, `comb` and `perm` preflight their product's size.
-        ("import math\nmath.factorial(2_000_000)", 10_547_092),
+        ("import math\nmath.factorial(2_000_000)", 10_547_220),
         // A binomial is bounded by `2**n`, so `comb` needs a larger `n` to trip the check.
-        ("import math\nmath.comb(9_000_000, 4_500_000)", 2_297_109),
-        ("import math\nmath.perm(4_000_000, 2_000_000)", 11_047_109),
+        ("import math\nmath.comb(9_000_000, 4_500_000)", 2_297_237),
+        ("import math\nmath.perm(4_000_000, 2_000_000)", 11_047_237),
         // `math.lcm` of two large coprime ints is a product, preflighted like `*`.
-        ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_297_439),
-        ("('a' * 1000).replace('a', 'b' * 2000)", 2_045_422),
+        ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_297_567),
+        ("('a' * 1000).replace('a', 'b' * 2000)", 2_045_550),
         // Every `%Z` copies the zone name into a `StringBuilder`, refused at a
         // capacity doubling like the formatter cases above: fixed-size pushes
         // make that step deterministic.
         (
             "from datetime import datetime, timezone, timedelta\ntz = timezone(timedelta(0), 'n' * 100_000)\ndatetime(2024, 1, 1, tzinfo=tz).strftime('%Z' * 5_000)",
-            1_254_024,
+            1_254_152,
         ),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.
-        ("x = [None] * 40_000\nx += x", 1_962_551),
-        ("t = (None,) * 40_000\nt + t", 1_322_547),
-        ("x = [None] * 40_000\nx.copy()", 1_322_293),
+        ("x = [None] * 40_000\nx += x", 1_962_679),
+        ("t = (None,) * 40_000\nt + t", 1_322_675),
+        ("x = [None] * 40_000\nx.copy()", 1_322_421),
         // `dict | dict` snapshots the left pairs and builds the merged dict
         // while that snapshot is live, so both are preflighted together.
-        ("d = dict.fromkeys(range(12_000))\nd | {}", 1_805_423),
+        ("d = dict.fromkeys(range(12_000))\nd | {}", 1_805_551),
         // The right operand is snapshotted inside the same call, so that copy is
         // preflighted too. Only the copy: see the overlap test below.
-        ("d = dict.fromkeys(range(12_000))\n{} | d", 1_229_423),
+        ("d = dict.fromkeys(range(12_000))\n{} | d", 1_229_551),
         // A partial re-clones its bound arguments on every call, so that clone
         // is preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [None] * 40_000\np()",
-            1_326_311,
+            1_326_475,
         ),
         // Reading `p.args` / `p.keywords` rebuilds them in full, so both are
         // preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [0] * 40_000\np.args",
-            1_326_311,
+            1_326_475,
         ),
         (
             "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0] * 30_000\np.keywords",
-            1_055_460,
+            1_055_624,
         ),
         // `deque.extend` preflights exact-hint iterators up front.
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
-            16_042_653,
+            16_042_781,
         ),
         // `randbytes` charges its word buffer and the byte buffer it fills.
-        ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_247_167),
+        ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_247_295),
         // A `range` population can be as long as `i64::MAX` while costing nothing,
         // so `sample` must saturate its size arithmetic and refuse the pick buffer.
         (
@@ -1172,18 +1172,18 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `itertools.batched` preflights one batch, capped at `n`.
         (
             "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",
-            16_044_751,
+            16_044_879,
         ),
         // The two combinatoric iterators whose width is not bounded by their
         // pool preflight that width: `r` repeats of a one-item pool, and
         // `repeat` copies of the argument list.
         (
             "import itertools\nnext(itertools.combinations_with_replacement('a', 1_000_000))",
-            24_044_563,
+            24_044_691,
         ),
         (
             "import itertools\nnext(itertools.product('ab', repeat=1_000_000))",
-            24_044_628,
+            24_044_756,
         ),
     ];
 
