@@ -260,7 +260,7 @@ console.log(snap.output) // 'hello Ada!'
 ```
 
 All three snapshot types expose `position`, a `SourceRange` (`filename`, `startLine`, `startColumn`, `endLine`, `endColumn`)
-locating the suspending expression: the call, the name, or the `await` the top-level code is blocked on. Lines and
+locating the suspending expression: the call, the name, or the `await` the main task is blocked on. Lines and
 columns are 1-based and `endColumn` is exclusive; `filename` is the traceback filename of the source
 (`<python-input-N>` for the session's N-th feed, `<string>` inside `eval()` / `exec()`).
 

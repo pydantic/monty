@@ -1041,7 +1041,6 @@ fn exception_to_js<'env>(env: &'env Env, exc: &MontyException) -> Result<Object<
     Ok(obj)
 }
 
-/// Converts one stack frame, field-for-field what `renderTraceback` needs.
 /// Builds the `position` object of a suspension turn (`SourceRange` in `ts/errors.ts`).
 fn source_range_to_js<'env>(env: &'env Env, range: &SourceRange) -> Result<Object<'env>> {
     let mut obj = Object::new(env)?;
@@ -1053,6 +1052,7 @@ fn source_range_to_js<'env>(env: &'env Env, range: &SourceRange) -> Result<Objec
     Ok(obj)
 }
 
+/// Converts one stack frame, field-for-field what `renderTraceback` needs.
 fn frame_to_js<'env>(env: &'env Env, frame: &StackFrame) -> Result<Object<'env>> {
     let mut obj = Object::new(env)?;
     obj.set("filename", frame.filename.as_str())?;

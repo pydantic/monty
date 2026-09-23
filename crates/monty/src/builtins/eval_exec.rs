@@ -140,16 +140,23 @@ fn compile_and_push(
     let mut namespace_guard = DropGuard::new(namespace, vm);
     let (_, vm) = namespace_guard.as_parts_mut();
     let mut overlay = CompileInterns::new(vm.interns);
-    let filename_id = overlay.add_eval_source(Arc::clone(source));
+    // `eval` parses past leading whitespace and its ranges index the trimmed
+    // text, so that is the source recorded for them (CPython's positions are
+    // relative to the stripped text too); parse errors are shifted back.
+    let text: Arc<str> = match builtin {
+        Builtin::Exec => Arc::clone(source),
+        Builtin::Eval => match source.trim_start() {
+            trimmed if trimmed.len() == source.len() => Arc::clone(source),
+            trimmed => Arc::from(trimmed),
+        },
+    };
+    let skipped = u32::try_from(source.len() - text.len()).unwrap_or(u32::MAX);
+    let filename_id = overlay.add_eval_source(Arc::clone(&text));
     let options = vm.env.options;
     let nodes = match builtin {
-        Builtin::Exec => {
-            parse_module_with_filename_id(source, filename_id, &mut overlay, options.source_scan_threshold)
-        }
+        Builtin::Exec => parse_module_with_filename_id(&text, filename_id, &mut overlay, options.source_scan_threshold),
         Builtin::Eval => {
-            let trimmed = source.trim_start();
-            let skipped = u32::try_from(source.len() - trimmed.len()).unwrap_or(u32::MAX);
-            parse_expression_with_interner(trimmed, filename_id, &mut overlay, options.source_scan_threshold)
+            parse_expression_with_interner(&text, filename_id, &mut overlay, options.source_scan_threshold)
                 .map(|expr| vec![Node::Return(Some(expr))])
                 .map_err(|e| e.shifted(skipped))
         }
@@ -170,7 +177,7 @@ fn compile_and_push(
     let position = CodeRange {
         filename: filename_id,
         start_byte: 0,
-        end_byte: u32::try_from(source.len()).unwrap_or(u32::MAX),
+        end_byte: u32::try_from(text.len()).unwrap_or(u32::MAX),
     };
     let function = Function::new(
         Identifier::new(overlay.intern_static(StaticStrings::Module), position),

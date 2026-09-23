@@ -1048,9 +1048,8 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
     // Arming for *this* exit happens below, after the slot is clear.
     release_pending_effect(vm.pending_effect.take(), vm.heap);
     vm.pending_lookup_effect.take().drop_with(vm.heap);
-    // `instruction_ip` still names the opcode that suspended, so this is the
-    // suspending expression for every exit but `ResolveFutures`.
-    let position = vm.current_position();
+    // `instruction_ip` still names the opcode that suspended, so the current
+    // position is the suspending expression for every exit but `ResolveFutures`.
     match result {
         Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::export(value, vm)),
         Ok(FrameExit::ExternalCall {
@@ -1059,6 +1058,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             call_id,
             ..
         }) => {
+            let position = vm.current_position();
             let name = function_name.into_string(vm.interns);
             let args = args.into_call_args(vm);
             ConvertedExit::FunctionCall {
@@ -1075,6 +1075,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             call_id,
             effect,
         }) => {
+            let position = vm.current_position();
             // The point of no return: the call is the host's, so a matching
             // `resume` is guaranteed. Every other destination drops it.
             vm.pending_effect = effect;
@@ -1093,6 +1094,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             call_id,
             object_id,
         }) => {
+            let position = vm.current_position();
             let name = method_name.into_string(vm.interns);
             let args = args.into_call_args(vm);
             ConvertedExit::FunctionCall {
@@ -1113,6 +1115,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             namespace_slot,
             is_global,
         }) => {
+            let position = vm.current_position();
             let name = vm.interns.get_str(name_id).to_owned();
             ConvertedExit::NameLookup {
                 name,
@@ -1130,6 +1133,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             type_object,
             effect,
         }) => {
+            let position = vm.current_position();
             // The lookup is the host's now, so a `resume` is guaranteed to
             // consume the effect (or the next `convert_frame_exit` releases it).
             vm.pending_lookup_effect = effect;

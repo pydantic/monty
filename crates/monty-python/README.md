@@ -84,7 +84,7 @@ if __name__ == '__main__':
 
 Every snapshot exposes `position`, a `SourceRange` with `filename`, `start_line`, `start_column`, `end_line` and `end_column`
 locating the suspending expression: the call of a `FunctionSnapshot`, the name of a `NameLookupSnapshot`, and the
-`await` the top-level code is blocked on for a `FutureSnapshot`.
+`await` the main task is blocked on for a `FutureSnapshot`.
 Lines and columns are 1-based and `end_column` is exclusive; `filename` is the traceback filename of the source
 (`<python-input-N>` for the session's N-th feed, `<string>` inside `eval()` / `exec()`).
 

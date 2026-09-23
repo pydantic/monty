@@ -232,6 +232,14 @@ def test_position_inside_a_function_from_an_earlier_feed(session: MontySession):
     )
 
 
+def test_position_inside_eval_indexes_the_stripped_string(session: MontySession):
+    snap = session.feed_start("eval('  1 + fetch()')")
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.position.dict() == snapshot(
+        {'filename': '<string>', 'start_line': 1, 'start_column': 5, 'end_line': 1, 'end_column': 12}
+    )
+
+
 def test_name_lookup_position(session: MontySession):
     snap = session.feed_start('total = 1 + missing')
     assert isinstance(snap, NameLookupSnapshot)

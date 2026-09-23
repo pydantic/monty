@@ -318,7 +318,7 @@ class SourceRange:
 
     Every snapshot exposes one as `position`: the call expression of a
     `FunctionSnapshot`, the name (or attribute access) of a
-    `NameLookupSnapshot`, and the `await` the top-level code is blocked on
+    `NameLookupSnapshot`, and the `await` the main task is blocked on
     for a `FutureSnapshot`. Positions are 1-based lines and character
     columns as in `Frame`, with `end_column` exclusive. A worker that predates
     the field reports none: `filename` is then empty and every line and
@@ -1367,7 +1367,7 @@ class FutureSnapshot:
     def script_name(self) -> str: ...
     @property
     def position(self) -> SourceRange:
-        """The `await` the top-level code is blocked on."""
+        """The `await` the main task is blocked on."""
     @property
     def pending_call_ids(self) -> list[int]: ...
     def trace_context(self) -> Context:
@@ -1459,7 +1459,7 @@ class AsyncFutureSnapshot:
     def script_name(self) -> str: ...
     @property
     def position(self) -> SourceRange:
-        """As `FutureSnapshot.position`: the top-level `await`."""
+        """As `FutureSnapshot.position`: the main task's `await`."""
     @property
     def pending_call_ids(self) -> list[int]: ...
     def trace_context(self) -> Context:

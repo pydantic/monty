@@ -302,8 +302,8 @@ impl Recorder {
             Some(pb::child_event::Kind::FunctionCall(c)) => {
                 let (args, kwargs, args_cut) = render_call_arguments(c);
                 let (function_name, name_cut) = truncate_str(&c.function_name);
-                let cut = args_cut | name_cut;
                 let position = PositionAttrs::new(c.position.as_ref());
+                let cut = args_cut | name_cut | position.cut;
                 let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "call {function_name}",
@@ -332,8 +332,9 @@ impl Recorder {
                 self.pending = Some(os_call_span(c, micros, max_feed_duration, &self.context_span()));
             }
             Some(pb::child_event::Kind::NameLookup(n)) => {
-                let (name, cut) = truncate_str(&n.name);
+                let (name, name_cut) = truncate_str(&n.name);
                 let position = PositionAttrs::from_pb(n.position.as_ref());
+                let cut = name_cut | position.cut;
                 let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "name lookup {name}",
@@ -353,8 +354,9 @@ impl Recorder {
                 self.pending = Some(OpenSpan::new(span, cut));
             }
             Some(pb::child_event::Kind::ResolveFutures(r)) => {
-                let (pending_call_ids, cut) = render_call_ids(&r.pending_call_ids);
+                let (pending_call_ids, ids_cut) = render_call_ids(&r.pending_call_ids);
                 let position = PositionAttrs::from_pb(r.position.as_ref());
+                let cut = ids_cut | position.cut;
                 let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "resolve futures",
@@ -661,33 +663,30 @@ fn render_call_ids(ids: &[u32]) -> (Option<String>, bool) {
     }
 }
 
-/// Opens the span for one os call suspension: the function name plus each
-/// argument as an `args.*` attribute named after its proto field. Every path
-/// is a virtual sandbox path.
-///
-/// Each call shape gets its own macro invocation because the attribute set is
-/// baked into the span's `logfire.json_schema` at compile time — a union-shaped
-/// call would surface every unused argument as `null` in the UI.
 /// The `sandbox.code.*` attributes locating a suspension in the sandboxed
 /// source (the `run code` span's `code` attribute).
 ///
 /// Namespaced under `sandbox.` rather than OpenTelemetry's `code.*` keys,
-/// which describe the host code emitting the span. Every value is absent when the
-/// child sent no position. Numbers are `i64`: the span visitor renders
-/// unsigned values as strings.
-struct PositionAttrs<'a> {
-    file: Option<&'a str>,
+/// which describe the host code emitting the span. Every value is absent when
+/// the child sent no position. Numbers are `i64`: the span visitor renders
+/// unsigned values as strings. The filename is child-supplied, so it is capped
+/// like every other attribute; `cut` says whether it was.
+struct PositionAttrs {
+    file: Option<String>,
+    cut: bool,
     line_start: Option<i64>,
     line_end: Option<i64>,
     column_start: Option<i64>,
     column_end: Option<i64>,
 }
 
-impl<'a> PositionAttrs<'a> {
+impl PositionAttrs {
     /// From an already-decoded position (a `FunctionCall` frame's).
-    fn new(position: Option<&'a SourceRange>) -> Self {
+    fn new(position: Option<&SourceRange>) -> Self {
+        let (file, cut) = capped_filename(position.map(|p| p.filename.as_str()));
         Self {
-            file: position.map(|p| p.filename.as_str()),
+            file,
+            cut,
             line_start: position.map(|p| i64::from(p.start.line)),
             line_end: position.map(|p| i64::from(p.end.line)),
             column_start: position.map(|p| i64::from(p.start.column)),
@@ -696,11 +695,13 @@ impl<'a> PositionAttrs<'a> {
     }
 
     /// From a generated wire position, whose endpoints are themselves optional.
-    fn from_pb(position: Option<&'a pb::SourceRange>) -> Self {
+    fn from_pb(position: Option<&pb::SourceRange>) -> Self {
         let start = position.and_then(|p| p.start);
         let end = position.and_then(|p| p.end);
+        let (file, cut) = capped_filename(position.map(|p| p.filename.as_str()));
         Self {
-            file: position.map(|p| p.filename.as_str()),
+            file,
+            cut,
             line_start: start.map(|l| i64::from(l.line)),
             line_end: end.map(|l| i64::from(l.line)),
             column_start: start.map(|l| i64::from(l.column)),
@@ -709,12 +710,27 @@ impl<'a> PositionAttrs<'a> {
     }
 }
 
+/// Caps a position's filename like any other attribute; absent stays absent.
+fn capped_filename(filename: Option<&str>) -> (Option<String>, bool) {
+    filename.map_or((None, false), |name| {
+        let (name, cut) = truncate_str(name);
+        (Some(name), cut)
+    })
+}
+
+/// Opens the span for one os call suspension: the function name plus each
+/// argument as an `args.*` attribute named after its proto field. Every path
+/// is a virtual sandbox path.
+///
+/// Each call shape gets its own macro invocation because the attribute set is
+/// baked into the span's `logfire.json_schema` at compile time — a union-shaped
+/// call would surface every unused argument as `null` in the UI.
 fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64>, parent: &Span) -> OpenSpan {
     let call_id = os_call.call_id;
     let position = PositionAttrs::from_pb(os_call.position.as_ref());
     // set by the arms whose arguments can be cut; recorded once below, so that
     // the answering `ResumeCall` can tell whether the flag is already there
-    let mut args_cut = false;
+    let mut args_cut = position.cut;
     /// One span with only the given `args.*` attributes plus the shared tail.
     macro_rules! os_call {
         ($function:expr $(, $($key:ident).+ = $value:expr)* $(,)?) => {
@@ -1064,7 +1080,7 @@ mod tests {
         trace::{InMemorySpanExporter, SimpleSpanProcessor, SpanData},
     };
 
-    use super::{ATTR_SIZE_LIMIT, Recorder, bytes_attr, render_ext_result};
+    use super::{ATTR_SIZE_LIMIT, PositionAttrs, Recorder, bytes_attr, render_ext_result};
 
     /// The suspension position every hand-built event carries.
     fn position() -> SourceRange {
@@ -1433,6 +1449,14 @@ mod tests {
         assert!(cut);
         assert_eq!(text.len(), ATTR_SIZE_LIMIT);
         assert_eq!(bytes_attr(b"hi\xff"), ("hi\\xff".to_owned(), false));
+
+        // a suspension's filename is child-supplied, so it is capped like the rest
+        let position = PositionAttrs::new(Some(&SourceRange {
+            filename: "f".repeat(ATTR_SIZE_LIMIT * 2),
+            ..SourceRange::unknown()
+        }));
+        assert!(position.cut);
+        assert_eq!(position.file.as_deref().map(str::len), Some(ATTR_SIZE_LIMIT));
     }
 
     /// The `Error` event's structured `exc_data.*` payload fields are capped

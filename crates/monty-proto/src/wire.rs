@@ -268,7 +268,12 @@ impl Message for WireFunctionCall {
             6 => encoding::bool::merge(wire_type, &mut self.allow_eager_await, buf, ctx),
             7 => encoding::message::merge(wire_type, &mut self.values, buf, ctx),
             8 => {
-                let mut position = pb::SourceRange::default();
+                // a singular message field repeated on the wire merges, as in
+                // prost's generated decoder
+                let mut position = self
+                    .position
+                    .as_ref()
+                    .map_or_else(pb::SourceRange::default, pb::SourceRange::from);
                 encoding::message::merge(wire_type, &mut position, buf, ctx)?;
                 self.position = Some(SourceRange::from(position));
                 Ok(())

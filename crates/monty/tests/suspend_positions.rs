@@ -80,6 +80,9 @@ fn os_call_points_at_the_call_expression() {
 fn a_call_inside_eval_points_into_the_string() {
     let call = start("eval('1 + fetch()')").into_function_call().unwrap();
     assert_eq!(call.position, range("<string>", 1, 5, 12));
+    // `eval` strips leading whitespace before parsing; positions index the stripped text
+    let call = start("eval('  \\n1 + fetch()')").into_function_call().unwrap();
+    assert_eq!(call.position, range("<string>", 1, 5, 12));
 }
 
 #[test]
@@ -147,6 +150,7 @@ fn resolve_futures_points_at_the_main_task_await_while_spawned_tasks_block() {
             RunProgress::FunctionCall(call) => {
                 assert_eq!(call.position, range("test.py", 4, 18, 25));
                 pending += 1;
+                assert!(pending <= 2, "only two calls precede the wait");
                 progress = call.resume_pending(PrintWriter::Stdout).unwrap();
             }
             RunProgress::ResolveFutures(waiting) => {

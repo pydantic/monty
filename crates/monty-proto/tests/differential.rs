@@ -1134,3 +1134,41 @@ fn oracle_position() -> oracle::SourceRange {
         end: Some(oracle::CodeLoc { line: 3, column: 19 }),
     }
 }
+
+/// A `FunctionCall.position` split across two tag-8 fields merges into one
+/// range on both sides, as protobuf requires of a singular message field.
+#[test]
+fn repeated_position_fields_merge_like_the_oracle() {
+    let args = CallArgs::new();
+    let (graph, _, _) = unstable::call_args_parts(&args);
+    let mut bytes = oracle::FunctionCall {
+        function_name: "external".to_owned(),
+        args: vec![],
+        kwargs: vec![],
+        call_id: 1,
+        object_id: None,
+        allow_eager_await: false,
+        values: Some(to_oracle(graph)),
+        position: Some(oracle::SourceRange {
+            filename: "main.py".to_owned(),
+            start: Some(oracle::CodeLoc { line: 3, column: 5 }),
+            end: None,
+        }),
+    }
+    .encode_to_vec();
+    // the second occurrence carries only the end
+    let tail = oracle::SourceRange {
+        filename: String::new(),
+        start: None,
+        end: Some(oracle::CodeLoc { line: 3, column: 19 }),
+    }
+    .encode_to_vec();
+    encode_key(8, WireType::LengthDelimited, &mut bytes);
+    encode_varint(tail.len() as u64, &mut bytes);
+    bytes.extend(tail);
+
+    let hand = decode_frame::<WireFunctionCall>(bytes.as_slice()).expect("split position decodes");
+    assert_eq!(hand.position, Some(position()));
+    let generated = oracle::FunctionCall::decode(bytes.as_slice()).expect("oracle decodes");
+    assert_eq!(generated.position, Some(oracle_position()));
+}

@@ -173,15 +173,15 @@ def test_standard_components_receive_session_tree():
     assert run.context is not None
     assert log.log_record.trace_id == run.context.trace_id
     assert log.log_record.span_id == run.context.span_id
-    assert log.log_record.attributes == snapshot(
+    # `code.*` is where in the host's source the record is emitted; it moves with every edit
+    assert log.log_record.attributes is not None
+    attributes = {k: v for k, v in log.log_record.attributes.items() if not k.startswith('code.')}
+    assert attributes == snapshot(
         {
             'stream': 'stdout',
             'text': 'hello\n',
             'logfire.json_schema': '{"type":"object","properties":{"stream":{},"text":{},"length_limit_exceeded":{}}}',
             'thread.id': 1,
-            'code.file.path': 'crates/monty-pool/src/telemetry/tracing.rs',
-            'code.line.number': 293,
-            'code.module.name': 'monty_pool::telemetry::tracing',
             'logfire.null_args': ('length_limit_exceeded',),
         }
     )

@@ -87,7 +87,7 @@ In JavaScript those are separate methods: `resume(value)`, `resumeError(err)` an
 ### Where execution stopped
 
 Every snapshot carries `position`, a [`SourceRange`][pydantic_monty.SourceRange] locating the expression that
-suspended: the call of a `FunctionSnapshot`, the name of a `NameLookupSnapshot`, and the `await` the top-level code is
+suspended: the call of a `FunctionSnapshot`, the name of a `NameLookupSnapshot`, and the `await` the main task is
 blocked on for a `FutureSnapshot`.
 Lines and columns are 1-based and `end_column` / `endColumn` is exclusive, as in a traceback `Frame`.
 
