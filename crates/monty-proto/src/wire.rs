@@ -220,7 +220,7 @@ impl Message for WireFunctionCall {
         }
         encoding::message::encode(7, &self.values, buf);
         if let Some(position) = &self.position {
-            encoding::message::encode(8, &pb::SourceRange::from(position), buf);
+            encode_source_range(8, position, buf);
         }
     }
 
@@ -239,9 +239,10 @@ impl Message for WireFunctionCall {
                 0
             }
             + encoding::message::encoded_len(7, &self.values)
-            + self.position.as_ref().map_or(0, |position| {
-                encoding::message::encoded_len(8, &pb::SourceRange::from(position))
-            })
+            + self
+                .position
+                .as_ref()
+                .map_or(0, |position| submessage_len(8, source_range_len(position)))
     }
 
     fn merge_field(
@@ -525,6 +526,22 @@ fn node_len(node: &MontyNode) -> usize {
         MontyNode::Repr(r) => encoding::string::encoded_len(tag::REPR, r),
         MontyNode::Cycle(placeholder) => encoding::string::encoded_len(tag::CYCLE, placeholder),
     }
+}
+
+/// A `SourceRange` message encoded from the borrowed domain value, so the
+/// filename is written in place rather than cloned into a `pb::SourceRange`.
+fn encode_source_range(tag: u32, range: &SourceRange, buf: &mut impl BufMut) {
+    encode_message_key(tag, source_range_len(range), buf);
+    encode_str(1, &range.filename, buf);
+    encoding::message::encode(2, &pb::CodeLoc::from(range.start), buf);
+    encoding::message::encode(3, &pb::CodeLoc::from(range.end), buf);
+}
+
+/// Body length of [`encode_source_range`]'s message.
+fn source_range_len(range: &SourceRange) -> usize {
+    str_len(1, &range.filename)
+        + encoding::message::encoded_len(2, &pb::CodeLoc::from(range.start))
+        + encoding::message::encoded_len(3, &pb::CodeLoc::from(range.end))
 }
 
 /// Writes the key and length prefix of a length-delimited field.

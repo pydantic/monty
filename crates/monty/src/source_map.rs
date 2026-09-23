@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use memchr::{memchr_iter, memrchr};
 use monty_types::{CodeLoc, SourceRange, StackFrame};
 
 use crate::{exception_private::RawStackFrame, intern::Interns, parse::CodeRange};
@@ -9,6 +10,9 @@ use crate::{exception_private::RawStackFrame, intern::Interns, parse::CodeRange}
 /// `source_for` maps a filename to its text, as for tracebacks: an `eval()` /
 /// `exec()` snippet resolves against its own recorded source first. An unknown
 /// source degrades to line 1 rather than failing the suspension.
+///
+/// This runs on every suspension, so it scans only the prefix up to the range
+/// (memchr) instead of building a [`SourceMap`] line index over the whole source.
 pub(crate) fn resolve_source_range<'s>(
     range: CodeRange,
     interns: &'s Interns,
@@ -19,12 +23,41 @@ pub(crate) fn resolve_source_range<'s>(
         .eval_source(range.filename)
         .or_else(|| source_for(filename))
         .unwrap_or("");
-    let (start, end) = SourceMap::new(source).resolve_span(range);
+    let bytes = source.as_bytes();
+    let start_byte = (range.start_byte as usize).min(bytes.len());
+    let end_byte = (range.end_byte as usize).clamp(start_byte, bytes.len());
+    let (start_line, start) = locate(bytes, 0, 0, start_byte);
+    let (_, end) = locate(bytes, start_line, start_byte, end_byte);
     SourceRange {
         filename: filename.to_string(),
         start,
         end,
     }
+}
+
+/// Resolves `offset` given that `from` (at or before it) lies on 0-based line
+/// `line`; returns the offset's 0-based line alongside its `CodeLoc`.
+///
+/// Columns count Unicode scalar values, as [`SourceMap`] does; counting
+/// non-continuation bytes keeps this total even off a char boundary.
+fn locate(bytes: &[u8], line: usize, from: usize, offset: usize) -> (usize, CodeLoc) {
+    let skipped = &bytes[from..offset];
+    let line = line + memchr_iter(b'\n', skipped).count();
+    let line_start = memrchr(b'\n', &bytes[..offset]).map_or(0, |i| i + 1);
+    let column = bytes[line_start..offset]
+        .iter()
+        .filter(|&&b| !is_utf8_continuation(b))
+        .count();
+    let loc = CodeLoc::new(
+        u32::try_from(line).unwrap_or(u32::MAX),
+        u32::try_from(column).unwrap_or(u32::MAX),
+    );
+    (line, loc)
+}
+
+/// Whether `byte` continues a multi-byte UTF-8 sequence rather than starting a char.
+fn is_utf8_continuation(byte: u8) -> bool {
+    byte & 0b1100_0000 == 0b1000_0000
 }
 
 /// Lazy resolver from raw byte offsets (stored on every [`CodeRange`]) back to
@@ -110,14 +143,6 @@ impl<'s> SourceMap<'s> {
             Some(Arc::from(self.multiline_preview(start_line_idx, end_line_idx)))
         };
         (start, end, preview_line)
-    }
-
-    /// Resolves a `CodeRange` to its `(start, end)` positions without a preview line.
-    pub(crate) fn resolve_span(&self, range: CodeRange) -> (CodeLoc, CodeLoc) {
-        (
-            self.resolve_byte(range.start_byte).1,
-            self.resolve_byte(range.end_byte).1,
-        )
     }
 
     /// Renders the source preview for a range spanning several lines,

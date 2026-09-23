@@ -1470,7 +1470,7 @@ impl Checkout {
                     }
                 }
                 Some(pb::child_event::Kind::FunctionCall(mut call)) => {
-                    let position = call.position.take().unwrap_or_else(SourceRange::unknown);
+                    let position = suspension_position(call.position.take());
                     self.pending = Some(Pending::Call {
                         call_id: call.call_id,
                         function_name: call.function_name.clone(),
@@ -1930,8 +1930,8 @@ fn build_mount_table(mounts: Vec<MountSpec>) -> Result<MountTable, PoolError> {
     Ok(table)
 }
 
-/// Decodes a suspension event's position. A child that predates the field
-/// sends none, which reads as [`SourceRange::unknown`] rather than an error.
-fn suspension_position(position: Option<pb::SourceRange>) -> SourceRange {
-    position.map_or_else(SourceRange::unknown, SourceRange::from)
+/// Decodes a suspension event's position, wire or already decoded. A child that
+/// predates the field sends none, which reads as [`SourceRange::unknown`] rather than an error.
+fn suspension_position(position: Option<impl Into<SourceRange>>) -> SourceRange {
+    position.map_or_else(SourceRange::unknown, Into::into)
 }

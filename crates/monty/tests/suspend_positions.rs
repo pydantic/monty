@@ -44,6 +44,9 @@ fn function_call_points_at_the_call_expression() {
     let call = start("x = 1\ny = fetch(x, 2) + 1").into_function_call().unwrap();
     assert_eq!(call.function_name, "fetch");
     assert_eq!(call.position, range("test.py", 2, 5, 16));
+    // columns count characters, not UTF-8 bytes
+    let call = start("y = 'éé' + fetch()").into_function_call().unwrap();
+    assert_eq!(call.position, range("test.py", 1, 12, 19));
 }
 
 #[test]
@@ -86,9 +89,11 @@ fn os_call_points_at_the_call_expression() {
 fn a_call_inside_eval_points_into_the_string() {
     let call = start("eval('1 + fetch()')").into_function_call().unwrap();
     assert_eq!(call.position, range("<string>", 1, 5, 12));
-    // `eval` strips leading whitespace before parsing; positions index the stripped text
-    let call = start("eval('  \\n1 + fetch()')").into_function_call().unwrap();
+    // `eval` strips leading spaces and tabs, not newlines; positions index the stripped text
+    let call = start("eval('  \\t1 + fetch()')").into_function_call().unwrap();
     assert_eq!(call.position, range("<string>", 1, 5, 12));
+    let call = start("eval(' \\n1 + fetch()')").into_function_call().unwrap();
+    assert_eq!(call.position, range("<string>", 2, 5, 12));
 }
 
 #[test]

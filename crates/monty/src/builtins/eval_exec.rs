@@ -140,17 +140,16 @@ fn compile_and_push(
     let mut namespace_guard = DropGuard::new(namespace, vm);
     let (_, vm) = namespace_guard.as_parts_mut();
     let mut overlay = CompileInterns::new(vm.interns);
-    // `eval` parses past leading whitespace and its ranges index the trimmed
-    // text, so that is the source recorded for them (CPython's positions are
-    // relative to the stripped text too); parse errors are shifted back.
+    // Like CPython, `eval` skips leading spaces and tabs (not newlines, so line
+    // numbers hold); every range, runtime or compile error, indexes the
+    // stripped text, which is therefore the source recorded and rendered.
     let text: Arc<str> = match builtin {
         Builtin::Exec => Arc::clone(source),
-        Builtin::Eval => match source.trim_start() {
+        Builtin::Eval => match source.trim_start_matches([' ', '\t']) {
             trimmed if trimmed.len() == source.len() => Arc::clone(source),
             trimmed => Arc::from(trimmed),
         },
     };
-    let skipped = u32::try_from(source.len() - text.len()).unwrap_or(u32::MAX);
     let filename_id = overlay.add_eval_source(Arc::clone(&text));
     let options = vm.env.options;
     let nodes = match builtin {
@@ -158,10 +157,9 @@ fn compile_and_push(
         Builtin::Eval => {
             parse_expression_with_interner(&text, filename_id, &mut overlay, options.source_scan_threshold)
                 .map(|expr| vec![Node::Return(Some(expr))])
-                .map_err(|e| e.shifted(skipped))
         }
     }
-    .map_err(|e| e.into_run_error(source))?;
+    .map_err(|e| e.into_run_error(&text))?;
 
     let globals_by_name = names == SnippetNames::NameOverDict;
     let mut scratch = NameMap::new();
@@ -170,9 +168,9 @@ fn compile_and_push(
     } else {
         &mut *vm.global_names
     };
-    let nodes = prepare_snippet(nodes, &overlay, globals, names).map_err(|e| e.into_run_error(source))?;
+    let nodes = prepare_snippet(nodes, &overlay, globals, names).map_err(|e| e.into_run_error(&text))?;
     let code = Compiler::compile_snippet(&nodes, &mut overlay, globals, options, globals_by_name)
-        .map_err(|e| e.into_run_error(source))?;
+        .map_err(|e| e.into_run_error(&text))?;
 
     let position = CodeRange {
         filename: filename_id,

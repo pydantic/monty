@@ -311,6 +311,8 @@ completion.
 captured `externalLookup` / `os`.
 A promise-returning external is awaited directly by `resumeAuto()` when the snapshot's `allowEagerAwait` is true, and
 otherwise concurrently, surfacing as an intermediate `FutureSnapshot`, exactly as under `feedRun`.
+Every snapshot's `position` is a `SourceRange` locating the suspending expression: the call, the name, or the `await`
+the main task is blocked on (see [where execution stopped](../snapshots.md#where-execution-stopped)).
 `snapshot.dump()` serializes a paused worker and `session.loadSnapshot(blob)` restores it; `session.dump()` and
 `session.loadSession(blob)` do the same for an idle session between feeds.
 Only restore unmodified snapshots from a trusted, compatible producer; the caller must establish provenance and integrity.
