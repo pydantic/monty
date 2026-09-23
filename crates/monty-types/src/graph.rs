@@ -71,7 +71,7 @@ pub enum MontyNode {
     /// Python string.
     String(String),
     /// Python bytes.
-    Bytes(Vec<u8>),
+    Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
     /// Python `datetime.date`.
     Date(MontyDate),
     /// Python `datetime.datetime`.

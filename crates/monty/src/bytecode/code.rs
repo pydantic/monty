@@ -13,6 +13,7 @@ use crate::{intern::StringId, parse::CodeRange, value::Value};
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Code {
     /// Variable-width instructions, addressed by body-relative offsets.
+    #[serde(with = "serde_bytes")]
     bytecode: Vec<u8>,
 
     /// Immediate constants indexed by `LoadConst`; heap literals live in `Interns`.

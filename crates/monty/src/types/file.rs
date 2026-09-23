@@ -88,7 +88,7 @@ use crate::{
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum FileName {
     Str(String),
-    Bytes(Vec<u8>),
+    Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
 }
 
 impl FileName {

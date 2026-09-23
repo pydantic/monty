@@ -370,5 +370,5 @@ pub enum RandomSeed {
     /// Seeded from the SHA-512-extended text, as `seed(str)` does.
     Str(String),
     /// Seeded from the SHA-512-extended bytes, as `seed(bytes)` does.
-    Bytes(Vec<u8>),
+    Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
 }

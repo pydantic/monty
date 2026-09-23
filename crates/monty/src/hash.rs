@@ -253,14 +253,39 @@ impl WithHash<BigInt> {
     }
 }
 
-// `Serialize` is generic: just emit the inner value. The hash is recomputable
-// from the value during deserialisation, so we don't waste bytes encoding it
-// (and we don't risk locking the snapshot format to the current hash function).
-impl<T: serde::Serialize> serde::Serialize for WithHash<T> {
+// `Serialize` emits just the inner value. The hash is recomputable from the
+// value during deserialisation, so we don't waste bytes encoding it (and we
+// don't risk locking the snapshot format to the current hash function).
+impl<T: SerializeHashed> serde::Serialize for WithHash<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.value.serialize(serializer)
+        self.value.serialize_hashed(serializer)
     }
 }
+
+/// How a hashed value is written: byte payloads go out as a byte string rather
+/// than one integer per byte, everything else as itself.
+trait SerializeHashed {
+    fn serialize_hashed<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>;
+}
+
+impl SerializeHashed for Vec<u8> {
+    fn serialize_hashed<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde_bytes::serialize(self, serializer)
+    }
+}
+
+/// Text and big integers already have the right serde form.
+macro_rules! serialize_hashed_as_self {
+    ($($ty:ty),*) => {$(
+        impl SerializeHashed for $ty {
+            fn serialize_hashed<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serde::Serialize::serialize(self, serializer)
+            }
+        }
+    )*};
+}
+
+serialize_hashed_as_self!(String, Box<str>, BigInt);
 
 // `Deserialize` is hand-written per concrete `T` so the right
 // `hash_python_*` helper is invoked.
@@ -278,7 +303,7 @@ impl<'de> serde::Deserialize<'de> for WithHash<Box<str>> {
 
 impl<'de> serde::Deserialize<'de> for WithHash<Vec<u8>> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self::for_bytes(Vec::<u8>::deserialize(deserializer)?))
+        Ok(Self::for_bytes(serde_bytes::deserialize(deserializer)?))
     }
 }
 

@@ -522,7 +522,7 @@ pub struct UnicodeErrorData {
 #[derive(Debug, Clone, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum UnicodeErrorObject {
     /// A decode error's input `bytes`.
-    Bytes(Vec<u8>),
+    Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
     /// An encode error's input `str`.
     Str(String),
 }

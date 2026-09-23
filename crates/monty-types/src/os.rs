@@ -492,6 +492,7 @@ pub struct PathStringDataArgs {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct PathBytesDataArgs {
     pub path: MontyPath,
+    #[serde(with = "serde_bytes")]
     pub data: Vec<u8>,
 }
 
