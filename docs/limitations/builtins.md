@@ -166,6 +166,12 @@ These raise `NameError`:
     text as one string rather than CPython's `(34, '...')` tuple.
 - **`sorted(iterable, *, key=None, reverse=False)`** — `key` and `reverse`
     must be passed by keyword; positional forms raise `TypeError`.
+    `sorted()` and `list.sort()` are a stable merge sort over runs of 16, not CPython's
+    timsort with its computed minrun, so two artefacts of the algorithm can differ.
+    A `NaN`, unordered against any number it is compared with, may land in a different
+    position.
+    With several incomparable pairs, the `TypeError` may report the operand types of a
+    different pair, which are key types under `key=`.
 - **`round(n, ndigits)`** — `ndigits` values outside the i64 range are
     clamped by sign. For floats this matches CPython (which clamps to
     `Py_ssize_t`); for an int `n` with a hugely negative `ndigits`, CPython

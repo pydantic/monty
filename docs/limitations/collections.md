@@ -69,6 +69,9 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
 - **`elements()` returns a list**, not CPython's lazy iterator. The values and
     order match, but the whole sequence is built up front, so a very large count
     can hit the memory limit where CPython would stream.
+- **`most_common()` and `repr` order counts with the same merge sort as `sorted()`**, so
+    a `NaN` count and an incomparable pair of counts carry the divergences described under
+    [`sorted`](builtins.md#behavioural-divergences).
 - **Crosses the host boundary as a plain `dict`.**
 
 ## Qualified vs bare type names
