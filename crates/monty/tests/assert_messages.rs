@@ -348,10 +348,14 @@ fn zero_limit_means_off_not_a_zero_length_repr() {
 #[test]
 fn deserialization_preserves_nonzero_limit_representation() {
     // `NonZeroU32` must remain nonzero even in invalid serialized state.
-    // Pin the encoding (variant index 1, then the u32) with `MaxBytes(1)`.
-    let valid: AssertMessageAnnotations = postcard::from_bytes(&[1u8, 1u8]).expect("MaxBytes(1) should decode");
+    // Pin the encoding (a one-entry map from the variant name to the u32) with `MaxBytes(1)`.
+    let mut encoded = vec![0xa1, 0x68];
+    encoded.extend_from_slice(b"MaxBytes");
+    encoded.push(1);
+    let valid: AssertMessageAnnotations = minicbor_serde::from_slice(&encoded).expect("MaxBytes(1) should decode");
     assert_eq!(valid, AssertMessageAnnotations::from_max_bytes(1));
-    postcard::from_bytes::<AssertMessageAnnotations>(&[1u8, 0u8]).expect_err("MaxBytes(0) must not decode");
+    *encoded.last_mut().unwrap() = 0;
+    minicbor_serde::from_slice::<AssertMessageAnnotations>(&encoded).expect_err("MaxBytes(0) must not decode");
 }
 
 #[test]

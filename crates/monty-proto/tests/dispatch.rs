@@ -447,8 +447,7 @@ fn load_rejects_old_dump_version() {
 #[test]
 fn load_re_announces_deep_suspension_args() {
     let repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
-    // nested 100 lists deep, shallow enough that postcard's recursive
-    // deserialize fits the test stack
+    // nested 100 lists deep; the arena is flat, so decoding never recurses
     let code = "x = []\nfor _ in range(100):\n    x = [x]\nf(x)";
     let progress = repl
         .feed_start(code, vec![], PrintWriter::Stdout)

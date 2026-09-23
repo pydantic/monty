@@ -2504,9 +2504,9 @@ mod tests {
         assert_eq!(heap.purple_count, 1);
         assert_eq!(heap.entries.get(id).color.get(), CcColor::Purple);
 
-        // Round-trip through postcard.
-        let bytes = postcard::to_allocvec(&heap).expect("serialize");
-        let mut restored: Heap = postcard::from_bytes(&bytes).expect("deserialize");
+        // Round-trip through the dump codec.
+        let bytes = minicbor_serde::to_vec(&heap).expect("serialize");
+        let mut restored: Heap = minicbor_serde::from_slice(&bytes).expect("deserialize");
 
         // `purple_count` and the per-entry color must round-trip.
         assert_eq!(restored.purple_count, 1);
