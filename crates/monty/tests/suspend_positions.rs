@@ -73,6 +73,27 @@ fn a_long_non_ascii_line_resolves_columns_past_the_checkpoints() {
         .into_function_call()
         .unwrap();
     assert_eq!(call.position, range("test.py", 1, 210, 217));
+    // 45,000 characters in: a scan from the line start per range would make compiling this quadratic
+    let call = start(&format!("{}fetch()", "x = 'é'; ".repeat(5000)))
+        .into_function_call()
+        .unwrap();
+    assert_eq!(call.position, range("test.py", 1, 45_001, 45_008));
+}
+
+#[test]
+fn a_non_ascii_line_starting_mid_checkpoint_counts_from_its_start() {
+    // lines 1 and 2 hold 16 bytes but 13 chars, so line 3 starts inside the first 64-byte chunk
+    let head = "# é\nx = 'éé'\n";
+    // the call ends at byte 64, exactly on a checkpoint and at the end of the source
+    let code = format!("{head}y = '{}' + fetch()", "é".repeat(16));
+    assert_eq!(code.len(), 64);
+    let call = start(&code).into_function_call().unwrap();
+    assert_eq!(call.position, range("test.py", 3, 26, 33));
+    // the line starts in the first chunk and the call lies in the second
+    let call = start(&format!("{head}y = '{}' + fetch()", "é".repeat(40)))
+        .into_function_call()
+        .unwrap();
+    assert_eq!(call.position, range("test.py", 3, 50, 57));
 }
 
 #[test]
