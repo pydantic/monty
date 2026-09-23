@@ -141,18 +141,10 @@ pub struct ResourceLimits {
     /// Maximum execution time for a single feed (`feed_start`, `feed_run` or
     /// `call_function`), summed over the turns it takes and excluding time
     /// suspended on the host. Bounds one snippet, not the session.
-    ///
-    /// Defaulted on deserialization so limits written by a build without this
-    /// field still load (see `DUMP_VERSION` in `monty`).
-    #[serde(default)]
     pub max_feed_duration: Option<Duration>,
     /// Maximum execution time for a single host turn, reset at each feed and
     /// each resume. Bounds the stretch of sandbox code between two host round
     /// trips, so a host can bound its own response time per call.
-    ///
-    /// Defaulted on deserialization like
-    /// [`max_feed_duration`](Self::max_feed_duration).
-    #[serde(default)]
     pub max_turn_duration: Option<Duration>,
     /// Maximum allocator-backed memory in bytes.
     ///
@@ -168,8 +160,7 @@ pub struct ResourceLimits {
     pub max_suspensions: usize,
     /// Maximum cumulative sleep under `SleepMode::System`, enforced by the host.
     /// Sleeps do not count toward execution duration; without this limit, sleeping
-    /// loops need `max_suspensions` or a host deadline. Defaults on deserialization.
-    #[serde(default)]
+    /// loops need `max_suspensions` or a host deadline.
     pub max_total_sleep: Option<Duration>,
 }
 
@@ -271,14 +262,11 @@ pub struct ResourceTracker {
     /// Execution time accumulated by completed `on_execution_start`/`stop`
     /// windows. Bounds nothing — it is what [`elapsed`](Self::elapsed) reports
     /// to hosts for telemetry — but is serialized so a loaded session keeps
-    /// counting from where it left off. The serde default lets a dump written
-    /// before this field existed still load (see `DUMP_VERSION` in `monty`).
-    #[serde(default)]
+    /// counting from where it left off.
     total_execution_time: Cell<Duration>,
     /// Execution time accumulated since the last [`on_feed_start`](Self::on_feed_start).
     /// Serialized like `total_execution_time`: a dump taken mid-feed resumes
     /// that feed, so its budget must survive the round trip.
-    #[serde(default)]
     feed_execution_time: Cell<Duration>,
     /// Execution time accumulated since the last [`on_turn_start`](Self::on_turn_start).
     /// Not serialized — a dump is taken between turns, and the resume that
@@ -299,12 +287,7 @@ pub struct ResourceTracker {
     /// [`lower_recursion_limit`](Self::lower_recursion_limit)
     /// under the `test-hooks` feature — `sys.setrecursionlimit` uses it to
     /// tighten the bound from Python code without escaping the
-    /// host-configured ceiling.
-    ///
-    /// Modeled as an override rather than the live limit so adding this
-    /// field doesn't break deserialization of snapshots produced before it
-    /// existed (`#[serde(default)]` gives back the `None` fallback case).
-    #[serde(default)]
+    /// host-configured ceiling. `None` means the configured limit applies.
     recursion_limit_override: Cell<Option<usize>>,
 }
 
