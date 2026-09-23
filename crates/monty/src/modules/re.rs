@@ -45,7 +45,7 @@ use crate::{
     modules::ModuleFunctions,
     types::{
         BoundedCompileError, Module, RePattern, Type,
-        re_pattern::{extract_count, extract_maxsplit},
+        re_pattern::{extract_count, extract_maxsplit, translate_replacement},
         str::allocate_string,
     },
     value::Value,
@@ -291,6 +291,8 @@ fn call_sub(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
 
     let Some(count) = count else {
+        // Reject out-of-range octal escapes even when the negative count skips matching.
+        translate_replacement(repl.to_str(vm)?)?;
         // Negative count — re.sub returns the input string unchanged.
         // CPython still type-checks the subject before its (empty) match
         // loop, so validate first, then just bump the refcount; no need to

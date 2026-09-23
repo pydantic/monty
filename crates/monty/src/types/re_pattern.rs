@@ -291,7 +291,7 @@ impl RePattern {
     /// Rust heap allocations from delegating to `fancy_regex::replace_all()`.
     pub fn sub(&self, repl: &str, text: &str, count: usize, heap: &Heap) -> RunResult<Value> {
         // Translate Python-style backreferences (\1, \2) to regex crate style ($1, $2)
-        let rust_repl = translate_replacement(repl);
+        let rust_repl = translate_replacement(repl)?;
         let effective_count = if count == 0 { usize::MAX } else { count };
 
         let mut result = String::new();
@@ -538,7 +538,10 @@ fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: 
         ));
     }
 
+    let repl = repl_val.to_str(vm)?.to_owned();
     let Some(count) = count else {
+        // Validate octal escapes even when the negative count skips matching.
+        translate_replacement(&repl)?;
         // Negative count — Pattern.sub returns the input string unchanged.
         // The subject is still type-checked (`to_str` raises this method's
         // `expected string, not {t}` wording) before the refcount bump; no
@@ -547,7 +550,6 @@ fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: 
         return Ok(string_val.clone_with_heap(vm.heap));
     };
 
-    let repl = repl_val.to_str(vm)?.to_owned();
     let text = string_val.to_str(vm)?.to_owned();
     pattern.get(vm.heap).sub(&repl, &text, count, vm.heap)
 }
@@ -723,10 +725,10 @@ fn is_size_limit_error(err: &RegexError) -> bool {
 /// translated as `$1` followed by literal `0`, which is wrong when 10+ groups
 /// exist. Fixing this requires passing the pattern's capture group count into
 /// this function to disambiguate.
-fn translate_replacement(repl: &str) -> Cow<'_, str> {
+pub(crate) fn translate_replacement(repl: &str) -> RunResult<Cow<'_, str>> {
     // Fast path: no backslashes and no literal `$` means nothing to translate or escape.
     if !repl.contains('\\') && !repl.contains('$') {
-        return Cow::Borrowed(repl);
+        return Ok(Cow::Borrowed(repl));
     }
 
     let mut result = String::with_capacity(repl.len());
@@ -736,12 +738,34 @@ fn translate_replacement(repl: &str) -> Cow<'_, str> {
         if c == '\\' {
             match chars.peek() {
                 Some(&d) if d.is_ascii_digit() => {
-                    // TODO: This only handles single-digit backrefs (\1–\9).
-                    // Multi-digit like \10 should be ${10} when group 10 exists,
-                    // but that requires knowing the group count. See docstring.
-                    result.push('$');
-                    result.push(d);
-                    chars.next();
+                    // A leading zero or three octal digits makes this an octal escape.
+                    let octal_len = chars
+                        .clone()
+                        .take_while(|digit| matches!(digit, '0'..='7'))
+                        .take(3)
+                        .count();
+                    if d == '0' || octal_len == 3 {
+                        let mut octal = 0;
+                        for _ in 0..octal_len {
+                            let digit = chars.next().expect("octal digits were checked");
+                            octal = octal * 8 + digit.to_digit(8).expect("octal digit");
+                        }
+                        if octal > 0o377 {
+                            // The iterator has consumed the backslash and octal digits.
+                            let position = repl.chars().count() - chars.clone().count() - 1 - octal_len;
+                            return Err(ExcType::re_pattern_error(format!(
+                                "octal escape value \\{octal:03o} outside of range 0-0o377 at position {position}"
+                            )));
+                        }
+                        result.push(char::from_u32(octal).expect("validated octal escape is a valid character"));
+                    } else {
+                        // TODO: This only handles single-digit backrefs (\1–\9).
+                        // Multi-digit like \10 should be ${10} when group 10 exists,
+                        // but that requires knowing the group count. See docstring.
+                        result.push('$');
+                        result.push(d);
+                        chars.next();
+                    }
                 }
                 Some(&'g') => {
                     chars.next(); // consume 'g'
@@ -765,7 +789,7 @@ fn translate_replacement(repl: &str) -> Cow<'_, str> {
         }
     }
 
-    Cow::Owned(result)
+    Ok(Cow::Owned(result))
 }
 
 /// Translates a `\g<...>` backreference to `fancy_regex` `${...}` syntax.

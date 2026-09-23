@@ -766,6 +766,29 @@ m = p.match('ab')
 assert m is not None
 assert m.group() == 'ab'
 
+# === Octal escapes and \g<0> whole-match backreference ===
+assert re.sub('(a)', r'\0', 'a') == '\x00'
+assert re.sub('(a)', r'\g<0>', 'a') == 'a'
+assert re.sub('(a)', r'\01', 'a') == '\x01'
+assert re.sub('(a)', r'\07', 'a') == '\x07'
+assert re.sub('(a)', r'\08', 'a') == '\x008'
+assert re.sub('(a)', r'\012', 'a') == '\n'
+assert re.sub('(a)', r'\077', 'a') == '?'
+assert re.sub('(a)', r'\123', 'a') == 'S'
+assert re.sub('(a)', r'\0123', 'a') == '\n3'
+
+# Three-digit octal escapes above 0o377 are invalid replacement templates.
+for repl, count, expected in [
+    (r'\400', 0, 'octal escape value \\400 outside of range 0-0o377 at position 0'),
+    ('x\\777', 0, 'octal escape value \\777 outside of range 0-0o377 at position 1'),
+    (r'\400', -1, 'octal escape value \\400 outside of range 0-0o377 at position 0'),
+]:
+    try:
+        re.sub('(a)', repl, 'a', count)
+        assert False, 'expected PatternError for out-of-range octal escape'
+    except re.PatternError as e:
+        assert str(e) == expected
+
 # === \g<N> numeric backreference in replacement ===
 result = re.sub(r'(\w+)\s+(\w+)', r'\g<2> \g<1>', 'hello world')
 assert result == 'world hello'
