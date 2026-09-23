@@ -1709,7 +1709,8 @@ impl Value {
             // an instance's class is a heap object, hashed by identity like its instances
             Self::Builtin(Builtins::Type(Type::Instance(class_id))) => Ok(Some(identity_hash(*class_id))),
             Self::Builtin(Builtins::Type(ty)) => Ok(Some(hash_named("type", &ty.name(vm.heap, vm.interns)))),
-            Self::ModuleFunction(function) => Ok(Some(hash_named("module_function", &function.to_string()))),
+            // the `Debug` form carries the module too, so `time.sleep` and `asyncio.sleep` differ
+            Self::ModuleFunction(function) => Ok(Some(hash_named("module_function", &format!("{function:?}")))),
             // Hash functions based on function ID
             Self::DefFunction(f_id) => Ok(Some(hash_one(f_id))),
             Self::Marker(marker) => Ok(Some(hash_named("marker", marker.0.into()))),

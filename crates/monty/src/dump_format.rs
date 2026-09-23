@@ -13,6 +13,8 @@
 //! enums are keyed by variant name, so serde's derive evolves the schema on
 //! its own. A dumped type may gain a field with `#[serde(default)]`, lose a
 //! field, or have variants inserted anywhere, and older dumps still load.
+//! Tuple structs and tuple variants are positional, so their fields may only
+//! be appended.
 //! The names themselves are the contract: renaming a serialized field or
 //! variant needs `#[serde(alias = "old")]` (or a [`DUMP_VERSION`] bump), and
 //! `#[serde(deny_unknown_fields)]` must never be added to a dumped type.
@@ -36,8 +38,9 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 
 /// Version of the dump schema.
 ///
-/// The payload names its fields and variants, so adding, removing or reordering
-/// them does not need a bump (see the module docs). Bump for every release where
+/// The payload names its fields and variants, so adding a field with a default,
+/// removing one or reordering them does not need a bump (see the module docs).
+/// Bump for every release where
 /// the *meaning* of serialized data changes: opcodes or their operand shapes,
 /// `BuiltinsFunctions` order (its discriminants are bytecode operands),
 /// `CmpOperator` values, the compiler's constant layout, how a dict or set key
