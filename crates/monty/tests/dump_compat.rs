@@ -145,7 +145,28 @@ fn fixture_dump_loads_and_resumes() {
     };
     let call = progress.into_function_call().expect("suspended on host_call");
     assert_eq!(call.function_name, "host_call");
-    assert_eq!(call.args.args().count(), 3);
+    // the call arguments are a value graph of their own inside the dump
+    assert_eq!(
+        call.args.args().collect::<Vec<_>>(),
+        vec![
+            MontyObject::list([
+                MontyObject::int(1),
+                MontyObject::float(2.5),
+                MontyObject::string("three"),
+                MontyObject::none(),
+                MontyObject::bool(true),
+            ]),
+            MontyObject::dict([
+                (MontyObject::string("a"), MontyObject::int(1)),
+                (
+                    MontyObject::string("b"),
+                    MontyObject::list([MontyObject::int(2), MontyObject::int(3)]),
+                ),
+                (MontyObject::int(3), MontyObject::string("int key")),
+            ]),
+            MontyObject::bytes(b"\x00\x01bytes".as_slice()),
+        ]
+    );
     let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("host_call resumed to completion");
     assert_eq!(value, MontyObject::int(42));

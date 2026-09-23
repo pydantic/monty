@@ -230,8 +230,9 @@ Snapshots store function IDs and offsets, rebuilding code borrows on restore.
 
 ### Session dumps name their fields
 
-Dumps (`crates/monty/src/dump_format.rs`) are CBOR through serde: structs are maps keyed by field name, enums by
-variant name. Adding a field (`#[serde(default)]`), removing one, or inserting a variant anywhere keeps older dumps
+Dumps (`crates/monty/src/dump_format.rs`) are CBOR through serde: derived structs are maps keyed by field name and
+enums by variant name (a `#[serde(transparent)]` newtype or a hand-written impl chooses its own shape and must keep
+it). Adding a field (`#[serde(default)]`), removing one, or inserting a variant anywhere keeps older dumps
 loading; the names are the persistence contract, so renaming a serialized field or variant needs `#[serde(alias = "old")]`, and `#[serde(deny_unknown_fields)]` must never go on a dumped type.
 Persisted `Vec<u8>` / `[u8; N]` data takes `#[serde(with = "serde_bytes")]` so it is written as one byte string.
 `DUMP_VERSION` still bumps when the *meaning* of stored data changes: opcodes, `BuiltinsFunctions` order (its

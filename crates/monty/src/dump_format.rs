@@ -311,11 +311,16 @@ impl Error for DumpEncodeError {
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{BuiltinsFunctions, MontyType, TypeCheckingFormat};
+    use std::str::FromStr;
+
+    use monty_types::{BuiltinsFunctions, ExcType, MontyType, TypeCheckingFormat};
+    use serde::Serialize;
     use strum::VariantNames;
 
     use super::DUMP_VERSION;
-    use crate::{bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, types::Type};
+    use crate::{
+        bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, heap::HeapId, types::Type,
+    };
 
     /// If a component changes incompatibly, bump `DUMP_VERSION` before updating its
     /// expected fingerprint. Compatible changes only require a fingerprint update.
@@ -337,23 +342,31 @@ mod tests {
             grouped_hex(comparison_operators_fingerprint())
         );
         // `VariantNames` keeps the `#[strum(disabled)]` variants that `EnumString`
-        // and `EnumIter` drop, which is what lets the fingerprints below cover
-        // every serialized variant. Asserted rather than assumed, so a strum
-        // upgrade that changed it says so instead of quietly narrowing the guard.
+        // drops, so the counts below cover every serialized variant once the
+        // disabled ones are supplied by hand. Asserted rather than assumed, so a
+        // strum upgrade that changed it says so instead of quietly narrowing the guard.
         assert!(Type::VARIANTS.contains(&"instance"));
         assert!(MontyType::VARIANTS.contains(&"exception"));
 
-        assert_eq!(
-            variant_name_fingerprint(Type::VARIANTS),
-            0xa747_4dc3_7191_fba4,
-            "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
-            grouped_hex(variant_name_fingerprint(Type::VARIANTS))
+        let type_names = serde_variant_names(
+            Type::VARIANTS,
+            &[
+                Type::Instance(HeapId::from_index(0)),
+                Type::Exception(ExcType::ValueError),
+            ],
         );
         assert_eq!(
-            variant_name_fingerprint(MontyType::VARIANTS),
-            0x3e2f_3c4a_4b0f_47bf,
+            variant_name_fingerprint(&type_names),
+            0x9901_dcf3_9e42_3098,
+            "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(variant_name_fingerprint(&type_names))
+        );
+        let monty_type_names = serde_variant_names(MontyType::VARIANTS, &[MontyType::Exception(ExcType::ValueError)]);
+        assert_eq!(
+            variant_name_fingerprint(&monty_type_names),
+            0x8af8_54dc_0bfe_1e6d,
             "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
-            grouped_hex(variant_name_fingerprint(MontyType::VARIANTS))
+            grouped_hex(variant_name_fingerprint(&monty_type_names))
         );
         // Builtin discriminants are `CallBuiltinFunction` operands, so the enum
         // is append-only: a new builtin goes after the last variant.
@@ -389,26 +402,21 @@ mod tests {
     /// `Type` and `MontyType` are encoded by variant name inside a `Dump`, so
     /// order is free but a rename or removal breaks older dumps: fix it with
     /// `#[serde(alias)]` or bump `DUMP_VERSION`. Adding a variant only needs
-    /// the expected hash updated. The strum names stand in for the serde
-    /// (Rust) names, which differ only in case.
-    ///
-    /// The list covers the `#[strum(disabled)]` variants too — `Type::Instance`
-    /// and `MontyType::Exception` — which serialize like any other despite
-    /// having no name to round-trip through `EnumString`.
-    fn variant_name_fingerprint(variants: &[&str]) -> u64 {
-        let mut sorted = variants.to_vec();
+    /// the expected hash updated.
+    fn variant_name_fingerprint(names: &[String]) -> u64 {
+        let mut sorted = names.to_vec();
         sorted.sort_unstable();
         fnv1a(&sorted)
     }
 
     /// FNV-1a over a sequence of names, each terminated by a separator.
-    fn fnv1a(names: &[&str]) -> u64 {
+    fn fnv1a(names: &[impl AsRef<str>]) -> u64 {
         const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
         const PRIME: u64 = 0x0100_0000_01b3;
 
         let mut hash = OFFSET_BASIS;
         for name in names {
-            for byte in name.as_bytes() {
+            for byte in name.as_ref().as_bytes() {
                 hash ^= u64::from(*byte);
                 hash = hash.wrapping_mul(PRIME);
             }
@@ -418,26 +426,56 @@ mod tests {
         hash
     }
 
+    /// The names serde writes for every variant of an enum, read back from the
+    /// encoded form rather than taken from strum, whose `#[strum(serialize)]`
+    /// spelling can stay put while the Rust name serde uses changes. `disabled`
+    /// supplies the `#[strum(disabled)]` variants `EnumString` refuses to parse.
+    fn serde_variant_names<T: FromStr + Serialize>(strum_names: &[&str], disabled: &[T]) -> Vec<String> {
+        let parsed: Vec<T> = strum_names.iter().filter_map(|name| T::from_str(name).ok()).collect();
+        assert_eq!(
+            parsed.len() + disabled.len(),
+            strum_names.len(),
+            "every variant must be covered"
+        );
+        parsed
+            .iter()
+            .chain(disabled)
+            .map(|variant| encoded_variant_name(&minicbor_serde::to_vec(variant).unwrap()))
+            .collect()
+    }
+
+    /// The variant name at the front of an encoded enum value: a bare text string
+    /// for a unit variant, or the single key of the map wrapping a payload.
+    fn encoded_variant_name(bytes: &[u8]) -> String {
+        let text = if bytes[0] == 0xa1 { &bytes[1..] } else { bytes };
+        let (len, start) = match text[0] {
+            header @ 0x60..=0x77 => (usize::from(header - 0x60), 1),
+            0x78 => (usize::from(text[1]), 2),
+            header => panic!("expected a text string, got CBOR header {header:#x}"),
+        };
+        String::from_utf8(text[start..start + len].to_vec()).unwrap()
+    }
+
     /// `TypeCheckingFormat` reaches the dump schema through
     /// `monty_types::TypeCheckState` and serializes by variant name, so the
     /// names are compared in sorted order: renaming one needs `#[serde(alias)]`
     /// or a `DUMP_VERSION` bump, adding one only needs this list updated.
     #[test]
     fn type_checking_format_variants_match_dump_version() {
-        let mut variants = TypeCheckingFormat::VARIANTS.to_vec();
+        let mut variants = serde_variant_names::<TypeCheckingFormat>(TypeCheckingFormat::VARIANTS, &[]);
         variants.sort_unstable();
         assert_eq!(
             variants,
             [
-                "azure",
-                "concise",
-                "full",
-                "github",
-                "gitlab",
-                "json",
-                "jsonlines",
-                "pylint",
-                "rdjson"
+                "Azure",
+                "Concise",
+                "Full",
+                "Github",
+                "Gitlab",
+                "Json",
+                "JsonLines",
+                "Pylint",
+                "Rdjson"
             ],
             "TypeCheckingFormat variants changed for dump version {DUMP_VERSION}"
         );

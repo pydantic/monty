@@ -194,16 +194,17 @@ pub(crate) fn hash_python_long_int(bi: &BigInt) -> HashValue {
 /// impossible to forget to keep the value and hash in sync, and makes
 /// serde recompute-on-deserialise local to this type.
 ///
-/// Constructors and `Deserialize` impls are provided for each concrete value
-/// type used by the interners. Adding another requires a constructor and the
-/// corresponding hash-rebuilding `Deserialize` implementation.
+/// Constructors, `SerializeHashed` and `Deserialize` impls are provided for
+/// each concrete value type used by the interners. Adding another requires a
+/// constructor and both serde halves.
 ///
 /// # Wire format
 ///
-/// `Serialize` is a hand-written passthrough — the on-the-wire form is
-/// exactly `T`'s serialised form (the hash is recomputable). `Deserialize`
-/// reads `T` and rebuilds the hash via the appropriate `hash_python_*`
-/// helper. Round-tripping through serde is therefore lossless and any
+/// `Serialize` writes only the value (the hash is recomputable): text and
+/// big integers as `T`'s own serialised form, `Vec<u8>` as a byte string via
+/// `serde_bytes`, chosen by the private `SerializeHashed` trait. `Deserialize`
+/// reads the same form and rebuilds the hash via the appropriate
+/// `hash_python_*` helper, so round-tripping through serde is lossless and any
 /// deserialiser-supplied bytes always produce a hash consistent with the
 /// canonical helpers.
 #[derive(Debug, Clone)]
