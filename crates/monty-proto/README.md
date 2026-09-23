@@ -13,7 +13,7 @@ Python and JavaScript packages — drives `monty subprocess` children over
 framed stdio (or a WebSocket), and a dead child is simply replaced. This crate
 defines the protocol both sides speak.
 
-The protocol is protobuf (rather than Monty's internal postcard format) so a
+The protocol is protobuf (rather than Monty's internal CBOR dump format) so a
 parent or child can be implemented in any language — see
 [`proto/monty/v1/monty.proto`](https://github.com/pydantic/monty/blob/main/crates/monty-proto/proto/monty/v1/monty.proto)
 for the schema and the protocol rules documented alongside it.

@@ -166,7 +166,7 @@ pub enum Type {
     /// A regex match result from `re.match()` / `re.search()` etc. - displays as "re.Match"
     #[strum(serialize = "re.Match")]
     ReMatch,
-    // Serialized enum variants are append-only to preserve postcard discriminants.
+    // Variants serialize by name into dumps: renaming one needs `#[serde(alias)]`.
     #[strum(serialize = "tuple_iterator")]
     TupleIterator,
     #[strum(serialize = "str_ascii_iterator")]

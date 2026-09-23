@@ -159,7 +159,7 @@ fn ordering_matches_integer_ordering() {
 fn cbor_encoding_is_a_16_byte_string() {
     // The dump format writes the id as one byte string, not sixteen integers.
     let id = MontyUuid::from_bytes(BYTES);
-    let encoded = minicbor_serde::to_vec(&id).unwrap();
+    let encoded = minicbor_serde::to_vec(id).unwrap();
     assert_eq!(encoded[0], 0x50); // major type 2 (bytes), length 16
     assert_eq!(encoded[1..], BYTES);
     assert_eq!(minicbor_serde::from_slice::<MontyUuid>(&encoded).unwrap(), id);

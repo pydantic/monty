@@ -14,6 +14,10 @@ This will update `Cargo.lock`, sync `package.json`/`package-lock.json` (via `cra
 and sync the `pydantic-monty` metapackage's version and its exact pins on
 `pydantic-monty-client`/`pydantic-monty-runtime` (via `crates/monty-python/build.rs`).
 
+If `DUMP_VERSION` (`crates/monty/src/dump_format.rs`) was bumped since the last release, check that
+`crates/monty/tests/fixtures/dump_v<N>.bin` is at the new version (the `dump_compat` test regenerates it with
+`UPDATE_DUMP_FIXTURE=1`) and say in the release notes that older dumps no longer load.
+
 ## 2. Commit and Push
 
 ```bash

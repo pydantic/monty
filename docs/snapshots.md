@@ -315,9 +315,13 @@ Calling a loader after a feed or a previous load is rejected before restoration,
 - **A dump is your own session state, not untrusted input.** Loading checks the magic, the version, the size cap and the
     structural invariants the interpreter relies on (function metadata, for one), but it is not a security boundary:
     load only dumps this host produced.
-- **Dumps are version-specific.** The bytes are Monty's own dump format, a `MONTY\0` magic followed by a dump-format
-    version, and a build that reads a different version refuses them, so treat dumps as valid only within a single Monty
-    version.
+- **Dumps carry a format version.** The bytes are Monty's own dump format, a `MONTY\0` magic followed by a dump-format
+    version, then the state encoded as CBOR with every field and variant named.
+    A release that only adds, removes or reorders fields keeps the version, so its builds still load dumps written by
+    earlier releases at that version.
+    A release that changes what stored data means, such as the bytecode, bumps the version and says so in its release
+    notes; a build then refuses dumps from before the bump as too old, and the session has to be rebuilt by replaying
+    its feeds.
     The same bytes load in-process, in a subprocess and over WebSocket.
 
 ## Async

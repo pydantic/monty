@@ -19,7 +19,10 @@
 
 use std::{convert::Infallible, error::Error, fmt, mem::size_of};
 
-use minicbor_serde::{Deserializer, Serializer};
+use minicbor_serde::{
+    Deserializer, Serializer,
+    error::{DecodeError, EncodeError},
+};
 use monty_types::TypeCheckState;
 use serde::{Deserialize, Serialize, de::Error as _};
 
@@ -260,12 +263,12 @@ impl Error for DumpError {}
 /// errors are equal when they render the same — the codec offers no structured
 /// comparison, and hosts only ever see the message.
 #[derive(Debug)]
-pub struct DumpDecodeError(minicbor_serde::error::DecodeError);
+pub struct DumpDecodeError(DecodeError);
 
 impl DumpDecodeError {
     /// Wraps a message about the payload, for checks that run after decoding.
     fn custom(message: &'static str) -> Self {
-        Self(minicbor_serde::error::DecodeError::custom(message))
+        Self(DecodeError::custom(message))
     }
 }
 
@@ -292,7 +295,7 @@ impl Error for DumpDecodeError {
 /// Why [`dump`] could not serialize a session. Writing into memory cannot run
 /// out of space, so this only surfaces a `Serialize` impl refusing a value.
 #[derive(Debug)]
-pub struct DumpEncodeError(minicbor_serde::error::EncodeError<Infallible>);
+pub struct DumpEncodeError(EncodeError<Infallible>);
 
 impl fmt::Display for DumpEncodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

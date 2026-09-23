@@ -18,7 +18,7 @@ const UPDATE_FIXTURE: &str = "UPDATE_DUMP_FIXTURE";
 /// Builds the state the fixture holds: the common heap types, a live
 /// iterator, functions, classes and a cycle, ahead of a suspension on a host
 /// call whose arguments carry heap values.
-const FIXTURE_STATE: &str = r#"
+const FIXTURE_STATE: &str = r"
 import collections
 import dataclasses
 import datetime
@@ -89,13 +89,13 @@ m = pat.match('12-ab')
 part = functools.partial(add5, 1)
 cycle = []
 cycle.append(cycle)
-"#;
+";
 
 /// The host call the fixture is suspended on.
 const FIXTURE_CALL: &str = "host_call(xs, d, b) + 1";
 
 /// Fed after restoring and resuming the fixture: every value must have survived.
-const FIXTURE_CHECK: &str = r#"
+const FIXTURE_CHECK: &str = r"
 assert big == 2**100 and neg == -7 and f == 3.5 and s == 'héllo'
 assert b == b'\x00\x01bytes'
 assert xs == [1, 2.5, 'three', None, True] and t == (1, 'two')
@@ -112,7 +112,7 @@ assert dt.microsecond == 678901 and dlt.days == 1
 assert m.groups() == ('12', 'ab') and pat.sub('X', '1-a 2-b') == 'X X'
 assert cycle[0] is cycle
 (result, c.value)
-"#;
+";
 
 /// A dump written by an earlier build at this `DUMP_VERSION` still loads and
 /// runs. Failing here means a data-layout change broke older dumps: add a

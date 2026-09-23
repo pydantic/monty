@@ -143,8 +143,7 @@ pub struct ResourceLimits {
     /// suspended on the host. Bounds one snippet, not the session.
     ///
     /// Defaulted on deserialization so limits written by a build without this
-    /// field still load from a self-describing format; a postcard dump of an
-    /// older layout is rejected by `DUMP_VERSION` instead.
+    /// field still load (see `DUMP_VERSION` in `monty`).
     #[serde(default)]
     pub max_feed_duration: Option<Duration>,
     /// Maximum execution time for a single host turn, reset at each feed and
@@ -272,9 +271,8 @@ pub struct ResourceTracker {
     /// Execution time accumulated by completed `on_execution_start`/`stop`
     /// windows. Bounds nothing — it is what [`elapsed`](Self::elapsed) reports
     /// to hosts for telemetry — but is serialized so a loaded session keeps
-    /// counting from where it left off. The serde default is for
-    /// self-describing formats; a postcard dump of an older layout is rejected
-    /// by `DUMP_VERSION` instead.
+    /// counting from where it left off. The serde default lets a dump written
+    /// before this field existed still load (see `DUMP_VERSION` in `monty`).
     #[serde(default)]
     total_execution_time: Cell<Duration>,
     /// Execution time accumulated since the last [`on_feed_start`](Self::on_feed_start).

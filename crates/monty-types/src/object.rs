@@ -1257,7 +1257,7 @@ pub enum MontyType {
     RePattern,
     #[strum(serialize = "re.Match")]
     ReMatch,
-    // Serialized enum variants are append-only to preserve postcard discriminants.
+    // Variants serialize by name into dumps: renaming one needs `#[serde(alias)]`.
     #[strum(serialize = "tuple_iterator")]
     TupleIterator,
     #[strum(serialize = "str_ascii_iterator")]
