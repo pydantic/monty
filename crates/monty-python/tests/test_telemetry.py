@@ -161,6 +161,8 @@ def test_standard_components_receive_session_tree():
     assert session.attributes['script_name'] == snapshot('calculation.py')
     assert run.attributes is not None
     assert run.attributes['code'] == snapshot("print('hello')\n1 + 2")
+    assert run.attributes['sandbox.execution.code.attribute'] == snapshot('code')
+    assert run.attributes['sandbox.execution.language'] == snapshot('python')
     assert run.attributes['output'] == snapshot(3)
     assert isinstance(run.start_time, int)
     assert isinstance(run.end_time, int)
@@ -178,7 +180,7 @@ def test_standard_components_receive_session_tree():
             'logfire.json_schema': '{"type":"object","properties":{"stream":{},"text":{},"length_limit_exceeded":{}}}',
             'thread.id': 1,
             'code.file.path': 'crates/monty-pool/src/telemetry/tracing.rs',
-            'code.line.number': 289,
+            'code.line.number': 293,
             'code.module.name': 'monty_pool::telemetry::tracing',
             'logfire.null_args': ('length_limit_exceeded',),
         }
@@ -334,11 +336,11 @@ async def test_eager_coroutine_result_is_recorded_on_the_call_span(fail: bool):
     assert call.attributes['return_value'] == ('raise ValueError: failed' if fail else 42)
     assert {k: v for k, v in call.attributes.items() if k.startswith('sandbox.')} == snapshot(
         {
-            'sandbox.file.path': '<python-input-0>',
-            'sandbox.line.start': 2,
-            'sandbox.line.end': 2,
-            'sandbox.column.start': 20,
-            'sandbox.column.end': 27,
+            'sandbox.code.file.path': '<python-input-0>',
+            'sandbox.code.line.start': 2,
+            'sandbox.code.line.end': 2,
+            'sandbox.code.column.start': 20,
+            'sandbox.code.column.end': 27,
         }
     )
     assert call.parent is not None and run.context is not None

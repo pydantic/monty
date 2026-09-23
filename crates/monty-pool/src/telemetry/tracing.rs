@@ -192,6 +192,10 @@ impl Recorder {
                     "run code",
                     code = &code,
                     code.language = "python",
+                    // the proposed `sandbox.*` conventions: which attribute
+                    // holds the executed code, and its language
+                    sandbox.execution.code.attribute = "code",
+                    sandbox.execution.language = "python",
                     inputs = inputs,
                     skip_type_check = f.skip_type_check,
                     length_limit_exceeded = cut.then_some(true),
@@ -308,11 +312,11 @@ impl Recorder {
                     kwargs = kwargs,
                     call_id = c.call_id,
                     object_id = c.object_id.as_ref().map(MontyUuid::to_string),
-                    sandbox.file.path = position.file,
-                    sandbox.line.start = position.line_start,
-                    sandbox.line.end = position.line_end,
-                    sandbox.column.start = position.column_start,
-                    sandbox.column.end = position.column_end,
+                    sandbox.code.file.path = position.file,
+                    sandbox.code.line.start = position.line_start,
+                    sandbox.code.line.end = position.line_end,
+                    sandbox.code.column.start = position.column_start,
+                    sandbox.code.column.end = position.column_end,
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_feed_duration_micros = max_feed_duration,
@@ -334,11 +338,11 @@ impl Recorder {
                     parent: self.context_span(),
                     "name lookup {name}",
                     name = name,
-                    sandbox.file.path = position.file,
-                    sandbox.line.start = position.line_start,
-                    sandbox.line.end = position.line_end,
-                    sandbox.column.start = position.column_start,
-                    sandbox.column.end = position.column_end,
+                    sandbox.code.file.path = position.file,
+                    sandbox.code.line.start = position.line_start,
+                    sandbox.code.line.end = position.line_end,
+                    sandbox.code.column.start = position.column_start,
+                    sandbox.code.column.end = position.column_end,
                     total_execution_micros = micros,
                     max_feed_duration_micros = max_feed_duration,
                     // filled in by the answering `ResumeNameLookup`, or an `AbortFeed`
@@ -355,11 +359,11 @@ impl Recorder {
                     parent: self.context_span(),
                     "resolve futures",
                     pending_call_ids = pending_call_ids,
-                    sandbox.file.path = position.file,
-                    sandbox.line.start = position.line_start,
-                    sandbox.line.end = position.line_end,
-                    sandbox.column.start = position.column_start,
-                    sandbox.column.end = position.column_end,
+                    sandbox.code.file.path = position.file,
+                    sandbox.code.line.start = position.line_start,
+                    sandbox.code.line.end = position.line_end,
+                    sandbox.code.column.start = position.column_start,
+                    sandbox.code.column.end = position.column_end,
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_feed_duration_micros = max_feed_duration,
@@ -664,10 +668,11 @@ fn render_call_ids(ids: &[u32]) -> (Option<String>, bool) {
 /// Each call shape gets its own macro invocation because the attribute set is
 /// baked into the span's `logfire.json_schema` at compile time — a union-shaped
 /// call would surface every unused argument as `null` in the UI.
-/// The `sandbox.*` attributes locating a suspension in the sandboxed source.
+/// The `sandbox.code.*` attributes locating a suspension in the sandboxed
+/// source (the `run code` span's `code` attribute).
 ///
-/// Prefixed `sandbox.` rather than using OpenTelemetry's `code.*` keys, which
-/// describe the host code emitting the span. Every value is absent when the
+/// Namespaced under `sandbox.` rather than OpenTelemetry's `code.*` keys,
+/// which describe the host code emitting the span. Every value is absent when the
 /// child sent no position. Numbers are `i64`: the span visitor renders
 /// unsigned values as strings.
 struct PositionAttrs<'a> {
@@ -719,11 +724,11 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64
                 function = $function,
                 $($($key).+ = $value,)*
                 call_id = call_id,
-                sandbox.file.path = position.file,
-                sandbox.line.start = position.line_start,
-                sandbox.line.end = position.line_end,
-                sandbox.column.start = position.column_start,
-                sandbox.column.end = position.column_end,
+                sandbox.code.file.path = position.file,
+                sandbox.code.line.start = position.line_start,
+                sandbox.code.line.end = position.line_end,
+                sandbox.code.column.start = position.column_start,
+                sandbox.code.column.end = position.column_end,
                 total_execution_micros = micros,
                 max_feed_duration_micros = max_feed_duration,
                 // filled in by the answering `ResumeCall`, or an `AbortFeed`
@@ -1183,13 +1188,15 @@ mod tests {
         // than child records — which leaves this session with no records at all
         assert_eq!(attr(feed, "output"), Some(4.into()));
         assert_eq!(attr(feed, "total_execution_micros"), Some(42.into()));
+        assert_eq!(attr(feed, "sandbox.execution.code.attribute"), Some("code".into()));
+        assert_eq!(attr(feed, "sandbox.execution.language"), Some("python".into()));
         assert_eq!(attr(call, "return_value"), Some(4.into()));
         // where in the sandboxed source the call sits, from the event's position
-        assert_eq!(attr(call, "sandbox.file.path"), Some("main.py".into()));
-        assert_eq!(attr(call, "sandbox.line.start"), Some(1.into()));
-        assert_eq!(attr(call, "sandbox.line.end"), Some(1.into()));
-        assert_eq!(attr(call, "sandbox.column.start"), Some(1.into()));
-        assert_eq!(attr(call, "sandbox.column.end"), Some(8.into()));
+        assert_eq!(attr(call, "sandbox.code.file.path"), Some("main.py".into()));
+        assert_eq!(attr(call, "sandbox.code.line.start"), Some(1.into()));
+        assert_eq!(attr(call, "sandbox.code.line.end"), Some(1.into()));
+        assert_eq!(attr(call, "sandbox.code.column.start"), Some(1.into()));
+        assert_eq!(attr(call, "sandbox.code.column.end"), Some(8.into()));
         assert!(logs.get_emitted_logs().unwrap().is_empty());
     }
 
