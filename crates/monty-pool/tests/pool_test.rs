@@ -31,9 +31,11 @@ use monty_pool::{
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
+#[cfg(unix)]
+use monty_types::SourceRange;
 use monty_types::{
     CallArgs, DateTimeSource, ExcType, MontyException, MontyObject, NameLookupResult, OsPolicy, PrintStream,
-    RandomSeed, RandomStart, ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, TypeCheckingFormat,
+    RandomSeed, RandomStart, ResourceLimits, SleepMode, TypeCheckingConfig, TypeCheckingFormat,
     unstable::{self, MontyNode},
 };
 use tokio::time::sleep;
@@ -2829,7 +2831,9 @@ async fn a_disabled_grace_leaves_the_sandbox_limit_in_charge() {
     assert_eq!(pool.idle_workers(), 1);
 }
 
-/// The suspension position every hand-built event carries.
+/// The suspension position every hand-built event carries; only the
+/// unix-gated forged-frame tests build events.
+#[cfg(unix)]
 fn position() -> pb::SourceRange {
     pb::SourceRange {
         filename: "main.py".to_owned(),
