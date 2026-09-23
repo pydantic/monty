@@ -16,6 +16,7 @@ pub mod dict_view;
 pub mod ext_function;
 pub mod file;
 pub mod generic_alias;
+pub mod hash_table;
 pub mod host_class;
 pub mod instance;
 pub mod iter;
