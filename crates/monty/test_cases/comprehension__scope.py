@@ -86,3 +86,7 @@ assert doubly_nested == [(1, 2, 3, 4)]
 # Starred sub-target in a comp
 starred = [(a, rest, last) for a, *rest, last in [(1, 2, 3, 4, 5)]]
 assert starred == [(1, [2, 3, 4], 5)]
+
+# === A comprehension in the first iterable keeps its slots off the outer target ===
+assert [(lambda: x)() for x in (i for i in [7, 8])] == [7, 8]
+assert [(lambda: shadow)() for shadow in (shadow for shadow in [3, 4])] == [3, 4]

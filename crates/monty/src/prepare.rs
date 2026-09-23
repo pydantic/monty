@@ -1403,7 +1403,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
             .into_values()
             .filter_map(|binding| binding.captured.then_some(binding.slot))
             .collect();
-        self.comp_var_depth = saved_var_depth;
+        // Only release once the enclosing comprehension has reserved its own targets.
+        if self.comp_name_scopes.last().is_none_or(|scope| !scope.is_empty()) {
+            self.comp_var_depth = saved_var_depth;
+        }
 
         Ok(PreparedComprehension {
             generators: prepared_generators,
