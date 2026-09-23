@@ -192,7 +192,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Range> {
 
     /// O(1) containment: bounds plus step alignment, no iteration. Non-integral
     /// items can never be members, matching CPython's fast path.
-    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let range = self.get(vm.heap);
         let n = match item {
             Value::Int(i) => *i,
@@ -228,7 +228,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Range> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
@@ -265,7 +265,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Range> {
         Ok(Value::Int(offset_i64))
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Range(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -369,7 +369,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RangeIterator> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 

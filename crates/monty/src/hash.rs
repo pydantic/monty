@@ -144,9 +144,9 @@ pub(crate) fn identity_hash(id: HeapId) -> HashValue {
 }
 
 /// Hashes a value with no heap identity (a builtin, type, marker or singleton)
-/// by its stable name. Dict and set entries persist their hash in dumps, so a
-/// hash tied to an enum's declaration order would break lookups in older dumps
-/// once a variant is inserted. `kind` keeps `int` apart from the string `'int'`.
+/// by its stable name rather than its discriminant, so the hash never depends
+/// on an enum's declaration order. `kind` keeps `int` apart from the string
+/// `'int'`.
 pub(crate) fn hash_named(kind: &'static str, name: &str) -> HashValue {
     hash_one((kind, name))
 }

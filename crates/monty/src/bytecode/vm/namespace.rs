@@ -373,7 +373,7 @@ impl VM<'_> {
 
     /// Looks `name_id` up in a namespace dict, returning an owned value.
     fn namespace_get(&mut self, dict_id: HeapId, name_id: StringId) -> RunResult<Option<Value>> {
-        let HeapReadOutput::Dict(dict) = self.heap.read(dict_id) else {
+        let HeapReadOutput::Dict(mut dict) = self.heap.read(dict_id) else {
             return Err(RunError::internal("namespace is not a dict"));
         };
         dict.dict_get(&Value::InternString(name_id), self)

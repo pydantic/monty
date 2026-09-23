@@ -279,56 +279,8 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
-        match self {
-            // `Undefined` is a sentinel and is never equal to anything.
-            Self::Undefined => Ok(Some(false)),
-
-            Self::None => Ok(matches!(other, Self::None).then_some(true)),
-            Self::Ellipsis => Ok(matches!(other, Self::Ellipsis).then_some(true)),
-            Self::NotImplemented => Ok(matches!(other, Self::NotImplemented).then_some(true)),
-            Self::Bool(b) => Ok(eq_i64(i64::from(*b), other, vm)),
-            Self::Int(a) => Ok(eq_i64(*a, other, vm)),
-            Self::Float(f) => Ok(eq_f64(*f, other, vm)),
-            // `InternLongInt` is normally materialised to a heap `LongInt` before
-            // it can be compared, but handle it directly so equality never
-            // silently diverges if one reaches here.
-            Self::InternLongInt(id) => Ok(eq_bigint(vm.interns.get_long_int(*id), other, vm)),
-            Self::InternString(id) => Ok(match other {
-                // Interned strings are deduplicated, so equal ids ⇔ equal content.
-                Self::InternString(o) => Some(id == o),
-                _ => eq_str(vm.interns.get_str(*id), other, vm),
-            }),
-            Self::InternBytes(id) => Ok(match other {
-                // Fast path for the same interned bytes; otherwise compare content
-                // (interned bytes are not deduplicated, unlike strings).
-                Self::InternBytes(o) if id == o => Some(true),
-                _ => eq_bytes(vm.interns.get_bytes(*id), other, vm),
-            }),
-            Self::Builtin(b) => Ok(match other {
-                Self::Builtin(o) => Some(b == o),
-                _ => None,
-            }),
-            Self::ModuleFunction(mf) => Ok(match other {
-                Self::ModuleFunction(o) => Some(mf == o),
-                _ => None,
-            }),
-            Self::DefFunction(f) => Ok(match other {
-                Self::DefFunction(o) => Some(f == o),
-                _ => None,
-            }),
-            Self::Marker(m) => Ok(match other {
-                Self::Marker(o) => Some(m == o),
-                _ => None,
-            }),
-            Self::Property(p) => Ok(match other {
-                Self::Property(o) => Some(p == o),
-                _ => None,
-            }),
-            Self::Ref(id) => vm.heap.read(*id).py_eq_impl(other, vm),
-            #[cfg(feature = "memory-model-checks")]
-            Self::Dereferenced => panic!("Cannot access Dereferenced object"),
-        }
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
+        Self::py_eq_impl(self, other, vm)
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
@@ -610,12 +562,8 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_cmp_op(&self, other: &Self, op: CmpOperator, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
-        if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_cmp_op(other, op, vm)
-        } else {
-            Ok(None)
-        }
+    fn py_cmp_op(&mut self, other: &Self, op: CmpOperator, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
+        Self::py_cmp_op(self, other, op, vm)
     }
 
     fn py_index_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
@@ -653,43 +601,8 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    /// One-sided implementation of Python `+`.
-    fn py_add_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        let interns = vm.interns;
-        match (self, other) {
-            // Int + Int with overflow detection
-            (Self::Int(a), Self::Int(b)) => {
-                if let Some(result) = a.checked_add(*b) {
-                    Ok(Some(Self::Int(result)))
-                } else {
-                    Ok(Some(wide_i128_into_value(i128::from(*a) + i128::from(*b), vm.heap)))
-                }
-            }
-            (Self::Float(v1), Self::Float(v2)) => Ok(Some(Self::Float(v1 + v2))),
-            // Int + Float and Float + Int
-            (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 + b))),
-            (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a + *b as f64))),
-            (Self::InternString(s1), Self::InternString(s2)) => Ok(Some(concat_allocate_str(
-                interns.get_str(*s1),
-                interns.get_str(*s2),
-                vm.heap,
-            )?)),
-            // for strings we need to account for the fact they might be either interned or not
-            (Self::InternString(string_id), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => Ok(Some(
-                concat_allocate_str(interns.get_str(*string_id), s2.as_str(), vm.heap)?,
-            )),
-            // same for bytes
-            (Self::InternBytes(lhs), Self::InternBytes(rhs)) => Ok(Some(concat_bytes(
-                interns.get_bytes(*lhs),
-                interns.get_bytes(*rhs),
-                vm.heap,
-            )?)),
-            (Self::InternBytes(lhs), Self::Ref(rhs)) if let HeapData::Bytes(rhs) = vm.heap.get(*rhs) => {
-                Ok(Some(concat_bytes(interns.get_bytes(*lhs), rhs.as_slice(), vm.heap)?))
-            }
-            (Self::Ref(id), _) => vm.heap.read(*id).py_add_impl(other, vm),
-            _ => Ok(None),
-        }
+    fn py_add_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        Self::py_add_impl(self, other, vm)
     }
 
     /// Reflected implementation of Python `+`.
@@ -701,25 +614,8 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    /// One-sided implementation of Python `-`.
-    fn py_sub_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        match (self, other) {
-            // Int - Int with overflow detection
-            (Self::Int(a), Self::Int(b)) => {
-                if let Some(result) = a.checked_sub(*b) {
-                    Ok(Some(Self::Int(result)))
-                } else {
-                    Ok(Some(wide_i128_into_value(i128::from(*a) - i128::from(*b), vm.heap)))
-                }
-            }
-            // Float - Float
-            (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a - b))),
-            // Int - Float and Float - Int
-            (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 - b))),
-            (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a - *b as f64))),
-            (Self::Ref(id), _) => vm.heap.read(*id).py_sub_impl(other, vm),
-            _ => Ok(None),
-        }
+    fn py_sub_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        Self::py_sub_impl(self, other, vm)
     }
 
     /// Reflected implementation of Python `-`.
@@ -1141,17 +1037,8 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    /// One-sided implementation of Python `&`.
-    fn py_and_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        if let (Self::Bool(lhs), Self::Bool(rhs)) = (self, other) {
-            Ok(Some(Self::Bool(*lhs && *rhs)))
-        } else if let (Some(lhs), Some(rhs)) = (immediate_int(self), immediate_int(other)) {
-            Ok(Some(Self::Int(lhs & rhs)))
-        } else if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_and_impl(other, vm)
-        } else {
-            Ok(None)
-        }
+    fn py_and_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        Self::py_and_impl(self, other, vm)
     }
 
     /// Reflected implementation of Python `&`.
@@ -1163,22 +1050,8 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    /// One-sided implementation of Python `|`.
-    fn py_or_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        if let (Self::Bool(lhs), Self::Bool(rhs)) = (self, other) {
-            Ok(Some(Self::Bool(*lhs || *rhs)))
-        } else if let (Some(lhs), Some(rhs)) = (immediate_int(self), immediate_int(other)) {
-            Ok(Some(Self::Int(lhs | rhs)))
-        } else if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_or_impl(other, vm)
-        } else if matches!(self, Self::Builtin(_) | Self::None | Self::Marker(_)) {
-            // `int | None` and the other unions with an immediate left operand;
-            // class objects, aliases and unions dispatch through their own
-            // `py_or_impl`, so other heap receivers never reach this check.
-            Union::try_or(self, other, vm)
-        } else {
-            Ok(None)
-        }
+    fn py_or_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        Self::py_or_impl(self, other, vm)
     }
 
     /// Reflected implementation of Python `|`.
@@ -1194,17 +1067,8 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    /// One-sided implementation of Python `^`.
-    fn py_xor_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        if let (Self::Bool(lhs), Self::Bool(rhs)) = (self, other) {
-            Ok(Some(Self::Bool(*lhs ^ *rhs)))
-        } else if let (Some(lhs), Some(rhs)) = (immediate_int(self), immediate_int(other)) {
-            Ok(Some(Self::Int(lhs ^ rhs)))
-        } else if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_xor_impl(other, vm)
-        } else {
-            Ok(None)
-        }
+    fn py_xor_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        Self::py_xor_impl(self, other, vm)
     }
 
     /// Reflected implementation of Python `^`.
@@ -1279,7 +1143,233 @@ impl<'h> PyTrait<'h> for Value {
         Ok(None)
     }
 
-    fn py_getitem(&self, key: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+    fn py_getitem(&mut self, key: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        Self::py_getitem(self, key, vm)
+    }
+
+    fn py_setitem(&mut self, key: Self, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_setitem(key, value, vm)
+        } else {
+            key.drop_with(vm);
+            value.drop_with(vm);
+            Err(ExcType::type_error_not_sub_assignment(&self.py_type_name(vm)))
+        }
+    }
+
+    fn py_is_iterator(&self, vm: &VM<'_>) -> bool {
+        // No immediate value is an iterator; interned `str`/`bytes` are iterable
+        // but, as in CPython, are not their own iterators.
+        match self {
+            Self::Ref(id) => vm.heap.read(*id).py_is_iterator(vm),
+            _ => false,
+        }
+    }
+
+    fn py_is_iterable(&self, vm: &VM<'_>) -> bool {
+        match self {
+            // Interned string and bytes literals iterate without ever reaching
+            // the heap, so they answer here rather than in `HeapReadOutput`.
+            Self::InternString(_) | Self::InternBytes(_) => true,
+            Self::Ref(id) => vm.heap.read(*id).py_is_iterable(vm),
+            _ => false,
+        }
+    }
+
+    fn py_iter(&self, vm: &mut VM<'_>) -> RunResult<Self> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_iter(vm)
+        } else {
+            match self {
+                Self::InternString(id) => Ok(StringIterator::from_intern(*id, vm)),
+                Self::InternBytes(id) => Ok(BytesIterator::from_intern(*id, vm)),
+                _ => Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))),
+            }
+        }
+    }
+
+    fn py_next(&mut self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_next(vm)
+        } else {
+            Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
+        }
+    }
+}
+
+/// `Value` releases its (possible) heap reference through any [`ContainsHeap`]
+/// context — `Heap`, `HeapReader`, `VM`, or the json `Encoder`. Forwards to the
+/// inherent [`Value::drop_with`], which also serves direct callers.
+/// The `&self` bodies behind the trait's `&mut self` operator methods.
+///
+/// The trait takes `&mut self` so a heap container can rebuild its indices
+/// lazily, but a `Value` never mutates on these paths, and its callers hold
+/// `&Value`, so the trait methods forward here.
+impl Value {
+    /// One-sided implementation of Python `+`.
+    pub(crate) fn py_add_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        let interns = vm.interns;
+        match (self, other) {
+            // Int + Int with overflow detection
+            (Self::Int(a), Self::Int(b)) => {
+                if let Some(result) = a.checked_add(*b) {
+                    Ok(Some(Self::Int(result)))
+                } else {
+                    Ok(Some(wide_i128_into_value(i128::from(*a) + i128::from(*b), vm.heap)))
+                }
+            }
+            (Self::Float(v1), Self::Float(v2)) => Ok(Some(Self::Float(v1 + v2))),
+            // Int + Float and Float + Int
+            (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 + b))),
+            (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a + *b as f64))),
+            (Self::InternString(s1), Self::InternString(s2)) => Ok(Some(concat_allocate_str(
+                interns.get_str(*s1),
+                interns.get_str(*s2),
+                vm.heap,
+            )?)),
+            // for strings we need to account for the fact they might be either interned or not
+            (Self::InternString(string_id), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => Ok(Some(
+                concat_allocate_str(interns.get_str(*string_id), s2.as_str(), vm.heap)?,
+            )),
+            // same for bytes
+            (Self::InternBytes(lhs), Self::InternBytes(rhs)) => Ok(Some(concat_bytes(
+                interns.get_bytes(*lhs),
+                interns.get_bytes(*rhs),
+                vm.heap,
+            )?)),
+            (Self::InternBytes(lhs), Self::Ref(rhs)) if let HeapData::Bytes(rhs) = vm.heap.get(*rhs) => {
+                Ok(Some(concat_bytes(interns.get_bytes(*lhs), rhs.as_slice(), vm.heap)?))
+            }
+            (Self::Ref(id), _) => vm.heap.read(*id).py_add_impl(other, vm),
+            _ => Ok(None),
+        }
+    }
+    pub(crate) fn py_eq_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
+        match self {
+            // `Undefined` is a sentinel and is never equal to anything.
+            Self::Undefined => Ok(Some(false)),
+
+            Self::None => Ok(matches!(other, Self::None).then_some(true)),
+            Self::Ellipsis => Ok(matches!(other, Self::Ellipsis).then_some(true)),
+            Self::NotImplemented => Ok(matches!(other, Self::NotImplemented).then_some(true)),
+            Self::Bool(b) => Ok(eq_i64(i64::from(*b), other, vm)),
+            Self::Int(a) => Ok(eq_i64(*a, other, vm)),
+            Self::Float(f) => Ok(eq_f64(*f, other, vm)),
+            // `InternLongInt` is normally materialised to a heap `LongInt` before
+            // it can be compared, but handle it directly so equality never
+            // silently diverges if one reaches here.
+            Self::InternLongInt(id) => Ok(eq_bigint(vm.interns.get_long_int(*id), other, vm)),
+            Self::InternString(id) => Ok(match other {
+                // Interned strings are deduplicated, so equal ids ⇔ equal content.
+                Self::InternString(o) => Some(id == o),
+                _ => eq_str(vm.interns.get_str(*id), other, vm),
+            }),
+            Self::InternBytes(id) => Ok(match other {
+                // Fast path for the same interned bytes; otherwise compare content
+                // (interned bytes are not deduplicated, unlike strings).
+                Self::InternBytes(o) if id == o => Some(true),
+                _ => eq_bytes(vm.interns.get_bytes(*id), other, vm),
+            }),
+            Self::Builtin(b) => Ok(match other {
+                Self::Builtin(o) => Some(b == o),
+                _ => None,
+            }),
+            Self::ModuleFunction(mf) => Ok(match other {
+                Self::ModuleFunction(o) => Some(mf == o),
+                _ => None,
+            }),
+            Self::DefFunction(f) => Ok(match other {
+                Self::DefFunction(o) => Some(f == o),
+                _ => None,
+            }),
+            Self::Marker(m) => Ok(match other {
+                Self::Marker(o) => Some(m == o),
+                _ => None,
+            }),
+            Self::Property(p) => Ok(match other {
+                Self::Property(o) => Some(p == o),
+                _ => None,
+            }),
+            Self::Ref(id) => vm.heap.read(*id).py_eq_impl(other, vm),
+            #[cfg(feature = "memory-model-checks")]
+            Self::Dereferenced => panic!("Cannot access Dereferenced object"),
+        }
+    }
+
+    pub(crate) fn py_cmp_op(&self, other: &Self, op: CmpOperator, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_cmp_op(other, op, vm)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// One-sided implementation of Python `-`.
+    pub(crate) fn py_sub_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        match (self, other) {
+            // Int - Int with overflow detection
+            (Self::Int(a), Self::Int(b)) => {
+                if let Some(result) = a.checked_sub(*b) {
+                    Ok(Some(Self::Int(result)))
+                } else {
+                    Ok(Some(wide_i128_into_value(i128::from(*a) - i128::from(*b), vm.heap)))
+                }
+            }
+            // Float - Float
+            (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a - b))),
+            // Int - Float and Float - Int
+            (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 - b))),
+            (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a - *b as f64))),
+            (Self::Ref(id), _) => vm.heap.read(*id).py_sub_impl(other, vm),
+            _ => Ok(None),
+        }
+    }
+
+    /// One-sided implementation of Python `&`.
+    pub(crate) fn py_and_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        if let (Self::Bool(lhs), Self::Bool(rhs)) = (self, other) {
+            Ok(Some(Self::Bool(*lhs && *rhs)))
+        } else if let (Some(lhs), Some(rhs)) = (immediate_int(self), immediate_int(other)) {
+            Ok(Some(Self::Int(lhs & rhs)))
+        } else if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_and_impl(other, vm)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// One-sided implementation of Python `|`.
+    pub(crate) fn py_or_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        if let (Self::Bool(lhs), Self::Bool(rhs)) = (self, other) {
+            Ok(Some(Self::Bool(*lhs || *rhs)))
+        } else if let (Some(lhs), Some(rhs)) = (immediate_int(self), immediate_int(other)) {
+            Ok(Some(Self::Int(lhs | rhs)))
+        } else if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_or_impl(other, vm)
+        } else if matches!(self, Self::Builtin(_) | Self::None | Self::Marker(_)) {
+            // `int | None` and the other unions with an immediate left operand;
+            // class objects, aliases and unions dispatch through their own
+            // `py_or_impl`, so other heap receivers never reach this check.
+            Union::try_or(self, other, vm)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// One-sided implementation of Python `^`.
+    pub(crate) fn py_xor_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        if let (Self::Bool(lhs), Self::Bool(rhs)) = (self, other) {
+            Ok(Some(Self::Bool(*lhs ^ *rhs)))
+        } else if let (Some(lhs), Some(rhs)) = (immediate_int(self), immediate_int(other)) {
+            Ok(Some(Self::Int(lhs ^ rhs)))
+        } else if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_xor_impl(other, vm)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn py_getitem(&self, key: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
         let interns = vm.interns;
         match self {
             // `heap_subscript` owns the mutating defaultdict-miss path outside
@@ -1344,60 +1434,8 @@ impl<'h> PyTrait<'h> for Value {
             _ => Err(ExcType::type_error_not_sub(&self.py_type_name(vm))),
         }
     }
-
-    fn py_setitem(&mut self, key: Self, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
-        if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_setitem(key, value, vm)
-        } else {
-            key.drop_with(vm);
-            value.drop_with(vm);
-            Err(ExcType::type_error_not_sub_assignment(&self.py_type_name(vm)))
-        }
-    }
-
-    fn py_is_iterator(&self, vm: &VM<'_>) -> bool {
-        // No immediate value is an iterator; interned `str`/`bytes` are iterable
-        // but, as in CPython, are not their own iterators.
-        match self {
-            Self::Ref(id) => vm.heap.read(*id).py_is_iterator(vm),
-            _ => false,
-        }
-    }
-
-    fn py_is_iterable(&self, vm: &VM<'_>) -> bool {
-        match self {
-            // Interned string and bytes literals iterate without ever reaching
-            // the heap, so they answer here rather than in `HeapReadOutput`.
-            Self::InternString(_) | Self::InternBytes(_) => true,
-            Self::Ref(id) => vm.heap.read(*id).py_is_iterable(vm),
-            _ => false,
-        }
-    }
-
-    fn py_iter(&self, vm: &mut VM<'_>) -> RunResult<Self> {
-        if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_iter(vm)
-        } else {
-            match self {
-                Self::InternString(id) => Ok(StringIterator::from_intern(*id, vm)),
-                Self::InternBytes(id) => Ok(BytesIterator::from_intern(*id, vm)),
-                _ => Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))),
-            }
-        }
-    }
-
-    fn py_next(&mut self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_next(vm)
-        } else {
-            Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
-        }
-    }
 }
 
-/// `Value` releases its (possible) heap reference through any [`ContainsHeap`]
-/// context — `Heap`, `HeapReader`, `VM`, or the json `Encoder`. Forwards to the
-/// inherent [`Value::drop_with`], which also serves direct callers.
 impl<C: ContainsHeap> DropWithContext<C> for Value {
     #[inline]
     fn drop_with(self, ctx: &mut C) {
@@ -1697,9 +1735,8 @@ impl Value {
             // NamedTuple/FrozenSet/Path) carry an inline `cached_hash`;
             // cheap-to-hash types recompute each call.
             Self::Ref(id) => vm.heap.read(*id).py_hash(vm),
-            // Values with no heap identity hash by name, never by discriminant:
-            // dict and set entries persist their hash, so a hash tied to an
-            // enum's declaration order would break lookups in older dumps.
+            // Values with no heap identity hash by name, never by discriminant,
+            // so a hash never depends on an enum's declaration order.
             Self::Undefined => Ok(Some(hash_named("singleton", "Undefined"))),
             Self::Ellipsis => Ok(Some(hash_named("singleton", "Ellipsis"))),
             Self::NotImplemented => Ok(Some(hash_named("singleton", "NotImplemented"))),

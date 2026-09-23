@@ -132,7 +132,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     /// Takes a recursion level like the repr: an argument can be a list that
     /// holds this alias, and comparing two such cycles raises `RecursionError`
     /// rather than overflowing the native stack.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::GenericAlias(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -235,7 +235,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         }
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Union::heap_or(self, other, vm)
     }
 
@@ -245,7 +245,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
 
     /// An alias has no type variables to fill, so `list[int][str]` fails as
     /// CPython's `__parameters__ == ()` case does.
-    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         let repr = self.repr_string(vm)?;
         Err(ExcType::type_error_not_generic_class(&repr))
     }

@@ -302,6 +302,8 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     See [host objects](host-objects.md#snapshots).
 - **The accumulated time budget travels with the dump**, so a restored session resumes where it left off rather than
     getting a fresh budget.
+- **Dict and set indexes are rebuilt on first use.** A dump stores entries without their hashes, so the first keyed
+    operation on a restored dict or set hashes its keys again, which runs any user-defined `__hash__` once more per key.
 - **Only the suspension limit travels.** A restored session keeps `max_suspensions`, but the pool resets its count to
     zero, and a `max_suspensions` set on the restoring `checkout()` caps the dump's.
 - **Mounts do not travel.** Host paths are never part of a dump.
@@ -316,10 +318,11 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     structural invariants the interpreter relies on (function metadata, for one), but it is not a security boundary:
     load only dumps this host produced.
 - **Dumps carry a format version.** The bytes are Monty's own dump format, a `MONTY\0` magic followed by a dump-format
-    version, then the state encoded as CBOR with every field and variant named.
+    version, then the state encoded as CBOR with every named field and every variant named.
     A release that only changes the layout of stored data, adding fields that default when absent or removing and
     reordering named fields, keeps the version, so its builds still load dumps written by earlier releases at that
     version.
+    Tuple structs and tuple variants are positional, so their elements may only be appended.
     A release that changes what stored data means, such as the bytecode, bumps the version and says so in its release
     notes; a build then refuses dumps from before the bump as too old, and the session has to be rebuilt by replaying
     its feeds.

@@ -236,10 +236,12 @@ it). Adding a field (`#[serde(default)]`), removing one, or inserting a variant 
 loading, while tuple structs and tuple variants are positional and may only grow at the end; the names are the
 persistence contract, so renaming a serialized field or variant needs `#[serde(alias = "old")]`, and `#[serde(deny_unknown_fields)]` must never go on a dumped type.
 Persisted `Vec<u8>` / `[u8; N]` data takes `#[serde(with = "serde_bytes")]` so it is written as one byte string.
+Dict and set entries carry no hash in a dump: each container leaves its index table empty on load and rebuilds it
+on the first keyed operation (`ensure_indices`), so the hasher may change freely; the trait methods that can probe
+one take `&mut self` for that reason.
 `DUMP_VERSION` still bumps when the *meaning* of stored data changes: opcodes, `BuiltinsFunctions` order (its
-discriminants are bytecode operands), `CmpOperator` values, the compiler's constant layout, how a key hashes (dict and
-set entries persist their hash, which is why keys without a heap identity hash by name or a persisted id such as a
-`FunctionId`, never by discriminant), or a semantic change to a stored value. `crates/monty/tests/dump_compat.rs` loads a checked-in fixture written at the current version; a
+discriminants are bytecode operands), `CmpOperator` values, the compiler's constant layout, or a semantic change to a
+stored value. `crates/monty/tests/dump_compat.rs` loads a checked-in fixture written at the current version; a
 change that breaks it decides between an alias, a default, or a bump plus `UPDATE_DUMP_FIXTURE=1` to regenerate.
 
 ### Compilation overlays and stable intern entries
