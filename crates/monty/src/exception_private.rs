@@ -2353,10 +2353,7 @@ pub(crate) struct SimpleException {
     arg: Option<String>,
     /// Structured payload (e.g. unicode-error constructor fields), carried
     /// through catch/re-raise so it reaches the public `MontyException` when
-    /// the exception escapes the sandbox. No `skip_serializing_if`:
-    /// exceptions round-trip through non-self-describing snapshot formats
-    /// where skipped fields break deserialization.
-    #[serde(default)]
+    /// the exception escapes the sandbox.
     data: ExcData,
 }
 
@@ -2515,7 +2512,6 @@ pub struct ExceptionRaise {
     /// CPython doesn't show carets for attribute GET errors, but does show them
     /// for attribute SET errors. This flag allows error creators to specify
     /// whether the caret should be hidden.
-    #[serde(default)]
     pub hide_caret: bool,
 }
 

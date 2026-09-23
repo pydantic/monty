@@ -75,15 +75,12 @@ pub struct MontyRepl {
     /// `CodeRange` byte offsets that index into snippet M's source, so the
     /// diagnostic pass must be able to look that source up by filename —
     /// the current snippet's `Executor.code` is not sufficient.
-    #[serde(default)]
     sources: AHashMap<String, Arc<str>>,
     /// [`CompileOptions`] applied to every snippet fed to this session, fixed
     /// at construction so all snippets compile consistently.
-    #[serde(default)]
     options: CompileOptions,
     /// OS-call policies shared with each snippet's executor.
     /// See [`with_os_policy`](Self::with_os_policy).
-    #[serde(default)]
     os_policy: Arc<OsPolicy>,
     /// Sandbox working directory the next snippet starts in: what
     /// [`set_cwd`](Self::set_cwd) chose, then whatever `os.chdir` left the

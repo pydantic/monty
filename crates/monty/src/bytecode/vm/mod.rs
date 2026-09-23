@@ -627,7 +627,6 @@ pub struct SerializedFrame {
     /// across a suspend (an `__init__` that calls an external/OS function), so it
     /// must round-trip — otherwise the resumed frame would push `__init__`'s
     /// `None` instead of leaving the instance on the stack.
-    #[serde(default)]
     is_initializer: bool,
 
     /// Frame namespace, with ownership of its dict references (see
@@ -699,11 +698,9 @@ pub struct VMSnapshot {
 
     /// In-flight resume effect for the paused OS call, if any. See
     /// [`VM::pending_effect`].
-    #[serde(default)]
     pending_effect: Option<PendingEffect>,
     /// In-flight resume effect for the paused lazy attribute lookup, if any.
     /// See [`VM::pending_lookup_effect`].
-    #[serde(default)]
     pending_lookup_effect: Option<PendingLookupEffect>,
 
     /// Working directory at the pause, including any `os.chdir` so far.

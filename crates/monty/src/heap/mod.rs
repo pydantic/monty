@@ -827,7 +827,7 @@ pub struct HeapEntry {
     /// the `HeapRead` is dropped. `dec_ref` panics if it would free an entry that
     /// still has active readers — this guarantees that `HeapRead` pointers remain
     /// valid for as long as they exist.
-    #[serde(skip, default)] // should always be 0 during serde ops
+    #[serde(skip)] // should always be 0 during serde ops
     readers: Cell<usize>,
     /// The payload data
     data: UnsafeHeapData,
@@ -837,7 +837,6 @@ pub struct HeapEntry {
     /// instructions can capture entries in the [`Purple`](CcColor::Purple)
     /// pending-collection state; dropping the color on restore would leak
     /// any cycle that became unreachable just before the snapshot.
-    #[serde(default)]
     color: Cell<CcColor>,
 }
 
@@ -976,11 +975,8 @@ impl<'de> serde::Deserialize<'de> for Heap {
         struct HeapFields {
             entries: StableHeap<HeapEntry>,
             tracker: ResourceTracker,
-            #[serde(default)]
             purple_count: usize,
-            #[serde(default)]
             allocations_since_gc: u32,
-            #[serde(default)]
             timezone_utc: Option<HeapId>,
         }
         let fields = HeapFields::deserialize(deserializer)?;

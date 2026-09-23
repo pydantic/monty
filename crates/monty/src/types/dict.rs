@@ -2220,8 +2220,7 @@ struct DictIteratorState {
     /// Set once a `next` call has reached the end. Mirrors CPython clearing
     /// `di_dict`: an already-exhausted iterator returns `StopIteration` on every
     /// further call and never re-checks the size, even if the dict was mutated
-    /// after exhaustion. Defaulted for backward-compatible snapshot decode.
-    #[serde(default)]
+    /// after exhaustion.
     exhausted: bool,
 }
 

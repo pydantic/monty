@@ -269,7 +269,6 @@ pub(crate) struct Program {
     /// their snippets the same way.
     pub(crate) options: CompileOptions,
     /// OS-call policies shared with the REPL session; see [`MontyRun::with_os_policy`].
-    #[serde(default)]
     pub(crate) os_policy: Arc<OsPolicy>,
     /// The user-facing script name (`main.py`), whose final component
     /// `__file__` is derived from. For REPL snippets this is the session's

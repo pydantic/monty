@@ -50,7 +50,6 @@ pub(crate) struct DateTime {
     /// and repeated `dt.tzinfo` access returns the same object. We store a retained
     /// heap reference so attribute lookup can return a stable object instead of
     /// allocating a new timezone each time.
-    #[serde(default)]
     tzinfo_ref: Option<HeapId>,
 }
 
