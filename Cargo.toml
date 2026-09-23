@@ -119,6 +119,10 @@ indexmap = "2"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 postcard = { version = "1.1", features = ["alloc"] }
+# session dump codec: self-describing, so struct fields and enum variants evolve without a `DUMP_VERSION` bump
+minicbor-serde = { version = "0.7", default-features = false, features = ["alloc"] }
+# CBOR byte strings for persisted `Vec<u8>` / `[u8; N]` fields instead of one integer per byte
+serde_bytes = "0.11"
 # exact pin: prost-build output must be byte-stable across contributors and CI
 # so `make check-proto` (regenerate + git diff) is reproducible
 prost = "=0.14.4"

@@ -31,7 +31,6 @@ napi-derive = "3.0.0"
 num-bigint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-postcard = { workspace = true }
 
 [build-dependencies]
 napi-build = "2"

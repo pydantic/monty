@@ -18,6 +18,7 @@ name = "monty_types"
 [dependencies]
 monty-macros = { workspace = true }
 serde = { workspace = true }
+serde_bytes = { workspace = true }
 strum = { workspace = true }
 chrono = { workspace = true }
 jiff = { workspace = true }
@@ -33,7 +34,7 @@ unicode-general-category = { workspace = true }
 web-time = "1.1"
 
 [dev-dependencies]
-postcard = { workspace = true }
+minicbor-serde = { workspace = true }
 serde_json = { workspace = true }
 
 [features]

@@ -30,6 +30,8 @@ indexmap = { workspace = true }
 itoa = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
+minicbor-serde = { workspace = true }
+serde_bytes = { workspace = true }
 strum = { workspace = true }
 hashbrown = "0.16"
 num-bigint = { workspace = true }
