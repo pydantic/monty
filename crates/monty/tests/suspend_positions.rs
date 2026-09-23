@@ -3,7 +3,10 @@
 //! `ResolveFutures` at the `await` the main task is blocked on.
 
 use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef, dump};
-use monty_types::{CodeLoc, CompileOptions, MontyObject, NameLookupResult, PrintWriter, ResourceTracker, SourceRange};
+use monty_types::{
+    CodeLoc, CompileOptions, ExtFunctionResult, MontyObject, NameLookupResult, PrintWriter, ResourceTracker,
+    SourceRange,
+};
 
 /// Builds the expected position of a single-line expression in `filename`.
 fn range(filename: &str, line: u32, column: u32, end_column: u32) -> SourceRange {
@@ -74,6 +77,9 @@ fn os_call_points_at_the_call_expression() {
     let call = start("import os\nhome = os.getenv('HOME')").into_os_call().unwrap();
     assert_eq!(call.function_call.name(), "os.getenv");
     assert_eq!(call.position, range("test.py", 2, 8, 25));
+    // answer the call so the run winds down instead of dropping live values
+    let done = call.resume(MontyObject::none(), PrintWriter::Stdout).unwrap();
+    assert!(done.into_complete().is_some());
 }
 
 #[test]
@@ -144,18 +150,25 @@ fn resolve_futures_points_at_the_main_task_await_while_spawned_tasks_block() {
     // run, so the VM parks and the main task's `gather` is the reported wait.
     let code = "import asyncio\n\nasync def task():\n    return await fetch()\n\nawait asyncio.gather(task(), task())";
     let mut progress = start(code);
-    let mut pending = 0;
+    let mut pending = Vec::new();
     loop {
         match progress {
             RunProgress::FunctionCall(call) => {
                 assert_eq!(call.position, range("test.py", 4, 18, 25));
-                pending += 1;
-                assert!(pending <= 2, "only two calls precede the wait");
+                pending.push(call.call_id);
+                assert!(pending.len() <= 2, "only two calls precede the wait");
                 progress = call.resume_pending(PrintWriter::Stdout).unwrap();
             }
             RunProgress::ResolveFutures(waiting) => {
-                assert_eq!(pending, 2);
+                assert_eq!(pending.len(), 2);
                 assert_eq!(*waiting.position(), range("test.py", 6, 1, 37));
+                // settle both futures so the run winds down instead of dropping live values
+                let results = pending
+                    .iter()
+                    .map(|&id| (id, ExtFunctionResult::Return(MontyObject::int(1))))
+                    .collect();
+                let done = waiting.resume(results, PrintWriter::Stdout).unwrap();
+                assert!(done.into_complete().is_some());
                 break;
             }
             other => panic!("unexpected progress: {other:?}"),
