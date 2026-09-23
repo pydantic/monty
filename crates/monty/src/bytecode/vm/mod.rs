@@ -21,7 +21,7 @@ use std::{borrow::Cow, mem};
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
-use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
+use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameNamespace, function_namespace};
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
 use scheduler::Scheduler;
@@ -2376,7 +2376,7 @@ impl<'h> VM<'h> {
     }
 
     /// Returns the source position for the instruction currently executing.
-    pub(crate) fn current_position(&self) -> CodeRange {
+    pub(super) fn current_position(&self) -> CodeRange {
         self.current_frame
             .code
             .location_for_offset(self.instruction_ip)
@@ -2384,14 +2384,25 @@ impl<'h> VM<'h> {
             .unwrap_or_default()
     }
 
+    /// Returns the position a suspension at the current instruction reports.
+    ///
+    /// `instruction_ip` still names the suspending opcode, and its line and
+    /// column were resolved at compile time, so this reads no source.
+    pub(crate) fn suspension_position(&self) -> SourceRange {
+        self.current_frame
+            .code
+            .location_for_offset(self.instruction_ip)
+            .map_or_else(SourceRange::unknown, |entry| entry.source_range(self.interns))
+    }
+
     /// Returns the source position of the `await` the main task is blocked on.
     ///
     /// The position reported when every task is blocked on host futures: the
     /// blocked main task may be the loaded context, or parked in the scheduler
     /// with its frames saved while a spawned task ran last.
-    pub(crate) fn main_task_position(&self) -> CodeRange {
+    pub(crate) fn main_task_position(&self) -> SourceRange {
         if self.is_main_task() && !self.current_frame.is_parked {
-            self.current_position()
+            self.suspension_position()
         } else {
             let task = self.scheduler.main_task();
             // `save_task_context` pushes the executing frame last.
@@ -2402,9 +2413,9 @@ impl<'h> VM<'h> {
                         Some(func_id) => &self.interns.get_function(func_id).code,
                         None => self.module_code,
                     };
-                    code.location_for_offset(task.instruction_ip).map(LocationEntry::range)
+                    code.location_for_offset(task.instruction_ip)
                 })
-                .unwrap_or_default()
+                .map_or_else(SourceRange::unknown, |entry| entry.source_range(self.interns))
         }
     }
 

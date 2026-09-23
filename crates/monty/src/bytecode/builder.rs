@@ -3,12 +3,14 @@
 //! `CodeBuilder` provides methods for emitting opcodes and operands, handling
 //! forward jumps with patching, and tracking source locations for tracebacks.
 
+use monty_types::CodeLoc;
+
 use super::{
     code::{Code, ExceptionEntry, HandlerKind, LocationEntry},
     compiler::CompileError,
     op::{Opcode, Operand},
 };
-use crate::{intern::StringId, parse::CodeRange, value::Value};
+use crate::{intern::StringId, parse::CodeRange, source_map::SourceLines, value::Value};
 
 /// Builder for emitting bytecode during compilation.
 ///
@@ -25,8 +27,9 @@ pub struct CodeBuilder {
     /// Constants collected during compilation.
     constants: Vec<Value>,
 
-    /// Source location entries for traceback generation.
-    location_table: Vec<LocationEntry>,
+    /// Source locations recorded per instruction, resolved to lines and
+    /// columns by [`Self::build`].
+    locations: Vec<RecordedLocation>,
 
     /// Exception handler entries.
     exception_table: Vec<ExceptionEntry>,
@@ -437,14 +440,31 @@ impl CodeBuilder {
     }
 
     /// Finishes a compiled body, transferring its buffers and metadata to `Code`.
+    ///
+    /// `lines` indexes the source every recorded range points into; each range
+    /// is resolved to a line and column here, once, so suspensions need not.
     #[must_use]
-    pub fn build(self) -> Code {
+    pub fn build(self, lines: &SourceLines<'_>) -> Code {
         // Unnamed slots use the sentinel understood by local-name lookup.
         let local_names = self.local_names.into_iter().map(Option::unwrap_or_default).collect();
+        let mut previous: Option<(CodeRange, CodeLoc, CodeLoc)> = None;
+        let location_table = self
+            .locations
+            .into_iter()
+            .map(|location| {
+                // consecutive instructions of one expression share its range
+                let (start, end) = match previous {
+                    Some((range, start, end)) if range == location.range => (start, end),
+                    _ => lines.resolve(location.range),
+                };
+                previous = Some((location.range, start, end));
+                LocationEntry::new(location.offset, location.range, location.focus, start, end)
+            })
+            .collect();
         Code::new(
             self.bytecode,
             self.constants,
-            self.location_table,
+            location_table,
             self.exception_table,
             local_names,
         )
@@ -459,8 +479,11 @@ impl CodeBuilder {
     fn record_location(&mut self) -> Result<(), CompileError> {
         if let Some(range) = self.current_location {
             let offset = u32::try_from(self.bytecode.len()).map_err(|_| self.bytecode_too_large())?;
-            self.location_table
-                .push(LocationEntry::new(offset, range, self.current_focus));
+            self.locations.push(RecordedLocation {
+                offset,
+                range,
+                focus: self.current_focus,
+            });
         }
         Ok(())
     }
@@ -779,6 +802,18 @@ struct JumpTargetInner {
     stack_depth: u16,
 }
 
+/// A location recorded while emitting, before [`CodeBuilder::build`]
+/// resolves its range to a line and column.
+#[derive(Debug)]
+struct RecordedLocation {
+    /// Bytecode offset of the instruction the location applies from.
+    offset: u32,
+    /// Source range of the instruction's expression.
+    range: CodeRange,
+    /// Optional caret focus within `range`.
+    focus: Option<CodeRange>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,7 +825,7 @@ mod tests {
         builder.emit(Opcode::LoadNone).unwrap();
         builder.emit(Opcode::Pop).unwrap();
 
-        let code = builder.build();
+        let code = builder.build(&SourceLines::new(""));
         assert_eq!(code.bytecode(), &[Opcode::LoadNone as u8, Opcode::Pop as u8]);
     }
 
@@ -800,7 +835,7 @@ mod tests {
         builder.new_code_region(0);
         builder.emit_u8(Opcode::LoadLocal, 42).unwrap();
 
-        let code = builder.build();
+        let code = builder.build(&SourceLines::new(""));
         assert_eq!(code.bytecode(), &[Opcode::LoadLocal as u8, 42]);
     }
 
@@ -810,7 +845,7 @@ mod tests {
         builder.new_code_region(0);
         builder.emit_u16(Opcode::LoadConst, 0x1234).unwrap();
 
-        let code = builder.build();
+        let code = builder.build(&SourceLines::new(""));
         assert_eq!(code.bytecode(), &[Opcode::LoadConst as u8, 0x34, 0x12]);
     }
 
@@ -826,7 +861,7 @@ mod tests {
         builder.emit(Opcode::LoadNone).unwrap(); // Return value
         builder.emit(Opcode::ReturnValue).unwrap();
 
-        let code = builder.build();
+        let code = builder.build(&SourceLines::new(""));
         assert_eq!(
             code.bytecode(),
             &[
@@ -850,7 +885,7 @@ mod tests {
         builder.emit(Opcode::Pop).unwrap(); // offset 1, 1 byte
         builder.emit_jump_to(Opcode::Jump, loop_start).unwrap(); // offset 2, target 0
 
-        let code = builder.build();
+        let code = builder.build(&SourceLines::new(""));
         // Jump at offset 2, target at offset 0
         // Offset = 0 - (2 + 3) = -5
         let expected_offset = (-5i16).to_le_bytes();
@@ -877,7 +912,7 @@ mod tests {
         builder.emit_load_local(4).unwrap();
         builder.emit_load_local(256).unwrap();
 
-        let code = builder.build();
+        let code = builder.build(&SourceLines::new(""));
         assert_eq!(
             code.bytecode(),
             &[

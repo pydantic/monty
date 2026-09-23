@@ -169,7 +169,7 @@ fn compile_and_push(
         &mut *vm.global_names
     };
     let nodes = prepare_snippet(nodes, &overlay, globals, names).map_err(|e| e.into_run_error(&text))?;
-    let code = Compiler::compile_snippet(&nodes, &mut overlay, globals, options, globals_by_name)
+    let code = Compiler::compile_snippet(&nodes, &text, &mut overlay, globals, options, globals_by_name)
         .map_err(|e| e.into_run_error(&text))?;
 
     let position = CodeRange {

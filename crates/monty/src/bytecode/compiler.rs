@@ -33,7 +33,7 @@ use crate::{
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try, syntax_error_in_snippet},
     run::CompileOptions,
-    source_map::{SourceMap, StackFrameExt},
+    source_map::{SourceLines, SourceMap, StackFrameExt},
     value::{EitherStr, Value},
 };
 
@@ -254,6 +254,9 @@ pub struct Compiler<'a, 'i> {
 
     /// Compilation tables: private overlay for an existing session, direct insertion for a fresh program.
     interns: &'a mut CompileInterns<'i>,
+
+    /// Line index of the source being compiled, shared with nested scopes.
+    lines: &'a SourceLines<'a>,
 
     /// Enclosing control blocks whose cleanup is emitted by non-local exits.
     /// This mirrors CPython's compiler `fblockinfo` stack and keeps each
@@ -512,12 +515,19 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Creates a compiler for a module or function.
     /// `frame_locals` is zero at module scope or the function namespace size;
     /// comprehension slots follow it on the operand stack.
-    fn new(interns: &'a mut CompileInterns<'i>, is_module_scope: bool, frame_locals: u16, flags: ScopeFlags) -> Self {
+    fn new(
+        interns: &'a mut CompileInterns<'i>,
+        lines: &'a SourceLines<'a>,
+        is_module_scope: bool,
+        frame_locals: u16,
+        flags: ScopeFlags,
+    ) -> Self {
         let mut code = CodeBuilder::new();
         code.new_code_region(0);
         Self {
             code,
             interns,
+            lines,
             fblocks: Vec::new(),
             finally_copies: 0,
             is_module_scope,
@@ -528,14 +538,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
     }
 
     /// Compiles module-level statements, returning the last expression or None.
-    /// On failure the caller discards the overlay, or the whole interner in direct mode.
+    /// `source` is the text `nodes` were parsed from. On failure the caller
+    /// discards the overlay, or the whole interner in direct mode.
     pub fn compile_module(
         nodes: &[PreparedNode],
+        source: &str,
         interns: &mut CompileInterns<'_>,
         globals: &NameMap,
         options: CompileOptions,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, globals, options, None)
+        Self::compile_module_inner(nodes, source, interns, globals, options, None)
     }
 
     /// Compiles a prepared `eval()` / `exec()` snippet, rejecting top-level await.
@@ -543,17 +555,19 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// The caller must discard the private intern overlay on failure.
     pub(crate) fn compile_snippet(
         nodes: &[PreparedNode],
+        source: &str,
         interns: &mut CompileInterns<'_>,
         globals: &NameMap,
         options: CompileOptions,
         globals_by_name: bool,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, globals, options, Some(globals_by_name))
+        Self::compile_module_inner(nodes, source, interns, globals, options, Some(globals_by_name))
     }
 
     /// Shared module compiler; `snippet` is `Some(globals_by_name)` for eval/exec.
     fn compile_module_inner(
         nodes: &[PreparedNode],
+        source: &str,
         interns: &mut CompileInterns<'_>,
         globals: &NameMap,
         options: CompileOptions,
@@ -568,7 +582,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
             globals_by_name: snippet.unwrap_or(false),
             forbid_await: snippet.is_some(),
         };
-        let mut compiler = Compiler::new(interns, true, 0, flags);
+        let lines = SourceLines::new(source);
+        let mut compiler = Compiler::new(interns, &lines, true, 0, flags);
 
         // All globals are "local names" in the module
         compiler.code.register_local_names(globals.names());
@@ -579,7 +594,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.code.build(compiler.lines))
     }
 
     /// Compiles a function body to bytecode, appending any nested functions to `interns`.
@@ -590,6 +605,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     fn compile_function_body(
         func_def: &PreparedFunctionDef,
         interns: &mut CompileInterns<'_>,
+        lines: &SourceLines<'_>,
         num_locals: u16,
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
@@ -600,7 +616,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             forbid_await: false,
             ..flags
         };
-        let mut compiler = Compiler::new(interns, false, num_locals, flags);
+        let mut compiler = Compiler::new(interns, lines, false, num_locals, flags);
         // Parameters, and the cells captured parameters live in, are named up
         // front: a body that never mentions one still reports it from `locals()`.
         let param_names: Vec<StringId> = func_def.signature.param_names().collect();
@@ -620,7 +636,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.code.build(compiler.lines))
     }
 
     /// Compiles statements, retaining `finally` bodies for inline cleanup.
@@ -857,8 +873,9 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// variables are captured, the pushed cells are consumed by `MakeClosure`.
     fn emit_make_function(&mut self, func_def: &PreparedFunctionDef, what: &'static str) -> Result<(), CompileError> {
         let flags = self.flags;
+        let lines = self.lines;
         self.emit_make_callable(func_def, what, |interns, namespace_size| {
-            Self::compile_function_body(func_def, interns, namespace_size, flags)
+            Self::compile_function_body(func_def, interns, lines, namespace_size, flags)
         })
     }
 
@@ -1008,6 +1025,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         position: CodeRange,
     ) -> Result<(), CompileError> {
         let flags = self.flags;
+        let lines = self.lines;
         self.emit_make_callable(body, "class body", |interns, namespace_size| {
             Self::compile_class_body(
                 &body.body,
@@ -1015,6 +1033,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 class_name,
                 position,
                 interns,
+                lines,
                 namespace_size,
                 flags,
             )
@@ -1033,16 +1052,18 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
     /// emits `LoadLocal`; it would transparently emit `LoadCell` if that ever
     /// changed, so no assumption is hard-coded here.
+    #[expect(clippy::too_many_arguments)]
     fn compile_class_body(
         body: &[PreparedNode],
         members: &[Identifier],
         class_name: &Identifier,
         position: CodeRange,
         interns: &mut CompileInterns<'_>,
+        lines: &SourceLines<'_>,
         num_locals: u16,
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
-        let mut compiler = Compiler::new(interns, false, num_locals, flags);
+        let mut compiler = Compiler::new(interns, lines, false, num_locals, flags);
         compiler.compile_block(body)?;
 
         // Assembly errors (e.g. resource limits while building the dict)
@@ -1069,7 +1090,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.code.build(compiler.lines))
     }
 
     /// Compiles an import, resolving the module only when execution reaches it.

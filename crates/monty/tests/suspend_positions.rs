@@ -50,6 +50,32 @@ fn function_call_points_at_the_call_expression() {
 }
 
 #[test]
+fn every_line_ending_starts_a_line() {
+    // a bare `\r` ends a line as the parser sees it; `\r\n` ends just one
+    let call = start("x = 1\rfetch()").into_function_call().unwrap();
+    assert_eq!(call.position, range("test.py", 2, 1, 8));
+    let call = start("x = 1\r\ny = 2\r\nfetch()").into_function_call().unwrap();
+    assert_eq!(call.position, range("test.py", 3, 1, 8));
+
+    let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    let progress = repl.feed_start("x = 1\rfetch()", vec![], PrintWriter::Stdout).unwrap();
+    let ReplProgress::FunctionCall(call) = progress else {
+        panic!("expected a function call");
+    };
+    assert_eq!(call.position, range("<python-input-0>", 2, 1, 8));
+}
+
+#[test]
+fn a_long_non_ascii_line_resolves_columns_past_the_checkpoints() {
+    // columns past several 64-byte character checkpoints, on a line of multi-byte chars
+    let padding = "é".repeat(200);
+    let call = start(&format!("y = '{padding}' + fetch()"))
+        .into_function_call()
+        .unwrap();
+    assert_eq!(call.position, range("test.py", 1, 210, 217));
+}
+
+#[test]
 fn a_call_inside_a_function_points_into_its_body() {
     let call = start("def helper(n):\n    return fetch(n)\n\nhelper(3)")
         .into_function_call()

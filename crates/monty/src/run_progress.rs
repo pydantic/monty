@@ -20,9 +20,7 @@ use crate::{
     heap::{DropWithContext, Heap, HeapReader},
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect},
-    parse::CodeRange,
     run::Executor,
-    source_map::resolve_source_range,
     value::Value,
 };
 
@@ -1001,8 +999,8 @@ pub(crate) enum ConvertedExit {
         call_id: u32,
         object_id: Option<MontyUuid>,
         allow_eager_await: bool,
-        /// The call expression, resolved to a `SourceRange` once the source is known.
-        position: CodeRange,
+        /// The call expression.
+        position: SourceRange,
     },
     /// OS-level operation.
     OsCall {
@@ -1010,19 +1008,19 @@ pub(crate) enum ConvertedExit {
         call_id: u32,
         /// See [`OsCall::allow_eager_await`].
         allow_eager_await: bool,
-        position: CodeRange,
+        position: SourceRange,
     },
     /// All async tasks are blocked waiting for external futures.
     ResolveFutures {
         pending_call_ids: Vec<u32>,
         /// The main task's blocked `await`.
-        position: CodeRange,
+        position: SourceRange,
     },
     /// Unresolved name lookup or lazy instance attribute lookup.
     NameLookup {
         name: String,
         scope: LookupScope,
-        position: CodeRange,
+        position: SourceRange,
     },
     /// Runtime error.
     Error(RunError),
@@ -1058,7 +1056,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             call_id,
             ..
         }) => {
-            let position = vm.current_position();
+            let position = vm.suspension_position();
             let name = function_name.into_string(vm.interns);
             let args = args.into_call_args(vm);
             ConvertedExit::FunctionCall {
@@ -1075,7 +1073,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             call_id,
             effect,
         }) => {
-            let position = vm.current_position();
+            let position = vm.suspension_position();
             // The point of no return: the call is the host's, so a matching
             // `resume` is guaranteed. Every other destination drops it.
             vm.pending_effect = effect;
@@ -1094,7 +1092,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             call_id,
             object_id,
         }) => {
-            let position = vm.current_position();
+            let position = vm.suspension_position();
             let name = method_name.into_string(vm.interns);
             let args = args.into_call_args(vm);
             ConvertedExit::FunctionCall {
@@ -1115,7 +1113,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             namespace_slot,
             is_global,
         }) => {
-            let position = vm.current_position();
+            let position = vm.suspension_position();
             let name = vm.interns.get_str(name_id).to_owned();
             ConvertedExit::NameLookup {
                 name,
@@ -1133,7 +1131,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             type_object,
             effect,
         }) => {
-            let position = vm.current_position();
+            let position = vm.suspension_position();
             // The lookup is the host's now, so a `resume` is guaranteed to
             // consume the effect (or the next `convert_frame_exit` releases it).
             vm.pending_lookup_effect = effect;
@@ -1198,7 +1196,7 @@ pub(crate) fn build_run_progress(
             call_id,
             object_id,
             allow_eager_await,
-            resolve_run_position(position, &executor),
+            position,
             new_snapshot!(),
         ))),
         ConvertedExit::OsCall {
@@ -1210,25 +1208,22 @@ pub(crate) fn build_run_progress(
             function_call,
             call_id,
             allow_eager_await,
-            resolve_run_position(position, &executor),
+            position,
             new_snapshot!(),
         ))),
         ConvertedExit::ResolveFutures {
             pending_call_ids,
             position,
-        } => {
-            let position = resolve_run_position(position, &executor);
-            Ok(RunProgress::ResolveFutures(ResolveFutures::new(
-                executor,
-                vm_state.expect("snapshot should exist for ResolveFutures"),
-                heap,
-                pending_call_ids,
-                position,
-            )))
-        }
+        } => Ok(RunProgress::ResolveFutures(ResolveFutures::new(
+            executor,
+            vm_state.expect("snapshot should exist for ResolveFutures"),
+            heap,
+            pending_call_ids,
+            position,
+        ))),
         ConvertedExit::NameLookup { name, scope, position } => Ok(RunProgress::NameLookup(NameLookup::new(
             name,
-            resolve_run_position(position, &executor),
+            position,
             scope,
             new_snapshot!(),
         ))),
@@ -1236,10 +1231,4 @@ pub(crate) fn build_run_progress(
             Err(err.into_python_exception(&executor.tables.interns, |_| Some(&*executor.program.code)))
         }
     }
-}
-
-/// Resolves a suspension's range for a one-shot run, whose single source
-/// every range indexes.
-fn resolve_run_position(range: CodeRange, executor: &Executor) -> SourceRange {
-    resolve_source_range(range, &executor.tables.interns, |_| Some(&*executor.program.code))
 }

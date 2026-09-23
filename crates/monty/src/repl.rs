@@ -29,13 +29,12 @@ use crate::{
     intern::Interns,
     name_map::NameMap,
     object_bridge::{MontyGraphExt, MontyObjectExt},
-    parse::{CodeRange, source_nesting_exception},
+    parse::source_nesting_exception,
     run::{CompileOptions, DEFAULT_CWD, Executor, Program, ReplSession, SessionTables},
     run_progress::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
         resume_lookup, resume_with_result,
     },
-    source_map::resolve_source_range,
     source_nesting::source_within_nesting_bound,
     types::{SessionRandom, tuple::allocate_tuple},
     value::Value,
@@ -1402,55 +1401,43 @@ fn build_repl_progress(
             object_id,
             allow_eager_await,
             position,
-        } => {
-            let position = resolve_repl_position(position, &executor, &repl);
-            Ok(ReplProgress::FunctionCall(ReplFunctionCall {
-                function_name,
-                args,
-                call_id,
-                object_id,
-                allow_eager_await,
-                position,
-                snapshot: new_repl_snapshot!(),
-            }))
-        }
+        } => Ok(ReplProgress::FunctionCall(ReplFunctionCall {
+            function_name,
+            args,
+            call_id,
+            object_id,
+            allow_eager_await,
+            position,
+            snapshot: new_repl_snapshot!(),
+        })),
         ConvertedExit::OsCall {
             function_call,
             call_id,
             allow_eager_await,
             position,
-        } => {
-            let position = resolve_repl_position(position, &executor, &repl);
-            Ok(ReplProgress::OsCall(ReplOsCall {
-                function_call,
-                call_id,
-                allow_eager_await,
-                position,
-                snapshot: new_repl_snapshot!(),
-            }))
-        }
+        } => Ok(ReplProgress::OsCall(ReplOsCall {
+            function_call,
+            call_id,
+            allow_eager_await,
+            position,
+            snapshot: new_repl_snapshot!(),
+        })),
         ConvertedExit::ResolveFutures {
             pending_call_ids,
             position,
-        } => {
-            let position = resolve_repl_position(position, &executor, &repl);
-            Ok(ReplProgress::ResolveFutures(ReplResolveFutures {
-                repl,
-                executor,
-                vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
-                pending_call_ids,
-                position,
-            }))
-        }
-        ConvertedExit::NameLookup { name, scope, position } => {
-            let position = resolve_repl_position(position, &executor, &repl);
-            Ok(ReplProgress::NameLookup(ReplNameLookup {
-                name,
-                position,
-                scope,
-                snapshot: new_repl_snapshot!(),
-            }))
-        }
+        } => Ok(ReplProgress::ResolveFutures(ReplResolveFutures {
+            repl,
+            executor,
+            vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
+            pending_call_ids,
+            position,
+        })),
+        ConvertedExit::NameLookup { name, scope, position } => Ok(ReplProgress::NameLookup(ReplNameLookup {
+            name,
+            position,
+            scope,
+            snapshot: new_repl_snapshot!(),
+        })),
         ConvertedExit::Error(err) => {
             // Resolve traceback frames against every snippet the REPL has
             // seen, not just the currently-executing one. `executor.interns`
@@ -1467,14 +1454,6 @@ fn build_repl_progress(
             Err(Box::new(ReplStartError { repl, error }))
         }
     }
-}
-
-/// Resolves a suspension's range against every snippet the REPL has seen, as
-/// errors do: the suspension may sit inside a function from an earlier snippet.
-fn resolve_repl_position(range: CodeRange, executor: &Executor, repl: &MontyRepl) -> SourceRange {
-    resolve_source_range(range, &executor.tables.interns, |fname| {
-        repl.sources.get(fname).map(|source| &**source)
-    })
 }
 
 /// Converts host call arguments to internal `ArgValues` for function calls;

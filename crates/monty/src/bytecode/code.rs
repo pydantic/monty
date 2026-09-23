@@ -4,7 +4,13 @@
 //! bytecode instructions, a constant pool, source location information for tracebacks,
 //! and an exception handler table.
 
-use crate::{intern::StringId, parse::CodeRange, value::Value};
+use monty_types::{CodeLoc, SourceRange};
+
+use crate::{
+    intern::{Interns, StringId},
+    parse::CodeRange,
+    value::Value,
+};
 
 /// Compiled bytecode for a function or module.
 ///
@@ -104,12 +110,11 @@ impl Code {
     #[must_use]
     pub fn location_for_offset(&self, offset: usize) -> Option<&LocationEntry> {
         let offset_u32 = u32::try_from(offset).ok()?;
-        // Location entries are in order by bytecode offset.
-        // Find the last entry where bytecode_offset <= offset.
-        self.location_table
-            .iter()
-            .rev()
-            .find(|entry| entry.bytecode_offset <= offset_u32)
+        // Entries are sorted by bytecode offset: take the last at or before `offset`.
+        let after = self
+            .location_table
+            .partition_point(|entry| entry.bytecode_offset <= offset_u32);
+        after.checked_sub(1).map(|index| &self.location_table[index])
     }
 
     /// Finds an exception handler for the given bytecode offset.
@@ -168,16 +173,24 @@ pub struct LocationEntry {
     /// This can be populated later for Python 3.11-style focused tracebacks.
     #[serde(rename = "F")]
     focus: Option<CodeRange>,
+
+    /// Line and column where `range` starts, resolved at compile time.
+    start: CodeLoc,
+
+    /// Line and column where `range` ends (exclusive), resolved at compile time.
+    end: CodeLoc,
 }
 
 impl LocationEntry {
-    /// Creates a new location entry.
+    /// Creates a new location entry; `start` / `end` are `range` resolved against its source.
     #[must_use]
-    pub fn new(bytecode_offset: u32, range: CodeRange, focus: Option<CodeRange>) -> Self {
+    pub fn new(bytecode_offset: u32, range: CodeRange, focus: Option<CodeRange>, start: CodeLoc, end: CodeLoc) -> Self {
         Self {
             bytecode_offset,
             range,
             focus,
+            start,
+            end,
         }
     }
 
@@ -185,6 +198,16 @@ impl LocationEntry {
     #[must_use]
     pub fn range(&self) -> CodeRange {
         self.range
+    }
+
+    /// The position a suspension at this entry reports, without rereading the source.
+    #[must_use]
+    pub fn source_range(&self, interns: &Interns) -> SourceRange {
+        SourceRange {
+            filename: interns.get_filename(self.range.filename).to_owned(),
+            start: self.start,
+            end: self.end,
+        }
     }
 }
 

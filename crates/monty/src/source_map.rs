@@ -1,63 +1,100 @@
 use std::{collections::HashMap, sync::Arc};
 
-use memchr::{memchr_iter, memrchr};
-use monty_types::{CodeLoc, SourceRange, StackFrame};
+use memchr::memchr2_iter;
+use monty_types::{CodeLoc, StackFrame};
 
 use crate::{exception_private::RawStackFrame, intern::Interns, parse::CodeRange};
 
-/// Resolves a suspension's byte range to the line/column [`SourceRange`] hosts see.
+/// Line and character index over one source, built once per compilation so
+/// every bytecode location resolves to a line and column up front.
 ///
-/// `source_for` maps a filename to its text, as for tracebacks: an `eval()` /
-/// `exec()` snippet resolves against its own recorded source first. An unknown
-/// source degrades to line 1 rather than failing the suspension.
-///
-/// This runs on every suspension, so it scans only the prefix up to the range
-/// (memchr) instead of building a [`SourceMap`] line index over the whole source.
-pub(crate) fn resolve_source_range<'s>(
-    range: CodeRange,
-    interns: &'s Interns,
-    source_for: impl Fn(&str) -> Option<&'s str>,
-) -> SourceRange {
-    let filename = interns.get_filename(range.filename);
-    let source = interns
-        .eval_source(range.filename)
-        .or_else(|| source_for(filename))
-        .unwrap_or("");
-    let bytes = source.as_bytes();
-    let start_byte = (range.start_byte as usize).min(bytes.len());
-    let end_byte = (range.end_byte as usize).clamp(start_byte, bytes.len());
-    let (start_line, start) = locate(bytes, 0, 0, start_byte);
-    let (_, end) = locate(bytes, start_line, start_byte, end_byte);
-    SourceRange {
-        filename: filename.to_string(),
-        start,
-        end,
+/// Suspensions then report a stored position instead of rescanning the source.
+/// Columns count Unicode scalar values; a non-ASCII source keeps a character
+/// count every [`CHAR_CHECKPOINT`] bytes, so a column costs a binary search and
+/// at most that many bytes of counting however long the line is.
+pub(crate) struct SourceLines<'s> {
+    source: &'s [u8],
+    /// Byte offset of the start of each line; `line_starts[0]` is 0.
+    line_starts: Vec<u32>,
+    /// Characters before each multiple of [`CHAR_CHECKPOINT`]; empty for ASCII.
+    char_checkpoints: Vec<usize>,
+}
+
+/// Bytes between the character counts a non-ASCII [`SourceLines`] records.
+const CHAR_CHECKPOINT: usize = 64;
+
+impl<'s> SourceLines<'s> {
+    /// Indexes `source`: one pass for line breaks, and one for character counts
+    /// when the source is not ASCII.
+    pub fn new(source: &'s str) -> Self {
+        let bytes = source.as_bytes();
+        let char_checkpoints = if source.is_ascii() {
+            Vec::new()
+        } else {
+            let mut total = 0;
+            let mut checkpoints = Vec::with_capacity(bytes.len() / CHAR_CHECKPOINT + 1);
+            checkpoints.push(0);
+            for chunk in bytes.as_chunks::<CHAR_CHECKPOINT>().0 {
+                total += count_chars(chunk);
+                checkpoints.push(total);
+            }
+            checkpoints
+        };
+        Self {
+            source: bytes,
+            line_starts: line_starts(bytes),
+            char_checkpoints,
+        }
+    }
+
+    /// Resolves a range's start and end (exclusive) to lines and columns.
+    pub fn resolve(&self, range: CodeRange) -> (CodeLoc, CodeLoc) {
+        (self.loc(range.start_byte), self.loc(range.end_byte))
+    }
+
+    /// Resolves one byte offset, clamped to the source.
+    fn loc(&self, byte: u32) -> CodeLoc {
+        let offset = (byte as usize).min(self.source.len());
+        // `line_starts[0]` is 0, so at least one start precedes any offset
+        let line_idx = self.line_starts.partition_point(|&s| s as usize <= offset) - 1;
+        let line_start = self.line_starts[line_idx] as usize;
+        let column = self.chars_before(offset) - self.chars_before(line_start);
+        CodeLoc::new(
+            u32::try_from(line_idx).unwrap_or(u32::MAX),
+            u32::try_from(column).unwrap_or(u32::MAX),
+        )
+    }
+
+    /// Number of characters in `source[..offset]`.
+    fn chars_before(&self, offset: usize) -> usize {
+        if self.char_checkpoints.is_empty() {
+            offset
+        } else {
+            let block = offset / CHAR_CHECKPOINT;
+            self.char_checkpoints[block] + count_chars(&self.source[block * CHAR_CHECKPOINT..offset])
+        }
     }
 }
 
-/// Resolves `offset` given that `from` (at or before it) lies on 0-based line
-/// `line`; returns the offset's 0-based line alongside its `CodeLoc`.
-///
-/// Columns count Unicode scalar values, as [`SourceMap`] does; counting
-/// non-continuation bytes keeps this total even off a char boundary.
-fn locate(bytes: &[u8], line: usize, from: usize, offset: usize) -> (usize, CodeLoc) {
-    let skipped = &bytes[from..offset];
-    let line = line + memchr_iter(b'\n', skipped).count();
-    let line_start = memrchr(b'\n', &bytes[..offset]).map_or(0, |i| i + 1);
-    let column = bytes[line_start..offset]
-        .iter()
-        .filter(|&&b| !is_utf8_continuation(b))
-        .count();
-    let loc = CodeLoc::new(
-        u32::try_from(line).unwrap_or(u32::MAX),
-        u32::try_from(column).unwrap_or(u32::MAX),
-    );
-    (line, loc)
+/// Byte offsets where each line starts. `\n`, `\r\n` and a bare `\r` each end
+/// a line, as they do for the parser.
+fn line_starts(bytes: &[u8]) -> Vec<u32> {
+    let mut starts = Vec::with_capacity(bytes.len() / 40 + 1);
+    starts.push(0);
+    for i in memchr2_iter(b'\n', b'\r', bytes) {
+        // the `\r` of a `\r\n` defers to its `\n`, so the pair ends one line
+        if !(bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n')) {
+            // source should never exceed 4 GB
+            starts.push(u32::try_from(i + 1).unwrap_or(u32::MAX));
+        }
+    }
+    starts
 }
 
-/// Whether `byte` continues a multi-byte UTF-8 sequence rather than starting a char.
-fn is_utf8_continuation(byte: u8) -> bool {
-    byte & 0b1100_0000 == 0b1000_0000
+/// Counts the characters in `bytes`: every byte that does not continue a
+/// multi-byte UTF-8 sequence, which holds even off a char boundary.
+fn count_chars(bytes: &[u8]) -> usize {
+    bytes.iter().filter(|&&b| b & 0b1100_0000 != 0b1000_0000).count()
 }
 
 /// Lazy resolver from raw byte offsets (stored on every [`CodeRange`]) back to
@@ -97,18 +134,9 @@ impl<'s> SourceMap<'s> {
     /// O(log n) lookups per frame.
     #[must_use]
     pub fn new(source: &'s str) -> Self {
-        let mut line_starts = Vec::with_capacity(source.len() / 40 + 1);
-        line_starts.push(0);
-        for (i, b) in source.bytes().enumerate() {
-            if b == b'\n' {
-                // source should never exceed 4 GB
-                let start = u32::try_from(i + 1).unwrap_or(u32::MAX);
-                line_starts.push(start);
-            }
-        }
         Self {
             source,
-            line_starts,
+            line_starts: line_starts(source.as_bytes()),
             line_cache: HashMap::new(),
         }
     }
@@ -223,7 +251,7 @@ impl<'s> SourceMap<'s> {
         // Guard against a trailing empty "line" past the last newline with no
         // content (e.g. when `start == source.len()`).
         let end = end.max(start);
-        // Strip a trailing `\r` if the source uses CRLF line endings.
+        // `next - 1` dropped the break's last byte; a `\r\n` leaves its `\r`.
         let line = &self.source[start..end];
         line.strip_suffix('\r').unwrap_or(line)
     }
