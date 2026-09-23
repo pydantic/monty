@@ -481,8 +481,8 @@ pub(crate) enum CounterOp {
 /// Computes a binary `Counter` operation, returning a new Counter that keeps
 /// only positive counts (CPython's `Counter.__add__` etc.).
 pub(crate) fn counter_binary_op<'h>(
-    lhs: &HeapObjectRead<'h, Dict>,
-    rhs: &HeapObjectRead<'h, Dict>,
+    lhs: &mut HeapObjectRead<'h, Dict>,
+    rhs: &mut HeapObjectRead<'h, Dict>,
     op: CounterOp,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
@@ -540,8 +540,8 @@ enum ExtremeOp {
 /// key, matching CPython's second-loop wording).
 fn counter_binary_extreme<'h>(
     result: &mut HeapObjectRead<'h, Dict>,
-    lhs: &HeapObjectRead<'h, Dict>,
-    rhs: &HeapObjectRead<'h, Dict>,
+    lhs: &mut HeapObjectRead<'h, Dict>,
+    rhs: &mut HeapObjectRead<'h, Dict>,
     op: ExtremeOp,
     vm: &mut VM<'h>,
 ) -> RunResult<()> {
@@ -618,8 +618,8 @@ pub(crate) enum CounterCmp {
 /// are defined in terms of the loose ones: `<` is `<= and !=`, `>` is
 /// `>= and !=`.
 pub(crate) fn counter_compare<'h>(
-    lhs: &HeapObjectRead<'h, Dict>,
-    rhs: &HeapObjectRead<'h, Dict>,
+    lhs: &mut HeapObjectRead<'h, Dict>,
+    rhs: &mut HeapObjectRead<'h, Dict>,
     cmp: CounterCmp,
     vm: &mut VM<'h>,
 ) -> RunResult<bool> {
@@ -678,41 +678,57 @@ pub(crate) fn counter_compare<'h>(
 /// Returns owned clones so the caller can run comparisons that need `&mut VM`.
 /// Every returned pair must be dropped by the caller.
 fn counter_union_counts<'h>(
-    lhs: &HeapObjectRead<'h, Dict>,
-    rhs: &HeapObjectRead<'h, Dict>,
+    lhs: &mut HeapObjectRead<'h, Dict>,
+    rhs: &mut HeapObjectRead<'h, Dict>,
     vm: &mut VM<'h>,
 ) -> RunResult<Vec<(Value, Value)>> {
-    // Three guards, so a failing lookup is a plain `?`: the pairs accumulated so
-    // far, the entries not yet visited, and the entry in flight all get released.
+    // The guard releases the pairs accumulated so far if a lookup fails.
     let mut pairs = DropGuard::new(Vec::new(), vm);
     // Left keys against their right counterparts, then the right-only keys.
-    for (keys, other, flip) in [(lhs, rhs, false), (rhs, lhs, true)] {
+    {
         let (collected, vm) = pairs.as_parts_mut();
-        let entries = keys.clone_all_pairs(vm)?.into_iter();
-        defer_drop_mut!(entries, vm);
-        for entry in entries.by_ref() {
-            let mut entry = DropGuard::new(entry, vm);
-            let ((key, _), vm) = entry.as_parts_mut();
-            let other = other.dict_get(key, vm)?;
-            // On the second pass only keys absent from the left are new; the
-            // shared ones were already paired, so skip them (the guard releases
-            // the entry); otherwise the count moves into `collected`.
-            match (flip, other) {
-                (true, Some(other)) => other.drop_with(vm),
-                (true, None) => {
-                    let ((key, count), vm) = entry.into_parts();
-                    key.drop_with(vm);
-                    collected.push((Value::Int(0), count));
-                }
-                (false, other) => {
-                    let ((key, count), vm) = entry.into_parts();
-                    key.drop_with(vm);
-                    collected.push((count, other.unwrap_or(Value::Int(0))));
-                }
+        counter_pair_counts(collected, lhs, rhs, false, vm)?;
+    }
+    {
+        let (collected, vm) = pairs.as_parts_mut();
+        counter_pair_counts(collected, rhs, lhs, true, vm)?;
+    }
+    Ok(pairs.into_inner())
+}
+
+/// One pass of [`counter_union_counts`]: each of `keys`' counts paired with
+/// `other`'s. On the flipped (second) pass only keys absent from `other` are
+/// new, so shared ones are skipped.
+fn counter_pair_counts<'h>(
+    collected: &mut Vec<(Value, Value)>,
+    keys: &HeapObjectRead<'h, Dict>,
+    other: &mut HeapObjectRead<'h, Dict>,
+    flip: bool,
+    vm: &mut VM<'h>,
+) -> RunResult<()> {
+    // Two guards, so a failing lookup is a plain `?`: the entries not yet
+    // visited and the entry in flight both get released.
+    let entries = keys.clone_all_pairs(vm)?.into_iter();
+    defer_drop_mut!(entries, vm);
+    for entry in entries.by_ref() {
+        let mut entry = DropGuard::new(entry, vm);
+        let ((key, _), vm) = entry.as_parts_mut();
+        let other = other.dict_get(key, vm)?;
+        match (flip, other) {
+            (true, Some(other)) => other.drop_with(vm),
+            (true, None) => {
+                let ((key, count), vm) = entry.into_parts();
+                key.drop_with(vm);
+                collected.push((Value::Int(0), count));
+            }
+            (false, other) => {
+                let ((key, count), vm) = entry.into_parts();
+                key.drop_with(vm);
+                collected.push((count, other.unwrap_or(Value::Int(0))));
             }
         }
     }
-    Ok(pairs.into_inner())
+    Ok(())
 }
 
 /// Applies a `Counter` algebra operator **in place**, mutating `counter`.

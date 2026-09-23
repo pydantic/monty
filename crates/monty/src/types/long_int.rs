@@ -423,7 +423,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(self.clone_value(vm.heap)))
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(eq_bigint(self.get(vm.heap).inner(), other, vm))
     }
 
@@ -443,21 +443,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(allocate_string(value.to_string(), vm.heap))
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let lhs = self.get(vm.heap);
-        let result = match other {
-            Value::Int(rhs) => lhs.inner() + rhs,
-            Value::Bool(rhs) => lhs.inner() + i64::from(*rhs),
-            Value::Float(rhs) => return Ok(Some(Value::Float(lhs.to_f64_checked()? + rhs))),
-            Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => lhs.inner() + rhs.inner(),
-            _ => return Ok(None),
-        };
-        Ok(Some(LongInt::new(result).into_value(vm.heap)))
+    fn py_add_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.add_value(other, vm)
     }
 
     fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        // `+` is commutative here, and the id is unused by the direct form.
-        self.py_add_impl(other, vm)
+        // `+` is commutative here.
+        self.add_value(other, vm)
     }
 
     fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -473,7 +465,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(self.clone_value(vm.heap)))
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let lhs = self.get(vm.heap);
         let result = match other {
             Value::Int(rhs) => lhs.inner() - rhs,
@@ -680,7 +672,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         }
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| lhs & rhs))
     }
 
@@ -688,7 +680,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| rhs & lhs))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| lhs | rhs))
     }
 
@@ -696,7 +688,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| rhs | lhs))
     }
 
-    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_xor_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| lhs ^ rhs))
     }
 
@@ -759,6 +751,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
 }
 
 impl<'h> HeapRead<'h, LongInt> {
+    /// `self + other` for the numeric operands a big int accepts, `None` otherwise.
+    /// Shared by the direct and reflected `+`, which only differ in receiver mutability.
+    fn add_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let lhs = self.get(vm.heap);
+        let result = match other {
+            Value::Int(rhs) => lhs.inner() + rhs,
+            Value::Bool(rhs) => lhs.inner() + i64::from(*rhs),
+            Value::Float(rhs) => return Ok(Some(Value::Float(lhs.to_f64_checked()? + rhs))),
+            Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => lhs.inner() + rhs.inner(),
+            _ => return Ok(None),
+        };
+        Ok(Some(LongInt::new(result).into_value(vm.heap)))
+    }
+
     /// Applies a two-operand bitwise operation using this long integer as the left operand.
     fn bitwise_value(
         &self,

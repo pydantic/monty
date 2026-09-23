@@ -152,8 +152,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         Ok(())
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::HostClass(other)) = other.read_heap(vm) else {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::HostClass(mut other)) = other.read_heap(vm) else {
             return Ok(None);
         };
         // Equal only for the same class (one type entry per class uuid, so the
@@ -161,7 +161,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         if self.get(vm.heap).class_id() != other.get(vm.heap).class_id() {
             return Ok(Some(false));
         }
-        Ok(Some(self.attrs().eq_dict(&other.attrs(), vm)?))
+        Ok(Some(self.attrs().eq_dict(&mut other.attrs_mut(), vm)?))
     }
 
     /// Always `None`: host instances are unhashable, matching CPython's rule
@@ -474,7 +474,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
         None
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Union::heap_or(self, other, vm)
     }
 
@@ -484,13 +484,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
 
     /// `Point[int]`: the host's class may define `__class_getitem__`, but the
     /// sandbox never asks it, so this is the wording for a type without one.
-    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         Err(ExcType::type_error_type_not_subscriptable(
             self.get(vm.heap).name(vm.interns),
         ))
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::HostClassType(other)) = other.read_heap(vm) else {
             return Ok(None);
         };

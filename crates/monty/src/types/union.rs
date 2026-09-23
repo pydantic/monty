@@ -285,7 +285,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
     }
 
     /// Two unions are equal when they have the same members in any order.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Union(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -390,7 +390,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
         }
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Union::heap_or(self, other, vm)
     }
 
@@ -400,7 +400,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
 
     /// A union has no type variables to fill, so `(int | str)[bytes]` fails
     /// as it does for a generic alias.
-    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         let repr = self.repr_string(vm)?;
         Err(ExcType::type_error_not_generic_class(&repr))
     }

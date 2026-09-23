@@ -77,7 +77,9 @@ use crate::{
 /// improving GC performance for dicts of primitives.
 #[derive(Debug, Default)]
 pub(crate) struct Dict {
-    /// indices mapping from the entry hash to its index.
+    /// Indices mapping from the entry hash to its index. Derived from the
+    /// entries and never serialized: a dump leaves it empty, and the first
+    /// keyed operation rebuilds it (see [`HeapRead::ensure_indices`]).
     indices: HashTable<usize>,
     /// entries is a dense vec maintaining entry order.
     entries: Vec<DictEntry>,
@@ -152,7 +154,10 @@ impl DictKind {
 struct DictEntry {
     key: Value,
     value: Value,
-    /// the hash is needed here for correct use of insert_unique
+    /// The key's hash, kept for `insert_unique`. Never serialized: hashes are
+    /// recomputed on the first keyed operation after a dump is loaded, so the
+    /// hasher and the enum layouts it sees are free to change between builds.
+    #[serde(skip)]
     hash: u64,
 }
 
@@ -306,6 +311,14 @@ impl Dict {
         self.contains_refs
     }
 
+    /// Whether the index table and entry hashes still need rebuilding after a
+    /// dump was loaded. Derived rather than flagged: every mutation that empties
+    /// the table refills it under the same `&mut`, so a non-empty dict with an
+    /// empty table can only have come from deserialization.
+    fn indices_stale(&self) -> bool {
+        self.indices.is_empty() && !self.entries.is_empty()
+    }
+
     /// Creates a dict from a vector of (key, value) pairs.
     ///
     /// Assumes the caller is transferring ownership of all keys and values in the pairs.
@@ -337,6 +350,8 @@ impl Dict {
     /// and are released here if the insertion exceeds the memory limit.
     pub fn set_json_string_key(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
         debug_assert!(json_key_string_slice(&key, vm.heap, vm.interns).is_some());
+        // only dicts under construction by the JSON decoder come here, never a loaded one
+        debug_assert!(!self.indices_stale());
 
         if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
             self.contains_refs = true;
@@ -465,7 +480,10 @@ impl<'h> HeapRead<'h, Dict> {
     ///
     /// Shared by `Dict::py_eq_impl` and `HostClass::py_eq_impl` (which compares
     /// the dataclasses' attribute dicts).
-    pub(crate) fn eq_dict(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<bool> {
+    ///
+    /// `other` is `&mut` because it is probed by key, which may rebuild its
+    /// indices; `self` is only iterated.
+    pub(crate) fn eq_dict(&self, other: &mut Self, vm: &mut VM<'h>) -> RunResult<bool> {
         if self.get(vm.heap).len() != other.get(vm.heap).len() {
             return Ok(false);
         }
@@ -493,21 +511,27 @@ impl<'h> HeapRead<'h, Dict> {
     /// `Counter.__eq__` returns `NotImplemented` and the comparison falls back
     /// to [`eq_dict`](Self::eq_dict), where a zero count *is* a real entry — so
     /// `Counter(a=1, b=0) == {'a': 1}` stays `False`.
-    pub(crate) fn eq_counter(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<bool> {
+    ///
+    /// Both sides are `&mut` because each is probed by key while the other is
+    /// iterated.
+    pub(crate) fn eq_counter(&mut self, other: &mut Self, vm: &mut VM<'h>) -> RunResult<bool> {
         // Every count in `self` must match the other side's, missing reading as 0.
-        let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some((key, value)) = iter.next(vm)? {
-            let other_value = other.dict_get(key, vm)?;
-            let eq = match &other_value {
-                Some(other_value) => value.py_eq(other_value, vm),
-                None => value.py_eq(&Value::Int(0), vm),
-            };
-            if let Some(other_value) = other_value {
-                other_value.drop_with(vm);
-            }
-            if !eq? {
-                return Ok(false);
+        // Scoped so the iterator's borrow of `self` ends before `self` is probed.
+        {
+            let iter = self.iter(vm)?;
+            defer_drop_mut!(iter, vm);
+            while let Some((key, value)) = iter.next(vm)? {
+                let other_value = other.dict_get(key, vm)?;
+                let eq = match &other_value {
+                    Some(other_value) => value.py_eq(other_value, vm),
+                    None => value.py_eq(&Value::Int(0), vm),
+                };
+                if let Some(other_value) = other_value {
+                    other_value.drop_with(vm);
+                }
+                if !eq? {
+                    return Ok(false);
+                }
             }
         }
 
@@ -532,7 +556,7 @@ impl<'h> HeapRead<'h, Dict> {
     ///
     /// Returns Ok(Some(value)) if key exists, Ok(None) if key doesn't exist.
     /// Returns Err if key is unhashable.
-    pub(crate) fn dict_get<'a>(&'a self, key: &Value, vm: &'a mut VM<'h>) -> RunResult<Option<Value>> {
+    pub(crate) fn dict_get<'a>(&'a mut self, key: &Value, vm: &'a mut VM<'h>) -> RunResult<Option<Value>> {
         let (opt_index, _hash) = self.find_index_hash(key, vm)?;
         if let Some(index) = opt_index {
             Ok(Some(self.get(vm.heap).entries[index].value.clone_with_heap(vm.heap)))
@@ -547,29 +571,35 @@ impl Dict {
     ///
     /// This is an O(1) lookup that doesn't require mutable heap access.
     /// Only works for string keys - returns None if the key is not found.
+    ///
+    /// The one keyed lookup with no VM in scope, so it cannot rebuild the
+    /// indices of a freshly loaded dict; it scans the entries instead until
+    /// a VM-bearing operation rebuilds them.
     pub fn get_by_str(&self, key_str: &str, heap: &Heap, interns: &Interns) -> Option<&Value> {
-        // Compute hash for the string key
-        let mut hasher = DefaultHasher::new();
-        key_str.hash(&mut hasher);
-        let hash = hasher.finish();
-
-        // Find entry with matching hash and key
-        self.indices
-            .find(hash, |&idx| {
-                let entry_key = &self.entries[idx].key;
-                match entry_key {
-                    Value::InternString(id) => interns.get_str(*id) == key_str,
-                    Value::Ref(id) => {
-                        if let HeapData::Str(s) = heap.get(*id) {
-                            s.as_str() == key_str
-                        } else {
-                            false
-                        }
-                    }
-                    _ => false,
+        let key_eq = |key: &Value| match key {
+            Value::InternString(id) => interns.get_str(*id) == key_str,
+            Value::Ref(id) => {
+                if let HeapData::Str(s) = heap.get(*id) {
+                    s.as_str() == key_str
+                } else {
+                    false
                 }
-            })
-            .map(|&idx| &self.entries[idx].value)
+            }
+            _ => false,
+        };
+        if self.indices_stale() {
+            self.entries
+                .iter()
+                .find(|entry| key_eq(&entry.key))
+                .map(|entry| &entry.value)
+        } else {
+            let mut hasher = DefaultHasher::new();
+            key_str.hash(&mut hasher);
+            let hash = hasher.finish();
+            self.indices
+                .find(hash, |&idx| key_eq(&self.entries[idx].key))
+                .map(|&idx| &self.entries[idx].value)
+        }
     }
 
     /// Sets a key-value pair in the dict.
@@ -838,7 +868,57 @@ pub(crate) enum ProbeOutcome {
 }
 
 impl<'h> HeapRead<'h, Dict> {
-    fn find_index_hash(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<(Option<usize>, u64)> {
+    /// Rebuilds the entry hashes and the index table if a loaded dump left them
+    /// empty. Every keyed operation calls this first; it is a no-op for a dict
+    /// built in this process.
+    ///
+    /// Hashing may run a user `__hash__`, which can touch this very dict and
+    /// rebuild it underneath us, so the rebuild is only committed if the dict
+    /// is still stale afterwards.
+    fn ensure_indices(&mut self, vm: &mut VM<'h>) -> RunResult<()> {
+        if !self.get(vm.heap).indices_stale() {
+            return Ok(());
+        }
+        // The cloned keys, their hashes and the table are three buffers sized
+        // by the dict, all allocated before the next execution checkpoint.
+        let len = self.get(vm.heap).entries.len();
+        vm.heap
+            .tracker
+            .check_allocation(len.saturating_mul(VALUE_SIZE + 2 * mem::size_of::<usize>()))?;
+        // Keys are cloned out because hashing needs `&mut VM` and may read the
+        // heap, so no borrow of the dict can be held across it.
+        let keys: Vec<Value> = self
+            .get(vm.heap)
+            .entries
+            .iter()
+            .map(|e| e.key.clone_with_heap(vm.heap))
+            .collect();
+        defer_drop!(keys, vm);
+        let mut hashes = Vec::with_capacity(len);
+        for (i, key) in keys.iter().enumerate() {
+            // hashing may run user `__hash__`, which restarts the dispatch countdown
+            vm.heap.tracker.check_memory_time_every(i)?;
+            // a key's class may have dropped `__hash__` since the dump was written
+            let Some(hash) = key.py_hash(vm)? else {
+                return Err(ExcType::type_error_unhashable_dict_key(&key.py_type_name(vm)));
+            };
+            hashes.push(hash.raw());
+        }
+        let this = self.get_mut(vm.heap);
+        if this.indices_stale() && this.entries.len() == hashes.len() {
+            for (entry, hash) in this.entries.iter_mut().zip(hashes) {
+                entry.hash = hash;
+            }
+            let (indices, entries) = (&mut this.indices, &this.entries);
+            for (idx, entry) in entries.iter().enumerate() {
+                indices.insert_unique(entry.hash, idx, |&i| entries[i].hash);
+            }
+        }
+        Ok(())
+    }
+
+    fn find_index_hash(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<(Option<usize>, u64)> {
+        self.ensure_indices(vm)?;
         let hash = key
             .py_hash(vm)?
             .ok_or_else(|| ExcType::type_error_unhashable_dict_key(&key.py_type_name(vm)))?
@@ -1020,7 +1100,7 @@ impl<'h> HeapRead<'h, Dict> {
     }
 
     /// Checks whether the dict contains a given key.
-    pub(crate) fn contains_key(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+    pub(crate) fn contains_key(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let (opt_index, _hash) = self.find_index_hash(key, vm)?;
         Ok(opt_index.is_some())
     }
@@ -1459,7 +1539,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
     }
 
     /// `in` on a dict tests its *keys*, matching CPython.
-    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         self.contains_key(item, vm).map(Some)
     }
 
@@ -1481,15 +1561,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         match other.read_heap(vm) {
-            Some(HeapReadOutput::Dict(other)) => {
+            Some(HeapReadOutput::Dict(mut other)) => {
                 // Two Counters compare as multisets (zero counts ignored); any
                 // other pairing is plain dict equality.
                 if self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter() {
-                    Ok(Some(self.eq_counter(&other, vm)?))
+                    Ok(Some(self.eq_counter(&mut other, vm)?))
                 } else {
-                    Ok(Some(self.eq_dict(&other, vm)?))
+                    Ok(Some(self.eq_dict(&mut other, vm)?))
                 }
             }
             _ => Ok(None),
@@ -1504,7 +1584,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
     /// which has no dict ordering and so raises `TypeError` — CPython's
     /// `Counter.__lt__` likewise returns `NotImplemented` for a non-Counter,
     /// which is why `Counter(a=1) < {'a': 2}` never becomes a dict comparison.
-    fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_cmp_op(&mut self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let cmp = match op {
             CmpOperator::Lt => CounterCmp::Lt,
             CmpOperator::LtE => CounterCmp::Le,
@@ -1513,11 +1593,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
             // Only the four ordering operators reach `py_cmp_op`.
             _ => return Ok(None),
         };
-        let Some(HeapReadOutput::Dict(other)) = other.read_heap(vm) else {
+        let Some(HeapReadOutput::Dict(mut other)) = other.read_heap(vm) else {
             return Ok(None);
         };
         if self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter() {
-            Ok(Some(counter_compare(self, &other, cmp, vm)?))
+            Ok(Some(counter_compare(self, &mut other, cmp, vm)?))
         } else {
             Ok(None)
         }
@@ -1531,22 +1611,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         self.counter_unary(false, vm)
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.counter_binary(other, CounterOp::Add, vm)
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.counter_binary(other, CounterOp::Sub, vm)
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.counter_binary(other, CounterOp::And, vm)
     }
 
     /// `Counter | Counter` is the multiset union; any other pair of dicts
     /// merges (PEP 584), and a non-dict on the right is left to the caller's
     /// `TypeError`.
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         match self.counter_binary(other, CounterOp::Or, vm)? {
             Some(union) => Ok(Some(union)),
             None => dict_or(self, other, vm),
@@ -1621,7 +1701,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
     /// A Counter reads a missing key as `0` *without* inserting it. A
     /// defaultdict's miss inserts `factory()` instead, which re-enters the VM
     /// and so cannot happen behind this `&self` — see `heap_data::heap_subscript`.
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         match self.dict_get(key, vm)? {
             Some(value) => Ok(value),
             None if self.get(vm.heap).is_counter() => Ok(Value::Int(0)),
@@ -1764,12 +1844,12 @@ impl<'h> HeapObjectRead<'h, Dict> {
     /// Any other pairing reports `None` so the caller raises its ordinary
     /// `TypeError`, matching CPython: `Counter.__add__` returns `NotImplemented`
     /// for a non-Counter, and a plain dict has no `+` of its own.
-    fn counter_binary(&self, other: &Value, op: CounterOp, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(HeapReadOutput::Dict(other)) = other.read_heap(vm) else {
+    fn counter_binary(&mut self, other: &Value, op: CounterOp, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(HeapReadOutput::Dict(mut other)) = other.read_heap(vm) else {
             return Ok(None);
         };
         if self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter() {
-            Ok(Some(counter_binary_op(self, &other, op, vm)?))
+            Ok(Some(counter_binary_op(self, &mut other, op, vm)?))
         } else {
             Ok(None)
         }
@@ -2116,21 +2196,23 @@ fn dict_setdefault<'h>(dict: &mut HeapRead<'h, Dict>, args: ArgValues, vm: &mut 
 /// Raises KeyError if the dict is empty.
 fn dict_popitem<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
     let this = dict.get_mut(vm.heap);
-    if this.is_empty() {
-        return Err(ExcType::key_error_popitem_empty_dict());
-    }
-
     // Remove the last entry (LIFO order)
-    let entry = this.entries.pop().expect("dict is not empty");
+    let Some(entry) = this.entries.pop() else {
+        return Err(ExcType::key_error_popitem_empty_dict());
+    };
 
     // Remove from indices - need to find the entry with this index
     // Since we removed the last entry, we need to clear and rebuild indices
     // (This is simpler than trying to find and remove the specific hash entry)
     // TODO: This O(n) rebuild could be optimized by finding and removing the
     // specific hash entry directly from the hashbrown table.
-    this.indices.clear();
-    for (idx, e) in this.entries.iter().enumerate() {
-        this.indices.insert_unique(e.hash, idx, |&i| this.entries[i].hash);
+    // A dict still awaiting its rebuild has no table to update, and popping
+    // keeps it that way without hashing anything.
+    if !this.indices.is_empty() {
+        this.indices.clear();
+        for (idx, e) in this.entries.iter().enumerate() {
+            this.indices.insert_unique(e.hash, idx, |&i| this.entries[i].hash);
+        }
     }
 
     // Create tuple (key, value)
@@ -2138,7 +2220,8 @@ fn dict_popitem<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult
 }
 
 // Custom serde implementation for Dict.
-// Serializes entries, contains_refs, and kind; rebuilds the indices hash table on deserialize.
+// Serializes entries, contains_refs and kind. Hashes and the index table are
+// derived data, rebuilt by `ensure_indices` on the first keyed operation.
 impl serde::Serialize for Dict {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut state = serializer.serialize_struct("Dict", 3)?;
@@ -2158,13 +2241,9 @@ impl<'de> serde::Deserialize<'de> for Dict {
             kind: DictKind,
         }
         let fields = DictFields::deserialize(deserializer)?;
-        // Rebuild the indices hash table from the entries
-        let mut indices = HashTable::with_capacity(fields.entries.len());
-        for (idx, entry) in fields.entries.iter().enumerate() {
-            indices.insert_unique(entry.hash, idx, |&i| fields.entries[i].hash);
-        }
+        // an empty table beside entries is what marks the dict for `ensure_indices`
         Ok(Self {
-            indices,
+            indices: HashTable::new(),
             entries: fields.entries,
             contains_refs: fields.contains_refs,
             kind: fields.kind,
@@ -2312,7 +2391,7 @@ macro_rules! impl_dict_iterator {
                 None
             }
 
-            fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+            fn py_eq_impl(&mut self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
                 Ok(None)
             }
 

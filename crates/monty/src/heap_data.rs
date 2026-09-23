@@ -449,7 +449,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Closure> {
 
     /// Two closures over the same `def` are equal only if they captured the
     /// same cells; the defaults play no part, as in CPython.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(match other.read_heap(vm) {
             Some(HeapReadOutput::Closure(other)) => {
                 let this = self.get(vm.heap);
@@ -493,7 +493,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
 
     /// Equal when they decorate the same `def`: with no captured scope, the
     /// defaults are all that could differ and CPython ignores those too.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(match other.read_heap(vm) {
             Some(HeapReadOutput::FunctionDefaults(other)) => {
                 Some(self.get(vm.heap).func_id == other.get(vm.heap).func_id)
@@ -675,7 +675,7 @@ pub(crate) fn heap_subscript<'h>(value: HeapReadOutput<'h>, key: &Value, vm: &mu
             Some(value) => Ok(value),
             None => defaultdict_missing(&mut dict, key, vm),
         },
-        value => value.py_getitem(key, vm),
+        mut value => value.py_getitem(key, vm),
     }
 }
 
@@ -691,7 +691,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
 
     /// Delegates to the types defining their own `in`; the rest keep the trait
     /// default (`None`), leaving `Value::py_contains` to iterate or raise.
-    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_contains_impl(item, vm), else Ok(None))
     }
 
@@ -773,7 +773,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rpow_impl(other, modulus, vm), else Ok(None))
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_and_impl(other, vm), else Ok(None))
     }
 
@@ -781,7 +781,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rand_impl(other, vm), else Ok(None))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_or_impl(other, vm), else Ok(None))
     }
 
@@ -789,7 +789,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_ror_impl(other, vm), else Ok(None))
     }
 
-    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_xor_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_xor_impl(other, vm), else Ok(None))
     }
 
@@ -902,7 +902,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_len(vm), else None)
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_eq_impl(other, vm),
@@ -978,11 +978,11 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_add_impl(other, vm), else Ok(None))
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_sub_impl(other, vm), else Ok(None))
     }
 
@@ -1018,11 +1018,11 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_ior_impl(other, vm), else Ok(false))
     }
 
-    fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_cmp_op(&mut self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_cmp_op(other, op, vm), else Ok(None))
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_getitem(key, vm),

@@ -8,7 +8,6 @@
 
 use std::{env, fs, path::PathBuf};
 
-use insta::assert_snapshot;
 use monty::{DUMP_VERSION, Dump, MontyRepl, Session, SessionRef, dump};
 use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 use serde::{Deserialize, Serialize};
@@ -179,22 +178,98 @@ fn fixture_dump_loads_and_resumes() {
     );
 }
 
-/// Dict and set entries persist their hash, so the hash of every kind of key
-/// without a heap identity is part of the dump contract: a change here needs a
-/// `DUMP_VERSION` bump.
+/// Dict and set entries carry no hash in a dump; each container rebuilds its
+/// index on the first keyed operation after loading. Every kind of keyed
+/// access is driven here on loaded containers, including keys whose `__hash__`
+/// is user code: a rebuild runs every stored `__hash__` exactly once, while
+/// later lookups hash their lookup key as they always did.
 #[test]
-fn persisted_key_hashes_are_stable() {
-    let mut repl = MontyRepl::new("hashes.py", ResourceTracker::default(), CompileOptions::default());
-    let hashes = repl
-        .feed_run(
-            "import json, typing\n(hash(None), hash(...), hash(NotImplemented), hash(int), hash(ValueError), \
-             hash(len), hash(json.dumps), hash(typing.Any))",
-            vec![],
-            PrintWriter::Stdout,
-        )
-        .unwrap();
-    assert_snapshot!(hashes.py_repr(), @"(-7376904247260835724, -8418895208483869890, -7578619387304540654, -6751866591645121981, -8097107109803033201, 2456456309100923238, -5014982954702616963, 2858064283329581446)");
+fn loaded_dicts_and_sets_rebuild_their_indices_lazily() {
+    let mut repl = MontyRepl::new("lazy.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(LAZY_STATE, vec![], PrintWriter::Stdout).unwrap();
+    let bytes = dump("lazy.py", None, SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut loaded) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped an idle session");
+    };
+    let checked = loaded.feed_run(LAZY_CHECK, vec![], PrintWriter::Stdout).unwrap();
+    assert_eq!(checked, MontyObject::bool(true));
 }
+
+/// Containers keyed by everything that hashes differently: immediates, strings,
+/// tuples, frozensets and instances with a counting `__hash__`.
+const LAZY_STATE: &str = r"
+import collections
+
+hash_calls = []
+
+
+class Key:
+    def __init__(self, n):
+        self.n = n
+
+    def __hash__(self):
+        hash_calls.append(self.n)
+        return self.n
+
+    def __eq__(self, other):
+        return isinstance(other, Key) and other.n == self.n
+
+
+class Point:
+    origin = (0, 0)
+
+    def __init__(self, x):
+        self.x = x
+
+
+k1, k2 = Key(1), Key(2)
+d = {(1, 2): 'tuple', frozenset({3}): 'frozen', k1: 'key', None: 'none', int: 'type', 'str': 1}
+s = {(1, 2), frozenset({3}), k2, None, int, 'str'}
+fs = frozenset(s)
+d2 = {k1: 'a', 'z': 2}
+s2 = {k2}
+c = collections.Counter(a=3, b=1)
+dd = collections.defaultdict(list)
+dd['x'].append(1)
+p = Point(5)
+hash_calls.clear()
+";
+
+/// The rebuilds run each stored `__hash__` once, then every keyed path on the
+/// loaded containers.
+const LAZY_CHECK: &str = r"
+import collections, math
+
+assert hash_calls == []
+# removing the last entry never needs the index, so nothing is hashed
+assert d2.popitem() == ('z', 2) and s2.pop() is k2 and hash_calls == []
+assert d2 == {k1: 'a'} and hash_calls == [1, 1]
+assert d[None] == 'none'
+assert hash_calls == [1, 1, 1]
+assert None in s
+assert hash_calls == [1, 1, 1, 2]
+assert d[None] == 'none' and None in s
+assert hash_calls == [1, 1, 1, 2]
+assert d[(1, 2)] == 'tuple' and d[frozenset({3})] == 'frozen' and d[k1] == 'key'
+assert d[None] == 'none' and d[int] == 'type' and d['str'] == 1
+assert (1, 2) in d and Key(1) in d and Key(3) not in d
+assert d == {(1, 2): 'tuple', frozenset({3}): 'frozen', Key(1): 'key', None: 'none', int: 'type', 'str': 1}
+assert d.keys() == {(1, 2), frozenset({3}), Key(1), None, int, 'str'}
+assert d.pop(None) == 'none' and d.popitem() == ('str', 1) and d.setdefault('new', 2) == 2
+assert (1, 2) in s and Key(2) in s and Key(3) not in s and 'str' in s
+assert s == fs and s | {7} == fs | {7} and s & {(1, 2)} == {(1, 2)} and s - fs == set()
+assert s.issubset(fs) and s.issuperset(fs) and s.isdisjoint({8})
+assert len({fs: 1}) == 1 and hash(fs) == hash(frozenset(s))
+s.discard(None)
+assert s.pop() is not None and len(s) == 4
+assert c['a'] == 3 and c['missing'] == 0 and c == collections.Counter(a=3, b=1)
+assert c <= collections.Counter(a=3, b=1, c=1) and (c + c)['a'] == 6 and (c - c)['a'] == 0
+assert dd['x'] == [1] and dd['y'] == []
+assert p.x == 5 and Point.origin == (0, 0) and math.sqrt(4) == 2
+p.y = 6
+assert p.y == 6 and p.x == 5
+True
+";
 
 /// The fixture for the current `DUMP_VERSION`; the name carries the version so
 /// a bump leaves the old file behind to delete rather than silently reuse.

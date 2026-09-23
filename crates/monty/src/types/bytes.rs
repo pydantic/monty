@@ -290,7 +290,7 @@ impl ops::Deref for Bytes {
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
     /// One-sided implementation of Python membership (`__contains__`).
-    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         bytes_contains(self.get(vm.heap).as_slice(), item, vm).map(Some)
     }
 
@@ -310,7 +310,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
         Some(self.get(vm.heap).0.len())
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
@@ -330,7 +330,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
         Ok(Value::Int(i64::from(byte)))
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // Heap bytes equal interned or heap bytes with the same content.
         Ok(eq_bytes(self.get(vm.heap).as_slice(), other, vm))
     }
@@ -360,7 +360,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
         Ok(bytes_repr_fmt(&self.get(vm.heap).0, f)?)
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let other = match other {
             Value::InternBytes(id) => vm.interns.get_bytes(*id),
             Value::Ref(id) if let HeapData::Bytes(value) = vm.heap.get(*id) => value.as_slice(),
@@ -2397,7 +2397,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIterator> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
