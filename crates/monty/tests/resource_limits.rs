@@ -530,6 +530,13 @@ fn timeout_in_three_arg_pow() {
     );
 }
 
+/// A tiny exponent must still poll, `modpow`'s setup alone runs for seconds here.
+#[test]
+fn timeout_in_three_arg_pow_with_small_exponent() {
+    let code = "m = (1 << 500000) + 1\nwhile True:\n    pow(2, 3, m)";
+    assert_timeout_in_builtin(code, "pow(2, 3, (1 << 500000) + 1) in a loop");
+}
+
 /// Test that `list(range(huge))` respects the time limit.
 ///
 /// The `list()` constructor drains its concrete Python iterator.
