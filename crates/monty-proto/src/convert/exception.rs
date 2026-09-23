@@ -266,13 +266,28 @@ impl From<SourceRange> for pb::SourceRange {
 /// column 0, like a missing range (see [`SourceRange::unknown`]).
 impl From<pb::SourceRange> for SourceRange {
     fn from(range: pb::SourceRange) -> Self {
-        let loc = |loc: Option<pb::CodeLoc>| loc.map_or(CodeLoc { line: 0, column: 0 }, CodeLoc::from);
         Self {
             filename: range.filename,
-            start: loc(range.start),
-            end: loc(range.end),
+            start: wire_loc(range.start),
+            end: wire_loc(range.end),
         }
     }
+}
+
+/// Borrowed form for a position read off an event that stays whole.
+impl From<&pb::SourceRange> for SourceRange {
+    fn from(range: &pb::SourceRange) -> Self {
+        Self {
+            filename: range.filename.clone(),
+            start: wire_loc(range.start),
+            end: wire_loc(range.end),
+        }
+    }
+}
+
+/// A wire endpoint, absent reading as line and column 0.
+fn wire_loc(loc: Option<pb::CodeLoc>) -> CodeLoc {
+    loc.map_or(CodeLoc { line: 0, column: 0 }, CodeLoc::from)
 }
 
 impl From<CodeLoc> for pb::CodeLoc {

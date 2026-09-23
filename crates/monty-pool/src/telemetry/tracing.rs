@@ -333,7 +333,8 @@ impl Recorder {
             }
             Some(pb::child_event::Kind::NameLookup(n)) => {
                 let (name, name_cut) = truncate_str(&n.name);
-                let position = PositionAttrs::from_pb(n.position.as_ref());
+                let range = n.position.as_ref().map(SourceRange::from);
+                let position = PositionAttrs::new(range.as_ref());
                 let cut = name_cut | position.cut;
                 let span = start_span(logfire::span!(
                     parent: self.context_span(),
@@ -355,7 +356,8 @@ impl Recorder {
             }
             Some(pb::child_event::Kind::ResolveFutures(r)) => {
                 let (pending_call_ids, ids_cut) = render_call_ids(&r.pending_call_ids);
-                let position = PositionAttrs::from_pb(r.position.as_ref());
+                let range = r.position.as_ref().map(SourceRange::from);
+                let position = PositionAttrs::new(range.as_ref());
                 let cut = ids_cut | position.cut;
                 let span = start_span(logfire::span!(
                     parent: self.context_span(),
@@ -679,7 +681,7 @@ struct PositionAttrs {
 }
 
 impl PositionAttrs {
-    /// From an already-decoded position (a `FunctionCall` frame's).
+    /// The attributes of a suspension's position, or none when it sent none.
     fn new(position: Option<&SourceRange>) -> Self {
         let (file, cut) = capped_filename(position.map(|p| p.filename.as_str()));
         Self {
@@ -689,21 +691,6 @@ impl PositionAttrs {
             line_end: position.map(|p| i64::from(p.end.line)),
             column_start: position.map(|p| i64::from(p.start.column)),
             column_end: position.map(|p| i64::from(p.end.column)),
-        }
-    }
-
-    /// From a generated wire position, whose endpoints are themselves optional.
-    fn from_pb(position: Option<&pb::SourceRange>) -> Self {
-        let start = position.and_then(|p| p.start);
-        let end = position.and_then(|p| p.end);
-        let (file, cut) = capped_filename(position.map(|p| p.filename.as_str()));
-        Self {
-            file,
-            cut,
-            line_start: start.map(|l| i64::from(l.line)),
-            line_end: end.map(|l| i64::from(l.line)),
-            column_start: start.map(|l| i64::from(l.column)),
-            column_end: end.map(|l| i64::from(l.column)),
         }
     }
 }
@@ -725,7 +712,8 @@ fn capped_filename(filename: Option<&str>) -> (Option<String>, bool) {
 /// call would surface every unused argument as `null` in the UI.
 fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64>, parent: &Span) -> OpenSpan {
     let call_id = os_call.call_id;
-    let position = PositionAttrs::from_pb(os_call.position.as_ref());
+    let range = os_call.position.as_ref().map(SourceRange::from);
+    let position = PositionAttrs::new(range.as_ref());
     // set by the arms whose arguments can be cut; recorded once below, so that
     // the answering `ResumeCall` can tell whether the flag is already there
     let mut args_cut = position.cut;
