@@ -1,0 +1,39 @@
+crates/monty/tests/suspend_positions.rs
+  s_361e16ea2605db::t_50d1b0a4a439f6 95-96
+  s_361e16ea2605db::t_9eed36d0269ebd 92-93
+  s_361e16ea2605db::t_ea1ea88dfe32df 47-49
+crates/monty/src/source_map.rs
+  s_361e16ea2605db::t_7a66316f78bd3b 3,45-46
+  s_361e16ea2605db::t_381ebfd5d72b4d 13-15,26-30,38-44,51-62
+  s_361e16ea2605db::t_635e66bf268042 47-50
+crates/monty-proto/src/wire.rs
+  s_361e16ea2605db::t_fd96ce29383616 223,242-245,531-544
+crates/monty/src/builtins/eval_exec.rs
+  s_361e16ea2605db::t_032dd0628d8e23 143,148
+  s_361e16ea2605db::t_035392f45307a4 144-145,162,171,173
+crates/monty/test_cases/builtin__eval_traceback_line.py
+  s_361e16ea2605db::t_6d6659f5d9ea28 1,3-6,9-11
+  s_361e16ea2605db::t_648d7362dee235 2,7
+  s_361e16ea2605db::t_4839a91f2a0d40 8
+crates/monty-pool/src/checkout.rs
+  s_361e16ea2605db::t_55ce4f3f9231e1 1473,1933-1936
+docs/quickstart/javascript.md
+  s_361e16ea2605db::t_711e71b03e4d8e 314
+  s_361e16ea2605db::t_66b7c1c98bf290 315
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "358b8484f702a1989b3e9acff2a864232802566a",
+  "prompts": {},
+  "sessions": {
+    "s_361e16ea2605db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5d2c06ea-1d92-4af2-ac8e-c861f11d72bb",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
