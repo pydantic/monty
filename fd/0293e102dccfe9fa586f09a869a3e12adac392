@@ -1,0 +1,19 @@
+crates/monty/tests/suspend_positions.rs
+  s_ad7fe5a5ed7985::t_62add70222c914 76-96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "fd0293e102dccfe9fa586f09a869a3e12adac392",
+  "prompts": {},
+  "sessions": {
+    "s_ad7fe5a5ed7985": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b11a97e8-e7fa-4d01-908a-66d334639f05",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
