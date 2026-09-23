@@ -1,0 +1,23 @@
+crates/monty-types/src/os.rs
+  s_39113c86df7101::t_337bec2ebdde6f 468,497-501,503-506
+docs/limitations/asyncio.md
+  s_39113c86df7101::t_337bec2ebdde6f 80,84-85
+crates/monty/test_cases/async__sleep.py
+  s_39113c86df7101::t_337bec2ebdde6f 35,37-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "df9820ef81951bc02520e956d5ac56f2934e4a9e",
+  "prompts": {},
+  "sessions": {
+    "s_39113c86df7101": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a6a907e-552e-489d-b040-c6ce4647bde1",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
