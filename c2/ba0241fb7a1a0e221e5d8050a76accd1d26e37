@@ -1,0 +1,71 @@
+crates/monty-js/__test__/async.spec.ts
+  s_9d51507fa6603c::t_740b209baa8c4b 10
+  s_39113c86df7101::t_0a5757df6d9960 347-348,351-352
+crates/monty/src/os_dispatch.rs
+  s_39113c86df7101::t_d82de0684cacc1 61,165
+docs/security.md
+  s_39113c86df7101::t_0a5757df6d9960 331
+docs/limitations/time.md
+  s_39113c86df7101::t_125736e939dc5b 63
+crates/monty/src/bytecode/vm/async_exec.rs
+  s_39113c86df7101::t_d82de0684cacc1 692-693
+crates/monty/tests/os_tests.rs
+  s_39113c86df7101::t_e8ece09f2f60b6 1437
+  s_39113c86df7101::t_63ce7f26b5d8af 1439-1440
+crates/monty-python/python/pydantic_monty/os_access.py
+  s_39113c86df7101::t_8155543e8f3cc7 10
+  s_39113c86df7101::t_125736e939dc5b 145
+  s_39113c86df7101::t_cdcf4492a95404 148,601-602
+  s_6a187c04456a53::t_c28283ca4af714 593,598
+crates/monty-python/tests/test_os_access.py
+  s_39113c86df7101::t_125736e939dc5b 133-134
+crates/monty/src/bytecode/vm/mod.rs
+  s_39113c86df7101::t_e5b496b71f3c79 1997-1999
+crates/monty-runtime/src/run.rs
+  s_39113c86df7101::t_125736e939dc5b 625-626,649,653
+crates/monty-python/tests/test_os_calls.py
+  s_39113c86df7101::t_058016aa633b34 18,570
+  s_39113c86df7101::t_0a5757df6d9960 504-505,509,511-512,516,520,539
+crates/monty/src/exception_private.rs
+  s_39113c86df7101::t_e085ed272df262 1680-1683
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_39113c86df7101::t_3446dd0d88d6ae 951
+  s_9d51507fa6603c::t_ccc6a92c27bd95 1042
+crates/monty-proto/src/generated/monty.v1.rs
+  s_39113c86df7101::t_3446dd0d88d6ae 897
+  s_9d51507fa6603c::t_ccc6a92c27bd95 988
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_39113c86df7101::t_56e1eeee31dee5 751
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c2ba0241fb7a1a0e221e5d8050a76accd1d26e37",
+  "prompts": {},
+  "sessions": {
+    "s_39113c86df7101": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a6a907e-552e-489d-b040-c6ce4647bde1",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_6a187c04456a53": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2a1e3e08-406c-4d77-bc6d-adc0cd98bdfd",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_9d51507fa6603c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c472e27-66a3-419f-98da-c107d9084ab7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

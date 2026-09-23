@@ -1,0 +1,60 @@
+crates/monty/tests/host_clock.rs
+  s_6a187c04456a53::t_398b612dac8383 153-157
+docs/limitations/time.md
+  s_39113c86df7101::t_125736e939dc5b 65,66,68-71
+  s_39113c86df7101::t_0a5757df6d9960 31
+  s_39113c86df7101::t_a2c1c7899123ae 61-62
+  s_39113c86df7101::t_3af5ba4a90eb73 50-52
+  s_6a187c04456a53::t_c28283ca4af714 67
+  s_6a187c04456a53::t_398b612dac8383 23-26
+crates/monty-python/tests/test_async.py
+  s_39113c86df7101::t_c4946d03428bf0 10
+  s_39113c86df7101::t_0a5757df6d9960 1118-1127,1134,1136-1141,1143-1147,1151-1152,1174-1175,1183-1186,1188-1190,1254-1258,1260-1263,1177,1182,1195-1196,1200,1205,1209-1210,1221,1227,1229,1232,1237,1217-1218
+  s_39113c86df7101::t_a7ebc3f3ffaf9c 1241-1242,1245-1246,1250-1253,1206
+  s_39113c86df7101::t_cc00affd880a14 249,1131-1132,1243-1244,1247-1249,1259
+  s_39113c86df7101::t_058016aa633b34 27,1128-1129,1133,1135,1142,1148-1150,1176,1178-1181,1187,1191,1193-1194,1219,1222-1223,1225,1228,1230-1231,1233-1236,1238-1240
+  s_39113c86df7101::t_cdcf4492a95404 1197-1199,1201,1203-1204,1207-1208
+  s_39113c86df7101::t_30d8a6902e6028 1202
+  s_39113c86df7101::t_125736e939dc5b 1211-1216
+crates/monty-types/src/clock.rs
+  s_39113c86df7101::t_0a5757df6d9960 84
+  s_6a187c04456a53::t_398b612dac8383 85-86,89
+docs/limitations/pool-architecture.md
+  s_39113c86df7101::t_45cfc7bbe1cac3 391-393
+  s_6a187c04456a53::t_398b612dac8383 322-323
+crates/monty-python/src/async_dispatch.rs
+  s_9d51507fa6603c::t_5be9e19fd0d7c5 43,46,48
+  s_39113c86df7101::t_e5b496b71f3c79 63-64,71,104-109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "5bf2fa279317a28d154a4d3f571417b1043d9a86",
+  "prompts": {},
+  "sessions": {
+    "s_39113c86df7101": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a6a907e-552e-489d-b040-c6ce4647bde1",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_6a187c04456a53": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2a1e3e08-406c-4d77-bc6d-adc0cd98bdfd",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_9d51507fa6603c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c472e27-66a3-419f-98da-c107d9084ab7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
