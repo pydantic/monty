@@ -1,0 +1,108 @@
+crates/monty/src/types/callable_iterator.rs
+  ai_agent 82
+crates/monty/src/modules/dataclasses/options.rs
+  ai_agent 47
+crates/monty/src/types/datetime.rs
+  ai_agent 1211,1296,1305
+crates/monty/src/types/dict_view.rs
+  ai_agent 72,82,117,132,135,137,145,147,164,166,189,196,205-206,211,215,219,223,300,310,340,345,399,402,404,412,414,432,439,471,478-479,481-482,487,491,495,499,588,621,757,759,761,769,773-777,779,787,798,803,808,816,821,848,850,852,856
+crates/monty/src/types/range.rs
+  ai_agent 195,231,268,372
+crates/monty/src/hash.rs
+  ai_agent 147-149
+crates/monty/src/types/long_int.rs
+  ai_agent 426,446-447,451-452,468,675,683,691,754-767
+crates/monty/src/types/set.rs
+  ai_agent 35-38,49-51,71-78,83-84,233-234,263-265,267-275,281,292,296-327,334-335,526-528,532,644-649,653,663,668-669,672,674,680,692-697,712-714,722,724,740-742,759-761,1069,1088-1089,1095-1097,1139,1141-1142,1145-1148,1157-1162,1178,1181,1229-1230,1247,1251-1255,1259,1263-1267,1271,1275-1277,1281,1285-1286,1288,1293,1295-1296,1299-1302,1310-1315,1331,1334,1346-1349,1363,1379,1384-1387,1396,1404,1412,1420,1521,1525-1527,1531,1535-1537,1541,1545-1547,1551,1555-1559,1566-1569,1679,1695,1700-1703,1733,1741,1749,1757,1823-1833,1845-1856,1870-1871,1882-1886,1988
+crates/monty/src/types/instance.rs
+  ai_agent 148,211,476
+crates/monty/src/types/slice.rs
+  ai_agent 214
+crates/monty/src/types/py_trait.rs
+  ai_agent 16-20,169,189,219,319,329,409,419,429,619
+crates/monty/src/modules/collections/counter.rs
+  ai_agent 484-485,543-544,621-622,681-682,685,688,690-727,731
+crates/monty/src/types/dict.rs
+  ai_agent 80-82,157-160,314-321,353-354,483-486,514-517,519-534,559,574-577,579-585,587-602,871-913,1095,1534,1556,1558,1562,1564,1579,1588,1592,1606,1610,1614,1621,1696,1839-1840,1844,2190-2191,2215-2216,2236,2238,2386
+crates/monty/src/types/list.rs
+  ai_agent 425,448,527,561,1094
+crates/monty/src/types/re_match.rs
+  ai_agent 321,382
+crates/monty/src/types/union.rs
+  ai_agent 288,393,403
+crates/monty/tests/dump_compat.rs
+  ai_agent 181-184,186-194,197-266
+crates/monty/src/heap_data.rs
+  ai_agent 452,496,678,694,776,784,792,905,981,985,1021,1025
+crates/monty/src/types/file.rs
+  ai_agent 340
+crates/monty/src/types/deque.rs
+  ai_agent 375,429,447,551,717
+crates/monty/src/types/time.rs
+  ai_agent 483
+docs/snapshots.md
+  s_c66365c8d21a83::t_ba72ee0e32f259 305-306
+  s_c66365c8d21a83::t_b6de875994d261 321,325
+crates/monty/src/types/generic_alias.rs
+  ai_agent 135,238,248
+crates/monty/src/types/path.rs
+  ai_agent 473
+crates/monty/src/dump_format.rs
+  ai_agent 46-49
+crates/monty/src/types/re_pattern.rs
+  ai_agent 423
+crates/monty/src/types/class.rs
+  ai_agent 168,178,193
+CLAUDE.md
+  ai_agent 239-241,243-244
+crates/monty/src/value.rs
+  ai_agent 282-283,565-566,604-605,617-618,1040-1041,1053-1054,1070-1071,1146-1372,1738-1739
+crates/monty/src/bytecode/vm/namespace.rs
+  ai_agent 376
+crates/monty/src/types/timedelta.rs
+  ai_agent 367,431,451
+crates/monty/src/types/partial.rs
+  ai_agent 343
+crates/monty/src/modules/dataclasses/field.rs
+  ai_agent 89
+crates/monty/src/types/itertools/mod.rs
+  ai_agent 344
+crates/monty/src/types/date.rs
+  ai_agent 217,249,256
+crates/monty/src/types/namedtuple.rs
+  ai_agent 370,398,428,474,879,884,894
+crates/monty/src/types/timezone.rs
+  ai_agent 301
+crates/monty/src/types/str.rs
+  ai_agent 257,279,296,330,1954
+crates/monty/src/types/tuple.rs
+  ai_agent 291,314,338,434,664
+crates/monty/src/types/bytes.rs
+  ai_agent 293,313,333,363,2400
+crates/monty/src/types/ext_function.rs
+  ai_agent 55
+crates/monty/src/str_format.rs
+  ai_agent 13
+crates/monty/src/types/host_class.rs
+  ai_agent 155-156,164,477,487,493
+crates/monty/src/types/random.rs
+  ai_agent 615
+crates/monty/src/modules/copy.rs
+  ai_agent 506
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6baa8b41624c0c9022720a5382d0982a1b94f1ca",
+  "prompts": {},
+  "sessions": {
+    "s_c66365c8d21a83": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3537decc-5741-4a4c-ad6b-4c3f2fd615ad",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": null
+    }
+  }
+}
