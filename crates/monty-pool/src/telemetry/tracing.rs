@@ -16,7 +16,7 @@ use std::fmt::{self, Write};
 use logfire::{Logfire, set_local_logfire};
 use monty_proto::{WireArena, WireFunctionCall, pb, pb::os_call::Call};
 use monty_types::{
-    MontyUuid, bytes_repr,
+    MontyUuid, SourceRange, bytes_repr,
     unstable::{MontyNode, NodeId},
 };
 use opentelemetry::Value as OtelValue;
@@ -299,6 +299,7 @@ impl Recorder {
                 let (args, kwargs, args_cut) = render_call_arguments(c);
                 let (function_name, name_cut) = truncate_str(&c.function_name);
                 let cut = args_cut | name_cut;
+                let position = PositionAttrs::new(c.position.as_ref());
                 let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "call {function_name}",
@@ -307,6 +308,11 @@ impl Recorder {
                     kwargs = kwargs,
                     call_id = c.call_id,
                     object_id = c.object_id.as_ref().map(MontyUuid::to_string),
+                    sandbox.file.path = position.file,
+                    sandbox.line.start = position.line_start,
+                    sandbox.line.end = position.line_end,
+                    sandbox.column.start = position.column_start,
+                    sandbox.column.end = position.column_end,
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_feed_duration_micros = max_feed_duration,
@@ -323,10 +329,16 @@ impl Recorder {
             }
             Some(pb::child_event::Kind::NameLookup(n)) => {
                 let (name, cut) = truncate_str(&n.name);
+                let position = PositionAttrs::from_pb(n.position.as_ref());
                 let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "name lookup {name}",
                     name = name,
+                    sandbox.file.path = position.file,
+                    sandbox.line.start = position.line_start,
+                    sandbox.line.end = position.line_end,
+                    sandbox.column.start = position.column_start,
+                    sandbox.column.end = position.column_end,
                     total_execution_micros = micros,
                     max_feed_duration_micros = max_feed_duration,
                     // filled in by the answering `ResumeNameLookup`, or an `AbortFeed`
@@ -338,10 +350,16 @@ impl Recorder {
             }
             Some(pb::child_event::Kind::ResolveFutures(r)) => {
                 let (pending_call_ids, cut) = render_call_ids(&r.pending_call_ids);
+                let position = PositionAttrs::from_pb(r.position.as_ref());
                 let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "resolve futures",
                     pending_call_ids = pending_call_ids,
+                    sandbox.file.path = position.file,
+                    sandbox.line.start = position.line_start,
+                    sandbox.line.end = position.line_end,
+                    sandbox.column.start = position.column_start,
+                    sandbox.column.end = position.column_end,
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_feed_duration_micros = max_feed_duration,
@@ -646,8 +664,49 @@ fn render_call_ids(ids: &[u32]) -> (Option<String>, bool) {
 /// Each call shape gets its own macro invocation because the attribute set is
 /// baked into the span's `logfire.json_schema` at compile time — a union-shaped
 /// call would surface every unused argument as `null` in the UI.
+/// The `sandbox.*` attributes locating a suspension in the sandboxed source.
+///
+/// Prefixed `sandbox.` rather than using OpenTelemetry's `code.*` keys, which
+/// describe the host code emitting the span. Every value is absent when the
+/// child sent no position. Numbers are `i64`: the span visitor renders
+/// unsigned values as strings.
+struct PositionAttrs<'a> {
+    file: Option<&'a str>,
+    line_start: Option<i64>,
+    line_end: Option<i64>,
+    column_start: Option<i64>,
+    column_end: Option<i64>,
+}
+
+impl<'a> PositionAttrs<'a> {
+    /// From an already-decoded position (a `FunctionCall` frame's).
+    fn new(position: Option<&'a SourceRange>) -> Self {
+        Self {
+            file: position.map(|p| p.filename.as_str()),
+            line_start: position.map(|p| i64::from(p.start.line)),
+            line_end: position.map(|p| i64::from(p.end.line)),
+            column_start: position.map(|p| i64::from(p.start.column)),
+            column_end: position.map(|p| i64::from(p.end.column)),
+        }
+    }
+
+    /// From a generated wire position, whose endpoints are themselves optional.
+    fn from_pb(position: Option<&'a pb::SourceRange>) -> Self {
+        let start = position.and_then(|p| p.start);
+        let end = position.and_then(|p| p.end);
+        Self {
+            file: position.map(|p| p.filename.as_str()),
+            line_start: start.map(|l| i64::from(l.line)),
+            line_end: end.map(|l| i64::from(l.line)),
+            column_start: start.map(|l| i64::from(l.column)),
+            column_end: end.map(|l| i64::from(l.column)),
+        }
+    }
+}
+
 fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64>, parent: &Span) -> OpenSpan {
     let call_id = os_call.call_id;
+    let position = PositionAttrs::from_pb(os_call.position.as_ref());
     // set by the arms whose arguments can be cut; recorded once below, so that
     // the answering `ResumeCall` can tell whether the flag is already there
     let mut args_cut = false;
@@ -660,6 +719,11 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64
                 function = $function,
                 $($($key).+ = $value,)*
                 call_id = call_id,
+                sandbox.file.path = position.file,
+                sandbox.line.start = position.line_start,
+                sandbox.line.end = position.line_end,
+                sandbox.column.start = position.column_start,
+                sandbox.column.end = position.column_end,
                 total_execution_micros = micros,
                 max_feed_duration_micros = max_feed_duration,
                 // filled in by the answering `ResumeCall`, or an `AbortFeed`
@@ -1120,6 +1184,12 @@ mod tests {
         assert_eq!(attr(feed, "output"), Some(4.into()));
         assert_eq!(attr(feed, "total_execution_micros"), Some(42.into()));
         assert_eq!(attr(call, "return_value"), Some(4.into()));
+        // where in the sandboxed source the call sits, from the event's position
+        assert_eq!(attr(call, "sandbox.file.path"), Some("main.py".into()));
+        assert_eq!(attr(call, "sandbox.line.start"), Some(1.into()));
+        assert_eq!(attr(call, "sandbox.line.end"), Some(1.into()));
+        assert_eq!(attr(call, "sandbox.column.start"), Some(1.into()));
+        assert_eq!(attr(call, "sandbox.column.end"), Some(8.into()));
         assert!(logs.get_emitted_logs().unwrap().is_empty());
     }
 

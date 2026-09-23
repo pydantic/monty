@@ -332,6 +332,15 @@ async def test_eager_coroutine_result_is_recorded_on_the_call_span(fail: bool):
     assert call.attributes is not None
     assert call.attributes['function_name'] == 'fetch'
     assert call.attributes['return_value'] == ('raise ValueError: failed' if fail else 42)
+    assert {k: v for k, v in call.attributes.items() if k.startswith('sandbox.')} == snapshot(
+        {
+            'sandbox.file.path': '<python-input-0>',
+            'sandbox.line.start': 2,
+            'sandbox.line.end': 2,
+            'sandbox.column.start': 20,
+            'sandbox.column.end': 27,
+        }
+    )
     assert call.parent is not None and run.context is not None
     assert call.parent.span_id == run.context.span_id
     assert _log_exporter.get_finished_logs() == ()
