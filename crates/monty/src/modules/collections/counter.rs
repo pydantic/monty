@@ -19,6 +19,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapReadOutput},
     resource_checks::check_repeat_size,
+    sorting::merge_sort_indices,
     types::{Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder},
     value::{VALUE_SIZE, Value},
 };
@@ -338,28 +339,20 @@ pub(crate) fn counter_total<'h>(counter: &HeapObjectRead<'h, Dict>, vm: &mut VM<
 /// live on the heap), which callers cannot hold alongside a `Dict` borrow.
 /// Consumes `counts`.
 pub(crate) fn counter_order(counts: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
+    defer_drop!(counts, vm);
+    // The index buffer and the merge sort's scratch copy of it are both this size.
+    vm.heap
+        .tracker
+        .check_allocation(counts.len().saturating_mul(2 * size_of::<usize>()))?;
     let mut order: Vec<usize> = (0..counts.len()).collect();
-    // `sort_by` needs an infallible comparator, so a comparison error is stashed
-    // and reported once the sort finishes; the ordering it produces in that case
-    // is discarded.
-    let mut failure = None;
-    order.sort_by(|&a, &b| {
-        if failure.is_some() {
-            return Ordering::Equal;
-        }
-        match count_sort_cmp(&counts[b], &counts[a], vm) {
-            Ok(ordering) => ordering,
-            Err(e) => {
-                failure = Some(e);
-                Ordering::Equal
-            }
-        }
-    });
-    counts.drop_with(vm);
-    match failure {
-        Some(e) => Err(e),
-        None => Ok(order),
-    }
+    let mut comparisons = 0usize;
+    // A `NaN` count compares equal to everything, so the comparator is no total order.
+    merge_sort_indices(&mut order, |a, b| {
+        comparisons += 1;
+        vm.heap.tracker.check_time_every(comparisons)?;
+        count_sort_cmp(&counts[b], &counts[a], vm)
+    })?;
+    Ok(order)
 }
 
 /// `Counter.most_common([n])` — a list of `(element, count)` tuples ordered by

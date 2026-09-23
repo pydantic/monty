@@ -10,6 +10,8 @@
 
 use std::cmp::Ordering;
 
+use smallvec::SmallVec;
+
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
     bytecode::VM,
@@ -18,6 +20,12 @@ use crate::{
     types::{CmpOrder, PyTrait},
     value::Value,
 };
+
+/// Length of the runs the sort builds by insertion before it starts merging.
+const INSERTION_RUN: usize = 16;
+
+/// Index buffer for the sort, inline for the short sequences most calls pass.
+type IndexBuffer = SmallVec<[usize; INSERTION_RUN]>;
 
 /// Argument shape for `list.sort(*, key=None, reverse=False)` and, by
 /// extension, the kwargs accepted by the `sorted()` builtin. Both fields
@@ -68,10 +76,14 @@ pub fn sort_values(
     reverse: bool,
     vm: &mut VM<'_>,
 ) -> RunResult<()> {
+    // The index buffer and the merge sort's scratch copy of it are both this size.
+    vm.heap
+        .tracker
+        .check_allocation(values.len().saturating_mul(2 * size_of::<usize>()))?;
+    let mut indices = (0..values.len()).collect::<IndexBuffer>();
     if let Some(f) = key_fn {
         // Sort by key function: compute all the keys, sort an index buffer, then
         // rearrange the original values in-place according to the sorted indices.
-        let mut indices = (0..values.len()).collect::<Vec<_>>();
         let keys: Vec<Value> = Vec::with_capacity(values.len());
         defer_drop_mut!(keys, vm);
 
@@ -83,23 +95,15 @@ pub fn sort_values(
             keys.push(vm.evaluate_function(key_context, f, ArgValues::One(item))?);
         }
 
-        // 2. Sort indices by comparing key values (or values themselves if no key)
         sort_indices(&mut indices, keys, reverse, vm)?;
-
-        // 3. Rearrange values in-place in the detached buffer.
-        apply_permutation(values, &mut indices);
-
-        Ok(())
     } else {
-        // With no key function can sort directly on the original array
-        let mut sort_result: RunResult<()> = Ok(());
-        let mut n = 0usize;
-        values.sort_by(|a, b| {
-            n += 1;
-            compare_values(n, a, b, reverse, &mut sort_result, vm)
-        });
-        sort_result
+        sort_indices(&mut indices, values, reverse, vm)?;
     }
+
+    // A failed sort returns above, leaving the values in their original order like CPython.
+    apply_permutation(values, &mut indices);
+
+    Ok(())
 }
 
 /// Sorts a vector of indices by comparing items at those positions.
@@ -111,13 +115,87 @@ pub fn sort_values(
 /// The `values` slice is typically either the items themselves (no key function)
 /// or the pre-computed key values.
 pub fn sort_indices(indices: &mut [usize], values: &[Value], reverse: bool, vm: &mut VM<'_>) -> Result<(), RunError> {
-    let mut sort_result: RunResult<()> = Ok(());
     let mut n = 0usize;
-    indices.sort_by(|&a, &b| {
+    merge_sort_indices(indices, |a, b| {
         n += 1;
-        compare_values(n, &values[a], &values[b], reverse, &mut sort_result, vm)
-    });
-    sort_result
+        compare_values(n, &values[a], &values[b], reverse, vm)
+    })
+}
+
+/// Stable merge sort for an index buffer, with a fallible comparator.
+///
+/// `slice::sort_by` panics when it catches a comparator contradicting itself, which a
+/// Python comparison does whenever a `NaN` is involved, so no standard sort can serve
+/// [`sort_indices`]. This one validates nothing and returns at the first failed compare.
+/// Short runs are insertion-sorted in place first, like CPython's minruns, so an ordinary
+/// small sort never merges or allocates.
+pub(crate) fn merge_sort_indices(
+    indices: &mut [usize],
+    mut compare: impl FnMut(usize, usize) -> RunResult<Ordering>,
+) -> RunResult<()> {
+    for start in (0..indices.len()).step_by(INSERTION_RUN) {
+        let end = start.saturating_add(INSERTION_RUN).min(indices.len());
+        insertion_sort_run(&mut indices[start..end], &mut compare)?;
+    }
+    if indices.len() <= INSERTION_RUN {
+        return Ok(());
+    }
+    let mut scratch = IndexBuffer::from_slice(indices);
+    let mut width = INSERTION_RUN;
+    while width < indices.len() {
+        let mut start = 0usize;
+        while start < indices.len() {
+            let mid = start.saturating_add(width).min(indices.len());
+            let end = start.saturating_add(width.saturating_mul(2)).min(indices.len());
+            merge_runs(
+                &indices[start..mid],
+                &indices[mid..end],
+                &mut scratch[start..end],
+                &mut compare,
+            )?;
+            start = end;
+        }
+        indices.copy_from_slice(&scratch);
+        width = width.saturating_mul(2);
+    }
+    Ok(())
+}
+
+/// Sorts one short run in place, shifting each index back past the greater ones.
+fn insertion_sort_run(
+    indices: &mut [usize],
+    compare: &mut impl FnMut(usize, usize) -> RunResult<Ordering>,
+) -> RunResult<()> {
+    for i in 1..indices.len() {
+        let mut j = i;
+        // Stops at the first index that is not greater, so equal indices keep their order.
+        while j > 0 && compare(indices[j], indices[j - 1])? == Ordering::Less {
+            indices.swap(j, j - 1);
+            j -= 1;
+        }
+    }
+    Ok(())
+}
+
+/// Merges two sorted runs into `out`, preferring `left` on ties to keep the sort stable.
+fn merge_runs(
+    left: &[usize],
+    right: &[usize],
+    out: &mut [usize],
+    compare: &mut impl FnMut(usize, usize) -> RunResult<Ordering>,
+) -> RunResult<()> {
+    let (mut i, mut j) = (0usize, 0usize);
+    for slot in out {
+        let take_right = i == left.len() || (j < right.len() && compare(right[j], left[i])? == Ordering::Less);
+        *slot = if take_right {
+            j += 1;
+            right[j - 1]
+        } else {
+            i += 1;
+            left[i - 1]
+        };
+    }
+    Ok(())
 }
 
 /// Rearranges `items` in-place according to a permutation of indices.
@@ -151,35 +229,18 @@ pub fn apply_permutation<T>(items: &mut [T], indices: &mut [usize]) {
 
 /// Helper for the sort functions which compares two values, handling any exceptions and timeouts.
 /// `n` is the caller's running comparison count, keying the amortized time check.
-fn compare_values(
-    n: usize,
-    a: &Value,
-    b: &Value,
-    reverse: bool,
-    sort_result: &mut RunResult<()>,
-    vm: &mut VM<'_>,
-) -> Ordering {
-    if sort_result.is_err() {
-        // short-circuit if we've already encountered an error in a previous comparison
-        return Ordering::Equal;
-    }
-    if let Err(e) = vm.heap.tracker.check_time_every(n) {
-        *sort_result = Err(e.into());
-        return Ordering::Equal;
-    }
-    let err = match a.py_cmp(b, vm) {
-        Ok(CmpOrder::Ordered(ord)) => return if reverse { ord.reverse() } else { ord },
+fn compare_values(n: usize, a: &Value, b: &Value, reverse: bool, vm: &mut VM<'_>) -> RunResult<Ordering> {
+    vm.heap.tracker.check_time_every(n)?;
+    match a.py_cmp(b, vm)? {
+        CmpOrder::Ordered(ord) => Ok(if reverse { ord.reverse() } else { ord }),
         // A `NaN` (or `NaN`-carrying container) has no ordering but must not
         // raise: CPython's `sorted`/`list.sort` leave such elements wherever the
         // comparisons happen to place them. Treat it as "equal" — no swap.
-        Ok(CmpOrder::Unordered) => return Ordering::Equal,
-        Ok(CmpOrder::Incomparable) => ExcType::type_error(format!(
-            "'<' not supported between instances of '{}' and '{}'",
-            a.py_type_name(vm),
-            b.py_type_name(vm)
+        CmpOrder::Unordered => Ok(Ordering::Equal),
+        CmpOrder::Incomparable => Err(ExcType::type_error_ordering(
+            "<",
+            &a.py_type_name(vm),
+            &b.py_type_name(vm),
         )),
-        Err(e) => e,
-    };
-    *sort_result = Err(err);
-    Ordering::Equal
+    }
 }

@@ -284,6 +284,13 @@ assert sorted([3, -1, 2, -4], key=abs, reverse=True) == [-4, 3, 2, -1]
 assert sorted(['banana', 'apple', 'cherry'], key=len, reverse=True) == ['banana', 'cherry', 'apple']
 assert sorted([3, 1, 2], key=None, reverse=True) == [3, 2, 1]
 
+# === A NaN is unordered against numbers, so only the multiset is portable ===
+unordered = [float(v) for v in range(21, 0, -1)]
+unordered[1] = float('nan')
+mixed = sorted(unordered)
+assert len([v for v in mixed if v != v]) == 1
+assert sorted(v for v in mixed if v == v) == sorted(v for v in unordered if v == v)
+
 # === reversed() ===
 # Basic reversed operations
 assert list(reversed([1, 2, 3])) == [3, 2, 1]
