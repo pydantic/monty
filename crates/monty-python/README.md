@@ -82,7 +82,7 @@ if __name__ == '__main__':
 
 ## Where a snapshot stopped
 
-Every snapshot exposes `position`, a `SourceRange` with `filename`, `line`, `column`, `end_line` and `end_column`
+Every snapshot exposes `position`, a `SourceRange` with `filename`, `start_line`, `start_column`, `end_line` and `end_column`
 locating the suspending expression: the call of a `FunctionSnapshot`, the name of a `NameLookupSnapshot`, and the
 `await` the top-level code is blocked on for a `FutureSnapshot`.
 Lines and columns are 1-based and `end_column` is exclusive; `filename` is the traceback filename of the source
@@ -96,7 +96,7 @@ with Monty() as pool:
         snapshot = session.feed_start('x = 1\ny = greet(x)')
         assert isinstance(snapshot, FunctionSnapshot)
         position = snapshot.position
-        print(position.line, position.column, position.end_column)
+        print(position.start_line, position.start_column, position.end_column)
         #> 2 5 13
 ```
 

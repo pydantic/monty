@@ -164,26 +164,26 @@ test('every snapshot kind carries the position of the suspending expression', as
   try {
     const call = (await session.feedStart('x = 1\ny = add(x, 2) + 1')) as FunctionSnapshot
     t.true(call instanceof FunctionSnapshot)
-    t.deepEqual(call.position, { filename: '<python-input-0>', line: 2, column: 5, endLine: 2, endColumn: 14 })
+    t.deepEqual(call.position, { filename: '<python-input-0>', startLine: 2, startColumn: 5, endLine: 2, endColumn: 14 })
     await call.resume(3)
 
     const name = (await session.feedStart('total = 1 + missing')) as NameLookupSnapshot
     t.true(name instanceof NameLookupSnapshot)
-    t.deepEqual(name.position, { filename: '<python-input-1>', line: 1, column: 13, endLine: 1, endColumn: 20 })
+    t.deepEqual(name.position, { filename: '<python-input-1>', startLine: 1, startColumn: 13, endLine: 1, endColumn: 20 })
     await name.resumeValue(1)
 
     const osCall = (await session.feedStart("from pathlib import Path\nPath('/etc/x').read_text()")) as FunctionSnapshot
     t.true(osCall.isOsFunction)
-    t.deepEqual(osCall.position, { filename: '<python-input-2>', line: 2, column: 1, endLine: 2, endColumn: 27 })
+    t.deepEqual(osCall.position, { filename: '<python-input-2>', startLine: 2, startColumn: 1, endLine: 2, endColumn: 27 })
     await osCall.resume('body')
 
     const code = 'import asyncio\n\nasync def go():\n    return await fetch()\n\nawait asyncio.gather(go(), go())'
     const first = (await session.feedStart(code)) as FunctionSnapshot
-    t.deepEqual(first.position, { filename: '<python-input-3>', line: 4, column: 18, endLine: 4, endColumn: 25 })
+    t.deepEqual(first.position, { filename: '<python-input-3>', startLine: 4, startColumn: 18, endLine: 4, endColumn: 25 })
     const second = (await first.resumeFuture()) as FunctionSnapshot
     const futures = (await second.resumeFuture()) as FutureSnapshot
     t.true(futures instanceof FutureSnapshot)
-    t.deepEqual(futures.position, { filename: '<python-input-3>', line: 6, column: 1, endLine: 6, endColumn: 33 })
+    t.deepEqual(futures.position, { filename: '<python-input-3>', startLine: 6, startColumn: 1, endLine: 6, endColumn: 33 })
     await futures.resume([
       { callId: first.callId, value: 1 },
       { callId: second.callId, value: 2 },
@@ -204,7 +204,7 @@ test('the position survives dump and loadSnapshot', async () => {
   const session = await pool().checkout()
   try {
     const snap = (await session.loadSnapshot(blob)) as FunctionSnapshot
-    t.deepEqual(snap.position, { filename: '<python-input-0>', line: 1, column: 5, endLine: 1, endColumn: 12 })
+    t.deepEqual(snap.position, { filename: '<python-input-0>', startLine: 1, startColumn: 5, endLine: 1, endColumn: 12 })
   } finally {
     await session.close()
   }

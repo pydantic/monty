@@ -33,7 +33,7 @@ use monty_pool::{
 use monty_proto::{encode_framed_into, pb};
 use monty_types::{
     CallArgs, DateTimeSource, ExcType, MontyException, MontyObject, NameLookupResult, OsPolicy, PrintStream,
-    RandomSeed, RandomStart, ResourceLimits, SleepMode, TypeCheckingConfig, TypeCheckingFormat,
+    RandomSeed, RandomStart, ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, TypeCheckingFormat,
     unstable::{self, MontyNode},
 };
 use tokio::time::sleep;
@@ -2700,6 +2700,41 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
         panic!("the spent feed budget must still backstop the next turn, got {outcome:?}");
     };
     assert_eq!(timeout, grace);
+}
+
+/// A child that predates the position field announces suspensions without
+/// it; the parent reports zero lines and columns rather than rejecting them.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_suspension_without_a_position_reads_as_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    replies.extend(framed(&child_event(pb::child_event::Kind::NameLookup(
+        pb::NameLookup {
+            name: "x".to_owned(),
+            object_id: None,
+            position: None,
+        },
+    ))));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 30\n", replies_path.display()),
+    );
+
+    let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
+    let mut checkout = pool
+        .checkout(&ReplConfig::default())
+        .await
+        .expect("the stand-in answers Configure with Ok");
+    let event = checkout.feed("x", vec![], vec![], false, &mut no_print).await.unwrap();
+    let TurnEvent::NameLookup { name, position, .. } = event else {
+        panic!("expected a name lookup, got {event:?}");
+    };
+    assert_eq!(name, "x");
+    assert_eq!(position, SourceRange::unknown());
+    assert_eq!(position.start.line, 0);
 }
 
 /// A second raw `Feed` restarts the parent's feed clock, as `Checkout::feed`

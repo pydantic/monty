@@ -765,6 +765,9 @@ impl CodeLoc {
 /// `filename` names the source the range indexes as a traceback frame does:
 /// the script name of a one-shot run, `<python-input-N>` for a session's N-th
 /// feed, or `<string>` inside an `eval()` / `exec()` string.
+///
+/// A worker that predates the field reports none; hosts then see
+/// [`SourceRange::unknown`], whose lines and columns are 0.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SourceRange {
     /// Name of the source the range indexes.
@@ -773,6 +776,19 @@ pub struct SourceRange {
     pub start: CodeLoc,
     /// Where the expression ends (exclusive).
     pub end: CodeLoc,
+}
+
+impl SourceRange {
+    /// The range a host reports when its peer sent no position: an empty
+    /// filename and zero lines and columns, which no real range has.
+    #[must_use]
+    pub fn unknown() -> Self {
+        Self {
+            filename: String::new(),
+            start: CodeLoc { line: 0, column: 0 },
+            end: CodeLoc { line: 0, column: 0 },
+        }
+    }
 }
 
 /// Formats the message for a `UnicodeDecodeError` covering the byte range

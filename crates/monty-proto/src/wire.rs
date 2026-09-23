@@ -166,8 +166,8 @@ pub struct WireFunctionCall {
     pub object_id: Option<MontyUuid>,
     /// The worker accepts an eagerly settled coroutine via `ResumeFutures`.
     pub allow_eager_await: bool,
-    /// Where the call expression is in the source; `None` only for a frame
-    /// that omitted it, which a parent rejects.
+    /// Where the call expression is in the source; `None` for a frame from a
+    /// child that predates the field.
     pub position: Option<SourceRange>,
 }
 
@@ -270,7 +270,7 @@ impl Message for WireFunctionCall {
             8 => {
                 let mut position = pb::SourceRange::default();
                 encoding::message::merge(wire_type, &mut position, buf, ctx)?;
-                self.position = Some(SourceRange::try_from(position).map_err(to_decode_err)?);
+                self.position = Some(SourceRange::from(position));
                 Ok(())
             }
             _ => skip_field(wire_type, tag, buf, ctx),

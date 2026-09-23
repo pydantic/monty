@@ -24,12 +24,13 @@ export interface Frame {
  * `snapshot.position`. Positions follow `Frame`: 1-based line and character
  * column, exclusive end. `filename` names the source as a traceback frame
  * does: `<python-input-N>` for the session's N-th feed, or `<string>` inside
- * an `eval()` / `exec()` string.
+ * an `eval()` / `exec()` string. A worker that predates the field reports
+ * none: `filename` is then empty and every line and column 0.
  */
 export interface SourceRange {
   filename: string
-  line: number
-  column: number
+  startLine: number
+  startColumn: number
   endLine: number
   endColumn: number
 }

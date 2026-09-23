@@ -574,12 +574,12 @@ pub struct PySourceRange {
     /// `<python-input-N>` for a feed, `<string>` inside `eval()` / `exec()`.
     #[pyo3(get)]
     pub filename: String,
-    /// Line number (1-based).
+    /// Start line number (1-based).
     #[pyo3(get)]
-    pub line: u32,
-    /// Column number (1-based).
+    pub start_line: u32,
+    /// Start column number (1-based).
     #[pyo3(get)]
-    pub column: u32,
+    pub start_column: u32,
     /// End line number (1-based).
     #[pyo3(get)]
     pub end_line: u32,
@@ -592,8 +592,8 @@ impl From<&SourceRange> for PySourceRange {
     fn from(range: &SourceRange) -> Self {
         Self {
             filename: range.filename.clone(),
-            line: range.start.line,
-            column: range.start.column,
+            start_line: range.start.line,
+            start_column: range.start.column,
             end_line: range.end.line,
             end_column: range.end.column,
         }
@@ -604,12 +604,12 @@ impl From<&SourceRange> for PySourceRange {
 impl PySourceRange {
     /// Builds a range by hand, e.g. to compare against `snapshot.position`.
     #[new]
-    #[pyo3(signature = (*, filename, line, column, end_line, end_column))]
-    fn new(filename: String, line: u32, column: u32, end_line: u32, end_column: u32) -> Self {
+    #[pyo3(signature = (*, filename, start_line, start_column, end_line, end_column))]
+    fn new(filename: String, start_line: u32, start_column: u32, end_line: u32, end_column: u32) -> Self {
         Self {
             filename,
-            line,
-            column,
+            start_line,
+            start_column,
             end_line,
             end_column,
         }
@@ -618,8 +618,8 @@ impl PySourceRange {
     fn dict<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         let dict = PyDict::new(py);
         dict.set_item("filename", &self.filename).unwrap();
-        dict.set_item("line", self.line).unwrap();
-        dict.set_item("column", self.column).unwrap();
+        dict.set_item("start_line", self.start_line).unwrap();
+        dict.set_item("start_column", self.start_column).unwrap();
         dict.set_item("end_line", self.end_line).unwrap();
         dict.set_item("end_column", self.end_column).unwrap();
         dict
@@ -628,10 +628,10 @@ impl PySourceRange {
     fn __repr__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyString>> {
         py_format!(
             py,
-            "SourceRange(filename='{}', line={}, column={}, end_line={}, end_column={})",
+            "SourceRange(filename='{}', start_line={}, start_column={}, end_line={}, end_column={})",
             self.filename,
-            self.line,
-            self.column,
+            self.start_line,
+            self.start_column,
             self.end_line,
             self.end_column
         )

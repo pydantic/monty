@@ -818,8 +818,8 @@ message FunctionCall {
   // The arena `args` and `kwargs` index: one per call, so an object passed
   // twice crosses once.
   Arena values = 7;
-  // Where the call expression is in the source. Required: a parent treats
-  // its absence as a protocol violation.
+  // Where the call expression is in the source. Absent from a child that
+  // predates the field; the parent then reports zero lines and columns.
   SourceRange position = 8;
 }
 
@@ -887,7 +887,7 @@ message OsCall {
   // `ResumeFutures` for `call_id`. Only ever set on `async_sleep`, the one
   // call a future may answer at all.
   bool allow_eager_await = 51;
-  // Where the call expression is in the source. Required, as on `FunctionCall`.
+  // Where the call expression is in the source; absent as on `FunctionCall`.
   SourceRange position = 52;
 
   message TextWrite {
@@ -966,7 +966,7 @@ message NameLookup {
   // Set for attribute lookups on a host-backed object — a class instance, or
   // a class type (a lazy class attribute): the uuid of the receiver.
   Uuid object_id = 2;
-  // Where the name (or attribute access) is in the source. Required, as on
+  // Where the name (or attribute access) is in the source; absent as on
   // `FunctionCall`.
   SourceRange position = 3;
 }
@@ -975,7 +975,7 @@ message NameLookup {
 // registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
 message ResolveFutures {
   repeated uint32 pending_call_ids = 1;
-  // Where the main task's blocked `await` is in the source. Required, as on
+  // Where the main task's blocked `await` is in the source; absent as on
   // `FunctionCall`.
   SourceRange position = 2;
 }

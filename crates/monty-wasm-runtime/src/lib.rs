@@ -221,7 +221,7 @@ impl PreparedOsEvent {
     /// arenas; the error names what was wrong with the call.
     fn from_proto(mut call: pb::OsCall) -> Result<Self, String> {
         let eager_bit = call.allow_eager_await;
-        let position = source_range_from_proto(call.position.take(), "OsCall")?;
+        let position = source_range_from_proto(call.position.take());
         let (call_id, call) = os_call_from_proto(call).map_err(|error| format!("invalid OS call: {error}"))?;
         Ok(Self {
             function_name: call.name().to_owned(),
@@ -264,20 +264,17 @@ impl PreparedOsEvent {
 fn component_source_range(range: monty_types::SourceRange) -> SourceRange {
     SourceRange {
         filename: range.filename,
-        line: range.start.line,
-        column: range.start.column,
+        start_line: range.start.line,
+        start_column: range.start.column,
         end_line: range.end.line,
         end_column: range.end.column,
     }
 }
 
-/// Lifts the position every suspension carries; a self-produced event never
-/// omits it, so absence is reported as an invalid event.
-fn source_range_from_proto(position: Option<pb::SourceRange>, event: &str) -> Result<SourceRange, String> {
-    let position = position.ok_or_else(|| format!("{event} event carried no position"))?;
-    monty_types::SourceRange::try_from(position)
-        .map(component_source_range)
-        .map_err(|error| format!("invalid {event}.position: {error}"))
+/// Lifts a suspension's position; a self-produced event always carries one,
+/// and a missing one reads as zero lines and columns, as in the pool.
+fn source_range_from_proto(position: Option<pb::SourceRange>) -> SourceRange {
+    component_source_range(position.map_or_else(monty_types::SourceRange::unknown, monty_types::SourceRange::from))
 }
 
 /// Converts a semantic component request into the child state machine's
@@ -468,10 +465,7 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
         Some(pb::child_event::Kind::Print(_)) => invalid_event("Print event bypassed segment expansion"),
         Some(pb::child_event::Kind::FunctionCall(call)) => {
             let object_id = call.object_id.map(|uuid| uuid.to_string());
-            // Self-produced by this worker, so the position is always present.
-            let Some(position) = call.position.map(component_source_range) else {
-                return invalid_event("FunctionCall event carried no position");
-            };
+            let position = component_source_range(call.position.unwrap_or_else(monty_types::SourceRange::unknown));
             Event::FunctionCall(FunctionCallEvent {
                 function_name: call.function_name,
                 values: value::into_component(call.values.0.into_inner()),
@@ -484,28 +478,19 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
             })
         }
         Some(pb::child_event::Kind::OsCall(_)) => invalid_event("OsCall event bypassed component budget preparation"),
-        Some(pb::child_event::Kind::NameLookup(lookup)) => match source_range_from_proto(lookup.position, "NameLookup")
-        {
-            Ok(position) => Event::NameLookup(NameLookupEvent {
-                name: lookup.name,
-                // Self-produced by this worker, so always a valid 16-byte uuid.
-                object_id: lookup
-                    .object_id
-                    .and_then(|uuid| MontyUuid::try_from_slice(&uuid.data))
-                    .map(|uuid| uuid.to_string()),
-                position,
-            }),
-            Err(error) => invalid_event(&error),
-        },
-        Some(pb::child_event::Kind::ResolveFutures(futures)) => {
-            match source_range_from_proto(futures.position, "ResolveFutures") {
-                Ok(position) => Event::ResolveFutures(ResolveFuturesEvent {
-                    pending_call_ids: futures.pending_call_ids.into_inner(),
-                    position,
-                }),
-                Err(error) => invalid_event(&error),
-            }
-        }
+        Some(pb::child_event::Kind::NameLookup(lookup)) => Event::NameLookup(NameLookupEvent {
+            name: lookup.name,
+            // Self-produced by this worker, so always a valid 16-byte uuid.
+            object_id: lookup
+                .object_id
+                .and_then(|uuid| MontyUuid::try_from_slice(&uuid.data))
+                .map(|uuid| uuid.to_string()),
+            position: source_range_from_proto(lookup.position),
+        }),
+        Some(pb::child_event::Kind::ResolveFutures(futures)) => Event::ResolveFutures(ResolveFuturesEvent {
+            pending_call_ids: futures.pending_call_ids.into_inner(),
+            position: source_range_from_proto(futures.position),
+        }),
         Some(pb::child_event::Kind::Complete(complete)) => complete.values.map_or_else(
             || invalid_event("Complete event carried no values"),
             |arena| {

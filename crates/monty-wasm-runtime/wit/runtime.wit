@@ -384,11 +384,12 @@ interface worker {
     /// Where the expression that suspended execution is in the source:
     /// 1-based line and character column, exclusive end. `filename` names the
     /// source as a traceback frame does: `<python-input-N>` for the session's
-    /// N-th feed, or `<string>` inside an `eval()` / `exec()` string.
+    /// N-th feed, or `<string>` inside an `eval()` / `exec()` string. Zero
+    /// lines and columns mean the child reported no position.
     record source-range {
         filename: string,
-        line: u32,
-        column: u32,
+        start-line: u32,
+        start-column: u32,
         end-line: u32,
         end-column: u32,
     }

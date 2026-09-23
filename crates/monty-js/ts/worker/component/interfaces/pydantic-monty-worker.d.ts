@@ -490,8 +490,8 @@ export interface StackFrame {
 }
 export interface SourceRange {
   filename: string
-  line: number
-  column: number
+  startLine: number
+  startColumn: number
   endLine: number
   endColumn: number
 }

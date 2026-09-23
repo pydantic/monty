@@ -1470,9 +1470,7 @@ impl Checkout {
                     }
                 }
                 Some(pb::child_event::Kind::FunctionCall(mut call)) => {
-                    let Some(position) = call.position.take() else {
-                        return Err(self.protocol_violation("FunctionCall.position is missing"));
-                    };
+                    let position = call.position.take().unwrap_or_else(SourceRange::unknown);
                     self.pending = Some(Pending::Call {
                         call_id: call.call_id,
                         function_name: call.function_name.clone(),
@@ -1495,10 +1493,7 @@ impl Checkout {
                     // `restore`) decodes into a typed `OsFunctionCall`; a
                     // payload the child could never legitimately produce is a
                     // protocol violation.
-                    let position = match suspension_position(call.position.take(), "OsCall") {
-                        Ok(position) => position,
-                        Err(err) => return Err(self.protocol_violation(err)),
-                    };
+                    let position = suspension_position(call.position.take());
                     let mut allow_eager_await = call.allow_eager_await;
                     let (call_id, function_call) = match os_call_from_proto(call) {
                         Ok(call) => call,
@@ -1539,10 +1534,7 @@ impl Checkout {
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {
                     // Frames from the child are untrusted — a malformed uuid
                     // is a protocol violation, not a panic.
-                    let position = match suspension_position(lookup.position, "NameLookup") {
-                        Ok(position) => position,
-                        Err(err) => return Err(self.protocol_violation(err)),
-                    };
+                    let position = suspension_position(lookup.position);
                     let object_id = match lookup.object_id {
                         None => None,
                         Some(uuid) => match MontyUuid::try_from_slice(&uuid.data) {
@@ -1560,10 +1552,7 @@ impl Checkout {
                     }));
                 }
                 Some(pb::child_event::Kind::ResolveFutures(futures)) => {
-                    let position = match suspension_position(futures.position, "ResolveFutures") {
-                        Ok(position) => position,
-                        Err(err) => return Err(self.protocol_violation(err)),
-                    };
+                    let position = suspension_position(futures.position);
                     self.pending = Some(Pending::Futures);
                     return Ok(ControlEvent::Turn(TurnEvent::ResolveFutures {
                         pending_call_ids: futures.pending_call_ids.into_inner(),
@@ -1941,9 +1930,8 @@ fn build_mount_table(mounts: Vec<MountSpec>) -> Result<MountTable, PoolError> {
     Ok(table)
 }
 
-/// Decodes the position every suspension event must carry. Frames from the
-/// child are untrusted, so a missing or malformed range is a protocol violation.
-fn suspension_position(position: Option<pb::SourceRange>, event: &str) -> Result<SourceRange, String> {
-    let position = position.ok_or_else(|| format!("{event}.position is missing"))?;
-    SourceRange::try_from(position).map_err(|err| format!("invalid {event}.position: {err}"))
+/// Decodes a suspension event's position. A child that predates the field
+/// sends none, which reads as [`SourceRange::unknown`] rather than an error.
+fn suspension_position(position: Option<pb::SourceRange>) -> SourceRange {
+    position.map_or_else(SourceRange::unknown, SourceRange::from)
 }

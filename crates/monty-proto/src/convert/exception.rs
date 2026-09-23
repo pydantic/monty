@@ -249,21 +249,17 @@ impl From<&SourceRange> for pb::SourceRange {
     }
 }
 
-/// Total apart from the sub-messages being present: nothing renders carets
-/// from a suspension's range, so no column check is needed (cf. `StackFrame`).
-impl TryFrom<pb::SourceRange> for SourceRange {
-    type Error = ProtoConvertError;
-
-    fn try_from(range: pb::SourceRange) -> Result<Self, ProtoConvertError> {
-        Ok(Self {
+/// Total: nothing renders carets from a suspension's range, so no column check
+/// is needed (cf. `StackFrame`), and a missing endpoint reads as line and
+/// column 0, like a missing range (see [`SourceRange::unknown`]).
+impl From<pb::SourceRange> for SourceRange {
+    fn from(range: pb::SourceRange) -> Self {
+        let loc = |loc: Option<pb::CodeLoc>| loc.map_or(CodeLoc { line: 0, column: 0 }, CodeLoc::from);
+        Self {
             filename: range.filename,
-            start: CodeLoc::from(
-                range
-                    .start
-                    .ok_or(ProtoConvertError::MissingField("SourceRange.start"))?,
-            ),
-            end: CodeLoc::from(range.end.ok_or(ProtoConvertError::MissingField("SourceRange.end"))?),
-        })
+            start: loc(range.start),
+            end: loc(range.end),
+        }
     }
 }
 

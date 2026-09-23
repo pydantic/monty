@@ -89,7 +89,7 @@ In JavaScript those are separate methods: `resume(value)`, `resumeError(err)` an
 Every snapshot carries `position`, a [`SourceRange`][pydantic_monty.SourceRange] locating the expression that
 suspended: the call of a `FunctionSnapshot`, the name of a `NameLookupSnapshot`, and the `await` the top-level code is
 blocked on for a `FutureSnapshot`.
-Lines and columns are 1-based and `end_column` is exclusive, as in a traceback `Frame`.
+Lines and columns are 1-based and `end_column` / `endColumn` is exclusive, as in a traceback `Frame`.
 
 === "Python"
 
@@ -101,7 +101,7 @@ Lines and columns are 1-based and `end_column` is exclusive, as in a traceback `
             snapshot = session.feed_start('x = 1\ny = greet(x)')
             assert isinstance(snapshot, FunctionSnapshot)
             position = snapshot.position
-            print(position.line, position.column, position.end_column)
+            print(position.start_line, position.start_column, position.end_column)
             #> 2 5 13
     ```
 
@@ -114,13 +114,15 @@ Lines and columns are 1-based and `end_column` is exclusive, as in a traceback `
     await using session = await pool.checkout()
     const snapshot = await session.feedStart('x = 1\ny = greet(x)')
     if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
-    console.log(snapshot.position) // { filename: '<python-input-0>', line: 2, column: 5, endLine: 2, endColumn: 13 }
+    console.log(snapshot.position) // { filename: '<python-input-0>', startLine: 2, startColumn: 5, endLine: 2, endColumn: 13 }
     ```
 
 `filename` names the source the range indexes the way a traceback frame does: `<python-input-N>` for the session's
 N-th feed, so a suspension inside a function defined by an earlier feed points into that feed, and `<string>` inside an
 `eval()` / `exec()` string.
 The position is part of the suspended state, so a restored snapshot reports the same one.
+A worker that predates the field (an older `monty` binary or server) reports none, and the snapshot then carries an
+empty `filename` with every line and column 0.
 
 A snapshot refers to the worker's current suspension; it does not own an independent copy of the execution state.
 Only one suspension is live per session.

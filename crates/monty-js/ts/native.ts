@@ -21,8 +21,8 @@ export interface NativeFrame {
  *  `SourceRange` of `errors.ts`, as the native binding ships it. */
 export interface NativeSourceRange {
   filename: string
-  line: number
-  column: number
+  startLine: number
+  startColumn: number
   endLine: number
   endColumn: number
 }
