@@ -5,75 +5,6 @@ use monty_types::{CodeLoc, StackFrame};
 
 use crate::{exception_private::RawStackFrame, intern::Interns, parse::CodeRange};
 
-/// Line and character index over one source, built once per compilation so
-/// every bytecode location resolves to a line and column up front.
-///
-/// Columns count characters; a non-ASCII source keeps a count every
-/// [`CHAR_CHECKPOINT`] bytes, bounding each character-count scan to one chunk.
-pub(crate) struct SourceLines<'s> {
-    source: &'s [u8],
-    /// Byte offset of the start of each line; `line_starts[0]` is 0.
-    line_starts: Vec<u32>,
-    /// Characters before each multiple of [`CHAR_CHECKPOINT`]; empty for ASCII.
-    char_checkpoints: Vec<usize>,
-}
-
-/// Bytes between the character counts a non-ASCII [`SourceLines`] records.
-const CHAR_CHECKPOINT: usize = 64;
-
-impl<'s> SourceLines<'s> {
-    /// Indexes `source`: one pass for line breaks, and one for character counts
-    /// when the source is not ASCII.
-    pub fn new(source: &'s str) -> Self {
-        let bytes = source.as_bytes();
-        let char_checkpoints = if source.is_ascii() {
-            Vec::new()
-        } else {
-            let mut total = 0;
-            let mut checkpoints = Vec::with_capacity(bytes.len() / CHAR_CHECKPOINT + 1);
-            checkpoints.push(0);
-            for chunk in bytes.as_chunks::<CHAR_CHECKPOINT>().0 {
-                total += count_chars(chunk);
-                checkpoints.push(total);
-            }
-            checkpoints
-        };
-        Self {
-            source: bytes,
-            line_starts: line_starts(bytes),
-            char_checkpoints,
-        }
-    }
-
-    /// Resolves a range's start and end (exclusive) to lines and columns.
-    pub fn resolve(&self, range: CodeRange) -> (CodeLoc, CodeLoc) {
-        (self.loc(range.start_byte), self.loc(range.end_byte))
-    }
-
-    /// Resolves one byte offset, clamped to the source.
-    fn loc(&self, byte: u32) -> CodeLoc {
-        let offset = (byte as usize).min(self.source.len());
-        // `line_starts[0]` is 0, so at least one start precedes any offset
-        let line_idx = self.line_starts.partition_point(|&s| s as usize <= offset) - 1;
-        let line_start = self.line_starts[line_idx] as usize;
-        let column = self.chars_before(offset) - self.chars_before(line_start);
-        CodeLoc::new(
-            u32::try_from(line_idx).unwrap_or(u32::MAX),
-            u32::try_from(column).unwrap_or(u32::MAX),
-        )
-    }
-
-    /// Number of characters in `source[..offset]`.
-    fn chars_before(&self, offset: usize) -> usize {
-        if self.char_checkpoints.is_empty() {
-            offset
-        } else {
-            let block = offset / CHAR_CHECKPOINT;
-            self.char_checkpoints[block] + count_chars(&self.source[block * CHAR_CHECKPOINT..offset])
-        }
-    }
-}
-
 /// Byte offsets where each line starts. `\n`, `\r\n` and a bare `\r` each end
 /// a line, as they do for the parser.
 fn line_starts(bytes: &[u8]) -> Vec<u32> {
@@ -89,28 +20,23 @@ fn line_starts(bytes: &[u8]) -> Vec<u32> {
     starts
 }
 
-/// Counts the characters in `bytes`: every byte that does not continue a
-/// multi-byte UTF-8 sequence, which holds even off a char boundary.
-fn count_chars(bytes: &[u8]) -> usize {
-    bytes.iter().filter(|&&b| b & 0b1100_0000 != 0b1000_0000).count()
-}
-
-/// Lazy resolver from raw byte offsets (stored on every [`CodeRange`]) back to
-/// human-readable line/column/preview-line information.
+/// Resolver from raw byte offsets (stored on every [`CodeRange`]) back to
+/// line/column and preview-line information.
 ///
 /// Monty's parser stores only byte offsets per AST node to keep the post-parse
-/// hot path O(1) per node. `SourceMap` is built once at the diagnostic
-/// boundary — when converting an internal error into a public
-/// [`MontyException`] — and used to resolve every frame in the traceback.
-/// Building it scans the source once to index line starts; with a 100k-line
-/// source this is a few hundred microseconds and fires only when an exception
-/// is actually raised.
+/// hot path O(1) per node. A `SourceMap` is built once per compilation, so
+/// every bytecode location stores its line and column up front and a
+/// suspension copies them, and once at the diagnostic boundary to resolve the
+/// frames of a traceback. Building it scans the source once to index line
+/// starts; with a 100k-line source this is a few hundred microseconds.
 ///
 /// Column semantics remain exactly CPython-compatible: columns count Unicode
-/// scalar values, not bytes. The ASCII fast path (the overwhelmingly common
-/// case for Python source) skips the `chars()` iterator entirely.
+/// scalar values, not bytes. An ASCII source (the overwhelmingly common case
+/// for Python) resolves a column in O(1); only a non-ASCII source counts chars.
 pub struct SourceMap<'s> {
     source: &'s str,
+    /// Whether every column is its byte offset, checked once for the source.
+    ascii: bool,
     /// Byte offset of the start of each line. Length equals the number of
     /// lines; `line_starts[0]` is always 0.
     line_starts: Vec<u32>,
@@ -134,9 +60,19 @@ impl<'s> SourceMap<'s> {
     pub fn new(source: &'s str) -> Self {
         Self {
             source,
+            ascii: source.is_ascii(),
             line_starts: line_starts(source.as_bytes()),
             line_cache: HashMap::new(),
         }
+    }
+
+    /// Resolves a range's start and end (exclusive) to lines and columns, with
+    /// no preview line: what a bytecode location stores at compile time.
+    pub(crate) fn resolve_span(&self, range: CodeRange) -> (CodeLoc, CodeLoc) {
+        (
+            self.resolve_byte(range.start_byte).1,
+            self.resolve_byte(range.end_byte).1,
+        )
     }
 
     /// Resolves a `CodeRange` into `(start, end, preview_line)`.
@@ -214,8 +150,7 @@ impl<'s> SourceMap<'s> {
     /// Resolves a raw byte offset to `(0-based line index, CodeLoc)`.
     ///
     /// Column is the number of Unicode scalar values between the line start
-    /// and the offset; uses an ASCII fast path when the preceding slice is
-    /// pure ASCII.
+    /// and the offset, which for an ASCII source is the byte distance.
     fn resolve_byte(&self, byte: u32) -> (usize, CodeLoc) {
         // partition_point(|&s| s <= byte) gives the index of the first line
         // whose start is strictly greater than `byte`; subtracting one maps
@@ -227,7 +162,7 @@ impl<'s> SourceMap<'s> {
         let slice = &self.source[slice_start..slice_end];
         // Ruff caps source files at 4 GiB, so any byte-based column count fits
         // comfortably in `u32`; saturate defensively if that ever changes.
-        let col = if slice.is_ascii() {
+        let col = if self.ascii {
             u32::try_from(slice.len()).unwrap_or(u32::MAX)
         } else {
             u32::try_from(slice.chars().count()).unwrap_or(u32::MAX)

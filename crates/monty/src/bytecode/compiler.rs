@@ -33,7 +33,7 @@ use crate::{
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try, syntax_error_in_snippet},
     run::CompileOptions,
-    source_map::{SourceLines, SourceMap, StackFrameExt},
+    source_map::{SourceMap, StackFrameExt},
     value::{EitherStr, Value},
 };
 
@@ -256,7 +256,7 @@ pub struct Compiler<'a, 'i> {
     interns: &'a mut CompileInterns<'i>,
 
     /// Line index of the source being compiled, shared with nested scopes.
-    lines: &'a SourceLines<'a>,
+    lines: &'a SourceMap<'a>,
 
     /// Enclosing control blocks whose cleanup is emitted by non-local exits.
     /// This mirrors CPython's compiler `fblockinfo` stack and keeps each
@@ -517,7 +517,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// comprehension slots follow it on the operand stack.
     fn new(
         interns: &'a mut CompileInterns<'i>,
-        lines: &'a SourceLines<'a>,
+        lines: &'a SourceMap<'a>,
         is_module_scope: bool,
         frame_locals: u16,
         flags: ScopeFlags,
@@ -582,7 +582,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             globals_by_name: snippet.unwrap_or(false),
             forbid_await: snippet.is_some(),
         };
-        let lines = SourceLines::new(source);
+        let lines = SourceMap::new(source);
         let mut compiler = Compiler::new(interns, &lines, true, 0, flags);
 
         // All globals are "local names" in the module
@@ -605,7 +605,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     fn compile_function_body(
         func_def: &PreparedFunctionDef,
         interns: &mut CompileInterns<'_>,
-        lines: &SourceLines<'_>,
+        lines: &SourceMap<'_>,
         num_locals: u16,
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
@@ -1059,7 +1059,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         class_name: &Identifier,
         position: CodeRange,
         interns: &mut CompileInterns<'_>,
-        lines: &SourceLines<'_>,
+        lines: &SourceMap<'_>,
         num_locals: u16,
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
