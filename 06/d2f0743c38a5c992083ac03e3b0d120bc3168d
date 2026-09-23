@@ -1,0 +1,70 @@
+crates/monty/src/types/type.rs
+  ai_agent 584
+crates/monty/src/types/datetime.rs
+  ai_agent 291,293-298,304-307,313-315,319-321
+crates/monty/src/bytecode/vm/async_exec.rs
+  s_3173e621b32649::t_713436456cfd49 15
+crates/monty/test_cases/random__unseeded.py
+  ai_agent 2-3
+crates/monty/tests/os_tests.rs
+  ai_agent 9-11,14-26,34,103,1369,1411,1472,1504,1531,1550,1572
+crates/monty/src/modules/asyncio.rs
+  ai_agent 11,85,94
+  s_3173e621b32649::t_b6bd730b306132 113-114
+crates/monty-datatest/src/main.rs
+  ai_agent 21,31-32,939-940,949
+crates/monty/src/modules/random.rs
+  ai_agent 10,149-150,155,204,211,213-216
+  s_e62d84b7400bbb::t_4d5bbe5f022ae1 156-158
+crates/monty/tests/random_module.rs
+  ai_agent 1,6,18,20-24,27-28,30,60-61,63-76,79,89-91,93-112,114-118,122-124,126-138,140-142,144-148,151,223-244
+crates/monty/src/bytecode/vm/mod.rs
+  ai_agent 46,72-73,77,648-649,659,820-823,825,883,2265-2267,2273,2277
+crates/monty/src/types/mod.rs
+  ai_agent 67
+crates/monty/tests/auto_os_calls.rs
+  ai_agent 1-2,4-10,13-14,16,29,36-61,64-70,72,75-76,82-89,93,108-109,111-112,114,118,122,131,159-167,174,177,180-181,185,187-188,198-199,203,206,211-212,216,219,228-230,233-234,236-244,246-247,254-256,261,267,270-272,276,280,284,286,288,292,296,309-310,312-315,326,331-335,337-340,342-358,364,366-367,370-402,405,407-408,410-411,413,418-431,435,445,449,461-462,465,488-490,495
+  s_3173e621b32649::t_b2b25b73a26810 193-196
+  s_3173e621b32649::t_2d82146c3f0d06 368-369
+crates/monty/src/types/random.rs
+  ai_agent 8-10,15,48-62,65,67-72,74,76-83,85-92,97-99,102-103,119,186,189,218,229,268-278,457,460-462
+crates/monty/src/modules/time.rs
+  ai_agent 6-7,58-60,64,66,90,94-96
+  s_3173e621b32649::t_b6bd730b306132 101
+crates/monty-types/src/resource.rs
+  ai_agent 4-7,674,687,689-697,733-739,746-751
+  s_3173e621b32649::t_246d59de58487b 238-239
+  s_3173e621b32649::t_e15a51b038cc26 397-398,400,403-404
+  s_3173e621b32649::t_d077e2da7cb5a0 659
+  s_3173e621b32649::t_ff54845058df4a 660-661
+crates/monty/src/repl.rs
+  ai_agent 12,32,37,82-85,90,92,120,122,128-132,134-135,216,304,314,403,405,446-449,1242
+crates/monty/src/types/date.rs
+  ai_agent 25,140-142
+crates/monty/src/run.rs
+  ai_agent 6,12,94-96,98-101,105,109-110,114-115,257-259,283,307-308,338,343-345,358-359,388,402,456,525,579-580,610
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "06d2f0743c38a5c992083ac03e3b0d120bc3168d",
+  "prompts": {},
+  "sessions": {
+    "s_3173e621b32649": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e5fe4119-039c-4be7-b91c-08854486546b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_e62d84b7400bbb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a31e62c3-967d-4409-83d0-9596867791f8",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

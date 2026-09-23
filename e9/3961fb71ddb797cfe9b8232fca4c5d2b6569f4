@@ -1,0 +1,22 @@
+crates/monty-types/src/auto_os_calls.rs
+  ai_agent 1,4,7,19,21-25,29-30,36-37,39-40,44,52,81-83,85-87,96-97,101,115-117,119,121-123,141-145,149-152,155-166,129-130,134-135,18
+  s_e62d84b7400bbb::t_c6cf5450c3b936 31-32,58,147
+  s_e62d84b7400bbb::t_0fe1a66ab1ee92 108
+  s_e62d84b7400bbb::t_5abdae025fe8c5 118,131,136,138,140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e93961fb71ddb797cfe9b8232fca4c5d2b6569f4",
+  "prompts": {},
+  "sessions": {
+    "s_e62d84b7400bbb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a31e62c3-967d-4409-83d0-9596867791f8",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

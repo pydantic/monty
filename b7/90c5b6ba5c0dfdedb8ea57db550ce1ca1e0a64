@@ -1,0 +1,64 @@
+crates/monty-js/ts/worker/component/interfaces/pydantic-monty-worker.d.ts
+  ai_agent 244-246,267-268,270-272,285-301,308-314,316-318,359,276-277,280,284,254-256,258-261,303-305,315
+  s_e62d84b7400bbb::t_132c071c1df818 265-266,269,283,253,257
+  s_e62d84b7400bbb::t_64586dae263e8e 273,275,278-279
+crates/monty-js/ts/worker/index.ts
+  ai_agent 126-134
+crates/monty-js/__test__/wasm_auto_os_calls.spec.ts
+  ai_agent 1-15,22-31,33-42
+crates/monty-js/README.md
+  s_e62d84b7400bbb::t_146c8139eeb27e 404-407,470-471,476,480-482,490-492
+  ai_agent 403,483-485,489,493-504
+  s_3173e621b32649::t_240dcd8df67c21 479
+crates/monty-js/src/pool.rs
+  ai_agent 44-45,55,147,150-154,164-166,173-176,295,318
+crates/monty-js/ts/worker/transport.ts
+  ai_agent 12-13,16,21,25,138,434-439,442,462,472-477,11,27,73,95-96,123,443,458-460,465-466,468-471
+  s_e62d84b7400bbb::t_0d8a8ce501d982 445,467
+  s_e62d84b7400bbb::t_3244b680653e23 448
+  s_e62d84b7400bbb::t_7433e8e16e7643 450
+crates/monty-js/ts/options.ts
+  ai_agent 75-76,82,84-85,98,100-101,117,119,122-128,135-144,147-148,156,163-165,171-177,180,182,184,189-192,196-200,219-229,231-247
+  s_3173e621b32649::t_053a3ce184c926 152-153
+crates/monty-js/ts/index.ts
+  ai_agent 16-17,19-21,23-24
+crates/monty-js/__test__/auto_os_calls.spec.ts
+  ai_agent 4-6,8-11,16,18-32,34-47,89-90,94-98,101-103,114-122,124-126,128-129,131,133-147,150,155,157,161-179,181-184,186-197,200-204,219,221,223,225-227,80-88,91-93,99-100,104,106-107,109-113,123,151,153,160,180,185,198-199,205-218,220
+  s_3173e621b32649::t_06624c4d765fa6 148-149,79
+  s_3173e621b32649::t_4c343dcfe286a6 105,108,152,159
+crates/monty-js/ts/pool.ts
+  ai_agent 10-11,13-17,202,225-226,235,238-246,254-255,262-267
+crates/monty-js/src/auto_os_calls.rs
+  ai_agent 1-10,12-41,60,62-65,97-110,58,66,68-70,74,80-96
+  s_e62d84b7400bbb::t_3244b680653e23 56
+crates/monty-js/__test__/async.spec.ts
+  ai_agent 324,380-381
+crates/monty-js/__test__/helpers.ts
+  ai_agent 43,55
+crates/monty-js/__test__/feed_start.spec.ts
+  ai_agent 126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b790c5b6ba5c0dfdedb8ea57db550ce1ca1e0a64",
+  "prompts": {},
+  "sessions": {
+    "s_3173e621b32649": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e5fe4119-039c-4be7-b91c-08854486546b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_e62d84b7400bbb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a31e62c3-967d-4409-83d0-9596867791f8",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

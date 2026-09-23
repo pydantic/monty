@@ -1,0 +1,46 @@
+docs/limitations/random.md
+  s_e62d84b7400bbb::t_146c8139eeb27e 24-28,38,41,54,82-84
+docs/limitations/datetime.md
+  s_e62d84b7400bbb::t_146c8139eeb27e 116,125-127,134-141,159-160
+CLAUDE.md
+  s_e62d84b7400bbb::t_146c8139eeb27e 1046-1047
+docs/limitations/time.md
+  s_e62d84b7400bbb::t_146c8139eeb27e 3,8,18-21,23-33,54,58
+  s_e62d84b7400bbb::t_ab12890ba40411 37
+packages/pydantic-monty/README.md
+  s_e62d84b7400bbb::t_146c8139eeb27e 281-282,287,292-305,310-311,319-320,322-323,335-336
+  s_3173e621b32649::t_240dcd8df67c21 290-291
+docs/quickstart/rust.md
+  s_e62d84b7400bbb::t_146c8139eeb27e 210,232-235,237-239,242-256
+docs/quickstart/javascript.md
+  s_e62d84b7400bbb::t_146c8139eeb27e 235,239-251,253-258
+docs/quickstart/python.md
+  s_e62d84b7400bbb::t_146c8139eeb27e 174,178-192,198-202,204
+docs/security.md
+  s_e62d84b7400bbb::t_146c8139eeb27e 203-204,207-208,217,238,281-283,296,300-302,306,328,331-332
+  s_e62d84b7400bbb::t_3f7ee05fe9c690 288
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "bc94f4e742007e976241d9efa1d81f3f0706bc3e",
+  "prompts": {},
+  "sessions": {
+    "s_3173e621b32649": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e5fe4119-039c-4be7-b91c-08854486546b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_e62d84b7400bbb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a31e62c3-967d-4409-83d0-9596867791f8",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
