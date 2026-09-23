@@ -29,6 +29,13 @@ pub(crate) enum ZeroArgOsProperty {
 }
 
 impl Property {
+    /// The dotted name the property is reached by; its hash key in dicts and sets.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Os(ZeroArgOsProperty::GetEnviron) => "os.environ",
+        }
+    }
+
     /// Invokes the getter, returning the `CallResult` the VM should act on.
     pub fn get(self) -> CallResult {
         match self {

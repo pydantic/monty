@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     cmp::Ordering,
     fmt::{self, Write},
-    mem::{self, discriminant},
+    mem,
     str::FromStr,
 };
 
@@ -18,7 +18,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
     fstring::FormatFloat,
-    hash::{HashValue, hash_one, hash_python_long_int},
+    hash::{HashValue, hash_named, hash_one, hash_python_long_int, identity_hash},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     heap_data::heap_subscript,
     identity::Identity,
@@ -1697,18 +1697,23 @@ impl Value {
             // NamedTuple/FrozenSet/Path) carry an inline `cached_hash`;
             // cheap-to-hash types recompute each call.
             Self::Ref(id) => vm.heap.read(*id).py_hash(vm),
-            // Singleton values hash by discriminant
-            Self::Undefined | Self::Ellipsis | Self::NotImplemented | Self::None => {
-                Ok(Some(hash_one(discriminant(self))))
-            }
-            Self::Builtin(b) => Ok(Some(hash_one(b))),
-            Self::ModuleFunction(mf) => Ok(Some(hash_one(mf))),
+            // Values with no heap identity hash by name, never by discriminant:
+            // dict and set entries persist their hash, so a hash tied to an
+            // enum's declaration order would break lookups in older dumps.
+            Self::Undefined => Ok(Some(hash_named("singleton", "Undefined"))),
+            Self::Ellipsis => Ok(Some(hash_named("singleton", "Ellipsis"))),
+            Self::NotImplemented => Ok(Some(hash_named("singleton", "NotImplemented"))),
+            Self::None => Ok(Some(hash_named("singleton", "None"))),
+            Self::Builtin(Builtins::Function(function)) => Ok(Some(hash_named("builtin", (*function).into()))),
+            Self::Builtin(Builtins::ExcType(exc_type)) => Ok(Some(hash_named("type", (*exc_type).into()))),
+            // an instance's class is a heap object, hashed by identity like its instances
+            Self::Builtin(Builtins::Type(Type::Instance(class_id))) => Ok(Some(identity_hash(*class_id))),
+            Self::Builtin(Builtins::Type(ty)) => Ok(Some(hash_named("type", &ty.name(vm.heap, vm.interns)))),
+            Self::ModuleFunction(function) => Ok(Some(hash_named("module_function", &function.to_string()))),
             // Hash functions based on function ID
             Self::DefFunction(f_id) => Ok(Some(hash_one(f_id))),
-            // Markers are hashable based on their discriminant
-            Self::Marker(m) => Ok(Some(hash_one(m))),
-            // Properties are hashable based on their OS function discriminant
-            Self::Property(p) => Ok(Some(hash_one(p))),
+            Self::Marker(marker) => Ok(Some(hash_named("marker", marker.0.into()))),
+            Self::Property(property) => Ok(Some(hash_named("property", property.name()))),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }

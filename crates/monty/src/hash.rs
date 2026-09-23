@@ -124,7 +124,7 @@ impl<'de> serde::Deserialize<'de> for HashValue {
 /// Hashes any `Hash` value with a fresh [`DefaultHasher`].
 ///
 /// Keeps the hasher boilerplate in one place for the cold `Value::py_hash` arms
-/// (builtins, functions, markers, singletons), so the hot arms (int/str/ref)
+/// (functions, named builtins, heap identities), so the hot arms (int/str/ref)
 /// never pay for constructing a hasher they don't use.
 #[inline]
 pub(crate) fn hash_one(value: impl Hash) -> HashValue {
@@ -141,6 +141,14 @@ pub(crate) fn hash_one(value: impl Hash) -> HashValue {
 #[inline]
 pub(crate) fn identity_hash(id: HeapId) -> HashValue {
     hash_one(id)
+}
+
+/// Hashes a value with no heap identity (a builtin, type, marker or singleton)
+/// by its stable name. Dict and set entries persist their hash in dumps, so a
+/// hash tied to an enum's declaration order would break lookups in older dumps
+/// once a variant is inserted. `kind` keeps `int` apart from the string `'int'`.
+pub(crate) fn hash_named(kind: &'static str, name: &str) -> HashValue {
+    hash_one((kind, name))
 }
 
 /// Hashes a string using the canonical Python-string hash function.

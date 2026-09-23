@@ -40,8 +40,9 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// them does not need a bump (see the module docs). Bump for every release where
 /// the *meaning* of serialized data changes: opcodes or their operand shapes,
 /// `BuiltinsFunctions` order (its discriminants are bytecode operands),
-/// `CmpOperator` values, the compiler's constant layout, or a semantic change to
-/// a stored value. Older dumps are then rejected instead of misexecuting.
+/// `CmpOperator` values, the compiler's constant layout, how a dict or set key
+/// hashes (entries persist their hash), or a semantic change to a stored value.
+/// Older dumps are then rejected instead of misexecuting.
 ///
 /// Before bumping, check there's already been a bump since the last release - multiple bumps
 /// between releases is unnecessary and can lead to confusion.

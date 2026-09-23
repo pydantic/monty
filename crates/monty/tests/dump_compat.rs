@@ -8,6 +8,7 @@
 
 use std::{env, fs, path::PathBuf};
 
+use insta::assert_snapshot;
 use monty::{DUMP_VERSION, Dump, MontyRepl, Session, SessionRef, dump};
 use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 use serde::{Deserialize, Serialize};
@@ -176,6 +177,23 @@ fn fixture_dump_loads_and_resumes() {
         checked,
         MontyObject::tuple(vec![MontyObject::int(42), MontyObject::int(12)])
     );
+}
+
+/// Dict and set entries persist their hash, so the hash of every kind of key
+/// without a heap identity is part of the dump contract: a change here needs a
+/// `DUMP_VERSION` bump.
+#[test]
+fn persisted_key_hashes_are_stable() {
+    let mut repl = MontyRepl::new("hashes.py", ResourceTracker::default(), CompileOptions::default());
+    let hashes = repl
+        .feed_run(
+            "import json, typing\n(hash(None), hash(...), hash(NotImplemented), hash(int), hash(ValueError), \
+             hash(len), hash(json.dumps), hash(typing.Any))",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_snapshot!(hashes.py_repr(), @"(-7376904247260835724, -8418895208483869890, -7578619387304540654, -6751866591645121981, -8097107109803033201, 2456456309100923238, -2765113180689838008, 2858064283329581446)");
 }
 
 /// The fixture for the current `DUMP_VERSION`; the name carries the version so
