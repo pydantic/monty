@@ -762,8 +762,9 @@ impl CodeLoc {
 /// `end` exclusive. A peer that sends no position reads as [`Self::unknown`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SourceRange {
-    /// The source the range indexes, named as a traceback frame names it:
-    /// the script, `<python-input-N>` for a feed, `<string>` in `eval()` / `exec()`.
+    /// The source the range indexes, named as a traceback frame names it: an
+    /// in-process one-shot run's script name, `<python-input-N>` for a feed,
+    /// `<string>` in `eval()` / `exec()`.
     pub filename: String,
     /// Where the expression starts.
     pub start: CodeLoc,

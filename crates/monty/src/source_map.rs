@@ -9,7 +9,7 @@ use crate::{exception_private::RawStackFrame, intern::Interns, parse::CodeRange}
 /// every bytecode location resolves to a line and column up front.
 ///
 /// Columns count characters; a non-ASCII source keeps a count every
-/// [`CHAR_CHECKPOINT`] bytes so a column never scans a whole line.
+/// [`CHAR_CHECKPOINT`] bytes, bounding each character-count scan to one chunk.
 pub(crate) struct SourceLines<'s> {
     source: &'s [u8],
     /// Byte offset of the start of each line; `line_starts[0]` is 0.
