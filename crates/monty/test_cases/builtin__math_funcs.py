@@ -256,6 +256,8 @@ big_odd = pow(3, (1 << 33) - 1, (1 << 131072) + 1)
 assert (big_odd % 1000003, big_odd % 999983, len(bin(big_odd)) - 2) == (518390, 765077, 131071)
 big_even = pow(3, (1 << 33) - 1, (1 << 131072) - 1)
 assert (big_even % 1000003, big_even % 999983, len(bin(big_even)) - 2) == (676515, 996886, 131072)
+# A tiny exponent over the same modulus takes the polled path too.
+assert pow(2, 3, (1 << 131072) + 1) == 8
 assert pow(2, True) == 2
 assert pow(True, True) == 1
 assert pow(True, -1) == 1.0

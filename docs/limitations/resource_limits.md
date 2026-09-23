@@ -135,10 +135,12 @@ indistinguishable from a stack overflow.
     bases 0, 1 and -1, which are computed.
 - `pow(base, exp, mod)` requires all integer arguments and rejects negative
     exponents (`ValueError`).
-    A call whose work estimate (exponent bits × modulus words²) is at most 2²⁷ runs
-    to completion without polling the time limit, about 0.2 s on a laptop; larger
+    A call whose work estimate ((exponent bits + 80) × modulus words²) is at most 2²⁷
+    runs to completion without polling the time limit, about 0.2 s on a laptop; larger
     calls poll between exponent bits, so a single squaring of the modulus is the
     longest uninterruptible step.
+    The added 80 bits are the fixed setup cost of the unpolled path, so a small
+    positive exponent over a large modulus polls as well.
 - `int(str_or_bytes, base)` rejects inputs over 4,300 digits before the
     potentially quadratic BigInt parse when the effective base is not a power
     of two. The fixed cap matches CPython's

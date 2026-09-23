@@ -784,6 +784,9 @@ impl<'h> HeapRead<'h, LongInt> {
 /// about 0.2 s on a 2024 laptop and well inside the pool's grace on slower hosts.
 const MODPOW_UNPOLLED_WORK: u64 = 1 << 27;
 
+/// Exponent bits charged for `modpow`'s fixed setup, its lowest exponent word plus a 16-power table.
+const MODPOW_FLOOR_BITS: u64 = 64 + 16;
+
 /// Performs modular exponentiation for integer values of any storage representation.
 ///
 /// Small inputs take `num-bigint`'s Montgomery `modpow`; anything past
@@ -809,7 +812,10 @@ pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, heap
     let (base, exponent, modulus_mag) = (base.magnitude(), exponent.magnitude(), modulus_abs.magnitude());
     // A `num-bigint` digit is pointer-sized, so wasm32 counts twice as many words.
     let words = modulus_mag.bits().div_ceil(u64::from(usize::BITS));
-    let work = exponent.bits().saturating_mul(words.saturating_mul(words));
+    let work = exponent
+        .bits()
+        .saturating_add(MODPOW_FLOOR_BITS)
+        .saturating_mul(words.saturating_mul(words));
     let result = if work <= MODPOW_UNPOLLED_WORK {
         base.modpow(exponent, modulus_mag)
     } else {
