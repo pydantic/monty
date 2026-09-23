@@ -879,6 +879,12 @@ impl<'h> HeapRead<'h, Dict> {
         if !self.get(vm.heap).indices_stale() {
             return Ok(());
         }
+        // The cloned keys, their hashes and the table are three buffers sized
+        // by the dict, all allocated before the next execution checkpoint.
+        let len = self.get(vm.heap).entries.len();
+        vm.heap
+            .tracker
+            .check_allocation(len.saturating_mul(VALUE_SIZE + 2 * mem::size_of::<usize>()))?;
         // Keys are cloned out because hashing needs `&mut VM` and may read the
         // heap, so no borrow of the dict can be held across it.
         let keys: Vec<Value> = self
@@ -888,13 +894,15 @@ impl<'h> HeapRead<'h, Dict> {
             .map(|e| e.key.clone_with_heap(vm.heap))
             .collect();
         defer_drop!(keys, vm);
-        let mut hashes = Vec::with_capacity(keys.len());
-        for key in keys {
-            let hash = key
-                .py_hash(vm)?
-                .expect("loaded dict keys were hashable when inserted")
-                .raw();
-            hashes.push(hash);
+        let mut hashes = Vec::with_capacity(len);
+        for (i, key) in keys.iter().enumerate() {
+            // hashing may run user `__hash__`, which restarts the dispatch countdown
+            vm.heap.tracker.check_memory_time_every(i)?;
+            // a key's class may have dropped `__hash__` since the dump was written
+            let Some(hash) = key.py_hash(vm)? else {
+                return Err(ExcType::type_error_unhashable_dict_key(&key.py_type_name(vm)));
+            };
+            hashes.push(hash.raw());
         }
         let this = self.get_mut(vm.heap);
         if this.indices_stale() && this.entries.len() == hashes.len() {
@@ -2187,24 +2195,24 @@ fn dict_setdefault<'h>(dict: &mut HeapRead<'h, Dict>, args: ArgValues, vm: &mut 
 /// Removes and returns the last inserted key-value pair as a tuple.
 /// Raises KeyError if the dict is empty.
 fn dict_popitem<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
-    // the rebuild below reads the entry hashes, so they must be current
-    dict.ensure_indices(vm)?;
     let this = dict.get_mut(vm.heap);
-    if this.is_empty() {
-        return Err(ExcType::key_error_popitem_empty_dict());
-    }
-
     // Remove the last entry (LIFO order)
-    let entry = this.entries.pop().expect("dict is not empty");
+    let Some(entry) = this.entries.pop() else {
+        return Err(ExcType::key_error_popitem_empty_dict());
+    };
 
     // Remove from indices - need to find the entry with this index
     // Since we removed the last entry, we need to clear and rebuild indices
     // (This is simpler than trying to find and remove the specific hash entry)
     // TODO: This O(n) rebuild could be optimized by finding and removing the
     // specific hash entry directly from the hashbrown table.
-    this.indices.clear();
-    for (idx, e) in this.entries.iter().enumerate() {
-        this.indices.insert_unique(e.hash, idx, |&i| this.entries[i].hash);
+    // A dict still awaiting its rebuild has no table to update, and popping
+    // keeps it that way without hashing anything.
+    if !this.indices.is_empty() {
+        this.indices.clear();
+        for (idx, e) in this.entries.iter().enumerate() {
+            this.indices.insert_unique(e.hash, idx, |&i| this.entries[i].hash);
+        }
     }
 
     // Create tuple (key, value)

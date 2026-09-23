@@ -227,22 +227,21 @@ impl<'h> HeapRead<'h, SetStorage> {
     ///
     /// Returns `Err(KeyError)` if the set is empty.
     fn pop(&mut self, vm: &mut VM<'h>) -> RunResult<Value> {
-        if self.get(vm.heap).is_empty() {
-            return Err(ExcType::key_error_pop_empty_set());
-        }
-        // the table removal below is keyed by the entry's hash, so it must be current
-        self.ensure_indices(vm)?;
-
         // Remove the last entry (most efficient)
         let storage = self.get_mut(vm.heap);
-        let entry = storage.entries.pop().expect("checked non-empty");
+        let Some(entry) = storage.entries.pop() else {
+            return Err(ExcType::key_error_pop_empty_set());
+        };
 
-        // Remove from hash table
-        storage
-            .indices
-            .find_entry(entry.hash, |&idx| idx == storage.entries.len())
-            .expect("entry must exist")
-            .remove();
+        // Remove from the hash table, unless the storage is still awaiting its
+        // rebuild: then there is no table entry, and none is needed.
+        if !storage.indices.is_empty() {
+            storage
+                .indices
+                .find_entry(entry.hash, |&idx| idx == storage.entries.len())
+                .expect("entry must exist")
+                .remove();
+        }
 
         Ok(entry.value)
     }
@@ -301,6 +300,12 @@ impl<'h> HeapRead<'h, SetStorage> {
         if !self.get(vm.heap).indices_stale() {
             return Ok(());
         }
+        // The cloned values, their hashes and the table are three buffers sized
+        // by the set, all allocated before the next execution checkpoint.
+        let len = self.get(vm.heap).entries.len();
+        vm.heap
+            .tracker
+            .check_allocation(len.saturating_mul(VALUE_SIZE + 2 * mem::size_of::<usize>()))?;
         let values: Vec<Value> = self
             .get(vm.heap)
             .entries
@@ -308,8 +313,10 @@ impl<'h> HeapRead<'h, SetStorage> {
             .map(|e| e.value.clone_with_heap(vm.heap))
             .collect();
         defer_drop!(values, vm);
-        let mut hashes = Vec::with_capacity(values.len());
-        for value in values {
+        let mut hashes = Vec::with_capacity(len);
+        for (i, value) in values.iter().enumerate() {
+            // hashing may run user `__hash__`, which restarts the dispatch countdown
+            vm.heap.tracker.check_memory_time_every(i)?;
             hashes.push(set_element_hash(value, vm)?);
         }
         let storage = self.get_mut(vm.heap);
@@ -526,10 +533,13 @@ impl<'h> HeapRead<'h, SetStorage> {
     /// Compares two sets for equality. Both sides are `&mut` because `self`'s
     /// cached hashes are handed to `other`'s probe, so both must be current.
     fn eq(&mut self, other: &mut Self, vm: &mut VM<'h>) -> RunResult<bool> {
+        // Rebuild first: a user `__hash__` run by the rebuild could resize
+        // either set, so the lengths are compared afterwards.
+        self.ensure_indices(vm)?;
+        other.ensure_indices(vm)?;
         if self.get(vm.heap).len() != other.get(vm.heap).len() {
             return Ok(false);
         }
-        self.ensure_indices(vm)?;
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some((elem, hash)) = iter.next_entry(vm)? {
@@ -1092,8 +1102,11 @@ impl<'h> HeapRead<'h, Set> {
     /// `set.update(iterable)` via HeapRead.
     fn hr_update(&mut self, other: Value, vm: &mut VM<'h>) -> RunResult<()> {
         // Try direct extraction from Set/FrozenSet
-        if let Value::Ref(id) = &other {
-            ensure_heap_set_indices(*id, vm)?;
+        if let Value::Ref(id) = &other
+            && let Err(err) = ensure_heap_set_indices(*id, vm)
+        {
+            other.drop_with(vm);
+            return Err(err);
         }
         let entries_opt = {
             match &other {
@@ -1564,8 +1577,11 @@ impl Set {
     /// Helper to get SetStorage from a Value (either directly or by conversion).
     fn get_storage_from_value(value: Value, vm: &mut VM<'_>) -> RunResult<SetStorage> {
         // Try to get entries from a Set/FrozenSet directly, hashes included
-        if let Value::Ref(id) = &value {
-            ensure_heap_set_indices(*id, vm)?;
+        if let Value::Ref(id) = &value
+            && let Err(err) = ensure_heap_set_indices(*id, vm)
+        {
+            value.drop_with(vm);
+            return Err(err);
         }
         let entries_opt = match &value {
             Value::Ref(id) => match vm.heap.get(*id) {

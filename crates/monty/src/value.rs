@@ -1197,9 +1197,6 @@ impl<'h> PyTrait<'h> for Value {
     }
 }
 
-/// `Value` releases its (possible) heap reference through any [`ContainsHeap`]
-/// context — `Heap`, `HeapReader`, `VM`, or the json `Encoder`. Forwards to the
-/// inherent [`Value::drop_with`], which also serves direct callers.
 /// The `&self` bodies behind the trait's `&mut self` operator methods.
 ///
 /// The trait takes `&mut self` so a heap container can rebuild its indices
@@ -1436,6 +1433,9 @@ impl Value {
     }
 }
 
+/// `Value` releases its (possible) heap reference through any [`ContainsHeap`]
+/// context — `Heap`, `HeapReader`, `VM`, or the json `Encoder`. Forwards to the
+/// inherent [`Value::drop_with`], which also serves direct callers.
 impl<C: ContainsHeap> DropWithContext<C> for Value {
     #[inline]
     fn drop_with(self, ctx: &mut C) {

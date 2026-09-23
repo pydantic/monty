@@ -181,7 +181,8 @@ fn fixture_dump_loads_and_resumes() {
 /// Dict and set entries carry no hash in a dump; each container rebuilds its
 /// index on the first keyed operation after loading. Every kind of keyed
 /// access is driven here on loaded containers, including keys whose `__hash__`
-/// is user code, which runs again exactly once per key.
+/// is user code: a rebuild runs every stored `__hash__` exactly once, while
+/// later lookups hash their lookup key as they always did.
 #[test]
 fn loaded_dicts_and_sets_rebuild_their_indices_lazily() {
     let mut repl = MontyRepl::new("lazy.py", ResourceTracker::default(), CompileOptions::default());
@@ -225,6 +226,8 @@ k1, k2 = Key(1), Key(2)
 d = {(1, 2): 'tuple', frozenset({3}): 'frozen', k1: 'key', None: 'none', int: 'type', 'str': 1}
 s = {(1, 2), frozenset({3}), k2, None, int, 'str'}
 fs = frozenset(s)
+d2 = {k1: 'a', 'z': 2}
+s2 = {k2}
 c = collections.Counter(a=3, b=1)
 dd = collections.defaultdict(list)
 dd['x'].append(1)
@@ -238,12 +241,15 @@ const LAZY_CHECK: &str = r"
 import collections, math
 
 assert hash_calls == []
+# removing the last entry never needs the index, so nothing is hashed
+assert d2.popitem() == ('z', 2) and s2.pop() is k2 and hash_calls == []
+assert d2 == {k1: 'a'} and hash_calls == [1, 1]
 assert d[None] == 'none'
-assert hash_calls == [1]
+assert hash_calls == [1, 1, 1]
 assert None in s
-assert hash_calls == [1, 2]
+assert hash_calls == [1, 1, 1, 2]
 assert d[None] == 'none' and None in s
-assert hash_calls == [1, 2]
+assert hash_calls == [1, 1, 1, 2]
 assert d[(1, 2)] == 'tuple' and d[frozenset({3})] == 'frozen' and d[k1] == 'key'
 assert d[None] == 'none' and d[int] == 'type' and d['str'] == 1
 assert (1, 2) in d and Key(1) in d and Key(3) not in d

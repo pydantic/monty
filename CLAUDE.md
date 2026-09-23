@@ -237,8 +237,9 @@ loading, while tuple structs and tuple variants are positional and may only grow
 persistence contract, so renaming a serialized field or variant needs `#[serde(alias = "old")]`, and `#[serde(deny_unknown_fields)]` must never go on a dumped type.
 Persisted `Vec<u8>` / `[u8; N]` data takes `#[serde(with = "serde_bytes")]` so it is written as one byte string.
 Dict and set entries carry no hash in a dump: each container leaves its index table empty on load and rebuilds it
-on the first keyed operation (`ensure_indices`), so the hasher may change freely; the trait methods that can probe
-one take `&mut self` for that reason.
+on the first VM-bearing keyed operation (`ensure_indices`), so the hasher may change freely; the trait methods that
+can probe one take `&mut self` for that reason. The VM-less `get_by_str` lookup scans a loaded dict linearly instead,
+so restored module and class namespaces stay on that path until something writes to them.
 `DUMP_VERSION` still bumps when the *meaning* of stored data changes: opcodes, `BuiltinsFunctions` order (its
 discriminants are bytecode operands), `CmpOperator` values, the compiler's constant layout, or a semantic change to a
 stored value. `crates/monty/tests/dump_compat.rs` loads a checked-in fixture written at the current version; a
