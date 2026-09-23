@@ -249,6 +249,18 @@ impl From<&SourceRange> for pb::SourceRange {
     }
 }
 
+/// Owned form: moves the filename, for decoders that merge repeated fields
+/// without copying what they already hold.
+impl From<SourceRange> for pb::SourceRange {
+    fn from(range: SourceRange) -> Self {
+        Self {
+            filename: range.filename,
+            start: Some(range.start.into()),
+            end: Some(range.end.into()),
+        }
+    }
+}
+
 /// Total: nothing renders carets from a suspension's range, so no column check
 /// is needed (cf. `StackFrame`), and a missing endpoint reads as line and
 /// column 0, like a missing range (see [`SourceRange::unknown`]).

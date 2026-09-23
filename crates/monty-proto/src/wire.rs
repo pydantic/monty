@@ -269,10 +269,11 @@ impl Message for WireFunctionCall {
             7 => encoding::message::merge(wire_type, &mut self.values, buf, ctx),
             8 => {
                 // a singular message field repeated on the wire merges, as in
-                // prost's generated decoder
+                // prost's generated decoder; the held value moves rather than
+                // clones, so repeats cost their own bytes and not the filename's
                 let mut position = self
                     .position
-                    .as_ref()
+                    .take()
                     .map_or_else(pb::SourceRange::default, pb::SourceRange::from);
                 encoding::message::merge(wire_type, &mut position, buf, ctx)?;
                 self.position = Some(SourceRange::from(position));

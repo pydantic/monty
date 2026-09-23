@@ -15,6 +15,8 @@
 //! validation now happens during decode, so these tests pin the exact error
 //! messages a misbehaving peer produces.
 
+use std::time::Instant;
+
 use monty::{MontyRun, RunProgress};
 use monty_proto::{WireArena, WireFunctionCall, decode_frame, os_call_to_proto, pb};
 use monty_types::{
@@ -1171,4 +1173,31 @@ fn repeated_position_fields_merge_like_the_oracle() {
     assert_eq!(hand.position, Some(position()));
     let generated = oracle::FunctionCall::decode(bytes.as_slice()).expect("oracle decodes");
     assert_eq!(generated.position, Some(oracle_position()));
+
+    // many empty repeats after a long filename must cost their own two bytes
+    // each, not a copy of the filename per repeat
+    let filename = "f".repeat(1 << 20);
+    let mut bytes = oracle::FunctionCall {
+        function_name: "external".to_owned(),
+        args: vec![],
+        kwargs: vec![],
+        call_id: 1,
+        object_id: None,
+        allow_eager_await: false,
+        values: Some(to_oracle(graph)),
+        position: Some(oracle::SourceRange {
+            filename: filename.clone(),
+            start: Some(oracle::CodeLoc { line: 1, column: 1 }),
+            end: Some(oracle::CodeLoc { line: 1, column: 2 }),
+        }),
+    }
+    .encode_to_vec();
+    for _ in 0..100_000 {
+        encode_key(8, WireType::LengthDelimited, &mut bytes);
+        encode_varint(0, &mut bytes);
+    }
+    let started = Instant::now();
+    let hand = decode_frame::<WireFunctionCall>(bytes.as_slice()).expect("repeated empty positions decode");
+    assert_eq!(hand.position.map(|p| p.filename), Some(filename));
+    assert!(started.elapsed().as_secs() < 5, "repeats amplified decode work");
 }
