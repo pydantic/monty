@@ -1,0 +1,21 @@
+crates/monty-proto/src/convert/exception.rs
+  s_b3020d5902d626::t_d119cc83802d13 271-272,277-290
+crates/monty-pool/src/telemetry/tracing.rs
+  s_b3020d5902d626::t_d119cc83802d13 336-337,359-360,684,715-716
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7d780cb33d91b577d5692991a0224102eccda7c9",
+  "prompts": {},
+  "sessions": {
+    "s_b3020d5902d626": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a564b0fb-b4c3-44c8-aa72-1544620ee3bb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
