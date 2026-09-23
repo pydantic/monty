@@ -419,6 +419,16 @@ pub(super) fn stack_index(index: usize) -> u32 {
     u32::try_from(index).expect("VM stack index exceeds u32")
 }
 
+/// The code a saved frame runs: its function's, or `module_code` for the
+/// module-level frame, which has no function ID.
+pub(super) fn frame_code<'code>(
+    interns: &'code Interns,
+    module_code: &'code Code,
+    function_id: Option<FunctionId>,
+) -> &'code Code {
+    function_id.map_or(module_code, |id| &interns.get_function(id).code)
+}
+
 impl<'code> CallFrame<'code> {
     /// Creates a new call frame for module-level code.
     ///
@@ -962,10 +972,7 @@ impl<'h> VM<'h> {
             .frames
             .into_iter()
             .map(|sf| {
-                let code = match sf.function_id {
-                    Some(func_id) => &interns.get_function(func_id).code,
-                    None => &program.module_code,
-                };
+                let code = frame_code(interns, &program.module_code, sf.function_id);
                 CallFrame {
                     code,
                     bytecode: code.bytecode(),
@@ -2404,16 +2411,13 @@ impl<'h> VM<'h> {
         if self.is_main_task() && !self.current_frame.is_parked {
             self.suspension_position()
         } else {
-            let task = self.scheduler.main_task();
-            // `save_task_context` pushes the executing frame last.
-            task.frames
-                .last()
-                .and_then(|frame| {
-                    let code = match frame.function_id {
-                        Some(func_id) => &self.interns.get_function(func_id).code,
-                        None => self.module_code,
-                    };
-                    code.location_for_offset(task.instruction_ip)
+            self.scheduler
+                .main_task()
+                .and_then(|task| {
+                    // `save_task_context` pushes the executing frame last.
+                    let frame = task.frames.last()?;
+                    frame_code(self.interns, self.module_code, frame.function_id)
+                        .location_for_offset(task.instruction_ip)
                 })
                 .map_or_else(SourceRange::unknown, |entry| entry.source_range(self.interns))
         }

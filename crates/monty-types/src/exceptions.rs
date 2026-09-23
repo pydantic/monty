@@ -755,22 +755,15 @@ impl CodeLoc {
     }
 }
 
-/// The source range of the expression that suspended execution.
+/// The source range of the expression that suspended execution, carried by
+/// every suspension.
 ///
-/// Carried by every suspension (a host function call, an OS call, a name
-/// lookup, or a run blocked on host futures) so a host can point at the
-/// suspending expression. Positions follow [`StackFrame`]: 1-based lines and
-/// character columns, with `end` exclusive.
-///
-/// `filename` names the source the range indexes as a traceback frame does:
-/// the script name of a one-shot run, `<python-input-N>` for a session's N-th
-/// feed, or `<string>` inside an `eval()` / `exec()` string.
-///
-/// A worker that predates the field reports none; hosts then see
-/// [`SourceRange::unknown`], whose lines and columns are 0.
+/// Positions follow [`StackFrame`]: 1-based lines and character columns,
+/// `end` exclusive. A peer that sends no position reads as [`Self::unknown`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SourceRange {
-    /// Name of the source the range indexes.
+    /// The source the range indexes, named as a traceback frame names it:
+    /// the script, `<python-input-N>` for a feed, `<string>` in `eval()` / `exec()`.
     pub filename: String,
     /// Where the expression starts.
     pub start: CodeLoc,

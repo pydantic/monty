@@ -664,14 +664,12 @@ fn render_call_ids(ids: &[u32]) -> (Option<String>, bool) {
 }
 
 /// The `sandbox.code.*` attributes locating a suspension in the sandboxed
-/// source (the `run code` span's `code` attribute).
+/// source; OpenTelemetry's `code.*` keys describe the host code instead.
 ///
-/// Namespaced under `sandbox.` rather than OpenTelemetry's `code.*` keys,
-/// which describe the host code emitting the span. Every value is absent when
-/// the child sent no position. Numbers are `i64`: the span visitor renders
-/// unsigned values as strings. The filename is child-supplied, so it is capped
-/// like every other attribute; `cut` says whether it was.
+/// Every value is absent when the child sent no position. Numbers are `i64`
+/// because the span visitor renders unsigned values as strings.
 struct PositionAttrs {
+    /// The child-supplied filename, capped like every other attribute.
     file: Option<String>,
     cut: bool,
     line_start: Option<i64>,

@@ -8,10 +8,8 @@ use crate::{exception_private::RawStackFrame, intern::Interns, parse::CodeRange}
 /// Line and character index over one source, built once per compilation so
 /// every bytecode location resolves to a line and column up front.
 ///
-/// Suspensions then report a stored position instead of rescanning the source.
-/// Columns count Unicode scalar values; a non-ASCII source keeps a character
-/// count every [`CHAR_CHECKPOINT`] bytes, so a column costs a binary search and
-/// at most that many bytes of counting however long the line is.
+/// Columns count characters; a non-ASCII source keeps a count every
+/// [`CHAR_CHECKPOINT`] bytes so a column never scans a whole line.
 pub(crate) struct SourceLines<'s> {
     source: &'s [u8],
     /// Byte offset of the start of each line; `line_starts[0]` is 0.
