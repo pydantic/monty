@@ -443,6 +443,7 @@ export class WorkerTransport {
           // null (not undefined) for plain calls, matching the napi turn shape
           objectId: event.val.objectId ?? null,
           allowEagerAwait: event.val.allowEagerAwait,
+          position: event.val.position,
         }
       }
       case 'os-call': {
@@ -462,13 +463,23 @@ export class WorkerTransport {
           kwargs: event.val.kwargs.map(({ key, value }) => [get(key), get(value)]),
           callId: event.val.callId,
           allowEagerAwait: event.val.allowEagerAwait,
+          position: event.val.position,
           ...(systemSleepSecs === undefined ? {} : { systemSleepSecs }),
         }
       }
       case 'name-lookup':
-        return { kind: 'nameLookup', name: event.val.name, objectId: event.val.objectId ?? null }
+        return {
+          kind: 'nameLookup',
+          name: event.val.name,
+          objectId: event.val.objectId ?? null,
+          position: event.val.position,
+        }
       case 'resolve-futures':
-        return { kind: 'resolveFutures', pendingCallIds: [...event.val] }
+        return {
+          kind: 'resolveFutures',
+          pendingCallIds: [...event.val.pendingCallIds],
+          position: event.val.position,
+        }
       case 'fatal-error':
         return crashed(event.val)
       default:

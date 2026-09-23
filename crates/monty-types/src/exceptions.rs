@@ -755,6 +755,26 @@ impl CodeLoc {
     }
 }
 
+/// The source range of the expression that suspended execution.
+///
+/// Carried by every suspension (a host function call, an OS call, a name
+/// lookup, or a run blocked on host futures) so a host can point at the
+/// suspending expression. Positions follow [`StackFrame`]: 1-based lines and
+/// character columns, with `end` exclusive.
+///
+/// `filename` names the source the range indexes as a traceback frame does:
+/// the script name of a one-shot run, `<python-input-N>` for a session's N-th
+/// feed, or `<string>` inside an `eval()` / `exec()` string.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct SourceRange {
+    /// Name of the source the range indexes.
+    pub filename: String,
+    /// Where the expression starts.
+    pub start: CodeLoc,
+    /// Where the expression ends (exclusive).
+    pub end: CodeLoc,
+}
+
 /// Formats the message for a `UnicodeDecodeError` covering the byte range
 /// `start..end`: CPython's single-byte form (`byte 0x{first_byte:02x} in
 /// position {start}`) when the range is one byte, otherwise the range form

@@ -2643,6 +2643,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
         ..child_event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "x".to_owned(),
             object_id: None,
+            position: Some(position()),
         }))
     };
     // `Ok` answers Configure, then the honest suspension and the rewound one.
@@ -2721,6 +2722,7 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
         ..child_event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "x".to_owned(),
             object_id: None,
+            position: Some(position()),
         }))
     }));
     let replies_path = dir.path().join("replies.bin");
@@ -2790,4 +2792,13 @@ async fn a_disabled_grace_leaves_the_sandbox_limit_in_charge() {
     assert_eq!(exc.exc_type().to_string(), "TimeoutError");
     session.finish().await.unwrap();
     assert_eq!(pool.idle_workers(), 1);
+}
+
+/// The suspension position every hand-built event carries.
+fn position() -> pb::SourceRange {
+    pb::SourceRange {
+        filename: "main.py".to_owned(),
+        start: Some(pb::CodeLoc { line: 1, column: 1 }),
+        end: Some(pb::CodeLoc { line: 1, column: 2 }),
+    }
 }

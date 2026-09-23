@@ -381,6 +381,18 @@ interface worker {
         hide-frame-name: bool,
     }
 
+    /// Where the expression that suspended execution is in the source:
+    /// 1-based line and character column, exclusive end. `filename` names the
+    /// source as a traceback frame does: `<python-input-N>` for the session's
+    /// N-th feed, or `<string>` inside an `eval()` / `exec()` string.
+    record source-range {
+        filename: string,
+        line: u32,
+        column: u32,
+        end-line: u32,
+        end-column: u32,
+    }
+
     /// A Python exception raised by the sandbox.
     record raised-exception {
         exc-type: string,
@@ -410,6 +422,8 @@ interface worker {
         object-id: option<string>,
         /// A coroutine may settle before replying with resume-futures.
         allow-eager-await: bool,
+        /// Where the call expression is in the source.
+        position: source-range,
     }
 
     /// A suspended name or lazy-attribute lookup.
@@ -419,6 +433,15 @@ interface worker {
         /// instance, or a class type): its uuid string
         /// (`NameLookup.object_id`).
         object-id: option<string>,
+        /// Where the name (or attribute access) is in the source.
+        position: source-range,
+    }
+
+    /// Every sandbox task is blocked on external futures.
+    record resolve-futures-event {
+        pending-call-ids: list<u32>,
+        /// Where the main task's blocked `await` is in the source.
+        position: source-range,
     }
 
     /// A suspended OS call projected into the public callback shape.
@@ -435,6 +458,8 @@ interface worker {
         /// System sleep duration for the host to await directly, in seconds.
         /// The child caps it; the host must cap it again and charge `max-total-sleep` before waiting.
         system-sleep-secs: option<f64>,
+        /// Where the call expression is in the source.
+        position: source-range,
     }
 
     /// A finished feed's value: an index into its arena.
@@ -449,7 +474,7 @@ interface worker {
         function-call(function-call-event),
         os-call(os-call-event),
         name-lookup(name-lookup-event),
-        resolve-futures(list<u32>),
+        resolve-futures(resolve-futures-event),
         complete(complete-event),
         error(raised-exception),
         typing-error(string),

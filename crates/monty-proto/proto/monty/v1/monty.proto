@@ -341,6 +341,16 @@ message CodeLoc {
   uint32 column = 2;
 }
 
+// Where the expression that suspended execution is in the source. `filename`
+// names the source as a traceback frame does: `<python-input-N>` for the
+// session's N-th feed, or `<string>` inside an `eval()` / `exec()` string.
+// `end` is exclusive.
+message SourceRange {
+  string filename = 1;
+  CodeLoc start = 2;
+  CodeLoc end = 3;
+}
+
 message StackFrame {
   string filename = 1;
   CodeLoc start = 2;
@@ -808,6 +818,9 @@ message FunctionCall {
   // The arena `args` and `kwargs` index: one per call, so an object passed
   // twice crosses once.
   Arena values = 7;
+  // Where the call expression is in the source. Required: a parent treats
+  // its absence as a protocol violation.
+  SourceRange position = 8;
 }
 
 // Suspension: the sandbox performed an OS operation, surfaced for the parent
@@ -874,6 +887,8 @@ message OsCall {
   // `ResumeFutures` for `call_id`. Only ever set on `async_sleep`, the one
   // call a future may answer at all.
   bool allow_eager_await = 51;
+  // Where the call expression is in the source. Required, as on `FunctionCall`.
+  SourceRange position = 52;
 
   message TextWrite {
     string path = 1;
@@ -951,12 +966,18 @@ message NameLookup {
   // Set for attribute lookups on a host-backed object — a class instance, or
   // a class type (a lazy class attribute): the uuid of the receiver.
   Uuid object_id = 2;
+  // Where the name (or attribute access) is in the source. Required, as on
+  // `FunctionCall`.
+  SourceRange position = 3;
 }
 
 // Suspension: every sandbox task is blocked on external futures previously
 // registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
 message ResolveFutures {
   repeated uint32 pending_call_ids = 1;
+  // Where the main task's blocked `await` is in the source. Required, as on
+  // `FunctionCall`.
+  SourceRange position = 2;
 }
 
 // Turn end: the snippet completed with this value. The session is ready for

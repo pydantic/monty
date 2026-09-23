@@ -128,6 +128,9 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
 - `FunctionCall::object_id` and `NameLookup::object_id` identify the host receiver for routed calls and lookups,
   including class construction via `__call__`.
   Plain calls and lookups carry `None`.
+- Every suspension carries a `SourceRange` (`FunctionCall::position`, `OsCall::position`, `NameLookup::position`,
+  `ResolveFutures::position()`) locating the suspending expression: the call, the name, or the `await` the main task is
+  blocked on.
 - `MontyRun::with_os_policy` / `MontyRepl::with_os_policy` configure clocks, sleeps and initial random state on every
   execution path.
   `DateTimeSource` selects the system clock, a fixed instant or the host; `SandboxTimeZone` independently selects UTC, a

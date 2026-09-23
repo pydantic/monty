@@ -488,6 +488,13 @@ export interface StackFrame {
   hideCaret: boolean
   hideFrameName: boolean
 }
+export interface SourceRange {
+  filename: string
+  line: number
+  column: number
+  endLine: number
+  endColumn: number
+}
 export interface RaisedException {
   excType: string
   message: string
@@ -506,10 +513,16 @@ export interface FunctionCallEvent {
   callId: number
   objectId?: string
   allowEagerAwait: boolean
+  position: SourceRange
 }
 export interface NameLookupEvent {
   name: string
   objectId?: string
+  position: SourceRange
+}
+export interface ResolveFuturesEvent {
+  pendingCallIds: Uint32Array
+  position: SourceRange
 }
 export interface OsCallEvent {
   functionName: string
@@ -519,6 +532,7 @@ export interface OsCallEvent {
   callId: number
   allowEagerAwait: boolean
   systemSleepSecs?: number
+  position: SourceRange
 }
 export interface CompleteEvent {
   values: Arena
@@ -555,7 +569,7 @@ export interface EventNameLookup {
 }
 export interface EventResolveFutures {
   tag: 'resolve-futures'
-  val: Uint32Array
+  val: ResolveFuturesEvent
 }
 export interface EventComplete {
   tag: 'complete'

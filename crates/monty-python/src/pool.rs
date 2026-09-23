@@ -1464,7 +1464,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                 }
             },
             // Unknown future IDs cannot be resolved by this loop.
-            TurnEvent::ResolveFutures { pending_call_ids } if !sleeps.is_empty() => {
+            TurnEvent::ResolveFutures { pending_call_ids, .. } if !sleeps.is_empty() => {
                 if let Some(id) = pending_call_ids.iter().find(|id| !sleep_ids.contains(id)) {
                     discard_checkout_sync(py, &checkout);
                     return Err(PyRuntimeError::new_err(format!(
@@ -1565,8 +1565,11 @@ fn sync_turn_answer(
         TurnEvent::NameLookup {
             name,
             object_id: Some(object_id),
+            ..
         } => Ok(TurnAnswer::Name(resolve_object_attr(py, &name, &object_id, instances))),
-        TurnEvent::NameLookup { name, object_id: None } => Ok(TurnAnswer::Name(lookup.resolve_name(&name)?.into())),
+        TurnEvent::NameLookup {
+            name, object_id: None, ..
+        } => Ok(TurnAnswer::Name(lookup.resolve_name(&name)?.into())),
         TurnEvent::ResolveFutures { .. } => Err(PyRuntimeError::new_err("async external functions require AsyncMonty")),
         TurnEvent::Complete(_) | TurnEvent::OsCall { .. } => {
             unreachable!("Complete and OsCall are handled by the drive loop")
@@ -1805,6 +1808,7 @@ async fn async_turn_answer(
             call_id,
             object_id,
             allow_eager_await,
+            ..
         } => {
             let dispatched = Python::attach(|py| {
                 let _guard = callback_context.enter(py, native)?;
@@ -1821,6 +1825,7 @@ async fn async_turn_answer(
         TurnEvent::NameLookup {
             name,
             object_id: Some(object_id),
+            ..
         } => {
             let value = Python::attach(|py| {
                 let _guard = callback_context.enter(py, native)?;
@@ -1828,7 +1833,9 @@ async fn async_turn_answer(
             })?;
             Ok(TurnAnswer::Name(value))
         }
-        TurnEvent::NameLookup { name, object_id: None } => {
+        TurnEvent::NameLookup {
+            name, object_id: None, ..
+        } => {
             let value = Python::attach(|py| {
                 let _guard = callback_context.enter(py, native)?;
                 ExternalLookup::new(py, external_lookup.map(|d| d.bind(py)), instances).resolve_name(&name)

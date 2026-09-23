@@ -25,14 +25,19 @@ pub mod worker;
 /// [`pb::Configure::protocol_version`] and range-checked by the child.
 ///
 /// Bump on any change a peer at the previous version could mis-read: removing
-/// or repurposing a field, changing a field's meaning, or adding one the child
-/// requires. Purely additive changes an older peer can ignore do not need a
-/// bump.
-pub const PROTOCOL_VERSION: u32 = 5;
+/// or repurposing a field, changing a field's meaning, or adding one either
+/// side requires. Purely additive changes an older peer can ignore do not need
+/// a bump.
+///
+/// Version 6 added the required `position` on every suspension event: a
+/// version 5 child would announce suspensions without it, which a parent at
+/// this version rejects, so such a child refuses this version instead.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///
-/// Version 4 and below are not served. Version 3 carried values as recursive
+/// A version 5 parent ignores the `position` a version 6 child sends, so it
+/// is still served. Version 4 and below are not served. Version 3 carried values as recursive
 /// `MontyObject` trees, where this build carries one flat `Arena` per message.
 /// Version 4 both lacked `max_feed_duration`/`max_turn_duration` and had the
 /// per-session `max_duration` this build dropped: a version 4 parent would

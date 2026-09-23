@@ -11,8 +11,8 @@ use monty_types::{
     MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
     MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues,
     OpenCallArgs, OsFunctionCall, OsPolicy, PathBytesDataArgs, PathStringDataArgs, ProcessTime, RandomSeed,
-    RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, StackFrame, TimeCaller, UnicodeErrorData,
-    UrandomArgs, sleep_duration, sleep_duration_saturating,
+    RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, SourceRange, StackFrame, TimeCaller,
+    UnicodeErrorData, UrandomArgs, sleep_duration, sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
@@ -904,8 +904,18 @@ fn invalid_arenas_are_rejected() {
 #[track_caller]
 fn assert_os_call_round_trip(call: OsFunctionCall) {
     let expected = format!("{call:?}");
-    let bytes = os_call_to_proto(3, call, false).encode_to_vec();
+    let position = SourceRange {
+        filename: "main.py".to_owned(),
+        start: CodeLoc { line: 2, column: 1 },
+        end: CodeLoc { line: 2, column: 9 },
+    };
+    let bytes = os_call_to_proto(3, call, false, &position).encode_to_vec();
     let decoded = decode_frame::<pb::OsCall>(bytes.as_slice()).expect("wire bytes -> OsCall failed");
+    let back = decoded.position.clone().expect("the position survives the wire");
+    assert_eq!(
+        SourceRange::try_from(back).expect("wire position -> SourceRange"),
+        position
+    );
     let (call_id, back) = os_call_from_proto(decoded).expect("wire call -> OsFunctionCall failed");
     assert_eq!(call_id, 3);
     assert_eq!(format!("{back:?}"), expected);
@@ -1078,6 +1088,7 @@ fn os_call_conversion_rejects_invalid_payloads() {
             key: "HOME".to_owned(),
             default: 1,
         })),
+        position: None,
     };
     assert!(matches!(
         os_call_from_proto(getenv(None)),

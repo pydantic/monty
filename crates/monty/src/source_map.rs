@@ -1,8 +1,31 @@
 use std::{collections::HashMap, sync::Arc};
 
-use monty_types::{CodeLoc, StackFrame};
+use monty_types::{CodeLoc, SourceRange, StackFrame};
 
 use crate::{exception_private::RawStackFrame, intern::Interns, parse::CodeRange};
+
+/// Resolves a suspension's byte range to the line/column [`SourceRange`] hosts see.
+///
+/// `source_for` maps a filename to its text, as for tracebacks: an `eval()` /
+/// `exec()` snippet resolves against its own recorded source first. An unknown
+/// source degrades to line 1 rather than failing the suspension.
+pub(crate) fn resolve_source_range<'s>(
+    range: CodeRange,
+    interns: &'s Interns,
+    source_for: impl Fn(&str) -> Option<&'s str>,
+) -> SourceRange {
+    let filename = interns.get_filename(range.filename);
+    let source = interns
+        .eval_source(range.filename)
+        .or_else(|| source_for(filename))
+        .unwrap_or("");
+    let (start, end) = SourceMap::new(source).resolve_span(range);
+    SourceRange {
+        filename: filename.to_string(),
+        start,
+        end,
+    }
+}
 
 /// Lazy resolver from raw byte offsets (stored on every [`CodeRange`]) back to
 /// human-readable line/column/preview-line information.
@@ -87,6 +110,14 @@ impl<'s> SourceMap<'s> {
             Some(Arc::from(self.multiline_preview(start_line_idx, end_line_idx)))
         };
         (start, end, preview_line)
+    }
+
+    /// Resolves a `CodeRange` to its `(start, end)` positions without a preview line.
+    pub(crate) fn resolve_span(&self, range: CodeRange) -> (CodeLoc, CodeLoc) {
+        (
+            self.resolve_byte(range.start_byte).1,
+            self.resolve_byte(range.end_byte).1,
+        )
     }
 
     /// Renders the source preview for a range spanning several lines,

@@ -10,7 +10,7 @@ use std::mem;
 
 use monty_types::{
     CallArgs, ExcType, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter,
-    ResourceTracker,
+    ResourceTracker, SourceRange,
 };
 
 use crate::{
@@ -20,7 +20,9 @@ use crate::{
     heap::{DropWithContext, Heap, HeapReader},
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect},
+    parse::CodeRange,
     run::Executor,
+    source_map::resolve_source_range,
     value::Value,
 };
 
@@ -125,6 +127,8 @@ pub struct FunctionCall {
     pub object_id: Option<MontyUuid>,
     /// The host may await a coroutine and answer with [`Self::resume_eager`].
     pub allow_eager_await: bool,
+    /// Where the call expression is in the source.
+    pub position: SourceRange,
     /// Internal execution snapshot.
     snapshot: Snapshot,
 }
@@ -137,6 +141,7 @@ impl FunctionCall {
         call_id: u32,
         object_id: Option<MontyUuid>,
         allow_eager_await: bool,
+        position: SourceRange,
         snapshot: Snapshot,
     ) -> Self {
         Self {
@@ -145,6 +150,7 @@ impl FunctionCall {
             call_id,
             object_id,
             allow_eager_await,
+            position,
             snapshot,
         }
     }
@@ -237,17 +243,26 @@ pub struct OsCall {
     /// The host may await its wait and answer with [`Self::resume_eager`].
     /// Only ever true for `asyncio.sleep`, the one call a future may answer.
     pub allow_eager_await: bool,
+    /// Where the call expression is in the source.
+    pub position: SourceRange,
     /// Internal execution snapshot.
     snapshot: Snapshot,
 }
 
 impl OsCall {
     /// Creates a new `OsCall` from its parts.
-    fn new(function_call: OsFunctionCall, call_id: u32, allow_eager_await: bool, snapshot: Snapshot) -> Self {
+    fn new(
+        function_call: OsFunctionCall,
+        call_id: u32,
+        allow_eager_await: bool,
+        position: SourceRange,
+        snapshot: Snapshot,
+    ) -> Self {
         Self {
             function_call,
             call_id,
             allow_eager_await,
+            position,
             snapshot,
         }
     }
@@ -370,6 +385,8 @@ impl LookupScope {
 pub struct NameLookup {
     /// The name being looked up.
     pub name: String,
+    /// Where the name (or attribute access) is in the source.
+    pub position: SourceRange,
     /// Where the resolved value lands (namespace slot or instance attribute).
     scope: LookupScope,
     /// Internal execution snapshot.
@@ -378,8 +395,13 @@ pub struct NameLookup {
 
 impl NameLookup {
     /// Creates a new `NameLookup` from its parts.
-    fn new(name: String, scope: LookupScope, snapshot: Snapshot) -> Self {
-        Self { name, scope, snapshot }
+    fn new(name: String, position: SourceRange, scope: LookupScope, snapshot: Snapshot) -> Self {
+        Self {
+            name,
+            position,
+            scope,
+            snapshot,
+        }
     }
 
     /// Host identity of the receiver for a lazy attribute lookup; `None` for
@@ -618,16 +640,25 @@ pub struct ResolveFutures {
     heap: Heap,
     /// The pending call_ids that this snapshot is waiting on.
     pending_call_ids: Vec<u32>,
+    /// Where the main task's blocked `await` is in the source.
+    position: SourceRange,
 }
 
 impl ResolveFutures {
     /// Creates a new `ResolveFutures` from its parts.
-    fn new(executor: Executor, vm_state: VMSnapshot, heap: Heap, pending_call_ids: Vec<u32>) -> Self {
+    fn new(
+        executor: Executor,
+        vm_state: VMSnapshot,
+        heap: Heap,
+        pending_call_ids: Vec<u32>,
+        position: SourceRange,
+    ) -> Self {
         Self {
             executor,
             vm_state,
             heap,
             pending_call_ids,
+            position,
         }
     }
 
@@ -635,6 +666,12 @@ impl ResolveFutures {
     #[must_use]
     pub fn pending_call_ids(&self) -> &[u32] {
         &self.pending_call_ids
+    }
+
+    /// Returns where the main task's blocked `await` is in the source.
+    #[must_use]
+    pub fn position(&self) -> &SourceRange {
+        &self.position
     }
 
     /// Returns the resource tracker while execution is suspended.
@@ -669,6 +706,7 @@ impl ResolveFutures {
             vm_state,
             mut heap,
             pending_call_ids,
+            position,
         } = self;
 
         let vm_state = HeapReader::with(&mut heap, &mut &mut executor, |reader, executor| {
@@ -683,7 +721,7 @@ impl ResolveFutures {
             vm.snapshot()
         });
 
-        Self::new(executor, vm_state, heap, pending_call_ids)
+        Self::new(executor, vm_state, heap, pending_call_ids, position)
     }
 
     /// Number of tasks still live while this snapshot is suspended.
@@ -723,6 +761,7 @@ impl ResolveFutures {
             vm_state,
             mut heap,
             pending_call_ids,
+            ..
         } = self;
 
         // Validate that all provided call_ids are in the pending set before restoring VM.
@@ -962,6 +1001,8 @@ pub(crate) enum ConvertedExit {
         call_id: u32,
         object_id: Option<MontyUuid>,
         allow_eager_await: bool,
+        /// The call expression, resolved to a `SourceRange` once the source is known.
+        position: CodeRange,
     },
     /// OS-level operation.
     OsCall {
@@ -969,11 +1010,20 @@ pub(crate) enum ConvertedExit {
         call_id: u32,
         /// See [`OsCall::allow_eager_await`].
         allow_eager_await: bool,
+        position: CodeRange,
     },
     /// All async tasks are blocked waiting for external futures.
-    ResolveFutures(Vec<u32>),
+    ResolveFutures {
+        pending_call_ids: Vec<u32>,
+        /// The main task's blocked `await`.
+        position: CodeRange,
+    },
     /// Unresolved name lookup or lazy instance attribute lookup.
-    NameLookup { name: String, scope: LookupScope },
+    NameLookup {
+        name: String,
+        scope: LookupScope,
+        position: CodeRange,
+    },
     /// Runtime error.
     Error(RunError),
 }
@@ -998,6 +1048,9 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
     // Arming for *this* exit happens below, after the slot is clear.
     release_pending_effect(vm.pending_effect.take(), vm.heap);
     vm.pending_lookup_effect.take().drop_with(vm.heap);
+    // `instruction_ip` still names the opcode that suspended, so this is the
+    // suspending expression for every exit but `ResolveFutures`.
+    let position = vm.current_position();
     match result {
         Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::export(value, vm)),
         Ok(FrameExit::ExternalCall {
@@ -1014,6 +1067,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                 call_id: call_id.raw(),
                 object_id: None,
                 allow_eager_await: vm.allow_eager_await(),
+                position,
             }
         }
         Ok(FrameExit::OsCall {
@@ -1030,6 +1084,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                 function_call,
                 call_id: call_id.raw(),
                 allow_eager_await,
+                position,
             }
         }
         Ok(FrameExit::MethodCall {
@@ -1046,11 +1101,13 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                 call_id: call_id.raw(),
                 object_id: Some(object_id),
                 allow_eager_await: vm.allow_eager_await(),
+                position,
             }
         }
-        Ok(FrameExit::ResolveFutures(pending_call_ids)) => {
-            ConvertedExit::ResolveFutures(pending_call_ids.iter().map(|id| id.raw()).collect())
-        }
+        Ok(FrameExit::ResolveFutures(pending_call_ids)) => ConvertedExit::ResolveFutures {
+            pending_call_ids: pending_call_ids.iter().map(|id| id.raw()).collect(),
+            position: vm.main_task_position(),
+        },
         Ok(FrameExit::NameLookup {
             name_id,
             namespace_slot,
@@ -1063,6 +1120,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                     namespace_slot,
                     is_global,
                 },
+                position,
             }
         }
         Ok(FrameExit::AttrLookup {
@@ -1082,6 +1140,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                     class_name,
                     type_object,
                 },
+                position,
             }
         }
         Err(err) => ConvertedExit::Error(err),
@@ -1128,35 +1187,55 @@ pub(crate) fn build_run_progress(
             call_id,
             object_id,
             allow_eager_await,
+            position,
         } => Ok(RunProgress::FunctionCall(FunctionCall::new(
             function_name,
             args,
             call_id,
             object_id,
             allow_eager_await,
+            resolve_run_position(position, &executor),
             new_snapshot!(),
         ))),
         ConvertedExit::OsCall {
             function_call,
             call_id,
             allow_eager_await,
+            position,
         } => Ok(RunProgress::OsCall(OsCall::new(
             function_call,
             call_id,
             allow_eager_await,
+            resolve_run_position(position, &executor),
             new_snapshot!(),
         ))),
-        ConvertedExit::ResolveFutures(pending_call_ids) => Ok(RunProgress::ResolveFutures(ResolveFutures::new(
-            executor,
-            vm_state.expect("snapshot should exist for ResolveFutures"),
-            heap,
+        ConvertedExit::ResolveFutures {
             pending_call_ids,
-        ))),
-        ConvertedExit::NameLookup { name, scope } => {
-            Ok(RunProgress::NameLookup(NameLookup::new(name, scope, new_snapshot!())))
+            position,
+        } => {
+            let position = resolve_run_position(position, &executor);
+            Ok(RunProgress::ResolveFutures(ResolveFutures::new(
+                executor,
+                vm_state.expect("snapshot should exist for ResolveFutures"),
+                heap,
+                pending_call_ids,
+                position,
+            )))
         }
+        ConvertedExit::NameLookup { name, scope, position } => Ok(RunProgress::NameLookup(NameLookup::new(
+            name,
+            resolve_run_position(position, &executor),
+            scope,
+            new_snapshot!(),
+        ))),
         ConvertedExit::Error(err) => {
             Err(err.into_python_exception(&executor.tables.interns, |_| Some(&*executor.program.code)))
         }
     }
+}
+
+/// Resolves a suspension's range for a one-shot run, whose single source
+/// every range indexes.
+fn resolve_run_position(range: CodeRange, executor: &Executor) -> SourceRange {
+    resolve_source_range(range, &executor.tables.interns, |_| Some(&*executor.program.code))
 }

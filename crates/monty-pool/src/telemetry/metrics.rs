@@ -855,7 +855,7 @@ mod tests {
 
     use logfire::{Logfire, config::MetricsOptions};
     use monty_proto::{WireFunctionCall, ext_result_to_proto, pb, pb::os_call::Call};
-    use monty_types::{CallArgs, ExtFunctionResult, MontyObject, NameLookupResult};
+    use monty_types::{CallArgs, CodeLoc, ExtFunctionResult, MontyObject, NameLookupResult, SourceRange};
     use opentelemetry::{
         KeyValue,
         trace::{SpanId, TraceId},
@@ -871,6 +871,14 @@ mod tests {
 
     use super::{Measurement, MetricValue, Metrics, TelemetryAdapter, TurnMetrics, print_bytes_by_stream};
 
+    /// The suspension position every hand-built event carries.
+    fn position() -> SourceRange {
+        SourceRange {
+            filename: "main.py".to_owned(),
+            start: CodeLoc { line: 1, column: 1 },
+            end: CodeLoc { line: 1, column: 8 },
+        }
+    }
     /// A cumulative aggregate exported from the test's Logfire provider.
     struct Capture {
         logfire: Logfire,
@@ -1100,6 +1108,7 @@ mod tests {
             1,
             None,
             false,
+            position(),
         )))
     }
 
@@ -1276,6 +1285,7 @@ mod tests {
             call_id: 1,
             values: None,
             allow_eager_await: false,
+            position: Some((&position()).into()),
             call: Some(Call::ReadText("/mnt/f.txt".to_owned())),
         })));
         metrics.begin_turn(&resume_return(MontyObject::string("hello".to_owned())));
@@ -1435,6 +1445,7 @@ mod tests {
             kind: Some(pb::child_event::Kind::NameLookup(pb::NameLookup {
                 name: "value".to_owned(),
                 object_id: None,
+                position: Some((&position()).into()),
             })),
             total_execution_micros: 10_000_000,
             max_suspensions: None,

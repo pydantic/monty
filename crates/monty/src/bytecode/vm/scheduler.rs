@@ -177,6 +177,16 @@ impl Scheduler {
         self.ready_queue.is_empty() && self.pending_externals.is_empty()
     }
 
+    /// Returns the main task, whose context is saved here whenever another task is loaded.
+    ///
+    /// # Panics
+    /// Panics if the main task was never registered.
+    pub fn main_task(&self) -> &Task {
+        self.tasks
+            .get(&TaskId::default())
+            .expect("Scheduler::main_task: main task not found")
+    }
+
     /// Returns a mutable reference to a task by ID.
     ///
     /// # Panics

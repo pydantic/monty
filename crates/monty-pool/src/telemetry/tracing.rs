@@ -988,7 +988,7 @@ mod tests {
 
     use logfire::{Logfire, config::AdvancedOptions, set_local_logfire};
     use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
-    use monty_types::{CallArgs, MontyObject, NameLookupResult};
+    use monty_types::{CallArgs, CodeLoc, MontyObject, NameLookupResult, SourceRange};
     use opentelemetry::{logs::AnyValue, trace::SpanId};
     use opentelemetry_sdk::{
         logs::{InMemoryLogExporter, SimpleLogProcessor},
@@ -997,6 +997,14 @@ mod tests {
 
     use super::{ATTR_SIZE_LIMIT, Recorder, bytes_attr, render_ext_result};
 
+    /// The suspension position every hand-built event carries.
+    fn position() -> SourceRange {
+        SourceRange {
+            filename: "main.py".to_owned(),
+            start: CodeLoc { line: 1, column: 1 },
+            end: CodeLoc { line: 1, column: 8 },
+        }
+    }
     /// Every subscriber these tests install, held for the life of the process.
     ///
     /// `set_local_logfire` registers the subscriber with tracing-core, which
@@ -1077,6 +1085,7 @@ mod tests {
             1,
             None,
             false,
+            position(),
         ))));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
@@ -1128,6 +1137,7 @@ mod tests {
         recorder.event(&event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "fetch".to_owned(),
             object_id: None,
+            position: Some((&position()).into()),
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
             NameLookupResult::from(MontyObject::string("<function>".to_owned())).into(),
@@ -1136,6 +1146,7 @@ mod tests {
             call_id: 1,
             values: None,
             allow_eager_await: false,
+            position: Some((&position()).into()),
             call: Some(Call::WriteText(pb::os_call::TextWrite {
                 path: "/mnt/data/f.txt".to_owned(),
                 data: long.clone(),
@@ -1268,6 +1279,7 @@ mod tests {
         recorder.event(&event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "value".to_owned(),
             object_id: None,
+            position: Some((&position()).into()),
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
             NameLookupResult::from(MontyObject::int(1)).into(),

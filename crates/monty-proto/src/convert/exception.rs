@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 
-use monty_types::{CodeLoc, ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject};
+use monty_types::{
+    CodeLoc, ExcData, JsonErrorData, MontyException, SourceRange, StackFrame, UnicodeErrorData, UnicodeErrorObject,
+};
 
 use crate::{convert::ProtoConvertError, pb};
 
@@ -233,6 +235,34 @@ impl TryFrom<pb::StackFrame> for StackFrame {
             preview_line: frame.preview_line.map(Arc::from),
             hide_caret: frame.hide_caret,
             hide_frame_name: frame.hide_frame_name,
+        })
+    }
+}
+
+impl From<&SourceRange> for pb::SourceRange {
+    fn from(range: &SourceRange) -> Self {
+        Self {
+            filename: range.filename.clone(),
+            start: Some(range.start.into()),
+            end: Some(range.end.into()),
+        }
+    }
+}
+
+/// Total apart from the sub-messages being present: nothing renders carets
+/// from a suspension's range, so no column check is needed (cf. `StackFrame`).
+impl TryFrom<pb::SourceRange> for SourceRange {
+    type Error = ProtoConvertError;
+
+    fn try_from(range: pb::SourceRange) -> Result<Self, ProtoConvertError> {
+        Ok(Self {
+            filename: range.filename,
+            start: CodeLoc::from(
+                range
+                    .start
+                    .ok_or(ProtoConvertError::MissingField("SourceRange.start"))?,
+            ),
+            end: CodeLoc::from(range.end.ok_or(ProtoConvertError::MissingField("SourceRange.end"))?),
         })
     }
 }

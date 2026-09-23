@@ -22,7 +22,7 @@ use monty_proto::{
 use monty_types::{
     AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION,
     MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
-    ResourceLimits, SleepMode, TypeCheckingConfig, validate_cwd,
+    ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, validate_cwd,
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
@@ -239,6 +239,8 @@ pub enum TurnEvent {
         object_id: Option<MontyUuid>,
         /// Coroutine results may be awaited and returned via [`Checkout::resume_futures`].
         allow_eager_await: bool,
+        /// Where the call expression is in the source.
+        position: SourceRange,
     },
     /// The sandbox performed an OS operation (e.g. `"Path.read_text"`).
     /// Answer it from this feed's mounts with
@@ -259,6 +261,8 @@ pub enum TurnEvent {
         /// The parent caps the untrusted worker's delay and charges `max_total_sleep` before returning it.
         /// `None` delegates to the caller's OS handler.
         system_sleep: Option<Duration>,
+        /// Where the call expression is in the source.
+        position: SourceRange,
     },
     /// The sandbox read an undefined name, or — when `object_id` is set — a
     /// lazy attribute on the host-backed object with that uuid (a class
@@ -266,10 +270,19 @@ pub enum TurnEvent {
     /// [`Checkout::resume_name_lookup`]. An `Undefined` (or `None`) answer
     /// raises `NameError` for plain lookups, `AttributeError` for attribute
     /// lookups; an `Error` answer raises the host's exception in the sandbox.
-    NameLookup { name: String, object_id: Option<MontyUuid> },
+    NameLookup {
+        name: String,
+        object_id: Option<MontyUuid>,
+        /// Where the name (or attribute access) is in the source.
+        position: SourceRange,
+    },
     /// Every sandbox task is blocked on external futures — answer with
     /// [`Checkout::resume_futures`].
-    ResolveFutures { pending_call_ids: Vec<u32> },
+    ResolveFutures {
+        pending_call_ids: Vec<u32>,
+        /// Where the main task's blocked `await` is in the source.
+        position: SourceRange,
+    },
     /// The fed snippet completed with this value; the session is ready for
     /// the next [`Checkout::feed`].
     Complete(MontyObject),
@@ -1456,7 +1469,10 @@ impl Checkout {
                         future.await;
                     }
                 }
-                Some(pb::child_event::Kind::FunctionCall(call)) => {
+                Some(pb::child_event::Kind::FunctionCall(mut call)) => {
+                    let Some(position) = call.position.take() else {
+                        return Err(self.protocol_violation("FunctionCall.position is missing"));
+                    };
                     self.pending = Some(Pending::Call {
                         call_id: call.call_id,
                         function_name: call.function_name.clone(),
@@ -1470,14 +1486,19 @@ impl Checkout {
                             object_id: call.object_id,
                             allow_eager_await: call.allow_eager_await,
                             args: call.into_call_args()?,
+                            position,
                         })
                     });
                 }
-                Some(pb::child_event::Kind::OsCall(call)) => {
+                Some(pb::child_event::Kind::OsCall(mut call)) => {
                     // Every announcement (fresh or re-announced after
                     // `restore`) decodes into a typed `OsFunctionCall`; a
                     // payload the child could never legitimately produce is a
                     // protocol violation.
+                    let position = match suspension_position(call.position.take(), "OsCall") {
+                        Ok(position) => position,
+                        Err(err) => return Err(self.protocol_violation(err)),
+                    };
                     let mut allow_eager_await = call.allow_eager_await;
                     let (call_id, function_call) = match os_call_from_proto(call) {
                         Ok(call) => call,
@@ -1512,11 +1533,16 @@ impl Checkout {
                         call_id,
                         allow_eager_await,
                         system_sleep,
+                        position,
                     }));
                 }
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {
                     // Frames from the child are untrusted — a malformed uuid
                     // is a protocol violation, not a panic.
+                    let position = match suspension_position(lookup.position, "NameLookup") {
+                        Ok(position) => position,
+                        Err(err) => return Err(self.protocol_violation(err)),
+                    };
                     let object_id = match lookup.object_id {
                         None => None,
                         Some(uuid) => match MontyUuid::try_from_slice(&uuid.data) {
@@ -1530,12 +1556,18 @@ impl Checkout {
                     return Ok(ControlEvent::Turn(TurnEvent::NameLookup {
                         name: lookup.name,
                         object_id,
+                        position,
                     }));
                 }
                 Some(pb::child_event::Kind::ResolveFutures(futures)) => {
+                    let position = match suspension_position(futures.position, "ResolveFutures") {
+                        Ok(position) => position,
+                        Err(err) => return Err(self.protocol_violation(err)),
+                    };
                     self.pending = Some(Pending::Futures);
                     return Ok(ControlEvent::Turn(TurnEvent::ResolveFutures {
                         pending_call_ids: futures.pending_call_ids.into_inner(),
+                        position,
                     }));
                 }
                 Some(pb::child_event::Kind::Complete(complete)) => {
@@ -1907,4 +1939,11 @@ fn build_mount_table(mounts: Vec<MountSpec>) -> Result<MountTable, PoolError> {
             .map_err(|err| PoolError::Runtime(err.into_exception()))?;
     }
     Ok(table)
+}
+
+/// Decodes the position every suspension event must carry. Frames from the
+/// child are untrusted, so a missing or malformed range is a protocol violation.
+fn suspension_position(position: Option<pb::SourceRange>, event: &str) -> Result<SourceRange, String> {
+    let position = position.ok_or_else(|| format!("{event}.position is missing"))?;
+    SourceRange::try_from(position).map_err(|err| format!("invalid {event}.position: {err}"))
 }

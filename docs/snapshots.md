@@ -84,6 +84,44 @@ Instead of driving a snippet to completion it hands control back at every suspen
 
 In JavaScript those are separate methods: `resume(value)`, `resumeError(err)` and `resumeFuture()`.
 
+### Where execution stopped
+
+Every snapshot carries `position`, a [`SourceRange`][pydantic_monty.SourceRange] locating the expression that
+suspended: the call of a `FunctionSnapshot`, the name of a `NameLookupSnapshot`, and the `await` the top-level code is
+blocked on for a `FutureSnapshot`.
+Lines and columns are 1-based and `end_column` is exclusive, as in a traceback `Frame`.
+
+=== "Python"
+
+    ```python
+    from pydantic_monty import FunctionSnapshot, Monty
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            snapshot = session.feed_start('x = 1\ny = greet(x)')
+            assert isinstance(snapshot, FunctionSnapshot)
+            position = snapshot.position
+            print(position.line, position.column, position.end_column)
+            #> 2 5 13
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { FunctionSnapshot, Monty } from '@pydantic/monty'
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    const snapshot = await session.feedStart('x = 1\ny = greet(x)')
+    if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
+    console.log(snapshot.position) // { filename: '<python-input-0>', line: 2, column: 5, endLine: 2, endColumn: 13 }
+    ```
+
+`filename` names the source the range indexes the way a traceback frame does: `<python-input-N>` for the session's
+N-th feed, so a suspension inside a function defined by an earlier feed points into that feed, and `<string>` inside an
+`eval()` / `exec()` string.
+The position is part of the suspended state, so a restored snapshot reports the same one.
+
 A snapshot refers to the worker's current suspension; it does not own an independent copy of the execution state.
 Only one suspension is live per session.
 Resuming twice or feeding while suspended raises `RuntimeError` in Python.

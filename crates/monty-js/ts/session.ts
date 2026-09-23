@@ -28,6 +28,7 @@ import {
   MontyTypingError,
   notCallableMessage,
   ProtocolError,
+  type SourceRange,
 } from './errors.js'
 import { PYTHON_EXC_NAMES } from './errors.js'
 import { mountsToNative } from './mount.js'
@@ -1035,6 +1036,8 @@ export class FunctionSnapshot extends SingleUse {
    *  instance, or a class type (a classmethod, or `__call__` construction).
    *  The receiver is not in `args`; `null` for plain external calls. */
   readonly objectId: string | null
+  /** Where the call expression is in the source. */
+  readonly position: SourceRange
 
   /** @internal */
   constructor(
@@ -1043,6 +1046,7 @@ export class FunctionSnapshot extends SingleUse {
     isOsFunction: boolean,
   ) {
     super(turn.callbackSpanKey, driver.traceBaseContext)
+    this.position = turn.position
     this.functionName = turn.functionName
     const [args, kwargs] = restoreCallArgs(turn, driver.instances)
     this.args = args
@@ -1112,6 +1116,8 @@ export class NameLookupSnapshot extends SingleUse {
    *  instance, or a class type): the receiver's store uuid. `null` for
    *  plain name lookups. */
   readonly objectId: string | null
+  /** Where the name (or attribute access) is in the source. */
+  readonly position: SourceRange
 
   /** @internal */
   constructor(
@@ -1119,6 +1125,7 @@ export class NameLookupSnapshot extends SingleUse {
     private readonly turn: NameLookupTurn,
   ) {
     super(turn.callbackSpanKey, driver.traceBaseContext)
+    this.position = turn.position
     this.variableName = turn.name
     this.objectId = turn.objectId ?? null
   }
@@ -1159,6 +1166,8 @@ export class NameLookupSnapshot extends SingleUse {
 /** A paused execution where every sandbox task is blocked on external futures. */
 export class FutureSnapshot extends SingleUse {
   readonly pendingCallIds: number[]
+  /** Where the main task's blocked `await` is in the source. */
+  readonly position: SourceRange
 
   /** @internal */
   constructor(
@@ -1166,6 +1175,7 @@ export class FutureSnapshot extends SingleUse {
     private readonly turn: ResolveFuturesTurn,
   ) {
     super(turn.callbackSpanKey, driver.traceBaseContext)
+    this.position = turn.position
     this.pendingCallIds = turn.pendingCallIds
   }
 

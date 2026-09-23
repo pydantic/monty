@@ -19,6 +19,21 @@ export interface Frame {
   sourceLine?: string
 }
 
+/**
+ * Where the expression that suspended execution is in the source, as
+ * `snapshot.position`. Positions follow `Frame`: 1-based line and character
+ * column, exclusive end. `filename` names the source as a traceback frame
+ * does: `<python-input-N>` for the session's N-th feed, or `<string>` inside
+ * an `eval()` / `exec()` string.
+ */
+export interface SourceRange {
+  filename: string
+  line: number
+  column: number
+  endLine: number
+  endColumn: number
+}
+
 /** Inner Python exception summary. */
 export interface ExceptionInfo {
   typeName: string

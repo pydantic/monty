@@ -23,8 +23,8 @@ mod virtual_path;
 pub use crate::{
     builtins::BuiltinsFunctions,
     exceptions::{
-        CodeLoc, ExcData, ExcType, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject,
-        unicode_decode_error_msg,
+        CodeLoc, ExcData, ExcType, JsonErrorData, MontyException, SourceRange, StackFrame, UnicodeErrorData,
+        UnicodeErrorObject, unicode_decode_error_msg,
     },
     file_mode::FileMode,
     format::{FormatFloat, StringRepr, bytes_repr, bytes_repr_fmt, string_repr_fmt, utf8_error_reason},

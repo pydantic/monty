@@ -2376,12 +2376,36 @@ impl<'h> VM<'h> {
     }
 
     /// Returns the source position for the instruction currently executing.
-    pub(super) fn current_position(&self) -> CodeRange {
+    pub(crate) fn current_position(&self) -> CodeRange {
         self.current_frame
             .code
             .location_for_offset(self.instruction_ip)
             .map(LocationEntry::range)
             .unwrap_or_default()
+    }
+
+    /// Returns the source position of the `await` the main task is blocked on.
+    ///
+    /// The position reported when every task is blocked on host futures: the
+    /// blocked main task may be the loaded context, or parked in the scheduler
+    /// with its frames saved while a spawned task ran last.
+    pub(crate) fn main_task_position(&self) -> CodeRange {
+        if self.is_main_task() && !self.current_frame.is_parked {
+            self.current_position()
+        } else {
+            let task = self.scheduler.main_task();
+            // `save_task_context` pushes the executing frame last.
+            task.frames
+                .last()
+                .and_then(|frame| {
+                    let code = match frame.function_id {
+                        Some(func_id) => &self.interns.get_function(func_id).code,
+                        None => self.module_code,
+                    };
+                    code.location_for_offset(task.instruction_ip).map(LocationEntry::range)
+                })
+                .unwrap_or_default()
+        }
     }
 
     /// Captures the caller's current bytecode offset for a call site, or `None`

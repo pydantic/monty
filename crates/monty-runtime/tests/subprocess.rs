@@ -16,8 +16,8 @@ use monty_proto::{
     WireFunctionCall, exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
 };
 use monty_types::{
-    CallArgs, DateTimeSource, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult, NamedValues,
-    OsPolicy, RandomSeed, RandomStart, SandboxTimeZone, SleepMode,
+    CallArgs, CodeLoc, DateTimeSource, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult,
+    NamedValues, OsPolicy, RandomSeed, RandomStart, SandboxTimeZone, SleepMode, SourceRange,
     unstable::{self, MontyNode},
 };
 
@@ -414,6 +414,11 @@ fn near_limit_suspension_is_refused_cleanly() {
             1,
             None,
             false,
+            SourceRange {
+                filename: "main.py".to_owned(),
+                start: CodeLoc { line: 1, column: 1 },
+                end: CodeLoc { line: 1, column: 8 },
+            },
         ))),
         ..Default::default()
     };

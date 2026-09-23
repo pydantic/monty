@@ -26,6 +26,7 @@ from pydantic_monty import (
     MountDir,
     NameLookupSnapshot,
     OsFunction,
+    SourceRange,
 )
 
 
@@ -206,6 +207,75 @@ def test_future_mechanism_sync(session: MontySession):
     done = nxt.resume({call_id: {'return_value': 99}})
     assert isinstance(done, MontyComplete)
     assert done.output == snapshot(99)
+
+
+def test_function_call_position(session: MontySession):
+    snap = session.feed_start('x = 1\ny = add(x, 2) + 1')
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.position.dict() == snapshot(
+        {'filename': '<python-input-0>', 'line': 2, 'column': 5, 'end_line': 2, 'end_column': 14}
+    )
+    assert repr(snap.position) == snapshot(
+        "SourceRange(filename='<python-input-0>', line=2, column=5, end_line=2, end_column=14)"
+    )
+    assert snap.position == SourceRange(filename='<python-input-0>', line=2, column=5, end_line=2, end_column=14)
+
+
+def test_position_inside_a_function_from_an_earlier_feed(session: MontySession):
+    session.feed_run('def helper(n):\n    return fetch(n)')
+    snap = session.feed_start('helper(3)')
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.position.dict() == snapshot(
+        {'filename': '<python-input-0>', 'line': 2, 'column': 12, 'end_line': 2, 'end_column': 20}
+    )
+
+
+def test_name_lookup_position(session: MontySession):
+    snap = session.feed_start('total = 1 + missing')
+    assert isinstance(snap, NameLookupSnapshot)
+    assert snap.position.dict() == snapshot(
+        {'filename': '<python-input-0>', 'line': 1, 'column': 13, 'end_line': 1, 'end_column': 20}
+    )
+
+
+def test_os_call_position(session: MontySession):
+    snap = session.feed_start("from pathlib import Path\nPath('/etc/x').read_text()")
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.is_os_function == snapshot(True)
+    assert snap.position.dict() == snapshot(
+        {'filename': '<python-input-0>', 'line': 2, 'column': 1, 'end_line': 2, 'end_column': 27}
+    )
+
+
+def test_future_snapshot_position_is_the_top_level_await(session: MontySession):
+    snap = session.feed_start(
+        'import asyncio\n\nasync def go():\n    return await fetch()\n\nawait asyncio.gather(go(), go())'
+    )
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.position.dict() == snapshot(
+        {'filename': '<python-input-0>', 'line': 4, 'column': 18, 'end_line': 4, 'end_column': 25}
+    )
+    second = snap.resume({'future': ...})
+    assert isinstance(second, FunctionSnapshot)
+    futures = second.resume({'future': ...})
+    assert isinstance(futures, FutureSnapshot)
+    assert futures.position.dict() == snapshot(
+        {'filename': '<python-input-0>', 'line': 6, 'column': 1, 'end_line': 6, 'end_column': 33}
+    )
+
+
+def test_position_survives_dump_and_load(pool: Monty):
+    with pool.checkout() as session:
+        snap = session.feed_start('y = fetch()\ny + 1')
+        assert isinstance(snap, FunctionSnapshot)
+        blob = snap.dump()
+
+    with pool.checkout() as session:
+        loaded_snap = session.load_snapshot(blob)
+        assert isinstance(loaded_snap, FunctionSnapshot)
+        assert loaded_snap.position.dict() == snapshot(
+            {'filename': '<python-input-0>', 'line': 1, 'column': 5, 'end_line': 1, 'end_column': 12}
+        )
 
 
 def test_future_cannot_resolve_to_future(session: MontySession):

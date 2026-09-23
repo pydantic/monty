@@ -18,8 +18,9 @@
 use monty::{MontyRun, RunProgress};
 use monty_proto::{WireArena, WireFunctionCall, decode_frame, os_call_to_proto, pb};
 use monty_types::{
-    CallArgs, CompileOptions, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker,
+    CallArgs, CodeLoc, CompileOptions, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject,
+    MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker,
+    SourceRange,
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
@@ -501,7 +502,14 @@ fn hand_call_payloads_match_generated_encoding() {
     let receivers = [Some(MontyUuid::from_u128(7)), None];
     for (object_id, allow_eager_await) in receivers.into_iter().flat_map(|id| [(id, false), (id, true)]) {
         let oracle_object_id = object_id.map(|uuid| oracle_uuid(&uuid));
-        let hand_call = WireFunctionCall::new("external".to_owned(), call.clone(), 42, object_id, allow_eager_await);
+        let hand_call = WireFunctionCall::new(
+            "external".to_owned(),
+            call.clone(),
+            42,
+            object_id,
+            allow_eager_await,
+            position(),
+        );
         let generated_call = oracle::FunctionCall {
             function_name: "external".to_owned(),
             args: arg_ids.iter().map(|id| id.0).collect(),
@@ -510,6 +518,7 @@ fn hand_call_payloads_match_generated_encoding() {
             object_id: oracle_object_id,
             allow_eager_await,
             values: Some(to_oracle(graph)),
+            position: Some(oracle_position()),
         };
         assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
         assert_eq!(
@@ -535,6 +544,7 @@ fn hand_call_payloads_match_generated_encoding() {
             default: default.clone(),
         }),
         false,
+        &position(),
     );
     let (graph, root) = unstable::graph_parts(&default);
     let generated_os = oracle::OsCall {
@@ -545,6 +555,7 @@ fn hand_call_payloads_match_generated_encoding() {
             key: "HOME".to_owned(),
             default: root.0,
         })),
+        position: Some(oracle_position()),
     };
     assert_eq!(hand_os.encode_to_vec(), generated_os.encode_to_vec());
     assert_eq!(
@@ -564,6 +575,7 @@ fn hand_call_payloads_match_generated_encoding() {
                 name: Some("CET".to_owned()),
             }),
         })),
+        position: Some((&position()).into()),
     };
     let generated_now = oracle::OsCall {
         call_id: 9,
@@ -575,6 +587,7 @@ fn hand_call_payloads_match_generated_encoding() {
                 name: Some("CET".to_owned()),
             }),
         })),
+        position: Some(oracle_position()),
     };
     assert_eq!(hand_now.encode_to_vec(), generated_now.encode_to_vec());
     assert_eq!(
@@ -1101,5 +1114,23 @@ fn corrupt_frames_fail_cleanly() {
             assert!(prefix.len() < graph.len(), "truncation at {cut} must lose nodes");
             assert_eq!(prefix.nodes(), &graph.nodes()[..prefix.len()]);
         }
+    }
+}
+
+/// The suspension position every hand-built event carries.
+fn position() -> SourceRange {
+    SourceRange {
+        filename: "main.py".to_owned(),
+        start: CodeLoc { line: 3, column: 5 },
+        end: CodeLoc { line: 3, column: 19 },
+    }
+}
+
+/// [`position`] on the oracle's generated types.
+fn oracle_position() -> oracle::SourceRange {
+    oracle::SourceRange {
+        filename: "main.py".to_owned(),
+        start: Some(oracle::CodeLoc { line: 3, column: 5 }),
+        end: Some(oracle::CodeLoc { line: 3, column: 19 }),
     }
 }

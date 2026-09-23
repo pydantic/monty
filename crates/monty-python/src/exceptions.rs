@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use ahash::AHashMap;
 use monty_proto::python::exc_monty_to_py;
-use monty_types::{ExcType, MontyException};
+use monty_types::{ExcType, MontyException, SourceRange};
 use pyo3::{
     PyClassInitializer,
     exceptions::{self},
@@ -560,6 +560,80 @@ impl PyFrame {
             self.line,
             self.column,
             func
+        )
+    }
+}
+
+/// Where the expression that suspended execution is in the source, exposed as
+/// `snapshot.position`. Same conventions as [`PyFrame`]: 1-based line and
+/// character column, exclusive end.
+#[pyclass(name = "SourceRange", module = "pydantic_monty", frozen, eq, skip_from_py_object)]
+#[derive(Debug, PartialEq, Eq)]
+pub struct PySourceRange {
+    /// The source the range indexes, named as in a traceback frame:
+    /// `<python-input-N>` for a feed, `<string>` inside `eval()` / `exec()`.
+    #[pyo3(get)]
+    pub filename: String,
+    /// Line number (1-based).
+    #[pyo3(get)]
+    pub line: u32,
+    /// Column number (1-based).
+    #[pyo3(get)]
+    pub column: u32,
+    /// End line number (1-based).
+    #[pyo3(get)]
+    pub end_line: u32,
+    /// End column number (1-based, exclusive).
+    #[pyo3(get)]
+    pub end_column: u32,
+}
+
+impl From<&SourceRange> for PySourceRange {
+    fn from(range: &SourceRange) -> Self {
+        Self {
+            filename: range.filename.clone(),
+            line: range.start.line,
+            column: range.start.column,
+            end_line: range.end.line,
+            end_column: range.end.column,
+        }
+    }
+}
+
+#[pymethods]
+impl PySourceRange {
+    /// Builds a range by hand, e.g. to compare against `snapshot.position`.
+    #[new]
+    #[pyo3(signature = (*, filename, line, column, end_line, end_column))]
+    fn new(filename: String, line: u32, column: u32, end_line: u32, end_column: u32) -> Self {
+        Self {
+            filename,
+            line,
+            column,
+            end_line,
+            end_column,
+        }
+    }
+
+    fn dict<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        let dict = PyDict::new(py);
+        dict.set_item("filename", &self.filename).unwrap();
+        dict.set_item("line", self.line).unwrap();
+        dict.set_item("column", self.column).unwrap();
+        dict.set_item("end_line", self.end_line).unwrap();
+        dict.set_item("end_column", self.end_column).unwrap();
+        dict
+    }
+
+    fn __repr__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyString>> {
+        py_format!(
+            py,
+            "SourceRange(filename='{}', line={}, column={}, end_line={}, end_column={})",
+            self.filename,
+            self.line,
+            self.column,
+            self.end_line,
+            self.end_column
         )
     }
 }

@@ -37,7 +37,7 @@ use monty_pool::{
 use monty_types::{
     unstable::{self, NodeId},
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, NameLookupResult, NamedValues, PrintStream,
-    StackFrame, TypeCheckingConfig, TypeCheckingFormat,
+    SourceRange, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
 };
 use napi::{
     bindgen_prelude::{
@@ -909,8 +909,10 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             call_id,
             object_id,
             allow_eager_await,
+            position,
         }) => {
             obj.set("kind", "functionCall")?;
+            obj.set("position", source_range_to_js(env, &position)?)?;
             obj.set("allowEagerAwait", allow_eager_await)?;
             obj.set("functionName", function_name)?;
             let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&args);
@@ -927,8 +929,10 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             call_id,
             allow_eager_await,
             system_sleep,
+            position,
         }) => {
             obj.set("kind", "osCall")?;
+            obj.set("position", source_range_to_js(env, &position)?)?;
             obj.set("functionName", function_name)?;
             if let Some(delay) = system_sleep {
                 obj.set("systemSleepSecs", delay.as_secs_f64())?;
@@ -940,15 +944,24 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("callId", call_id)?;
             obj.set("allowEagerAwait", allow_eager_await)?;
         }
-        TurnOutcome::Event(TurnEvent::NameLookup { name, object_id }) => {
+        TurnOutcome::Event(TurnEvent::NameLookup {
+            name,
+            object_id,
+            position,
+        }) => {
             obj.set("kind", "nameLookup")?;
             obj.set("name", name)?;
             // the receiver uuid as a canonical string
             obj.set("objectId", object_id.map(|uuid| uuid.to_string()))?;
+            obj.set("position", source_range_to_js(env, &position)?)?;
         }
-        TurnOutcome::Event(TurnEvent::ResolveFutures { pending_call_ids }) => {
+        TurnOutcome::Event(TurnEvent::ResolveFutures {
+            pending_call_ids,
+            position,
+        }) => {
             obj.set("kind", "resolveFutures")?;
             obj.set("pendingCallIds", pending_call_ids)?;
+            obj.set("position", source_range_to_js(env, &position)?)?;
         }
         TurnOutcome::Runtime(exc) => {
             obj.set("kind", "error")?;
@@ -1029,6 +1042,17 @@ fn exception_to_js<'env>(env: &'env Env, exc: &MontyException) -> Result<Object<
 }
 
 /// Converts one stack frame, field-for-field what `renderTraceback` needs.
+/// Builds the `position` object of a suspension turn (`SourceRange` in `ts/errors.ts`).
+fn source_range_to_js<'env>(env: &'env Env, range: &SourceRange) -> Result<Object<'env>> {
+    let mut obj = Object::new(env)?;
+    obj.set("filename", range.filename.as_str())?;
+    obj.set("line", range.start.line)?;
+    obj.set("column", range.start.column)?;
+    obj.set("endLine", range.end.line)?;
+    obj.set("endColumn", range.end.column)?;
+    Ok(obj)
+}
+
 fn frame_to_js<'env>(env: &'env Env, frame: &StackFrame) -> Result<Object<'env>> {
     let mut obj = Object::new(env)?;
     obj.set("filename", frame.filename.as_str())?;

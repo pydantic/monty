@@ -337,6 +337,8 @@ serialize it and continue tomorrow:
 
 `resume` also takes `{'exception': SomeError('...')}` to raise into the sandbox, or `{'exc_type': 'ValueError', 'message': '...'}` when you only have the type by name.
 In JavaScript `resume(value)` takes the return value directly and `resumeError(err)` raises.
+Each snapshot's `position` locates the suspending expression in the source; see
+[where execution stopped](snapshots.md#where-execution-stopped).
 See [snapshots](snapshots.md) for the full set of snapshot kinds.
 
 ## Designing a safe tool surface
