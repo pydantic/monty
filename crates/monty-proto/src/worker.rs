@@ -24,7 +24,7 @@ use std::{
 
 use monty::{
     CheckedSource, Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump,
-    source_within_nesting_bound,
+    type_check_nesting_exception,
 };
 use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, scan_imports};
 use monty_types::{
@@ -477,9 +477,9 @@ impl Child {
                 Some(Ok(os_policy)) => os_policy,
                 Some(Err(err)) => return protocol_violation(&format!("invalid os_policy: {err}")),
             };
-            // ty parses the stubs with every feed, unguarded.
+            // ty walks the stubs with every feed, unguarded.
             if let Some(stubs) = &configure.type_check_stubs
-                && !source_within_nesting_bound(stubs, SOURCE_SCAN_THRESHOLD)
+                && type_check_nesting_exception(stubs, "repl_type_stubs.pyi", SOURCE_SCAN_THRESHOLD).is_err()
             {
                 return protocol_violation("invalid type_check_stubs: Source is too deeply nested");
             }
@@ -1075,6 +1075,12 @@ impl Child {
     /// Checks against accumulated stubs and imports, returning an event on failure.
     fn type_check_feed(&mut self, code: &str) -> Option<pb::ChildEvent> {
         let state = self.type_check.as_ref()?;
+        // `check_source` already ran the lexer scan, so only the AST walk is left.
+        if let Err(error) = type_check_nesting_exception(code, &self.script_name, usize::MAX) {
+            return Some(event(pb::child_event::Kind::Error(pb::Error {
+                exception: Some((&error).into()),
+            })));
+        }
         let stubs =
             (!state.committed_stubs.is_empty()).then(|| SourceFile::new(&state.committed_stubs, "repl_type_stubs.pyi"));
         let context = TypeCheckContext {
