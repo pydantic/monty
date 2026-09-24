@@ -1,0 +1,59 @@
+crates/monty-worker/src/session.rs
+  s_065bd2ed705bbf::t_4a42743e7cc598 466-469
+  s_065bd2ed705bbf::t_6e0bb3e8fd3305 486
+  s_065bd2ed705bbf::t_306fa653e35877 329,464-465,470,472-485,487-489
+crates/monty-server-tests/src/client/session.rs
+  s_065bd2ed705bbf::t_a86dec57d95f74 151-152,157-163
+crates/monty-server-tests/tests/wire/deadlines.rs
+  s_065bd2ed705bbf::t_aa0fbf8bbab968 11-12,14-15,62-63,68-70,72-74,76-81
+  s_065bd2ed705bbf::t_55a506d3c1aee9 16-17,85-89
+  s_065bd2ed705bbf::t_4a42743e7cc598 64-67,71,75,82-84
+crates/monty-server/CLAUDE.md
+  s_065bd2ed705bbf::t_6e0bb3e8fd3305 93-95
+crates/monty-server-tests/tests/client/drain.rs
+  s_065bd2ed705bbf::t_a86dec57d95f74 202,211-212
+crates/monty-worker/tests/server_test.rs
+  s_065bd2ed705bbf::t_a86dec57d95f74 1-2,4-5
+crates/monty-server/src/run.rs
+  s_065bd2ed705bbf::t_2d4e9f5b835b91 232-235
+crates/monty-server/tests/wire_test.rs
+  s_065bd2ed705bbf::t_3a072f2e294b1a 154-176
+crates/monty-server-tests/CLAUDE.md
+  s_065bd2ed705bbf::t_6e0bb3e8fd3305 15-17
+crates/monty-server-tests/tests/http/main.rs
+  s_065bd2ed705bbf::t_a16049c7514278 356-377
+README.md
+  s_065bd2ed705bbf::t_6e0bb3e8fd3305 10-11
+crates/monty-server/src/wire.rs
+  s_065bd2ed705bbf::t_3a072f2e294b1a 19-21,106-108,115-120,128-129,138,145-147,150-153
+crates/monty-worker/README.md
+  s_065bd2ed705bbf::t_6e0bb3e8fd3305 78-80,89,198-201
+Makefile
+  s_065bd2ed705bbf::t_a86dec57d95f74 38-39,43
+render.yaml
+  s_065bd2ed705bbf::t_a86dec57d95f74 23-26
+crates/monty-worker/CLAUDE.md
+  s_065bd2ed705bbf::t_6e0bb3e8fd3305 22-24,84-87,91-92
+crates/monty-server-tests/src/server.rs
+  s_065bd2ed705bbf::t_a86dec57d95f74 362-368
+CLAUDE.md
+  s_065bd2ed705bbf::t_6e0bb3e8fd3305 17-18,32-34
+crates/monty-server/README.md
+  s_065bd2ed705bbf::t_6e0bb3e8fd3305 191-194
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f4bedc04eb6b554f4a55133f171f969175ad2286",
+  "prompts": {},
+  "sessions": {
+    "s_065bd2ed705bbf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc421dd5-2fec-42f6-8fbb-3b8320b8d6af",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
