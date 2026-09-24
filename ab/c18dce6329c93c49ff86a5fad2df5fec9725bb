@@ -1,0 +1,32 @@
+crates/monty-datatest/src/main.rs
+  s_d7395db8d665f2::t_b0f857da83e8dc 28,1931-1966,1972-1979,2733-2737
+  s_d7395db8d665f2::t_bceb049af00e32 1967-1971
+  s_d7395db8d665f2::t_e158ddaaba36ac 1760-1766,1920-1921
+docs/limitations/builtins.md
+  s_d7395db8d665f2::t_878846d1d75be9 151-152
+crates/monty/tests/dump_compat.rs
+  s_d7395db8d665f2::t_f20005fffd0b7a 144-146,155,191
+  s_d7395db8d665f2::t_b68e371f68a0e0 185-187,266
+  s_d7395db8d665f2::t_4ff6ed64bbabf0 181-182
+  s_d7395db8d665f2::t_0af77b26a10415 12-13,209-212,216
+  s_d7395db8d665f2::t_80b1f90d889fa5 19-21,29,96-99,101-117,132-133,138-143,147-154,158-160,179-180,183-184,188-190
+  s_d7395db8d665f2::t_bceb049af00e32 213-215
+  s_d7395db8d665f2::t_9a39bc37f914b9 100
+  s_d7395db8d665f2::t_3a98b065fcc016 27-28,118-131,134-137,192-195
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "abc18dce6329c93c49ff86a5fad2df5fec9725bb",
+  "prompts": {},
+  "sessions": {
+    "s_d7395db8d665f2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6838a25f-2c6e-45af-9d8a-1e0485adfa39",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
