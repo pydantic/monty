@@ -1,0 +1,38 @@
+crates/monty/src/bytecode/code.rs
+  s_ad7fe5a5ed7985::t_3a5cf0549f8029 153,157,164
+crates/monty/src/types/tuple.rs
+  s_ad7fe5a5ed7985::t_2a8fde2758c1c9 71,75
+crates/monty/src/value.rs
+  s_ad7fe5a5ed7985::t_2a8fde2758c1c9 62,64,66,68,70,72,74,78,82,86,89,93,96,100,104,108,116
+crates/monty/src/types/dict.rs
+  s_ad7fe5a5ed7985::t_2a8fde2758c1c9 153,155,158,2148-2150,2159,2161,2163
+crates/monty/src/heap/mod.rs
+  s_ad7fe5a5ed7985::t_2a8fde2758c1c9 84,90,95,101,827,838,846
+crates/monty/src/types/list.rs
+  s_ad7fe5a5ed7985::t_2a8fde2758c1c9 64,68
+crates/monty/src/parse.rs
+  s_ad7fe5a5ed7985::t_2a8fde2758c1c9 2458,2461,2464
+CLAUDE.md
+  s_ad7fe5a5ed7985::t_fffd6b492b67fb 239-240
+  s_ad7fe5a5ed7985::t_c9f308b1898066 241
+crates/monty/src/types/set.rs
+  s_ad7fe5a5ed7985::t_2a8fde2758c1c9 34,37
+crates/monty-types/src/exceptions.rs
+  s_ad7fe5a5ed7985::t_2a8fde2758c1c9 728,731
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "cf05998d30513afc3acd005cd388e1eb11330a36",
+  "prompts": {},
+  "sessions": {
+    "s_ad7fe5a5ed7985": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b11a97e8-e7fa-4d01-908a-66d334639f05",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
