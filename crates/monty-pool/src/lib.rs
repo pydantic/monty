@@ -256,7 +256,7 @@ impl fmt::Display for PoolError {
             Self::Disconnected { context } => write!(f, "monty worker connection closed while {context}"),
             Self::Shutdown { dump } => match dump {
                 Some(_) => {
-                    f.write_str("monty server is shutting down; the request did not run (session dump attached)")
+                    f.write_str("monty server is shutting down; the request did not run (restorable state attached)")
                 }
                 None => f.write_str("monty server is shutting down; the request did not run"),
             },

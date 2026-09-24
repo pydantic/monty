@@ -673,24 +673,34 @@ enum Pending {
         /// Accept a settled coroutine for this call via `ResumeFutures`.
         allow_eager_await: bool,
     },
-    NameLookup,
-    Futures,
+    /// The name looked up, kept only to recognise it re-announced after a drain.
+    NameLookup { name: String },
+    /// The ids awaited, kept only to recognise them re-announced after a drain.
+    Futures { pending_call_ids: Vec<u32> },
 }
 
-/// A suspension's identity, compared when a resumed session re-announces it.
+/// A suspension's identity, compared when a resumed session re-announces it:
+/// the call id and name, the looked-up name, or the awaited ids.
 #[derive(Debug, PartialEq, Eq)]
 enum PendingKey {
-    Call(u32),
-    NameLookup,
-    Futures,
+    Call { call_id: u32, function_name: String },
+    NameLookup { name: String },
+    Futures { pending_call_ids: Vec<u32> },
 }
 
 impl PendingKey {
     fn of(pending: &Pending) -> Self {
         match pending {
-            Pending::Call { call_id, .. } => Self::Call(*call_id),
-            Pending::NameLookup => Self::NameLookup,
-            Pending::Futures => Self::Futures,
+            Pending::Call {
+                call_id, function_name, ..
+            } => Self::Call {
+                call_id: *call_id,
+                function_name: function_name.clone(),
+            },
+            Pending::NameLookup { name } => Self::NameLookup { name: name.clone() },
+            Pending::Futures { pending_call_ids } => Self::Futures {
+                pending_call_ids: pending_call_ids.clone(),
+            },
         }
     }
 }
@@ -1032,7 +1042,7 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
         self.ensure_ready()?;
-        if !matches!(self.pending, Some(Pending::NameLookup)) {
+        if !matches!(self.pending, Some(Pending::NameLookup { .. })) {
             return Err(PoolError::Protocol("no suspended name lookup to resume".into()));
         }
         let request = request(pb::parent_request::Kind::ResumeNameLookup(result.into().into()));
@@ -1062,7 +1072,7 @@ impl Checkout {
                     ));
                 }
             }
-            Some(Pending::Futures) => {}
+            Some(Pending::Futures { .. }) => {}
             _ => return Err(PoolError::Protocol("no suspended futures to resume".into())),
         }
         let results = results
@@ -1622,6 +1632,12 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
+            // Only a storing relay sets this, on its reply to `Configure` or
+            // `Load`. Taken before the budget check: a re-announced suspension
+            // over budget is aborted and dropped, but the session it names lives on.
+            if let Some(session_id) = event.session_id.take() {
+                self.session_id = Some(session_id.into_inner());
+            }
             // a suspension past `max_suspensions` is aborted here and never
             // reaches the caller; the abort's reply is the next event
             if self.abort_if_over_budget(&mut event).await? {
@@ -1631,10 +1647,6 @@ impl Checkout {
             // dump's script name without parsing the opaque dump bytes.
             if let Some(name) = &event.restored_script_name {
                 self.restored_script_name = Some(name.clone());
-            }
-            // Only a storing relay sets this, on its reply to `Configure` or `Load`.
-            if let Some(session_id) = event.session_id.take() {
-                self.session_id = Some(session_id.into_inner());
             }
             match event.kind {
                 Some(pb::child_event::Kind::Print(print)) => {
@@ -1737,7 +1749,9 @@ impl Checkout {
                             }
                         },
                     };
-                    self.pending = Some(Pending::NameLookup);
+                    self.pending = Some(Pending::NameLookup {
+                        name: lookup.name.clone(),
+                    });
                     return Ok(ControlEvent::Turn(TurnEvent::NameLookup {
                         name: lookup.name,
                         object_id,
@@ -1746,9 +1760,12 @@ impl Checkout {
                 }
                 Some(pb::child_event::Kind::ResolveFutures(futures)) => {
                     let position = suspension_position(futures.position);
-                    self.pending = Some(Pending::Futures);
+                    let pending_call_ids = futures.pending_call_ids.into_inner();
+                    self.pending = Some(Pending::Futures {
+                        pending_call_ids: pending_call_ids.clone(),
+                    });
                     return Ok(ControlEvent::Turn(TurnEvent::ResolveFutures {
-                        pending_call_ids: futures.pending_call_ids.into_inner(),
+                        pending_call_ids,
                         position,
                     }));
                 }

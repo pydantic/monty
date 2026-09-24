@@ -35,11 +35,14 @@ Against such a server [`dump()`][pydantic_monty.AsyncMontySession.dump] writes t
 record that never changes and returns that record's ID; the session continues under its `session_id`.
 The server also writes the session's state under `session_id` whenever it parks the session: idle for its
 `--park-after`, the client gone, or a drain.
-Passing either ID to [`load_session()`][pydantic_monty.AsyncMontySession.load_session] or
-[`load_snapshot()`][pydantic_monty.AsyncMontySession.load_snapshot] on a fresh session, from any process, starts a new
-session with its own ID: a `session_id` gives the state as of that session's last park, a `dump()` ID the state dumped.
+Passing either ID to the loader matching the stored state, [`load_session()`][pydantic_monty.AsyncMontySession.load_session]
+for an idle session or [`load_snapshot()`][pydantic_monty.AsyncMontySession.load_snapshot] for one suspended mid-feed, on
+a fresh session, from any process, starts a new session with its own ID: a `session_id` gives the state as of that
+session's last park, a `dump()` ID the state dumped.
 The record is unchanged and the session that wrote it is never resumed in place, so loading one ID twice gives two
 independent sessions, and a session still running elsewhere is unaffected.
+Loading an ID restores a dump, so [what restoring does not carry](../../snapshots.md#what-restoring-does-and-does-not-carry)
+applies: host objects sent before the dump, in particular, are unknown to the new session.
 To branch a session at a chosen point, call `dump()`, then `load_session()` with its ID once per branch; the original
 session can carry on as well.
 `checkout(ephemeral=True)` asks the server never to store the session, so it has no ID and `dump()` is refused.

@@ -2110,6 +2110,89 @@ async fn resume_rejects_a_different_reannounced_call() {
 }
 
 #[tokio::test]
+async fn resume_rejects_a_reannounced_call_with_another_name() {
+    // the same call id naming a different function is another session
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "ext()");
+        send_kind(&mut socket, function_call(7));
+        expect_resume_call(&mut socket, 7);
+        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"sess-1");
+        send_with_session_id(
+            &mut socket,
+            pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+                "other".to_owned(),
+                CallArgs::new(),
+                7,
+                None,
+                false,
+                position(),
+            )),
+            b"sess-2",
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    checkout
+        .feed("ext()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    let err = checkout
+        .resume(ResumeValue::Return(MontyObject::int(5)), &mut no_print)
+        .await
+        .expect_err("a mismatched session must not be resumed");
+    assert!(matches!(err, PoolError::Shutdown { .. }), "got {err:?}");
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn an_aborted_load_reply_still_names_the_session() {
+    // a re-announced suspension over budget is aborted before the caller
+    // sees it, but the ID its event carried names the session that lives on
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_load(&mut socket, b"sess-1");
+        send_with_session_id(&mut socket, function_call(7), b"sess-2");
+        let request = try_read_request(&mut socket).expect("abort");
+        let Some(pb::parent_request::Kind::AbortFeed(abort)) = request.kind else {
+            panic!("expected AbortFeed, got {request:?}");
+        };
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Error(pb::Error {
+                exception: abort.exception,
+            }),
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let pool = websocket_pool(port).await;
+    let repl = ReplConfig {
+        limits: Some(ResourceLimits::default().max_suspensions(0)),
+        ..ReplConfig::default()
+    };
+    let mut checkout = pool.checkout(&repl).await.expect("checkout");
+    let err = checkout
+        .restore(b"sess-1".to_vec(), vec![], &mut no_print)
+        .await
+        .expect_err("the re-announced call is over the limit");
+    assert!(matches!(err, PoolError::Runtime(_)), "got {err:?}");
+    assert_eq!(checkout.session_id(), Some(&b"sess-2"[..]));
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+#[tokio::test]
 async fn resume_refused_returns_the_original_shutdown() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
