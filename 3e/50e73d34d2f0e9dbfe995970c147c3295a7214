@@ -1,0 +1,36 @@
+Makefile
+  s_065bd2ed705bbf::t_ff8b3fa634a8d5 3-11,35-36,43,47,85-86,115
+crates/monty-server-tests/src/server.rs
+  s_065bd2ed705bbf::t_39b5acd32c5b41 58-59,62-64,75-80,82-96
+crates/monty-worker/Dockerfile
+  s_065bd2ed705bbf::t_e805741c8a6444 57-67
+Cargo.lock
+  ai_agent 1392,1403,1413,1437,1509
+CLAUDE.md
+  s_065bd2ed705bbf::t_bc331723337a01 74-82,89
+  s_065bd2ed705bbf::t_2b367d59abcecc 100
+pyproject.toml
+  s_065bd2ed705bbf::t_dc5c1b6b2ffbf3 10-14,24-28
+uv.lock
+  ai_agent 121,148
+.github/workflows/ci.yml
+  s_065bd2ed705bbf::t_bc331723337a01 97-98,120
+Cargo.toml
+  s_065bd2ed705bbf::t_0356d5d06025b2 70-73,75-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3e50e73d34d2f0e9dbfe995970c147c3295a7214",
+  "prompts": {},
+  "sessions": {
+    "s_065bd2ed705bbf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc421dd5-2fec-42f6-8fbb-3b8320b8d6af",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
