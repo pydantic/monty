@@ -1197,6 +1197,7 @@ fn repeated_position_fields_merge_like_the_oracle() {
     }
     let started = Instant::now();
     let hand = decode_frame::<WireFunctionCall>(bytes.as_slice()).expect("repeated empty positions decode");
-    assert_eq!(hand.position.map(|p| p.filename), Some(filename));
+    let expected = filename[..SourceRange::MAX_FILENAME_LEN].to_owned();
+    assert_eq!(hand.position.map(|p| p.filename), Some(expected));
     assert!(started.elapsed().as_secs() < 5, "repeats amplified decode work");
 }

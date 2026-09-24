@@ -2423,11 +2423,11 @@ impl<'h> VM<'h> {
         code.location_for_offset(offset)
             .map_or_else(SourceRange::unknown, |entry| {
                 let range = entry.range();
-                SourceRange {
-                    filename: self.interns.get_filename(range.filename).to_owned(),
-                    start: range.start_byte,
-                    end: range.end_byte,
-                }
+                SourceRange::new(
+                    self.interns.get_filename(range.filename),
+                    range.start_byte,
+                    range.end_byte,
+                )
             })
     }
 

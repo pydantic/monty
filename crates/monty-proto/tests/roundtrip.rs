@@ -1132,3 +1132,21 @@ fn out_of_range_now_timezone_is_rejected() {
         "invalid value for TimeZone.offset_seconds: -2147483648 is outside the range -86399..=86399"
     );
 }
+
+#[test]
+fn source_range_filename_is_capped_on_a_char_boundary() {
+    let wire = pb::SourceRange {
+        filename: "é".repeat(200),
+        start: 1,
+        end: 2,
+    };
+    let range = SourceRange::from(&wire);
+    assert_eq!(range.filename, "é".repeat(SourceRange::MAX_FILENAME_LEN / 2));
+    assert_eq!((range.start, range.end), (1, 2));
+    let odd = format!("x{}", "é".repeat(200));
+    assert_eq!(
+        SourceRange::new(&odd, 0, 0).filename.len(),
+        SourceRange::MAX_FILENAME_LEN - 1
+    );
+    assert_eq!(SourceRange::new("<python-input-3>", 0, 0).filename, "<python-input-3>");
+}

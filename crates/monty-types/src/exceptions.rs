@@ -775,6 +775,23 @@ pub struct SourceRange {
 }
 
 impl SourceRange {
+    /// Longest `filename` a range carries, in bytes, so a peer cannot make hosts copy a huge name.
+    pub const MAX_FILENAME_LEN: usize = 256;
+
+    /// Builds a range, cutting `filename` on a char boundary.
+    #[must_use]
+    pub fn new(filename: &str, start: u32, end: u32) -> Self {
+        let mut len = filename.len().min(Self::MAX_FILENAME_LEN);
+        while !filename.is_char_boundary(len) {
+            len -= 1;
+        }
+        Self {
+            filename: filename[..len].to_owned(),
+            start,
+            end,
+        }
+    }
+
     /// The range a host reports when its peer sent no position: an empty
     /// filename and an empty range at offset zero.
     #[must_use]

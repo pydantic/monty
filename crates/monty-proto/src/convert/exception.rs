@@ -265,22 +265,14 @@ impl From<SourceRange> for pb::SourceRange {
 /// is needed (cf. `StackFrame`).
 impl From<pb::SourceRange> for SourceRange {
     fn from(range: pb::SourceRange) -> Self {
-        Self {
-            filename: range.filename,
-            start: range.start,
-            end: range.end,
-        }
+        Self::from(&range)
     }
 }
 
 /// Borrowed form for a position read off an event that stays whole.
 impl From<&pb::SourceRange> for SourceRange {
     fn from(range: &pb::SourceRange) -> Self {
-        Self {
-            filename: range.filename.clone(),
-            start: range.start,
-            end: range.end,
-        }
+        Self::new(&range.filename, range.start, range.end)
     }
 }
 
