@@ -1,0 +1,19 @@
+crates/monty-js/__test__/wasm_memory_limit.spec.ts
+  s_b6c11d3465a9c0::t_bcd660e2b2b28c 31-33,37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e0f4210266586c8e8474d672474757fe1dc48c40",
+  "prompts": {},
+  "sessions": {
+    "s_b6c11d3465a9c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3d6e88a0-b022-40a2-8602-07cdeebe22ad",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
