@@ -2313,7 +2313,63 @@ async fn resumed_session_keeps_its_duration_backstop() {
         .resume(ResumeValue::Return(MontyObject::int(5)), &mut no_print)
         .await
         .expect_err("the configured feed budget survives the reload");
-    assert!(matches!(err, PoolError::Timeout { .. }), "got {err:?}");
+    // the backstop's deadline, not the 10s request timeout
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    assert_eq!(timeout, Duration::from_millis(200));
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn resumed_turn_takes_the_reloaded_backstop() {
+    // the session was configured without limits; the `Load` reply reports the
+    // dump's, which must bound the re-sent turn rather than the deadline
+    // computed before the shutdown
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "ext()");
+        send_kind(&mut socket, function_call(7));
+        expect_resume_call(&mut socket, 7);
+        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"sess-1");
+        send_event(
+            &mut socket,
+            &pb::ChildEvent {
+                kind: Some(function_call(7)),
+                session_id: Some(b"sess-2".to_vec().into()),
+                max_feed_duration_micros: Some(100_000),
+                ..Default::default()
+            },
+        );
+        // never answered: the reloaded 100ms budget plus 100ms grace ends the turn
+        expect_resume_call(&mut socket, 7);
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    config.max_processes = 1;
+    config.request_timeout = Some(Duration::from_secs(10));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(100));
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    checkout
+        .feed("ext()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    let err = checkout
+        .resume(ResumeValue::Return(MontyObject::int(5)), &mut no_print)
+        .await
+        .expect_err("the reloaded feed budget bounds the re-sent turn");
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    assert_eq!(timeout, Duration::from_millis(200));
     join_server(server).await;
 }
 

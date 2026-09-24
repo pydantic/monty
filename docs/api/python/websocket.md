@@ -30,9 +30,11 @@ Neither exception occurs on the local subprocess transport.
 ## Stored sessions
 
 A server that stores sessions gives each one an opaque ID instead of sending its state back.
-[`session_id`][pydantic_monty.AsyncMontySession.session_id] holds it; it is `None` against a server that stores nothing,
-which also refuses `dump()`, `load_session()` and `load_snapshot()` with `MontyRuntimeError` (the session carries on).
-Against such a server [`dump()`][pydantic_monty.AsyncMontySession.dump] writes the session's current state to a
+[`session_id`][pydantic_monty.AsyncMontySession.session_id] holds it; it is `None` against a server that stores nothing.
+`monty-server` run without a store also refuses `dump()`, `load_session()` and `load_snapshot()` with
+`MontyRuntimeError`, and the session carries on; the development relay in `scripts/websocket_relay.py` instead passes
+them to its worker, which dumps and loads bytes as a local session does.
+Against a storing server [`dump()`][pydantic_monty.AsyncMontySession.dump] writes the session's current state to a
 record that never changes and returns that record's ID; the session continues under its `session_id`.
 The server also writes the session's state under `session_id` whenever it parks the session: idle for its
 `--park-after`, the client gone, or a drain.

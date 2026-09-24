@@ -617,6 +617,20 @@ fn remaining_deadline(budget: Option<Duration>, consumed: Duration, grace: Optio
     Some(budget?.saturating_sub(consumed).saturating_add(grace?))
 }
 
+/// Recognizes the requests that run sandbox code, whose turns are bounded by
+/// the duration backstops as well as `request_timeout`.
+fn is_execution_turn(request: &pb::ParentRequest) -> bool {
+    matches!(
+        request.kind,
+        Some(
+            pb::parent_request::Kind::Feed(_)
+                | pb::parent_request::Kind::ResumeCall(_)
+                | pb::parent_request::Kind::ResumeNameLookup(_)
+                | pb::parent_request::Kind::ResumeFutures(_)
+        )
+    )
+}
+
 /// Recognizes turn-ending events that await a host answer.
 fn is_suspension(event: &pb::ChildEvent) -> bool {
     matches!(
@@ -1402,6 +1416,13 @@ impl Checkout {
                 if matches!(request.kind, Some(pb::parent_request::Kind::Feed(_))) {
                     self.budget.begin_feed();
                 }
+                // the `Load` reply may have tightened the budget, so an
+                // execution turn's backstop is re-derived as `expect_turn` did
+                let deadline = if is_execution_turn(request) {
+                    min_deadline(self.pool.config.request_timeout, self.backstop_deadline())
+                } else {
+                    deadline
+                };
                 self.request_turn(request, deadline, on_print).await
             }
             Err(_) => Err(PoolError::Shutdown { dump: Some(state) }),

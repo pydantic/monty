@@ -852,7 +852,11 @@ impl PyAsyncMontySession {
     #[pyo3(signature = (*_args))]
     fn __aexit__<'py>(&self, py: Python<'py>, _args: &Bound<'_, PyTuple>) -> PyResult<Bound<'py, PyAny>> {
         let slot = Arc::clone(&self.checkout);
+        let session_id = Arc::clone(&self.session_id);
         future_into_py(py, async move {
+            // the getter reads the cache once the checkout is gone: keep the ID
+            // an auto-resume adopted during a turn
+            refresh_session_id(&slot, &session_id).await;
             finish_checkout(&slot).await;
             Ok(())
         })
@@ -1063,16 +1067,13 @@ impl PyAsyncMontySession {
     }
 }
 
-/// Copies the checkout's session ID into the getter's cache after a load,
-/// which replaced it: loading a session ID names a new session.
+/// Copies the checkout's session ID into the getter's cache, after a load
+/// (which names a new session) and before the checkout goes. A checkout
+/// already gone leaves the cache as the last ID seen.
 async fn refresh_session_id(checkout: &SharedCheckout, cache: &Mutex<Option<Vec<u8>>>) {
-    let id = checkout
-        .lock()
-        .await
-        .as_ref()
-        .and_then(Checkout::session_id)
-        .map(<[u8]>::to_vec);
-    *lock(cache) = id;
+    if let Some(checkout) = checkout.lock().await.as_ref() {
+        *lock(cache) = checkout.session_id().map(<[u8]>::to_vec);
+    }
 }
 
 // =============================================================================
@@ -1165,8 +1166,10 @@ async fn restore_turn(
         }
     };
     // discard the worker on failure (the lock is released above) so a later
-    // feed fails fast — a failed load is not retryable
-    if result.is_err() {
+    // feed fails fast — a failed load is not retryable. A `Runtime` error is
+    // the exception: the pool keeps the session for it (a frame too large to
+    // send, or a relay that refuses the load), and so does this
+    if !matches!(result, Ok(_) | Err(PoolError::Runtime(_))) {
         discard_checkout(checkout).await;
     }
     result
