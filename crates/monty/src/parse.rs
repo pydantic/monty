@@ -24,7 +24,7 @@ use crate::{
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     intern::{CompileInterns, StringId},
     source_map::{SourceMap, StackFrameExt},
-    source_nesting::nesting_bound_exceeded,
+    source_nesting::{ast_depth_exceeded, nesting_bound_exceeded},
     stringize::stringize_annotation,
     types::long_int::INT_MAX_STR_DIGITS,
     value::EitherStr,
@@ -259,6 +259,30 @@ pub(crate) fn source_nesting_exception(
     // The filename id is a compiler concern; the exception names the file itself.
     check_source_nesting(code, Mode::Module, StringId::default(), source_scan_threshold)
         .map_err(|e| e.into_python_exc(script_name, code))
+}
+
+/// [`source_nesting_exception`] for a source about to be type-checked, which
+/// also rejects any expression nested deeper than [`MAX_NESTING_DEPTH`].
+///
+/// The compiler bounds expression depth itself, but ty walks the whole AST
+/// first — annotations the compiler drops included — and a flat source such
+/// as `1+1+...` builds one deep enough to overflow the stack.
+///
+/// # Errors
+/// The `SyntaxError: Source is too deeply nested` located in the source.
+pub fn type_check_nesting_exception(
+    code: &str,
+    script_name: &str,
+    source_scan_threshold: usize,
+) -> Result<(), MontyException> {
+    source_nesting_exception(code, script_name, source_scan_threshold)?;
+    match ast_depth_exceeded(code, MAX_NESTING_DEPTH) {
+        Some(range) => Err(
+            ParseError::syntax("Source is too deeply nested", code_range(StringId::default(), range))
+                .into_python_exc(script_name, code),
+        ),
+        None => Ok(()),
+    }
 }
 
 /// Rejects a source over `source_scan_threshold` bytes whose estimated parser

@@ -2051,20 +2051,26 @@ fn install_dependencies_is_rejected_but_session_survives() {
 // =============================================================================
 
 /// Stubs reach ty with every feed and nothing else scans them, so a
-/// `Configure` carrying deeply nested stubs is refused up front.
+/// `Configure` carrying deeply nested stubs is refused up front — whether the
+/// parser would recurse on them or they merely build a deep AST.
 #[test]
 fn deeply_nested_type_check_stubs_are_rejected_on_configure() {
     let mut child = ChildProc::spawn();
-    child.send(pb::parent_request::Kind::Configure(pb::Configure {
-        type_check: true,
-        type_check_stubs: Some(format!("x: '{}1{}'", "(".repeat(5000), ")".repeat(5000))),
-        ..configure()
-    }));
-    let error = expect_error(child.recv());
-    assert_eq!(
-        error.message.as_deref(),
-        Some("protocol violation: invalid type_check_stubs: Source is too deeply nested")
-    );
+    for stubs in [
+        format!("x: '{}1{}'", "(".repeat(5000), ")".repeat(5000)),
+        format!("x: {}", vec!["int"; 5000].join(" | ")),
+    ] {
+        child.send(pb::parent_request::Kind::Configure(pb::Configure {
+            type_check: true,
+            type_check_stubs: Some(stubs),
+            ..configure()
+        }));
+        let error = expect_error(child.recv());
+        assert_eq!(
+            error.message.as_deref(),
+            Some("protocol violation: invalid type_check_stubs: Source is too deeply nested")
+        );
+    }
     child.create_repl();
     child.feed_complete("1 + 1");
     child.shutdown();
@@ -2091,6 +2097,34 @@ fn type_checked_session_skips_the_checker_for_deeply_nested_source() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "SyntaxError");
     assert_eq!(error.message.as_deref(), Some("Source is too deeply nested"));
+
+    assert_eq!(child.feed_complete("1"), MontyObject::int(1));
+    child.shutdown();
+}
+
+/// ty recurses once per AST level, and ruff builds arbitrarily deep ASTs from
+/// flat source without recursing itself — annotations the compiler drops and
+/// string annotations included. Each such feed ends in a SyntaxError before ty
+/// runs, and the session survives.
+#[test]
+fn type_checked_session_rejects_deep_asts_from_flat_source() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        type_check: true,
+        ..configure()
+    });
+
+    for source in [
+        format!("x = {}", vec!["1"; 20_000].join("+")),
+        format!("y = a{}", ".x".repeat(20_000)),
+        format!("def f(a: {}) -> None: ...", vec!["int"; 5000].join(" | ")),
+        format!("x: '{}' = 1", vec!["int"; 5000].join(" | ")),
+    ] {
+        let (_, event) = child.feed(&source);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "SyntaxError");
+        assert_eq!(error.message.as_deref(), Some("Source is too deeply nested"));
+    }
 
     assert_eq!(child.feed_complete("1"), MontyObject::int(1));
     child.shutdown();

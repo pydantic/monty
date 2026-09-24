@@ -22,7 +22,7 @@ use anstream::{AutoStream, ColorChoice, eprintln};
 use anstyle::{AnsiColor, Color, Style};
 use monty::{
     MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress, detect_repl_continuation_mode,
-    source_within_nesting_bound,
+    type_check_nesting_exception,
 };
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
@@ -213,10 +213,12 @@ fn run_script(
     mut host: HostOs,
     cwd: &str,
 ) -> ExitCode {
-    // A source the compiler will reject as too deeply nested skips the (unguarded) type checker.
-    if let Some(config) = type_check
-        && source_within_nesting_bound(&code, SOURCE_SCAN_THRESHOLD)
-    {
+    // ty recurses through the AST unguarded, so a source nested too deeply is rejected before it.
+    if let Some(config) = type_check {
+        if let Err(err) = type_check_nesting_exception(&code, file_path, SOURCE_SCAN_THRESHOLD) {
+            eprintln!("{BOLD_RED}error{BOLD_RED:#}:\n{err}");
+            return ExitCode::FAILURE;
+        }
         let start = Instant::now();
         let mut checker = TypeChecker::default();
         if let Some(failure) = checker.run(&SourceFile::new(&code, file_path), None, config).unwrap() {
