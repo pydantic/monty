@@ -290,7 +290,7 @@ import { Monty } from '@pydantic/monty'
 
 await using pool = await Monty.create({
   binaryPath: undefined, // explicit path to the `monty` worker binary
-  minProcesses: 1, // workers spawned up front
+  minProcesses: 1, // workers spawned up front and kept warm
   maxProcesses: 8, // cap on live workers; defaults to the CPU count
   checkoutTimeout: 5, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline; kills the worker

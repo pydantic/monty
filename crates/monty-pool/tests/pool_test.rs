@@ -2,6 +2,8 @@
 //! headline scenarios: a worker dying mid-execution (kill, crash, timeout)
 //! must surface as a clean error and never poison the pool.
 
+mod common;
+
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 #[cfg(windows)]
@@ -39,6 +41,8 @@ use monty_types::{
 use tokio::time::sleep;
 #[cfg(unix)]
 use tokio::time::timeout;
+
+use crate::common::wait_for_idle;
 
 /// Locates (building once if needed) the `monty` CLI binary for tests.
 fn monty_binary() -> PathBuf {
@@ -2176,11 +2180,122 @@ async fn workers_are_recycled_after_max_checkouts() {
     let session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let first_pid = session.pid().unwrap();
     session.finish().await.unwrap();
-    assert_eq!(pool.idle_workers(), 0, "worker must be retired, not pooled");
+    // retired, not pooled: the idle worker is a background replacement
+    wait_for_idle(&pool, 1).await;
+    assert_ne!(pool.idle_worker_pids(), vec![first_pid]);
 
     let session = pool.checkout(&ReplConfig::default()).await.unwrap();
     assert_ne!(session.pid().unwrap(), first_pid);
     session.finish().await.unwrap();
+}
+
+/// With one checkout per process, every session gets a fresh worker, and the
+/// pool refills to `min_processes` after each so the next one is warm.
+#[tokio::test]
+async fn recycled_workers_are_replaced_in_the_background() {
+    let mut config = config();
+    config.min_processes = 2;
+    config.max_checkouts_per_worker = Some(1);
+    let pool = Pool::new(config).await.unwrap();
+
+    let mut seen = pool.idle_worker_pids();
+    for _ in 0..3 {
+        let session = pool.checkout(&ReplConfig::default()).await.unwrap();
+        let pid = session.pid().unwrap();
+        session.finish().await.unwrap();
+        wait_for_idle(&pool, 2).await;
+        for idle in pool.idle_worker_pids() {
+            if !seen.contains(&idle) {
+                seen.push(idle);
+            }
+        }
+        assert!(seen.contains(&pid));
+    }
+    // two prewarmed plus one refill per session, never a PID reused
+    assert_eq!(seen.len(), 5);
+}
+
+/// Workers lost to a crash or an abandoned checkout are replaced too.
+#[tokio::test]
+async fn crashed_and_dropped_workers_are_replaced() {
+    let pool = Pool::new(config()).await.unwrap();
+
+    let session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let dropped_pid = session.pid().unwrap();
+    drop(session);
+    wait_for_idle(&pool, 1).await;
+    assert_ne!(pool.idle_worker_pids(), vec![dropped_pid]);
+
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let crashed_pid = session.pid().unwrap();
+    kill_pid(crashed_pid);
+    let err = session
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Crashed { .. }), "got {err:?}");
+    drop(session);
+    wait_for_idle(&pool, 1).await;
+    assert_ne!(pool.idle_worker_pids(), vec![crashed_pid]);
+}
+
+/// A refill reserves its slot before spawning, so it never takes the pool
+/// past `max_processes`: a checkout racing it waits for the refilled worker.
+#[tokio::test]
+async fn refill_never_exceeds_max_processes() {
+    let mut config = config();
+    config.min_processes = 2;
+    config.max_processes = 2;
+    config.max_checkouts_per_worker = Some(1);
+    config.checkout_timeout = Some(Duration::from_secs(1));
+    let pool = Pool::new(config).await.unwrap();
+
+    let first = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let held = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let first_pid = first.pid().unwrap();
+    first.finish().await.unwrap();
+
+    let refilled = pool.checkout(&ReplConfig::default()).await.unwrap();
+    assert_ne!(refilled.pid().unwrap(), first_pid);
+    assert_eq!(pool.idle_workers(), 0);
+    let blocked = pool.checkout(&ReplConfig::default()).await.err();
+    assert!(matches!(blocked, Some(PoolError::Exhausted)), "{blocked:?}");
+
+    drop(held);
+    drop(refilled);
+    wait_for_idle(&pool, 2).await;
+}
+
+/// `min_processes` floors live workers, not idle ones: a reuse pool that ran
+/// more sessions than its floor keeps exactly the workers its load spawned.
+#[tokio::test]
+async fn reuse_pool_does_not_grow_past_its_load() {
+    let mut config = config();
+    config.max_processes = 3;
+    let pool = Pool::new(config).await.unwrap();
+
+    let repl = ReplConfig::default();
+    let (a, b, c) = tokio::join!(pool.checkout(&repl), pool.checkout(&repl), pool.checkout(&repl));
+    for session in [a, b, c] {
+        session.unwrap().finish().await.unwrap();
+    }
+    assert_eq!(pool.idle_workers(), 3);
+    sleep(Duration::from_millis(100)).await;
+    assert_eq!(pool.idle_workers(), 3);
+}
+
+/// A refill landing after `close` kills its worker instead of pooling it.
+#[tokio::test]
+async fn close_stops_refilling() {
+    let mut config = config();
+    config.max_checkouts_per_worker = Some(1);
+    let pool = Pool::new(config).await.unwrap();
+
+    let session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    session.finish().await.unwrap();
+    pool.close().await;
+    sleep(Duration::from_millis(200)).await;
+    assert_eq!(pool.idle_workers(), 0);
 }
 
 #[tokio::test]

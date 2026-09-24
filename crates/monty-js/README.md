@@ -564,7 +564,7 @@ died (the session is lost, the pool recovers).
 
 ```ts
 const pool = await Monty.create({
-  minProcesses: 1, // prewarmed workers
+  minProcesses: 1, // prewarmed workers, replaced in the background as they leave
   maxProcesses: 8, // cap; checkouts beyond it wait (default: CPU count)
   checkoutTimeout: 10, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline (seconds)

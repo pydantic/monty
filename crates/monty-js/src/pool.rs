@@ -97,7 +97,8 @@ where
 pub struct NativePoolOptions {
     /// Resolved path to the `monty` binary.
     pub binary_path: String,
-    /// Workers spawned eagerly by `start()` and kept warm.
+    /// Workers spawned eagerly by `start()`, and replaced in the background
+    /// whenever one is recycled, crashes or is discarded.
     pub min_processes: u32,
     /// Hard cap on live workers; checkouts beyond it wait.
     pub max_processes: u32,

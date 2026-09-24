@@ -7,9 +7,11 @@
 
 #![cfg(feature = "telemetry")]
 
+mod common;
+
 use std::{
     collections::HashMap,
-    env,
+    env, fs,
     future::ready,
     path::{Path, PathBuf},
     process::Command,
@@ -39,6 +41,9 @@ use opentelemetry_sdk::{
     trace::SpanData,
 };
 use prost::Message;
+use tokio::time::sleep;
+
+use crate::common::wait_for_idle;
 
 /// A cumulative aggregate exported from a test Logfire provider.
 struct Capture {
@@ -336,13 +341,76 @@ async fn saturation_and_abandonment_are_recorded() {
     assert!(matches!(blocked, Some(PoolError::Exhausted)), "{blocked:?}");
     capture.last("monty.pool.checkout.wait", "outcome", "exhausted");
 
-    // dropping without `finish` kills the worker: the session ended, and the
-    // worker left the pool
+    // dropping without `finish` kills the worker: the session ended, the
+    // worker left the pool, and a refill replaced it
     drop(held);
     capture.last("monty.pool.session.duration", "outcome", "abandoned");
     capture.last("monty.pool.worker.terminated", "reason", "abandoned");
-    assert_eq!(capture.total("monty.pool.workers.live"), 0);
+    wait_for_idle(&pool, 1).await;
+    assert_eq!(capture.total("monty.pool.workers.live"), 1);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 1);
+}
+
+/// A worker recycled after its checkout is replaced in the background, so the
+/// next checkout is served warm rather than spawning on its path.
+#[tokio::test]
+async fn checkout_after_recycle_is_warm() {
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 1;
+    config.max_checkouts_per_worker = Some(1);
+    let (pool, capture) = pool_with_metrics(config).await;
+
+    pool.checkout(&ReplConfig::default())
+        .await
+        .expect("checkout")
+        .finish()
+        .await
+        .expect("finish");
+    capture.last("monty.pool.worker.terminated", "reason", "recycled");
+    wait_for_idle(&pool, 1).await;
+
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let spawned = capture
+        .named("monty.pool.checkout.wait")
+        .into_iter()
+        .any(|recorded| recorded.attributes.get("outcome").is_some_and(|o| o == "spawned"));
+    assert!(!spawned, "no checkout should have spawned its worker");
+    assert_eq!(capture.total("monty.pool.workers.live"), 1);
     assert_eq!(capture.total("monty.pool.workers.idle"), 0);
+    drop(checkout);
+}
+
+/// A refill that cannot spawn backs off rather than retrying in a tight loop,
+/// while a checkout still surfaces the spawn error, and refilling resumes once
+/// the binary is back. Unix-only: Windows cannot delete a running executable.
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_refills_back_off() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let binary = dir.path().join(format!("monty{}", env::consts::EXE_SUFFIX));
+    fs::copy(monty_binary(), &binary).expect("copy monty");
+    let mut config = PoolConfig::subprocess(&binary);
+    config.min_processes = 1;
+    config.max_checkouts_per_worker = Some(1);
+    let (pool, capture) = pool_with_metrics(config).await;
+
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    fs::remove_file(&binary).expect("remove monty");
+    checkout.finish().await.expect("finish");
+    sleep(Duration::from_secs(1)).await;
+    // 100 ms doubling: failures at about 0, 0.1, 0.3 and 0.7 s
+    let failures = capture
+        .last("monty.pool.worker.terminated", "reason", "refill_failed")
+        .value;
+    assert!(
+        matches!(failures, Value::U64(2..=5)),
+        "expected a handful of backed-off refills, got {failures:?}"
+    );
+    let err = pool.checkout(&ReplConfig::default()).await.err();
+    assert!(matches!(err, Some(PoolError::Spawn(_))), "{err:?}");
+
+    fs::copy(monty_binary(), &binary).expect("restore monty");
+    wait_for_idle(&pool, 1).await;
 }
 
 /// A worker that dies during a turn: the teardown path counts its termination
@@ -376,8 +444,9 @@ async fn a_crashed_worker_is_counted_as_it_is_torn_down() {
     capture.last("monty.pool.worker.terminated", "reason", "crash");
     assert_eq!(capture.named("monty.pool.session.duration").len(), 1);
     capture.last("monty.pool.session.duration", "outcome", "error");
-    assert_eq!(capture.total("monty.pool.workers.live"), 0);
-    assert_eq!(capture.total("monty.pool.workers.idle"), 0);
+    wait_for_idle(&pool, 1).await;
+    assert_eq!(capture.total("monty.pool.workers.live"), 1);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 1);
 }
 
 /// A pool dropped without `close` — a supported shutdown — still counts its

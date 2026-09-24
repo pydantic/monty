@@ -22,7 +22,10 @@ import { captureTelemetryContext } from './telemetry.js'
 export interface MontyOptions {
   /** Path to the `monty` binary; resolved automatically when omitted. */
   binaryPath?: string
-  /** Workers spawned up front by `create()` (default 1). */
+  /**
+   * Workers spawned up front by `create()` and replaced in the background
+   * whenever one is recycled, crashes or is discarded (default 1).
+   */
   minProcesses?: number
   /** Worker cap; checkouts beyond it wait (default: CPU count). */
   maxProcesses?: number
