@@ -25,7 +25,7 @@ use std::{
 use ahash::AHashMap;
 // only the dump round-trip needs these, and it is skipped under memory-model-checks
 #[cfg(not(feature = "memory-model-checks"))]
-use monty::{Dump, Session, SessionRef, dump};
+use monty::{Dump, MontyRepl, Session, SessionRef, dump};
 use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
@@ -1757,6 +1757,13 @@ fn run_mount_fs_iter_loop(
     let mut progress = exec.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)?;
 
     loop {
+        // As in `run_iter_loop`: every suspension goes through the dump format,
+        // which is what carries live open files through it.
+        #[cfg(not(feature = "memory-model-checks"))]
+        {
+            progress = dump_load_round_trip(&progress);
+        }
+
         match progress {
             RunProgress::Complete(result) => return Ok(result),
             RunProgress::FunctionCall(call) => {
@@ -1910,14 +1917,63 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
     }
 }
 
-/// Dumps a suspended run and reloads it, so every test case exercises the real
-/// dump format rather than only the underlying serde impls.
+/// Dumps a suspended run and reloads it, so every suspending test case exercises
+/// the real dump format rather than only the underlying serde impls.
 #[cfg(not(feature = "memory-model-checks"))]
 fn dump_load_round_trip(progress: &RunProgress) -> RunProgress {
     let bytes = dump("test.py", None, SessionRef::Running(progress)).expect("failed to dump RunProgress");
     match Dump::load(&bytes).expect("failed to load RunProgress").state {
         Session::Running(progress) => *progress,
         _ => panic!("dumped a running session, loaded something else"),
+    }
+}
+
+/// Runs the fixture in a REPL, then dumps the idle session, loads it and dumps it again.
+///
+/// Most fixtures never suspend, so this is what puts their heap (every global the
+/// case leaves behind) through the dump codec. The two dumps must match byte for
+/// byte, which catches asymmetric serde impls and fields lost on load.
+#[cfg(not(feature = "memory-model-checks"))]
+fn idle_dump_round_trip(path: &Path, code: &str, config: &TestConfig) -> Result<(), TestFailure> {
+    let test_name = path
+        .strip_prefix(TEST_CASES_RELATIVE_DIR)
+        .unwrap_or(path)
+        .display()
+        .to_string();
+    let failure = |actual: String| TestFailure {
+        test_name: test_name.clone(),
+        kind: "Dump round-trip".to_string(),
+        expected: "identical dumps before and after loading".to_string(),
+        actual,
+    };
+    let mut repl = MontyRepl::new(
+        &test_name,
+        ResourceTracker::new(config.limits.clone()),
+        CompileOptions::default(),
+    )
+    .with_os_policy(config.os_policy.clone());
+    // the case's own outcome was checked by the main run; a raising case still leaves its globals
+    let _ = repl.feed_run(code, vec![], PrintWriter::Disabled);
+
+    let first = dump(&test_name, None, SessionRef::Idle(&repl)).map_err(|err| failure(format!("dump: {err}")))?;
+    let loaded = Dump::load(&first).map_err(|err| failure(format!("load: {err}")))?;
+    let Session::Idle(loaded) = loaded.state else {
+        return Err(failure("dumped an idle session, loaded something else".to_string()));
+    };
+    let second = dump(&test_name, None, SessionRef::Idle(&loaded)).map_err(|err| failure(format!("re-dump: {err}")))?;
+    if first == second {
+        Ok(())
+    } else {
+        let at = first
+            .iter()
+            .zip(&second)
+            .position(|(a, b)| a != b)
+            .unwrap_or(first.len().min(second.len()));
+        Err(failure(format!(
+            "dumps differ at byte {at} ({} vs {} bytes)",
+            first.len(),
+            second.len()
+        )))
     }
 }
 
@@ -2674,7 +2730,11 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
         } else if iter_mode {
             try_run_iter_test(&path_owned, &code, &expectation, &config)
         } else {
-            try_run_test(&path_owned, &code, &expectation, &config)
+            try_run_test(&path_owned, &code, &expectation, &config)?;
+            // Suspending cases already round-trip at every host call; this covers the rest.
+            #[cfg(not(feature = "memory-model-checks"))]
+            idle_dump_round_trip(&path_owned, &code, &config)?;
+            Ok(())
         }
     });
 

@@ -9,21 +9,24 @@
 use std::{env, fs, path::PathBuf};
 
 use insta::assert_snapshot;
-use monty::{DUMP_VERSION, Dump, MontyRepl, Session, SessionRef, dump};
-use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
+use monty::{DUMP_VERSION, Dump, MontyRepl, ReplProgress, Session, SessionRef, dump};
+use monty_types::{CompileOptions, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
 use serde::{Deserialize, Serialize};
 
 /// Environment variable that rewrites the fixture instead of checking it.
 const UPDATE_FIXTURE: &str = "UPDATE_DUMP_FIXTURE";
 
-/// Builds the state the fixture holds: the common heap types, a live
-/// iterator, functions, classes and a cycle, ahead of a suspension on a host
-/// call whose arguments carry heap values.
+/// Builds the state the fixture holds: the common heap types, live iterators,
+/// functions, classes and a cycle, ahead of a suspension on a host call whose
+/// arguments carry heap values.
 const FIXTURE_STATE: &str = r"
 import collections
 import dataclasses
 import datetime
 import functools
+import itertools
+import pathlib
+import random
 import re
 
 big = 2**100
@@ -90,10 +93,71 @@ m = pat.match('12-ab')
 part = functools.partial(add5, 1)
 cycle = []
 cycle.append(cycle)
+
+day = datetime.date(2024, 5, 6)
+tz = datetime.timezone(datetime.timedelta(hours=2), 'X')
+tm = datetime.time(1, 2, 3)
+raw = b'\x07\x08' + b'\x09'
+rg = range(2, 10, 3)
+sl = slice(1, 5, 2)
+bound = c.bump
+kv, iv, vv = d.keys(), d.items(), d.values()
+rnd = random.Random(42)
+rnd.random()
+dq_it = iter(dq)
+next(dq_it)
+t_it = iter(t)
+next(t_it)
+b_it = iter(raw)
+next(b_it)
+di_it = iter(d.items())
+next(di_it)
+s_it = iter(st)
+next(s_it)
+call_it = iter(lambda: 7, 0)
+joined = '-'.join(['x', 'y'])
+str_it = iter('abc')
+next(str_it)
+range_it = iter(range(3))
+next(range_it)
+dk_it = iter(d)
+next(dk_it)
+dv_it = iter(d.values())
+next(dv_it)
+counter = itertools.count(5)
+next(counter)
+alias = list[int]
+opt = int | None
+where = pathlib.Path('/data') / 'file.txt'
+
+
+def with_default(x, y=[1]):
+    return x + len(y)
+
+
+def exec_host(xs, d, b):
+    g = {'host_call': host_call, 'xs': xs, 'd': d, 'b': b}
+    exec('out = host_call(xs, d, b)', g)
+    return g['out']
+
+
+pending_log = []
+
+
+class Pending:
+    def __init__(self, xs, d, b):
+        try:
+            raise KeyError('pending')
+        except KeyError:
+            try:
+                self.result = exec_host(xs, d, b)
+            finally:
+                pending_log.append('finally')
 ";
 
-/// The host call the fixture is suspended on.
-const FIXTURE_CALL: &str = "host_call(xs, d, b) + 1";
+/// The host call the fixture is suspended on, from inside an `exec()` frame with a
+/// globals dict, a `finally` block, an `except` handler and an `__init__`.
+const FIXTURE_CALL: &str = "Pending(xs, d, b).result + 1";
 
 /// Fed after restoring and resuming the fixture: every value must have survived.
 const FIXTURE_CHECK: &str = r"
@@ -112,6 +176,23 @@ assert str(err) == 'boom' and isinstance(err, ValueError)
 assert dt.microsecond == 678901 and dlt.days == 1
 assert m.groups() == ('12', 'ab') and pat.sub('X', '1-a 2-b') == 'X X'
 assert cycle[0] is cycle
+assert day == datetime.date(2024, 5, 6) and tm == datetime.time(1, 2, 3)
+assert tz.utcoffset(None) == datetime.timedelta(hours=2) and tz.tzname(None) == 'X'
+assert raw == b'\x07\x08\x09' and list(rg) == [2, 5, 8]
+assert (sl.start, sl.stop, sl.step) == (1, 5, 2)
+assert bound() == 13 and c.value == 13
+assert list(kv) == ['a', 'b', 3] and list(vv) == [1, [2, 3], 'int key'] and ('a', 1) in iv
+fresh = random.Random(42)
+fresh.random()
+assert rnd.random() == fresh.random()
+assert list(dq_it) == [2, 3] and list(t_it) == ['two'] and list(b_it) == [8, 9]
+assert list(di_it) == [('b', [2, 3]), (3, 'int key')] and len(list(s_it)) == 2
+assert next(call_it) == 7
+assert pending_log == ['finally']
+assert joined == 'x-y' and list(str_it) == ['b', 'c'] and list(range_it) == [1, 2]
+assert list(dk_it) == ['b', 3] and list(dv_it) == [[2, 3], 'int key'] and next(counter) == 6
+assert alias == list[int] and opt == (int | None) and str(where) == '/data/file.txt'
+assert with_default(1) == 2
 (result, c.value)
 ";
 
@@ -125,7 +206,14 @@ fn fixture_dump_loads_and_resumes() {
     if env::var_os(UPDATE_FIXTURE).is_some() {
         let mut repl = MontyRepl::new("fixture.py", ResourceTracker::default(), CompileOptions::default());
         repl.feed_run(FIXTURE_STATE, vec![], PrintWriter::Stdout).unwrap();
-        let progress = repl.feed_start(FIXTURE_CALL, vec![], PrintWriter::Stdout).unwrap();
+        let mut progress = repl.feed_start(FIXTURE_CALL, vec![], PrintWriter::Stdout).unwrap();
+        // `host_call` is looked up from inside `exec_host`, where it is not yet defined
+        while let ReplProgress::NameLookup(lookup) = progress {
+            let host = MontyObject::function(lookup.name.clone(), None);
+            progress = lookup
+                .resume(NameLookupResult::Value(host), PrintWriter::Stdout)
+                .unwrap();
+        }
         let bytes = dump("fixture.py", None, SessionRef::Suspended(&progress)).unwrap();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, bytes).unwrap();
@@ -175,7 +263,7 @@ fn fixture_dump_loads_and_resumes() {
     let checked = repl.feed_run(FIXTURE_CHECK, vec![], PrintWriter::Stdout).unwrap();
     assert_eq!(
         checked,
-        MontyObject::tuple(vec![MontyObject::int(42), MontyObject::int(12)])
+        MontyObject::tuple(vec![MontyObject::int(42), MontyObject::int(13)])
     );
 }
 
