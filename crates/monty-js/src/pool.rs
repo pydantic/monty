@@ -756,6 +756,13 @@ impl NativeSession {
         })
     }
 
+    /// Pool-assigned identity, captured by the JS session before it starts any turns.
+    #[must_use]
+    #[napi(getter)]
+    pub fn worker_id(&self) -> Option<f64> {
+        self.checkout.try_lock().ok()?.as_ref()?.worker_id().map(|id| id as f64)
+    }
+
     /// OS process id of this session's worker, or `null` when no worker is
     /// attached or a turn is in flight (the turn thread holds the checkout
     /// lock — blocking the event loop on it would deadlock with the print

@@ -50,6 +50,8 @@ struct PoolState {
     idle: Vec<Worker>,
     /// Live workers: idle + checked out + currently being spawned.
     total: usize,
+    /// Never reused, including when a spawn fails or is cancelled.
+    next_id: u64,
 }
 
 impl Pool {
@@ -68,14 +70,20 @@ impl Pool {
         let mut idle = Vec::with_capacity(config.min_processes);
         if !config.transport.is_websocket() {
             for _ in 0..config.min_processes {
-                idle.push(Worker::new(&config, &[]).await?);
+                let mut worker = Worker::new(&config, &[]).await?;
+                worker.id = idle.len() as u64 + 1;
+                idle.push(worker);
             }
         }
         let total = idle.len();
         let pool = Self {
             inner: Arc::new(PoolInner {
                 config,
-                state: Mutex::new(PoolState { idle, total }),
+                state: Mutex::new(PoolState {
+                    idle,
+                    total,
+                    next_id: total as u64 + 1,
+                }),
                 available: Notify::new(),
             }),
         };
@@ -236,9 +244,14 @@ impl PoolInner {
                 }
                 // reserve capacity before releasing the lock to spawn/connect
                 let below_cap = reused.is_none() && state.total < self.config.max_processes;
-                if below_cap {
+                let id = if below_cap {
                     state.total += 1;
-                }
+                    let id = state.next_id;
+                    state.next_id = id.checked_add(1).expect("worker identity exhausted");
+                    Some(id)
+                } else {
+                    None
+                };
                 drop(state); // never call into the host adapter under the lock
                 for _ in 0..died_idle {
                     self.count_termination("died_idle");
@@ -249,14 +262,15 @@ impl PoolInner {
                     *outcome = if waited { "waited" } else { "idle" };
                     return Ok(worker);
                 }
-                below_cap
+                id
             };
-            if spawn {
+            if let Some(id) = spawn {
                 *outcome = if waited { "waited" } else { "spawned" };
                 // guard the reserved slot: a failed — or cancelled, for the
                 // WebSocket dial — spawn must release it or the pool shrinks
                 let capacity = CapacityGuard::new(self);
-                let worker = Worker::new(&self.config, connect_headers).await?;
+                let mut worker = Worker::new(&self.config, connect_headers).await?;
+                worker.id = id;
                 capacity.disarm();
                 return Ok(worker);
             }

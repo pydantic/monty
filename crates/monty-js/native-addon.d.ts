@@ -31,6 +31,7 @@ export declare class NativePool {
 }
 
 export declare class NativeSession {
+  readonly workerId?: number
   readonly workerPid?: number
   enter(telemetryContext?: unknown): Promise<void>
   feed(...args: unknown[]): Promise<object>

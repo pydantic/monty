@@ -230,6 +230,7 @@ async fn feed_and_finish_reuses_the_worker() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let first_pid = session.pid().unwrap();
+    let first_id = session.worker_id().unwrap();
 
     let event = session
         .feed("x = 40\nx + 2", vec![], vec![], false, &mut no_print)
@@ -250,6 +251,7 @@ async fn feed_and_finish_reuses_the_worker() {
     // at NameLookup and resolving it as undefined raises NameError
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     assert_eq!(session.pid().unwrap(), first_pid);
+    assert_eq!(session.worker_id(), Some(first_id));
     let event = session.feed("x", vec![], vec![], false, &mut no_print).await.unwrap();
     assert!(matches!(event, TurnEvent::NameLookup { name, .. } if name == "x"));
     let err = session
@@ -2182,6 +2184,7 @@ async fn workers_are_recycled_after_max_checkouts() {
 
     let session = pool.checkout(&ReplConfig::default()).await.unwrap();
     assert_ne!(session.pid().unwrap(), first_pid);
+    assert_eq!(session.worker_id(), Some(2));
     session.finish().await.unwrap();
 }
 

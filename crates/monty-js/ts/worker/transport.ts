@@ -19,6 +19,7 @@ import {
 import type { CheckoutOptions, ResourceLimits } from '../pool.js'
 import type {
   Arena,
+  ConfigureRequest,
   OsPolicy as ComponentOsPolicy,
   CallResult,
   Event as ComponentEvent,
@@ -113,37 +114,31 @@ export class WorkerTransport {
     graces: DurationGraces = {},
     workerId = 0,
   ): Promise<WorkerTransport> {
-    const limits = encodeLimits(config.limits ?? {})
+    return WorkerTransport.configure(dispatcher, prepareSession(config), graces, workerId)
+  }
+
+  /** Configures a worker with options captured before waiting for pool capacity. */
+  static async configure(
+    dispatcher: Dispatcher,
+    config: ConfigureRequest,
+    graces: DurationGraces,
+    workerId: number,
+  ): Promise<WorkerTransport> {
+    const limits = config.limits ?? {}
     const transport = new WorkerTransport(dispatcher, limits.maxTotalSleepMicros, graces, workerId)
     transport.suspensionLimit = limits.maxSuspensions ?? 1000n
     transport.feedBudgetMs =
-      config.limits?.maxFeedDurationSecs === undefined ? undefined : config.limits.maxFeedDurationSecs * 1000
+      limits.maxFeedDurationMicros === undefined ? undefined : Number(limits.maxFeedDurationMicros) / 1000
     transport.turnBudgetMs =
-      config.limits?.maxTurnDurationSecs === undefined ? undefined : config.limits.maxTurnDurationSecs * 1000
-    const assertMessageAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
-    const encodedOsPolicy = encodeOsPolicy(config.osPolicy ?? {})
-    transport.systemSleepMaxSecs = systemSleepCapOf(encodedOsPolicy)
-    const osPolicy = componentOsPolicy(encodedOsPolicy)
-    await transport.control(
-      {
-        tag: 'configure',
-        val: {
-          scriptName: config.scriptName ?? 'main.py',
-          ...(config.limits === undefined ? {} : { limits }),
-          typeCheck: config.typeCheck ?? false,
-          ...(config.typeCheckStubs === undefined ? {} : { typeCheckStubs: config.typeCheckStubs }),
-          ...(assertMessageAnnotations === undefined ? {} : { assertMessageAnnotations }),
-          typeCheckFormat: componentTypeCheckFormat(config.typeCheckFormat ?? 'full'),
-          typeCheckColor: config.typeCheckColor ?? false,
-          ...(config.printFlushInterval === undefined
-            ? {}
-            : { printFlushIntervalMs: flushIntervalMs(config.printFlushInterval) }),
-          ...(osPolicy === undefined ? {} : { osPolicy }),
-        },
-      },
-      'ok',
-      'Configure',
-    )
+      limits.maxTurnDurationMicros === undefined ? undefined : Number(limits.maxTurnDurationMicros) / 1000
+    const sleep = config.osPolicy?.sleep
+    transport.systemSleepMaxSecs =
+      sleep?.tag === 'system' && sleep.val !== undefined
+        ? sleep.val === 0xffff_ffff_ffff_ffffn
+          ? Infinity
+          : Number(sleep.val) / 1_000_000
+        : systemSleepCapOf({})
+    await transport.control({ tag: 'configure', val: config }, 'ok', 'Configure')
     return transport
   }
 
@@ -375,6 +370,7 @@ export class WorkerTransport {
       const failure = this.crash()
       throw new MontyCrashedError(failure.message, failure)
     }
+    if (event.tag === 'fatal-error') throw new MontyCrashedError(event.val, { exitStatus: this.exitStatus })
     // the worker's own reason, e.g. a zone name its tz database lacks
     if (event.tag === 'error' && kind !== 'error') throw new Error(`${what} failed: ${event.val.message}`)
     if (event.tag !== kind) throw new Error(`${what} expected event ${kind}, got ${event.tag}`)
@@ -433,7 +429,8 @@ export class WorkerTransport {
       }
     }
     if (this.dead && this.onFinish) await this.finish()
-    return terminating
+    // Shutdown may carry a fatal diagnostic, but must never deliver a successful turn or another suspension.
+    return this.dead && terminating?.tag !== 'fatal-error' ? null : terminating
   }
 
   /** Retains crash metadata so subsequent requests cannot revive a dead component. */
@@ -520,6 +517,23 @@ export class WorkerTransport {
       default:
         return { kind: 'protocol', message: `unexpected event kind ${event.tag}` }
     }
+  }
+}
+
+/** Validates and snapshots checkout options before any asynchronous pool acquisition. */
+export function prepareSession(config: WorkerSessionConfig): ConfigureRequest {
+  const osPolicy = componentOsPolicy(encodeOsPolicy(config.osPolicy ?? {}))
+  return {
+    scriptName: config.scriptName ?? 'main.py',
+    ...(config.limits === undefined ? {} : { limits: encodeLimits(config.limits) }),
+    typeCheck: config.typeCheck ?? false,
+    typeCheckStubs: config.typeCheckStubs,
+    assertMessageAnnotations: encodeAssertMessageAnnotations(config.assertMessageAnnotations),
+    typeCheckFormat: componentTypeCheckFormat(config.typeCheckFormat ?? 'full'),
+    typeCheckColor: config.typeCheckColor ?? false,
+    printFlushIntervalMs:
+      config.printFlushInterval === undefined ? undefined : flushIntervalMs(config.printFlushInterval),
+    osPolicy,
   }
 }
 

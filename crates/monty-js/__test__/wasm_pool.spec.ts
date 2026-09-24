@@ -10,6 +10,16 @@ test('precompiled modules run in a worker-backed pool', async () => {
   t.is(await session.feedRun('6 * 7'), 42)
 })
 
+test.each(['requestTimeout', 'checkoutTimeout', 'feedDurationLimitGrace', 'turnDurationLimitGrace'] as const)(
+  'direct pool creation rejects invalid %s asynchronously',
+  async (option) => {
+    const promise = createWorkerPool({}, { minProcesses: 0, [option]: -1 })
+    t.true(promise instanceof Promise)
+    const error = await t.throwsAsync(() => promise)
+    t.is(error.message, `${option} must be a finite non-negative number`)
+  },
+)
+
 test('component initialization failures reject pool creation', async () => {
   const error = await t.throwsAsync(() => createWorkerPool({}), { instanceOf: MontyCrashedError })
   t.false(error.timedOut)

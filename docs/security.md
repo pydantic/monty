@@ -386,10 +386,8 @@ Its return value is ignored: the sandbox itself produces the `result` argument o
 
 ## Crash isolation
 
-Monty runs in a subprocess, so an unexpected memory error or panic in the interpreter cannot kill the main process;
-the same design makes it easy to run many Monty interpreters in parallel.
-The Python package and the native `@pydantic/monty` binding never run the interpreter in your process: every session
-runs in a `monty` worker subprocess.
+The Python package and the native `@pydantic/monty` binding run every session in a `monty` worker subprocess.
+Worker panics and aborts terminate the worker rather than the host.
 
 The WebAssembly build runs off-thread in a browser Web Worker or Node `worker_threads` worker.
 Both support hard termination and replacement after WASM traps; environments without workers are rejected.
@@ -398,7 +396,8 @@ Browser worker failures have no OS exit status; Node can report the thread's exi
 
 When a worker dies, the pool observes the death, discards the worker, spawns a replacement, and the call raises
 [`MontyCrashedError`][pydantic_monty.MontyCrashedError] ([`PoolError::Crashed`](api/rust/monty-pool.md#poolerror) in Rust).
-The session is lost; subprocess isolation protects the host process.
+The session is lost.
+Subprocess isolation protects native hosts; WASM worker isolation has the limits described above.
 
 Two more properties of the subprocess worker boundary matter:
 

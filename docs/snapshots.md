@@ -85,7 +85,9 @@ Instead of driving a snippet to completion it hands control back at every suspen
 In JavaScript those are separate methods: `resume(value)`, `resumeError(err)` and `resumeFuture()`.
 For a `NameLookupSnapshot`, use `resumeValue(value)` to answer a variable or lazy attribute read;
 `resume(name)` resolves an external function, and `resume()` leaves the lookup unresolved.
-Both call and lookup snapshots carry `objectId` for host-object requests, or `null` otherwise.
+Both call and lookup snapshots carry `objectId`, the `ClassInstance.id` or `ClassType.id` of the wrapper involved,
+or `null` for plain host calls and name lookups.
+It is a wrapper UUID, not a memory address; routing uses the session's instance store, but the UUID can be reused across sessions.
 
 ### Where execution stopped
 

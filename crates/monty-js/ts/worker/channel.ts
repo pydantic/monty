@@ -52,14 +52,22 @@ export class WorkerChannel implements PooledWorker {
   private failStartup!: (error: Error) => void
 
   /** Waits for component initialization, independently of per-request deadlines. */
-  static async create(worker: WorkerLike, options: WorkerChannelOptions = {}): Promise<WorkerChannel> {
+  static async create(
+    worker: WorkerLike,
+    options: WorkerChannelOptions = {},
+    signal?: AbortSignal,
+  ): Promise<WorkerChannel> {
     const channel = new WorkerChannel(worker, options)
+    const cancel = () => void channel.kill('worker initialization cancelled')
+    signal?.addEventListener('abort', cancel, { once: true })
+    if (signal?.aborted) cancel()
     const timer = deadlineTimer(30_000, () => void channel.kill('monty worker initialization timed out', true))
     try {
       await channel.ready
       return channel
     } finally {
       timer.cancel()
+      signal?.removeEventListener('abort', cancel)
     }
   }
 

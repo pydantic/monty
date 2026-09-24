@@ -18,7 +18,7 @@ export type { WasmPoolOptions, WasmPoolOptions as MontyOptions } from './poolOpt
 export type Monty = MontyPool
 
 /** Creates a hard-preemptible Node worker-thread pool for precompiled modules. */
-export function createWorkerPool(modules: ComponentModules, options: WasmPoolOptions = {}): Promise<Monty> {
+export async function createWorkerPool(modules: ComponentModules, options: WasmPoolOptions = {}): Promise<Monty> {
   return createWorkerPoolFromFactory(
     nodeWorkerFactory(modules, workerChannelOptions(options)),
     options,

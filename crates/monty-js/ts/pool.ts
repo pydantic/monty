@@ -14,6 +14,7 @@ import {
   type TypeCheckFormat,
   encodeAssertMessageAnnotations,
   encodeOsPolicy,
+  validateMaxCheckouts,
 } from './options.js'
 import { MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
@@ -56,7 +57,8 @@ export interface MontyOptions {
    * `null` disables).
    */
   turnDurationLimitGrace?: number | null
-  /** Recycle a worker (kill and replace) after serving this many sessions. */
+  /** Recycle a worker after this many sessions: an integer from 0 to 4294967295.
+   *  Both 0 and 1 retire after each checkout; omitted means no recycling. */
   maxCheckoutsPerWorker?: number
 }
 
@@ -166,6 +168,7 @@ export class Monty {
 
   /** Creates the pool and prewarms `minProcesses` workers. */
   static async create(options: MontyOptions = {}): Promise<Monty> {
+    validateMaxCheckouts(options.maxCheckoutsPerWorker)
     const native = new NativePool({
       binaryPath: findMontyBinary(options.binaryPath),
       minProcesses: options.minProcesses ?? 1,

@@ -76,6 +76,9 @@ The default `SleepMode::System` sets `system_sleep` to the capped delay for the 
 `Checkout::feed` accepts inputs exposed as sandbox globals and per-feed filesystem mounts (`MountSpec`); mounts that
 overlap on the host or repeat a virtual path fail the feed with a session-preserving `PoolError::Runtime`.
 `Checkout::feed_with_cwd` also changes the working directory, which defaults to the first feed's first mount and persists.
+`Checkout::worker_id` identifies a worker within its pool independently of PID reuse, for either transport.
+It returns `None` after the worker is released or discarded; `Checkout::pid` remains the subprocess-only OS diagnostic.
+
 `Checkout::dump` snapshots a session; `Checkout::restore` can restore it on another worker or machine.
 The caller must establish that restored bytes are unmodified output from a trusted, compatible Monty producer.
 Neither the pool nor the interpreter authenticates snapshots; successful loading does not establish validity.

@@ -112,6 +112,10 @@ A [`Checkout`](../api/rust/monty-pool.md#checkout) dropped without `finish()` ki
 trusted back into the pool.
 
 [`ReplConfig`](../api/rust/monty-pool.md#replconfig) carries the per-session sandbox [`ResourceLimits`](../api/rust/monty-types.md#resourcelimits) and type-checking options.
+`Checkout::worker_id()` identifies the worker within its pool, independent of PID reuse and transport;
+it returns `None` after the worker is released or discarded.
+`Checkout::pid()` is the subprocess-only OS diagnostic.
+
 [`Checkout::dump`](../api/rust/monty-pool.md#checkout) and [`Checkout::restore`](../api/rust/monty-pool.md#checkout) snapshot and restore a session, including onto a different worker or machine.
 Restore only unmodified snapshots whose provenance and integrity the caller has established;
 see [snapshot security](../security.md#deserializing-snapshots).

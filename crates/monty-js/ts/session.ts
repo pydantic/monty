@@ -193,7 +193,7 @@ export class MontySession {
   /** @internal — sessions are created by `Monty.checkout`. */
   constructor(native: NativeSession) {
     this.native = native
-    this.workerId = (native as { workerId?: number }).workerId ?? native.workerPid ?? undefined
+    this.workerId = native.workerId ?? undefined
   }
 
   /**
@@ -825,7 +825,11 @@ class PrintTarget {
       return
     }
     if (this.callback === undefined) {
-      ;(stream === 'stdout' ? process.stdout : process.stderr).write(text)
+      if (typeof process !== 'undefined' && process.stdout && process.stderr) {
+        ;(stream === 'stdout' ? process.stdout : process.stderr).write(text)
+      } else {
+        ;(stream === 'stdout' ? console.log : console.error)(text)
+      }
       return
     }
     try {

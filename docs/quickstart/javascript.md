@@ -157,7 +157,7 @@ Both collectors default to a 10 MiB cap (`DEFAULT_MAX_PRINT_COLLECT_BYTES`); `ma
 Other `maxBytes` values must be finite and non-negative.
 Exceeding the cap rejects the feed with `MontyRuntimeError` wrapping `MemoryError`.
 The cap is host-side and separate from [`maxMemory`](../resource-limits.md).
-Without `printCallback`, output goes to the host's stdout/stderr.
+Without `printCallback`, Node writes to stdout/stderr; browsers send each output chunk to `console.log`/`console.error`.
 
 Output arrives in batched chunks, not one per `print()`.
 `printFlushInterval` on `checkout()` sets how long (in seconds) the worker may hold it — 0.005 by default, `0` for one
@@ -322,6 +322,8 @@ await using pool = await Monty.create({
 
 Closing a pool rejects pending/new checkouts and reaps idle workers; checked-out sessions remain usable until closed.
 `session.workerId` identifies the worker within its pool, including during turns and after the session closes.
+Replacement workers get new IDs, even if the OS reuses a PID.
+`maxCheckoutsPerWorker` accepts integers from 0 to 4294967295; 0 and 1 both retire a worker after each checkout.
 `workerPid` is a native-only OS diagnostic and may be unavailable during a turn.
 
 The worker binary is resolved from `binaryPath`, then the `MONTY_BIN` environment variable, then the installed platform

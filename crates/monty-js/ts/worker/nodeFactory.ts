@@ -17,7 +17,7 @@ const entryPath = join(dirname(fileURLToPath(import.meta.url)), 'nodeWorkerEntry
 
 /** Spawns worker threads that instantiate and serve `modules`. */
 export function nodeWorkerFactory(modules: ComponentModules, options: WorkerChannelOptions = {}): WorkerFactory {
-  return () => {
+  return (signal) => {
     const worker = new Worker(entryPath, { workerData: { modules } })
     const like: WorkerLike = {
       post: (message) => worker.postMessage(message),
@@ -26,6 +26,6 @@ export function nodeWorkerFactory(modules: ComponentModules, options: WorkerChan
       onExit: (handler) => worker.on('exit', (code) => handler(`exit code: ${code}`)),
       terminate: async () => `exit code: ${await worker.terminate()}`,
     }
-    return WorkerChannel.create(like, options)
+    return WorkerChannel.create(like, options, signal)
   }
 }

@@ -1,10 +1,10 @@
 // An elastic pool of real workers sharing the native pool's checkout and shutdown contract.
 
-import { encodeOsPolicy } from '../options.js'
+import { validateMaxCheckouts } from '../options.js'
 import { MontySession } from '../session.js'
 import { deadlineTimer, timeoutOption, type DeadlineTimer } from './deadline.js'
 import type { Dispatcher } from './host.js'
-import { WorkerTransport, type WorkerSessionConfig, type DurationGraces } from './transport.js'
+import { WorkerTransport, prepareSession, type WorkerSessionConfig, type DurationGraces } from './transport.js'
 
 /** The transport seam consumed by the shared session drive loop. */
 type SessionNative = ConstructorParameters<typeof MontySession>[0]
@@ -16,8 +16,8 @@ export interface PooledWorker {
   readonly alive: boolean
 }
 
-/** Spawns a fresh worker for the pool. */
-export type WorkerFactory = () => Promise<PooledWorker>
+/** Spawns a worker; aborting initialization must terminate and reap it before rejecting. */
+export type WorkerFactory = (signal: AbortSignal) => Promise<PooledWorker>
 
 /** Pool capacity, checkout deadline and duration-backstop configuration. */
 export interface WorkerPoolOptions extends DurationGraces {
@@ -32,6 +32,8 @@ interface WorkerSlot {
   readonly worker: PooledWorker
   readonly id: number
   checkouts: number
+  /** Shared by close and checkout cleanup so a slot is retired exactly once. */
+  retirement?: Promise<void>
 }
 
 /** A pending checkout, removed from the queue when timed out. */
@@ -46,6 +48,9 @@ export class WorkerPool {
   private readonly idle: WorkerSlot[] = []
   private readonly waiters: Waiter[] = []
   private readonly retiring = new Set<Promise<void>>()
+  /** Claimed by a checkout but not yet exposed as a session. */
+  private readonly configuring = new Set<WorkerSlot>()
+  private readonly spawning = new Map<AbortController, Promise<WorkerSlot>>()
   private total = 0
   private nextId = 1
   private closed = false
@@ -62,9 +67,7 @@ export class WorkerPool {
     const max = integerOption(options.maxWorkers ?? 4, 'maxProcesses', 1)
     const min = integerOption(options.minWorkers ?? 1, 'minProcesses', 0)
     if (min > max) throw new TypeError('minProcesses cannot exceed maxProcesses')
-    if (options.maxCheckoutsPerWorker !== undefined) {
-      integerOption(options.maxCheckoutsPerWorker, 'maxCheckoutsPerWorker', 0)
-    }
+    validateMaxCheckouts(options.maxCheckoutsPerWorker)
     timeoutOption(options.checkoutTimeoutMs, 'checkoutTimeout')
     timeoutOption(options.feedDurationLimitGraceMs ?? undefined, 'feedDurationLimitGrace')
     timeoutOption(options.turnDurationLimitGraceMs ?? undefined, 'turnDurationLimitGrace')
@@ -85,7 +88,7 @@ export class WorkerPool {
   /** Borrows a worker, configuring a new isolated session before returning it. */
   async checkout(config: WorkerSessionConfig = {}): Promise<MontySession> {
     if (this.closed) throw closedError()
-    encodeOsPolicy(config.osPolicy ?? {})
+    const configuration = prepareSession(config)
     const slot = await this.acquire()
     if (this.closed) {
       await this.discard(slot)
@@ -93,10 +96,12 @@ export class WorkerPool {
     }
     let transport: WorkerTransport
     try {
-      transport = await WorkerTransport.create(slot.worker.dispatch, config, this.options, slot.id)
+      transport = await WorkerTransport.configure(slot.worker.dispatch, configuration, this.options, slot.id)
     } catch (error) {
       await this.discard(slot)
-      throw error
+      throw this.closed ? closedError() : error
+    } finally {
+      this.configuring.delete(slot)
     }
     if (this.closed) {
       await this.discard(slot)
@@ -123,18 +128,30 @@ export class WorkerPool {
       waiter.timer?.cancel()
       waiter.reject(closedError())
     }
-    await Promise.all([...this.idle.splice(0).map((slot) => this.discard(slot)), ...this.retiring])
+    for (const controller of this.spawning.keys()) controller.abort()
+    await Promise.allSettled([
+      ...this.spawning.values(),
+      ...[...this.idle.splice(0), ...this.configuring].map((slot) => this.discard(slot)),
+      ...this.retiring,
+    ])
   }
 
   /** Reuses a live slot or waits for capacity, removing timed-out waiters. */
   private async acquire(): Promise<WorkerSlot> {
     while (this.idle.length > 0) {
       const slot = this.idle.pop()!
-      if (slot.worker.alive) return slot
+      if (slot.worker.alive) {
+        this.configuring.add(slot)
+        return slot
+      }
       await this.discard(slot)
     }
     if (this.closed) throw closedError()
-    if (this.total < this.maxWorkers) return this.spawn()
+    if (this.total < this.maxWorkers)
+      return this.spawn().then((slot) => {
+        this.configuring.add(slot)
+        return slot
+      })
     return new Promise<WorkerSlot>((resolve, reject) => {
       const waiter: Waiter = { resolve, reject, timer: null }
       if (this.options.checkoutTimeoutMs !== undefined) {
@@ -159,6 +176,7 @@ export class WorkerPool {
       const waiter = this.waiters.shift()
       if (waiter) {
         waiter.timer?.cancel()
+        this.configuring.add(slot)
         waiter.resolve(slot)
       } else {
         this.idle.push(slot)
@@ -168,11 +186,16 @@ export class WorkerPool {
 
   /** Frees capacity only after termination, so replacements cannot exceed the worker cap. */
   private discard(slot: WorkerSlot): Promise<void> {
-    const retiring = Promise.resolve(slot.worker.terminate()).then(() => {
-      this.total--
-      this.retiring.delete(retiring)
-      this.pump()
-    })
+    this.configuring.delete(slot)
+    if (slot.retirement) return slot.retirement
+    const retiring = Promise.resolve()
+      .then(() => slot.worker.terminate())
+      .then(() => {
+        this.total--
+        this.retiring.delete(retiring)
+        this.pump()
+      })
+    slot.retirement = retiring
     this.retiring.add(retiring)
     return retiring
   }
@@ -182,22 +205,42 @@ export class WorkerPool {
     while (!this.closed && this.waiters.length > 0 && this.total < this.maxWorkers) {
       const waiter = this.waiters.shift()!
       waiter.timer?.cancel()
-      this.spawn().then(waiter.resolve, (error) => {
-        waiter.reject(error instanceof Error ? error : new Error(String(error)))
-        this.pump()
-      })
+      this.spawn().then(
+        (slot) => {
+          this.configuring.add(slot)
+          waiter.resolve(slot)
+        },
+        (error) => {
+          waiter.reject(error instanceof Error ? error : new Error(String(error)))
+          this.pump()
+        },
+      )
     }
   }
 
   /** Reserves capacity while the worker initializes, rolling back on failure. */
-  private async spawn(): Promise<WorkerSlot> {
+  private spawn(): Promise<WorkerSlot> {
     this.total++
-    try {
-      return { worker: await this.factory(), id: this.nextId++, checkouts: 0 }
-    } catch (error) {
-      this.total--
-      throw error
-    }
+    const controller = new AbortController()
+    const spawning = Promise.resolve()
+      .then(async () => {
+        let worker: PooledWorker
+        try {
+          worker = await this.factory(controller.signal)
+        } catch (error) {
+          this.total--
+          throw this.closed ? closedError() : error
+        }
+        const slot = { worker, id: this.nextId++, checkouts: 0 }
+        if (this.closed) {
+          await this.discard(slot)
+          throw closedError()
+        }
+        return slot
+      })
+      .finally(() => this.spawning.delete(controller))
+    this.spawning.set(controller, spawning)
+    return spawning
   }
 }
 

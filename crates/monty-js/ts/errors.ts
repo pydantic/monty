@@ -194,9 +194,9 @@ export class MontyTypingError extends MontyError {
 }
 
 /**
- * Raised when a worker dies: a process crash, WASM trap, or watchdog kill
- * for exceeding a request/duration deadline. The session is lost; the pool
- * replaces the worker, so other sessions and future checkouts are unaffected.
+ * Raised when a worker fails to initialize or dies: a process crash, WASM
+ * trap, or watchdog kill for exceeding a request/duration deadline.
+ * If a session exists, it is lost; its pool can replace the worker on future checkouts.
  */
 export class MontyCrashedError extends MontyError {
   /** True when the worker was killed by a watchdog timeout. */

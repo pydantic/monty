@@ -7,6 +7,10 @@ import { join } from 'node:path'
 import { t } from './assertions.js'
 import { skipIfWasm } from './env.js'
 import { WorkerTransport } from '../ts/worker/transport.js'
+import { MontyCrashedError as TransportCrashedError } from '../ts/errors.js'
+import { WorkerPool } from '../ts/worker/pool.js'
+import { WorkerChannel, type WorkerMessage } from '../ts/worker/channel.js'
+import type { Event as ComponentEvent } from '../ts/worker/component/monty.component.js'
 
 import { Monty, MontyCrashedError, MontyRuntimeError } from '@pydantic/monty'
 import { MountDir } from '@pydantic/monty/node'
@@ -15,25 +19,126 @@ import { MountDir } from '@pydantic/monty/node'
 // Pool lifecycle
 // =============================================================================
 
-test('wasm transport discards a component after shutdown', async () => {
-  let dispatches = 0
-  const transport = await WorkerTransport.create(async () => {
-    dispatches += 1
-    return { status: 'shutdown', events: [{ tag: 'ok' }], feedExecutionMicros: 0n, exitStatus: 'exit code: 7' }
-  })
-  let reusable: boolean | undefined
-  transport.onFinish = (value) => {
-    reusable = value
+test('wasm transport discards shutdown replies but preserves fatal diagnostics', async () => {
+  const cases: Array<{ events: ComponentEvent[]; message: string }> = [
+    { events: [], message: 'worker exited without a turn-ending event' },
+    { events: [{ tag: 'ok' }], message: 'worker exited without a turn-ending event' },
+    {
+      events: [{ tag: 'complete', val: { values: { nodes: [{ tag: 'none' }] }, value: 0 } }],
+      message: 'worker exited without a turn-ending event',
+    },
+    { events: [{ tag: 'fatal-error', val: 'specific failure' }], message: 'specific failure' },
+  ]
+  for (const { events, message } of cases) {
+    const requests: string[] = []
+    const transport = await WorkerTransport.create(async (request) => {
+      requests.push(request.tag)
+      return request.tag === 'configure'
+        ? { status: 'continue', events: [{ tag: 'ok' }], feedExecutionMicros: 0n }
+        : { status: 'shutdown', events, feedExecutionMicros: 0n, exitStatus: 'exit code: 7' }
+    })
+    const releases: boolean[] = []
+    transport.onFinish = (reusable) => {
+      releases.push(reusable)
+    }
+    t.deepEqual(await transport.feed('1', null, [], { skipTypeCheck: true }, () => {}), {
+      kind: 'crashed',
+      message,
+      timedOut: false,
+      exitStatus: 'exit code: 7',
+    })
+    await transport.finish()
+    t.deepEqual(releases, [false])
+    t.deepEqual(requests, ['configure', 'feed'])
   }
-  t.deepEqual(await transport.feed('1', null, [], { skipTypeCheck: true }, () => {}), {
-    kind: 'crashed',
-    message: 'worker exited without a turn-ending event',
-    timedOut: false,
-    exitStatus: 'exit code: 7',
+})
+
+test('shutdown during Configure preserves the fatal diagnostic', async () => {
+  const error = await t.throwsAsync(
+    () =>
+      WorkerTransport.create(async () => ({
+        status: 'shutdown',
+        events: [{ tag: 'fatal-error', val: 'configuration failed' }],
+        feedExecutionMicros: 0n,
+        exitStatus: 'exit code: 7',
+      })),
+    { instanceOf: TransportCrashedError },
+  )
+  t.is(error.message, 'RuntimeError: configuration failed')
+  t.is(error.exitStatus, 'exit code: 7')
+})
+
+test.each(['acquire', 'startup', 'configure'])('close cancels a checkout during %s', async (phase) => {
+  let start!: () => void
+  const started = new Promise<void>((resolve) => {
+    start = resolve
   })
-  await transport.finish()
-  t.is(reusable, false)
-  t.is(dispatches, 1)
+  let terminations = 0
+  let message: (reply: WorkerMessage) => void = () => {}
+  const pool = await WorkerPool.create(
+    (signal) =>
+      WorkerChannel.create(
+        {
+          post: () => {
+            start()
+          },
+          onMessage: (handler) => {
+            message = handler
+            if (phase === 'startup') start()
+            else queueMicrotask(() => handler({ ready: true }))
+          },
+          onError: () => {},
+          terminate: () => {
+            terminations++
+          },
+        },
+        {},
+        signal,
+      ),
+    { minWorkers: phase === 'acquire' ? 1 : 0, maxWorkers: 1 },
+  )
+  const pending = t.throwsAsync(() => pool.checkout())
+  if (phase !== 'acquire') await started
+  await pool.close()
+  t.is((await pending).message, 'the pool is closed — create a new Monty pool')
+  message({ ready: true })
+  await pool.close()
+  t.is(terminations, 1)
+})
+
+test.each([-1, 0.5, NaN, Infinity, 2 ** 32, 2 ** 32 + 1])(
+  'rejects invalid recycle count %s',
+  async (maxCheckoutsPerWorker) => {
+    const error = await t.throwsAsync(() => Monty.create({ minProcesses: 0, maxCheckoutsPerWorker }))
+    t.is(error.message, 'maxCheckoutsPerWorker must be an integer between 0 and 4294967295')
+  },
+)
+
+test('queued checkout snapshots nested options before waiting', async () => {
+  await using pool = await Monty.create({ maxProcesses: 1 })
+  const held = await pool.checkout()
+  const options = {
+    scriptName: 'original.py',
+    limits: { maxRecursionDepth: 100 },
+    osPolicy: { datetime: new Date('2000-01-01T00:00:00Z'), randomStart: { seed: new Uint8Array([97, 98, 99]) } },
+  }
+  const waiting = pool.checkout(options)
+  options.scriptName = 'mutated.py'
+  options.limits.maxRecursionDepth = 1
+  options.osPolicy.datetime.setUTCFullYear(2020)
+  options.osPolicy.randomStart.seed.fill(9)
+  await held.close()
+  await using session = await waiting
+  t.deepEqual(
+    await session.feedRun(`
+from datetime import datetime
+import random
+def count(n):
+    return count(n - 1) + 1 if n else 0
+(datetime.now().year, __file__, random.random() == random.Random(b'abc').random(), count(10))
+`),
+    [2000, '/original.py', true, 10],
+  )
 })
 
 test('checkout after close rejects', async () => {
@@ -67,19 +172,31 @@ test('feed after session close rejects', async () => {
   t.is(error.message, 'the session is closed — check out a new one')
 })
 
-test('workers are reused across checkouts', async () => {
-  await using pool = await Monty.create({ maxProcesses: 1 })
-  const first = await pool.checkout()
-  const id = first.workerId
-  t.truthy(id)
-  await first.close()
-  const second = await pool.checkout()
-  t.is(second.workerId, id)
-  await second.close()
-})
+test.each([undefined, 0xffffffff])(
+  'workers are reused across checkouts (recycle count %s)',
+  async (maxCheckoutsPerWorker) => {
+    await using pool = await Monty.create({ maxProcesses: 1, maxCheckoutsPerWorker })
+    const first = await pool.checkout()
+    const id = first.workerId
+    t.is(id, 1)
+    await first.feedRun('f()', {
+      externalLookup: {
+        f: () => {
+          t.is(first.workerId, id)
+          return null
+        },
+      },
+    })
+    await first.close()
+    t.is(first.workerId, id)
+    const second = await pool.checkout()
+    t.is(second.workerId, id)
+    await second.close()
+  },
+)
 
-test('maxCheckoutsPerWorker recycles the worker', async () => {
-  await using pool = await Monty.create({ maxCheckoutsPerWorker: 1 })
+test.each([0, 1])('maxCheckoutsPerWorker %s recycles the worker', async (maxCheckoutsPerWorker) => {
+  await using pool = await Monty.create({ maxCheckoutsPerWorker })
   const first = await pool.checkout()
   const id = first.workerId
   await first.close()

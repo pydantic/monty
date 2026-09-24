@@ -2,7 +2,7 @@ declare const MONTY_TEST_WASM: boolean
 
 /** Selects capabilities independently of whether the test runner itself is Node. */
 export const isWasm = typeof window !== 'undefined' || (typeof MONTY_TEST_WASM !== 'undefined' && MONTY_TEST_WASM)
-export const kind = typeof window === 'undefined' ? 'node' : 'browser'
+export const kind = typeof window !== 'undefined' ? 'browser WASM' : isWasm ? 'Node WASM' : 'native Node'
 
 interface SkipContext {
   skip(): void

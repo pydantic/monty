@@ -1131,6 +1131,13 @@ impl Checkout {
         }
     }
 
+    /// Stable identity within this pool, independent of PID reuse or transport.
+    /// Returns `None` after the worker has been released or discarded.
+    #[must_use]
+    pub fn worker_id(&self) -> Option<u64> {
+        self.worker.as_ref().map(|worker| worker.id)
+    }
+
     /// OS process id of the worker, when it is a local subprocess (`None` for a
     /// remote WebSocket worker, or a finished checkout). Diagnostics/tests.
     pub fn pid(&self) -> Option<u32> {
