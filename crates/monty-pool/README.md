@@ -164,7 +164,7 @@ pool health
 `monty.pool.session.duration` uses `ok` for a clean finish, `error` when the worker is lost, and `abandoned` when a
 live checkout is dropped.
 `monty.pool.session.resumed` counts auto-resume attempts: `ok`, or why the reload failed (`exhausted`,
-`disconnected`, `refused`, `drained`, `mismatch`, `timeout`).
+`disconnected`, `refused`, `shutdown`, `mismatch`, `timeout`).
 
 Two differences from the spans above. Metrics cover **every** checkout, not only the ones a
 host gave a parent context — an aggregate over traced sessions alone would be misleading —
@@ -220,11 +220,12 @@ The relay also writes a session's state under its own ID whenever it parks the s
 session ID loads the state as of its last park, a dump ID the state dumped.
 A record is never modified by a load and a session is never resumed in place, so two loads of one ID give two
 independent sessions, and a session still live elsewhere is unaffected.
-With `PoolConfig::auto_resume` (the default), a drain of a named session is not returned: the checkout redials,
-loads what the `ShutdownDump` named into a new session, re-sends the request and adopts the new session's ID.
-The session's host-counted suspension and sleep totals carry over, so a drain grants no extra allowance.
-It returns the original `PoolError::Shutdown` if the drain named nothing to load, if the new connection fails, or if
-the new session is not in the state the old one was drained in.
+With `PoolConfig::auto_resume` (the default), a shutdown answering a named session's request is not returned: the
+checkout redials, loads what the `ShutdownDump` named into a new session, re-sends the request and adopts the new
+session's ID.
+The session's host-counted suspension and sleep totals carry over, so a shutdown grants no extra allowance.
+It returns the original `PoolError::Shutdown` if the shutdown named nothing to load, if the new connection fails, or
+if the new session is not in the state the old one was in at the shutdown.
 The redial reuses the checkout's original upgrade headers, so a short-lived token in them can make the resume fail.
 A bare disconnect is never resumed, since the request may have run.
 

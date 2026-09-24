@@ -89,7 +89,7 @@ impl Recorder {
     }
 
     /// Marks the open session span as one resumed on this worker after its
-    /// relay drained, so a trace shows where the session moved.
+    /// relay shut down, so a trace shows where the session moved.
     pub(crate) fn mark_resumed(&mut self) {
         if let Some(session) = &self.session {
             session.set_attribute("resumed", true);

@@ -422,7 +422,7 @@ pub struct Checkout {
     restored_script_name: Option<String>,
     /// The session ID a storing relay minted, from its reply to `Configure` or `Load`.
     session_id: Option<Vec<u8>>,
-    /// How to redial a drained relay; `None` unless auto-resume applies.
+    /// How to redial the relay after a `Shutdown`; `None` unless auto-resume applies.
     redial: Option<Box<Redial>>,
     /// Parent-side mount table for the in-flight feed, built from the
     /// [`MountSpec`]s passed to [`Checkout::feed`] / [`Checkout::restore`].
@@ -673,9 +673,9 @@ enum Pending {
         /// Accept a settled coroutine for this call via `ResumeFutures`.
         allow_eager_await: bool,
     },
-    /// The name looked up, kept only to recognise it re-announced after a drain.
+    /// The name looked up, kept only to recognise it re-announced after a shutdown.
     NameLookup { name: String },
-    /// The ids awaited, kept only to recognise them re-announced after a drain.
+    /// The ids awaited, kept only to recognise them re-announced after a shutdown.
     Futures { pending_call_ids: Vec<u32> },
 }
 
@@ -705,8 +705,8 @@ impl PendingKey {
     }
 }
 
-/// What a WebSocket checkout keeps to redial its relay and reload a drained
-/// session (see [`PoolConfig::auto_resume`]).
+/// What a WebSocket checkout keeps to redial its relay and reload the session
+/// after a `Shutdown` (see [`PoolConfig::auto_resume`]).
 pub(crate) struct Redial {
     /// Re-sent as the new worker's `Configure`.
     pub(crate) repl: ReplConfig,
@@ -1316,19 +1316,35 @@ impl Checkout {
     /// Also enforces the cancellation contract (see the type docs): a caller
     /// that dropped a previous turn future mid-I/O left the protocol state
     /// unknowable, so the worker is discarded on the next call.
+    ///
+    /// A `Shutdown` naming what to load is resumed on a new worker (see
+    /// [`PoolConfig::auto_resume`]); any other ends the session.
     async fn request_turn(
         &mut self,
         request: &pb::ParentRequest,
         deadline: Option<Duration>,
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
-        let outcome = match self.request_turn_once(request, deadline, &mut *on_print).await {
+        self.ensure_ready()?;
+        self.turn_in_flight = true;
+        self.armed_deadline = deadline;
+        let outcome = match deadline {
+            Some(limit) => match timeout(limit, self.turn_io(request, &mut *on_print)).await {
+                Ok(outcome) => outcome,
+                Err(_elapsed) => Err(self.poison_timeout().await),
+            },
+            None => self.turn_io(request, &mut *on_print).await,
+        };
+        self.turn_in_flight = false;
+        let outcome = match outcome {
             Err(PoolError::Shutdown { dump: Some(state) }) if self.can_resume(request) => {
-                self.resume_drained(state, request, deadline, on_print).await
+                // boxed: it recurses into this turn, and its state machine must
+                // not enlarge every turn's future for a path taken once per shutdown
+                Box::pin(self.resume_after_shutdown(state, request, deadline, on_print)).await
             }
             outcome => outcome,
         };
-        // the drained worker is already released; this ends the session
+        // the worker that shut down is already released; this ends the session
         if matches!(outcome, Err(PoolError::Shutdown { .. })) {
             #[cfg(feature = "telemetry")]
             self.record_finish("error");
@@ -1337,9 +1353,9 @@ impl Checkout {
         outcome
     }
 
-    /// Whether a drain answering `request` may be resumed: auto-resume applies,
+    /// Whether a `Shutdown` answering `request` may be resumed: auto-resume applies,
     /// the relay named the session, and `request` is not session setup or teardown.
-    /// The caller also requires the drain to carry what to load: a relay with no
+    /// The caller also requires the shutdown to carry what to load: a relay with no
     /// state to load sends none, and a session cannot resume from nothing.
     fn can_resume(&self, request: &pb::ParentRequest) -> bool {
         self.redial.is_some()
@@ -1355,42 +1371,45 @@ impl Checkout {
             )
     }
 
-    /// Reloads a drained session from `state`, what the relay said restores it,
-    /// on a new worker and re-sends `request`, which the relay reported it did
-    /// not run. Resumes at most once per request: any failure reloading returns
-    /// the original `Shutdown`, its cause recorded as the metric's outcome.
-    async fn resume_drained(
+    /// Reloads the session a relay shut down from `state`, what the relay said
+    /// restores it, on a new worker and re-sends `request`, which the relay
+    /// reported it did not run. Resumes at most once per request: `redial` is
+    /// taken for the duration, so the turns this makes cannot resume again. Any
+    /// failure reloading returns the original `Shutdown`, its cause the metric's outcome.
+    async fn resume_after_shutdown(
         &mut self,
         state: Vec<u8>,
         request: &pb::ParentRequest,
         deadline: Option<Duration>,
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
-        let reloaded = self.reload_session(&state).await;
+        let redial = self.redial.take().expect("checked by can_resume");
+        let reloaded = self.reload_session(&redial, &state).await;
         #[cfg(feature = "telemetry")]
         if let Some(metrics) = &self.pool.config.metrics {
             metrics.session_resumed(reloaded.as_ref().map_or_else(resume_failure, |()| "ok"));
         }
-        match reloaded {
+        let outcome = match reloaded {
             Ok(()) => {
                 // as `feed_with_cwd`: the child restarts its feed clock on a
                 // `Feed`, and the `Load` reply reported the dump's last feed
                 if matches!(request.kind, Some(pb::parent_request::Kind::Feed(_))) {
                     self.budget.begin_feed();
                 }
-                self.request_turn_once(request, deadline, on_print).await
+                self.request_turn(request, deadline, on_print).await
             }
             Err(_) => Err(PoolError::Shutdown { dump: Some(state) }),
-        }
+        };
+        self.redial = Some(redial);
+        outcome
     }
 
     /// Dials a new worker, re-creates the session and loads `state` (a session
     /// ID against a storing relay), which starts a new session under a new ID.
-    /// The reply must match the drained state: `Ok` when idle, or the same
-    /// pending suspension re-announced when mid-feed. The host-counted
-    /// suspension and sleep totals carry over, so a drain grants nothing.
-    async fn reload_session(&mut self, state: &[u8]) -> Result<(), PoolError> {
-        let redial = self.redial.as_ref().expect("checked by can_resume");
+    /// The reply must match the state at the shutdown: `Ok` when idle, or the
+    /// same pending suspension re-announced when mid-feed. The host-counted
+    /// suspension and sleep totals carry over, so a shutdown grants nothing.
+    async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
         let configure = configure_request(&redial.repl);
         let worker = self.pool.acquire_worker(&redial.connect_headers).await?;
         #[cfg(feature = "telemetry")]
@@ -1399,7 +1418,7 @@ impl Checkout {
         let expected = self.pending.as_ref().map(PendingKey::of);
         let timeout = self.pool.config.request_timeout;
         let mut no_print = on_print_sync(|_, _| {});
-        match self.request_turn_once(&configure, timeout, &mut no_print).await? {
+        match self.request_turn(&configure, timeout, &mut no_print).await? {
             ControlEvent::Ok => {}
             other => return Err(self.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
         }
@@ -1408,7 +1427,7 @@ impl Checkout {
         let load = request(pb::parent_request::Kind::Load(pb::Load {
             state: state.to_vec().into(),
         }));
-        let reply = self.request_turn_once(&load, timeout, &mut no_print).await;
+        let reply = self.request_turn(&load, timeout, &mut no_print).await;
         self.end_load();
         // the session's script name is the one it already had
         self.restored_script_name = None;
@@ -1427,29 +1446,8 @@ impl Checkout {
             }
             Ok(())
         } else {
-            Err(self.protocol_violation("the resumed session does not match the drained one"))
+            Err(self.protocol_violation("the resumed session does not match the one shut down"))
         }
-    }
-
-    /// One protocol turn with its deadline; see [`Checkout::request_turn`].
-    async fn request_turn_once(
-        &mut self,
-        request: &pb::ParentRequest,
-        deadline: Option<Duration>,
-        on_print: OnPrint<'_>,
-    ) -> Result<ControlEvent, PoolError> {
-        self.ensure_ready()?;
-        self.turn_in_flight = true;
-        self.armed_deadline = deadline;
-        let outcome = match deadline {
-            Some(limit) => match timeout(limit, self.turn_io(request, on_print)).await {
-                Ok(outcome) => outcome,
-                Err(_elapsed) => Err(self.poison_timeout().await),
-            },
-            None => self.turn_io(request, on_print).await,
-        };
-        self.turn_in_flight = false;
-        outcome
     }
 
     /// Sends `request` and returns the child's turn-ending event, as protobuf —
@@ -2038,7 +2036,7 @@ impl Checkout {
     }
 
     /// Drops the worker and frees its pool slot, leaving the session state to
-    /// the caller: a drained session may yet resume on another worker.
+    /// the caller: a session the relay shut down may yet resume on another worker.
     fn release_worker(&mut self) {
         if let Some(worker) = self.worker.take() {
             drop(worker);
@@ -2087,15 +2085,15 @@ fn configure_request(repl: &ReplConfig) -> pb::ParentRequest {
 
 /// The `monty.pool.session.resumed` outcome for a failed reload: `exhausted`
 /// (no pool capacity), `disconnected` (the new connection failed), `refused`
-/// (the relay rejected the load), `drained` (the new relay is draining too),
-/// `mismatch` (the reloaded state is not the drained one) or `timeout`.
+/// (the relay rejected the load), `shutdown` (the new relay is shutting down
+/// too), `mismatch` (the reloaded state is not the one shut down) or `timeout`.
 #[cfg(feature = "telemetry")]
 fn resume_failure(err: &PoolError) -> &'static str {
     match err {
         PoolError::Exhausted => "exhausted",
         PoolError::Disconnected { .. } | PoolError::Spawn(_) => "disconnected",
         PoolError::Crashed { .. } | PoolError::Runtime(_) | PoolError::Typing(_) => "refused",
-        PoolError::Shutdown { .. } => "drained",
+        PoolError::Shutdown { .. } => "shutdown",
         PoolError::Protocol(_) => "mismatch",
         PoolError::Timeout { .. } => "timeout",
         PoolError::Finished => "error",

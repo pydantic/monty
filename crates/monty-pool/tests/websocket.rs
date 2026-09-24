@@ -2299,17 +2299,18 @@ async fn resumed_feed_restarts_the_feed_clock() {
             &pb::ChildEvent {
                 kind: Some(ok_event()),
                 session_id: Some(b"sess-2".to_vec().into()),
-                feed_execution_micros: 100_000,
-                max_feed_duration_micros: Some(100_000),
+                feed_execution_micros: 10_000_000,
+                max_feed_duration_micros: Some(10_000_000),
                 ..Default::default()
             },
         );
         expect_feed(&mut socket, "ext()");
         send_kind(&mut socket, function_call(7));
-        // inside the restarted feed's backstop (100ms budget plus 100ms
-        // grace), but past the 100ms left if the dump's feed time were kept
+        // well inside the restarted feed's backstop (10s budget plus 100ms
+        // grace), but past the 100ms grace that is all the dump's feed time
+        // would leave, however slow the machine
         expect_resume_call(&mut socket, 7);
-        thread::sleep(Duration::from_millis(150));
+        thread::sleep(Duration::from_millis(500));
         send_complete(&mut socket);
         while try_read_request(&mut socket).is_some() {}
     });
@@ -2320,7 +2321,7 @@ async fn resumed_feed_restarts_the_feed_clock() {
     config.feed_duration_limit_grace = Some(Duration::from_millis(100));
     let pool = Pool::new(config).await.expect("pool");
     let repl = ReplConfig {
-        limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
+        limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_secs(10))),
         ..ReplConfig::default()
     };
     let mut checkout = pool.checkout(&repl).await.expect("checkout");

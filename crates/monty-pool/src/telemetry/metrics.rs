@@ -74,12 +74,12 @@ static WORKER_TERMINATED: Instrument = Instrument {
     description: "Workers discarded by the pool, by reason.",
 };
 
-/// Sessions resumed after their relay drained.
+/// Sessions resumed after their relay shut down.
 static SESSION_RESUMED: Instrument = Instrument {
     kind: MetricKind::Counter,
     name: "monty.pool.session.resumed",
     unit: "{session}",
-    description: "Drained sessions the pool tried to resume, by outcome.",
+    description: "Sessions the pool tried to resume after a relay shutdown, by outcome.",
 };
 
 /// Checkout lifetime.
@@ -243,7 +243,7 @@ impl Metrics {
         );
     }
 
-    /// One attempt to resume a session its relay drained (`ok` or `error`).
+    /// One attempt to resume a session after a relay shutdown (`ok`, or why it failed).
     pub(crate) fn session_resumed(&self, outcome: &'static str) {
         self.record(
             &SESSION_RESUMED,

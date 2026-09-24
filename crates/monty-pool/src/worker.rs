@@ -352,7 +352,7 @@ impl Worker {
         self
     }
 
-    /// Marks this worker's session span as a session resumed after its relay drained.
+    /// Marks this worker's session span as a session resumed after its relay shut down.
     #[cfg(feature = "telemetry")]
     pub(crate) fn mark_resumed(&mut self) {
         if let Some(recorder) = &mut self.recorder {

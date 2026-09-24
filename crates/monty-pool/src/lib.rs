@@ -94,9 +94,9 @@ pub struct PoolConfig {
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child.
     pub max_checkouts_per_worker: Option<u32>,
-    /// Resume a session transparently when a relay that stores sessions drains
-    /// it: the checkout redials, reloads the state the drain named and re-sends
-    /// the request the relay reported it did not run. The session's suspension
+    /// Resume a session transparently when a relay that stores sessions answers
+    /// a request with `Shutdown`: the checkout redials, reloads the state the
+    /// shutdown named and re-sends the request the relay reported it did not run. The session's suspension
     /// and sleep totals carry over. WebSocket transport only; on by default.
     pub auto_resume: bool,
     /// Where pool and turn metrics are recorded, from
