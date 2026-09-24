@@ -2179,12 +2179,13 @@ async fn workers_are_recycled_after_max_checkouts() {
 
     let session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let first_pid = session.pid().unwrap();
+    let first_id = session.worker_id().unwrap();
     session.finish().await.unwrap();
     assert_eq!(pool.idle_workers(), 0, "worker must be retired, not pooled");
 
     let session = pool.checkout(&ReplConfig::default()).await.unwrap();
     assert_ne!(session.pid().unwrap(), first_pid);
-    assert_eq!(session.worker_id(), Some(2));
+    assert_ne!(session.worker_id().unwrap(), first_id);
     session.finish().await.unwrap();
 }
 

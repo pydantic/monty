@@ -386,8 +386,10 @@ Its return value is ignored: the sandbox itself produces the `result` argument o
 
 ## Crash isolation
 
-The Python package and the native `@pydantic/monty` binding run every session in a `monty` worker subprocess.
+Python's local [`Monty`][pydantic_monty.Monty] / [`AsyncMonty`][pydantic_monty.AsyncMonty] pools and the native
+`@pydantic/monty` binding run every session in a `monty` worker subprocess.
 Worker panics and aborts terminate the worker rather than the host.
+For WebSocket sessions, see [remote workers](#remote-workers).
 
 The WebAssembly build runs off-thread in a browser Web Worker or Node `worker_threads` worker.
 Both support hard termination and replacement after WASM traps; environments without workers are rejected.

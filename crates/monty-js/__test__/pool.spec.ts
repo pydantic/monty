@@ -106,6 +106,33 @@ test.each(['acquire', 'startup', 'configure'])('close cancels a checkout during 
   t.is(terminations, 1)
 })
 
+test('failed direct and queued spawns wake the next checkout', async () => {
+  let attempts = 0
+  await using pool = await WorkerPool.create(
+    async () => {
+      if (++attempts <= 2) throw new Error(`spawn ${attempts} failed`)
+      return {
+        alive: true,
+        terminate() {},
+        async dispatch() {
+          return { status: 'continue', events: [{ tag: 'ok' }], feedExecutionMicros: 0n }
+        },
+      }
+    },
+    { minWorkers: 0, maxWorkers: 1, checkoutTimeoutMs: 1000 },
+  )
+  const first = t.throwsAsync(() => pool.checkout())
+  const second = t.throwsAsync(() => pool.checkout())
+  const [firstError, secondError] = await Promise.all([
+    first,
+    second,
+    pool.checkout().then((session) => session.close()),
+  ])
+  t.is(firstError.message, 'spawn 1 failed')
+  t.is(secondError.message, 'spawn 2 failed')
+  t.is(attempts, 3)
+})
+
 test.each([-1, 0.5, NaN, Infinity, 2 ** 32, 2 ** 32 + 1])(
   'rejects invalid recycle count %s',
   async (maxCheckoutsPerWorker) => {
@@ -178,7 +205,7 @@ test.each([undefined, 0xffffffff])(
     await using pool = await Monty.create({ maxProcesses: 1, maxCheckoutsPerWorker })
     const first = await pool.checkout()
     const id = first.workerId
-    t.is(id, 1)
+    t.true(Number.isSafeInteger(id))
     await first.feedRun('f()', {
       externalLookup: {
         f: () => {

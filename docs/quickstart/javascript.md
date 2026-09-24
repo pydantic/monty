@@ -185,7 +185,9 @@ await sdk.shutdown()
 Instrumentation is an explicit opt-in because it records source, inputs, outputs, host calls, exceptions, and printed
 text.
 It also records pool and execution metrics through the SDK's meter provider, without sandbox-supplied dimensions.
-Configure instrumentation before creating pools; changing providers or signal options while pools are active is unsupported.
+Configure instrumentation before creating pools.
+`MontyInstrumentation.disable()` can stop telemetry while sessions remain active; changing providers or other signal
+settings while pools are active is unsupported.
 Drain Monty's callback queues with `instrumentation.forceFlush()` before shutting down the SDK.
 
 For already configured OTel components, import `instrumentTelemetry` from `@pydantic/monty/node` and call

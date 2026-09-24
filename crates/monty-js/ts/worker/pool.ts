@@ -148,10 +148,16 @@ export class WorkerPool {
     }
     if (this.closed) throw closedError()
     if (this.total < this.maxWorkers)
-      return this.spawn().then((slot) => {
-        this.configuring.add(slot)
-        return slot
-      })
+      return this.spawn().then(
+        (slot) => {
+          this.configuring.add(slot)
+          return slot
+        },
+        (error) => {
+          this.pump()
+          throw error
+        },
+      )
     return new Promise<WorkerSlot>((resolve, reject) => {
       const waiter: Waiter = { resolve, reject, timer: null }
       if (this.options.checkoutTimeoutMs !== undefined) {

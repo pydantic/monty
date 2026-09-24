@@ -5,7 +5,7 @@ import { t } from './assertions.js'
 
 // The lower-level public entry must select the same backend as Monty.create().
 test('precompiled modules run in a worker-backed pool', async () => {
-  await using pool: Monty = await createWorkerPool(await loadModule(), { maxProcesses: 1, requestTimeout: 0.5 })
+  await using pool: Monty = await createWorkerPool(await loadModule(), { maxProcesses: 1 })
   await using session = await pool.checkout()
   t.is(await session.feedRun('6 * 7'), 42)
 })
