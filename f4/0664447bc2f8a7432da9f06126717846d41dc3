@@ -1,0 +1,23 @@
+crates/monty-server/README.md
+  s_c758dc76462636::t_4bdd9426a29513 234-235
+  s_c758dc76462636::t_7e3672cb94cea6 236-237
+render.yaml
+  s_c758dc76462636::t_ca60c30fe92108 33-35,126-128
+  s_c758dc76462636::t_f53b9a4e450cc4 183-188
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f40664447bc2f8a7432da9f06126717846d41dc3",
+  "prompts": {},
+  "sessions": {
+    "s_c758dc76462636": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "08eb6537-87a9-495f-a693-f3346021b6da",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
