@@ -51,7 +51,7 @@ def main() -> None:
     parts = [
         f"<svg xmlns='http://www.w3.org/2000/svg' width='{WIDTH}' height='{height}' "
         f"viewBox='0 0 {WIDTH} {height}' role='img' aria-labelledby='title'>",
-        "<title id='title'>Time to create a sandbox and run 10 REPL commands in it</title>",
+        "<title id='title'>Time to get a new sandbox and run 10 REPL commands in it</title>",
         f"<text x='{LABEL_WIDTH + PLOT_WIDTH / 2:.1f}' y='18' text-anchor='middle' fill='{TEXT}' "
         f"font-size='15' font-weight='600' {FONT}>{CAPTION}</text>",
     ]

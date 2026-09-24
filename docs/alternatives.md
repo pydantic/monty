@@ -12,7 +12,7 @@ This page runs through the obvious alternatives and why they were not right for 
 written by a model, per request, with nothing else in the loop.
 Most of them were not designed as an LLM sandbox.
 
-![Time to create a sandbox and run 10 REPL commands](img/startup-latency.svg)
+![Time to get a new sandbox and run 10 REPL commands](img/startup-latency.svg)
 
 The chart is the time to get a new sandbox and then run ten REPL commands in it; see [latency](#latency).
 
@@ -152,7 +152,7 @@ Desktop on the same machine.
 The client is `pydantic-monty` 1.0.0b2's [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket] in a third
 container on the same Docker network, so the figures are the server's own overhead, not Docker Desktop's
 port-forwarding proxy.
-Each figure is the median of 7 runs.
+The new client pool and agent run figures are medians of 7 runs.
 
 New sandbox is the median of 20 `checkout()` + `feed_run()` round trips on a client pool that is already open, at
 1.7 ms, measured back to back; each is a new connection and a new worker process, because the server never lets one

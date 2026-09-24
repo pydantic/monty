@@ -19,10 +19,10 @@ ______________________________________________________________________
 
 Monty avoids the latency, complexity and cost of a container based sandbox for running LLM generated code.
 It comes in two forms: **OSS Monty**, the MIT licensed Python 3.14 sandbox you install as a package, and
-[**Full Monty**](server.md), the commercial server that runs the same sandbox behind a WebSocket as a service.
+[**Full Monty**](https://pydantic.dev/docs/monty/commercial-support/server/), the commercial server that runs the same sandbox behind a WebSocket as a service.
 
-This means Monty has a start-up time of under **1ms** [compared to](https://pydantic.dev/docs/monty/get-started/)
-around **1500ms** for a sandbox service.
+A new OSS Monty sandbox takes under **1ms** from a running pool (Full Monty: about **2ms**)
+[compared to](https://pydantic.dev/docs/monty/reference/alternatives/) around **1500ms** for a sandbox service.
 
 Filesystem, environment variables and network do not exist inside the sandbox: it reaches the host only through the
 functions and mounts you pass in.

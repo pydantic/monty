@@ -50,8 +50,8 @@ def run_monty(rounds: int = 20, idle: float = 1.0):
 
 def run_monty_new_pool():
     start = time.perf_counter()
-    # creating the pool spawns a worker subprocess and completes the protocol
-    # handshake — execution is always subprocess-isolated
+    # creating the pool spawns a worker subprocess; the checkout completes the
+    # protocol handshake — execution is always subprocess-isolated
     with Monty() as pool:
         with pool.checkout() as session:
             result = session.feed_run(code)
@@ -62,7 +62,7 @@ def run_monty_new_pool():
 
 def run_full_monty():
     async def run() -> Any:
-        # a new client pool dials the server, which spawns a worker for the session
+        # the checkout dials the server, which starts a worker for the session
         async with AsyncMontyWebsocket(FULL_MONTY_URL) as pool:
             async with pool.checkout() as session:
                 return await session.feed_run(code)

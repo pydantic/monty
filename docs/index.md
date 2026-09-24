@@ -23,7 +23,7 @@ It comes in two forms: **OSS Monty**, the MIT licensed Python 3.14 sandbox you i
 
 ## Latency
 
-![Time to create a sandbox and run 10 REPL commands](img/startup-latency.svg)
+![Time to get a new sandbox and run 10 REPL commands](img/startup-latency.svg)
 
 | Sandbox                | New sandbox¹ | Agent run² | Combined³ | Execution env⁴ |
 | ---------------------- | ------------ | ---------- | --------- | -------------- |

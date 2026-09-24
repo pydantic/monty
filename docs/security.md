@@ -24,7 +24,7 @@ In practice that means:
     read an environment variable, open a socket, or spawn a process.
     Not "it is blocked" — the capability does not exist in the bytecode VM.
     The wall clock and OS entropy are the exceptions: every session reads the clock by default and seeds `random`
-    from entropy, although even those can be disable or customised; see [the clock](#the-clock) and [entropy](#entropy).
+    from entropy, although even those can be disabled or customised; see [the clock](#the-clock) and [entropy](#entropy).
 - **The interpreter performs no filesystem I/O at all.** It suspends with a description of the operation it wants, and a
     host component decides what to do about it.
     All filesystem code lives in a separate crate (`monty-fs`).

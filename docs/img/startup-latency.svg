@@ -1,5 +1,5 @@
 <svg xmlns='http://www.w3.org/2000/svg' width='760' height='288' viewBox='0 0 760 288' role='img' aria-labelledby='title'>
-<title id='title'>Time to create a sandbox and run 10 REPL commands in it</title>
+<title id='title'>Time to get a new sandbox and run 10 REPL commands in it</title>
 <text x='410.0' y='18' text-anchor='middle' fill='#8a8f98' font-size='15' font-weight='600' font-family='ui-sans-serif, system-ui, sans-serif'>Combined new sandbox + agent run</text>
 <line x1='150.0' y1='36' x2='150.0' y2='254' stroke='#8a8f98' stroke-opacity='0.3'/>
 <text x='150.0' y='272' text-anchor='middle' fill='#8a8f98' font-size='12' font-family='ui-sans-serif, system-ui, sans-serif'>0 ms</text>
