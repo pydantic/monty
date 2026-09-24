@@ -25,8 +25,10 @@ pub enum NameScope {
     ///
     /// If accessed before assignment, raises `UnboundLocalError`.
     #[default]
+    #[serde(rename = "L")]
     Local,
     /// Variable is in the module-level global namespace.
+    #[serde(rename = "G")]
     Global,
     /// Variable accessed through a cell (heap-allocated container).
     ///
@@ -36,12 +38,21 @@ pub enum NameScope {
     ///
     /// The namespace slot contains `Value::Ref(cell_id)` pointing to a `HeapData::Cell`.
     /// Access requires dereferencing through the cell.
+    #[serde(rename = "C")]
     Cell,
     /// Comprehension target stored in isolated operand-stack storage.
     ///
     /// The namespace ID is a comprehension-local slot ID. The compiler stores
     /// uncaptured targets directly and gives captured targets a stable cell.
+    #[serde(rename = "V")]
     CompVar,
+    /// Top-level name of an `eval()` / `exec()` snippet that runs with a locals
+    /// dict or dict globals: resolved by name at runtime through the frame's
+    /// namespace. The namespace ID is the session global slot for the name (a
+    /// scratch slot under dict globals) so the slot-globals tail of the lookup
+    /// reuses the `LoadGlobal` machinery.
+    #[serde(rename = "N")]
+    Name,
 }
 
 /// Identifies where an enclosing scope stores a cell captured by a callable.
@@ -59,11 +70,15 @@ pub enum CaptureSource {
 /// To get the actual string, look it up in the `Interns` storage.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Identifier {
+    #[serde(rename = "P")]
     pub position: CodeRange,
     /// Interned name ID - look up in Interns to get the actual string.
+    #[serde(rename = "N")]
     pub name_id: StringId,
+    #[serde(rename = "I")]
     opt_namespace_id: Option<NamespaceId>,
     /// Which namespace this identifier refers to (determined at prepare time)
+    #[serde(rename = "S")]
     pub scope: NameScope,
 }
 
@@ -847,6 +862,9 @@ pub struct PreparedFunctionDef {
     /// preparation and so does not fall in the contiguous param/cell/free
     /// region the namespace layout otherwise follows.
     pub free_var_slots: Vec<NamespaceId>,
+    /// Names parallel to `free_var_slots`, including captures never read by this body.
+    /// The compiler records them so `locals()` can report pass-through cells.
+    pub free_var_names: Vec<StringId>,
     /// This function's own namespace slots for cell variables (locals captured
     /// by nested functions). A fresh cell is created for each at call time and
     /// stored at `cell_var_slots[i]`. Parallel to [`Self::cell_param_indices`].

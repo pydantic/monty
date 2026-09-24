@@ -7,7 +7,14 @@
 import { availableParallelism } from 'node:os'
 import { NativePool } from '../native-addon.js'
 import { findMontyBinary } from './binary.js'
-import { type AssertMessageAnnotations, type TypeCheckFormat, encodeAssertMessageAnnotations } from './options.js'
+import {
+  type AssertMessageAnnotations,
+  type OsPolicy,
+  type EncodedOsPolicy,
+  type TypeCheckFormat,
+  encodeAssertMessageAnnotations,
+  encodeOsPolicy,
+} from './options.js'
 import { MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
 
@@ -28,21 +35,27 @@ export interface MontyOptions {
    * Hard per-turn deadline in seconds: a worker that does not answer a
    * protocol request in time is killed and the session fails with
    * `MontyCrashedError` (`timedOut: true`). Off by default — prefer the
-   * in-sandbox `maxDurationSecs` limit; this is the backstop for code that
+   * in-sandbox `maxFeedDurationSecs` limit; this is the backstop for code that
    * wedges the interpreter itself.
    */
   requestTimeout?: number
   /**
-   * Grace period in seconds for the automatic `maxDurationSecs` backstop
-   * (default 1, `null` disables). For sessions with a `maxDurationSecs`
-   * limit, the worker reports cumulative execution time each turn (the
+   * Grace period in seconds for the automatic `maxFeedDurationSecs` backstop
+   * (default 1, `null` disables). For sessions with a `maxFeedDurationSecs`
+   * limit, the worker reports the running feed's execution time each turn (the
    * sandbox clock runs only while the interpreter executes, never while
    * suspended on the host) and the host kills the worker this long after the
    * budget expires — covering cases the in-sandbox limit cannot catch (its
    * check only runs at interpreter checkpoints). Surfaces as `MontyCrashedError`
    * (`timedOut: true`), losing the session. `requestTimeout` is independent.
    */
-  durationLimitGrace?: number | null
+  feedDurationLimitGrace?: number | null
+  /**
+   * As `feedDurationLimitGrace`, but for `maxTurnDurationSecs`: the host kills the
+   * worker this long after the current turn's budget expires (default 1,
+   * `null` disables).
+   */
+  turnDurationLimitGrace?: number | null
   /** Recycle a worker (kill and replace) after serving this many sessions. */
   maxCheckoutsPerWorker?: number
 }
@@ -90,6 +103,12 @@ export interface CheckoutOptions {
    * lag — never what arrives, or in what order.
    */
   printFlushInterval?: number
+  /**
+   * Session clock, sleep, process-clock and random initialization policies; see `OsPolicy`.
+   * Defaults to the worker's clock in UTC and its entropy, with pool-managed sleeps capped at ten seconds.
+   * Sleeps count toward suspensions and `maxTotalSleepSecs`, but not execution duration limits.
+   */
+  osPolicy?: OsPolicy
 }
 
 /**
@@ -97,13 +116,33 @@ export interface CheckoutOptions {
  * `maxRecursionDepth` and `maxSuspensions`, which keep their 1000 defaults.
  * The pool counts `maxSuspensions` per checkout and aborts an over-budget
  * feed with an uncatchable `RuntimeError`.
+ *
+ * Both duration limits share one clock, which runs only while sandboxed
+ * code executes, never while suspended on the host; they differ in when it
+ * restarts: at each feed, at each host round trip. Exceeding either raises
+ * `TimeoutError` in the sandbox.
  */
 export interface ResourceLimits {
-  maxDurationSecs?: number
+  /**
+   * @deprecated Removed: it capped a whole session, which neither replacement
+   * does, so there is no value to carry over. Pick `maxFeedDurationSecs` or
+   * `maxTurnDurationSecs`. Declared `never` so a stale key still fails to
+   * compile rather than being silently dropped at the boundary.
+   */
+  maxDurationSecs?: never
+  /** Maximum execution time for a single feed (`feedRun` or `feedStart`). */
+  maxFeedDurationSecs?: number
+  /** Maximum execution time between host round trips. */
+  maxTurnDurationSecs?: number
   maxMemory?: number
   gcInterval?: number
   maxRecursionDepth?: number
   maxSuspensions?: number
+  /**
+   * Maximum cumulative seconds of `'system'` sleep, excluded from execution duration limits.
+   * The pool charges each sleep before waiting; exceeding the limit raises an uncatchable `TimeoutError`.
+   */
+  maxTotalSleepSecs?: number
 }
 
 /**
@@ -133,10 +172,9 @@ export class Monty {
       maxProcesses: options.maxProcesses ?? availableParallelism(),
       ...(options.checkoutTimeout !== undefined ? { checkoutTimeoutMs: options.checkoutTimeout * 1000 } : {}),
       ...(options.requestTimeout !== undefined ? { requestTimeoutMs: options.requestTimeout * 1000 } : {}),
-      // `null` disables the backstop; omitted means the 1s default
-      ...(options.durationLimitGrace !== null
-        ? { durationLimitGraceMs: (options.durationLimitGrace ?? 1) * 1000 }
-        : {}),
+      // `null` disables a backstop; omitted means the 1s default
+      ...graceMs('feedDurationLimitGraceMs', options.feedDurationLimitGrace),
+      ...graceMs('turnDurationLimitGraceMs', options.turnDurationLimitGrace),
       ...(options.maxCheckoutsPerWorker !== undefined ? { maxCheckoutsPerWorker: options.maxCheckoutsPerWorker } : {}),
     })
     await native.start()
@@ -153,6 +191,7 @@ export class Monty {
       throw new Error('the pool is closed — create a new Monty pool')
     }
     const assertAnnotations = encodeAssertMessageAnnotations(options.assertMessageAnnotations)
+    const osPolicy = encodeOsPolicy(options.osPolicy ?? {})
     const native = this.native.checkout({
       scriptName: options.scriptName ?? 'main.py',
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
@@ -162,6 +201,7 @@ export class Monty {
       ...(options.typeCheckColor !== undefined ? { typeCheckColor: options.typeCheckColor } : {}),
       ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
       ...(options.printFlushInterval !== undefined ? { printFlushIntervalMs: options.printFlushInterval * 1000 } : {}),
+      ...nativeOsPolicy(osPolicy),
     })
     const telemetryContext = captureTelemetryContext()
     await native.enter(telemetryContext)
@@ -183,4 +223,48 @@ export class Monty {
   async [Symbol.asyncDispose](): Promise<void> {
     await this.close()
   }
+}
+
+/**
+ * Renders one duration-backstop grace as the native option the pool takes:
+ * `null` yields no key at all, and an absent grace falls back to 1s.
+ */
+function graceMs(key: string, seconds: number | null | undefined): Record<string, number> {
+  return seconds === null ? {} : { [key]: (seconds ?? 1) * 1000 }
+}
+
+/** Flattens normalized options into native binding fields. */
+function nativeOsPolicy(calls: EncodedOsPolicy): Record<string, unknown> {
+  const fields: Record<string, unknown> = {}
+  if (typeof calls.datetime === 'string') {
+    fields.datetimeKind = calls.datetime
+  } else if (calls.datetime !== undefined) {
+    fields.datetimeKind = 'fixed'
+    fields.datetimeUnixSeconds = calls.datetime.unixSeconds
+    fields.datetimeMicrosecond = calls.datetime.microsecond
+  }
+  if (calls.timezone === 'utc') {
+    fields.timezoneKind = 'utc'
+  } else if (typeof calls.timezone === 'string') {
+    fields.timezoneKind = 'named'
+    fields.timezoneName = calls.timezone
+  } else if (calls.timezone !== undefined) {
+    fields.timezoneKind = 'fixed'
+    fields.timezoneOffsetSeconds = calls.timezone.offsetSeconds
+    if (calls.timezone.name !== undefined) fields.timezoneName = calls.timezone.name
+  }
+  if (calls.sleep !== undefined) fields.sleep = calls.sleep
+  if (calls.sleepSystemMaxSecs !== undefined) fields.sleepSystemMaxSecs = calls.sleepSystemMaxSecs
+  if (calls.randomStart === 'call_host') {
+    fields.randomStartKind = 'call_host'
+  } else if (calls.randomStart !== undefined) {
+    fields.randomStartKind = 'seed'
+    const seed = calls.randomStart.seed
+    if ('int' in seed) fields.randomSeedInt = Buffer.from(seed.int)
+    else if ('float' in seed) fields.randomSeedFloat = seed.float
+    else if ('str' in seed) fields.randomSeedStr = seed.str
+    else fields.randomSeedBytes = Buffer.from(seed.bytes)
+  }
+  if (calls.processTime !== undefined) fields.processTime = calls.processTime
+  return fields
 }

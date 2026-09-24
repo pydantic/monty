@@ -21,8 +21,8 @@ use monty_proto::{
 };
 use monty_types::{
     AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION,
-    MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, PrintStream, ResourceLimits,
-    TypeCheckingConfig, validate_cwd,
+    MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
+    ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, validate_cwd,
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
@@ -31,7 +31,7 @@ use tokio::{task::spawn_blocking, time::timeout};
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::outcome};
 use crate::{
-    CrashCause, PoolError,
+    CrashCause, PoolConfig, PoolError,
     pool::{CapacityGuard, PoolInner},
     worker::Worker,
 };
@@ -71,6 +71,10 @@ pub struct ReplConfig {
     /// below 1 ms is sent as 1 ms rather than rounding down into the
     /// line-buffering sentinel.
     pub print_flush_interval: Option<Duration>,
+    /// Session clock, initial random state and sleep policy; defaults use the worker's clock and entropy.
+    /// `CallHost` delegates to the caller's OS handler through [`TurnEvent::OsCall`].
+    /// `System` sleeps set `system_sleep` for the caller to await directly; `Zero` sleeps return immediately.
+    pub os_policy: OsPolicy,
 }
 
 impl Default for ReplConfig {
@@ -83,6 +87,7 @@ impl Default for ReplConfig {
             type_check_config: TypeCheckingConfig::default(),
             assert_message_annotations: AssertMessageAnnotations::default(),
             print_flush_interval: None,
+            os_policy: OsPolicy::default(),
         }
     }
 }
@@ -234,6 +239,8 @@ pub enum TurnEvent {
         object_id: Option<MontyUuid>,
         /// Coroutine results may be awaited and returned via [`Checkout::resume_futures`].
         allow_eager_await: bool,
+        /// Where the call expression is in the source.
+        position: SourceRange,
     },
     /// The sandbox performed an OS operation (e.g. `"Path.read_text"`).
     /// Answer it from this feed's mounts with
@@ -250,6 +257,12 @@ pub enum TurnEvent {
         /// the wait and answer with [`Checkout::resume_futures`]. Only set on
         /// a call `OsFunctionCall::accepts_future` allows a future for.
         allow_eager_await: bool,
+        /// Wait this duration, then return `MontyObject::none()` (as a future for `asyncio.sleep`).
+        /// The parent caps the untrusted worker's delay and charges `max_total_sleep` before returning it.
+        /// `None` delegates to the caller's OS handler.
+        system_sleep: Option<Duration>,
+        /// Where the call expression is in the source.
+        position: SourceRange,
     },
     /// The sandbox read an undefined name, or — when `object_id` is set — a
     /// lazy attribute on the host-backed object with that uuid (a class
@@ -257,10 +270,19 @@ pub enum TurnEvent {
     /// [`Checkout::resume_name_lookup`]. An `Undefined` (or `None`) answer
     /// raises `NameError` for plain lookups, `AttributeError` for attribute
     /// lookups; an `Error` answer raises the host's exception in the sandbox.
-    NameLookup { name: String, object_id: Option<MontyUuid> },
+    NameLookup {
+        name: String,
+        object_id: Option<MontyUuid>,
+        /// Where the name (or attribute access) is in the source.
+        position: SourceRange,
+    },
     /// Every sandbox task is blocked on external futures — answer with
     /// [`Checkout::resume_futures`].
-    ResolveFutures { pending_call_ids: Vec<u32> },
+    ResolveFutures {
+        pending_call_ids: Vec<u32>,
+        /// Where the main task's blocked `await` is in the source.
+        position: SourceRange,
+    },
     /// The fed snippet completed with this value; the session is ready for
     /// the next [`Checkout::feed`].
     Complete(MontyObject),
@@ -388,25 +410,35 @@ pub struct Checkout {
     started: Option<Instant>,
 }
 
-/// Tracks limits the parent enforces or backstops.
-///
-/// Limits come from `Configure` or the first reply after `Load`. Suspension
-/// counts are parent state and restart at zero on restore. The suspension
-/// limit survives a restore and a reply can only tighten it: the reply's
-/// value is untrusted (a compromised worker could omit or inflate it), so it
-/// never loosens what this checkout was configured with.
+/// Parent-enforced limits from `Configure` or the first reply after `Load`.
+/// Restoring resets suspension and sleep totals, but keeps their limits as ceilings:
+/// untrusted worker replies can only tighten them. Duration budgets backstop the
+/// child's enforcement, so restoring adopts the dump's duration limits.
 #[derive(Clone, Copy)]
 struct SessionBudget {
-    /// The session's `max_duration`, when configured.
-    duration_budget: Option<Duration>,
-    /// Monotonic worker-reported sandbox time, preventing a compromised worker
-    /// from rewinding the parent's view.
-    reported_execution: Duration,
+    /// The session's `max_feed_duration`, when configured.
+    feed_budget: Option<Duration>,
+    /// The session's `max_turn_duration`, when configured.
+    turn_budget: Option<Duration>,
+    /// Worker-reported sandbox time consumed by the feed in progress, and
+    /// monotonic, so a compromised worker cannot rewind the parent's view of
+    /// how much of the feed budget is spent. The legitimate drop to zero is
+    /// [`begin_feed`](Self::begin_feed), driven by the `Feed` request going
+    /// out, so a worker reporting less than it did mid-feed cannot loosen its
+    /// own feed backstop.
+    reported_feed_execution: Duration,
     /// The session's `max_suspensions` in force (the configured one, else
     /// [`DEFAULT_MAX_SUSPENSIONS`]).
     suspension_limit: u64,
     /// Suspensions this checkout has received from the worker.
     suspensions_seen: u64,
+    /// Configured `max_total_sleep`, tightened by worker replies.
+    sleep_limit: Option<Duration>,
+    /// Parent-enforced ceiling on each system sleep, even from a compromised worker.
+    /// Uses the configured maximum, or the default for other modes because a restored dump may sleep.
+    system_sleep_max: Duration,
+    /// Capped system sleep accepted so far; `charge_sleep` refuses a sleep that would exceed `sleep_limit`.
+    sleep_used: Duration,
 }
 
 impl SessionBudget {
@@ -414,36 +446,50 @@ impl SessionBudget {
     fn from_config(repl: &ReplConfig) -> Self {
         let limits = repl.limits.as_ref();
         Self {
-            duration_budget: limits.and_then(|limits| limits.max_duration),
-            reported_execution: Duration::ZERO,
+            feed_budget: limits.and_then(|limits| limits.max_feed_duration),
+            turn_budget: limits.and_then(|limits| limits.max_turn_duration),
+            reported_feed_execution: Duration::ZERO,
             suspension_limit: limits.map_or(DEFAULT_MAX_SUSPENSIONS as u64, |limits| limits.max_suspensions as u64),
             suspensions_seen: 0,
+            sleep_limit: limits.and_then(|limits| limits.max_total_sleep),
+            sleep_used: Duration::ZERO,
+            system_sleep_max: match repl.os_policy.sleep {
+                SleepMode::System(max) => max,
+                SleepMode::CallHost | SleepMode::Zero => SleepMode::DEFAULT_MAX,
+            },
         }
     }
 
     /// Clears `Configure` state before adopting a dump's budget. The
-    /// suspension limit stays: it is the ceiling on the dump's.
+    /// suspension and sleep limits stay: they are the ceilings on the dump's.
     fn forget(&mut self) {
         *self = Self {
-            duration_budget: None,
-            reported_execution: Duration::ZERO,
+            feed_budget: None,
+            turn_budget: None,
+            reported_feed_execution: Duration::ZERO,
             suspension_limit: self.suspension_limit,
             suspensions_seen: 0,
+            sleep_limit: self.sleep_limit,
+            sleep_used: Duration::ZERO,
+            system_sleep_max: self.system_sleep_max,
         };
     }
 
-    /// Adopts unknown limits and records an event's consumption.
-    ///
-    /// Reported time only ratchets up so a compromised worker cannot rewind it.
-    /// A reported suspension limit only ever tightens the one in force (an
-    /// ordinary reply echoes it; a `Load` reply carries the dump's). Suspension
-    /// events increment the parent-owned count.
+    /// Adopts unknown limits and records consumption, counting suspensions in the parent.
+    /// Untrusted replies can only increase reported time and tighten suspension or sleep limits.
+    /// Ordinary replies echo limits; a `Load` reply reports the dump's.
     fn update_from(&mut self, event: &pb::ChildEvent) {
-        self.reported_execution = self
-            .reported_execution
-            .max(Duration::from_micros(event.total_execution_micros));
-        if self.duration_budget.is_none() {
-            self.duration_budget = event.max_duration_micros.map(Duration::from_micros);
+        self.reported_feed_execution = self
+            .reported_feed_execution
+            .max(Duration::from_micros(event.feed_execution_micros));
+        if self.feed_budget.is_none() {
+            self.feed_budget = event.max_feed_duration_micros.map(Duration::from_micros);
+        }
+        if self.turn_budget.is_none() {
+            self.turn_budget = event.max_turn_duration_micros.map(Duration::from_micros);
+        }
+        if let Some(reported) = event.max_total_sleep_micros.map(Duration::from_micros) {
+            self.sleep_limit = Some(self.sleep_limit.map_or(reported, |limit| limit.min(reported)));
         }
         if let Some(reported) = event.max_suspensions {
             self.suspension_limit = self.suspension_limit.min(reported);
@@ -453,22 +499,88 @@ impl SessionBudget {
         }
     }
 
+    /// Clears the feed clock as a feed request goes out; see
+    /// [`reported_feed_execution`](Self::reported_feed_execution).
+    fn begin_feed(&mut self) {
+        self.reported_feed_execution = Duration::ZERO;
+    }
+
     /// Reports when this event exceeds the suspension limit.
     fn over_suspension_limit(&self, event: &pb::ChildEvent) -> Option<u64> {
         (is_suspension(event) && self.suspensions_seen > self.suspension_limit).then_some(self.suspension_limit)
     }
 
-    /// Returns the remaining `max_duration` plus grace.
-    ///
-    /// The child normally raises `TimeoutError`; this catches one that stops
-    /// checking its clock.
-    fn backstop_deadline(&self, grace: Option<Duration>) -> Option<Duration> {
-        Some(
-            self.duration_budget?
-                .saturating_sub(self.reported_execution)
-                .saturating_add(grace?),
-        )
+    /// Charges a capped system sleep; other events, including `CallHost` sleeps, are free.
+    /// Returns `Some((limit, total))` without charging if the caller must refuse the sleep.
+    /// Invalid worker delays count as the ceiling.
+    fn charge_sleep(&mut self, event: &pb::ChildEvent) -> Option<(Duration, Duration)> {
+        let seconds = match &event.kind {
+            Some(pb::child_event::Kind::OsCall(call)) => match call.call {
+                Some(pb::os_call::Call::SystemSleep(pb::os_call::Sleep { seconds })) => seconds,
+                Some(pb::os_call::Call::AsyncSystemSleep(pb::os_call::AsyncSleep { delay })) => delay,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let delay = self.cap_system_sleep(Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX));
+        let total = self.sleep_used.saturating_add(delay);
+        match self.sleep_limit {
+            Some(limit) if total > limit => Some((limit, total)),
+            _ => {
+                self.sleep_used = total;
+                None
+            }
+        }
     }
+
+    fn cap_system_sleep(&self, delay: Duration) -> Duration {
+        delay.min(self.system_sleep_max)
+    }
+
+    /// Returns the tighter of the two duration backstops: what each configured
+    /// budget has left, plus that budget's grace. The turn budget has all of
+    /// its limit left, since the child resets that clock on the request being
+    /// sent.
+    ///
+    /// The child normally raises `TimeoutError` inside the grace; this catches
+    /// one that stops checking its clock. A `None` grace means no backstop —
+    /// the host would rather wait than lose the worker.
+    fn backstop_deadline(&self, graces: DurationGraces) -> Option<Duration> {
+        [
+            remaining_deadline(self.feed_budget, self.reported_feed_execution, graces.feed),
+            remaining_deadline(self.turn_budget, Duration::ZERO, graces.turn),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+}
+
+/// The grace period configured for each of the two duration backstops.
+///
+/// Bundled so [`SessionBudget::backstop_deadline`] takes one argument rather
+/// than two same-typed `Option<Duration>`s in an order nothing enforces.
+#[derive(Clone, Copy)]
+struct DurationGraces {
+    feed: Option<Duration>,
+    turn: Option<Duration>,
+}
+
+impl DurationGraces {
+    /// Reads both graces off a pool config.
+    fn from_config(config: &PoolConfig) -> Self {
+        Self {
+            feed: config.feed_duration_limit_grace,
+            turn: config.turn_duration_limit_grace,
+        }
+    }
+}
+
+/// One budget's backstop deadline: what it has left, plus its grace. `None`
+/// when the budget or its grace is unset — either way there is nothing to
+/// backstop.
+fn remaining_deadline(budget: Option<Duration>, consumed: Duration, grace: Option<Duration>) -> Option<Duration> {
+    Some(budget?.saturating_sub(consumed).saturating_add(grace?))
 }
 
 /// Recognizes turn-ending events that await a host answer.
@@ -500,6 +612,15 @@ fn suspension_limit_exceeded(limit: u64) -> MontyException {
     MontyException::new(
         ExcType::RuntimeError,
         Some(format!("suspension limit {limit} exceeded")),
+    )
+}
+
+/// Uncatchable feed error; `total` includes the refused sleep.
+/// The documented message uses `Duration` debug formatting (`1.5s > 1s`).
+fn sleep_limit_exceeded(limit: Duration, total: Duration) -> MontyException {
+    MontyException::new(
+        ExcType::TimeoutError,
+        Some(format!("sleep limit exceeded: {total:?} > {limit:?}")),
     )
 }
 
@@ -542,6 +663,7 @@ impl Checkout {
             // Diagnostic only, so a rejection can report both builds.
             monty_version: MONTY_VERSION.to_owned(),
             print_flush_interval_ms: repl.print_flush_interval.map(flush_interval_ms),
+            os_policy: Some((&repl.os_policy).into()),
         }));
         let mut this = Self {
             worker: Some(worker),
@@ -603,7 +725,7 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
         self.ensure_ready()?;
-        let feed_mounts = Self::build_feed_mounts(mounts);
+        let feed_mounts = Self::build_feed_mounts(mounts)?;
         // the dump carries its own limits/consumed time/script name — forget
         // what the worker's Configure established and re-adopt from the reply
         // (see `pending_load_budget` for when the old budget comes back)
@@ -611,7 +733,7 @@ impl Checkout {
         self.begin_load();
         self.restored_script_name = None;
         self.feed_mounts = feed_mounts;
-        let request = request(pb::parent_request::Kind::Load(pb::Load { state }));
+        let request = request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
         let outcome = self
             .request_turn(&request, self.pool.config.request_timeout, on_print)
             .await;
@@ -630,13 +752,13 @@ impl Checkout {
 
     /// Executes one snippet against the session. Inputs become sandbox
     /// globals; mounts apply to this feed only and are serviced by the parent
-    /// (an invalid host path fails here, before any frame is sent, as a
-    /// session-preserving [`PoolError::Runtime`]). The session's first feed
-    /// sets the sandbox working directory to its first mount's virtual path,
-    /// or `/` without mounts; later feeds keep the directory (`os.chdir`
-    /// included) unless [`Checkout::feed_with_cwd`] switches it. Returns the
-    /// first suspension (or completion); `print()` output streams to
-    /// `on_print` throughout.
+    /// (specs with overlapping host directories fail here, before any frame is
+    /// sent, as a session-preserving [`PoolError::Runtime`]). The session's
+    /// first feed sets the sandbox working directory to its first mount's
+    /// virtual path, or `/` without mounts; later feeds keep the directory
+    /// (`os.chdir` included) unless [`Checkout::feed_with_cwd`] switches it.
+    /// Returns the first suspension (or completion); `print()` output streams
+    /// to `on_print` throughout.
     ///
     /// # Errors
     /// [`PoolError::Runtime`] / [`PoolError::Typing`] leave the session
@@ -685,8 +807,11 @@ impl Checkout {
                 .first()
                 .map_or_else(|| "/".to_owned(), |mount| mount.virtual_path().to_owned()),
         };
-        self.feed_mounts = Self::build_feed_mounts(mounts);
+        self.feed_mounts = Self::build_feed_mounts(mounts)?;
         let (inputs, values) = named_values_to_proto(inputs.into());
+        // The child resets its feed clock on this request, so the last feed's
+        // reported total must not shorten this feed's backstop.
+        self.budget.begin_feed();
         let request = request(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.into(),
             inputs,
@@ -926,7 +1051,7 @@ impl Checkout {
             validate_requirement(requirement).map_err(invalid_requirement)?;
         }
         let request = request(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
-            requirements,
+            requirements: requirements.into(),
         }));
         let mut no_print = on_print_sync(|_, _| {});
         let deadline = self.pool.config.request_timeout;
@@ -1029,9 +1154,10 @@ impl Checkout {
         }
     }
 
-    /// The `max_duration` backstop deadline; see [`SessionBudget::backstop_deadline`].
+    /// The duration backstop deadline; see [`SessionBudget::backstop_deadline`].
     fn backstop_deadline(&self) -> Option<Duration> {
-        self.budget.backstop_deadline(self.pool.config.duration_limit_grace)
+        self.budget
+            .backstop_deadline(DurationGraces::from_config(&self.pool.config))
     }
 
     /// Snapshots the budget and forgets it ahead of a `Load`, so the reply can
@@ -1049,18 +1175,11 @@ impl Checkout {
         }
     }
 
-    /// Records an event and aborts a suspension past `max_suspensions`.
-    ///
-    /// The first non-`Print` reply to a `Load` settles `pending_load_budget`:
-    /// an `Ok` or the re-announced suspension means the dump was adopted,
-    /// anything else (the child refusing it) keeps the live session's budget.
-    ///
-    /// Returns `true` after sending `AbortFeed`, so the caller reads its
-    /// turn-ender; `false` means to handle the event normally. The abort's
-    /// reply must be an `Error` or a crash announcement: a child that answers
-    /// with another suspension would otherwise be aborted again forever, and
-    /// a suspension whose payload the typed path would reject is a protocol
-    /// violation, not a feed to abort.
+    /// Records consumption and aborts feeds exceeding suspension or system sleep limits.
+    /// Returns `true` after `AbortFeed`; the caller must read an error or crash next to avoid an abort loop.
+    /// Invalid suspension payloads are protocol violations, even when over budget.
+    /// The first non-print `Load` reply settles the budget: `Ok` or a suspension adopts the dump;
+    /// any other reply restores the live session's budget.
     async fn abort_if_over_budget(&mut self, event: &mut pb::ChildEvent) -> Result<bool, PoolError> {
         let is_print = matches!(event.kind, Some(pb::child_event::Kind::Print(_)));
         if !is_print && mem::take(&mut self.abort_in_flight) && !is_abort_reply(event) {
@@ -1073,7 +1192,16 @@ impl Checkout {
             self.budget = saved;
         }
         self.budget.update_from(event);
-        let Some(limit) = self.budget.over_suspension_limit(event) else {
+        let exceeded = self
+            .budget
+            .over_suspension_limit(event)
+            .map(suspension_limit_exceeded)
+            .or_else(|| {
+                self.budget
+                    .charge_sleep(event)
+                    .map(|(limit, total)| sleep_limit_exceeded(limit, total))
+            });
+        let Some(exception) = exceeded else {
             return Ok(false);
         };
         // an aborted event is dropped by the caller, so validation consumes the
@@ -1084,7 +1212,7 @@ impl Checkout {
             return Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
         }
         let abort = request(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
-            exception: Some((&suspension_limit_exceeded(limit)).into()),
+            exception: Some((&exception).into()),
         }));
         let Some(worker) = self.worker.as_mut() else {
             return Err(PoolError::Finished);
@@ -1153,7 +1281,7 @@ impl Checkout {
     ///
     /// # Errors
     /// As [`Checkout::feed`]: a dead worker, a protocol violation, or a turn
-    /// that outlived `request_timeout` or the remaining `max_duration` budget.
+    /// that outlived `request_timeout` or the remaining feed/turn budget.
     pub async fn turn_raw(
         &mut self,
         request: &pb::ParentRequest,
@@ -1181,9 +1309,15 @@ impl Checkout {
         if is_load {
             self.begin_load();
         }
+        // A raw `Feed` restarts the child's feed clock exactly as `feed` does,
+        // so the parent's must follow it rather than carry the last feed's
+        // total into this feed's backstop.
+        if matches!(request.kind, Some(pb::parent_request::Kind::Feed(_))) {
+            self.budget.begin_feed();
+        }
         self.turn_in_flight = true;
-        // as `expect_turn`: `request_timeout` alone would drop the `max_duration`
-        // backstop, leaving a wedged child bounded by a timeout that may be unset
+        // as `expect_turn`: `request_timeout` alone would drop the duration
+        // backstops, leaving a wedged child bounded by a timeout that may be unset
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
         self.armed_deadline = deadline;
         let outcome = match deadline {
@@ -1335,7 +1469,8 @@ impl Checkout {
                         future.await;
                     }
                 }
-                Some(pb::child_event::Kind::FunctionCall(call)) => {
+                Some(pb::child_event::Kind::FunctionCall(mut call)) => {
+                    let position = suspension_position(call.position.take());
                     self.pending = Some(Pending::Call {
                         call_id: call.call_id,
                         function_name: call.function_name.clone(),
@@ -1349,14 +1484,16 @@ impl Checkout {
                             object_id: call.object_id,
                             allow_eager_await: call.allow_eager_await,
                             args: call.into_call_args()?,
+                            position,
                         })
                     });
                 }
-                Some(pb::child_event::Kind::OsCall(call)) => {
+                Some(pb::child_event::Kind::OsCall(mut call)) => {
                     // Every announcement (fresh or re-announced after
                     // `restore`) decodes into a typed `OsFunctionCall`; a
                     // payload the child could never legitimately produce is a
                     // protocol violation.
+                    let position = suspension_position(call.position.take());
                     let mut allow_eager_await = call.allow_eager_await;
                     let (call_id, function_call) = match os_call_from_proto(call) {
                         Ok(call) => call,
@@ -1371,6 +1508,13 @@ impl Checkout {
                     // The child is untrusted: an eager bit on a call no future
                     // may answer is dropped rather than exposed.
                     allow_eager_await = allow_eager_await && OsFunctionCall::accepts_future(function_call.name());
+                    // Enforce the parent's ceiling even if the worker ignored its own.
+                    let system_sleep = match function_call {
+                        OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) => {
+                            Some(self.budget.cap_system_sleep(delay))
+                        }
+                        _ => None,
+                    };
                     let args = function_call.clone().to_args();
                     self.pending = Some(Pending::Call {
                         call_id,
@@ -1383,11 +1527,14 @@ impl Checkout {
                         args,
                         call_id,
                         allow_eager_await,
+                        system_sleep,
+                        position,
                     }));
                 }
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {
                     // Frames from the child are untrusted — a malformed uuid
                     // is a protocol violation, not a panic.
+                    let position = suspension_position(lookup.position);
                     let object_id = match lookup.object_id {
                         None => None,
                         Some(uuid) => match MontyUuid::try_from_slice(&uuid.data) {
@@ -1401,12 +1548,15 @@ impl Checkout {
                     return Ok(ControlEvent::Turn(TurnEvent::NameLookup {
                         name: lookup.name,
                         object_id,
+                        position,
                     }));
                 }
                 Some(pb::child_event::Kind::ResolveFutures(futures)) => {
+                    let position = suspension_position(futures.position);
                     self.pending = Some(Pending::Futures);
                     return Ok(ControlEvent::Turn(TurnEvent::ResolveFutures {
-                        pending_call_ids: futures.pending_call_ids,
+                        pending_call_ids: futures.pending_call_ids.into_inner(),
+                        position,
                     }));
                 }
                 Some(pb::child_event::Kind::Complete(complete)) => {
@@ -1438,7 +1588,9 @@ impl Checkout {
                     return Err(PoolError::Typing(typing.diagnostics));
                 }
                 Some(pb::child_event::Kind::Ok(_)) => return Ok(ControlEvent::Ok),
-                Some(pb::child_event::Kind::DumpResult(dump)) => return Ok(ControlEvent::Dump(dump.state)),
+                Some(pb::child_event::Kind::DumpResult(dump)) => {
+                    return Ok(ControlEvent::Dump(dump.state.into_inner()));
+                }
                 Some(pb::child_event::Kind::FatalError(fatal)) => {
                     return Err(self.fatal_error(&fatal.message).await);
                 }
@@ -1459,7 +1611,9 @@ impl Checkout {
                     // host-side dump signing lands it must pass the same
                     // verification there as any other dump.
                     self.discard_worker();
-                    return Err(PoolError::Shutdown { dump: shutdown.dump });
+                    return Err(PoolError::Shutdown {
+                        dump: shutdown.dump.map(Into::into),
+                    });
                 }
                 None => {
                     return Err(self.protocol_violation("unexpected event"));
@@ -1510,9 +1664,10 @@ impl Checkout {
 
     /// Builds this feed's mount table, or `None` for the common mount-less
     /// feed. Runs inline: the specs' directories were opened when the caller
-    /// built them, so nothing here touches the host filesystem.
-    fn build_feed_mounts(mounts: Vec<MountSpec>) -> Option<MountTable> {
-        (!mounts.is_empty()).then(|| build_mount_table(mounts))
+    /// built them, so nothing here touches the host filesystem. Fails
+    /// (session-preserving) when two specs' host directories overlap.
+    fn build_feed_mounts(mounts: Vec<MountSpec>) -> Result<Option<MountTable>, PoolError> {
+        (!mounts.is_empty()).then(|| build_mount_table(mounts)).transpose()
     }
 
     /// Runs blocking host mount work on tokio's blocking pool, so a stalled
@@ -1750,9 +1905,12 @@ fn checked_cwd(cwd: &str) -> Result<String, PoolError> {
 }
 
 /// Builds the parent-side [`MountTable`] for one feed from its (non-empty)
-/// specs. Infallible and free of filesystem I/O: each spec already carries its
-/// opened directory, so this only pairs those descriptors with a per-feed mode.
-fn build_mount_table(mounts: Vec<MountSpec>) -> MountTable {
+/// specs. Free of filesystem I/O: each spec already carries its opened
+/// directory, so this only pairs those descriptors with a per-feed mode. Specs
+/// that overlap (see [`MountTable::push_mount`]) are rejected here — as a
+/// session-preserving [`PoolError::Runtime`], since specs are built
+/// independently and only meet at feed time.
+fn build_mount_table(mounts: Vec<MountSpec>) -> Result<MountTable, PoolError> {
     let mut table = MountTable::new();
     for mount in mounts {
         let mode = match mount.mode {
@@ -1765,7 +1923,15 @@ fn build_mount_table(mounts: Vec<MountSpec>) -> MountTable {
         // No filesystem access: the root was opened when the spec was built.
         let mount = monty_fs::Mount::with_root(mount.root, mode, mount.write_bytes_limit)
             .with_memory_usage_limit(mount.memory_usage_limit);
-        table.push_mount(mount);
+        table
+            .push_mount(mount)
+            .map_err(|err| PoolError::Runtime(err.into_exception()))?;
     }
-    table
+    Ok(table)
+}
+
+/// Decodes a suspension event's position, wire or already decoded. A child that
+/// predates the field sends none, which reads as [`SourceRange::unknown`] rather than an error.
+fn suspension_position(position: Option<impl Into<SourceRange>>) -> SourceRange {
+    position.map_or_else(SourceRange::unknown, Into::into)
 }

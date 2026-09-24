@@ -45,7 +45,12 @@ extension traits (`ExcTypeExt`, `MontyObjectExt`, `MontyGraphExt`, `CallArgsExt`
 `object_bridge::GraphExporter` builds one `MontyGraph` per outgoing message, so a sub-object shared in the sandbox
 crosses once; `MontyGraphExt::to_values` converts an incoming graph back into interpreter values.
 `MontyObject` is one owned value, a graph plus its root node: hosts build inputs with it and read results through its
-`ObjectRef` accessors.
+`ObjectRef` accessors. These types, along with `CallArgs` and `NamedValues`, have private fields; carrier builders accept
+`MontyObject` values rather than exposing node IDs.
+Graph types (`MontyGraph`, `MontyNode`, `NodeId`, `ClassTypeNode`, `GraphError`), `PushValue`, raw node inspection and
+borrowed/owned storage access are exported only through `monty_types::unstable`.
+These representation APIs carry no API compatibility guarantee; prefer value constructors and accessors elsewhere.
+The unstable `object_from_graph`, `call_args_from_parts` and `named_values_from_parts` constructors check the roots.
 
 ## Cross-Platform Requirements
 
@@ -150,12 +155,25 @@ subprocesses:
     every child index is lower than its holder's, an index used twice is a shared object, and the message names its
     roots by index, so a shared sub-object crosses once and the wire imposes no nesting limit.
     prost `extern_path` maps the message onto `WireArena` (`src/wire.rs`), a hand-written `prost::Message` impl that
-    encodes borrowed `MontyNode`s and validates *while* decoding, with no mirror struct, deep clone or recursion on
-    the hot path. `tests/differential.rs` proves it
+    encodes borrowed `MontyNode`s without cloning. Decoding parses one generated protobuf node at a time, then
+    validates and converts it into the domain arena; temporary buffers and conversions share the frame budget.
+    `wire/references.rs` maps index, pair and named-tuple messages onto domain reference buffers so node conversion
+    can transfer them without allocating or copying.
+    `tests/differential.rs` proves it
     byte-compatible against a fully prost-generated oracle (`tests/oracle/`,
     regenerated and CI-checked together with the main codegen). Parents must
     treat frames from a (possibly compromised) child as untrusted — wire
     decoding and proto→Rust conversions validate everything and never panic.
+    Generated decoders use `budgeted_prost` via `prost_path`: generated vectors
+    and byte buffers use `BudgetVec`, whose decode growth is fallible and shares
+    a cumulative per-frame allocation budget with hand-written boxed payloads.
+    Decode through `decode_frame` or `FrameReader::read`, which scope the budget;
+    decoding these protocol types cannot allocate payload storage outside a frame.
+    Integration tests enable the internal `test-util` feature for smaller budgets
+    and accounting checks.
+    New allocation forms must extend the adapter and its tests; codegen rejects
+    unsupported maps, groups, generated boxes, `Bytes` fields and repeated enums
+    (prost's enum accessors require infallible `push`).
     `monty-proto` depends only on `monty-types` by default; its `worker` feature
     (enabled by `monty-runtime`/`monty-wasm-runtime`) pulls in the full `monty`
     interpreter for the child-side `worker` state machine.
@@ -197,6 +215,59 @@ is hard-capped at 256 variants and roughly half are already taken. Use slots spa
 prefer a flags/operand encoding on one opcode (e.g. `Assert`/`FormatValue`) over a family
 of near-identical opcodes, unless the instruction is hot enough that decoding the
 discriminating operand would cost measurable dispatch time.
+
+### Code owns its instruction and constant buffers
+
+Each `Code` (`crates/monty/src/bytecode/code.rs`) owns its bytecode, constants and metadata.
+A `CallFrame` borrows the `Code` and caches its bytecode slice so instruction fetches avoid an extra dereference.
+Its `usize` instruction pointer, source locations and exception handlers all use body-relative offsets.
+
+Committed functions have stable addresses and their code is immutable, so runtime compilation can publish new
+functions without invalidating active frames.
+Module code is held in an `Arc<Code>` so runner clones share it; frames borrow it from the running `Program`.
+`eval()` / `exec()` bodies are stored as functions in `Interns`.
+Snapshots store function IDs and offsets, rebuilding code borrows on restore.
+
+### Session dumps name their fields
+
+Dumps (`crates/monty/src/dump_format.rs`) are CBOR through serde: derived structs are maps keyed by field name and
+enums by variant name (a `#[serde(transparent)]` newtype or a hand-written impl chooses its own shape and must keep
+it). Adding a field (`#[serde(default)]`), removing one, or inserting a variant anywhere keeps older dumps
+loading, while tuple structs and tuple variants are positional and may only grow at the end; the names are the
+persistence contract, so renaming a serialized field or variant needs `#[serde(alias = "old")]`, and `#[serde(deny_unknown_fields)]` must never go on a dumped type.
+Persisted `Vec<u8>` / `[u8; N]` data takes `#[serde(with = "serde_bytes")]` so it is written as one byte string.
+Types written many times (`Value`, `HeapEntry`, `CcColor`, the hot `HeapData` variants, `List`, `Tuple`, `Dict`,
+`DictEntry`, `SetEntry`, `CodeRange`, `LocationEntry`, `CodeLoc`, `Instance`, `Closure`, `FunctionDefaults`,
+`SerializedFrame`) or once per function (`Function`, `Signature`, `Identifier`, `NameScope`, `Code`, `ExceptionEntry`)
+rename every field and variant to one upper-case letter, since key strings otherwise dominate the dump; a new field
+or variant on them takes an unused letter.
+`DUMP_VERSION` still bumps when the *meaning* of stored data changes: opcodes, `BuiltinsFunctions` order (its
+discriminants are bytecode operands), `CmpOperator` values, the compiler's constant layout, how a key hashes (dict and
+set entries persist their hash, which is why keys without a heap identity hash by name or a persisted id such as a
+`FunctionId`, never by discriminant), or a semantic change to a stored value. `crates/monty/tests/dump_compat.rs` loads a checked-in fixture written at the current version; a
+change that breaks it decides between an alias, a default, or a bump plus `UPDATE_DUMP_FIXTURE=1` to regenerate.
+
+### Compilation overlays and stable intern entries
+
+The VM holds `&Interns`, never `&mut Interns`.
+Committed strings, literals and functions have stable addresses in append-only storage.
+For REPL feeds and runtime compilation, `CompileInterns` owns pending entries and deduplicates strings against both tables.
+Fresh programs use `CompileInterns::direct(&mut Interns)` and discard the entire interner if compilation fails.
+Do not use direct mode for an existing session: only the overlay supports rejection without retaining products.
+New IDs start at the committed table lengths, so bytecode uses final IDs without relocation.
+An active overlay blocks runtime interning and other compilations from consuming those IDs.
+
+Compiled function bodies remain owned by the overlay until publication.
+Only an admitted snippet publishes its intern entries and code; dropping a rejected overlay frees its products.
+For `eval()` / `exec()`, reserve the frame's recursion level before publication, then construct its frame from the
+committed code.
+No fallible operation or Python execution may intervene between admission and installing the frame.
+Preparation's provisional global slots are restored on rejection.
+Never roll back a snippet after execution starts: its definitions may already be reachable from globals.
+
+Snippet source IDs occupy a separate range from canonical string IDs.
+They display as `<string>` without allowing duplicate entries in the string-deduplication maps.
+Resolve filenames with `Interns::get_filename`; ordinary `get_str` only accepts canonical string IDs.
 
 ### HeapReader API — Safe Heap Access
 
@@ -420,6 +491,7 @@ make lint-rs              Lint Rust code with clippy and import checks
 make clippy-fix           Fix Rust code with clippy
 make generate-proto       Regenerate monty-proto's checked-in code from the .proto schema
 make check-proto          Verify monty-proto's checked-in code matches the .proto schema
+make check-publish        Package and verify-build every publishable crate as `cargo publish` would, without uploading
 make generate-api-docs    Generate the Rust API reference into docs/api/rust/ (gitignored) from rustdoc JSON
 make docs-dev             Preview this checkout in a sibling pydantic/unified-docs checkout (../unified-docs)
 make lint-py              Lint Python code with ruff
@@ -727,6 +799,13 @@ You may mark python files with:
 
 - `# call-external` to support calling external functions
 - `# run-async` to support running async code
+- `# timezone=Europe/London` to run the case in an IANA zone rather than the UTC default:
+    it sets `OsPolicy::timezone` for Monty and `TZ` for CPython, so `astimezone()`,
+    a naive `timestamp()`, `%Z`/`%z` and the `time` zone constants can be compared.
+    The CPython side is skipped on Windows, which has no `time.tzset`.
+    Without the marker both sides run in UTC — except on Windows, where the harness
+    cannot move CPython, so a case asserting zone values needs `# skip-cpython-windows`
+    (see `datetime__zone_default.py`).
 
 NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!! INSTEAD FIX THE BEHAVIOR SO THAT THE TEST PASSES.
 
@@ -1023,6 +1102,12 @@ where they are. Change one and you must change all of them:
 - **Default resource limits** (1000 recursion frames, 1000 suspensions, 100 MB per-mount memory, 10 MiB
     print collectors, 1s duration grace) — `limitations/resource_limits.md`,
     `docs/resource-limits.md`, and the binding docstrings.
+- **`OsPolicy` defaults** (system clock, UTC zone, host-serviced sleeps capped at 10 s, a zero `process_time`,
+    OS entropy for `random`)
+    and `call_host` — `limitations/time.md`, `limitations/datetime.md`,
+    `limitations/random.md`, `docs/security.md` (the clock / entropy / waiting), `docs/cli.md` and
+    `crates/monty-runtime/README.md` (`--max-sleep`, `--max-total-sleep`), the `checkout()` docstrings in
+    `_monty.pyi` and `crates/monty-js/ts/pool.ts`.
 - **Mount modes and their defaults** — `limitations/filesystem.md`, `docs/filesystem.md`,
     the `MountDir` docstrings in `_monty.pyi` and `crates/monty-js/ts/mount.ts`.
 

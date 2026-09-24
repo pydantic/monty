@@ -88,7 +88,7 @@ use crate::{
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum FileName {
     Str(String),
-    Bytes(Vec<u8>),
+    Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
 }
 
 impl FileName {
@@ -253,7 +253,7 @@ struct BufferMeta {
 impl OpenFile {
     /// Creates a path-backed file wrapper from a parsed `open()` mode and the
     /// `position` carried across the host boundary by a
-    /// [`monty_types::MontyObject::FileHandle`].
+    /// [`monty_types::MontyNode::FileHandle`].
     ///
     /// Truncating modes (`w`/`w+`) have already had the file emptied by the
     /// host at `open()` time, so the wrapper starts with `first_write_done`
@@ -580,7 +580,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     /// Implements `file.write(data)` as a one-shot OS write or append.
     ///
     /// As with [`Self::read`], the first OS-call argument is the file object
-    /// itself, delivered to the host as a `MontyObject::FileHandle`.
+    /// itself, delivered to the host as a `MontyNode::FileHandle`.
     fn write(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         let data = args.get_one_arg("write", vm.heap)?;
         defer_drop!(data, vm);

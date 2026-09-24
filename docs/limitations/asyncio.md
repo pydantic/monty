@@ -16,8 +16,9 @@ The `asyncio` module exposes exactly three functions:
     where CPython raises
     `TypeError: gather() got an unexpected keyword argument 'X'` because
     `return_exceptions` is a real kwarg there.
-- `asyncio.sleep(delay, result=None)` — asks the host to wait, then produces
-    `result`. See [below](#asynciosleep-waits-at-the-call-not-at-the-await).
+- `asyncio.sleep(delay, result=None)` — waits as the session's `sleep` setting
+    says, then produces `result`. See
+    [below](#asynciosleep-waits-at-the-call-not-at-the-await).
 
 Not implemented (raise `AttributeError`):
 
@@ -51,30 +52,36 @@ time (see [language.md](language.md)).
 ## `asyncio.sleep()` waits at the call, not at the `await`
 
 CPython's `asyncio.sleep()` returns a coroutine that does nothing until it is
-awaited. Monty's suspends to the host at the call itself — the wait belongs to
-the host, which is also the only side that can run anything else meanwhile — and
-the `await` then produces `result` once the host has answered. What follows from that:
+awaited. Monty starts waiting at the call; `await` produces `result` when the wait finishes.
+The session's `sleep` setting determines concurrency (see [time.md](time.md)):
 
-- `asyncio.sleep(...)` whose result is never awaited has still asked the host to
+- `'system'`: all pools answer with futures, so gathered sleeps overlap and sibling tasks can run meanwhile.
+    Standard Rust execution and the CLI wait inline, making gathered sleeps sequential.
+    An immediately awaited sleep may be answered eagerly if no other task can run.
+- `'call_host'`: async handlers in `AsyncMonty` and JavaScript allow gathered sleeps to overlap.
+    `OSAccess` is async by default under `AsyncMonty`.
+    Sync handlers, including `Monty` callbacks, wait sequentially; results are unchanged.
+- `'zero'`: the awaitable settles immediately without yielding to sibling tasks, unlike CPython's `sleep(0)`.
+    Zero-delay system sleeps also settle without a round trip.
+    Under `'call_host'`, a handler returning a pending future allows sibling tasks to run even for zero delay.
+
+Suspending sleeps count against `max_suspensions`; system sleeps also count against `max_total_sleep`.
+Waiting consumes neither execution-time limit (see [time.md](time.md)).
+
+What follows from waiting at the call:
+
+- `asyncio.sleep(...)` whose result is never awaited has still started the
     wait, where CPython runs nothing and warns that the coroutine was never
     awaited.
 - A bad `delay` raises at the call rather than at the `await`. The error is the
     one CPython's `delay <= 0` produces —
     `TypeError: '<=' not supported between instances of 'str' and 'int'` — but it
     surfaces one step earlier.
-- The value is a host future rather than a coroutine, though `type(...).__name__`
+- The value is a future rather than a coroutine, though `type(...).__name__`
     is `coroutine` either way. Its `repr()` is `<coroutine external_future(N)>`,
     not CPython's `<coroutine object sleep at 0x...>`, and awaiting it a second
     time replays the same result where CPython raises
     `RuntimeError: cannot reuse already awaited coroutine`.
-
-How much concurrency a gathered sleep gets is the host's choice. A host that
-answers the call with a pending future lets sibling tasks run while the delay
-elapses: `AsyncMonty` and `@pydantic/monty` do this when the `os` callback is
-async (`OSAccess` is, by default, under `AsyncMonty`). A host that waits inline
-— the sync `Monty`, a sync callback, or the `monty` CLI — runs gathered sleeps
-one after another, so `gather(sleep(1), sleep(1))` takes two seconds rather
-than one. Either way the results are the same.
 
 `delay` accepts only real numbers, matching CPython's `delay <= 0`: an
 `__index__`-able class is rejected here although `time.sleep()` accepts it.

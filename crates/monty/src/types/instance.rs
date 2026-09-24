@@ -32,11 +32,14 @@ use crate::{
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Instance {
     /// The class this is an instance of (a `HeapData::Class`).
+    #[serde(rename = "C")]
     class: HeapId,
     /// Instance attributes (`__dict__`).
+    #[serde(rename = "A")]
     attrs: Dict,
     /// Boundary identity, generated lazily the first time the instance crosses
     /// to the host; dumped with the heap so it stays stable across restores.
+    #[serde(rename = "U")]
     uuid: Option<MontyUuid>,
 }
 
@@ -523,7 +526,7 @@ pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_
 /// Split out so the synthesized dataclass `__repr__`/`__eq__` read their fields
 /// exactly as `self.field` does, binding a function-valued class member as a
 /// [`BoundMethod`].
-pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &mut VM<'_>) -> Option<Value> {
+pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<Value> {
     if let HeapReadOutput::Instance(inst) = vm.heap.read(self_id)
         && let Some(value) = inst
             .get(vm.heap)

@@ -3,7 +3,10 @@
 
 use std::{collections::HashMap, vec::IntoIter};
 
-use monty_types::{ClassTypeNode, MontyDate, MontyException, MontyGraph, MontyNode, MontyObject, MontyUuid, NodeId};
+use monty_types::{
+    MontyDate, MontyException, MontyObject, MontyUuid,
+    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+};
 use num_bigint::BigInt;
 use pyo3::{
     exceptions::{PyBaseException, PyTypeError, PyValueError},
@@ -25,6 +28,7 @@ use super::{
         py_datetime_to_monty, py_time_to_monty, py_timedelta_to_monty, py_timezone_to_monty, py_type_object_to_monty,
     },
     exceptions::{exc_py_to_monty, exc_to_monty_node},
+    std_type_proxy::PyMontyStdTypeProxy,
 };
 
 /// Encodes one host value as its own arena; unsupported types raise `TypeError`.
@@ -134,14 +138,13 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
         self.graph
     }
 
-    /// The arena as one value rooted at `root`, an id [`push`](Self::push) returned.
+    /// Finishes one value rooted at an id [`push`](Self::push) returned.
+    ///
+    /// # Panics
+    /// If `root` is not an index in this arena.
     #[must_use]
     pub fn finish_object(self, root: NodeId) -> MontyObject {
-        // `push` returned `root`, so it is in range
-        MontyObject {
-            graph: self.graph,
-            root,
-        }
+        unstable::object_from_graph(self.graph, root).expect("encoded root is valid")
     }
 
     /// Resolves one pending child: a leaf is pushed at once, a container
@@ -245,6 +248,9 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
                 identity: Some(obj.clone()),
                 register: None,
             })
+        } else if let Ok(proxy) = obj.cast::<PyMontyStdTypeProxy>() {
+            // a proxy handed out by decode re-enters as the builtin it stands for
+            Ok(self.leaf(proxy.get().inner.to_node()))
         } else if obj.is_instance(get_pure_posix_path(py)?)? {
             // pathlib.PurePosixPath and thereby pathlib.PosixPath
             Ok(self.leaf(MontyNode::Path(obj.str()?.extract()?)))

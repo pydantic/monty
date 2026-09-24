@@ -11,6 +11,7 @@ from . import (
     ExternalResult,
     ExternalSettledResult,
     OsHandler,
+    OSPolicy,
     PrintCallback,
     ResourceLimits,
     SyncSnapshot,
@@ -28,9 +29,11 @@ __all__ = [
     'CollectStreams',
     'CollectString',
     'Frame',
+    'SourceRange',
     'Monty',
     'MontyClassProxy',
     'MontyClassTypeProxy',
+    'MontyStdTypeProxy',
     'MontyConversionError',
     'MontyCrashedError',
     'MontyDisconnectError',
@@ -93,6 +96,13 @@ class MountDir:
     The directory is opened here, and every feed this mount is passed to serves
     that same directory — so build one and reuse it. `'overlay'` writes live in
     each feed's own table and are discarded when the feed ends.
+
+    Mounts passed to one feed must have distinct virtual paths and cover
+    disjoint host directories: a mount whose host directory overlaps another's
+    (the same directory, or one inside the other), or that repeats a virtual
+    path, is rejected when the feed starts with a `MontyRuntimeError` wrapping
+    a `ValueError`, since the stricter mount's mode could otherwise be bypassed
+    through the other mount's paths.
 
     **Warning: `mode='read-write'` writes files from untrusted code to your
     real filesystem.**
@@ -303,6 +313,41 @@ class Frame:
         """dict of attributes."""
 
 @final
+class SourceRange:
+    """Where the expression that suspended execution is in the source.
+
+    Every snapshot exposes one as `position`: the call expression of a
+    `FunctionSnapshot`, the name (or attribute access) of a
+    `NameLookupSnapshot`, and the `await` the main task is blocked on
+    for a `FutureSnapshot`. `start` and `end` are UTF-8 byte offsets into
+    the source, `end` exclusive, so slice the encoded source:
+    `source.encode()[position.start:position.end].decode()`. A worker that
+    predates the field reports none: `filename` is then empty and both
+    offsets 0.
+    """
+
+    def __new__(cls, *, filename: str, start: int, end: int) -> SourceRange: ...
+    @property
+    def filename(self) -> str:
+        """The source the range indexes, named as in a traceback `Frame`:
+        `<python-input-N>` for the session's N-th feed (a suspension inside a
+        function defined by an earlier feed points into that feed), or
+        `<string>` inside an `eval()` / `exec()` string."""
+
+    @property
+    def start(self) -> int:
+        """UTF-8 byte offset where the expression starts."""
+
+    @property
+    def end(self) -> int:
+        """UTF-8 byte offset where the expression ends (exclusive)."""
+
+    def dict(self) -> dict[str, int | str]:
+        """dict of attributes."""
+
+    def __repr__(self) -> str: ...
+
+@final
 class MontyFileHandle:
     """Host-side handle to a file opened inside a Monty sandbox.
 
@@ -415,6 +460,26 @@ class MontyClassTypeProxy:
     def __eq__(self, value: object, /) -> bool: ...
 
 @final
+class MontyStdTypeProxy:
+    """Read-only proxy for a builtin function, or a type object outside the
+    data-type allowlist, returned from the sandbox: `open`, `type(print)`,
+    `functools.partial`. Only the name crosses, so the host never holds a live
+    callable built from sandbox output. Passed back in, it is the builtin again.
+    """
+
+    @property
+    def kind(self) -> Literal['function', 'type']:
+        """`'function'` for a builtin function, `'type'` for a type object."""
+
+    @property
+    def name(self) -> str:
+        """The name the sandbox renders the builtin as (`'open'`, `'functools.partial'`)."""
+
+    def __repr__(self) -> str: ...
+    def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
+
+@final
 class MontyCrashedError(MontyError):
     """Raised when the sandbox is gone and the session with it.
 
@@ -504,6 +569,8 @@ class Monty:
         checkout_timeout: float | None = None,
         request_timeout: float | None = None,
         max_checkouts_per_worker: int | None = None,
+        feed_duration_limit_grace: float | None = 1.0,
+        turn_duration_limit_grace: float | None = 1.0,
     ) -> Self:
         """
         Configure a worker pool; the workers are spawned by `with`.
@@ -523,6 +590,11 @@ class Monty:
                 with `timed_out=True`. Trusted synchronous span and log callbacks
                 delay enforcement while they run. Backstops sandbox `limits`.
             max_checkouts_per_worker: Recycle a worker after this many sessions.
+            feed_duration_limit_grace: Seconds the parent waits past a feed's
+                `max_feed_duration_secs` before killing the worker, giving the
+                sandbox time to raise `TimeoutError` itself rather than the
+                session dying with its worker. `None` disables this backstop.
+            turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
         """
 
     def __enter__(self) -> Self: ...
@@ -538,6 +610,7 @@ class Monty:
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
+        os_policy: OSPolicy | None = None,
     ) -> MontySession:
         """
         Prepare a REPL session served by a dedicated worker.
@@ -576,6 +649,9 @@ class Monty:
                 before a host call and before a run ends, so this only sets
                 how far live output may lag — never what arrives, or in what
                 order.
+            os_policy: Session clock, sleep and random initialization policies;
+                see `OSPolicy`. Defaults to the worker's clock in UTC and its
+                entropy, with sleeps handled by the pool and capped at ten seconds.
         """
 
 @final
@@ -830,6 +906,8 @@ class AsyncMonty:
         checkout_timeout: float | None = None,
         request_timeout: float | None = None,
         max_checkouts_per_worker: int | None = None,
+        feed_duration_limit_grace: float | None = 1.0,
+        turn_duration_limit_grace: float | None = 1.0,
     ) -> Self:
         """
         Configure a worker pool; the workers are spawned by `async with`.
@@ -850,6 +928,7 @@ class AsyncMonty:
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
+        os_policy: OSPolicy | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated worker.
@@ -894,6 +973,8 @@ class AsyncMontyWebsocket:
         checkout_timeout: float | None = None,
         request_timeout: float | None = 10.0,
         connect_headers: Callable[[], Mapping[str, str]] | None = None,
+        feed_duration_limit_grace: float | None = 1.0,
+        turn_duration_limit_grace: float | None = 1.0,
     ) -> Self:
         """
         Configure a remote worker pool; connections are made by `async with` and
@@ -928,6 +1009,11 @@ class AsyncMontyWebsocket:
                 `user-agent` and the `traceparent` the Logfire integration
                 adds, and a malformed name or value raises `RuntimeError` as
                 the session is entered.
+            feed_duration_limit_grace: Seconds the parent waits past a feed's
+                `max_feed_duration_secs` before killing the worker, giving the
+                sandbox time to raise `TimeoutError` itself rather than the
+                session dying with its worker. `None` disables this backstop.
+            turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
         """
 
     async def __aenter__(self) -> Self: ...
@@ -943,6 +1029,7 @@ class AsyncMontyWebsocket:
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
+        os_policy: OSPolicy | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated remote connection.
@@ -1167,6 +1254,9 @@ class FunctionSnapshot:
     @property
     def script_name(self) -> str: ...
     @property
+    def position(self) -> SourceRange:
+        """The call expression that suspended execution."""
+    @property
     def is_os_function(self) -> bool: ...
     @property
     def object_id(self) -> uuid.UUID | None:
@@ -1228,6 +1318,9 @@ class NameLookupSnapshot:
     @property
     def script_name(self) -> str: ...
     @property
+    def position(self) -> SourceRange:
+        """The name, or the attribute access, that suspended execution."""
+    @property
     def variable_name(self) -> str: ...
     @property
     def object_id(self) -> uuid.UUID | None:
@@ -1264,6 +1357,9 @@ class FutureSnapshot:
     @property
     def script_name(self) -> str: ...
     @property
+    def position(self) -> SourceRange:
+        """The `await` the main task is blocked on."""
+    @property
     def pending_call_ids(self) -> list[int]: ...
     def trace_context(self) -> Context:
         """As `FunctionSnapshot.trace_context`, for this future-resolution suspension."""
@@ -1292,6 +1388,9 @@ class AsyncFunctionSnapshot:
 
     @property
     def script_name(self) -> str: ...
+    @property
+    def position(self) -> SourceRange:
+        """As `FunctionSnapshot.position`: the call expression."""
     @property
     def is_os_function(self) -> bool: ...
     @property
@@ -1325,6 +1424,9 @@ class AsyncNameLookupSnapshot:
     @property
     def script_name(self) -> str: ...
     @property
+    def position(self) -> SourceRange:
+        """As `NameLookupSnapshot.position`: the name or attribute access."""
+    @property
     def variable_name(self) -> str: ...
     @property
     def object_id(self) -> uuid.UUID | None:
@@ -1346,6 +1448,9 @@ class AsyncFutureSnapshot:
 
     @property
     def script_name(self) -> str: ...
+    @property
+    def position(self) -> SourceRange:
+        """As `FutureSnapshot.position`: the main task's `await`."""
     @property
     def pending_call_ids(self) -> list[int]: ...
     def trace_context(self) -> Context:

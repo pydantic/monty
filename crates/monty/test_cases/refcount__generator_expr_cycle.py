@@ -9,6 +9,17 @@ cycle = make_cycle()
 next(cycle)
 cycle = None
 
+# A generator owns its exec globals even while its stack is on the VM.
+namespace = {}
+exec('generator = (value for value in [1, 2])', namespace)
+next(namespace['generator'])
+namespace = None
+
+namespace = {}
+exec('generator = (value for value in [1])', namespace)
+list(namespace['generator'])
+namespace = None
+
 # Trigger the periodic collector after the cycle loses its external root.
 for _ in range(1100):
     item = []

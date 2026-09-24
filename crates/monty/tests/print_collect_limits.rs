@@ -30,7 +30,7 @@ fn monty_run(code: impl Into<String>) -> MontyRun {
 
 #[test]
 fn collect_string_respects_max_bytes() {
-    let ex = monty_run(print_loop_code());
+    let mut ex = monty_run(print_loop_code());
     let mut output = String::new();
 
     let err = ex
@@ -60,7 +60,7 @@ fn collect_string_respects_max_bytes() {
 
 #[test]
 fn collect_streams_respects_max_bytes() {
-    let ex = monty_run(print_loop_code());
+    let mut ex = monty_run(print_loop_code());
     let mut streams = CollectedStreams::default();
 
     let err = ex
@@ -87,7 +87,7 @@ fn collect_streams_respects_max_bytes() {
 /// Opt-out: `max_bytes=None` still allows growth past a 64 KiB would-be cap.
 #[test]
 fn collect_string_unlimited_allows_growth_past_64kib() {
-    let ex = monty_run(print_loop_code());
+    let mut ex = monty_run(print_loop_code());
     let mut output = String::new();
 
     ex.run(
@@ -118,7 +118,7 @@ fn collect_streams_charges_both_streams_against_one_cap() {
     // an entry: 4 overheads plus 8 payload bytes. A cap one byte short of that
     // refuses the last newline.
     const CAP: usize = 4 * COLLECT_STREAMS_ENTRY_OVERHEAD + 7;
-    let ex = monty_run("import sys\nfor i in range(2):\n    print('a')\n    print('b', file=sys.stderr)\n");
+    let mut ex = monty_run("import sys\nfor i in range(2):\n    print('a')\n    print('b', file=sys.stderr)\n");
     let mut streams = CollectedStreams::default();
 
     let err = ex
@@ -147,7 +147,7 @@ fn collect_streams_charges_both_streams_against_one_cap() {
 /// (the `end=''` loop tests never push a terminator).
 #[test]
 fn collect_streams_helper_merges_newline_push() {
-    let ex = monty_run("print('hi')");
+    let mut ex = monty_run("print('hi')");
     let mut streams = CollectedStreams::default();
 
     ex.run(
@@ -164,7 +164,7 @@ fn collect_streams_helper_merges_newline_push() {
 /// of `CollectedStreams::push_char`.
 #[test]
 fn collect_streams_empty_print_pushes_newline_entry() {
-    let ex = monty_run("print()");
+    let mut ex = monty_run("print()");
     let mut streams = CollectedStreams::default();
 
     ex.run(
@@ -180,7 +180,7 @@ fn collect_streams_empty_print_pushes_newline_entry() {
 /// Cap of 1 byte: `print('a')` writes `'a'` then fails on the newline push.
 #[test]
 fn collect_string_max_bytes_rejects_newline_push() {
-    let ex = monty_run("print('a')");
+    let mut ex = monty_run("print('a')");
     let mut output = String::new();
 
     let err = ex
@@ -201,7 +201,7 @@ fn collect_string_max_bytes_rejects_newline_push() {
 #[test]
 fn collect_streams_max_bytes_rejects_newline_push() {
     const CAP: usize = COLLECT_STREAMS_ENTRY_OVERHEAD + 1;
-    let ex = monty_run("print('a')");
+    let mut ex = monty_run("print('a')");
     let mut streams = CollectedStreams::default();
 
     let err = ex
@@ -226,7 +226,7 @@ fn collect_streams_bounds_entries_not_just_payload() {
     const CAP: usize = 4 * 1024;
     /// Each fragment is one byte and starts its own entry.
     const PER_ENTRY: usize = COLLECT_STREAMS_ENTRY_OVERHEAD + 1;
-    let ex = monty_run(
+    let mut ex = monty_run(
         "import sys\nfor _ in range(200):\n    print('a', end='')\n    print('b', end='', file=sys.stderr)\n",
     );
     let mut streams = CollectedStreams::default();

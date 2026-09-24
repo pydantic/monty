@@ -28,6 +28,7 @@
 //! `print_callback` — always execute in the host process.
 
 use std::{
+    collections::HashSet,
     future::{Future, ready},
     num::NonZeroU32,
     path::PathBuf,
@@ -36,17 +37,18 @@ use std::{
         Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
+    thread,
     time::Duration,
 };
 
 use monty_pool::{
-    Checkout, CheckoutOptions, MountSpec, OnPrint, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue,
-    TurnEvent,
+    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, MountSpec, OnPrint, Pool, PoolConfig, PoolError,
+    PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value};
 use monty_types::{
-    AssertMessageAnnotations, CallArgs, ExtFunctionResult, MontyException, NameLookupResult, NamedValues, PrintStream,
-    TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, CallArgs, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, NamedValues,
+    OsPolicy, PrintStream, TypeCheckingConfig, TypeCheckingFormat,
 };
 use pyo3::{
     Borrowed,
@@ -59,10 +61,13 @@ use tokio::{
     runtime::{Handle, RuntimeFlavor},
     sync::Mutex as AsyncMutex,
     task::{JoinSet, block_in_place},
+    time::sleep as tokio_sleep,
 };
 
 use crate::{
-    async_dispatch::{CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, wait_for_futures},
+    async_dispatch::{
+        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_system_sleep, wait_for_futures,
+    },
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
@@ -72,6 +77,7 @@ use crate::{
     get_not_handled,
     limits::extract_limits,
     mount::PyMountDir,
+    os_policy::OsPolicyArg,
     print_target::PrintTarget,
     snapshot::{DriveContext, build_snapshot, feed_start_async, feed_start_sync},
     telemetry::{capture_otel_context, capture_telemetry_context, pool_metrics},
@@ -123,7 +129,10 @@ impl PyMonty {
         checkout_timeout = None,
         request_timeout = None,
         max_checkouts_per_worker = None,
+        feed_duration_limit_grace = 1.0,
+        turn_duration_limit_grace = 1.0,
     ))]
+    #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
         binary_path: Option<PathBuf>,
@@ -132,6 +141,8 @@ impl PyMonty {
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
         max_checkouts_per_worker: Option<u32>,
+        feed_duration_limit_grace: Option<f64>,
+        turn_duration_limit_grace: Option<f64>,
     ) -> PyResult<Self> {
         Ok(Self {
             config: parse_pool_config(
@@ -142,6 +153,10 @@ impl PyMonty {
                 checkout_timeout,
                 request_timeout,
                 max_checkouts_per_worker,
+                GraceArgs {
+                    feed: feed_duration_limit_grace,
+                    turn: turn_duration_limit_grace,
+                },
             )?,
             pool: Arc::new(Mutex::new(None)),
         })
@@ -177,6 +192,7 @@ impl PyMonty {
         type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
+        os_policy = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -190,6 +206,7 @@ impl PyMonty {
         type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
+        os_policy: Option<OsPolicyArg>,
     ) -> PyResult<PyMontySession> {
         Ok(PyMontySession {
             pool: Arc::clone(&self.pool),
@@ -205,6 +222,7 @@ impl PyMonty {
                 },
                 assert_message_annotations,
                 print_flush_interval,
+                os_policy.unwrap_or_default().0,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -499,7 +517,10 @@ impl PyAsyncMonty {
         checkout_timeout = None,
         request_timeout = None,
         max_checkouts_per_worker = None,
+        feed_duration_limit_grace = 1.0,
+        turn_duration_limit_grace = 1.0,
     ))]
+    #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
         binary_path: Option<PathBuf>,
@@ -508,6 +529,8 @@ impl PyAsyncMonty {
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
         max_checkouts_per_worker: Option<u32>,
+        feed_duration_limit_grace: Option<f64>,
+        turn_duration_limit_grace: Option<f64>,
     ) -> PyResult<Self> {
         Ok(Self {
             config: parse_pool_config(
@@ -518,6 +541,10 @@ impl PyAsyncMonty {
                 checkout_timeout,
                 request_timeout,
                 max_checkouts_per_worker,
+                GraceArgs {
+                    feed: feed_duration_limit_grace,
+                    turn: turn_duration_limit_grace,
+                },
             )?,
             pool: Arc::new(Mutex::new(None)),
         })
@@ -558,6 +585,7 @@ impl PyAsyncMonty {
         type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
+        os_policy = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -571,6 +599,7 @@ impl PyAsyncMonty {
         type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
+        os_policy: Option<OsPolicyArg>,
     ) -> PyResult<PyAsyncMontySession> {
         Ok(PyAsyncMontySession {
             pool: Arc::clone(&self.pool),
@@ -586,6 +615,7 @@ impl PyAsyncMonty {
                 },
                 assert_message_annotations,
                 print_flush_interval,
+                os_policy.unwrap_or_default().0,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -637,7 +667,10 @@ impl PyAsyncMontyWebsocket {
         checkout_timeout = None,
         request_timeout = 10.0,
         connect_headers = None,
+        feed_duration_limit_grace = 1.0,
+        turn_duration_limit_grace = 1.0,
     ))]
+    #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
         url: String,
@@ -645,10 +678,21 @@ impl PyAsyncMontyWebsocket {
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
         connect_headers: Option<Py<PyAny>>,
+        feed_duration_limit_grace: Option<f64>,
+        turn_duration_limit_grace: Option<f64>,
     ) -> PyResult<Self> {
         check_callable(py, connect_headers.as_ref())?;
         Ok(Self {
-            config: parse_websocket_config(url, max_processes, checkout_timeout, request_timeout)?,
+            config: parse_websocket_config(
+                url,
+                max_processes,
+                checkout_timeout,
+                request_timeout,
+                GraceArgs {
+                    feed: feed_duration_limit_grace,
+                    turn: turn_duration_limit_grace,
+                },
+            )?,
             pool: Arc::new(Mutex::new(None)),
             connect_headers,
         })
@@ -689,6 +733,7 @@ impl PyAsyncMontyWebsocket {
         type_check_color = false,
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
+        os_policy = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -702,6 +747,7 @@ impl PyAsyncMontyWebsocket {
         type_check_color: bool,
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
+        os_policy: Option<OsPolicyArg>,
     ) -> PyResult<PyAsyncMontySession> {
         Ok(PyAsyncMontySession {
             pool: Arc::clone(&self.pool),
@@ -717,6 +763,7 @@ impl PyAsyncMontyWebsocket {
                 },
                 assert_message_annotations,
                 print_flush_interval,
+                os_policy.unwrap_or_default().0,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -985,6 +1032,7 @@ impl PyAsyncMontySession {
 /// Builds the subprocess-transport `monty-pool` config from the (shared)
 /// `Monty`/`AsyncMonty` constructor arguments, resolving the binary via
 /// `pydantic_monty._binary` when not given explicitly.
+#[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
 fn parse_pool_config(
     py: Python<'_>,
     binary_path: Option<PathBuf>,
@@ -993,6 +1041,7 @@ fn parse_pool_config(
     checkout_timeout: Option<f64>,
     request_timeout: Option<f64>,
     max_checkouts_per_worker: Option<u32>,
+    graces: GraceArgs,
 ) -> PyResult<PoolConfig> {
     let binary_path = match binary_path {
         Some(path) => path,
@@ -1014,6 +1063,7 @@ fn parse_pool_config(
         .map(|secs| duration_from_secs("request_timeout", secs))
         .transpose()?;
     config.max_checkouts_per_worker = max_checkouts_per_worker;
+    graces.apply(&mut config)?;
     config.metrics = pool_metrics();
     Ok(config)
 }
@@ -1123,6 +1173,7 @@ fn parse_websocket_config(
     max_processes: Option<usize>,
     checkout_timeout: Option<f64>,
     request_timeout: Option<f64>,
+    graces: GraceArgs,
 ) -> PyResult<PoolConfig> {
     let mut config = PoolConfig::websocket(url);
     if let Some(max) = max_processes {
@@ -1134,8 +1185,47 @@ fn parse_websocket_config(
     config.request_timeout = request_timeout
         .map(|secs| duration_from_secs("request_timeout", secs))
         .transpose()?;
+    graces.apply(&mut config)?;
     config.metrics = pool_metrics();
     Ok(config)
+}
+
+// The pool constructors default their graces to a literal `1.0` second because
+// pyo3 renders a non-literal `signature` default as `...`, which stubtest then
+// flags. This pins that literal to `monty-pool`'s own default.
+const _: () = assert!(
+    DEFAULT_DURATION_LIMIT_GRACE.as_secs() == 1 && DEFAULT_DURATION_LIMIT_GRACE.subsec_nanos() == 0,
+    "the pool's default duration grace changed: update the `1.0` literals in the constructor signatures"
+);
+
+/// Both duration-backstop graces as a pool constructor takes them, in
+/// seconds. `None` means that limit is not backstopped at all, rather than
+/// "unspecified" — hence the constructors' real-number defaults.
+struct GraceArgs {
+    feed: Option<f64>,
+    turn: Option<f64>,
+}
+
+impl GraceArgs {
+    /// Writes both graces onto `config`, rejecting a value that is not a
+    /// valid duration.
+    fn apply(self, config: &mut PoolConfig) -> PyResult<()> {
+        for (secs, name, slot) in [
+            (
+                self.feed,
+                "feed_duration_limit_grace",
+                &mut config.feed_duration_limit_grace,
+            ),
+            (
+                self.turn,
+                "turn_duration_limit_grace",
+                &mut config.turn_duration_limit_grace,
+            ),
+        ] {
+            *slot = secs.map(|secs| duration_from_secs(name, secs)).transpose()?;
+        }
+        Ok(())
+    }
 }
 
 /// Builds the worker-side REPL session config from the (shared) `checkout`
@@ -1150,6 +1240,7 @@ pub(crate) fn parse_repl_config(
     type_check_config: TypeCheckingConfig,
     assert_message_annotations: AssertAnnotationsArg,
     print_flush_interval: Option<f64>,
+    os_policy: OsPolicy,
 ) -> PyResult<ReplConfig> {
     Ok(ReplConfig {
         script_name: script_name.to_owned(),
@@ -1161,6 +1252,7 @@ pub(crate) fn parse_repl_config(
         print_flush_interval: print_flush_interval
             .map(|secs| duration_from_secs("print_flush_interval", secs))
             .transpose()?,
+        os_policy,
     })
 }
 
@@ -1311,6 +1403,9 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
         instances,
     } = args;
     let lookup = ExternalLookup::new(py, external_lookup, &instances);
+    let mut sleeps: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
+    // Only system sleeps may create futures in the synchronous API.
+    let mut sleep_ids: HashSet<u32> = HashSet::new();
     let mut event = run_turn_sync(
         py,
         &checkout,
@@ -1339,6 +1434,54 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
         let callback_guard = callback_context.enter(py, &native)?;
         let resume_with = match event {
             TurnEvent::Complete(value) => return monty_to_py(py, &value, &instances),
+            // Immediate sleeps release the GIL; deferred async sleeps use tokio timers
+            // so gathered sleeps overlap. Neither invokes the `os=` callback.
+            TurnEvent::OsCall {
+                function_name,
+                call_id,
+                allow_eager_await,
+                system_sleep: Some(delay),
+                ..
+            } => match CoroutineMode::for_os_call(&function_name, allow_eager_await) {
+                CoroutineMode::Future => {
+                    sleep_ids.insert(call_id);
+                    sleeps.spawn_on(
+                        async move {
+                            tokio_sleep(delay).await;
+                            (call_id, ExtFunctionResult::Return(MontyObject::none()))
+                        },
+                        get_runtime().handle(),
+                    );
+                    TurnAnswer::Call(ResumeValue::Future)
+                }
+                CoroutineMode::Eager => {
+                    py.detach(|| thread::sleep(delay));
+                    TurnAnswer::Eager(call_id, ResumeValue::Return(MontyObject::none()))
+                }
+                CoroutineMode::AsValue => {
+                    py.detach(|| thread::sleep(delay));
+                    TurnAnswer::Call(ResumeValue::Return(MontyObject::none()))
+                }
+            },
+            // Unknown future IDs cannot be resolved by this loop.
+            TurnEvent::ResolveFutures { pending_call_ids, .. } if !sleeps.is_empty() => {
+                if let Some(id) = pending_call_ids.iter().find(|id| !sleep_ids.contains(id)) {
+                    discard_checkout_sync(py, &checkout);
+                    return Err(PyRuntimeError::new_err(format!(
+                        "internal error: pending future {id} is not one of the pool's own sleeps"
+                    )));
+                }
+                let results = py.detach(|| block_on_sync(wait_for_futures(&mut sleeps)))??;
+                TurnAnswer::Futures(
+                    results
+                        .into_iter()
+                        .map(|(id, r)| {
+                            sleep_ids.remove(&id);
+                            ext_to_resume(r).map(|r| (id, r))
+                        })
+                        .collect::<PyResult<_>>()?,
+                )
+            }
             // This feed's mounts get first refusal on every OS call; only what
             // they don't cover reaches the `os=` callback.
             TurnEvent::OsCall {
@@ -1386,7 +1529,8 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                     match resume_with {
                         TurnAnswer::Call(value) => c.resume(value, p).await,
                         TurnAnswer::Name(value) => c.resume_name_lookup(value, p).await,
-                        TurnAnswer::Eager(..) => unreachable!("eager awaits require AsyncMonty"),
+                        TurnAnswer::Eager(call_id, value) => c.resume_futures(vec![(call_id, value)], p).await,
+                        TurnAnswer::Futures(results) => c.resume_futures(results, p).await,
                     }
                 })
             }),
@@ -1421,8 +1565,11 @@ fn sync_turn_answer(
         TurnEvent::NameLookup {
             name,
             object_id: Some(object_id),
+            ..
         } => Ok(TurnAnswer::Name(resolve_object_attr(py, &name, &object_id, instances))),
-        TurnEvent::NameLookup { name, object_id: None } => Ok(TurnAnswer::Name(lookup.resolve_name(&name)?.into())),
+        TurnEvent::NameLookup {
+            name, object_id: None, ..
+        } => Ok(TurnAnswer::Name(lookup.resolve_name(&name)?.into())),
         TurnEvent::ResolveFutures { .. } => Err(PyRuntimeError::new_err("async external functions require AsyncMonty")),
         TurnEvent::Complete(_) | TurnEvent::OsCall { .. } => {
             unreachable!("Complete and OsCall are handled by the drive loop")
@@ -1565,12 +1712,23 @@ async fn drive_async_inner(
                 .await?;
                 continue;
             }
+            TurnEvent::OsCall {
+                function_name,
+                call_id,
+                allow_eager_await,
+                system_sleep: Some(delay),
+                ..
+            } => {
+                let mode = CoroutineMode::for_os_call(&function_name, allow_eager_await);
+                dispatched_answer(dispatch_system_sleep(delay, call_id, mode, &mut join_set), call_id).await?
+            }
             // Mounts get first refusal, as in `drive_sync`.
             TurnEvent::OsCall {
                 function_name,
                 args,
                 call_id,
                 allow_eager_await,
+                ..
             } => {
                 let mounted = run_turn_async(
                     &checkout,
@@ -1620,6 +1778,7 @@ async fn drive_async_inner(
                         TurnAnswer::Call(value) => c.resume(value, p).await,
                         TurnAnswer::Name(value) => c.resume_name_lookup(value, p).await,
                         TurnAnswer::Eager(call_id, value) => c.resume_futures(vec![(call_id, value)], p).await,
+                        TurnAnswer::Futures(results) => c.resume_futures(results, p).await,
                     }
                 })
             }),
@@ -1649,6 +1808,7 @@ async fn async_turn_answer(
             call_id,
             object_id,
             allow_eager_await,
+            ..
         } => {
             let dispatched = Python::attach(|py| {
                 let _guard = callback_context.enter(py, native)?;
@@ -1665,6 +1825,7 @@ async fn async_turn_answer(
         TurnEvent::NameLookup {
             name,
             object_id: Some(object_id),
+            ..
         } => {
             let value = Python::attach(|py| {
                 let _guard = callback_context.enter(py, native)?;
@@ -1672,7 +1833,9 @@ async fn async_turn_answer(
             })?;
             Ok(TurnAnswer::Name(value))
         }
-        TurnEvent::NameLookup { name, object_id: None } => {
+        TurnEvent::NameLookup {
+            name, object_id: None, ..
+        } => {
             let value = Python::attach(|py| {
                 let _guard = callback_context.enter(py, native)?;
                 ExternalLookup::new(py, external_lookup.map(|d| d.bind(py)), instances).resolve_name(&name)
@@ -1707,6 +1870,8 @@ enum TurnAnswer {
     Name(NameLookupResult),
     /// A settled coroutine answered at its function-call suspension.
     Eager(u32, ResumeValue),
+    /// Settled futures answering a `ResolveFutures` suspension.
+    Futures(Vec<(u32, ResumeValue)>),
 }
 
 /// What a turn helper may return, so one implementation serves both an
@@ -1937,7 +2102,7 @@ pub(crate) fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
 
 /// Converts a seconds argument to a `Duration`, naming the argument in the
 /// error so a rejected value says which one it was.
-fn duration_from_secs(name: &str, secs: f64) -> PyResult<Duration> {
+pub(crate) fn duration_from_secs(name: &str, secs: f64) -> PyResult<Duration> {
     Duration::try_from_secs_f64(secs).map_err(|err| PyValueError::new_err(format!("invalid {name}: {err}")))
 }
 

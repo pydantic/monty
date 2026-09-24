@@ -20,14 +20,14 @@ use monty_types::{CompileOptions, ExcType, MontyObject};
 /// Runs `from collections import <name>` and returns the raised exception.
 fn import_err(name: &str) -> monty_types::MontyException {
     let code = format!("from collections import {name}");
-    let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
     run.run_no_limits(vec![]).expect_err("expected ImportError")
 }
 
 /// The four members Monty implements import cleanly.
 #[test]
 fn implemented_names_import() {
-    let run = MontyRun::new(
+    let mut run = MontyRun::new(
         "from collections import deque, Counter, defaultdict, namedtuple".to_owned(),
         "test.py",
         vec![],
@@ -102,7 +102,7 @@ def build():
 build()
 gc.collect()
 ";
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
     let freed = run.run_no_limits(vec![]).expect("should run");
     let Some(freed) = freed.as_ref().as_int() else {
         panic!("gc.collect() should return an int, got {freed:?}");
@@ -135,7 +135,7 @@ def build():
 build()
 gc.collect()
 ";
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
     let freed = run.run_no_limits(vec![]).expect("should run");
     let Some(freed) = freed.as_ref().as_int() else {
         panic!("gc.collect() should return an int, got {freed:?}");
@@ -148,7 +148,7 @@ gc.collect()
 
 /// Runs `code` and returns its final value as a host object.
 fn host_value(code: &str) -> MontyObject {
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
     run.run_no_limits(vec![]).expect("should run")
 }
 

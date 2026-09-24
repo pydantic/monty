@@ -1,5 +1,5 @@
 //! [`BuiltinsFunctions`] — the name-level identity of every interpreter-native
-//! Python builtin, carried by [`MontyNode::BuiltinFunction`](crate::MontyNode::BuiltinFunction).
+//! Python builtin, carried by [`MontyObject::builtin_function`](crate::MontyObject::builtin_function).
 
 use strum::{Display, EnumString, FromRepr, IntoStaticStr, VariantNames};
 /// Enumerates every interpreter-native Python builtin function.
@@ -51,8 +51,6 @@ pub enum BuiltinsFunctions {
     // Dir,
     Divmod,
     Enumerate,
-    // Eval,
-    // Exec,
     Filter,
     // float - handled by Type enum
     // Format - appended below
@@ -71,7 +69,6 @@ pub enum BuiltinsFunctions {
     // Iter - handled by Type enum
     Len,
     // list - handled by Type enum
-    // Locals,
     Map,
     Max,
     // memoryview - handled by Type enum
@@ -115,4 +112,10 @@ pub enum BuiltinsFunctions {
     ObjectSetattr,
     /// `format(value, format_spec='')`, appended after [`Self::ObjectSetattr`].
     Format,
+    /// `eval(source, /, globals=None, locals=None)`, appended after [`Self::Format`].
+    Eval,
+    /// `exec(source, /, globals=None, locals=None, *, closure=None)`, appended after [`Self::Eval`].
+    Exec,
+    /// `locals()`, appended after [`Self::Exec`].
+    Locals,
 }

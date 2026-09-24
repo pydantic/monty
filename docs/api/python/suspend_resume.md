@@ -21,6 +21,7 @@ See [snapshots](../../snapshots.md) for the concepts.
             - AsyncFunctionSnapshot
             - AsyncNameLookupSnapshot
             - AsyncFutureSnapshot
+            - SourceRange
             - ExternalReturnValue
             - ExternalException
             - ExternalExceptionData

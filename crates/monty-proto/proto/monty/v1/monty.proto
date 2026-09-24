@@ -16,7 +16,11 @@
 // (`MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION` in `monty-proto`).
 // Prefer additive changes (fresh tag numbers, `reserved` removals) so a
 // separately-deployed parent has a migration window; a change an older peer
-// could mis-read needs a `PROTOCOL_VERSION` bump instead.
+// could mis-read needs a `PROTOCOL_VERSION` bump instead. A field the peer must
+// act on counts as mis-read even when the change is additive, in both
+// directions: an older child ignores a limit the parent set and the parent
+// never learns, and an older parent keeps sending a limit this build no longer
+// reads.
 
 syntax = "proto3";
 
@@ -65,7 +69,7 @@ message MontyNode {
     bytes bytes = 9;
     // A uuid.UUID value. Declared so the tag is settled, but NOT YET
     // IMPLEMENTED: monty has no uuid module, so neither end produces or
-    // accepts this arm (it decodes like any unknown kind — rejected).
+    // accepts this arm (conversion to a domain node rejects it).
     Uuid uuid = 10;
     Indexes list = 11;
     Indexes tuple = 12;
@@ -337,6 +341,16 @@ message CodeLoc {
   uint32 column = 2;
 }
 
+// Where the expression that suspended execution is in the source. `filename`
+// names the source as a traceback frame does: `<python-input-N>` for the
+// session's N-th feed, or `<string>` inside an `eval()` / `exec()` string.
+// `start` and `end` are UTF-8 byte offsets into that source, `end` exclusive.
+message SourceRange {
+  string filename = 1;
+  uint32 start = 2;
+  uint32 end = 3;
+}
+
 message StackFrame {
   string filename = 1;
   CodeLoc start = 2;
@@ -360,11 +374,107 @@ message StackFrame {
 // `max_suspensions`; the child only retains it for dumps and echoes it on
 // `ChildEvent`.
 message ResourceLimits {
-  optional uint64 max_duration_micros = 1;
+  // Tag 1 was `max_duration_micros`, a cumulative per-session execution
+  // budget, removed in protocol version 5.
+  reserved 1;
   optional uint64 max_memory_bytes = 2;
   optional uint64 gc_interval = 3;
   optional uint64 max_recursion_depth = 4;
   optional uint64 max_suspensions = 5;
+  // Per-feed and per-turn execution budgets on one clock: the feed budget
+  // resets at each feed, the turn budget at each feed and each resume.
+  optional uint64 max_feed_duration_micros = 6;
+  optional uint64 max_turn_duration_micros = 7;
+  // Cumulative budget for system sleeps, enforced by the parent.
+  optional uint64 max_total_sleep_micros = 8;
+}
+
+// Mirrors monty's `OsPolicy`: the clock, zone, sleep, process clock and
+// initial randomness a session gets, and which of those it asks the host for.
+// Each unset arm means that field's default.
+message OsPolicy {
+  // The instant `date.today()`, `datetime.now()` and `time.time()` read.
+  oneof datetime {
+    // The child's clock.
+    Unit system = 1;
+    // Suspend to the parent's OS handler.
+    Unit call_host = 2;
+    // One frozen instant, for reproducible runs.
+    FixedDateTime fixed = 3;
+  }
+  // The zone naive `datetime.now()` and `date.today()` read in, and that
+  // `astimezone()`, `%Z` and the `time` constants report. Absent = UTC.
+  SandboxTimeZone timezone = 4;
+  // What `time.sleep()` and `asyncio.sleep()` do.
+  // Absent (or with no arm set) = system sleep with the default maximum.
+  SleepMode sleep = 5;
+  // Where an unseeded `random` generator gets its first state.
+  oneof random_start {
+    // From the child's own OS entropy.
+    Unit random_system = 6;
+    // Suspend the first draw with an `os.urandom` call for 2496 bytes.
+    Unit random_call_host = 7;
+    // As `random.seed(seed)` would, for reproducible runs.
+    RandomSeed seed = 8;
+  }
+  // What `time.process_time()` and `time.thread_time()` report.
+  // Absent (or with no arm set) = zero.
+  oneof process_time {
+    // Always 0.0, so elapsed execution time is not observable in the sandbox.
+    Unit zero = 9;
+    // The session's accumulated execution time.
+    Unit elapsed = 10;
+  }
+}
+
+// Mirrors monty's `SandboxTimeZone`.
+message SandboxTimeZone {
+  oneof zone {
+    // UTC, the default.
+    Unit utc = 1;
+    // An IANA zone name (`Europe/London`), resolved from the child's tz database.
+    string named = 2;
+    // A fixed offset from UTC, with a name if it has one.
+    TimeZone fixed = 3;
+  }
+}
+
+// Mirrors monty's `SleepMode`.
+message SleepMode {
+  oneof mode {
+    // The parent waits without invoking its OS handler.
+    SystemSleep system = 1;
+    // Suspend to the parent, which performs the wait.
+    Unit call_host = 2;
+    // Return at once without waiting.
+    Unit zero = 3;
+  }
+}
+
+// A sleep capped by the child and performed by the parent.
+message SystemSleep {
+  // Longest wait one call performs; longer sleeps are cut short. Absent = 10s.
+  optional uint64 max_micros = 1;
+}
+
+// A frozen clock reading.
+message FixedDateTime {
+  // Seconds since the Unix epoch, UTC.
+  int64 unix_seconds = 1;
+  // 0..=999999; anything larger is rejected.
+  uint32 microsecond = 2;
+}
+
+// A `random.seed()` argument: the types CPython accepts.
+message RandomSeed {
+  oneof value {
+    // Arbitrary-size two's-complement little-endian bytes (`BigInt::to_signed_bytes_le`).
+    bytes int = 1;
+    // Must be finite.
+    double float = 2;
+    string str = 3;
+    bytes bytes = 4;
+  }
 }
 
 // ============================================================================
@@ -485,6 +595,9 @@ message Configure {
   // Output is always flushed before a turn-ending event whatever this says, so
   // the field trades streaming latency for event volume and nothing else.
   optional uint32 print_flush_interval_ms = 10;
+  // Absent = `OsPolicy::default()`: the child's clock in UTC and its entropy,
+  // with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
+  optional OsPolicy os_policy = 11;
 }
 
 // Rendering of the typing diagnostics a `TypingError` carries; mirrors ty's
@@ -628,19 +741,32 @@ message ChildEvent {
   // executing bytecode — never while suspended waiting on the parent or idle
   // between feeds — and survives Dump/Load. Set on every turn-ending event
   // while a session exists (zero on Print events and outside a session) so
-  // the parent can mirror the `max_duration` budget, e.g. to arm a watchdog
-  // backstop, without keeping a second clock.
+  // the parent can report how much sandbox time a session has used without
+  // keeping a second clock. Bounds nothing: the budgets are per-feed and
+  // per-turn.
   uint64 total_execution_micros = 20;
 
-  // The session's `max_duration` limit in microseconds, when one is
-  // configured. Reported alongside `total_execution_micros` so a parent that
-  // restored a session via `Load` (where the limits travel inside the opaque
-  // state bytes) still learns the budget.
-  optional uint64 max_duration_micros = 21;
+  // Tag 21 was `max_duration_micros`, the removed per-session budget.
+  reserved 21;
 
   // Echoes the parent-enforced budget so a host restoring an opaque dump can
   // recover it.
   optional uint64 max_suspensions = 22;
+
+  // Execution time consumed by the feed in progress, in microseconds — the
+  // `total_execution_micros` clock restarted at the feed that is running.
+  // Lets the parent backstop `max_feed_duration_micros` without tracking feed
+  // boundaries against a clock it cannot see. Zero outside a session.
+  uint64 feed_execution_micros = 24;
+
+  // The session's `max_feed_duration` and `max_turn_duration` limits in
+  // microseconds, when configured. Reported so a parent that restored a
+  // session via `Load` (where the limits travel inside the opaque state
+  // bytes) still learns its budgets.
+  optional uint64 max_feed_duration_micros = 25;
+  optional uint64 max_turn_duration_micros = 26;
+  // Parent-enforced sleep budget, also reported on `Load`.
+  optional uint64 max_total_sleep_micros = 27;
 
   // The session's script name, surfaced on a `Load` reply so a parent that
   // restored a session (whose script name, like the limits above, travels
@@ -692,6 +818,9 @@ message FunctionCall {
   // The arena `args` and `kwargs` index: one per call, so an object passed
   // twice crosses once.
   Arena values = 7;
+  // Where the call expression is in the source. Absent from a child that
+  // predates the field; the parent then reports an empty range at offset 0.
+  SourceRange position = 8;
 }
 
 // Suspension: the sandbox performed an OS operation, surfaced for the parent
@@ -743,9 +872,13 @@ message OsCall {
     DateTimeNow date_time_now = 24;
     // os.urandom(size), also how `random` seeds an unseeded generator.
     Urandom urandom = 25;
-    Unit time = 26; // time.time()
-    Sleep sleep = 27; // time.sleep(seconds)
-    AsyncSleep async_sleep = 28; // asyncio.sleep(delay)
+    TimeCall time = 26; // time.time() and the other time-module clock reads
+    Sleep sleep = 27; // time.sleep(seconds) under `call_host`: the handler waits
+    AsyncSleep async_sleep = 28; // asyncio.sleep(delay) under `call_host`
+    // System sleeps: capped by the child, charged to `max_total_sleep` and
+    // waited out by the parent without invoking its OS handler.
+    Sleep system_sleep = 29;
+    AsyncSleep async_system_sleep = 30;
   }
 
   // The arena any value-typed argument (`Getenv.default`) indexes.
@@ -754,6 +887,8 @@ message OsCall {
   // `ResumeFutures` for `call_id`. Only ever set on `async_sleep`, the one
   // call a future may answer at all.
   bool allow_eager_await = 51;
+  // Where the call expression is in the source; absent as on `FunctionCall`.
+  SourceRange position = 52;
 
   message TextWrite {
     string path = 1;
@@ -782,6 +917,12 @@ message OsCall {
   message Getenv {
     string key = 1;
     uint32 default = 2;
+  }
+  // A `time`-module clock read. `caller` names the Python function that asked
+  // (`time.time`, `time.monotonic`, ...), so a parent may answer them
+  // differently; they all share the `time.time` call name.
+  message TimeCall {
+    string caller = 1;
   }
   // datetime.now(tz) — the VM validates the argument to None-or-timezone
   // before suspending, so the wire carries a typed TimeZone rather than an
@@ -825,12 +966,18 @@ message NameLookup {
   // Set for attribute lookups on a host-backed object — a class instance, or
   // a class type (a lazy class attribute): the uuid of the receiver.
   Uuid object_id = 2;
+  // Where the name (or attribute access) is in the source; absent as on
+  // `FunctionCall`.
+  SourceRange position = 3;
 }
 
 // Suspension: every sandbox task is blocked on external futures previously
 // registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
 message ResolveFutures {
   repeated uint32 pending_call_ids = 1;
+  // Where the main task's blocked `await` is in the source; absent as on
+  // `FunctionCall`.
+  SourceRange position = 2;
 }
 
 // Turn end: the snippet completed with this value. The session is ready for

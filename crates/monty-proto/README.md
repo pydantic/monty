@@ -13,7 +13,7 @@ Python and JavaScript packages — drives `monty subprocess` children over
 framed stdio (or a WebSocket), and a dead child is simply replaced. This crate
 defines the protocol both sides speak.
 
-The protocol is protobuf (rather than Monty's internal postcard format) so a
+The protocol is protobuf (rather than Monty's internal CBOR dump format) so a
 parent or child can be implemented in any language — see
 [`proto/monty/v1/monty.proto`](https://github.com/pydantic/monty/blob/main/crates/monty-proto/proto/monty/v1/monty.proto)
 for the schema and the protocol rules documented alongside it.
@@ -47,14 +47,20 @@ for the schema and the protocol rules documented alongside it.
   `extension-module` feature — how libpython is linked stays the top crate's
   decision), so pure-Rust consumers pay nothing for it.
 
+Repeated fields and byte buffers in protocol messages use `BudgetVec<T>`.
+Construct them from standard vectors with `.into()` or collect an iterator directly; use `.into_inner()` to recover a standard vector without copying.
+Host construction and cloning are unbudgeted; fallible `try_push` charges any growth to the active decode budget.
+
 ## Values are special-cased for performance
 
 Values cross as one flat `monty.v1.Arena` per message: a post-order node arena in which containers hold child indexes.
 A sub-object shared inside the sandbox, or between two arguments of one call, is sent once, and the carrying message
 names its roots by index.
 prost `extern_path` maps the message onto `WireArena`, a hand-written `prost::Message` implementation that encodes
-borrowed `MontyNode`s and validates *while* decoding: no mirror struct, no deep clone and no recursion, with the
-decode budget charged as each vector grows.
+borrowed `monty_types::unstable::MontyNode`s without cloning and decodes one generated protobuf node at a time.
+Each node is validated and converted before being retained in the domain arena; temporary payloads and conversion allocations share the frame budget.
+Strings, bytes and reference buffers transfer without copying; reference containers use `WireIndexes`, `WireNodePairs` and `WireNamedTuple` rather than temporary vectors of protobuf ids.
+Duplicate fields follow protobuf merging rules, and value depth does not increase decoding recursion.
 `tests/differential.rs` proves it byte-compatible against a fully prost-generated oracle (`tests/oracle/`, regenerated
 and CI-checked together with the main codegen).
 
@@ -65,14 +71,28 @@ untrusted input: conversions from proto to Rust are fallible by design,
 decoding enforces a per-frame decode budget and validates every arena index,
 and nothing in this crate panics on malformed wire data.
 
-Frames are capped at 256 MiB, with a separate fixed 1 GiB budget for resident decoded values.
-Compact nodes can expand considerably on decode, so the wire cap alone cannot bound allocation.
-The decoder charges arena capacity, child indexes and payloads as it builds them; shared nodes are charged once.
-The frame buffer and transient decoding allocations are additional memory, and each concurrent worker has its own budget.
-See `DEFAULT_MAX_DECODE_BYTES` in `src/frame.rs` for the accounting details.
-The browser component applies the same budget and semantic checks to WIT arenas.
+Decode protocol types through `decode_frame` or `FrameReader::read`.
+These functions manage the per-frame allocation budget automatically.
+Direct `Message::decode` calls on these types fail if they allocate payload storage without a frame budget.
 
-Invalid dates, timedeltas, exception names and other semantic values are rejected during decoding.
+Frames are capped at 256 MiB, with a separate fixed 1 GiB budget for cumulative decoded allocation requests.
+This budget is independent of the session's `max_memory`.
+Compact messages can require much more memory when decoded.
+The budget covers arena slots, repeated-field capacity, strings, byte buffers, boxed payloads and BigInt storage.
+Temporary protobuf buffers and conversions into domain nodes share this budget.
+Child references include an allowance for host container storage; shared sub-objects are encoded once.
+Growth charges the full replacement allocation, with no refunds for discarded payloads.
+A frame can therefore exceed the budget even if its final decoded value occupies less than 1 GiB.
+The receiver checks the budget before allocating payload storage.
+
+The wire buffer, bounded stack and error storage, allocator metadata and subsequent host conversions are not counted.
+Each concurrent decode has its own budget; this is not a process-memory limit.
+See `DEFAULT_MAX_DECODE_BYTES` in `src/frame.rs` for the accounting contract.
+The browser component uses separate decoded-value estimates for WIT arenas, with the same 1 GiB ceiling.
+Those checks do not account for all allocations made by the component ABI or JavaScript conversion.
+
+Invalid dates, timedeltas, exception names and other semantic values are rejected after parsing each protobuf node.
+The browser component validates semantic values while converting WIT arenas.
 A parent receiving an invalid frame discards the worker with a protocol error.
 A worker receiving such a malformed request reports `RuntimeError("protocol violation: malformed request: ...")`
 and keeps the session.

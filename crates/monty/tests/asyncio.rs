@@ -1423,7 +1423,7 @@ for _ in range(5000):
     result = result[0]
 result
 ";
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let result = runner.run_no_limits(vec![]).expect("a deep gather nest should resolve");
     assert_eq!(result, MontyObject::int(1));
@@ -1448,7 +1448,7 @@ for _ in range(5000):
     result = result[0]
 result
 ";
-        let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
         let result = runner
             .run_no_limits(vec![])
@@ -1483,7 +1483,7 @@ except RuntimeError as exc:
     caught = str(exc)
 caught
 ";
-        let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
         let result = runner.run_no_limits(vec![]).expect("the reuse error should be caught");
         assert_eq!(
@@ -1576,7 +1576,7 @@ except ValueError:
 caught
 ";
 
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let result = runner.run_no_limits(vec![]).expect("should complete");
     assert_eq!(result, MontyObject::bool(true));

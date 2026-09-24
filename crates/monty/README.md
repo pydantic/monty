@@ -4,7 +4,7 @@
 [![crates.io](https://img.shields.io/crates/v/monty.svg)](https://crates.io/crates/monty)
 [![license](https://img.shields.io/github/license/pydantic/monty.svg?v=2)](https://github.com/pydantic/monty/blob/main/LICENSE)
 
-The core interpreter crate of [Monty](https://github.com/pydantic/monty) — a sandboxed Python interpreter written in Rust for code written by AI.
+The core interpreter crate of [Monty](https://github.com/pydantic/monty) — a secure Python sandbox written in Rust for code written by AI.
 
 Monty runs Python code written by an LLM without the cost, latency and complexity of a container based sandbox. It parses Python with [Ruff](https://github.com/astral-sh/ruff)'s parser and executes it on its own bytecode VM — no CPython, no FFI, no C dependencies. Startup takes microseconds, not hundreds of milliseconds.
 
@@ -37,10 +37,12 @@ def fib(n):
 fib(x)
 "#;
 
-let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
+let mut runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
 let result = runner.run(vec![MontyObject::int(10)], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::int(55));
 ```
+
+`CompileOptions` also carries `source_scan_threshold`, the source length in bytes above which a pre-parse nesting scan runs (4 KiB by default); the docs' language limitations page describes the scan.
 
 Errors are returned as `MontyException`, with a traceback matching what CPython would produce. `PrintWriter` controls where `print()` output goes: `Stdout`, `Disabled`, or collected for the host to inspect — into a `String`, or into a `CollectedStreams` buffer whose `entries()` label each run `stdout` or `stderr`.
 
@@ -56,13 +58,13 @@ use monty::MontyRun;
 use monty_types::{CompileOptions, ResourceTracker, PrintWriter, ResourceLimits};
 
 let limits = ResourceLimits {
-    max_duration: Some(Duration::from_millis(20)),
+    max_feed_duration: Some(Duration::from_millis(20)),
     ..ResourceLimits::default()
 };
 
-let runner = MontyRun::new("while True: pass".to_owned(), "spin.py", vec![], CompileOptions::default()).unwrap();
+let mut runner = MontyRun::new("while True: pass".to_owned(), "spin.py", vec![], CompileOptions::default()).unwrap();
 let err = runner.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout).unwrap_err();
-assert!(err.to_string().contains("time limit exceeded"));
+assert!(err.to_string().contains("feed time limit exceeded"));
 ```
 
 ## External functions and snapshotting
@@ -123,8 +125,22 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
 - `MontyRepl` — a REPL-style interface: feed code snippet by snippet with state persisting between snippets.
 - `monty-fs` crate — mount real host directories into the sandbox at virtual paths (read-write, read-only, or copy-on-write in-memory overlay), with path resolution hardened against escapes.
 - `RunProgress::OsCall` — filesystem and other `os`-level operations the host can intercept or delegate.
-- `FunctionCall::object_id` and `NameLookup::object_id` — `Some(uuid)` when the suspension is a method call or lazy attribute lookup on a host object sent as a `MontyNode::ClassInstance` or `MontyNode::ClassType` node; the receiver is not in `args`.
-- `MontyRun::with_host_clock` / `MontyRepl::with_host_clock` — choose what `date.today()`, `datetime.now()` and `time.time()` read on the non-suspending paths, which have no host to ask. `HostClock::System` (this machine's clock) unless changed; `Denied` takes it away, `Fixed` freezes an instant for reproducible runs.
+- `FunctionCall::object_id` and `NameLookup::object_id` identify the host receiver for routed calls and lookups,
+  including class construction via `__call__`.
+  Plain calls and lookups carry `None`.
+- Every suspension carries a `SourceRange` (`FunctionCall::position`, `OsCall::position`, `NameLookup::position`,
+  `ResolveFutures::position()`) locating the suspending expression: the call, the name, or the `await` the main task is
+  blocked on.
+- `MontyRun::with_os_policy` / `MontyRepl::with_os_policy` configure clocks, sleeps and initial random state on every
+  execution path.
+  `DateTimeSource` selects the system clock, a fixed instant or the host; `SandboxTimeZone` independently selects UTC, a
+  fixed offset and name, or an IANA zone (`SandboxTimeZone::named`, resolved from the tz database that `monty-types`'
+  `tzdb` or `tzdb-bundled` feature provides).
+  `SleepMode` selects capped system sleeps, a host handler or no wait; `RandomStart` selects OS entropy, a seed with
+  `random.seed()` semantics or host entropy.
+  Defaults use the system clock, UTC and OS entropy, with sleeps capped at ten seconds.
+  System sleeps suspend for the host to wait without its `os` handler; standard execution waits inline.
+  `CallHost` delegates to the host through `RunProgress::OsCall`.
 
 ## Monty crates
 

@@ -11,7 +11,7 @@ use std::{mem, task::Poll};
 use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
-use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM};
+use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM, frame_code, function_namespace, stack_index};
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
@@ -34,8 +34,8 @@ use crate::{
 impl<'h> VM<'h> {
     /// Allows eager host resolution only for an immediate await with no competing work.
     pub(crate) fn allow_eager_await(&self) -> bool {
-        let frame = self.current_frame();
-        frame.bytecode.get(frame.ip) == Some(&(Opcode::Await as u8)) && self.scheduler.can_await_eagerly()
+        let next = self.current_frame.bytecode.get(self.current_frame.ip);
+        next == Some(&(Opcode::Await as u8)) && self.scheduler.can_await_eagerly()
     }
 
     /// Executes the Await opcode.
@@ -90,6 +90,7 @@ impl<'h> VM<'h> {
 
         // Extract coroutine data before mutating
         let func_id = coro.get(self.heap).func_id;
+        let globals = coro.get(self.heap).globals;
         let namespace_values: Vec<Value> = coro
             .get(self.heap)
             .namespace
@@ -101,7 +102,7 @@ impl<'h> VM<'h> {
         coro.get_mut(self.heap).state = CoroutineState::Running;
 
         // Create namespace and push frame (guard drops awaitable at scope exit)
-        self.start_coroutine_frame(func_id, namespace_values)?;
+        self.start_coroutine_frame(func_id, namespace_values, globals)?;
 
         Ok(AwaitResult::FramePushed)
     }
@@ -388,9 +389,14 @@ impl<'h> VM<'h> {
     ///
     /// Extends the VM stack with the coroutine's pre-bound namespace values
     /// and pushes a new frame to execute the coroutine's function body.
-    fn start_coroutine_frame(&mut self, func_id: FunctionId, namespace_values: Vec<Value>) -> Result<(), RunError> {
+    fn start_coroutine_frame(
+        &mut self,
+        func_id: FunctionId,
+        namespace_values: Vec<Value>,
+        globals: Option<HeapId>,
+    ) -> Result<(), RunError> {
         let call_offset = self.current_offset();
-        let func = self.interns.get_function(func_id);
+        let code = &self.interns.get_function(func_id).code;
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
 
         // Extend the stack with the coroutine's pre-bound locals.
@@ -399,13 +405,15 @@ impl<'h> VM<'h> {
 
         // Push frame to execute the coroutine
         let exc_stack_base = self.exception_stack.len();
+        let namespace = function_namespace(globals, &*self.heap);
         self.push_frame(CallFrame::new_function(
-            &func.code,
+            code,
             stack_base,
             locals_count,
             exc_stack_base,
             func_id,
             call_offset,
+            namespace,
         ))?;
 
         Ok(())
@@ -520,15 +528,17 @@ impl<'h> VM<'h> {
                 SerializedTaskFrame {
                     function_id: f.function_id,
                     ip: f.ip,
-                    stack_base: f.stack_base,
+                    stack_base: f.stack_base(),
                     locals_count: f.locals_count,
-                    exception_stack_base: f.exception_stack_base,
+                    exception_stack_base: f.exception_stack_base(),
                     call_offset: f.call_offset,
                     is_initializer: f.is_initializer,
+                    namespace: f.namespace,
                 }
             })
             .collect();
-        let current = &self.current_frame;
+        // The namespace moves across so the frame left behind releases nothing.
+        let current = &mut self.current_frame;
         assert!(
             current.generator_id.is_none(),
             "cannot save an actively executing generator frame as an async task"
@@ -536,11 +546,12 @@ impl<'h> VM<'h> {
         frames.push(SerializedTaskFrame {
             function_id: current.function_id,
             ip: current.ip,
-            stack_base: current.stack_base,
+            stack_base: current.stack_base(),
             locals_count: current.locals_count,
-            exception_stack_base: current.exception_stack_base,
+            exception_stack_base: current.exception_stack_base(),
             call_offset: current.call_offset,
             is_initializer: current.is_initializer,
+            namespace: mem::take(&mut current.namespace),
         });
 
         // Count this task's recursion depth contribution and subtract it from
@@ -594,25 +605,20 @@ impl<'h> VM<'h> {
             let mut frames: Vec<_> = frames
                 .into_iter()
                 .map(|sf| {
-                    let code = match sf.function_id {
-                        Some(func_id) => &self.interns.get_function(func_id).code,
-                        None => {
-                            // This happens for the main task's module-level code
-                            self.module_code.expect("module_code not set for main task frame")
-                        }
-                    };
+                    let code = frame_code(self.interns, self.module_code, sf.function_id);
                     CallFrame {
                         code,
                         bytecode: code.bytecode(),
                         ip: sf.ip,
-                        stack_base: sf.stack_base,
+                        stack_base: stack_index(sf.stack_base),
                         locals_count: sf.locals_count,
-                        exception_stack_base: sf.exception_stack_base,
+                        exception_stack_base: stack_index(sf.exception_stack_base),
                         function_id: sf.function_id,
                         call_offset: sf.call_offset,
                         generator_id: None,
                         should_return: false,
                         is_parked: false,
+                        namespace: sf.namespace,
                         is_initializer: sf.is_initializer,
                     }
                 })
@@ -659,6 +665,7 @@ impl<'h> VM<'h> {
 
         // Extract coroutine data
         let func_id = coro.get(self.heap).func_id;
+        let globals = coro.get(self.heap).globals;
         let namespace_values: Vec<Value> = coro
             .get(self.heap)
             .namespace
@@ -672,20 +679,22 @@ impl<'h> VM<'h> {
         // Push locals onto stack and push frame directly (can't use start_coroutine_frame
         // because that needs a current frame for call_offset, but spawned tasks
         // don't have a parent frame — the coroutine is the root)
-        let func = self.interns.get_function(func_id);
+        let code = &self.interns.get_function(func_id).code;
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
 
         let stack_base = self.stack.len();
         self.stack.extend(namespace_values);
 
         let exc_stack_base = self.exception_stack.len();
+        let namespace = function_namespace(globals, &*self.heap);
         self.current_frame = CallFrame::new_function(
-            &func.code,
+            code,
             stack_base,
             locals_count,
             exc_stack_base,
             func_id,
             None, // No call position — this is the root frame for a spawned task
+            namespace,
         );
         self.suspended_frames.clear();
 
@@ -888,11 +897,6 @@ impl<'h> VM<'h> {
         Value::Ref(self.heap.allocate(HeapData::ExternalFuture(Box::new(future))))
     }
 
-    /// Gets the pending call IDs from the scheduler.
-    pub fn get_pending_call_ids(&self) -> Vec<CallId> {
-        self.scheduler.pending_call_ids()
-    }
-
     /// Raises `exc` uncatchably at the suspension point, for hosts enforcing
     /// a limit while execution is suspended.
     ///
@@ -904,10 +908,7 @@ impl<'h> VM<'h> {
     /// suspension the user sees.
     pub fn abort(&mut self, exc: MontyException) -> RunResult<FrameExit> {
         let main = TaskId::default();
-        if self.current_frame.is_parked
-            && self.scheduler.has_task(main)
-            && !self.scheduler.get_task_mut(main).frames.is_empty()
-        {
+        if self.current_frame.is_parked && self.scheduler.main_task().is_some_and(|task| !task.frames.is_empty()) {
             self.scheduler.set_current_task(Some(main));
             self.load_or_init_task(main)?;
         }
@@ -952,7 +953,7 @@ impl<'h> VM<'h> {
             return self.run_external();
         }
 
-        let pending_call_ids = self.get_pending_call_ids();
+        let pending_call_ids = self.scheduler.pending_call_ids();
 
         if pending_call_ids.is_empty() {
             // A stalled turn loses one `feed_run`, aborting loses the session.

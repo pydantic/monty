@@ -148,7 +148,7 @@ fn run_on_worker_stack(code: &str) -> Result<(), MontyException> {
     thread::Builder::new()
         .stack_size(WORKER_STACK)
         .spawn(move || {
-            let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("code compiles");
+            let mut runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("code compiles");
             runner
                 .run(vec![], ResourceTracker::default(), PrintWriter::Stdout)
                 .map(|_| ())

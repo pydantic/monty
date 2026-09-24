@@ -66,7 +66,7 @@ pub(crate) use partial::Partial;
 pub(crate) use path::Path;
 pub(crate) use property::Property;
 pub(crate) use py_trait::{CmpOrder, LazyHeapSet, PyTrait, attribute_name_value};
-pub(crate) use random::Random;
+pub(crate) use random::{Random, SessionRandom};
 pub(crate) use range::{Range, RangeIterator};
 pub(crate) use re_match::ReMatch;
 pub(crate) use re_pattern::{BoundedCompileError, RePattern};

@@ -68,7 +68,7 @@ pub mod monty_node {
         Bytes(::prost::alloc::vec::Vec<u8>),
         /// A uuid.UUID value. Declared so the tag is settled, but NOT YET
         /// IMPLEMENTED: monty has no uuid module, so neither end produces or
-        /// accepts this arm (it decodes like any unknown kind — rejected).
+        /// accepts this arm (conversion to a domain node rejects it).
         #[prost(message, tag = "10")]
         Uuid(super::Uuid),
         #[prost(message, tag = "11")]
@@ -420,6 +420,19 @@ pub struct CodeLoc {
     #[prost(uint32, tag = "2")]
     pub column: u32,
 }
+/// Where the expression that suspended execution is in the source. `filename`
+/// names the source as a traceback frame does: `<python-input-N>` for the
+/// session's N-th feed, or `<string>` inside an `eval()` / `exec()` string.
+/// `start` and `end` are UTF-8 byte offsets into that source, `end` exclusive.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SourceRange {
+    #[prost(string, tag = "1")]
+    pub filename: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub start: u32,
+    #[prost(uint32, tag = "3")]
+    pub end: u32,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StackFrame {
     #[prost(string, tag = "1")]
@@ -447,8 +460,6 @@ pub struct StackFrame {
 /// `ChildEvent`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResourceLimits {
-    #[prost(uint64, optional, tag = "1")]
-    pub max_duration_micros: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "2")]
     pub max_memory_bytes: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "3")]
@@ -457,6 +468,160 @@ pub struct ResourceLimits {
     pub max_recursion_depth: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "5")]
     pub max_suspensions: ::core::option::Option<u64>,
+    /// Per-feed and per-turn execution budgets on one clock: the feed budget
+    /// resets at each feed, the turn budget at each feed and each resume.
+    #[prost(uint64, optional, tag = "6")]
+    pub max_feed_duration_micros: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "7")]
+    pub max_turn_duration_micros: ::core::option::Option<u64>,
+    /// Cumulative budget for system sleeps, enforced by the parent.
+    #[prost(uint64, optional, tag = "8")]
+    pub max_total_sleep_micros: ::core::option::Option<u64>,
+}
+/// Mirrors monty's `OsPolicy`: the clock, zone, sleep, process clock and
+/// initial randomness a session gets, and which of those it asks the host for.
+/// Each unset arm means that field's default.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OsPolicy {
+    /// The zone naive `datetime.now()` and `date.today()` read in, and that
+    /// `astimezone()`, `%Z` and the `time` constants report. Absent = UTC.
+    #[prost(message, optional, tag = "4")]
+    pub timezone: ::core::option::Option<SandboxTimeZone>,
+    /// What `time.sleep()` and `asyncio.sleep()` do.
+    /// Absent (or with no arm set) = system sleep with the default maximum.
+    #[prost(message, optional, tag = "5")]
+    pub sleep: ::core::option::Option<SleepMode>,
+    /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
+    #[prost(oneof = "os_policy::Datetime", tags = "1, 2, 3")]
+    pub datetime: ::core::option::Option<os_policy::Datetime>,
+    /// Where an unseeded `random` generator gets its first state.
+    #[prost(oneof = "os_policy::RandomStart", tags = "6, 7, 8")]
+    pub random_start: ::core::option::Option<os_policy::RandomStart>,
+    /// What `time.process_time()` and `time.thread_time()` report.
+    /// Absent (or with no arm set) = zero.
+    #[prost(oneof = "os_policy::ProcessTime", tags = "9, 10")]
+    pub process_time: ::core::option::Option<os_policy::ProcessTime>,
+}
+/// Nested message and enum types in `OsPolicy`.
+pub mod os_policy {
+    /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Datetime {
+        /// The child's clock.
+        #[prost(message, tag = "1")]
+        System(super::Unit),
+        /// Suspend to the parent's OS handler.
+        #[prost(message, tag = "2")]
+        CallHost(super::Unit),
+        /// One frozen instant, for reproducible runs.
+        #[prost(message, tag = "3")]
+        Fixed(super::FixedDateTime),
+    }
+    /// Where an unseeded `random` generator gets its first state.
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum RandomStart {
+        /// From the child's own OS entropy.
+        #[prost(message, tag = "6")]
+        RandomSystem(super::Unit),
+        /// Suspend the first draw with an `os.urandom` call for 2496 bytes.
+        #[prost(message, tag = "7")]
+        RandomCallHost(super::Unit),
+        /// As `random.seed(seed)` would, for reproducible runs.
+        #[prost(message, tag = "8")]
+        Seed(super::RandomSeed),
+    }
+    /// What `time.process_time()` and `time.thread_time()` report.
+    /// Absent (or with no arm set) = zero.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum ProcessTime {
+        /// Always 0.0, so elapsed execution time is not observable in the sandbox.
+        #[prost(message, tag = "9")]
+        Zero(super::Unit),
+        /// The session's accumulated execution time.
+        #[prost(message, tag = "10")]
+        Elapsed(super::Unit),
+    }
+}
+/// Mirrors monty's `SandboxTimeZone`.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SandboxTimeZone {
+    #[prost(oneof = "sandbox_time_zone::Zone", tags = "1, 2, 3")]
+    pub zone: ::core::option::Option<sandbox_time_zone::Zone>,
+}
+/// Nested message and enum types in `SandboxTimeZone`.
+pub mod sandbox_time_zone {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Zone {
+        /// UTC, the default.
+        #[prost(message, tag = "1")]
+        Utc(super::Unit),
+        /// An IANA zone name (`Europe/London`), resolved from the child's tz database.
+        #[prost(string, tag = "2")]
+        Named(::prost::alloc::string::String),
+        /// A fixed offset from UTC, with a name if it has one.
+        #[prost(message, tag = "3")]
+        Fixed(super::TimeZone),
+    }
+}
+/// Mirrors monty's `SleepMode`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SleepMode {
+    #[prost(oneof = "sleep_mode::Mode", tags = "1, 2, 3")]
+    pub mode: ::core::option::Option<sleep_mode::Mode>,
+}
+/// Nested message and enum types in `SleepMode`.
+pub mod sleep_mode {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Mode {
+        /// The parent waits without invoking its OS handler.
+        #[prost(message, tag = "1")]
+        System(super::SystemSleep),
+        /// Suspend to the parent, which performs the wait.
+        #[prost(message, tag = "2")]
+        CallHost(super::Unit),
+        /// Return at once without waiting.
+        #[prost(message, tag = "3")]
+        Zero(super::Unit),
+    }
+}
+/// A sleep capped by the child and performed by the parent.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SystemSleep {
+    /// Longest wait one call performs; longer sleeps are cut short. Absent = 10s.
+    #[prost(uint64, optional, tag = "1")]
+    pub max_micros: ::core::option::Option<u64>,
+}
+/// A frozen clock reading.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FixedDateTime {
+    /// Seconds since the Unix epoch, UTC.
+    #[prost(int64, tag = "1")]
+    pub unix_seconds: i64,
+    /// 0..=999999; anything larger is rejected.
+    #[prost(uint32, tag = "2")]
+    pub microsecond: u32,
+}
+/// A `random.seed()` argument: the types CPython accepts.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RandomSeed {
+    #[prost(oneof = "random_seed::Value", tags = "1, 2, 3, 4")]
+    pub value: ::core::option::Option<random_seed::Value>,
+}
+/// Nested message and enum types in `RandomSeed`.
+pub mod random_seed {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Value {
+        /// Arbitrary-size two's-complement little-endian bytes (`BigInt::to_signed_bytes_le`).
+        #[prost(bytes, tag = "1")]
+        Int(::prost::alloc::vec::Vec<u8>),
+        /// Must be finite.
+        #[prost(double, tag = "2")]
+        Float(f64),
+        #[prost(string, tag = "3")]
+        Str(::prost::alloc::string::String),
+        #[prost(bytes, tag = "4")]
+        Bytes(::prost::alloc::vec::Vec<u8>),
+    }
 }
 /// Outcome of an external function / OS call, decided by the parent. Mirrors
 /// monty's `ExtFunctionResult`, plus `not_handled` (which only the child can
@@ -557,7 +722,7 @@ pub mod parent_request {
 /// the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
 /// worker can still be initialized by `Load` instead. Valid only when the
 /// worker has no session yet.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Configure {
     #[prost(string, tag = "1")]
     pub script_name: ::prost::alloc::string::String,
@@ -611,6 +776,10 @@ pub struct Configure {
     /// the field trades streaming latency for event volume and nothing else.
     #[prost(uint32, optional, tag = "10")]
     pub print_flush_interval_ms: ::core::option::Option<u32>,
+    /// Absent = `OsPolicy::default()`: the child's clock in UTC and its entropy,
+    /// with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
+    #[prost(message, optional, tag = "11")]
+    pub os_policy: ::core::option::Option<OsPolicy>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -742,20 +911,32 @@ pub struct ChildEvent {
     /// executing bytecode — never while suspended waiting on the parent or idle
     /// between feeds — and survives Dump/Load. Set on every turn-ending event
     /// while a session exists (zero on Print events and outside a session) so
-    /// the parent can mirror the `max_duration` budget, e.g. to arm a watchdog
-    /// backstop, without keeping a second clock.
+    /// the parent can report how much sandbox time a session has used without
+    /// keeping a second clock. Bounds nothing: the budgets are per-feed and
+    /// per-turn.
     #[prost(uint64, tag = "20")]
     pub total_execution_micros: u64,
-    /// The session's `max_duration` limit in microseconds, when one is
-    /// configured. Reported alongside `total_execution_micros` so a parent that
-    /// restored a session via `Load` (where the limits travel inside the opaque
-    /// state bytes) still learns the budget.
-    #[prost(uint64, optional, tag = "21")]
-    pub max_duration_micros: ::core::option::Option<u64>,
     /// Echoes the parent-enforced budget so a host restoring an opaque dump can
     /// recover it.
     #[prost(uint64, optional, tag = "22")]
     pub max_suspensions: ::core::option::Option<u64>,
+    /// Execution time consumed by the feed in progress, in microseconds — the
+    /// `total_execution_micros` clock restarted at the feed that is running.
+    /// Lets the parent backstop `max_feed_duration_micros` without tracking feed
+    /// boundaries against a clock it cannot see. Zero outside a session.
+    #[prost(uint64, tag = "24")]
+    pub feed_execution_micros: u64,
+    /// The session's `max_feed_duration` and `max_turn_duration` limits in
+    /// microseconds, when configured. Reported so a parent that restored a
+    /// session via `Load` (where the limits travel inside the opaque state
+    /// bytes) still learns its budgets.
+    #[prost(uint64, optional, tag = "25")]
+    pub max_feed_duration_micros: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "26")]
+    pub max_turn_duration_micros: ::core::option::Option<u64>,
+    /// Parent-enforced sleep budget, also reported on `Load`.
+    #[prost(uint64, optional, tag = "27")]
+    pub max_total_sleep_micros: ::core::option::Option<u64>,
     /// The session's script name, surfaced on a `Load` reply so a parent that
     /// restored a session (whose script name, like the limits above, travels
     /// inside the opaque dump bytes) learns it without parsing the dump. Set only
@@ -843,6 +1024,10 @@ pub struct FunctionCall {
     /// twice crosses once.
     #[prost(message, optional, tag = "7")]
     pub values: ::core::option::Option<Arena>,
+    /// Where the call expression is in the source. Absent from a child that
+    /// predates the field; the parent then reports an empty range at offset 0.
+    #[prost(message, optional, tag = "8")]
+    pub position: ::core::option::Option<SourceRange>,
 }
 /// Suspension: the sandbox performed an OS operation, surfaced for the parent
 /// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
@@ -870,9 +1055,12 @@ pub struct OsCall {
     /// call a future may answer at all.
     #[prost(bool, tag = "51")]
     pub allow_eager_await: bool,
+    /// Where the call expression is in the source; absent as on `FunctionCall`.
+    #[prost(message, optional, tag = "52")]
+    pub position: ::core::option::Option<SourceRange>,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -924,6 +1112,14 @@ pub mod os_call {
         pub key: ::prost::alloc::string::String,
         #[prost(uint32, tag = "2")]
         pub default: u32,
+    }
+    /// A `time`-module clock read. `caller` names the Python function that asked
+    /// (`time.time`, `time.monotonic`, ...), so a parent may answer them
+    /// differently; they all share the `time.time` call name.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct TimeCall {
+        #[prost(string, tag = "1")]
+        pub caller: ::prost::alloc::string::String,
     }
     /// datetime.now(tz) — the VM validates the argument to None-or-timezone
     /// before suspending, so the wire carries a typed TimeZone rather than an
@@ -1040,15 +1236,21 @@ pub mod os_call {
         /// os.urandom(size), also how `random` seeds an unseeded generator.
         #[prost(message, tag = "25")]
         Urandom(Urandom),
-        /// time.time()
+        /// time.time() and the other time-module clock reads
         #[prost(message, tag = "26")]
-        Time(super::Unit),
-        /// time.sleep(seconds)
+        Time(TimeCall),
+        /// time.sleep(seconds) under `call_host`: the handler waits
         #[prost(message, tag = "27")]
         Sleep(Sleep),
-        /// asyncio.sleep(delay)
+        /// asyncio.sleep(delay) under `call_host`
         #[prost(message, tag = "28")]
         AsyncSleep(AsyncSleep),
+        /// System sleeps: capped by the child, charged to `max_total_sleep` and
+        /// waited out by the parent without invoking its OS handler.
+        #[prost(message, tag = "29")]
+        SystemSleep(Sleep),
+        #[prost(message, tag = "30")]
+        AsyncSystemSleep(AsyncSleep),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
@@ -1064,6 +1266,10 @@ pub struct NameLookup {
     /// a class type (a lazy class attribute): the uuid of the receiver.
     #[prost(message, optional, tag = "2")]
     pub object_id: ::core::option::Option<Uuid>,
+    /// Where the name (or attribute access) is in the source; absent as on
+    /// `FunctionCall`.
+    #[prost(message, optional, tag = "3")]
+    pub position: ::core::option::Option<SourceRange>,
 }
 /// Suspension: every sandbox task is blocked on external futures previously
 /// registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
@@ -1071,6 +1277,10 @@ pub struct NameLookup {
 pub struct ResolveFutures {
     #[prost(uint32, repeated, tag = "1")]
     pub pending_call_ids: ::prost::alloc::vec::Vec<u32>,
+    /// Where the main task's blocked `await` is in the source; absent as on
+    /// `FunctionCall`.
+    #[prost(message, optional, tag = "2")]
+    pub position: ::core::option::Option<SourceRange>,
 }
 /// Turn end: the snippet completed with this value. The session is ready for
 /// the next `Feed`.

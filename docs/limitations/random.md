@@ -16,31 +16,32 @@ platform (see the note on floats below).
 
 ## Entropy
 
-An unseeded generator seeds itself from the host on its first draw.
-The draw suspends with an `os.urandom` host call for 2496 bytes, the 624 32-bit words of one MT19937 state vector,
-and the reply seeds the generator as CPython's `seed(None)` does from the same bytes.
-This applies to the module-level generator and to a `random.Random()` created without a seed.
-`random.seed()` and `random.seed(None)` make the same call.
-A host that answers with fixed bytes makes unseeded runs reproducible.
-A reply of any other length, or one that is not `bytes`, raises `RuntimeError`.
+An unseeded generator seeds itself on its first draw from the session's `random_start`
+(`os_policy` on `checkout()` in the bindings, `OsPolicy::random_start` in Rust):
 
-Code that seeds explicitly never calls the host.
-Where nothing answers the call, the first unseeded draw raises
-`RuntimeError: 'os.urandom' is not supported in this environment`.
-That is the case in a pool session without an `os=` handler, in one whose handler returns `NOT_HANDLED`, and in the
-`monty` CLI with a `--mount`.
-In `pydantic_monty`, `AbstractOS.urandom()` returns the host's `os.urandom(size)` by default.
-Under Rust's non-suspending `MontyRun::run`, which the CLI uses without a mount, the draw raises
-`NotImplementedError`, as every unanswered OS call does there.
-`getstate()` on a never-seeded generator makes the same call first, since there is no state to report until then.
+- `'system'` reads 2496 bytes of OS entropy, the 624 32-bit words of an MT19937 state vector.
+    If entropy is unavailable, the run ends with an uncatchable `OSError: OS entropy source unavailable: <reason>`.
+    CPython instead falls back to the time and process ID.
+- A configured seed initializes the module generator as `random.seed(s)` would.
+    Unseeded `Random()` instances and calls to `seed(None)` receive successive states derived from that seed.
+    These states are reproducible and distinct; CPython reads fresh entropy for each.
+    See [entropy configuration](../security.md#entropy) and the seed type restrictions below.
+- `'call_host'` requests 2496 bytes through `os.urandom` on the first draw or a `seed(None)` call.
+    The bytes seed the generator as CPython's `seed(None)` would; fixed bytes make runs reproducible.
+    A reply with another type or length raises `RuntimeError`.
+    An unanswered request raises `RuntimeError: 'os.urandom' is not supported in this environment` in the pools,
+    or `NotImplementedError` in non-suspending Rust execution.
+
+`random.seed(s)` with an explicit value overrides the session policy.
+`random.seed()` and `random.seed(None)` use that policy; `getstate()` also seeds a never-seeded generator first.
 
 The module-level generator is session state like the globals: a seed set in one `feed_run` applies to the next, and
-it is included in a dump.
+it is included in a dump, as is the session's `random_start`.
 
 ## Behavioural notes
 
 - **`Random` instances do not convert to host values.** Returning a `Random` instance, `random.Random` or `type(rng)`
-    to the host produces `MontyNode::Repr` in Rust and a string in Python.
+    to the host produces `unstable::MontyNode::Repr` in Rust and a string in Python.
     Return the generated values or `rng.getstate()` instead.
 - **No `SystemRandom`**, and `random.Random` cannot be subclassed (Monty has no class inheritance, see
     [classes.md](classes.md)).
@@ -48,7 +49,7 @@ it is included in a dump.
     Instances have no `gauss_next` attribute.
 - **Copying an unseeded generator gives two independent streams.** `copy.copy(rng)` and `copy.deepcopy(rng)` rebuild
     a generator at the same point in the same sequence, but one that has never been seeded has no state to carry, so
-    each copy takes its own entropy from the host on its first draw.
+    each copy takes its own first state on its first draw.
     CPython seeds at construction, so its copies agree.
     See [copy.md](copy.md).
 - **Instance methods must be called directly**, as on other native objects such as `re.Pattern`.
@@ -76,9 +77,9 @@ it is included in a dump.
     a `float`, `int` or `bool`, and is stored as a float, where CPython stores any object.
     A state word in `2**63..2**64` is truncated to 32 bits as on 64-bit CPython; CPython on Windows raises
     `OverflowError` for it.
-- **Argument errors on an unseeded generator are raised after the entropy call.** Whether a draw needs entropy is
-    decided before its arguments are parsed, so `random.randint('a')` on a never-seeded generator requests entropy
-    from the host and only then raises its `TypeError`.
+- **Argument errors on an unseeded generator are raised after it is seeded.** Whether a draw needs a first state is
+    decided before its arguments are parsed, so `random.randint('a')` on a never-seeded generator seeds it and only
+    then raises its `TypeError`; under a session seed the draw that follows is the second, not the first.
     CPython seeds at import, so it raises without reading entropy.
 - **Float results match CPython on the same platform.** The distributions call the platform's `log`, `exp`, `sin`,
     `cos` and `pow`, as CPython does, so values can differ in the last bits between operating systems.

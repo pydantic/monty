@@ -118,6 +118,35 @@ try:
 except NameError as exc:
     assert str(exc) == "name 'values' is not defined"
 
+# === Runtime-compiled generators retain their globals, not snippet locals ===
+namespace = {'offset': 10}
+compiled = eval('(offset + x for x in source)', namespace, {'source': [1, 2], 'offset': 100})
+assert next(compiled) == 11
+namespace['offset'] = 20
+assert next(compiled) == 22
+assert next(compiled, None) is None
+
+assert list(eval('(x + offset for x in [1, 2])', {'offset': 30})) == [31, 32]
+exec('nested = ((x + offset for _ in [0]) for x in [1, 2])', namespace)
+nested_compiled = namespace['nested']
+child = next(nested_compiled)
+assert next(child) == 21
+namespace['offset'] = 40
+assert list(next(nested_compiled)) == [42]
+
+exec('assigned = ((last := x + offset) for x in [1, 2])', namespace)
+assert list(namespace['assigned']) == [41, 42]
+assert namespace['last'] == 42
+
+failing_compiled = eval('(1 // x for x in [1, 0])', {})
+assert next(failing_compiled) == 1
+try:
+    next(failing_compiled)
+    assert False, 'expected division by zero in runtime-compiled generator'
+except ZeroDivisionError as exc:
+    assert str(exc) == 'division by zero'
+assert next(failing_compiled, None) is None
+
 # === Nested child scopes capture one stable target cell ===
 outer = ((x for _ in [0]) for x in [1, 2])
 first = next(outer)

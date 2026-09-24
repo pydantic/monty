@@ -86,6 +86,12 @@ jobs:
       - name: Check vendored typeshed stubs are in sync
         run: make check-typeshed
 
+      # packaging resolves every crate's dependencies against crates.io, which
+      # catches manifests that only break at release time (e.g. a versioned
+      # path dependency on a crate that is not published yet)
+      - name: Check the workspace packages for crates.io
+        run: make check-publish
+
       # the str character-property tables are generated from the pinned CPython
       - name: Check generated str Unicode tables are in sync
         run: make check-unicode-type
@@ -779,10 +785,13 @@ jobs:
           args: --release ${{ matrix.pgo-args }} --out dist
           rust-toolchain: stable
           rustup-components: ${{ matrix.pgo-runtime && 'llvm-tools-preview' || '' }}
-          docker-options: -e CI -e UV_PYTHON -e PGO_RUNTIME
+          docker-options: -e CI -e UV_PYTHON -e PGO_RUNTIME -e CFLAGS_s390x_unknown_linux_gnu
           working-directory: crates/monty-runtime
         env:
           PGO_RUNTIME: ${{ matrix.pgo-runtime }}
+          # The s390x cross assembler defaults to z900, which lacks the `lay`
+          # instruction `psm` (via ruff's `stacker`) uses; z10 is Rust's baseline.
+          CFLAGS_s390x_unknown_linux_gnu: -march=z10
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:

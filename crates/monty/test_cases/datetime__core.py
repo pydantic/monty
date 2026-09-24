@@ -126,6 +126,60 @@ assert datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.timezone.utc) == dat
 #         'aware/naive subtraction message should match CPython'
 #     )
 
+# === astimezone between fixed offsets ===
+# conversions to an explicit zone need no local zone, so they agree on any host
+_eet = datetime.timezone(datetime.timedelta(hours=2), 'EET')
+_aware = datetime.datetime(2024, 6, 15, 12, 30, 5, 123456, tzinfo=_eet)
+assert repr(_aware.astimezone(datetime.timezone.utc)) == (
+    'datetime.datetime(2024, 6, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc)'
+)
+assert repr(_aware.astimezone(tz=datetime.timezone(datetime.timedelta(hours=-5)))) == (
+    'datetime.datetime(2024, 6, 15, 5, 30, 5, 123456, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=68400)))'
+)
+_target = datetime.timezone(datetime.timedelta(hours=1), 'X')
+assert _aware.astimezone(_target).tzinfo is _target
+assert _aware.astimezone(_target) == _aware
+assert _aware.astimezone(_target).tzname() == 'X'
+# the sandbox zone is fixed, so a naive value converts without raising and comes back aware;
+# what that zone actually is belongs in datetime__zone_default.py, which skips CPython
+# on Windows because the harness cannot set its zone there
+_local = datetime.datetime(2024, 6, 15, 12, 30).astimezone()
+assert _local.tzinfo is not None
+assert _local.utcoffset() is not None
+assert datetime.datetime(2024, 6, 15, 12, 30).astimezone(datetime.timezone.utc).tzinfo is datetime.timezone.utc
+# the same day near the year boundary needs the date to roll with the offset
+assert repr(datetime.datetime(2024, 1, 1, 1, 0, tzinfo=_eet).astimezone(datetime.timezone.utc)) == (
+    'datetime.datetime(2023, 12, 31, 23, 0, tzinfo=datetime.timezone.utc)'
+)
+# CPython forms `self - utcoffset()` first, so an out-of-range UTC intermediate raises even when the result fits
+try:
+    datetime.datetime(1, 1, 1, tzinfo=_eet).astimezone(datetime.timezone(datetime.timedelta(hours=3)))
+    assert False, 'astimezone with a year-0 UTC intermediate should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'date value out of range'
+try:
+    datetime.datetime(9999, 12, 31, 23, tzinfo=datetime.timezone(datetime.timedelta(hours=-2))).astimezone(
+        datetime.timezone(datetime.timedelta(hours=-3))
+    )
+    assert False, 'astimezone with a year-10000 UTC intermediate should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'date value out of range'
+try:
+    _aware.astimezone(1)
+    assert False, 'astimezone(1) should raise TypeError'
+except TypeError as e:
+    assert str(e) == "tzinfo argument must be None or of a tzinfo subclass, not type 'int'"
+try:
+    _aware.astimezone(datetime.timezone.utc, datetime.timezone.utc)
+    assert False, 'astimezone with two positionals should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'astimezone() takes at most 1 argument (2 given)'
+try:
+    _aware.astimezone(tz=datetime.timezone.utc, x=1)
+    assert False, 'astimezone with an unknown kwarg should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'astimezone() takes at most 1 keyword argument (2 given)'
+
 # === timezone validations and constant ===
 assert datetime.timezone.utc == datetime.timezone(datetime.timedelta(0))
 # TODO(timezone): add a GC-stability regression ensuring `timezone.utc` identity
@@ -420,6 +474,15 @@ assert datetime.date(2024, 6, 15).replace(year=2025, day=1) == datetime.date(202
 assert datetime.datetime(2024, 6, 15, 10, 30).replace(hour=0, minute=0) == datetime.datetime(2024, 6, 15, 0, 0)
 assert datetime.datetime(2024, 6, 15, 10, 30).replace(tzinfo=datetime.timezone.utc) == datetime.datetime(
     2024, 6, 15, 10, 30, tzinfo=datetime.timezone.utc
+)
+# a zone built in the call is held by nothing else, so the new datetime has to
+# take its reference before the argument is released
+assert datetime.datetime(2024, 6, 15, 10, 30).replace(
+    tzinfo=datetime.timezone(datetime.timedelta(hours=4))
+) == datetime.datetime(2024, 6, 15, 10, 30, tzinfo=datetime.timezone(datetime.timedelta(hours=4)))
+assert (
+    repr(datetime.datetime(2024, 6, 15, 10, 30).replace(tzinfo=datetime.timezone(datetime.timedelta(hours=-4), 'Q')))
+    == "datetime.datetime(2024, 6, 15, 10, 30, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=72000), 'Q'))"
 )
 
 # === weekday / isoweekday ===

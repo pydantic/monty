@@ -234,11 +234,97 @@ export interface NamedValue {
   value: number
 }
 export interface ResourceLimits {
-  maxDurationMicros?: bigint
+  maxFeedDurationMicros?: bigint
+  maxTurnDurationMicros?: bigint
   maxMemoryBytes?: bigint
   gcInterval?: bigint
   maxRecursionDepth?: bigint
   maxSuspensions?: bigint
+  maxTotalSleepMicros?: bigint
+}
+export interface FixedDatetime {
+  unixSeconds: bigint
+  microsecond: number
+}
+export interface FixedTimeZone {
+  offsetSeconds: number
+  name?: string
+}
+export type TimeZone = TimeZoneUtc | TimeZoneNamed | TimeZoneFixed
+export interface TimeZoneUtc {
+  tag: 'utc'
+}
+export interface TimeZoneNamed {
+  tag: 'named'
+  val: string
+}
+export interface TimeZoneFixed {
+  tag: 'fixed'
+  val: FixedTimeZone
+}
+export type DatetimeSource = DatetimeSourceSystem | DatetimeSourceCallHost | DatetimeSourceFixed
+export interface DatetimeSourceSystem {
+  tag: 'system'
+}
+export interface DatetimeSourceCallHost {
+  tag: 'call-host'
+}
+export interface DatetimeSourceFixed {
+  tag: 'fixed'
+  val: FixedDatetime
+}
+export type SleepMode = SleepModeSystem | SleepModeCallHost | SleepModeZero
+export interface SleepModeSystem {
+  tag: 'system'
+  val: bigint | undefined
+}
+export interface SleepModeCallHost {
+  tag: 'call-host'
+}
+export interface SleepModeZero {
+  tag: 'zero'
+}
+export type RandomSeed = RandomSeedInt | RandomSeedFloat | RandomSeedStr | RandomSeedBytes
+export interface RandomSeedInt {
+  tag: 'int'
+  val: Uint8Array
+}
+export interface RandomSeedFloat {
+  tag: 'float'
+  val: number
+}
+export interface RandomSeedStr {
+  tag: 'str'
+  val: string
+}
+export interface RandomSeedBytes {
+  tag: 'bytes'
+  val: Uint8Array
+}
+export type RandomStart = RandomStartSystem | RandomStartCallHost | RandomStartSeed
+export interface RandomStartSystem {
+  tag: 'system'
+}
+export interface RandomStartCallHost {
+  tag: 'call-host'
+}
+export interface RandomStartSeed {
+  tag: 'seed'
+  val: RandomSeed
+}
+export type ProcessTime = ProcessTimeZero | ProcessTimeElapsed
+export interface ProcessTimeZero {
+  tag: 'zero'
+}
+export interface ProcessTimeElapsed {
+  tag: 'elapsed'
+}
+export interface OsPolicy {
+  datetime?: DatetimeSource
+  timezone?: TimeZone
+  sleep?: SleepMode
+  randomStart?: RandomStart
+  processTime?: ProcessTime
 }
 /**
  * # Variants
@@ -280,6 +366,7 @@ export interface ConfigureRequest {
   typeCheckFormat: TypeCheckFormat
   typeCheckColor: boolean
   printFlushIntervalMs?: number
+  osPolicy?: OsPolicy
 }
 export interface FeedRequest {
   code: string
@@ -401,6 +488,11 @@ export interface StackFrame {
   hideCaret: boolean
   hideFrameName: boolean
 }
+export interface SourceRange {
+  filename: string
+  start: number
+  end: number
+}
 export interface RaisedException {
   excType: string
   message: string
@@ -419,10 +511,16 @@ export interface FunctionCallEvent {
   callId: number
   objectId?: string
   allowEagerAwait: boolean
+  position: SourceRange
 }
 export interface NameLookupEvent {
   name: string
   objectId?: string
+  position: SourceRange
+}
+export interface ResolveFuturesEvent {
+  pendingCallIds: Uint32Array
+  position: SourceRange
 }
 export interface OsCallEvent {
   functionName: string
@@ -431,6 +529,8 @@ export interface OsCallEvent {
   kwargs: Array<NodePair>
   callId: number
   allowEagerAwait: boolean
+  systemSleepSecs?: number
+  position: SourceRange
 }
 export interface CompleteEvent {
   values: Arena
@@ -467,7 +567,7 @@ export interface EventNameLookup {
 }
 export interface EventResolveFutures {
   tag: 'resolve-futures'
-  val: Uint32Array
+  val: ResolveFuturesEvent
 }
 export interface EventComplete {
   tag: 'complete'
@@ -500,4 +600,5 @@ export interface DispatchResult {
   status: Status
   events: Array<Event>
   maxSuspensions?: bigint
+  maxTotalSleepMicros?: bigint
 }

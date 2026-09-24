@@ -40,7 +40,7 @@ The snippet does not run, and the session survives — fix the code and feed aga
 
 ## Why it matters more here than usual
 
-Monty implements a [deliberately small subset](limitations/index.md) of Python.
+The Monty sandbox runs a [deliberately small subset](limitations/index.md) of Python.
 A model that writes `import statistics` produces code that is perfectly valid CPython and completely unrunnable here.
 
 Type checking closes that gap, because Monty does not check against CPython's typeshed.
@@ -192,6 +192,9 @@ the flag is `--type-check-format`.
 - **Type checking is static only.** The `typing` module inside the sandbox provides markers, not runtime enforcement —
     no annotation is ever checked at runtime, and class annotations are stored in stringized form.
     See [`limitations/typing.md`](limitations/typing.md).
+- **Code compiled at runtime is not checked.** `eval()` and `exec()` compile their source strings inside the sandbox,
+    where no checker runs.
+    See [`limitations/eval_exec.md`](limitations/eval_exec.md).
 - **Passing the type check does not mean the code runs.** Parser-rejected constructs (`match`, `yield`) are not
     modelled.
     Five stub-only modules (`abc`, `types`, `typing_extensions`, `_collections_abc`, `_typeshed`) resolve during checking

@@ -7,7 +7,7 @@
 //! than leaking raw PyO3 errors.
 
 use monty_proto::python::{GraphEncoder, InstanceStore, exc_py_to_monty};
-use monty_types::{ExcType, MontyException, NamedValues, StringRepr};
+use monty_types::{ExcType, MontyException, NamedValues, StringRepr, unstable};
 use pyo3::{
     exceptions::PyTypeError,
     prelude::*,
@@ -87,10 +87,7 @@ pub(crate) fn extract_repl_inputs(
             .map_err(|e| MontyConversionError::value_conversion_err(py, exc_py_to_monty(py, &e)))?;
         names.push((name, id));
     }
-    Ok(NamedValues {
-        graph: encoder.finish(),
-        names,
-    })
+    Ok(unstable::named_values_from_parts(encoder.finish(), names).expect("encoded roots are valid"))
 }
 
 /// Calls the `connect_headers` callback and extracts its `str -> str` mapping.

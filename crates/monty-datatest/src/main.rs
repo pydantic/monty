@@ -6,6 +6,7 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
+    env,
     error::Error,
     ffi::CString,
     fmt,
@@ -18,20 +19,19 @@ use std::{
         mpsc::{self, RecvTimeoutError},
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use ahash::AHashMap;
-use chrono::{Datelike, Timelike};
 // only the dump round-trip needs these, and it is skipped under memory-model-checks
 #[cfg(not(feature = "memory-model-checks"))]
-use monty::{Dump, Session, SessionRef, dump};
+use monty::{Dump, MontyRepl, Session, SessionRef, dump};
 use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
-    CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime, MontyException,
-    MontyFileHandle, MontyObject, MontyTimeZone, MontyUuid, NameLookupResult, OsFunctionCall, PrintWriter,
-    ResourceLimits, ResourceTracker, dir_stat, file_stat,
+    CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject,
+    MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker,
+    SandboxTimeZone, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -74,8 +74,9 @@ fn default_test_limits() -> ResourceLimits {
 /// exercise the same bytecode real embedders run. Fixtures with a *failing*
 /// assert whose message diverges from CPython can't live in `test_cases/` —
 /// they belong in `crates/monty/tests/assert_messages.rs`.
-fn new_monty_run(code: &str, test_name: &str) -> Result<MontyRun, MontyException> {
+fn new_monty_run(code: &str, test_name: &str, config: &TestConfig) -> Result<MontyRun, MontyException> {
     MontyRun::new(code.to_owned(), test_name, vec![], CompileOptions::default())
+        .map(|run| run.with_os_policy(config.os_policy.clone()))
 }
 
 /// Test configuration parsed from directive comments.
@@ -94,6 +95,11 @@ fn new_monty_run(code: &str, test_name: &str) -> Result<MontyRun, MontyException
 /// - `cpython-main-module` - Set `__name__ = '__main__'` for CPython only,
 ///   matching script-style module globals for tests that directly inspect it.
 /// - `xfail=monty,cpython` - Expected to fail on both interpreters
+///
+/// ## Session zone
+/// - `timezone=Europe/London` - Run both sides in that IANA zone: Monty's
+///   `OsPolicy::timezone`, and `TZ` for CPython. CPython is skipped on
+///   Windows, which has no `time.tzset`.
 #[derive(Debug, Clone)]
 #[expect(clippy::struct_excessive_bools)]
 struct TestConfig {
@@ -125,6 +131,12 @@ struct TestConfig {
     /// under `test-hooks` and CPython), so neither runner needs a special
     /// directive for it.
     limits: ResourceLimits,
+    /// Session policies for this test's Monty run; the `# timezone=<NAME>`
+    /// directive sets the zone, which `cpython_timezone` mirrors onto `TZ`.
+    os_policy: OsPolicy,
+    /// The zone `# timezone=<NAME>` named, for the CPython side and the
+    /// Windows skip. `None` leaves both sides on their default.
+    timezone: Option<String>,
 }
 
 impl Default for TestConfig {
@@ -138,6 +150,8 @@ impl Default for TestConfig {
             skip_cpython_windows: false,
             cpython_main_module: false,
             limits: default_test_limits(),
+            os_policy: OsPolicy::default(),
+            timezone: None,
         }
     }
 }
@@ -239,6 +253,13 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
         config.limits.gc_interval = Some(interval);
     }
 
+    // `# timezone=<IANA name>` runs the case in that zone on both sides.
+    if let Some(name) = parse_str_directive(&comment_lines, "timezone=") {
+        config.os_policy.timezone =
+            SandboxTimeZone::named(name).unwrap_or_else(|e| panic!("invalid # timezone={name:?} directive: {e}"));
+        config.timezone = Some(name.to_owned());
+    }
+
     // Check for TRACEBACK expectation (triple-quoted string at end of file)
     // Format: """TRACEBACK:\n...\n"""
     if let Some((code, traceback)) = parse_traceback_expectation(content) {
@@ -290,6 +311,14 @@ fn parse_usize_directive(comment_lines: &[&str], prefix: &str) -> Option<usize> 
             .parse()
             .unwrap_or_else(|e| panic!("invalid {prefix}{value_str:?} directive: {e}")),
     )
+}
+
+/// Reads the value of a `# <prefix><value>` directive, up to the first space.
+fn parse_str_directive<'a>(comment_lines: &[&'a str], prefix: &str) -> Option<&'a str> {
+    let line = comment_lines.iter().find(|line| line.starts_with(prefix))?;
+    let value = &line[prefix.len()..];
+    let value_end = value.find(|c: char| c.is_whitespace()).unwrap_or(value.len());
+    Some(value[..value_end].trim())
 }
 
 /// Parses a TRACEBACK expectation from the end of a fixture file.
@@ -938,30 +967,19 @@ fn get_virtual_dir_entries(path: &str) -> Option<Vec<String>> {
 #[expect(clippy::cast_possible_wrap)] // Virtual file sizes are tiny, no wrap possible
 fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
     match call {
-        OsFunctionCall::DateToday => MontyObject::date(MontyDate {
-            year: 2023,
-            month: 11,
-            day: 15,
-        })
-        .into(),
-        OsFunctionCall::DateTimeNow(tz) => dispatch_datetime_now(tz.as_ref()).into(),
-        // Deterministic "entropy": a fixture can only assert invariants on
-        // unseeded draws anyway, since CPython's side reads real entropy.
+        // Fixed bytes for `os.urandom()`; fixtures assert invariants because CPython reads real entropy.
         OsFunctionCall::Urandom(args) => MontyObject::bytes(fixture_entropy(args.size)).into(),
-        // The clock calls above are frozen for reproducibility, but `time.time()`
-        // is only ever asserted against loosely (and CPython runs the same case
-        // against the real clock), so it reads the host's.
-        OsFunctionCall::Time => MontyObject::float(SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(
-            |before| -before.duration().as_secs_f64(),
-            |since_epoch| since_epoch.as_secs_f64(),
-        ))
-        .into(),
-        // Both sleeps wait here, so a gathered `asyncio.sleep` runs in series
-        // rather than concurrently — fine for fixtures, which sleep for
-        // milliseconds at most.
-        OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay) => {
+        // `OsPolicy::default()` answers the clock and initial random seed in the sandbox.
+        OsFunctionCall::DateToday | OsFunctionCall::DateTimeNow(_) | OsFunctionCall::Time(_) => {
+            unreachable!("{} is answered in the sandbox", call.name())
+        }
+        // The sandbox has already capped these delays.
+        OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) => {
             thread::sleep(*delay);
             MontyObject::none().into()
+        }
+        OsFunctionCall::Sleep(_) | OsFunctionCall::AsyncSleep(_) => {
+            unreachable!("{} is the host's own wait under OsPolicy::default()", call.name())
         }
         OsFunctionCall::GetEnviron => {
             let env_dict = vec![
@@ -1249,55 +1267,10 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
     }
 }
 
-/// Deterministic UTC timestamp for datetime test fixtures (2023-11-14 22:13:20 UTC).
-const DATETIME_FIXTURE_TIMESTAMP: i64 = 1_700_000_000;
-
 /// Answers `os.urandom(size)` with a fixed byte pattern of the requested length.
 fn fixture_entropy(size: u64) -> Vec<u8> {
     #[expect(clippy::cast_possible_truncation)] // reduced mod 256 first
     (0..size).map(|i| (i % 256) as u8).collect()
-}
-
-/// Dispatches a `DateTimeNow` OS call, returning a deterministic `MontyDateTime`.
-///
-/// The `tz` argument determines whether a naive or aware datetime is returned.
-/// The deterministic timestamp is 1_700_000_000 UTC (2023-11-14 22:13:20 UTC).
-/// For naive datetimes the virtual local offset is UTC+02:00.
-fn dispatch_datetime_now(tz: Option<&MontyTimeZone>) -> MontyObject {
-    match tz {
-        None => {
-            // Naive datetime: apply local offset to get local wall-clock time
-            // 1_700_000_000 UTC + 7200 = 2023-11-15 00:13:20 local
-            MontyObject::datetime(MontyDateTime {
-                year: 2023,
-                month: 11,
-                day: 15,
-                hour: 0,
-                minute: 13,
-                second: 20,
-                microsecond: 0,
-                offset_seconds: None,
-                timezone_name: None,
-            })
-        }
-        Some(tz) => {
-            // Aware datetime: convert UTC timestamp to the requested timezone
-            let offset_delta = chrono::TimeDelta::try_seconds(i64::from(tz.offset_seconds)).expect("valid offset");
-            let utc = chrono::DateTime::from_timestamp(DATETIME_FIXTURE_TIMESTAMP, 0).expect("valid timestamp");
-            let local = (utc + offset_delta).naive_utc();
-            MontyObject::datetime(MontyDateTime {
-                year: local.year(),
-                month: u8::try_from(local.month()).expect("month fits u8"),
-                day: u8::try_from(local.day()).expect("day fits u8"),
-                hour: u8::try_from(local.hour()).expect("hour fits u8"),
-                minute: u8::try_from(local.minute()).expect("minute fits u8"),
-                second: u8::try_from(local.second()).expect("second fits u8"),
-                microsecond: 0,
-                offset_seconds: Some(tz.offset_seconds),
-                timezone_name: tz.name.clone(),
-            })
-        }
-    }
 }
 
 /// Helper to create parent directories recursively.
@@ -1347,7 +1320,7 @@ impl fmt::Display for TestFailure {
 ///
 /// This function executes Python code via the MontyRun and validates the result
 /// against the expected outcome specified in the fixture.
-fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: ResourceLimits) -> Result<(), TestFailure> {
+fn try_run_test(path: &Path, code: &str, expectation: &Expectation, config: &TestConfig) -> Result<(), TestFailure> {
     let test_name = path
         .strip_prefix(TEST_CASES_RELATIVE_DIR)
         .unwrap_or(path)
@@ -1360,8 +1333,8 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
     // Handle ref-count-return tests separately since they need run_ref_counts()
     #[cfg(feature = "ref-count-return")]
     if let Expectation::RefCounts(expected) = expectation {
-        match new_monty_run(code, &test_name) {
-            Ok(ex) => {
+        match new_monty_run(code, &test_name, config) {
+            Ok(mut ex) => {
                 let result = ex.run_ref_counts(vec![]);
                 match result {
                     Ok(monty::RefCountOutput {
@@ -1409,9 +1382,9 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
         }
     }
 
-    match new_monty_run(code, &test_name) {
-        Ok(ex) => {
-            let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    match new_monty_run(code, &test_name, config) {
+        Ok(mut ex) => {
+            let result = ex.run(vec![], ResourceTracker::new(config.limits.clone()), PrintWriter::Stdout);
             match result {
                 Ok(obj) => match expectation {
                     Expectation::ReturnStr(expected) => {
@@ -1539,7 +1512,7 @@ fn try_run_iter_test(
     path: &Path,
     code: &str,
     expectation: &Expectation,
-    limits: ResourceLimits,
+    config: &TestConfig,
 ) -> Result<(), TestFailure> {
     let test_name = path
         .strip_prefix(TEST_CASES_RELATIVE_DIR)
@@ -1561,7 +1534,7 @@ fn try_run_iter_test(
         });
     }
 
-    let exec = match new_monty_run(code, &test_name) {
+    let exec = match new_monty_run(code, &test_name, config) {
         Ok(e) => e,
         Err(parse_err) => {
             if let Expectation::Raise(expected) = expectation {
@@ -1597,7 +1570,7 @@ fn try_run_iter_test(
     };
 
     // Run execution loop, handling external function calls until complete
-    let result = run_iter_loop(exec, limits);
+    let result = run_iter_loop(exec, config.limits.clone());
 
     match result {
         Ok(obj) => match expectation {
@@ -1688,7 +1661,7 @@ fn try_run_mount_fs_test(
     path: &Path,
     code: &str,
     expectation: &Expectation,
-    limits: ResourceLimits,
+    config: &TestConfig,
 ) -> Result<(), TestFailure> {
     let test_name = path
         .strip_prefix(TEST_CASES_RELATIVE_DIR)
@@ -1708,7 +1681,7 @@ fn try_run_mount_fs_test(
         .expect("failed to mount temp dir for mount-fs test");
 
     // Like the pool, the working directory defaults to the first mount.
-    let exec = match new_monty_run(code, &test_name).map(|mut exec| {
+    let exec = match new_monty_run(code, &test_name, config).map(|mut exec| {
         exec.set_cwd("/mnt");
         exec
     }) {
@@ -1723,7 +1696,7 @@ fn try_run_mount_fs_test(
         }
     };
 
-    let result = run_mount_fs_iter_loop(exec, &mut mount_table, limits);
+    let result = run_mount_fs_iter_loop(exec, &mut mount_table, config.limits.clone());
 
     match result {
         Ok(_) => match expectation {
@@ -1784,6 +1757,13 @@ fn run_mount_fs_iter_loop(
     let mut progress = exec.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)?;
 
     loop {
+        // As in `run_iter_loop`: every suspension goes through the dump format,
+        // which is what carries live open files through it.
+        #[cfg(not(feature = "memory-model-checks"))]
+        {
+            progress = dump_load_round_trip(&progress);
+        }
+
         match progress {
             RunProgress::Complete(result) => return Ok(result),
             RunProgress::FunctionCall(call) => {
@@ -1937,14 +1917,63 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
     }
 }
 
-/// Dumps a suspended run and reloads it, so every test case exercises the real
-/// dump format rather than only the underlying serde impls.
+/// Dumps a suspended run and reloads it, so every suspending test case exercises
+/// the real dump format rather than only the underlying serde impls.
 #[cfg(not(feature = "memory-model-checks"))]
 fn dump_load_round_trip(progress: &RunProgress) -> RunProgress {
     let bytes = dump("test.py", None, SessionRef::Running(progress)).expect("failed to dump RunProgress");
     match Dump::load(&bytes).expect("failed to load RunProgress").state {
         Session::Running(progress) => *progress,
         _ => panic!("dumped a running session, loaded something else"),
+    }
+}
+
+/// Runs the fixture in a REPL, then dumps the idle session, loads it and dumps it again.
+///
+/// Most fixtures never suspend, so this is what puts their heap (every global the
+/// case leaves behind) through the dump codec. The two dumps must match byte for
+/// byte, which catches asymmetric serde impls and fields lost on load.
+#[cfg(not(feature = "memory-model-checks"))]
+fn idle_dump_round_trip(path: &Path, code: &str, config: &TestConfig) -> Result<(), TestFailure> {
+    let test_name = path
+        .strip_prefix(TEST_CASES_RELATIVE_DIR)
+        .unwrap_or(path)
+        .display()
+        .to_string();
+    let failure = |actual: String| TestFailure {
+        test_name: test_name.clone(),
+        kind: "Dump round-trip".to_string(),
+        expected: "identical dumps before and after loading".to_string(),
+        actual,
+    };
+    let mut repl = MontyRepl::new(
+        &test_name,
+        ResourceTracker::new(config.limits.clone()),
+        CompileOptions::default(),
+    )
+    .with_os_policy(config.os_policy.clone());
+    // the case's own outcome was checked by the main run; a raising case still leaves its globals
+    let _ = repl.feed_run(code, vec![], PrintWriter::Disabled);
+
+    let first = dump(&test_name, None, SessionRef::Idle(&repl)).map_err(|err| failure(format!("dump: {err}")))?;
+    let loaded = Dump::load(&first).map_err(|err| failure(format!("load: {err}")))?;
+    let Session::Idle(loaded) = loaded.state else {
+        return Err(failure("dumped an idle session, loaded something else".to_string()));
+    };
+    let second = dump(&test_name, None, SessionRef::Idle(&loaded)).map_err(|err| failure(format!("re-dump: {err}")))?;
+    if first == second {
+        Ok(())
+    } else {
+        let at = first
+            .iter()
+            .zip(&second)
+            .position(|(a, b)| a != b)
+            .unwrap_or(first.len().min(second.len()));
+        Err(failure(format!(
+            "dumps differ at byte {at} ({} vs {} bytes)",
+            first.len(),
+            second.len()
+        )))
     }
 }
 
@@ -2059,14 +2088,10 @@ fn wrap_code_for_async(code: &str, need_return_value: bool) -> (String, Option<S
 /// file's globals before execution.
 ///
 /// When `async_mode` is true, code is wrapped in an async context before execution.
-fn run_traceback_script(
-    path: &Path,
-    test_name: &str,
-    iter_mode: bool,
-    async_mode: bool,
-) -> Result<String, TestFailure> {
+fn run_traceback_script(path: &Path, test_name: &str, config: &TestConfig) -> Result<String, TestFailure> {
     // Serialize CPython work across the whole process; see [`CPYTHON_TEST_LOCK`].
     let _cpython_guard = CPYTHON_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let _zone_guard = CpythonTimeZone::apply(config.timezone.as_deref());
     let watchdog = CpythonWatchdog::arm(test_name);
     let traceback = Python::attach(|py| {
         let _recursion_guard = RecursionLimitGuard::new(py);
@@ -2084,7 +2109,7 @@ fn run_traceback_script(
         // traceback becomes the actual output so the case fails naming the watchdog.
         match run_traceback.call_method1(
             "run_file_and_get_traceback",
-            (path_str, TEST_RECURSION_LIMIT, iter_mode, async_mode),
+            (path_str, TEST_RECURSION_LIMIT, config.iter_mode, config.async_mode),
         ) {
             Err(err) => format_traceback(py, &err),
             // None means no exception was raised
@@ -2125,6 +2150,59 @@ fn format_traceback(py: Python<'_>, exc: &PyErr) -> String {
 /// user code execution, and any post-mortem formatting. Monty's runner is
 /// not affected and continues to run concurrently with other Monty cases.
 static CPYTHON_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Points CPython's local zone at the `# timezone=` name for one fixture and
+/// puts `TZ` back after it, so `astimezone()`, `timestamp()` and `%Z` read the
+/// same zone Monty's side was configured with. The whole CPython side of a case
+/// runs under [`CPYTHON_TEST_LOCK`], so this process-global edit races nothing;
+/// `time.tzset` is POSIX-only, which is why Windows skips these cases instead.
+struct CpythonTimeZone {
+    previous: Option<String>,
+}
+
+impl CpythonTimeZone {
+    /// Applies `zone`, remembering whatever `TZ` held.
+    ///
+    /// A case without a `# timezone=` marker gets UTC, the zone Monty defaults
+    /// to: leaving CPython on the host's zone would make the two sides disagree
+    /// on every unmarked case that reads the local zone, on whichever developer
+    /// machine or CI runner is not itself UTC.
+    fn apply(zone: Option<&str>) -> Option<Self> {
+        // `time.tzset` is POSIX-only. Windows already skips the cases that name
+        // a zone, so there is nothing to apply and nothing to restore there.
+        if cfg!(windows) {
+            return None;
+        }
+        Python::attach(|py| {
+            let previous = Self::set(py, Some(zone.unwrap_or("UTC")));
+            Some(Self { previous })
+        })
+    }
+
+    /// Sets or clears `TZ` and re-reads it, returning the previous value.
+    ///
+    /// Through `os.putenv`, not `os.environ`: `test_fixtures.py` replaces the
+    /// latter with a `VirtualEnviron` overlay, while `tzset` reads the real one.
+    fn set(py: Python<'_>, value: Option<&str>) -> Option<String> {
+        let previous = env::var("TZ").ok();
+        let os = py.import("os").expect("os unavailable");
+        match value {
+            Some(name) => os.call_method1("putenv", ("TZ", name)),
+            None => os.call_method1("unsetenv", ("TZ",)),
+        }
+        .expect("failed to update TZ");
+        py.import("time")
+            .and_then(|time| time.call_method0("tzset"))
+            .expect("time.tzset failed");
+        previous
+    }
+}
+
+impl Drop for CpythonTimeZone {
+    fn drop(&mut self) {
+        Python::attach(|py| Self::set(py, self.previous.as_deref()));
+    }
+}
 
 /// Soft deadline for the CPython side of one fixture; the slowest legitimate
 /// case takes well under a second, so reaching this means a hang.
@@ -2321,15 +2399,11 @@ enum CpythonResult {
 ///
 /// RefCounts tests are skipped as they're Monty-specific.
 /// Traceback tests use scripts/run_traceback.py for reliable caret line support.
-#[expect(clippy::fn_params_excessive_bools)]
 fn try_run_cpython_test(
     path: &Path,
     code: &str,
     expectation: &Expectation,
-    iter_mode: bool,
-    async_mode: bool,
-    mount_fs: bool,
-    cpython_main_module: bool,
+    config: &TestConfig,
 ) -> Result<(), TestFailure> {
     // Ensure Python modules are imported before parallel tests access them.
     // This prevents race conditions during module initialization.
@@ -2348,7 +2422,7 @@ fn try_run_cpython_test(
 
     // Traceback tests use the external script for reliable caret line support
     if let Expectation::Traceback(expected) = expectation {
-        let result = run_traceback_script(path, &test_name, iter_mode, async_mode)?;
+        let result = run_traceback_script(path, &test_name, config)?;
         if result != *expected {
             return Err(TestFailure {
                 test_name,
@@ -2362,7 +2436,7 @@ fn try_run_cpython_test(
 
     // For mount-fs tests, create a fresh temp directory and inject `root` as a real Path.
     // The TempDir must outlive the test execution so the directory isn't cleaned up early.
-    let mount_tmpdir = if mount_fs {
+    let mount_tmpdir = if config.mount_fs {
         Some(create_mount_fs_tempdir())
     } else {
         None
@@ -2381,7 +2455,7 @@ fn try_run_cpython_test(
     );
 
     // Use async wrapper for tests with top-level await
-    let (statements, maybe_expr) = if async_mode {
+    let (statements, maybe_expr) = if config.async_mode {
         wrap_code_for_async(code, need_return_value)
     } else {
         split_code_for_module(code, need_return_value)
@@ -2389,6 +2463,7 @@ fn try_run_cpython_test(
 
     // Serialize CPython work across the whole process; see [`CPYTHON_TEST_LOCK`].
     let _cpython_guard = CPYTHON_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let _zone_guard = CpythonTimeZone::apply(config.timezone.as_deref());
     let watchdog = CpythonWatchdog::arm(&test_name);
     let result: CpythonResult = Python::attach(|py| {
         let _recursion_guard = RecursionLimitGuard::new(py);
@@ -2412,7 +2487,7 @@ fn try_run_cpython_test(
         // Doing so makes CPython qualify function names in some error messages
         // (`__main__.f() argument ...`), which Monty does not, breaking
         // exception-message parity for several `function__err_*` cases.
-        if cpython_main_module {
+        if config.cpython_main_module {
             globals
                 .set_item("__name__", "__main__")
                 .expect("Failed to seed __name__ for CPython");
@@ -2647,15 +2722,22 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
     let path_owned = path.to_owned();
     let iter_mode = config.iter_mode;
     let mount_fs = config.mount_fs;
-    let limits = config.limits;
+    let xfail_monty = config.xfail_monty;
 
     let result = run_with_timeout(TEST_TIMEOUT, move || {
         if mount_fs {
-            try_run_mount_fs_test(&path_owned, &code, &expectation, limits)
+            try_run_mount_fs_test(&path_owned, &code, &expectation, &config)
         } else if iter_mode {
-            try_run_iter_test(&path_owned, &code, &expectation, limits)
+            try_run_iter_test(&path_owned, &code, &expectation, &config)
         } else {
-            try_run_test(&path_owned, &code, &expectation, limits)
+            try_run_test(&path_owned, &code, &expectation, &config)?;
+            // Suspending cases already round-trip at every host call; this covers the rest.
+            // Not for xfail cases, whose expected failure must come from the run itself.
+            #[cfg(not(feature = "memory-model-checks"))]
+            if !config.xfail_monty {
+                idle_dump_round_trip(&path_owned, &code, &config)?;
+            }
+            Ok(())
         }
     });
 
@@ -2676,7 +2758,7 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
         }),
     };
 
-    if config.xfail_monty {
+    if xfail_monty {
         // Strict xfail: test must fail; if it passed, xfail should be removed
         assert!(
             result.is_err(),
@@ -2707,20 +2789,13 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
         .display()
         .to_string();
 
-    // Skip CPython tests that rely on POSIX path semantics when running on Windows
-    if cfg!(windows) && config.skip_cpython_windows {
+    // Skip CPython tests that rely on POSIX path semantics when running on Windows,
+    // and `# timezone=` cases, which need the POSIX-only `time.tzset`.
+    if cfg!(windows) && (config.skip_cpython_windows || config.timezone.is_some()) {
         return Ok(());
     }
 
-    let result = try_run_cpython_test(
-        path,
-        &code,
-        &expectation,
-        config.iter_mode,
-        config.async_mode,
-        config.mount_fs,
-        config.cpython_main_module,
-    );
+    let result = try_run_cpython_test(path, &code, &expectation, &config);
 
     if config.xfail_cpython {
         // Strict xfail: test must fail; if it passed, xfail should be removed

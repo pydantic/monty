@@ -16,7 +16,7 @@ const isRuntimeError = { instanceOf: MontyRuntimeError }
 
 test('resource limits custom', async () => {
   const limits: ResourceLimits = {
-    maxDurationSecs: 5.0,
+    maxFeedDurationSecs: 5.0,
     maxMemory: 64 * 1024,
     gcInterval: 10,
     maxRecursionDepth: 500,
@@ -27,7 +27,7 @@ test('resource limits custom', async () => {
 })
 
 test('run with limits', async () => {
-  t.is(await run('1 + 1', { limits: { maxDurationSecs: 5.0 } }), 2)
+  t.is(await run('1 + 1', { limits: { maxFeedDurationSecs: 5.0 } }), 2)
 })
 
 // =============================================================================
@@ -84,7 +84,7 @@ test('memory limit accepts values above u32 max', async () => {
 // =============================================================================
 
 test('limits with inputs', async () => {
-  t.is(await run('x * 2', { inputs: { x: 21 }, limits: { maxDurationSecs: 5.0 } }), 42)
+  t.is(await run('x * 2', { inputs: { x: 21 }, limits: { maxFeedDurationSecs: 5.0 } }), 42)
 })
 
 // =============================================================================
@@ -122,12 +122,31 @@ test('small operations within limit', async () => {
 
 test('time limit', async () => {
   const error = await t.throwsAsync(
-    () => run('while True:\n    pass\n', { limits: { maxDurationSecs: 0.1 } }),
+    () => run('while True:\n    pass\n', { limits: { maxFeedDurationSecs: 0.1 } }),
     isRuntimeError,
   )
   t.is(error.exception.typeName, 'TimeoutError')
   // The reported elapsed time varies from run to run; the limit is fixed.
-  t.regex(error.display('msg'), /^time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
+  t.regex(error.display('msg'), /^feed time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
+})
+
+test('feed duration limit restarts each feed', async () => {
+  // The budget restarts at each feed, so the session survives one over-long
+  // feed.
+  await using session = await pool().checkout({ limits: { maxFeedDurationSecs: 0.1 } })
+  t.is(await session.feedRun('1 + 1'), 2)
+  const error = await t.throwsAsync(() => session.feedRun('while True:\n    pass\n'), isRuntimeError)
+  t.is(error.exception.typeName, 'TimeoutError')
+  t.regex(error.display('msg'), /^feed time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
+  t.is(await session.feedRun('2 + 2'), 4)
+})
+
+test('turn duration limit', async () => {
+  await using session = await pool().checkout({ limits: { maxTurnDurationSecs: 0.1 } })
+  const error = await t.throwsAsync(() => session.feedRun('while True:\n    pass\n'), isRuntimeError)
+  t.is(error.exception.typeName, 'TimeoutError')
+  t.regex(error.display('msg'), /^turn time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
+  t.is(await session.feedRun('2 + 2'), 4)
 })
 
 // =============================================================================
@@ -153,6 +172,14 @@ while True:
   )
   t.is(error.exception.typeName, 'RuntimeError')
   t.is(error.display('msg'), 'suspension limit 3 exceeded')
+})
+
+test('max total sleep refuses the sleep that would take the total over', async () => {
+  // exact binary fractions, so the reported total is exact too
+  const code = 'import time\ntime.sleep(0.125)\ntry:\n    time.sleep(0.5)\nexcept TimeoutError:\n    pass\n'
+  const error = await t.throwsAsync(() => run(code, { limits: { maxTotalSleepSecs: 0.25 } }), isRuntimeError)
+  t.is(error.exception.typeName, 'TimeoutError')
+  t.is(error.display('msg'), 'sleep limit exceeded: 625ms > 250ms')
 })
 
 test('suspension limit defaults to 1000', async () => {
@@ -186,6 +213,7 @@ test('a suspension answering abort-feed ends the wasm worker', async () => {
       args: new Uint32Array(),
       kwargs: [],
       allowEagerAwait: false,
+      position: { filename: '<python-input-0>', start: 0, end: 7 },
     },
   })
   const requests: string[] = []
@@ -206,6 +234,34 @@ test('a suspension answering abort-feed ends the wasm worker', async () => {
   t.deepEqual(requests, ['configure', 'feed', 'resume-call', 'abort-feed'])
   await transport.finish()
   t.is(reusable, false)
+})
+
+test('the sleep limit is a ceiling a restored dump can only tighten', async () => {
+  const sleep = (secs: number) => `import time\ntime.sleep(${secs})`
+  let unlimited: Buffer
+  let capped: Buffer
+  {
+    await using session = await pool().checkout()
+    unlimited = await session.dump()
+  }
+  {
+    await using session = await pool().checkout({ limits: { maxTotalSleepSecs: 0.25 } })
+    t.is(await session.feedRun(sleep(0.125)), null)
+    capped = await session.dump()
+  }
+
+  // a dump with no limit does not loosen the checkout's, and the total restarts
+  await using kept = await pool().checkout({ limits: { maxTotalSleepSecs: 0.25 } })
+  await kept.loadSession(unlimited)
+  t.is(await kept.feedRun(sleep(0.125)), null)
+  const over = await t.throwsAsync(() => kept.feedRun(sleep(0.5)), isRuntimeError)
+  t.is(over.display('msg'), 'sleep limit exceeded: 625ms > 250ms')
+
+  // a dump's limit tightens a checkout that set none
+  await using adopted = await pool().checkout()
+  await adopted.loadSession(capped)
+  const refused = await t.throwsAsync(() => adopted.feedRun(sleep(0.5)), isRuntimeError)
+  t.is(refused.display('msg'), 'sleep limit exceeded: 500ms > 250ms')
 })
 
 test('restored session keeps its suspension limit with a fresh count', async () => {

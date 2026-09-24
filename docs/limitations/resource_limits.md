@@ -1,22 +1,29 @@
 # Resource limits
 
-Monty limits memory, time, and recursion, while the host limits suspension
+Monty limits memory, time, sleep and recursion, while the host limits suspension
 events. Exceeding the memory, time, or suspension limit returns `MemoryError`,
 `TimeoutError`, or `RuntimeError`, respectively; sandboxed code cannot catch
 these exceptions. `RecursionError` is catchable, as in CPython.
 
 ## Compilation
 
-`max_duration` starts when the VM executes, so parsing, preparation, and
-bytecode compilation do not consume it. In workers, allocations retained by
+The duration limits start when the VM executes, so parsing, preparation, and
+bytecode compilation do not consume them. In workers, allocations retained by
 compiled code do count toward `max_memory`; transient compilation allocations
 are released before execution reaches its first memory checkpoint.
 Compilation has separate structural caps for parser nesting, bytecode operand
-sizes, comprehension nesting, and repeated `finally` expansion. A code object
+sizes, comprehension nesting, and repeated `finally` expansion. The parser
+grows its native stack outside the sandbox allocator, so a source over 4 KiB is
+scanned for nesting before it is parsed (see [language.md](language.md)). A code object
 requiring more than 1,024 emitted copies of `finally` bodies is rejected with
 `SyntaxError`; CPython has no equivalent limit. Production hosts should still
 isolate compilation when accepting untrusted source, as the subprocess and
 WebAssembly runtimes do.
+
+Code compiled at runtime by `eval()` / `exec()` is the exception: it is parsed and compiled inside the VM,
+so that work is charged against `max_feed_duration` and `max_turn_duration`.
+Once a snippet starts executing, its source and bytecode stay allocated for the rest of the session.
+Snippets rejected before execution retain none of their compilation products (see [eval_exec.md](eval_exec.md)).
 
 ## Memory / size limits
 
@@ -128,6 +135,10 @@ indistinguishable from a stack overflow.
     bases 0, 1 and -1, which are computed.
 - `pow(base, exp, mod)` requires all integer arguments and rejects negative
     exponents (`ValueError`).
+    A call whose work estimate (exponent bits × modulus words²) is at most 2²⁷ runs
+    to completion without polling the time limit, about 0.2 s on a laptop; larger
+    calls poll between exponent bits, so a single squaring of the modulus is the
+    longest uninterruptible step.
 - `int(str_or_bytes, base)` rejects inputs over 4,300 digits before the
     potentially quadratic BigInt parse when the effective base is not a power
     of two. The fixed cap matches CPython's
@@ -191,19 +202,38 @@ indistinguishable from a stack overflow.
     the configured one alone if the worker's reply omits it).
 - There is no in-sandbox way to observe the budget or remaining count.
 
+## Sleep
+
+- `max_total_sleep` bounds cumulative system sleep durations (see [time.md](time.md)).
+    It is disabled by default; sleeping loops remain bounded by `max_suspensions`.
+    Bindings expose `max_total_sleep_secs` or `maxTotalSleepSecs`; the CLI uses `--max-total-sleep`.
+- Pools and the CLI charge each capped delay before waiting.
+    Exceeding the total raises an uncatchable `TimeoutError: sleep limit exceeded: <total> > <limit>`.
+    The reported total includes the refused sleep and uses Rust `Duration` formatting, such as `1.5s > 1s`.
+    An `asyncio.sleep()` costs its full capped delay when created, regardless of how long the host waits.
+    Non-suspending `MontyRun::run` enforces no total sleep limit.
+- The time already slept travels in dumps with the limit, like execution time,
+    so a restored session resumes its budget rather than restarting from zero.
+- Sleeps handed to the host under `'call_host'` are not charged to it.
+
 ## Time
 
-- The host can set a `max_duration` budget; if exceeded the VM stops with a
+- The host can set a `max_feed_duration` or `max_turn_duration` budget; if
+    either is exceeded the VM stops with a
     [`ResourceError`](../api/rust/monty-types.md#resourceerror) at its next checkpoint.
+    There is no cumulative per-session budget: both clocks restart, so nothing
+    inside the sandbox bounds what a session costs over its lifetime.
+- When one checkpoint blows both budgets, the feed one is reported. The message
+    names the scope — `feed time limit exceeded`, `turn time limit exceeded`.
 - Enforcement is polled, not preemptive: a single bytecode instruction may
     run a long native operation (a `bytes` substring scan, a sort, an iterator
     drain), and those poll the clock at a coarse granularity. A run can
-    therefore overshoot `max_duration` before stopping.
+    therefore overshoot its budget before stopping.
 - Checkpoints are amortized rather than per-instruction: the dispatch loop
     reads the clock every 256th instruction, and the native loops that poll for
     themselves (iterator advancement, sequence repeats, comparisons, `repr`)
     do so every 64th item. Both are unconditional overshoots of ordinary
-    `max_duration` enforcement, on top of the per-operation cases below.
+    time-limit enforcement, on top of the per-operation cases below.
 - A container narrower than that 64-item interval never reaches a poll at all.
     Structures that share sub-objects are walked once per path rather than once per
     object, so `repr` and `==` over one nested `n` levels deep do work exponential
@@ -222,7 +252,7 @@ indistinguishable from a stack overflow.
     probe, `find`, `count`, `split`, `partition`, `replace` and their
     variants) poll the clock every 64KiB, or every two lengths of the
     searched-for sequence if that is longer. Searching for a
-    sequence over 64KiB therefore overshoots `max_duration` in proportion to
+    sequence over 64KiB therefore overshoots its duration budget in proportion to
     its length.
 - The neighbouring `bytes` operations that scan without a sub-sequence are
     **not** polled and run to completion however large the input: `in` with an
@@ -235,16 +265,30 @@ indistinguishable from a stack overflow.
 - `base64.a85decode()` polls the clock every 64th byte that matches no
     Ascii85 digit and so reaches `ignorechars`. Each of those bytes is one
     `in` test against the container, so a large explicit `ignorechars`
-    overshoots `max_duration` in proportion to its length.
-- The budget covers cumulative **execution time**, not wall-clock time:
-    the clock runs only while the interpreter executes bytecode, and is
-    paused while execution is suspended waiting on the host (external
-    function calls, OS callbacks) and between REPL feeds. It accumulates
-    across feeds for the life of the session.
-- The accumulated time is serialized into dumps/snapshots, so a restored
-    session resumes its budget where it left off rather than restarting
-    from zero.
-- There is no in-sandbox way to observe the budget or remaining time.
+    overshoots its duration budget in proportion to its length.
+- Both budgets cover **execution time**, not wall-clock time: the clock runs
+    only while the interpreter executes bytecode, and is paused while execution
+    is suspended waiting on the host (external function calls, OS callbacks)
+    and between REPL feeds.
+- There is no in-sandbox way to observe either budget or the time left in it.
+- `max_feed_duration` and `max_turn_duration` bound one clock over two scopes,
+    differing only in when it restarts: at each feed, and at each feed or
+    answered suspension respectively.
+- A feed that the host never resumes leaves its `max_feed_duration` clock
+    where it stopped. The next feed resets it, so the abandoned feed's time is
+    charged to nothing.
+- `MontyRepl::call_function` counts as its own feed *and* its own turn, so a
+    host-driven call is never charged for the feeds before it.
+- A turn's clock restarts at the resume, not at the point the host answered,
+    so it never includes the time the host spent deciding.
+- Continuations the VM resolves without the host — an `await` on an
+    already-settled future, a task switch — stay inside the turn that started
+    them and do not restart the turn clock.
+- A name lookup the host answers restarts the turn clock, including one
+    answered as `Undefined`: the round trip happened either way.
+- `max_feed_duration` is serialized into dumps/snapshots, so a restored session
+    resumes the feed budget it was dumped mid-way through; `max_turn_duration`'s
+    clock is not, because a dump is only ever taken between turns.
 
 ## JSON
 

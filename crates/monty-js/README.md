@@ -1,11 +1,11 @@
 # @pydantic/monty
 
 Run untrusted Python safely from JavaScript. In Node.js this uses a pool of
-crash-isolated `monty` interpreter subprocesses; browser bundlers resolve the
+crash-isolated `monty` worker subprocesses; browser bundlers resolve the
 same public API to a Web Worker pool backed by a lean wasm build.
 
-[Monty](https://github.com/pydantic/monty) is a sandboxed Python interpreter
-written in Rust. A sandbox process can never be made fully crash-proof against
+[Monty](https://github.com/pydantic/monty) is a Python sandbox written in
+Rust. A sandbox process can never be made fully crash-proof against
 memory errors (stack overflow, allocator aborts), so the native binding
 (`@pydantic/monty`, `@pydantic/monty/node`) only runs the interpreter in worker
 subprocesses. A worker that crashes raises `MontyCrashedError` and is replaced
@@ -214,6 +214,12 @@ constructed instances are exposed, or `convertValue` to transform class
 attrs, static-method returns and (through `instanceWrapper`) every
 constructed instance's values.
 
+A builtin type or builtin function the sandbox returns crosses as a marker
+carrying only its name, never a JavaScript callable. Passing such a marker back
+in resolves it to the builtin it names, so `len` returned from one feed is `len`
+again when fed to the next. An unrecognized name is rejected with
+`unknown type name` or `unknown builtin function`.
+
 A host class the sandbox returns — the `ClassType` input itself, or
 `type(x)` of a wrapped instance — resolves to the class object when the
 session registered its id (any `ClassType` or `ClassInstance` crossing
@@ -257,6 +263,23 @@ while (!(snap instanceof MontyComplete)) {
   snap = await snap.resumeAuto()
 }
 console.log(snap.output) // 'hello Ada!'
+```
+
+All three snapshot types expose `position`, a `SourceRange` (`filename`, `start`, `end`) locating the suspending
+expression: the call, the name, or the `await` the main task is blocked on. `start` and `end` are UTF-8 byte offsets
+into the source, `end` exclusive, so slice the encoded source (`new TextEncoder().encode(code)`) rather than the
+string; `filename` is the traceback filename of the source (`<python-input-N>` for the session's N-th feed,
+`<string>` inside `eval()` / `exec()`).
+
+```ts
+import { FunctionSnapshot } from '@pydantic/monty'
+
+const code = 'x = 1\ny = greet(x)'
+const snap = await session.feedStart(code)
+if (snap instanceof FunctionSnapshot) {
+  const { start, end } = snap.position // { filename: '<python-input-0>', start: 10, end: 18 }
+  console.log(new TextDecoder().decode(new TextEncoder().encode(code).subarray(start, end))) // 'greet(x)'
+}
 ```
 
 For manual handlers, all three snapshot types expose `traceContext()`, returning an OpenTelemetry `Context`.
@@ -400,10 +423,8 @@ await session.feedRun('import os\nos.getenv("HOME")', {
 })
 ```
 
-An `async` callback works too. Its answer to `asyncio.sleep` is registered as a
-future, so the sandbox's other tasks run while it waits (or, when there are
-none, is awaited in place like an eager host function); its answer to any other
-OS call is awaited before that session resumes.
+Under `osPolicy: { sleep: 'call_host' }`, an async `os` callback lets other sandbox tasks run during `asyncio.sleep`.
+With no other tasks, the pool awaits it in place, as it does for every other OS call.
 
 Callback-backed virtual files return a `MontyFileHandle` marker from the
 open-time call. Paths are virtual POSIX sandbox paths and `position` defaults
@@ -440,7 +461,7 @@ Enforced inside the worker, configured per session:
 
 ```ts
 const limited = await pool.checkout({
-  limits: { maxMemory: 100 * 1024 * 1024, maxDurationSecs: 5, maxRecursionDepth: 100 },
+  limits: { maxMemory: 100 * 1024 * 1024, maxFeedDurationSecs: 5, maxTurnDurationSecs: 1, maxRecursionDepth: 100 },
 })
 ```
 
@@ -448,18 +469,59 @@ const limited = await pool.checkout({
 interpreter itself: the worker is killed and the session fails with
 `MontyCrashedError` (`timedOut: true`).
 
-`maxDurationSecs` limits cumulative _execution_ time: the sandbox clock runs
-only while the interpreter executes, never while suspended waiting on an
-external function or between feeds. Sessions with the limit also get an
-automatic backstop: the worker reports its execution time on every protocol
-turn and the host kills it `durationLimitGrace` (default 1s) after the
-remaining budget expires, covering cases where the in-sandbox limit cannot
-fire (its check only runs at interpreter checkpoints). Set
-`durationLimitGrace: null` to disable it.
+`maxFeedDurationSecs` and `maxTurnDurationSecs` limit _execution_ time: the
+sandbox clock runs only while the interpreter executes, never while suspended
+waiting on an external function or between feeds. They bound one `feedRun` and
+one stretch of code between host round trips, by restarting the clock at each
+feed and at each host answer respectively. Neither accumulates over a session's
+lifetime; bounding that is the host's job.
+
+Both also get an automatic backstop: the worker reports its consumed time on
+every protocol turn and the host kills it a grace period after the budget
+expires, covering cases where the in-sandbox limit cannot fire (its check only
+runs at interpreter checkpoints). The graces are `feedDurationLimitGrace` and
+`turnDurationLimitGrace` (default 1s each); set one to `null` to disable that
+backstop.
 
 `maxSuspensions` limits the host round trips the pool services per checkout
 (default 1000; it cannot be disabled). Exceeding it ends the feed with an
 uncatchable `RuntimeError`.
+
+## Clock, sleeping and entropy
+
+By default, `date.today()`, `datetime.now()` and the `time` module's clocks read the worker's clock in UTC.
+`time.process_time()` reports `0.0`.
+The pool handles `time.sleep()` and `asyncio.sleep()`, capped per call by `sleepSystemMax` (10 seconds).
+Gathered async sleeps overlap.
+Sleeps count toward suspensions and `maxTotalSleepSecs`, but not execution duration limits.
+Unseeded `random` generators use worker OS entropy.
+Configure these policies per session with `osPolicy`:
+
+```ts
+const fixed = await pool.checkout({
+  osPolicy: {
+    datetime: new Date('2026-01-01T09:30:00Z'),
+    timezone: { offsetSeconds: 3600, name: 'CET' },
+    sleepSystemMax: 0.5,
+    randomStart: { seed: 42 },
+  },
+})
+```
+
+A `Date` freezes the instant; `timezone` is `'utc'` (the default), an IANA zone name such as `'Europe/London'`
+(resolved with its DST rules from the worker's tz database, the bundled copy in the wasm worker) or a fixed UTC
+offset with an optional name.
+The zone shifts naive `datetime.now()` and `date.today()`, and is what `astimezone()`, `strftime('%Z')` and the
+`time.timezone` / `time.tzname` constants report.
+`sleep: 'zero'` returns immediately; `sleepSystemMax: Infinity` disables the per-call cap.
+`{ seed }` initializes the module as `random.seed(seed)` and derives deterministic states for unseeded `random.Random()`
+instances.
+Seeds accept `number`, `bigint`, `string` and `Uint8Array`; sandbox calls to `random.seed()` still override the state.
+`processTime: 'elapsed'` makes `time.process_time()` report the session's execution time instead of `0.0`.
+`'call_host'` delegates the selected clock, sleep or initial-entropy calls to `os`.
+Every `time` module clock then arrives as the one function `time.time`, with the asking function's name
+(`'time.monotonic'`, ...) as its argument.
+Explicit `os.urandom()` calls always reach `os`.
 
 ## Assert message annotations
 
@@ -529,7 +591,8 @@ const pool = await Monty.create({
   maxProcesses: 8, // cap; checkouts beyond it wait (default: CPU count)
   checkoutTimeout: 10, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline (seconds)
-  durationLimitGrace: 1, // maxDurationSecs backstop grace (seconds, null disables)
+  feedDurationLimitGrace: 1, // maxFeedDurationSecs backstop grace (seconds, null disables)
+  turnDurationLimitGrace: 1, // maxTurnDurationSecs backstop grace
   maxCheckoutsPerWorker: 100, // recycle workers after this many sessions
   binaryPath: '/path/to/monty', // explicit binary (default: auto-resolved)
 })
@@ -618,6 +681,8 @@ Browser/WASM does not yet implement this instrumentation path.
 | `dict`            | `Map` (preserves key types and order)                  |
 | `set`/`frozenset` | `Set`                                                  |
 | datetime types    | marker objects (`{ __monty_type__: 'DateTime', ... }`) |
+| builtin types     | `{ __monty_type__: 'Type', value }`                    |
+| builtin functions | `{ __monty_type__: 'BuiltinFunction', value }`         |
 | file handles      | `MontyFileHandle`                                      |
 | class instances   | `ClassInstance` wrappers / `MontyClassProxy` stand-ins |
 

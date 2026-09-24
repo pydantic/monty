@@ -1,0 +1,314 @@
+import { test } from 'vitest'
+import { t } from './assertions.js'
+import type { OsPolicy, MontyDate, MontyDateTime } from '@pydantic/monty'
+import { kind } from './env.js'
+import { setupPool } from './helpers.js'
+
+const { run, pool } = setupPool()
+
+const runWith = (code: string, osPolicy: OsPolicy, os?: (name: string, args: unknown[]) => unknown) =>
+  run(code, { osPolicy, ...(os === undefined ? {} : { os }) })
+
+// datetime and timezone
+
+test('the worker clock answers by default, with no os callback', async () => {
+  const before = Date.now() / 1000 - 60
+  const now = (await run('import time\ntime.time()')) as number
+  t.true(now >= before && now <= Date.now() / 1000 + 60)
+})
+
+test('a Date freezes the clock at that instant, read as UTC', async () => {
+  const frozen = new Date('2024-01-15T10:30:05.123Z')
+  const code = [
+    'import time',
+    'from datetime import date, datetime, timezone',
+    '(datetime.now(), date.today(), time.time(), datetime.now(timezone.utc), datetime.now() == datetime.now())',
+  ].join('\n')
+  const [naive, today, epoch, aware, frozenAgain] = (await runWith(code, { datetime: frozen })) as [
+    MontyDateTime,
+    MontyDate,
+    number,
+    MontyDateTime,
+    boolean,
+  ]
+  const wall = { year: 2024, month: 1, day: 15, hour: 10, minute: 30, second: 5, microsecond: 123000 }
+  t.deepEqual(naive, { __monty_type__: 'DateTime', ...wall })
+  t.deepEqual(today, { __monty_type__: 'Date', year: 2024, month: 1, day: 15 })
+  t.is(epoch, 1705314605.123)
+  t.deepEqual(aware, { __monty_type__: 'DateTime', ...wall, offsetSeconds: 0 })
+  t.true(frozenAgain)
+})
+
+test('a fixed timezone shifts the naive calls only', async () => {
+  const frozen = new Date('2024-01-15T23:30:05Z')
+  const code = 'import time\nfrom datetime import date, datetime, timezone\n(datetime.now(), date.today(), time.time())'
+  const [naive, today, epoch] = (await runWith(code, {
+    datetime: frozen,
+    timezone: { offsetSeconds: 3600, name: 'CET' },
+  })) as [MontyDateTime, MontyDate, number]
+  t.deepEqual(naive, {
+    __monty_type__: 'DateTime',
+    year: 2024,
+    month: 1,
+    day: 16,
+    hour: 0,
+    minute: 30,
+    second: 5,
+    microsecond: 0,
+  })
+  t.deepEqual(today, { __monty_type__: 'Date', year: 2024, month: 1, day: 16 })
+  t.is(epoch, 1705361405)
+})
+
+test('a named zone applies its DST rules in the worker', async () => {
+  const frozen = new Date('2024-01-15T10:30:05Z')
+  const code = [
+    'import time',
+    'from datetime import datetime, timezone',
+    '(datetime.now().hour, datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc).astimezone().strftime("%H:%M %Z %z"),',
+    ' datetime(2024, 10, 27, 1, 30).astimezone(timezone.utc).hour, time.timezone, time.altzone, time.daylight, time.tzname)',
+  ].join('\n')
+  t.deepEqual(await runWith(code, { datetime: frozen, timezone: 'Europe/London' }), [
+    10,
+    '13:30 BST +0100',
+    0,
+    0,
+    -3600,
+    1,
+    ['GMT', 'BST'],
+  ])
+})
+
+test('astimezone and the time constants read the sandbox zone, UTC by default', async () => {
+  const code = [
+    'import time',
+    'from datetime import datetime, timezone',
+    '(datetime(2024, 6, 15, 12, 30).astimezone().strftime("%H:%M %Z %z"), time.timezone, time.tzname)',
+  ].join('\n')
+  t.deepEqual(await runWith(code, {}), ['12:30 UTC +0000', 0, ['UTC', 'UTC']])
+  t.deepEqual(await runWith(code, { timezone: 'utc' }), ['12:30 UTC +0000', 0, ['UTC', 'UTC']])
+  t.deepEqual(await runWith(code, { timezone: { offsetSeconds: 7200, name: 'EET' } }), [
+    '12:30 EET +0200',
+    -7200,
+    ['EET', 'EET'],
+  ])
+})
+
+test('call_host sends the clock to the os callback', async () => {
+  const calls: unknown[] = []
+  const result = await runWith('import time\ntime.time()', { datetime: 'call_host' }, (name, args) => {
+    calls.push([name, args])
+    return 7.5
+  })
+  t.is(result, 7.5)
+  t.deepEqual(calls, [['time.time', ['time.time']]])
+})
+
+test('every time module clock shares the call, naming its caller', async () => {
+  const answers: Record<string, number> = { 'time.time': 1000, 'time.monotonic': 5, 'time.perf_counter': 0.25 }
+  const calls: unknown[] = []
+  const code = 'import time\n(time.time(), time.monotonic(), time.perf_counter(), time.gmtime().tm_year)'
+  const result = await runWith(code, { datetime: 'call_host' }, (name, args) => {
+    calls.push([name, args])
+    return answers[args[0] as string] ?? 0
+  })
+  t.deepEqual(result, [1000, 5, 0.25, 1970])
+  t.deepEqual(calls, [
+    ['time.time', ['time.time']],
+    ['time.time', ['time.monotonic']],
+    ['time.time', ['time.perf_counter']],
+    ['time.time', ['time.gmtime']],
+  ])
+})
+
+// processTime
+
+test('the process clocks report zero unless the session opts in', async () => {
+  const code = 'import time\n(time.process_time(), time.thread_time(), time.process_time_ns(), time.thread_time_ns())'
+  t.deepEqual(await run(code), [0, 0, 0, 0])
+  t.deepEqual(await runWith(code, { processTime: 'zero' }), [0, 0, 0, 0])
+})
+
+test("processTime: 'elapsed' reports execution time and never reaches os", async () => {
+  const calls: unknown[] = []
+  const code = [
+    'import time',
+    'start = time.process_time()',
+    'for _ in range(200000):',
+    '    pass',
+    '(time.process_time() > start, time.process_time_ns() > 0)',
+  ].join('\n')
+  const result = await runWith(code, { processTime: 'elapsed', datetime: 'call_host' }, (name) => {
+    calls.push(name)
+    return 0
+  })
+  t.deepEqual(result, [true, true])
+  t.deepEqual(calls, [])
+})
+
+test('an invalid processTime is rejected before the checkout', async () => {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { processTime: 'cpu' as never } }), {
+    instanceOf: RangeError,
+    message: "unknown processTime 'cpu', expected one of: zero, elapsed",
+  })
+})
+
+test('invalid datetime and timezone values are rejected before the checkout', async () => {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { datetime: new Date('nope') } }), {
+    instanceOf: RangeError,
+    message: "datetime must be 'system', 'call_host' or a valid Date",
+  })
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { datetime: 'later' as 'system' } }), {
+    instanceOf: RangeError,
+  })
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { timezone: { offsetSeconds: 1.5 } } }), {
+    instanceOf: RangeError,
+    message: 'timezone offsetSeconds must be an integer number of seconds',
+  })
+  // the native binding resolves the name before spawning; the wasm worker is the first to see it
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { timezone: 'Mars/Olympus' } }), {
+    message:
+      kind === 'browser'
+        ? "Configure failed: protocol violation: invalid os_policy: invalid value for SandboxTimeZone.named: unknown timezone 'Mars/Olympus'"
+        : "timezone: unknown timezone 'Mars/Olympus'",
+  })
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { timezone: { name: 'CET' } as unknown as 'utc' } }), {
+    instanceOf: TypeError,
+  })
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { timezone: { offsetSeconds: 86_400 } } }), {
+    instanceOf: RangeError,
+    message: 'timezone offsetSeconds must be within ±86399, got 86400',
+  })
+})
+
+// sleep
+
+test('zero returns at once', async () => {
+  const started = performance.now()
+  const code = "import asyncio, time\ntime.sleep(3600)\nasyncio.run(asyncio.sleep(3600, 'woken'))"
+  t.is(await runWith(code, { sleep: 'zero' }), 'woken')
+  t.true(performance.now() - started < 5000)
+})
+
+test('sleepSystemMax cuts a system sleep short', async () => {
+  const started = performance.now()
+  const code = "import asyncio, time\ntime.sleep(3600)\nasyncio.run(asyncio.sleep(3600, 'woken'))"
+  t.is(await runWith(code, { sleepSystemMax: 0.001 }), 'woken')
+  t.true(performance.now() - started < 5000)
+  t.is(await runWith('import time\ntime.sleep(0.001)', { sleepSystemMax: Infinity }), null)
+})
+
+test('gathered sandbox sleeps overlap', async () => {
+  const code = [
+    // Verify overlap by ordering, without requiring a precise wall-clock duration.
+    'import asyncio, time',
+    'starts, ends = [], []',
+    'async def w(n):',
+    '    starts.append(time.time())',
+    '    await asyncio.sleep(0.05, n)',
+    '    ends.append(time.time())',
+    '    return n * 2',
+    'async def main():',
+    '    return await asyncio.gather(w(1), w(2), w(3))',
+    'r = asyncio.run(main())',
+    '(r, max(starts) < min(ends))',
+  ].join('\n')
+  t.deepEqual(await run(code), [[2, 4, 6], true])
+})
+
+test('system sleeps are waited out here without the os callback', async () => {
+  const calls: [string, unknown[]][] = []
+  const code = "import asyncio, time\ntime.sleep(0.001)\nasyncio.run(asyncio.sleep(0.001, 'woken'))"
+  t.is(
+    await runWith(code, {}, (name, args) => {
+      calls.push([name, args])
+      return null
+    }),
+    'woken',
+  )
+  t.deepEqual(calls, [])
+})
+
+test('invalid sleep options are rejected before the checkout', async () => {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { sleep: 'forever' as 'zero' } }), {
+    instanceOf: RangeError,
+  })
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { sleepSystemMax: -1 } }), {
+    instanceOf: RangeError,
+    message: 'sleepSystemMax must be a non-negative number of seconds (Infinity for no cap)',
+  })
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { sleepSystemMax: NaN } }), {
+    instanceOf: RangeError,
+  })
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { sleep: 'zero', sleepSystemMax: 1 } }), {
+    instanceOf: RangeError,
+    message: "sleepSystemMax only applies to sleep: 'system', not 'zero'",
+  })
+})
+
+// randomStart
+
+// CPython: random.seed(s); random.random(), random.randint(1, 100)
+const SEEDS: [number | bigint | string | Uint8Array, [number, number]][] = [
+  [42, [0.6394267984578837, 4]],
+  [-42, [0.6394267984578837, 4]],
+  [2n ** 70n, [0.2327882718301838, 54]],
+  [1.5, [0.551763726942059, 33]],
+  ['abc', [0.7720246314157545, 72]],
+  [new TextEncoder().encode('abc'), [0.7720246314157545, 72]],
+]
+
+test('a seed starts random exactly as random.seed would', async () => {
+  for (const [seed, expected] of SEEDS) {
+    const code = 'import random\n[random.random(), random.randint(1, 100)]'
+    t.deepEqual(await runWith(code, { randomStart: { seed } }), expected, String(seed))
+  }
+})
+
+test('a seed persists across feeds and random.seed still wins', async () => {
+  const session = await pool().checkout({ osPolicy: { randomStart: { seed: 42 } } })
+  try {
+    await session.feedRun('import random')
+    t.is(await session.feedRun('random.random()'), 0.6394267984578837)
+    await session.feedRun('random.seed(5)')
+    t.is(await session.feedRun('random.random()'), 0.6229016948897019)
+  } finally {
+    await session.close()
+  }
+})
+
+test('unseeded instances under a seed are deterministic and distinct', async () => {
+  const code = 'import random\n[random.Random().random(), random.Random().random(), random.random()]'
+  const first = (await runWith(code, { randomStart: { seed: 42 } })) as number[]
+  const second = await runWith(code, { randomStart: { seed: 42 } })
+  t.deepEqual(first, second)
+  t.is(new Set(first).size, 3)
+  t.is(first[2], 0.6394267984578837)
+})
+
+test('call_host asks the os callback for one state vector', async () => {
+  const calls: [string, unknown[]][] = []
+  const os = (name: string, args: unknown[]) => {
+    calls.push([name, args])
+    return Uint8Array.from({ length: args[0] as number }, (_, i) => i % 256)
+  }
+  t.deepEqual(
+    await runWith('import random\n[random.random(), random.Random(1).random()]', { randomStart: 'call_host' }, os),
+    [0.2469864874493971, 0.13436424411240122],
+  )
+  t.deepEqual(calls, [['os.urandom', [2496]]])
+})
+
+test('an invalid randomStart is rejected before the checkout', async () => {
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { randomStart: { seed: true as unknown as number } } }), {
+    instanceOf: TypeError,
+    message: "randomStart must be 'system', 'call_host' or { seed: number | bigint | string | Uint8Array }",
+  })
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { randomStart: { sead: 1 } as unknown as 'system' } }), {
+    instanceOf: TypeError,
+  })
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { randomStart: { seed: Number.NaN } } }), {
+    instanceOf: RangeError,
+    message: 'randomStart seed must be finite, got NaN',
+  })
+})

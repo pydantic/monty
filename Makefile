@@ -250,6 +250,10 @@ update-typeshed: ## Update vendored typeshed from upstream
 check-typeshed: ## Check vendored typeshed stubs are in sync with upstream
 	uv run crates/monty-typeshed/check.py
 
+.PHONY: check-publish
+check-publish: ## Package and verify-build every publishable crate as `cargo publish` would, without uploading
+	cargo publish --workspace --dry-run
+
 .PHONY: bench
 bench: ## Run benchmarks
 	cargo bench -p monty-bench --bench main

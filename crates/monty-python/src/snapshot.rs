@@ -34,7 +34,7 @@ use std::{
 
 use monty_pool::{Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value, uuid_to_py};
-use monty_types::{CallArgs, ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult};
+use monty_types::{CallArgs, ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult, SourceRange};
 use pyo3::{
     Borrowed,
     exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
@@ -52,7 +52,7 @@ mod tests;
 use crate::{
     async_dispatch::{CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, wait_for_futures},
     callback_context::CallbackContext,
-    exceptions::MontyError,
+    exceptions::{MontyError, PySourceRange},
     external::{CallResult, ExternalLookup, resolve_object_attr, wire_call_arguments},
     pool::{
         FeedArgs, OsDispatch, SharedCheckout, TurnFuture, block_on_sync, discard_checkout, discard_checkout_sync,
@@ -285,6 +285,7 @@ pub(crate) fn build_snapshot(
             call_id,
             object_id,
             allow_eager_await,
+            position,
         } => {
             let call = FunctionCallData {
                 function_name,
@@ -293,6 +294,7 @@ pub(crate) fn build_snapshot(
                 is_os_function: false,
                 object_id,
                 allow_eager_await,
+                position,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
@@ -301,6 +303,8 @@ pub(crate) fn build_snapshot(
             args,
             call_id,
             allow_eager_await,
+            position,
+            ..
         } => {
             let call = FunctionCallData {
                 function_name,
@@ -309,53 +313,42 @@ pub(crate) fn build_snapshot(
                 is_os_function: true,
                 object_id: None,
                 allow_eager_await,
+                position,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
-        TurnEvent::NameLookup { name, object_id } => {
+        TurnEvent::NameLookup {
+            name,
+            object_id,
+            position,
+        } => {
             let snapshot = SnapshotState::new(ctx);
+            let lookup = NameLookupSnapshot {
+                snapshot,
+                name,
+                object_id,
+                position,
+            };
             if is_async {
-                Py::new(
-                    py,
-                    PyAsyncNameLookupSnapshot(NameLookupSnapshot {
-                        snapshot,
-                        name,
-                        object_id,
-                    }),
-                )
-                .map(Py::into_any)
+                Py::new(py, PyAsyncNameLookupSnapshot(lookup)).map(Py::into_any)
             } else {
-                Py::new(
-                    py,
-                    PyNameLookupSnapshot(NameLookupSnapshot {
-                        snapshot,
-                        name,
-                        object_id,
-                    }),
-                )
-                .map(Py::into_any)
+                Py::new(py, PyNameLookupSnapshot(lookup)).map(Py::into_any)
             }
         }
-        TurnEvent::ResolveFutures { pending_call_ids } => {
+        TurnEvent::ResolveFutures {
+            pending_call_ids,
+            position,
+        } => {
             let snapshot = SnapshotState::new(ctx);
+            let futures = FutureSnapshot {
+                snapshot,
+                pending_call_ids,
+                position,
+            };
             if is_async {
-                Py::new(
-                    py,
-                    PyAsyncFutureSnapshot(FutureSnapshot {
-                        snapshot,
-                        pending_call_ids,
-                    }),
-                )
-                .map(Py::into_any)
+                Py::new(py, PyAsyncFutureSnapshot(futures)).map(Py::into_any)
             } else {
-                Py::new(
-                    py,
-                    PyFutureSnapshot(FutureSnapshot {
-                        snapshot,
-                        pending_call_ids,
-                    }),
-                )
-                .map(Py::into_any)
+                Py::new(py, PyFutureSnapshot(futures)).map(Py::into_any)
             }
         }
     }
@@ -587,6 +580,8 @@ struct FunctionCallData {
     object_id: Option<MontyUuid>,
     /// The worker accepts a settled coroutine at this suspension.
     allow_eager_await: bool,
+    /// Where the call expression is in the source.
+    position: SourceRange,
 }
 
 struct FunctionSnapshot {
@@ -662,6 +657,12 @@ impl PyFunctionSnapshot {
     #[getter]
     fn script_name(&self) -> &str {
         &self.0.snapshot.ctx.script_name
+    }
+
+    /// Where the suspending expression is in the source.
+    #[getter]
+    fn position(&self) -> PySourceRange {
+        PySourceRange::from(&self.0.call.position)
     }
 
     #[getter]
@@ -808,6 +809,12 @@ impl PyAsyncFunctionSnapshot {
     #[getter]
     fn script_name(&self) -> &str {
         &self.0.snapshot.ctx.script_name
+    }
+
+    /// Where the suspending expression is in the source.
+    #[getter]
+    fn position(&self) -> PySourceRange {
+        PySourceRange::from(&self.0.call.position)
     }
 
     #[getter]
@@ -979,6 +986,8 @@ struct NameLookupSnapshot {
     /// object (instance or class type); `None` for a plain undefined-name
     /// lookup.
     object_id: Option<MontyUuid>,
+    /// Where the name (or attribute access) is in the source.
+    position: SourceRange,
 }
 
 /// The argument to `NameLookupSnapshot.resume`, distinguishing an omitted value
@@ -1035,6 +1044,12 @@ impl PyNameLookupSnapshot {
     #[getter]
     fn script_name(&self) -> &str {
         &self.0.snapshot.ctx.script_name
+    }
+
+    /// Where the suspending expression is in the source.
+    #[getter]
+    fn position(&self) -> PySourceRange {
+        PySourceRange::from(&self.0.position)
     }
 
     #[getter]
@@ -1112,6 +1127,12 @@ impl PyAsyncNameLookupSnapshot {
         &self.0.snapshot.ctx.script_name
     }
 
+    /// Where the suspending expression is in the source.
+    #[getter]
+    fn position(&self) -> PySourceRange {
+        PySourceRange::from(&self.0.position)
+    }
+
     #[getter]
     fn variable_name(&self) -> &str {
         &self.0.name
@@ -1177,6 +1198,8 @@ impl PyAsyncNameLookupSnapshot {
 struct FutureSnapshot {
     snapshot: SnapshotState,
     pending_call_ids: Vec<u32>,
+    /// Where the main task's blocked `await` is in the source.
+    position: SourceRange,
 }
 
 impl FutureSnapshot {
@@ -1223,6 +1246,12 @@ impl PyFutureSnapshot {
         &self.0.snapshot.ctx.script_name
     }
 
+    /// Where the suspending expression is in the source.
+    #[getter]
+    fn position(&self) -> PySourceRange {
+        PySourceRange::from(&self.0.position)
+    }
+
     #[getter]
     fn pending_call_ids(&self) -> Vec<u32> {
         self.0.pending_call_ids.clone()
@@ -1265,6 +1294,12 @@ impl PyAsyncFutureSnapshot {
     #[getter]
     fn script_name(&self) -> &str {
         &self.0.snapshot.ctx.script_name
+    }
+
+    /// Where the suspending expression is in the source.
+    #[getter]
+    fn position(&self) -> PySourceRange {
+        PySourceRange::from(&self.0.position)
     }
 
     #[getter]

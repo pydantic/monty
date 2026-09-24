@@ -2,7 +2,8 @@
 //! structural equality and the typed accessors.
 
 use monty_types::{
-    ExcType, MontyDate, MontyDateTime, MontyGraph, MontyNode, MontyObject, MontyTimeDelta, MontyTimeZone, MontyUuid,
+    ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone, MontyUuid,
+    unstable::{self, MontyGraph, MontyNode},
 };
 
 // === is_truthy ===
@@ -623,14 +624,18 @@ fn eq_ignores_arena_layout() {
     let one = graph.push(MontyNode::Int(1));
     let inner = graph.push(MontyNode::List(vec![one]));
     let root = graph.push(MontyNode::List(vec![inner, inner]));
-    let shared = MontyObject::new(graph, root).unwrap();
+    let shared = unstable::object_from_graph(graph, root).unwrap();
     let copied = MontyObject::list([
         MontyObject::list([MontyObject::int(1)]),
         MontyObject::list([MontyObject::int(1)]),
     ]);
-    let mut padded = copied.clone();
-    padded.graph.merge(MontyObject::string("unreachable").graph);
-    assert_ne!(shared.graph.len(), copied.graph.len());
+    let (mut graph, root) = unstable::into_graph_parts(copied.clone());
+    graph.push(MontyNode::String("unreachable".to_owned()));
+    let padded = unstable::object_from_graph(graph, root).unwrap();
+    assert_ne!(
+        unstable::graph_parts(&shared).0.len(),
+        unstable::graph_parts(&copied).0.len()
+    );
     assert_eq!(shared, copied);
     assert_eq!(copied, padded);
     assert_ne!(

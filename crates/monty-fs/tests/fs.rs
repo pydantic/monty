@@ -8,8 +8,9 @@ use std::fs;
 
 use monty_fs::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use monty_types::{
-    ExcType, MkdirCallArgs, MontyException, MontyNode, MontyObject, OsFunctionCall, PathBytesDataArgs,
-    PathStringDataArgs, RenameCallArgs, UnicodeErrorData, UnicodeErrorObject,
+    ExcType, MkdirCallArgs, MontyException, MontyObject, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
+    RenameCallArgs, UnicodeErrorData, UnicodeErrorObject,
+    unstable::{self, MontyNode},
 };
 use tempfile::TempDir;
 
@@ -136,7 +137,7 @@ fn sorted_names(obj: &MontyObject) -> Vec<String> {
         .unwrap_or_else(|| panic!("expected List from iterdir, got {obj:?}"));
     let mut names: Vec<String> = items
         .iter()
-        .map(|item| match item.node() {
+        .map(|item| match unstable::node(*item) {
             MontyNode::Path(p) => p.rsplit('/').next().unwrap().to_owned(),
             other => panic!("expected Path in iterdir result, got {other:?}"),
         })
@@ -1612,9 +1613,10 @@ fn empty_mount_table() {
 #[test]
 fn mount_table_len() {
     let dir = create_test_dir();
+    let dir2 = TempDir::new().unwrap();
     let mut mt = MountTable::new();
     mt.mount("/a", dir.path(), MountMode::ReadWrite, None).unwrap();
-    mt.mount("/b", dir.path(), MountMode::ReadOnly, None).unwrap();
+    mt.mount("/b", dir2.path(), MountMode::ReadOnly, None).unwrap();
     assert_eq!(mt.len(), 2);
     assert!(!mt.is_empty());
 }
@@ -1736,7 +1738,7 @@ fn mount_at_mnt_with_memory_limit(tmpdir: &TempDir, mode: MountMode, limit: u64)
         .unwrap()
         .with_memory_usage_limit(limit);
     let mut table = MountTable::new();
-    table.push_mount(mount);
+    table.push_mount(mount).unwrap();
     table
 }
 

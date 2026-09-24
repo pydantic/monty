@@ -59,11 +59,11 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         let ident = &f.ident;
         match f.kind {
             FieldKind::PosOnly | FieldKind::PosOrKeyword => quote! {
-                crate::CallArgs::push_arg(&mut __call, self.#ident);
+                crate::unstable::push_arg(&mut __call, self.#ident);
             },
             FieldKind::Varargs => quote! {
                 for __item in self.#ident {
-                    crate::CallArgs::push_arg(&mut __call, __item);
+                    crate::unstable::push_arg(&mut __call, __item);
                 }
             },
             _ => quote! {},
@@ -75,7 +75,7 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         let name_lit = LitStr::new(&ident.to_string(), ident.span());
         match f.kind {
             FieldKind::KwOnly => quote! {
-                crate::CallArgs::push_kwarg(&mut __call, #name_lit, self.#ident);
+                crate::unstable::push_kwarg(&mut __call, #name_lit, self.#ident);
             },
             FieldKind::Varkwargs => {
                 // No caller needs this yet; reject at codegen rather than

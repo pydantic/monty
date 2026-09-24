@@ -11,8 +11,9 @@ use std::mem;
 
 use ahash::{AHashMap, AHashSet};
 use monty_types::{
-    CallArgs, ClassTypeNode, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyGraph, MontyNode,
-    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NodeId,
+    CallArgs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
+    MontyTimeZone, MontyType, MontyUuid,
+    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 
 use crate::{
@@ -58,16 +59,14 @@ impl MontyObjectExt for MontyObject {
     fn export(value: Value, vm: &mut VM<'_>) -> Self {
         let mut exporter = GraphExporter::new();
         let root = exporter.push_owned(value, vm);
-        Self {
-            graph: exporter.finish(vm),
-            root,
-        }
+        unstable::object_from_graph(exporter.finish(vm), root).expect("exported root is valid")
     }
 
     fn to_value(self, vm: &mut VM<'_>) -> Result<Value, InvalidInputError> {
-        let mut values = self.graph.to_values(vm)?;
+        let (graph, root) = unstable::into_graph_parts(self);
+        let mut values = graph.to_values(vm)?;
         // `None` is an immediate, so swapping it in leaves nothing to release.
-        let root = mem::replace(&mut values[self.root.index()], Value::None);
+        let root = mem::replace(&mut values[root.index()], Value::None);
         values.drop_with(vm);
         Ok(root)
     }
@@ -361,25 +360,10 @@ impl GraphExporter {
                     day: u8::try_from(day).expect("day is always 1..=31"),
                 })
             }
-            HeapReadOutput::DateTime(dt) => {
-                if let Some((year, month, day, hour, minute, second, microsecond)) =
-                    datetime_type::to_components(dt.get(vm.heap))
-                {
-                    MontyNode::DateTime(MontyDateTime {
-                        year,
-                        month,
-                        day,
-                        hour,
-                        minute,
-                        second,
-                        microsecond,
-                        offset_seconds: datetime_type::offset_seconds(dt.get(vm.heap)),
-                        timezone_name: datetime_type::timezone_info(dt.get(vm.heap)).and_then(|tz| tz.name),
-                    })
-                } else {
-                    repr_node(value, vm)
-                }
-            }
+            HeapReadOutput::DateTime(dt) => match datetime_type::to_monty_datetime(dt.get(vm.heap)) {
+                Some(datetime) => MontyNode::DateTime(datetime),
+                None => repr_node(value, vm),
+            },
             HeapReadOutput::Time(t) => {
                 let time = t.get(vm.heap);
                 let (hour, minute, second, microsecond, fold) = time.to_components();
@@ -591,13 +575,13 @@ pub(crate) trait CallArgsExt {
 impl CallArgsExt for CallArgs {
     fn export_arg(&mut self, exporter: &mut GraphExporter, value: Value, vm: &mut VM<'_>) {
         let id = exporter.push_owned(value, vm);
-        self.arg_ids.push(id);
+        unstable::call_args_parts_mut(self).1.push(id);
     }
 
     fn export_kwarg(&mut self, exporter: &mut GraphExporter, key: Value, value: Value, vm: &mut VM<'_>) {
         let key = exporter.push_owned(key, vm);
         let value = exporter.push_owned(value, vm);
-        self.kwarg_ids.push((key, value));
+        unstable::call_args_parts_mut(self).2.push((key, value));
     }
 }
 

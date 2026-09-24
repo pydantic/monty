@@ -7,13 +7,15 @@ use std::fmt::Write;
 
 use insta::assert_snapshot;
 use monty::{
-    DUMP_VERSION, Dump, DumpError, MontyRepl, ReplContinuationMode, ReplProgress, ReplStartError, Session, SessionRef,
-    detect_repl_continuation_mode, dump,
+    DUMP_VERSION, Dump, DumpError, MIN_SUPPORTED_DUMP_VERSION, MontyRepl, ReplContinuationMode, ReplProgress,
+    ReplStartError, Session, SessionRef, detect_repl_continuation_mode, dump,
 };
 use monty_types::{
-    CallArgs, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyNode, MontyObject, MontyUuid,
-    NameLookupResult, PrintWriter, ResourceLimits, ResourceTracker,
+    CallArgs, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult,
+    PrintWriter, ResourceLimits, ResourceTracker,
+    unstable::{self, MontyNode},
 };
+use serde_json::to_value;
 
 #[test]
 fn repl_executes_only_new_code() {
@@ -59,9 +61,48 @@ fn round_trip_progress(progress: &ReplProgress) -> ReplProgress {
     }
 }
 
+/// Only the `Display` string reaches a Python or JavaScript host — the worker
+/// stringifies `DumpError` into a `RuntimeError` message at the boundary — so
+/// every variant's wording is pinned here, including `Unsupported`, which has no
+/// producer until a compatibility mechanism lands. Literal versions rather than
+/// `DUMP_VERSION` keep the snapshots stable across a bump.
+#[test]
+fn dump_error_messages_are_stable() {
+    assert_snapshot!(DumpError::NotADump.to_string(), @"not a monty dump");
+    assert_snapshot!(
+        DumpError::VersionTooOld {
+            found: 7,
+            min_supported: 9,
+        }
+        .to_string(),
+        @"dump format version 7 is older than 9, the oldest this build reads"
+    );
+    assert_snapshot!(
+        DumpError::VersionTooNew {
+            found: 12,
+            max_supported: 9,
+        }
+        .to_string(),
+        @"dump format version 12 is newer than 9, the newest this build reads"
+    );
+    assert_snapshot!(
+        DumpError::Unsupported {
+            found: 7,
+            reason: "`Heap` changed in version 9".to_string(),
+        }
+        .to_string(),
+        @"dump format version 7 is unsupported: `Heap` changed in version 9"
+    );
+    // a header with nothing after it is the shortest payload failure
+    let truncated = dump_repl("")[..8].to_vec();
+    let err = Dump::load(&truncated).unwrap_err();
+    assert!(matches!(err, DumpError::Payload(_)));
+    assert_snapshot!(err.to_string(), @"malformed dump payload: end of input bytes");
+}
+
 /// The header must reject anything this build cannot read, and each rejection
-/// must say which of the three it was — a stale snapshot needs rebuilding, a
-/// corrupt one needs investigating.
+/// must say which kind it was — a stale snapshot needs rebuilding, one from a
+/// newer build needs a newer reader, a corrupt one needs investigating.
 #[test]
 fn dump_header_rejects_incompatible_data() {
     let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
@@ -78,14 +119,25 @@ fn dump_header_rejects_incompatible_data() {
     wrong_magic[0] = b'X';
     assert_eq!(Dump::load(&wrong_magic).unwrap_err(), DumpError::NotADump);
 
-    let previous_version = DUMP_VERSION - 1;
+    let previous_version = MIN_SUPPORTED_DUMP_VERSION - 1;
     let mut wrong_version = bytes.clone();
     wrong_version[6..8].copy_from_slice(&previous_version.to_le_bytes());
     assert_eq!(
         Dump::load(&wrong_version).unwrap_err(),
-        DumpError::VersionMismatch {
+        DumpError::VersionTooOld {
             found: previous_version,
-            expected: DUMP_VERSION
+            min_supported: MIN_SUPPORTED_DUMP_VERSION
+        }
+    );
+
+    // the other side of the range: intact bytes this build is simply too old for
+    let next_version = DUMP_VERSION + 1;
+    wrong_version[6..8].copy_from_slice(&next_version.to_le_bytes());
+    assert_eq!(
+        Dump::load(&wrong_version).unwrap_err(),
+        DumpError::VersionTooNew {
+            found: next_version,
+            max_supported: DUMP_VERSION
         }
     );
 
@@ -93,33 +145,39 @@ fn dump_header_rejects_incompatible_data() {
     // decode as the shorter valid one it starts with
     let mut trailing_data = bytes;
     trailing_data.push(0);
-    assert_eq!(
-        Dump::load(&trailing_data).unwrap_err(),
-        DumpError::Payload(postcard::Error::DeserializeBadEncoding)
-    );
+    let err = Dump::load(&trailing_data).unwrap_err();
+    assert!(matches!(err, DumpError::Payload(_)));
+    assert_snapshot!(err.to_string(), @"malformed dump payload: decode error: trailing bytes after the payload");
 }
 
 /// Transient GC colors cannot be restored: the collector's reader protection
 /// relies on establishing Gray/White itself, even when the snapshot is invalid.
 #[test]
 fn dump_rejects_transient_gc_colors() {
-    // A distinctive naive time payload: hour, minute, second, microsecond
-    // (varint), fold, tzinfo. The heap entry's color immediately follows it.
-    const TIME: [u8; 8] = [11, 22, 33, 0x8B, 0x91, 0x1B, 0, 0];
+    // The microsecond 444555 as a CBOR u32 is distinctive; the heap entry's
+    // `color` field follows its time payload.
+    const MICROSECOND: [u8; 5] = [0x1a, 0x00, 0x06, 0xc8, 0x8b];
+    // `color` is serialized as key `C`, `Black` as `B`, `Gray`/`White` as `G`/`W`.
+    const BLACK: &[u8] = b"\x61C\x61B";
     let bytes = dump_repl("import datetime\nt = datetime.time(11, 22, 33, 444555)");
-    let color = offset_of(&bytes, &TIME) + TIME.len();
-    assert_eq!(bytes[color], 0); // Black
+    let after_time = offset_of(&bytes, &MICROSECOND) + MICROSECOND.len();
+    let color = after_time + offset_of(&bytes[after_time..], BLACK) + b"\x61C".len();
     assert!(Dump::load(&bytes).is_ok());
 
-    for transient in [1, 2] {
-        // Gray, White
-        let mut forged = bytes.clone();
-        forged[color] = transient;
-        assert_eq!(
-            Dump::load(&forged).unwrap_err(),
-            DumpError::Payload(postcard::Error::SerdeDeCustom)
-        );
-    }
+    let rejections: Vec<String> = [&b"\x61G"[..], b"\x61W"]
+        .into_iter()
+        .map(|transient| {
+            let mut forged = bytes.clone();
+            forged.splice(color..color + b"\x61B".len(), transient.iter().copied());
+            let err = Dump::load(&forged).unwrap_err();
+            assert!(matches!(err, DumpError::Payload(_)));
+            err.to_string()
+        })
+        .collect();
+    assert_snapshot!(rejections.join("\n"), @"
+    malformed dump payload: decode error: snapshot contains a transient GC color
+    malformed dump payload: decode error: snapshot contains a transient GC color
+    ");
 }
 
 /// Dumps an idle session after running `code`.
@@ -128,16 +186,13 @@ fn dump_repl(code: &str) -> Vec<u8> {
     dump("repl.py", None, SessionRef::Idle(&repl)).unwrap()
 }
 
-/// The offset of the one occurrence of `marker` in `bytes`, so a forged dump can
-/// be built by patching a known field rather than by rebuilding the payload.
+/// The offset of the first occurrence of `marker` in `bytes`, so a forged dump
+/// can be built by patching a known field rather than by rebuilding the payload.
 fn offset_of(bytes: &[u8], marker: &[u8]) -> usize {
-    let mut found = bytes
+    bytes
         .windows(marker.len())
-        .enumerate()
-        .filter_map(|(index, window)| (window == marker).then_some(index));
-    let offset = found.next().expect("marker not found in dump");
-    assert_eq!(found.next(), None, "marker is not unique in dump");
-    offset
+        .position(|window| window == marker)
+        .expect("marker not found in dump")
 }
 
 #[test]
@@ -406,6 +461,28 @@ fn repl_dump_load_preserves_unstarted_generator() {
     );
 }
 
+/// Both new and suspended generators retain their explicit globals across dumps.
+#[test]
+fn repl_dump_load_preserves_generator_globals() {
+    for suspended in [false, true] {
+        let (mut repl, _) =
+            init_repl("namespace = {'offset': 10}\ngenerator = eval('(x + offset for x in [1, 2])', namespace)");
+        if suspended {
+            assert_eq!(
+                feed_run_print(&mut repl, "next(generator)").unwrap(),
+                MontyObject::int(11)
+            );
+        }
+        let mut loaded = round_trip_repl(&repl);
+        feed_run_print(&mut loaded, "namespace['offset'] = 20").unwrap();
+        let expected = if suspended { vec![22] } else { vec![21, 22] };
+        assert_eq!(
+            feed_run_print(&mut loaded, "list(generator)").unwrap(),
+            MontyObject::list(expected.into_iter().map(MontyObject::int))
+        );
+    }
+}
+
 #[test]
 fn repl_dump_load_derives_exact_positional_call_plans() {
     let (repl, _) = init_repl("def add(a, b):\n    return a + b\n\nasync def async_add(a, b):\n    return a + b");
@@ -507,7 +584,7 @@ fn repl_feed_start_restores_comprehension_slots_before_next_turn() {
     let progress = repl.feed_start("foo()", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "foo");
-    assert!(call.args.arg_ids.is_empty());
+    assert_eq!(call.args.args().len(), 0);
     let _repl = call.into_repl();
 }
 
@@ -522,7 +599,7 @@ fn repl_feed_start_restores_comprehension_slots_after_runtime_error() {
     let progress = err.repl.feed_start("foo()", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "foo");
-    assert!(call.args.arg_ids.is_empty());
+    assert_eq!(call.args.args().len(), 0);
     let _repl = call.into_repl();
 }
 
@@ -611,6 +688,108 @@ fn repl_failed_snippets_keep_session_tables() {
     assert_eq!(err.error.exc_type(), ExcType::SyntaxError);
     let mut repl = err.repl;
     assert_eq!(feed_run_print(&mut repl, "h()").unwrap(), MontyObject::int(2));
+}
+
+/// Rejection at any compiler stage leaves all committed tables unchanged.
+#[test]
+fn repl_rejected_compilation_keeps_no_products() {
+    let (mut repl, _) = init_repl("def existing():\n    return 'retained'");
+    let before = to_value(&repl).unwrap();
+    let mut errors = Vec::new();
+    for code in [
+        "def broken(:",
+        "def pending():\n    nonlocal absent",
+        "def pending():\n    return ('uncommitted', b'uncommitted', 123456789012345678901234567890)\n__name__ = 'rejected'",
+    ] {
+        errors.push(feed_run_print(&mut repl, code).unwrap_err().to_string());
+        let after = to_value(&repl).unwrap();
+        assert_eq!(after["interns"], before["interns"]);
+        assert_eq!(after["global_names"], before["global_names"]);
+    }
+    assert_snapshot!("rejected_compilation_errors", errors.join("\n\n"));
+    let mut repl = round_trip_repl(&repl);
+    assert_eq!(
+        feed_run_print(&mut repl, "existing()").unwrap(),
+        MontyObject::string("retained".to_owned())
+    );
+    feed_run_print(&mut repl, "exec('def accepted():\\n    return 42')").unwrap();
+    let mut repl = round_trip_repl(&repl);
+    assert_eq!(feed_run_print(&mut repl, "accepted()").unwrap(), MontyObject::int(42));
+}
+
+/// Static tags, owned strings and reserved IDs stay canonical across feeds and snapshots.
+#[test]
+fn repl_interns_deduplicate_static_and_owned_strings() {
+    let source = "def keepends(custom_parameter='owned-name'):\n    return (custom_parameter.splitlines(keepends=False)[0], 'keepends', 'κ', 'x', '')\nkeepends(custom_parameter='owned-name')";
+    let runtime_source = format!("exec({source:?})\nkeepends()");
+    let (mut repl, _) = init_repl("");
+    let expected =
+        MontyObject::tuple(["owned-name", "keepends", "κ", "x", ""].map(|text| MontyObject::string(text.to_owned())));
+
+    for code in [source, source, &runtime_source] {
+        assert_eq!(feed_run_print(&mut repl, code).unwrap(), expected);
+        let state = to_value(&repl).unwrap();
+        let strings = state["interns"]["strings"].as_array().unwrap();
+        for text in ["keepends", "custom_parameter", "owned-name", "κ"] {
+            assert_eq!(strings.iter().filter(|value| value.as_str() == Some(text)).count(), 1);
+        }
+        for text in ["", "x"] {
+            assert_eq!(strings.iter().filter(|value| value.as_str() == Some(text)).count(), 0);
+        }
+        repl = round_trip_repl(&repl);
+        assert_eq!(feed_run_print(&mut repl, "keepends()").unwrap(), expected);
+    }
+}
+
+/// Frame admission must reject runtime compilation before publishing any code or names.
+#[test]
+fn repl_rejected_snippet_admission_keeps_no_products() {
+    for (builtin, source) in [
+        (
+            "exec",
+            "def pending():\n    return ('uncommitted', b'uncommitted')\nglobal newly_bound\nnewly_bound = pending",
+        ),
+        (
+            "eval",
+            "lambda: ('uncommitted', b'uncommitted', 123456789012345678901234567890)",
+        ),
+    ] {
+        for namespace in ["", ", ns"] {
+            let (mut repl, _) = init_repl(&format!(
+                "ns = {{}}\nsource = {source:?}\ndef attempt():\n    try:\n        {builtin}(source{namespace})\n    except RecursionError as exc:\n        return str(exc)"
+            ));
+            *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(1));
+
+            // Warm the host-call wrapper's argument slot before comparing tables.
+            let result = repl.call_function("attempt", vec![], PrintWriter::Stdout).unwrap();
+            assert_eq!(
+                result,
+                MontyObject::string("maximum recursion depth exceeded".to_owned())
+            );
+            let mut expected = to_value(&repl).unwrap();
+            for snippet in 2..5 {
+                assert_eq!(
+                    repl.call_function("attempt", vec![], PrintWriter::Stdout).unwrap(),
+                    result
+                );
+                // Each host call interns its filename, but none of the rejected snippet's entries.
+                expected["interns"]["strings"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(format!("<python-input-{snippet}>").into());
+                let after = to_value(&repl).unwrap();
+                assert_eq!(after["interns"], expected["interns"]);
+                assert_eq!(after["global_names"], expected["global_names"]);
+            }
+
+            *repl.tracker_mut() = ResourceTracker::default();
+            let mut repl = round_trip_repl(&repl);
+            assert_eq!(
+                repl.call_function("attempt", vec![], PrintWriter::Stdout).unwrap(),
+                MontyObject::none()
+            );
+        }
+    }
 }
 
 /// A snippet rejected at compile time, after prepare has allocated its
@@ -775,7 +954,7 @@ fn repl_class_instance_method_call_yields_function_call_with_instance_id() {
         Some(MontyUuid::from_u128(42)),
         "should be a method call on instance 42"
     );
-    assert!(call.args.arg_ids.is_empty(), "receiver must not be included in args");
+    assert_eq!(call.args.args().len(), 0, "receiver must not be included in args");
 
     // Resume with a return value (sum of x + y = 3)
     let progress = call.resume(MontyObject::int(3), PrintWriter::Stdout).unwrap();
@@ -1187,7 +1366,7 @@ fn repl_sandbox_objects_round_trip_by_identity() {
     let (mut repl, _) = init_repl("class Foo:\n    def __init__(self):\n        self.x = 1\nfoo = Foo()");
     let instance = feed_run_print(&mut repl, "foo").unwrap();
     let (class_object, instance_id) = split_instance(&instance);
-    assert!(matches!(class_object.root_node(), MontyNode::ClassType(class) if !class.host_defined));
+    assert!(matches!(unstable::root_node(&class_object), MontyNode::ClassType(class) if !class.host_defined));
     // The class itself crosses out as repr text; its wire type (as carried by
     // the instance) is what a host can hand back.
 
@@ -1269,7 +1448,7 @@ fn repl_sandbox_object_resolution_edge_cases() {
 
     // An id of the wrong kind never resolves: with a host origin it becomes a
     // host-backed copy, with a sandbox origin it is rejected.
-    let MontyNode::ClassType(class) = class_object.root_node().clone() else {
+    let MontyNode::ClassType(class) = unstable::root_node(&class_object).clone() else {
         panic!("expected a class type object");
     };
     let class_as_instance = |host_defined: bool| {
@@ -1472,6 +1651,19 @@ fn call_function_survives_repl_round_trip() {
             .unwrap(),
         MontyObject::int(6)
     );
+}
+
+/// A module global first bound by `exec()` inside the called function outlives
+/// the call, while the slot that carried the call's arguments stays hidden.
+#[test]
+fn call_function_keeps_globals_the_call_added() {
+    let mut repl = repl_with_code("def define():\n    exec('global added\\nadded = 41')");
+    assert_eq!(
+        repl.call_function("define", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::none()
+    );
+    assert_eq!(feed_run_print(&mut repl, "added + 1").unwrap(), MontyObject::int(42));
+    assert_eq!(repl.function_names(), vec!["define"]);
 }
 
 #[test]
@@ -1888,11 +2080,11 @@ fn split_instance(instance: &MontyObject) -> (MontyObject, MontyUuid) {
         class_type,
         instance_id,
         ..
-    } = instance.root_node()
+    } = unstable::root_node(instance)
     else {
         panic!("expected a ClassInstance, got {instance:?}");
     };
-    (instance.graph.value(*class_type).to_owned(), *instance_id)
+    (unstable::child(instance.as_ref(), *class_type).to_owned(), *instance_id)
 }
 
 /// The synthetic call site is `name(*args)`, so keyword arguments are refused
@@ -1908,4 +2100,89 @@ fn call_function_rejects_keyword_arguments() {
         err.to_string(),
         "TypeError: call_function() takes positional arguments only"
     );
+}
+
+#[test]
+fn repl_eval_suspends_at_external_call() {
+    let (repl, _) = init_repl("");
+
+    // The snippet compiles against the session tables, so an external
+    // function is reached exactly as from compiled code.
+    let progress = repl
+        .feed_start("eval('ext_fn(41) + 1')", vec![], PrintWriter::Stdout)
+        .unwrap();
+    let call = progress.into_function_call().expect("expected function call");
+    assert_eq!(call.function_name, "ext_fn");
+    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(41)]);
+
+    let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
+    let (mut repl, value) = progress.into_complete().expect("expected completion");
+    assert_eq!(value, MontyObject::int(42));
+
+    // What an exec'd snippet defines outlives the feed.
+    assert_eq!(
+        feed_run_print(&mut repl, "exec('def double(n):\\n    return n * 2')").unwrap(),
+        MontyObject::none()
+    );
+    assert_eq!(feed_run_print(&mut repl, "double(21)").unwrap(), MontyObject::int(42));
+}
+
+/// A refused locals snapshot must not retain the function's globals namespace.
+#[cfg(feature = "ref-count-return")]
+#[test]
+fn repl_failed_exec_locals_snapshot_releases_globals() {
+    for builtin in ["eval", "exec"] {
+        let (mut repl, _) = init_repl("import gc");
+        let baseline = repl.heap_entry_count();
+        feed_run_print(
+            &mut repl,
+            &format!("ns = {{}}\nexec('def f(x):\\n    return {builtin}(\"0\")', ns)"),
+        )
+        .unwrap();
+
+        // Refuse the snapshot dict's first growth, independently of allocator usage.
+        *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(0));
+        let error = feed_run_print(&mut repl, "ns['f'](1)").unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::MemoryError);
+        *repl.tracker_mut() = ResourceTracker::default();
+
+        feed_run_print(&mut repl, "ns = None\ngc.collect()").unwrap();
+        assert_eq!(repl.heap_entry_count(), baseline);
+    }
+}
+
+/// Rejected snippets retain diagnostic locations without committing their source or intern IDs.
+#[test]
+fn repl_rejected_snippet_locations() {
+    let (mut repl, _) = init_repl("pass");
+    let mut errors = Vec::new();
+    for source in [
+        "\n\nfrom . import missing",
+        "\n\nfrom math import *",
+        "\n\ndel missing",
+        "\n\n__name__ = 'changed'",
+    ] {
+        let error = feed_run_print(&mut repl, &format!("exec({source:?})")).unwrap_err();
+        assert_eq!(error.traceback().last().unwrap().start.line, 3);
+        errors.push(error.to_string());
+        let state = to_value(&repl).unwrap();
+        assert_eq!(state["interns"]["eval_sources"].as_array().unwrap().len(), 0);
+    }
+    assert_snapshot!("rejected_snippet_locations", errors.join("\n\n"));
+}
+
+/// Equal displayed filenames retain distinct source locations after loading a session.
+#[test]
+fn repl_snippet_sources_survive_round_trip() {
+    let (repl, _) = init_repl(
+        "filename = '<string>'\nexec('def first():\\n    raise ValueError')\nexec('\\n\\ndef second():\\n    raise ValueError')",
+    );
+    let mut repl = round_trip_repl(&repl);
+    assert_eq!(
+        feed_run_print(&mut repl, "filename == eval(\"'<string>'\")").unwrap(),
+        MontyObject::bool(true)
+    );
+    let first = feed_run_print(&mut repl, "first()").unwrap_err();
+    let second = feed_run_print(&mut repl, "second()").unwrap_err();
+    assert_snapshot!("snippet_sources", format!("{first}\n\n{second}"));
 }

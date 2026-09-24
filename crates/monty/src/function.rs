@@ -1,7 +1,6 @@
 use std::{
     cell::OnceCell,
     fmt::{self, Write},
-    sync::Arc,
 };
 
 use crate::{args::Signature, bytecode::Code, expressions::Identifier, intern::Interns, namespace::NamespaceId};
@@ -17,10 +16,8 @@ pub(crate) enum ExactPositionalCall {
 
 /// A defined function once compiled and ready for execution.
 ///
-/// This is created during the compilation phase from a `PreparedFunctionDef`.
-/// Contains everything needed to execute a user-defined function: compiled bytecode,
-/// metadata, and closure information. Functions are stored on the heap and
-/// referenced via HeapId.
+/// Contains compiled code, parameter metadata and closure layout.
+/// Committed functions have stable addresses in `Interns` and are referenced by `FunctionId`.
 ///
 /// # Namespace Layout
 ///
@@ -44,35 +41,44 @@ pub(crate) enum ExactPositionalCall {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Function {
     /// The function name (used for error messages and repr).
+    #[serde(rename = "N")]
     pub name: Identifier,
     /// The function signature.
+    #[serde(rename = "S")]
     pub signature: Signature,
     /// Size of the initial namespace (number of local variable slots).
+    #[serde(rename = "Z")]
     pub namespace_size: usize,
     /// Legacy compiler record of enclosing slots; closure creation uses bytecode.
+    #[serde(rename = "E")]
     pub free_var_enclosing_slots: Vec<NamespaceId>,
     /// This frame's slots that receive the captured free-var cells, parallel to
     /// [`Self::free_var_enclosing_slots`]. Explicit (not positional) so
     /// late-allocated pass-through slots land correctly.
+    #[serde(rename = "F")]
     pub free_var_slots: Vec<NamespaceId>,
     /// This frame's slots for owned cell variables (locals captured by nested
     /// functions); a fresh cell is created for each at call time. Parallel to
     /// [`Self::cell_param_indices`].
+    #[serde(rename = "C")]
     pub cell_var_slots: Vec<NamespaceId>,
     /// Maps each cell variable (parallel to [`Self::cell_var_slots`]) to its
     /// parameter index when the cell is for a captured parameter, so the bound
     /// value can be copied in; `None` means the cell starts `Undefined`.
+    #[serde(rename = "P")]
     pub cell_param_indices: Vec<Option<usize>>,
     /// Number of default parameter values.
     ///
     /// At function definition time, this many default values are evaluated and stored
     /// in a separate defaults array. The signature indicates how these map to parameters.
+    #[serde(rename = "D")]
     pub defaults_count: usize,
     /// Whether this is an async function (`async def`).
     ///
     /// When true, calling this function creates a `Coroutine` object instead of
     /// immediately pushing a frame. The coroutine captures the bound arguments
     /// and starts execution only when awaited.
+    #[serde(rename = "A")]
     pub is_async: bool,
     /// Cached binder-free call plan, derived from the fields above and cached
     /// via [`Self::exact_positional_call`].
@@ -83,8 +89,9 @@ pub(crate) struct Function {
     /// than merely checked.
     #[serde(skip)]
     exact_positional_call: OnceCell<Option<ExactPositionalCall>>,
-    /// Compiled bytecode for this function body. Wrapped in `Arc` to avoid deep clone.
-    pub code: Arc<Code>,
+    /// Compiled body borrowed by active frames, which track body-relative instruction offsets.
+    #[serde(rename = "B")]
+    pub code: Code,
 }
 
 impl Function {
@@ -127,7 +134,7 @@ impl Function {
             defaults_count,
             is_async,
             exact_positional_call: OnceCell::new(),
-            code: Arc::new(code),
+            code,
         }
     }
 

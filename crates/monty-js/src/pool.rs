@@ -35,12 +35,14 @@ use monty_pool::{
     ResumeValue, TurnEvent,
 };
 use monty_types::{
-    AssertMessageAnnotations, ExcType, MontyException, MontyNode, MontyObject, NameLookupResult, NamedValues, NodeId,
-    PrintStream, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
+    unstable::{self, NodeId},
+    AssertMessageAnnotations, ExcType, MontyException, MontyObject, NameLookupResult, NamedValues, PrintStream,
+    SourceRange, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
 };
 use napi::{
     bindgen_prelude::{
-        Array, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw, Unknown,
+        Array, BigInt, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw,
+        Unknown,
     },
     threadsafe_function::UnknownReturnValue,
     Env, Error, Result,
@@ -52,6 +54,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::{
     convert::{js_to_monty, monty_to_js, DecodedArena, GraphEncoder},
     limits::{extract_limits, JsResourceLimits},
+    os_policy::extract_os_policy,
     telemetry::{configured_adapter, configured_tracing_adapter},
 };
 
@@ -88,8 +91,8 @@ where
 }
 
 /// Pool construction options. Timeouts are pre-normalised to milliseconds by
-/// the TypeScript layer (which also applies the `durationLimitGrace` default
-/// and resolves the binary path).
+/// the TypeScript layer (which also applies the grace defaults and resolves the
+/// binary path).
 #[napi(object, js_name = "NativePoolOptions")]
 pub struct NativePoolOptions {
     /// Resolved path to the `monty` binary.
@@ -102,9 +105,12 @@ pub struct NativePoolOptions {
     pub checkout_timeout_ms: Option<f64>,
     /// Parent-side hard deadline per protocol turn (ms).
     pub request_timeout_ms: Option<f64>,
-    /// Grace for the automatic `maxDurationSecs` backstop (ms). Absent:
+    /// Grace for the automatic `maxFeedDurationSecs` backstop (ms). Absent:
     /// backstop disabled.
-    pub duration_limit_grace_ms: Option<f64>,
+    pub feed_duration_limit_grace_ms: Option<f64>,
+    /// Grace for the automatic `maxTurnDurationSecs` backstop (ms). Absent:
+    /// backstop disabled.
+    pub turn_duration_limit_grace_ms: Option<f64>,
     /// Recycle a worker after serving this many checkouts.
     pub max_checkouts_per_worker: Option<u32>,
 }
@@ -138,6 +144,35 @@ pub struct NativeCheckoutOptions {
     /// it (ms). Absent: the worker's default. `0` restores line buffering,
     /// delivering each completed line on its own.
     pub print_flush_interval_ms: Option<f64>,
+
+    /// The instant the clock calls read: `'system'`, `'call_host'` or
+    /// `'fixed'` (with the two `datetime*` parts below). Absent: `'system'`.
+    pub datetime_kind: Option<String>,
+    /// A fixed clock's instant, seconds since the Unix epoch (UTC).
+    pub datetime_unix_seconds: Option<BigInt>,
+    /// A fixed clock's sub-second part, 0..=999999.
+    pub datetime_microsecond: Option<u32>,
+    /// The sandbox zone: `'utc'`, `'named'` (an IANA name in `timezone_name`) or
+    /// `'fixed'` (with the two `timezone*` parts below). Absent: `'utc'`.
+    pub timezone_kind: Option<String>,
+    /// A fixed zone's offset from UTC, in seconds.
+    pub timezone_offset_seconds: Option<i32>,
+    /// A fixed zone's name, if it has one; a named zone's IANA name.
+    pub timezone_name: Option<String>,
+    /// Sleep policy: `'system'` (default), `'zero'` or `'call_host'`.
+    pub sleep: Option<String>,
+    /// Maximum seconds per system sleep (default 10); `Infinity` disables the cap.
+    pub sleep_system_max_secs: Option<f64>,
+    /// What `time.process_time()` reports: `'zero'` (default) or `'elapsed'`.
+    pub process_time: Option<String>,
+    /// Where `random` starts: `'system'`, `'call_host'` or `'seed'` (with
+    /// exactly one `random_seed_*` field below). Absent: `'system'`.
+    pub random_start_kind: Option<String>,
+    /// Integer seed encoded as two's-complement little-endian bytes.
+    pub random_seed_int: Option<Buffer>,
+    pub random_seed_float: Option<f64>,
+    pub random_seed_str: Option<String>,
+    pub random_seed_bytes: Option<Buffer>,
 }
 
 /// Per-feed settings other than the mounts, passed by the TypeScript
@@ -218,9 +253,13 @@ impl NativePool {
             .request_timeout_ms
             .map(|ms| duration_from_ms("requestTimeout", ms))
             .transpose()?;
-        config.duration_limit_grace = options
-            .duration_limit_grace_ms
-            .map(|ms| duration_from_ms("durationLimitGrace", ms))
+        config.feed_duration_limit_grace = options
+            .feed_duration_limit_grace_ms
+            .map(|ms| duration_from_ms("feedDurationLimitGrace", ms))
+            .transpose()?;
+        config.turn_duration_limit_grace = options
+            .turn_duration_limit_grace_ms
+            .map(|ms| duration_from_ms("turnDurationLimitGrace", ms))
             .transpose()?;
         config.max_checkouts_per_worker = options.max_checkouts_per_worker;
         config.metrics = configured_adapter().map(TelemetryAdapterHandle::metrics);
@@ -252,6 +291,7 @@ impl NativePool {
     #[napi]
     pub fn checkout(&self, options: NativeCheckoutOptions) -> Result<NativeSession> {
         let limits = options.limits.map(extract_limits).transpose()?;
+        let os_policy = extract_os_policy(&options)?;
         Ok(NativeSession {
             pool: Arc::clone(&self.pool),
             repl_config: ReplConfig {
@@ -274,6 +314,7 @@ impl NativePool {
                     .print_flush_interval_ms
                     .map(|ms| duration_from_ms("printFlushInterval", ms))
                     .transpose()?,
+                os_policy,
             },
             checkout: Arc::new(AsyncMutex::new(None)),
         })
@@ -524,7 +565,7 @@ impl NativeSession {
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let resolved = match value {
             Some(wrapper) => Some(name_lookup_value(env, &wrapper)?),
-            None => function_name.map(|name| MontyObject::leaf(MontyNode::Function { name, docstring: None })),
+            None => function_name.map(|name| MontyObject::function(name, None)),
         };
         self.run_turn(
             env,
@@ -868,13 +909,16 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             call_id,
             object_id,
             allow_eager_await,
+            position,
         }) => {
             obj.set("kind", "functionCall")?;
+            obj.set("position", source_range_to_js(env, &position)?)?;
             obj.set("allowEagerAwait", allow_eager_await)?;
             obj.set("functionName", function_name)?;
-            let arena = DecodedArena::new(&args.graph, env)?;
-            obj.set("args", values_to_js(env, &arena, &args.arg_ids)?)?;
-            obj.set("kwargs", pairs_to_js(env, &arena, &args.kwarg_ids)?)?;
+            let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&args);
+            let arena = DecodedArena::new(graph, env)?;
+            obj.set("args", values_to_js(env, &arena, arg_ids)?)?;
+            obj.set("kwargs", pairs_to_js(env, &arena, kwarg_ids)?)?;
             obj.set("callId", call_id)?;
             // the routed receiver uuid as a canonical string
             obj.set("objectId", object_id.map(|uuid| uuid.to_string()))?;
@@ -884,24 +928,40 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             args,
             call_id,
             allow_eager_await,
+            system_sleep,
+            position,
         }) => {
             obj.set("kind", "osCall")?;
+            obj.set("position", source_range_to_js(env, &position)?)?;
             obj.set("functionName", function_name)?;
-            let arena = DecodedArena::new(&args.graph, env)?;
-            obj.set("args", values_to_js(env, &arena, &args.arg_ids)?)?;
-            obj.set("kwargs", pairs_to_js(env, &arena, &args.kwarg_ids)?)?;
+            if let Some(delay) = system_sleep {
+                obj.set("systemSleepSecs", delay.as_secs_f64())?;
+            }
+            let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&args);
+            let arena = DecodedArena::new(graph, env)?;
+            obj.set("args", values_to_js(env, &arena, arg_ids)?)?;
+            obj.set("kwargs", pairs_to_js(env, &arena, kwarg_ids)?)?;
             obj.set("callId", call_id)?;
             obj.set("allowEagerAwait", allow_eager_await)?;
         }
-        TurnOutcome::Event(TurnEvent::NameLookup { name, object_id }) => {
+        TurnOutcome::Event(TurnEvent::NameLookup {
+            name,
+            object_id,
+            position,
+        }) => {
             obj.set("kind", "nameLookup")?;
             obj.set("name", name)?;
             // the receiver uuid as a canonical string
             obj.set("objectId", object_id.map(|uuid| uuid.to_string()))?;
+            obj.set("position", source_range_to_js(env, &position)?)?;
         }
-        TurnOutcome::Event(TurnEvent::ResolveFutures { pending_call_ids }) => {
+        TurnOutcome::Event(TurnEvent::ResolveFutures {
+            pending_call_ids,
+            position,
+        }) => {
             obj.set("kind", "resolveFutures")?;
             obj.set("pendingCallIds", pending_call_ids)?;
+            obj.set("position", source_range_to_js(env, &position)?)?;
         }
         TurnOutcome::Runtime(exc) => {
             obj.set("kind", "error")?;
@@ -981,6 +1041,15 @@ fn exception_to_js<'env>(env: &'env Env, exc: &MontyException) -> Result<Object<
     Ok(obj)
 }
 
+/// Builds the `position` object of a suspension turn (`SourceRange` in `ts/errors.ts`).
+fn source_range_to_js<'env>(env: &'env Env, range: &SourceRange) -> Result<Object<'env>> {
+    let mut obj = Object::new(env)?;
+    obj.set("filename", range.filename.as_str())?;
+    obj.set("start", range.start)?;
+    obj.set("end", range.end)?;
+    Ok(obj)
+}
+
 /// Converts one stack frame, field-for-field what `renderTraceback` needs.
 fn frame_to_js<'env>(env: &'env Env, frame: &StackFrame) -> Result<Object<'env>> {
     let mut obj = Object::new(env)?;
@@ -1018,10 +1087,7 @@ fn convert_inputs<'env>(env: &'env Env, inputs: Option<Object<'env>>) -> Result<
             Ok((name, encoder.push(value)?))
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(NamedValues {
-        graph: encoder.finish(),
-        names,
-    })
+    Ok(unstable::named_values_from_parts(encoder.finish(), names).expect("encoded roots are valid"))
 }
 
 /// Converts a non-callable `externalLookup` entry — carried inside a

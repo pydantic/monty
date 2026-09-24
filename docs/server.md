@@ -18,7 +18,7 @@ The server is closed-source and distributed as a container image.
     [contact us](https://pydantic.dev/contact). We're currently offering Full Monty free to a select set of
     organizations while we finalize the commercial platform.
 
-## Why Monty over WebSocket
+## Why Full Monty over OSS Monty
 
 Running Monty on a remote server provides:
 
@@ -28,7 +28,7 @@ Running Monty on a remote server provides:
     execution, instead of every service running its own worker pool.
 - **Density**: Monty workers have a small baseline footprint (as little as 2MB), plus additional memory for limits and
     optional type checking, so a single machine can run hundreds.
-- **Same behavior as local Monty**: the wire protocol carries host callbacks, name lookups, async futures and mounted
+- **Same behavior as OSS Monty**: the wire protocol carries host callbacks, name lookups, async futures and mounted
     client directories, so code that runs against a local pool runs unchanged against the server.
 - **Full sandbox option**: a VM running CPython for code that needs dependencies, bash or a real filesystem,
     exposed through the same interface.
@@ -152,7 +152,7 @@ container's loopback interface and is not reachable through `-p 8000:8000`.
 | `--turn-timeout <seconds>`      | wall-clock cap on one request; 0 disables                          | 300                                   |
 | `--drain-grace <seconds>`       | time after SIGTERM for existing sessions to collect a dump         | 30                                    |
 | `--max-memory-mib <MiB>`        | per-session memory ceiling; 0 disables                             | 64                                    |
-| `--max-duration <seconds>`      | cumulative sandbox execution time per session; 0 disables          | 60                                    |
+| `--max-duration <seconds>`      | sandbox execution time per feed; 0 disables                        | 60                                    |
 | `--max-recursion-depth <n>`     | per-session call-stack ceiling; cannot be disabled                 | 1000                                  |
 | `--trust-forwarded-for`         | use the last `X-Forwarded-For` entry as the caller identity        | off                                   |
 | `--dump-key <key>`              | required key of at least 16 bytes for signing session dumps        | none (required)                       |
@@ -183,7 +183,7 @@ The server flags and Python client keys use different names and, for memory, dif
 
 | Server flag                 | `pool.checkout(limits=...)` key | Unit    |
 | --------------------------- | ------------------------------- | ------- |
-| `--max-duration <seconds>`  | `max_duration_secs`             | seconds |
+| `--max-duration <seconds>`  | `max_feed_duration_secs`        | seconds |
 | `--max-memory-mib <MiB>`    | `max_memory`                    | bytes   |
 | `--max-recursion-depth <n>` | `max_recursion_depth`           | count   |
 
@@ -200,7 +200,7 @@ async def main() -> None:
     async with AsyncMontyWebsocket('ws://localhost:8000/') as pool:
         async with pool.checkout(
             limits={
-                'max_duration_secs': 30,
+                'max_feed_duration_secs': 30,
                 'max_memory': 32 * 1024 * 1024,
                 'max_recursion_depth': 500,
             },
@@ -216,8 +216,9 @@ if __name__ == '__main__':
 Save this as `limits_client.py` and run `uv run limits_client.py`; with the default server configuration, it prints
 `2`.
 
-`--max-duration` counts cumulative interpreter execution across the session and excludes time suspended waiting for
-the client. `--turn-timeout` measures wall-clock time for one complete request, including time waiting for a client
+`--max-duration` counts interpreter execution within one feed and excludes time suspended waiting for the client.
+It restarts at each feed, so it bounds a request rather than a session; `--session-timeout` is what bounds the
+session. `--turn-timeout` measures wall-clock time for one complete request, including time waiting for a client
 callback. Keep the server's turn timeout above the clients' `request_timeout` so the client watchdog can report a more
 specific failure first.
 

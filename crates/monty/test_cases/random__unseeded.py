@@ -1,7 +1,6 @@
 # call-external
-# Unseeded `random`: the first draw asks the host for entropy (the datatest
-# harness answers with a fixed byte pattern, CPython reads real entropy), so
-# only invariants can be asserted here.
+# Unseeded `random`: the generator seeds itself from OS entropy (on the first
+# draw in Monty, at import in CPython), so only invariants can be asserted here.
 import random
 
 # === the module-level generator seeds itself on first use ===

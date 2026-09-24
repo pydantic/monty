@@ -8,21 +8,45 @@ use std::{
     iter::repeat_n,
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use monty_proto::{
-    FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireFunctionCall,
-    exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
+    BudgetVec, FrameError, FrameReader, MAX_FRAME_LEN, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION,
+    WireFunctionCall, exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
 };
 use monty_types::{
-    CallArgs, ExtFunctionResult, MontyDate, MontyDateTime, MontyNode, MontyObject, NameLookupResult, NamedValues,
+    CallArgs, DateTimeSource, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult, NamedValues,
+    OsPolicy, RandomSeed, RandomStart, SandboxTimeZone, SleepMode, SourceRange,
+    unstable::{self, MontyNode},
 };
 
 /// How long a death-expecting helper waits for the child to exit. Generous:
 /// the regression it guards is "the child never dies", so the only cost of a
 /// long wait is how late that failure is reported on a slow CI machine.
 const DEATH_TIMEOUT: Duration = Duration::from_secs(20);
+
+fn configure() -> pb::Configure {
+    pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: None,
+        type_check: false,
+        type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        assert_message_annotations: None,
+        ..Default::default()
+    }
+}
+
+/// The clock and the sleeps routed to the parent.
+fn call_host() -> OsPolicy {
+    OsPolicy {
+        datetime: DateTimeSource::CallHost,
+        sleep: SleepMode::CallHost,
+        ..OsPolicy::default()
+    }
+}
 
 /// A spawned `monty subprocess` child with framed pipes.
 struct ChildProc {
@@ -90,15 +114,13 @@ impl ChildProc {
     }
 
     fn create_repl(&mut self) {
+        self.create_repl_with(configure());
+    }
+
+    fn create_repl_with_os_policy(&mut self, os_policy: &OsPolicy) {
         self.create_repl_with(pb::Configure {
-            script_name: "main.py".to_owned(),
-            limits: None,
-            type_check: false,
-            type_check_stubs: None,
-            monty_version: env!("CARGO_PKG_VERSION").to_owned(),
-            protocol_version: PROTOCOL_VERSION,
-            assert_message_annotations: None,
-            ..Default::default()
+            os_policy: Some(os_policy.into()),
+            ..configure()
         });
     }
 
@@ -164,7 +186,7 @@ impl ChildProc {
     fn feed_expecting_death(&mut self, code: &str) {
         self.send(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -357,7 +379,7 @@ fn abort_feed_round_trip() {
         exception: Some(pb::RaisedException {
             exc_type: "RuntimeError".to_owned(),
             message: Some("suspension limit 3 exceeded".to_owned()),
-            traceback: vec![],
+            traceback: BudgetVec::new(),
             data: None,
         }),
     }));
@@ -392,6 +414,11 @@ fn near_limit_suspension_is_refused_cleanly() {
             1,
             None,
             false,
+            SourceRange {
+                filename: "main.py".to_owned(),
+                start: 0,
+                end: 7,
+            },
         ))),
         ..Default::default()
     };
@@ -468,7 +495,7 @@ fn name_lookup_error_raises_in_sandbox() {
     let exc = pb::RaisedException {
         exc_type: "PermissionError".to_owned(),
         message: Some("secret is off limits".to_owned()),
-        traceback: vec![],
+        traceback: BudgetVec::new(),
         data: None,
     };
     child.send(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
@@ -518,14 +545,139 @@ fn external_function_not_found_raises_name_error() {
     child.shutdown();
 }
 
-/// The worker's `MontyRepl` carries a `HostClock`, but drives `feed_start`,
-/// which never reads it. Only this test holds the two apart: routing a worker
-/// feed through `feed_run` would answer the clock inside the sandbox instead
-/// of asking the parent.
+/// Default sleeps reach the parent capped at ten seconds; clock and entropy calls stay in the worker.
 #[test]
-fn clock_calls_bubble_to_parent() {
+fn clock_and_entropy_are_answered_in_the_worker_by_default() {
     let mut child = ChildProc::spawn();
     child.create_repl();
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock before the epoch")
+        .as_secs_f64();
+    let (_, event) = child.feed(&format!(
+        "import time
+from datetime import date, datetime
+abs(time.time() - {now}) < 60 and date.today().year == datetime.now().year"
+    ));
+    assert_eq!(expect_complete(event), MontyObject::bool(true));
+    let (_, event) = child.feed("import time\ntime.sleep(3600)");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::SystemSleep(pb::os_call::Sleep { seconds: 10.0 }))
+    );
+    let (_, event) = child.resume_return(call.call_id, MontyObject::none());
+    assert_eq!(expect_complete(event), MontyObject::none());
+    let (_, event) = child.feed(
+        "import asyncio
+asyncio.run(asyncio.sleep(3600, 'woken'))",
+    );
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::AsyncSystemSleep(pb::os_call::AsyncSleep {
+            delay: 10.0
+        }))
+    );
+    let (_, event) = child.resume_return(call.call_id, MontyObject::none());
+    assert_eq!(expect_complete(event), MontyObject::string("woken"));
+    let (_, event) = child.feed(
+        "import random
+0 <= random.random() < 1",
+    );
+    assert_eq!(expect_complete(event), MontyObject::bool(true));
+    child.shutdown();
+}
+
+#[test]
+fn fixed_clock_and_seed_are_answered_in_the_worker() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with_os_policy(&OsPolicy {
+        datetime: DateTimeSource::Fixed {
+            unix_seconds: 1_700_000_000,
+            microsecond: 123_456,
+        },
+        timezone: SandboxTimeZone::Fixed {
+            offset_seconds: 7_200,
+            name: None,
+        },
+        random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
+        ..OsPolicy::default()
+    });
+
+    let (_, event) = child.feed(
+        "from datetime import datetime
+repr(datetime.now())",
+    );
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::string("datetime.datetime(2023, 11, 15, 0, 13, 20, 123456)")
+    );
+    let (_, event) = child.feed(
+        "import time
+time.time()",
+    );
+    assert_eq!(expect_complete(event), MontyObject::float(1_700_000_000.123_456));
+    // the zone is also what `astimezone()`, `%Z` and the `time` constants report
+    let (_, event) = child.feed(
+        "import time
+(datetime.now().astimezone().strftime('%H:%M %Z'), time.timezone, time.tzname)",
+    );
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::tuple([
+            MontyObject::string("00:13 UTC+02:00".to_owned()),
+            MontyObject::int(-7_200),
+            MontyObject::tuple([
+                MontyObject::string("UTC+02:00".to_owned()),
+                MontyObject::string("UTC+02:00".to_owned()),
+            ]),
+        ])
+    );
+    // CPython: random.seed(42); random.random()
+    let (_, event) = child.feed(
+        "import random
+random.random()",
+    );
+    assert_eq!(expect_complete(event), MontyObject::float(0.639_426_798_457_883_7));
+    child.shutdown();
+}
+
+/// Rejecting malformed `OsPolicy` leaves the worker usable.
+#[test]
+fn invalid_os_policy_is_rejected_on_configure() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(pb::Configure {
+        os_policy: Some(pb::OsPolicy {
+            datetime: Some(pb::os_policy::Datetime::Fixed(pb::FixedDateTime {
+                unix_seconds: 0,
+                microsecond: 1_000_000,
+            })),
+            ..Default::default()
+        }),
+        ..configure()
+    }));
+    let error = expect_error(child.recv());
+    assert_eq!(
+        error.message.as_deref(),
+        Some(
+            "protocol violation: invalid os_policy: invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
+        )
+    );
+    child.create_repl();
+    child.feed_complete("1 + 1");
+    child.shutdown();
+}
+
+#[test]
+fn clock_calls_bubble_to_parent_under_call_host() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with_os_policy(&call_host());
 
     let today = MontyDate {
         year: 2024,
@@ -566,20 +718,23 @@ fn clock_calls_bubble_to_parent() {
     let pb::child_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
-    assert_eq!(call.call, Some(pb::os_call::Call::Time(pb::Unit {})));
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::Time(pb::os_call::TimeCall {
+            caller: "time.time".to_owned(),
+        }))
+    );
     let (_, event) = child.resume_return(call.call_id, MontyObject::float(1_700_000_000.5));
     assert_eq!(expect_complete(event), MontyObject::float(1_700_000_000.5));
 
     child.shutdown();
 }
 
-/// Neither sleep waits in the worker: both cross the wire so the parent can
-/// decide how long a wait it will perform, and `time.sleep()` evaluates to
-/// `None` whatever the parent answers with.
+/// `CallHost` lets the parent choose the wait; `time.sleep()` returns `None` regardless of its answer.
 #[test]
-fn sleep_calls_bubble_to_parent() {
+fn sleep_calls_bubble_to_parent_under_call_host() {
     let mut child = ChildProc::spawn();
-    child.create_repl();
+    child.create_repl_with_os_policy(&call_host());
 
     let (_, event) = child.feed("import time\ntime.sleep(1.5)");
     let pb::child_event::Kind::OsCall(call) = event else {
@@ -704,7 +859,7 @@ fn os_call_error_resume_carries_exception() {
     let exc = pb::RaisedException {
         exc_type: "FileNotFoundError".to_owned(),
         message: Some("No such file or directory: '/nope.txt'".to_owned()),
-        traceback: vec![],
+        traceback: BudgetVec::new(),
         data: None,
     };
     let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::Error(exc));
@@ -726,7 +881,7 @@ fn child_enforces_time_limit() {
     child.create_repl_with(pb::Configure {
         script_name: "main.py".to_owned(),
         limits: Some(pb::ResourceLimits {
-            max_duration_micros: Some(100_000), // 100ms
+            max_feed_duration_micros: Some(100_000), // 100ms
             ..Default::default()
         }),
         type_check: false,
@@ -739,10 +894,10 @@ fn child_enforces_time_limit() {
     let (_, event) = child.feed("while True:\n    pass");
     let error = expect_error(event);
     assert_eq!(error.exc_type, "TimeoutError");
-    // resource exhaustion is terminal for the SESSION (the tracker stays
-    // exhausted) but not for the child process: Reset + Configure reuses it
-    let (_, event) = child.feed("1 + 1");
-    assert_eq!(expect_error(event).exc_type, "TimeoutError");
+    // the feed clock restarts, so the next feed gets the whole budget back —
+    // the heap it runs against is what a host should not trust, not the budget
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    // the child process is reusable too: Reset + Configure starts a session over
     child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
     let pb::child_event::Kind::Ok(_) = child.recv() else {
         panic!("expected Ok for Reset");
@@ -944,68 +1099,75 @@ fn deep_copy_of_a_near_limit_dict_raises_rather_than_dying() {
 fn large_allocations_are_rejected_before_the_hard_limit() {
     // each case with the allocator usage it should be refused at
     let cases = [
-        ("'x' * 10_000_000", 10_042_090),
+        ("'x' * 10_000_000", 10_041_930),
         // Each formatter builder must fail softly before the worker reaches its hard ceiling.
-        ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_242_532),
-        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_442_564),
-        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_242_569),
+        ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_242_361),
+        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_442_393),
+        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_242_398),
         // `%` formatting: padding, float digits, integer zero-extension and output growth.
-        ("'%*d' % (2_000_000, 1)", 2_042_250),
-        ("'%.*f' % (1_000_000, 1.0)", 1_171_289),
-        ("'%.*d' % (2_000_000, 1)", 2_042_254),
-        ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_642_715),
-        ("b'%*d' % (2_000_000, 1)", 2_042_376),
-        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_642_842),
-        ("b'x' * 10_000_000", 10_042_228),
-        ("[None] * 1_000_000", 16_042_252),
-        ("2 ** 10_000_000", 10_042_089),
-        ("1 << 10_000_000", 1_292_090),
+        ("'%*d' % (2_000_000, 1)", 2_042_087),
+        ("'%.*f' % (1_000_000, 1.0)", 1_171_127),
+        ("'%.*d' % (2_000_000, 1)", 2_042_091),
+        ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_642_547),
+        ("b'%*d' % (2_000_000, 1)", 2_050_309),
+        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_650_770),
+        ("b'x' * 10_000_000", 10_050_164),
+        ("[None] * 1_000_000", 16_042_085),
+        ("2 ** 10_000_000", 10_041_929),
+        ("1 << 10_000_000", 1_291_930),
         // `int / int` scales one operand before dividing; both shift directions are
         // preflighted.
-        ("x = 1 << 3_000_000\nx / (x - 1)", 1_542_723),
-        ("x = 1 << 3_000_000\nx / (x >> 100)", 1_542_706),
+        ("x = 1 << 3_000_000\nx / (x - 1)", 1_542_551),
+        ("x = 1 << 3_000_000\nx / (x >> 100)", 1_542_534),
         // `math.factorial`, `comb` and `perm` preflight their product's size.
-        ("import math\nmath.factorial(2_000_000)", 10_547_267),
+        ("import math\nmath.factorial(2_000_000)", 10_547_092),
         // A binomial is bounded by `2**n`, so `comb` needs a larger `n` to trip the check.
-        ("import math\nmath.comb(9_000_000, 4_500_000)", 2_297_281),
-        ("import math\nmath.perm(4_000_000, 2_000_000)", 11_047_281),
+        ("import math\nmath.comb(9_000_000, 4_500_000)", 2_297_109),
+        ("import math\nmath.perm(4_000_000, 2_000_000)", 11_047_109),
         // `math.lcm` of two large coprime ints is a product, preflighted like `*`.
-        ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_297_628),
-        ("('a' * 1000).replace('a', 'b' * 2000)", 2_045_640),
+        ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_297_439),
+        ("('a' * 1000).replace('a', 'b' * 2000)", 2_045_422),
+        // Every `%Z` copies the zone name into a `StringBuilder`, refused at a
+        // capacity doubling like the formatter cases above: fixed-size pushes
+        // make that step deterministic.
+        (
+            "from datetime import datetime, timezone, timedelta\ntz = timezone(timedelta(0), 'n' * 100_000)\ndatetime(2024, 1, 1, tzinfo=tz).strftime('%Z' * 5_000)",
+            1_254_024,
+        ),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.
-        ("x = [None] * 40_000\nx += x", 1_962_720),
-        ("t = (None,) * 40_000\nt + t", 1_322_720),
-        ("x = [None] * 40_000\nx.copy()", 1_322_466),
+        ("x = [None] * 40_000\nx += x", 1_962_551),
+        ("t = (None,) * 40_000\nt + t", 1_322_547),
+        ("x = [None] * 40_000\nx.copy()", 1_322_293),
         // `dict | dict` snapshots the left pairs and builds the merged dict
         // while that snapshot is live, so both are preflighted together.
-        ("d = dict.fromkeys(range(12_000))\nd | {}", 1_805_591),
+        ("d = dict.fromkeys(range(12_000))\nd | {}", 1_805_423),
         // The right operand is snapshotted inside the same call, so that copy is
         // preflighted too. Only the copy: see the overlap test below.
-        ("d = dict.fromkeys(range(12_000))\n{} | d", 1_229_591),
+        ("d = dict.fromkeys(range(12_000))\n{} | d", 1_229_423),
         // A partial re-clones its bound arguments on every call, so that clone
         // is preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [None] * 40_000\np()",
-            1_325_348,
+            1_326_311,
         ),
         // Reading `p.args` / `p.keywords` rebuilds them in full, so both are
         // preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [0] * 40_000\np.args",
-            1_325_348,
+            1_326_311,
         ),
         (
             "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0] * 30_000\np.keywords",
-            1_054_536,
+            1_055_460,
         ),
         // `deque.extend` preflights exact-hint iterators up front.
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
-            16_042_844,
+            16_042_653,
         ),
         // `randbytes` charges its word buffer and the byte buffer it fills.
-        ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_247_332),
+        ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_247_167),
         // A `range` population can be as long as `i64::MAX` while costing nothing,
         // so `sample` must saturate its size arithmetic and refuse the pick buffer.
         (
@@ -1015,18 +1177,18 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `itertools.batched` preflights one batch, capped at `n`.
         (
             "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",
-            16_044_917,
+            16_044_751,
         ),
         // The two combinatoric iterators whose width is not bounded by their
         // pool preflight that width: `r` repeats of a one-item pool, and
         // `repeat` copies of the argument list.
         (
             "import itertools\nnext(itertools.combinations_with_replacement('a', 1_000_000))",
-            24_044_732,
+            24_044_563,
         ),
         (
             "import itertools\nnext(itertools.product('ab', repeat=1_000_000))",
-            24_044_794,
+            24_044_628,
         ),
     ];
 
@@ -1053,6 +1215,50 @@ fn overlapping_dict_merges_are_not_charged_for_absent_growth() {
     child.create_repl_with(configure_with_max_memory(23 * 1024 * 1024));
     child.feed_complete("a = dict.fromkeys(range(100_000))\nb = dict.fromkeys(range(100_000))");
     assert_eq!(child.feed_complete("x = a | b\nlen(x)"), MontyObject::int(100_000));
+    child.shutdown();
+}
+
+/// A rejected `eval()` / `exec()` snippet leaves nothing behind: the filename,
+/// source and anything the failed parse interned are dropped again, so a loop
+/// of failing calls stays inside a budget that all their leftovers would blow.
+#[test]
+fn rejected_snippets_are_not_retained() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "for _ in range(20_000):\n    try:\n        eval('(')\n    except SyntaxError:\n        pass\n    try:\n        exec('(')\n    except SyntaxError:\n        pass\n    try:\n        exec('def transient():\\n    return (b\"pending\", 123456789012345678901234567890)\\n__name__ = 1')\n    except NotImplementedError:\n        pass\n1 + 1";
+    assert_eq!(child.feed_complete(code), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// A snippet that compiles but is refused its frame — the recursion limit
+/// trips on the push — is dropped like one that failed to parse. `deep` is
+/// sized so the snippet's frame, not one of its own, is the one over the limit.
+#[test]
+fn snippets_refused_a_frame_are_not_retained() {
+    let mut child = ChildProc::spawn();
+    let mut configure = configure_with_max_memory(1024 * 1024);
+    configure.limits.as_mut().expect("limits are set").max_recursion_depth = Some(20);
+    child.create_repl_with(configure);
+    let code = "\
+src = '0' + ' ' * 4000
+def plain(n):
+    return plain(n - 1) if n else 0
+def deep(n):
+    return deep(n - 1) if n else eval(src)
+tip = 0
+while True:
+    try:
+        plain(tip + 1)
+    except RecursionError:
+        break
+    tip += 1
+for _ in range(2000):
+    try:
+        deep(tip)
+    except RecursionError:
+        pass
+1 + 1";
+    assert_eq!(child.feed_complete(code), MontyObject::int(2));
     child.shutdown();
 }
 
@@ -1220,7 +1426,7 @@ fn exporting_a_shared_graph_is_linear_in_heap_objects() {
     let code = "x = [0]\nfor _ in range(20):\n    x = [x]\nfor _ in range(15):\n    x = [x, x]\nx";
     let (_, event) = child.feed(code);
     let value = expect_complete(event);
-    assert_eq!(value.graph.len(), 37);
+    assert_eq!(unstable::graph_parts(&value).0.len(), 37);
     // the session survives: nothing overshot into a soft-limit `MemoryError`
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
@@ -1235,7 +1441,7 @@ fn exporting_a_small_shared_graph_round_trips() {
     let (_, event) = child.feed("x = [0]\nx = [x, x]\nx = [x, x]\nx");
     let value = expect_complete(event);
     // `0`, `[0]`, `[[0], [0]]` and the outer list: sharing costs nothing
-    assert_eq!(value.graph.len(), 4);
+    assert_eq!(unstable::graph_parts(&value).0.len(), 4);
     let leaf = MontyObject::list([MontyObject::int(0)]);
     let pair = MontyObject::list([leaf.clone(), leaf]);
     assert_eq!(value, MontyObject::list([pair.clone(), pair]));
@@ -1252,7 +1458,7 @@ fn exporting_a_deeply_nested_value_does_not_overflow_the_stack() {
     let (_, event) = child.feed("x = [1]\nfor _ in range(300):\n    x = [x]\nx");
     let value = expect_complete(event);
     // one node per list plus the leaf
-    assert_eq!(value.graph.len(), 302);
+    assert_eq!(unstable::graph_parts(&value).0.len(), 302);
     let expected = (0..301).fold(MontyObject::int(1), |inner, _| MontyObject::list([inner]));
     assert_eq!(value, expected);
     child.shutdown();
@@ -1269,8 +1475,9 @@ fn exporting_past_the_recursion_guard_degrades_to_a_repr() {
     let value = expect_complete(event);
     // post-order: the innermost node comes first; the guard trips at the
     // 1000th level, so 1000 lists wrap the repr
-    assert_eq!(value.graph.nodes()[0], MontyNode::Repr("<deeply nested>".to_owned()));
-    assert_eq!(value.graph.len(), 1001);
+    let (graph, _) = unstable::graph_parts(&value);
+    assert_eq!(graph.nodes()[0], MontyNode::Repr("<deeply nested>".to_owned()));
+    assert_eq!(graph.len(), 1001);
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
@@ -1286,8 +1493,8 @@ fn many_references_to_one_object_cost_one_node() {
     let (_, event) = child.feed(&format!("x = [1]\n[x] * {REFS}"));
     let value = expect_complete(event);
     // `1`, `[1]` and the outer list
-    assert_eq!(value.graph.len(), 3);
-    let MontyNode::List(ids) = value.root_node() else {
+    assert_eq!(unstable::graph_parts(&value).0.len(), 3);
+    let MontyNode::List(ids) = unstable::root_node(&value) else {
         panic!("expected a list, got {value:?}");
     };
     assert_eq!(ids.len(), REFS);
@@ -1304,9 +1511,9 @@ fn cycles_export_one_placeholder_each() {
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
     let (_, event) = child.feed("xs = [[] for _ in range(10_000)]\nfor x in xs:\n    x.append(x)\nxs");
     let value = expect_complete(event);
-    assert_eq!(value.graph.len(), 20_001);
-    let cycles = value
-        .graph
+    let (graph, _) = unstable::graph_parts(&value);
+    assert_eq!(graph.len(), 20_001);
+    let cycles = graph
         .nodes()
         .iter()
         .filter(|node| matches!(node, MontyNode::Cycle(_)))
@@ -1357,8 +1564,10 @@ fn shared_inputs_are_one_sandbox_object() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let mut inputs = NamedValues::new();
-    let id = inputs.push("a", MontyObject::list([MontyObject::int(1)]));
-    inputs.names.push(("b".to_owned(), id));
+    let id = unstable::push_named(&mut inputs, "a", MontyObject::list([MontyObject::int(1)]));
+    let (graph, mut names) = unstable::into_named_values_parts(inputs);
+    names.push(("b".to_owned(), id));
+    let inputs = unstable::named_values_from_parts(graph, names).unwrap();
     let (_, event) = child.feed_with("a is b and a == [1]", inputs);
     assert_eq!(expect_complete(event), MontyObject::bool(true));
     child.shutdown();
@@ -1824,7 +2033,7 @@ fn install_dependencies_is_rejected_but_session_survives() {
     // The Monty sandbox has no host interpreter to install packages for, so it
     // refuses `InstallDependencies` with a recoverable error.
     child.send(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
-        requirements: vec!["numpy".to_owned()],
+        requirements: vec!["numpy".to_owned()].into(),
     }));
     let error = expect_error(child.recv());
     assert_eq!(error.exc_type, "RuntimeError");
@@ -1840,6 +2049,52 @@ fn install_dependencies_is_rejected_but_session_survives() {
 // =============================================================================
 // Type checking
 // =============================================================================
+
+/// Stubs reach ty with every feed and nothing else scans them, so a
+/// `Configure` carrying deeply nested stubs is refused up front.
+#[test]
+fn deeply_nested_type_check_stubs_are_rejected_on_configure() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(pb::Configure {
+        type_check: true,
+        type_check_stubs: Some(format!("x: '{}1{}'", "(".repeat(5000), ")".repeat(5000))),
+        ..configure()
+    }));
+    let error = expect_error(child.recv());
+    assert_eq!(
+        error.message.as_deref(),
+        Some("protocol violation: invalid type_check_stubs: Source is too deeply nested")
+    );
+    child.create_repl();
+    child.feed_complete("1 + 1");
+    child.shutdown();
+}
+
+/// The type checker parses with no nesting limit, so a source the compiler
+/// will reject as too deeply nested must bypass it: the feed ends in the
+/// compiler's SyntaxError, not a crash, and the session survives.
+#[test]
+fn type_checked_session_skips_the_checker_for_deeply_nested_source() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: None,
+        type_check: true,
+        type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        assert_message_annotations: None,
+        ..Default::default()
+    });
+
+    let (_, event) = child.feed(&format!("{}1{}", "(".repeat(200_000), ")".repeat(200_000)));
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "SyntaxError");
+    assert_eq!(error.message.as_deref(), Some("Source is too deeply nested"));
+
+    assert_eq!(child.feed_complete("1"), MontyObject::int(1));
+    child.shutdown();
+}
 
 #[test]
 fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
@@ -2286,6 +2541,23 @@ fn undeclared_protocol_version_is_a_fatal_error() {
     );
 }
 
+/// The oldest served version still works: the point of a bump is to refuse a
+/// peer that would silently drop a field, not to close the migration window on
+/// parents that never send one.
+#[test]
+fn oldest_supported_protocol_version_is_accepted() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+        MIN_SUPPORTED_PROTOCOL_VERSION,
+        env!("CARGO_PKG_VERSION"),
+    )));
+    assert!(
+        matches!(child.recv(), pb::child_event::Kind::Ok(_)),
+        "a parent one version behind must still be served"
+    );
+    child.shutdown();
+}
+
 /// The package version is informational: a parent from a different build is
 /// served as long as its protocol version is one this build speaks.
 #[test]
@@ -2329,7 +2601,7 @@ fn killed_child_is_detected_as_eof() {
     // run forever (no limits), then kill the child mid-execution
     child.send(pb::parent_request::Kind::Feed(pb::Feed {
         code: "while True:\n    pass".to_owned(),
-        inputs: vec![],
+        inputs: vec![].into(),
         values: None,
         skip_type_check: false,
         cwd: "/".to_owned(),

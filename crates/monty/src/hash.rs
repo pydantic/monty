@@ -124,7 +124,7 @@ impl<'de> serde::Deserialize<'de> for HashValue {
 /// Hashes any `Hash` value with a fresh [`DefaultHasher`].
 ///
 /// Keeps the hasher boilerplate in one place for the cold `Value::py_hash` arms
-/// (builtins, functions, markers, singletons), so the hot arms (int/str/ref)
+/// (functions, named builtins, heap identities), so the hot arms (int/str/ref)
 /// never pay for constructing a hasher they don't use.
 #[inline]
 pub(crate) fn hash_one(value: impl Hash) -> HashValue {
@@ -141,6 +141,14 @@ pub(crate) fn hash_one(value: impl Hash) -> HashValue {
 #[inline]
 pub(crate) fn identity_hash(id: HeapId) -> HashValue {
     hash_one(id)
+}
+
+/// Hashes a value with no heap identity (a builtin, type, marker or singleton)
+/// by its stable name. Dict and set entries persist their hash in dumps, so a
+/// hash tied to an enum's declaration order would break lookups in older dumps
+/// once a variant is inserted. `kind` keeps `int` apart from the string `'int'`.
+pub(crate) fn hash_named(kind: &'static str, name: &str) -> HashValue {
+    hash_one((kind, name))
 }
 
 /// Hashes a string using the canonical Python-string hash function.
@@ -194,16 +202,17 @@ pub(crate) fn hash_python_long_int(bi: &BigInt) -> HashValue {
 /// impossible to forget to keep the value and hash in sync, and makes
 /// serde recompute-on-deserialise local to this type.
 ///
-/// Constructors and `Deserialize` impls are provided for each concrete value
-/// type used by the interners. Adding another requires a constructor and the
-/// corresponding hash-rebuilding `Deserialize` implementation.
+/// Constructors, `SerializeHashed` and `Deserialize` impls are provided for
+/// each concrete value type used by the interners. Adding another requires a
+/// constructor and both serde halves.
 ///
 /// # Wire format
 ///
-/// `Serialize` is a hand-written passthrough — the on-the-wire form is
-/// exactly `T`'s serialised form (the hash is recomputable). `Deserialize`
-/// reads `T` and rebuilds the hash via the appropriate `hash_python_*`
-/// helper. Round-tripping through serde is therefore lossless and any
+/// `Serialize` writes only the value (the hash is recomputable): text and
+/// big integers as `T`'s own serialised form, `Vec<u8>` as a byte string via
+/// `serde_bytes`, chosen by the private `SerializeHashed` trait. `Deserialize`
+/// reads the same form and rebuilds the hash via the appropriate
+/// `hash_python_*` helper, so round-tripping through serde is lossless and any
 /// deserialiser-supplied bytes always produce a hash consistent with the
 /// canonical helpers.
 #[derive(Debug, Clone)]
@@ -253,14 +262,39 @@ impl WithHash<BigInt> {
     }
 }
 
-// `Serialize` is generic: just emit the inner value. The hash is recomputable
-// from the value during deserialisation, so we don't waste bytes encoding it
-// (and we don't risk locking the snapshot format to the current hash function).
-impl<T: serde::Serialize> serde::Serialize for WithHash<T> {
+// `Serialize` emits just the inner value. The hash is recomputable from the
+// value during deserialisation, so we don't waste bytes encoding it (and we
+// don't risk locking the snapshot format to the current hash function).
+impl<T: SerializeHashed> serde::Serialize for WithHash<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.value.serialize(serializer)
+        self.value.serialize_hashed(serializer)
     }
 }
+
+/// How a hashed value is written: byte payloads go out as a byte string rather
+/// than one integer per byte, everything else as itself.
+trait SerializeHashed {
+    fn serialize_hashed<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>;
+}
+
+impl SerializeHashed for Vec<u8> {
+    fn serialize_hashed<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde_bytes::serialize(self, serializer)
+    }
+}
+
+/// Text and big integers already have the right serde form.
+macro_rules! serialize_hashed_as_self {
+    ($($ty:ty),*) => {$(
+        impl SerializeHashed for $ty {
+            fn serialize_hashed<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serde::Serialize::serialize(self, serializer)
+            }
+        }
+    )*};
+}
+
+serialize_hashed_as_self!(String, Box<str>, BigInt);
 
 // `Deserialize` is hand-written per concrete `T` so the right
 // `hash_python_*` helper is invoked.
@@ -278,7 +312,7 @@ impl<'de> serde::Deserialize<'de> for WithHash<Box<str>> {
 
 impl<'de> serde::Deserialize<'de> for WithHash<Vec<u8>> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self::for_bytes(Vec::<u8>::deserialize(deserializer)?))
+        Ok(Self::for_bytes(serde_bytes::deserialize(deserializer)?))
     }
 }
 

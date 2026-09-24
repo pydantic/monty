@@ -156,15 +156,22 @@ impl VM<'_> {
 /// Derefs to the [`VM`] so the nested `call_function`/`run()` call runs
 /// through the guard; the reserved level is released when the guard is
 /// dropped on any code path (normal return, `?`, or early return).
+///
+/// Dropping it also restores `instruction_ip`: the nested run leaves it on the
+/// next instruction, and a suspension the outer instruction makes afterwards
+/// must report the outer instruction's position.
 pub(crate) struct RunReentryGuard<'a, 'h> {
     vm: &'a mut VM<'h>,
+    /// The outer instruction's `instruction_ip`, restored on drop.
+    instruction_ip: usize,
 }
 
 impl<'a, 'h> RunReentryGuard<'a, 'h> {
     /// Wraps a re-entry level already charged by a prior
     /// [`VM::enter_run_reentry`] call.
     pub(crate) fn new(vm: &'a mut VM<'h>) -> Self {
-        Self { vm }
+        let instruction_ip = vm.instruction_ip;
+        Self { vm, instruction_ip }
     }
 }
 
@@ -183,6 +190,7 @@ impl DerefMut for RunReentryGuard<'_, '_> {
 
 impl Drop for RunReentryGuard<'_, '_> {
     fn drop(&mut self) {
+        self.vm.instruction_ip = self.instruction_ip;
         self.vm.release_run_reentry();
     }
 }

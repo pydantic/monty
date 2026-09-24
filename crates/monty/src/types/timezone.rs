@@ -168,6 +168,24 @@ fn extract_offset_seconds(offset_arg: &Value, heap: &Heap, interns: &Interns) ->
         .map_err(|_| SimpleException::new_msg(ExcType::ValueError, "timezone offset out of range").into())
 }
 
+/// CPython's bound on a `timezone` offset, for the paths where one arrives as a
+/// count of seconds rather than a `timedelta` (`strptime`'s `%z`).
+pub(crate) fn check_offset_seconds(offset_seconds: i32) -> RunResult<()> {
+    if (MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&offset_seconds) {
+        Ok(())
+    } else {
+        let offset = timedelta::from_total_microseconds(i128::from(offset_seconds) * MICROSECONDS_PER_SECOND)?;
+        let timedelta_repr = timedelta::format_repr(&offset);
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!(
+                "offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24), not {timedelta_repr}"
+            ),
+        )
+        .into())
+    }
+}
+
 /// Formats a generic offset as `+HH:MM` or `+HH:MM:SS`.
 #[must_use]
 pub(crate) fn format_offset_hms(offset_seconds: i32) -> String {
@@ -180,6 +198,13 @@ pub(crate) fn format_offset_hms(offset_seconds: i32) -> String {
         return format!("{sign}{hours:02}:{minutes:02}");
     }
     format!("{sign}{hours:02}:{minutes:02}:{seconds:02}")
+}
+
+/// The offset as `strftime('%z')` renders it: `±HHMM`, with `SS` appended
+/// when the offset has seconds.
+#[must_use]
+pub(crate) fn format_offset_compact(offset_seconds: i32) -> String {
+    format_offset_hms(offset_seconds).replace(':', "")
 }
 
 /// The name a fixed-offset zone reports from `tzname()` and `str()`.

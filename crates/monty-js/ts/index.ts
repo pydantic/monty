@@ -13,7 +13,15 @@ export {
   type ClassInstanceOptions,
   type ClassTypeOptions,
 } from './classInstance.js'
-export { type AssertMessageAnnotations, type TypeCheckFormat } from './options.js'
+export {
+  type AssertMessageAnnotations,
+  type OsPolicy,
+  type DateTimeSource,
+  type RandomStart,
+  type SleepMode,
+  type TimeZone,
+  type TypeCheckFormat,
+} from './options.js'
 export {
   FunctionSnapshot,
   FutureSnapshot,
@@ -41,6 +49,7 @@ export {
   ProtocolError,
   type ExceptionInfo,
   type Frame,
+  type SourceRange,
 } from './errors.js'
 export {
   type MontyDate,

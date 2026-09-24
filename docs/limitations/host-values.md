@@ -23,6 +23,19 @@ Rust hosts can distinguish the corresponding `MontyNode` variants.
 Sandbox-defined class *instances* instead return structured proxies;
 see [classes](classes.md#crossing-the-host-boundary-pydantic_monty-pydanticmonty).
 
+Builtin functions and type objects outside the data-type allowlist never resolve to the host's own objects.
+Python receives a read-only [`MontyStdTypeProxy`][pydantic_monty.MontyStdTypeProxy] with `kind` and `name`,
+JavaScript a `{ __monty_type__, value }` marker.
+The Python proxy and both JavaScript markers re-enter the sandbox as the builtin they name.
+The allowlist is `type`, `object`, `bool`, `int`, `float`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`,
+`frozenset`, `range`, `slice`, `NoneType`, `ellipsis`, `NotImplementedType`, the `datetime` classes,
+`collections.deque`, `re.Pattern`, `re.Match`, `types.GenericAlias`, `types.UnionType`,
+`pathlib.PurePosixPath` and the exception classes.
+So `open`, `functools.partial` and `type(iter([]))` reach a Python host as proxies, while `int` and `datetime.date`
+are the host classes.
+A host class outside the allowlist passed *in*, such as `functools.partial` or an `itertools` adaptor, is an
+unmodelled class and enters as a host function.
+
 A self-referential container replaces the cycle with a placeholder string such as `[...]`, `{...}`, `(...)` or `...`.
 Rust receives a `Cycle` node, which cannot be sent back as an input.
 Cyclic host inputs are rejected: Python raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError]
@@ -59,9 +72,9 @@ If arguments make a suspension announcement too large, the feed ends with a host
 that sandboxed code cannot catch.
 [Session dumps](../snapshots.md#storing-and-restoring) have the same size cap.
 
-There is also a fixed 1 GiB budget for decoded values per frame, independent of the encoded size.
-A value can fit the wire cap but exceed this budget; a parent receiving such a frame discards the worker
-with a protocol error.
-The browser component applies the same decoded-value budget to its WIT arenas.
+On protobuf transports, the receiver also limits cumulative decoded allocation requests to 1 GiB per frame.
+A message can exceed this budget even if its final decoded values occupy less than 1 GiB.
+A parent receiving such a frame discards the worker with a protocol error.
+The browser component separately limits its WIT value arenas to an estimated 1 GiB.
 Protocol validation and accounting are described in the
 [`monty-proto` README](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted).

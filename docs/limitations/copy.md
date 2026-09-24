@@ -58,15 +58,17 @@ for the same object (see [classes.md](classes.md)).
 ## Immutable values are shared rather than rebuilt
 
 Both `copy.copy` and `copy.deepcopy` return the same object for `datetime`,
-`date`, `time`, `timedelta`, `timezone`, `Path`, `slice`, exception
-instances, generic aliases (`list[int]`) and unions (`int | None`), where
-CPython builds an equal new one through the pickle protocol. Nothing in Monty
-can mutate these, so only `is` can tell the difference. `copy.copy` of a named
-tuple *does* build a new object, matching CPython.
+`date`, `time`, `timedelta`, `timezone`, `Path`, exception instances, generic
+aliases (`list[int]`) and unions (`int | None`), where CPython builds an equal
+new one through the pickle protocol. `timezone.utc` is the exception, a
+singleton in both, so only other offsets show it. `deepcopy` of a `slice`
+diverges the same way; `copy.copy` of one does not, CPython sharing slices too.
+Nothing in Monty can mutate any of these, so only `is` can tell the difference.
+`copy.copy` of a named tuple *does* build a new object, matching CPython.
 
 The cases where sharing is CPython's behaviour too — `str`, `bytes`, `int`,
-`tuple` of immutables, `frozenset` under `copy.copy`, `range`, compiled
-patterns, classes, functions — behave identically.
+`tuple` of immutables, `frozenset` and `slice` under `copy.copy`, `range`,
+compiled patterns, classes, functions — behave identically.
 
 ## Deep nesting is copied further than CPython manages
 
@@ -88,7 +90,7 @@ recursion notes in [resource_limits.md](resource_limits.md).
 
 A generator copies to a second generator at the same point in the same
 sequence, as CPython's does. One that has never been seeded is the exception:
-Monty seeds from host entropy on the first draw rather than at construction, so
+Monty seeds on the first draw rather than at construction, so
 copying an unseeded generator gives two that go on to draw *different*
 sequences, where CPython's copies agree. Seed it, and the copies agree here
 too. See [random.md](random.md).

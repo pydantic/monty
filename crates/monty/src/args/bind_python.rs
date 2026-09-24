@@ -62,27 +62,33 @@ pub(crate) struct Signature {
     /// Positional-only parameters, e.g. `a, b` in `def f(a, b, /): ...`
     ///
     /// These can only be passed by position, not by keyword.
+    #[serde(rename = "P")]
     pos_args: Option<Vec<StringId>>,
 
     /// Number of positional-only parameters with defaults (from the end).
+    #[serde(rename = "Q")]
     pos_defaults_count: usize,
 
     /// Positional-or-keyword parameters, e.g. `a, b` in `def f(a, b): ...`
     ///
     /// These can be passed either by position or by keyword.
+    #[serde(rename = "A")]
     args: Option<Vec<StringId>>,
 
     /// Number of positional-or-keyword parameters with defaults (from the end).
+    #[serde(rename = "B")]
     arg_defaults_count: usize,
 
     /// Variable positional parameter name, e.g. `args` in `def f(*args): ...`
     ///
     /// Collects excess positional arguments into a tuple.
+    #[serde(rename = "V")]
     var_args: Option<StringId>,
 
     /// Keyword-only parameters, e.g. `c` in `def f(*, c): ...` or `def f(*args, c): ...`
     ///
     /// These can only be passed by keyword, not by position.
+    #[serde(rename = "K")]
     kwargs: Option<Vec<StringId>>,
 
     /// Mapping from each keyword-only parameter to its default index (if any).
@@ -90,11 +96,13 @@ pub(crate) struct Signature {
     /// Each entry corresponds to the same index in `kwargs`. A value of `Some(i)`
     /// points into the kwarg section of the defaults array, while `None` means
     /// the parameter is required.
+    #[serde(rename = "M")]
     kwarg_default_map: Option<Vec<Option<usize>>>,
 
     /// Variable keyword parameter name, e.g. `kwargs` in `def f(**kwargs): ...`
     ///
     /// Collects excess keyword arguments into a dict.
+    #[serde(rename = "W")]
     var_kwargs: Option<StringId>,
 
     /// How simple the signature is, used for the fast path when binding.
@@ -622,10 +630,9 @@ impl Signature {
         self.kwargs.as_ref().map_or(0, Vec::len)
     }
 
-    /// Returns an iterator over all parameter names in namespace slot order.
-    ///
-    /// Order: pos_args, args, var_args (if present), kwargs, var_kwargs (if present)
-    fn param_names(&self) -> impl Iterator<Item = StringId> + '_ {
+    /// Returns parameter names in the slot order filled by `bind`:
+    /// positional-only, positional-or-keyword, `*args`, keyword-only, `**kwargs`.
+    pub(crate) fn param_names(&self) -> impl Iterator<Item = StringId> + '_ {
         let pos_args = self.pos_args.iter().flat_map(|v| v.iter().copied());
         let args = self.args.iter().flat_map(|v| v.iter().copied());
         let var_args = self.var_args.iter().copied();

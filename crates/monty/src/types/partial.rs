@@ -367,7 +367,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
 
         // Both loops share one counter so the 64-item poll cadence spans the
         // whole partial, as `repr_items_fmt` does for a sequence: a widely
-        // bound partial must not outrun `max_duration` between checkpoints.
+        // bound partial must not outrun its time limit between checkpoints.
         let mut item = 0;
         'items: {
             for index in 0..self.get(vm.heap).args.len() {

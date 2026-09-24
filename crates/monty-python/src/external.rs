@@ -11,7 +11,10 @@
 //! not `external_lookup`.
 
 use monty_proto::python::{DecodedArena, InstanceStore, exc_py_to_monty, py_to_monty, py_to_monty_value};
-use monty_types::{CallArgs, ExtFunctionResult, MontyNode, MontyObject, MontyUuid, NameLookupResult};
+use monty_types::{
+    CallArgs, ExtFunctionResult, MontyObject, MontyUuid, NameLookupResult,
+    unstable::{self, MontyNode},
+};
 use pyo3::{
     exceptions::PyAttributeError,
     prelude::*,
@@ -74,10 +77,11 @@ pub(crate) fn wire_call_arguments<'py>(
     args: &CallArgs,
     instances: &InstanceStore,
 ) -> PyResult<(Bound<'py, PyTuple>, Bound<'py, PyDict>)> {
-    let arena = DecodedArena::new(py, &args.graph, instances)?;
-    let py_args_tuple = PyTuple::new(py, args.arg_ids.iter().map(|id| arena.get(py, *id)))?;
+    let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(args);
+    let arena = DecodedArena::new(py, graph, instances)?;
+    let py_args_tuple = PyTuple::new(py, arg_ids.iter().map(|id| arena.get(py, *id)))?;
     let py_kwargs = PyDict::new(py);
-    for (key, value) in &args.kwarg_ids {
+    for (key, value) in kwarg_ids {
         py_kwargs.set_item(arena.get(py, *key), arena.get(py, *value))?;
     }
     Ok((py_args_tuple, py_kwargs))
@@ -140,7 +144,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     /// (or absent dict) yields `None` → the sandbox raises `NameError`.
     ///
     /// [`py_to_monty_value`] decides callable-vs-other (notably a type object
-    /// Monty models converts to `MontyObject::Type`, not a proxy); a function
+    /// Monty models converts to `MontyNode::Type`, not a proxy); a function
     /// proxy is renamed to the lookup *key* (not the callable's `__name__`) so
     /// the `FunctionCall` hits the same dict entry. An unconvertible value
     /// rejects the turn via [`MontyConversionError::value_conversion_err`] —
@@ -154,12 +158,13 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         let Some(value) = lookup.get_item(name)? else {
             return Ok(None);
         };
-        let mut value = py_to_monty_value(&value, self.instances)
+        let value = py_to_monty_value(&value, self.instances)
             .map_err(|exc| MontyConversionError::value_conversion_err(self.py, exc))?;
-        if let MontyNode::Function { name: proxy_name, .. } = value.graph.node_mut(value.root) {
+        let (mut graph, root) = unstable::into_graph_parts(value);
+        if let MontyNode::Function { name: proxy_name, .. } = graph.node_mut(root) {
             name.clone_into(proxy_name);
         }
-        Ok(Some(value))
+        Ok(Some(unstable::object_from_graph(graph, root).expect("root unchanged")))
     }
 
     /// Calls an external function by name, converting args/kwargs from Monty

@@ -8,7 +8,7 @@ use std::mem;
 
 use monty_types::{MontyUuid, OsFunctionCall};
 
-use super::{CallFrame, VM, attr::PendingLookupEffect, recursion::RunReentryGuard};
+use super::{CallFrame, VM, attr::PendingLookupEffect, function_namespace, recursion::RunReentryGuard};
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
@@ -121,7 +121,7 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
     }
 }
 
-impl VM<'_> {
+impl<'h> VM<'h> {
     // ========================================================================
     // Call Opcode Executors
     // ========================================================================
@@ -558,8 +558,8 @@ impl VM<'_> {
             Value::Builtin(builtin) => builtin.call(self, args),
             Value::ModuleFunction(mf) => mf.call(self, args),
             Value::DefFunction(func_id) => {
-                // Defined function without defaults or captured variables
-                self.call_def_function(*func_id, &[], &[], args)
+                // Defined function without defaults, captured variables or a globals dict
+                self.call_def_function(*func_id, &[], &[], None, args)
             }
             Value::Ref(heap_id) => {
                 // Could be a closure or function with defaults - check heap
@@ -813,10 +813,10 @@ impl VM<'_> {
         let func = self.interns.get_function(func_id);
         match func.exact_positional_call() {
             Some(ExactPositionalCall::Sync(count)) if count == arg_count => {
-                Some(self.call_exact_sync_function(func_id, callable_index))
+                Some(self.call_exact_sync_function(func_id, func, callable_index))
             }
             Some(ExactPositionalCall::Async(count)) if count == arg_count => {
-                Some(Ok(self.create_exact_coroutine(func_id, callable_index)))
+                Some(Ok(self.create_exact_coroutine(func_id, func, callable_index)))
             }
             _ => None,
         }
@@ -826,9 +826,13 @@ impl VM<'_> {
     ///
     /// Removing the immediate callable shifts its arguments into the parameter
     /// slots, avoiding argument wrappers, binding, scratch storage, and a copy.
-    fn call_exact_sync_function(&mut self, func_id: FunctionId, callable_index: usize) -> Result<CallResult, RunError> {
+    fn call_exact_sync_function(
+        &mut self,
+        func_id: FunctionId,
+        func: &'h Function,
+        callable_index: usize,
+    ) -> Result<CallResult, RunError> {
         let call_offset = self.current_offset();
-        let func = self.interns.get_function(func_id);
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
         let code = &func.code;
@@ -846,14 +850,14 @@ impl VM<'_> {
             exc_stack_base,
             func_id,
             call_offset,
+            None,
         ))?;
 
         Ok(CallResult::FramePushed)
     }
 
     /// Creates a coroutine by moving exact positional arguments into its namespace.
-    fn create_exact_coroutine(&mut self, func_id: FunctionId, callable_index: usize) -> CallResult {
-        let func = self.interns.get_function(func_id);
+    fn create_exact_coroutine(&mut self, func_id: FunctionId, func: &Function, callable_index: usize) -> CallResult {
         let mut namespace = self.stack.split_off(callable_index + 1);
         namespace.reserve(func.namespace_size - namespace.len());
         self.install_closure_cells(func, &[], &mut namespace);
@@ -861,7 +865,7 @@ impl VM<'_> {
         let callable = self.pop();
         debug_assert_exact_callable(&callable, func_id);
 
-        let coroutine = Coroutine::new(func_id, namespace);
+        let coroutine = Coroutine::new(func_id, namespace, None);
         let coroutine_id = self.heap.allocate(HeapData::Coroutine(coroutine));
         CallResult::Value(Value::Ref(coroutine_id))
     }
@@ -879,14 +883,15 @@ impl VM<'_> {
         func_id: FunctionId,
         cells: &[HeapId],
         defaults: &[Value],
+        globals: Option<HeapId>,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
         let func = self.interns.get_function(func_id);
 
         if func.is_async {
-            self.create_coroutine(func_id, cells, defaults, args)
+            self.create_coroutine(func_id, func, cells, defaults, globals, args)
         } else {
-            self.call_sync_function(func_id, cells, defaults, args)
+            self.call_sync_function(func_id, func, cells, defaults, globals, args)
         }
     }
 
@@ -896,12 +901,12 @@ impl VM<'_> {
     fn create_coroutine(
         &mut self,
         func_id: FunctionId,
+        func: &Function,
         cells: &[HeapId],
         defaults: &[Value],
+        globals: Option<HeapId>,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
-        let func = self.interns.get_function(func_id);
-
         // 1. Create namespace for the coroutine with bound arguments and captured cells.
         let namespace = Vec::with_capacity(func.namespace_size);
         let mut namespace_guard = DropGuard::new(namespace, self);
@@ -913,9 +918,12 @@ impl VM<'_> {
         // 3. Install owned cells and captured free-var cells at their slots.
         this.install_closure_cells(func, cells, namespace);
 
-        // 4. Create Coroutine on heap
+        // 4. Create Coroutine on heap; it carries its own reference to the globals dict.
         let (namespace, this) = namespace_guard.into_parts();
-        let coroutine = Coroutine::new(func_id, namespace);
+        if let Some(globals) = globals {
+            this.heap.inc_ref(globals);
+        }
+        let coroutine = Coroutine::new(func_id, namespace, globals);
         let coroutine_id = this.heap.allocate(HeapData::Coroutine(coroutine));
 
         Ok(CallResult::Value(Value::Ref(coroutine_id)))
@@ -968,14 +976,15 @@ impl VM<'_> {
     fn call_sync_function(
         &mut self,
         func_id: FunctionId,
+        func: &'h Function,
         cells: &[HeapId],
         defaults: &[Value],
+        globals: Option<HeapId>,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
         let call_offset = self.current_offset();
         let stack_base = self.stack.len();
 
-        let func = self.interns.get_function(func_id);
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 
@@ -997,8 +1006,6 @@ impl VM<'_> {
         // 3. Install owned cells and captured free-var cells at their slots.
         this.install_closure_cells(func, cells, namespace);
 
-        let code = &func.code;
-
         // 6. Commit the guard (no rollback) and push the frame. The operand
         // stack starts immediately above the locals region — comprehensions
         // emit their own push/pop bytecode, so no frame-level region is
@@ -1009,13 +1016,15 @@ impl VM<'_> {
         this.namespace_scratch = namespace;
 
         let exc_stack_base = this.exception_stack.len();
+        let namespace = function_namespace(globals, &*this.heap);
         this.push_frame(CallFrame::new_function(
-            code,
+            &func.code,
             stack_base,
             locals_count,
             exc_stack_base,
             func_id,
             call_offset,
+            namespace,
         ))?;
 
         Ok(CallResult::FramePushed)

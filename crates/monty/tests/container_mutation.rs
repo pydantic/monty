@@ -10,7 +10,10 @@
 
 use insta::{allow_duplicates, assert_snapshot};
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyException, MontyNode, MontyObject};
+use monty_types::{
+    CompileOptions, ExcType, MontyException, MontyObject,
+    unstable::{self, MontyNode},
+};
 
 /// Two colliding elements in `s`, whose `__eq__` clears `s` once `armed`.
 ///
@@ -128,7 +131,7 @@ fn run_err(preamble: &str, expr: &str) -> MontyException {
 fn run_repr(preamble: &str, expr: &str) -> String {
     let (head, tail) = expr.rsplit_once('\n').unwrap_or(("", expr));
     let value = run(preamble, &format!("{head}\nrepr({tail})")).expect("expected the run to succeed");
-    match value.root_node() {
+    match unstable::root_node(&value) {
         MontyNode::String(repr) => repr.clone(),
         other => panic!("expected a string, got {other:?}"),
     }
@@ -137,6 +140,6 @@ fn run_repr(preamble: &str, expr: &str) -> String {
 /// Compiles and runs `preamble` followed by `expr` with no resource limits.
 fn run(preamble: &str, expr: &str) -> Result<MontyObject, MontyException> {
     let code = format!("{preamble}{expr}\n");
-    let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
     run.run_no_limits(vec![])
 }

@@ -2,7 +2,11 @@
 
 use std::mem;
 
-use super::{CallFrame, FrameExit, VM, recursion::RunReentryGuard};
+use super::{
+    CallFrame, FrameExit, VM,
+    namespace::{FrameNamespace, function_namespace},
+    recursion::RunReentryGuard,
+};
 use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
@@ -40,24 +44,32 @@ impl VM<'_> {
         cells.drop_with(this);
 
         let (namespace, this) = namespace_guard.into_parts();
+        let globals = this
+            .current_frame
+            .namespace
+            .as_deref()
+            .and_then(FrameNamespace::dict_globals);
+        if let Some(globals) = globals {
+            this.heap.inc_ref(globals);
+        }
         let id = this
             .heap
-            .allocate(HeapData::Generator(Generator::new(function_id, namespace)));
+            .allocate(HeapData::Generator(Generator::new(function_id, namespace, globals)));
         this.push(Value::Ref(id));
         Ok(())
     }
 
     /// Advances a generator until it yields, returns, or raises.
     pub(crate) fn resume_generator(&mut self, generator_id: HeapId) -> RunResult<Option<Value>> {
-        let (function_id, ip, stack) = {
+        let (function_id, ip, stack, globals) = {
             let HeapReadOutput::Generator(mut generator) = self.heap.read(generator_id) else {
                 return Err(RunError::internal("generator id does not reference a Generator"));
             };
             let generator = generator.get_mut(self.heap);
             let state = mem::replace(&mut generator.state, GeneratorState::Running);
             match state {
-                GeneratorState::New { stack } => (generator.function_id, 0, stack),
-                GeneratorState::Suspended { ip, stack } => (generator.function_id, ip, stack),
+                GeneratorState::New { stack } => (generator.function_id, 0, stack, generator.globals),
+                GeneratorState::Suspended { ip, stack } => (generator.function_id, ip, stack, generator.globals),
                 GeneratorState::Running => {
                     generator.state = GeneratorState::Running;
                     return Err(ExcType::generator_already_executing());
@@ -89,6 +101,7 @@ impl VM<'_> {
             this.exception_stack.len(),
             function_id,
             call_offset,
+            function_namespace(globals, this.heap),
         );
         frame.ip = ip;
         frame.should_return = true;
@@ -140,8 +153,8 @@ impl VM<'_> {
         let Some(generator_id) = self.current_frame.generator_id else {
             return Err(RunError::internal("YieldValue outside a generator frame"));
         };
-        debug_assert_eq!(self.exception_stack.len(), self.current_frame.exception_stack_base);
-        let stack = self.stack.split_off(self.current_frame.stack_base);
+        debug_assert_eq!(self.exception_stack.len(), self.current_frame.exception_stack_base());
+        let stack = self.stack.split_off(self.current_frame.stack_base());
         let HeapReadOutput::Generator(mut generator) = self.heap.read(generator_id) else {
             return Err(RunError::internal("generator frame owner changed heap type"));
         };
@@ -150,6 +163,7 @@ impl VM<'_> {
         generator.state = GeneratorState::Suspended { ip, stack };
 
         let caller = self.suspended_frames.pop().expect("generator frame has no caller");
+        self.current_frame.namespace.take().drop_with(self);
         self.current_frame = caller;
         self.instruction_ip = self.current_frame.ip;
         if !self.current_frame.is_parked {

@@ -10,22 +10,33 @@
 //! StringIds are laid out as follows:
 //! * 0 to 127 - single character strings for all 128 ASCII characters
 //! * 128 - the empty string
-//! * 129+ - strings interned per executor
+//! * 129 to 2³¹-1 - strings interned per executor
+//! * 2³¹ and above - snippet filename identities, never Python string values
 //!
 //! Other static strings occupy ordinary executor-local slots. Their interner entries
 //! retain a [`StaticStrings`] tag for dispatch, while snapshots serialize only
 //! their text so another build can load an unknown static string as owned text.
 
-use std::{cell::RefCell, mem, ops::Index, slice::from_ref, str::FromStr, sync::LazyLock};
+mod compile;
+mod storage;
 
-use ahash::AHashMap;
+use std::{
+    cell::{Cell, RefCell},
+    mem,
+    slice::from_ref,
+    str::FromStr,
+    sync::{Arc, LazyLock},
+};
+
+use ahash::{AHashMap, AHashSet};
+pub(crate) use compile::CompileInterns;
 use num_bigint::BigInt;
+use storage::Entries;
 use strum::{EnumString, FromRepr, IntoStaticStr};
 
 use crate::{
     function::Function,
     hash::{HashValue, RESERVED_STRING_HASHES, WithHash, hash_python_str},
-    heap::{HeapId, StableHeap},
 };
 
 /// Index into the string interner's storage.
@@ -104,9 +115,13 @@ pub(crate) static RESERVED_STRS: [&str; 129] = const {
 
 /// Static string values known at compile time.
 ///
-/// ASCII variants use their character codes, matching reserved ASCII IDs.
-/// Other discriminants are runtime-only: interner entries serialize as text
-/// and recover a tag only when the loading build recognizes that text.
+/// The `Ascii*` variants and [`Self::EmptyString`] pin the discriminants
+/// [`get_static_string`] reverses with [`FromRepr`](strum::FromRepr), so they
+/// stay in code-point order. Every variant after them is in alphabetical
+/// order by variant name, purely so that two branches adding a string rarely
+/// touch the same line; nothing reads those discriminants. Interner entries
+/// serialize as text and recover a tag only when the loading build recognizes
+/// that text, so reordering them does not invalidate a dump.
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, EnumString, FromRepr, IntoStaticStr, PartialEq, Eq, Hash)]
 #[strum(serialize_all = "snake_case")]
@@ -495,1181 +510,1057 @@ pub enum StaticStrings {
     /// ASCII character 0x7f.
     #[strum(serialize = "\x7f")]
     AsciiDelete = 127,
+    /// The empty string, addressed by [`StringId::EMPTY`] immediately after ASCII.
     #[strum(serialize = "")]
-    EmptyString,
-    #[strum(serialize = "<module>")]
-    Module,
-    // ==========================
-    // List methods
-    // Also uses shared: POP, CLEAR, COPY, REMOVE
-    // Also uses string-shared: INDEX, COUNT
-    Append,
-    Insert,
-    Extend,
-    Reverse,
-    Sort,
-
-    // ==========================
-    // Dict methods
-    // Also uses shared: POP, CLEAR, COPY, UPDATE
-    Get,
-    Keys,
-    Values,
-    Items,
-    Setdefault,
-    Popitem,
-    Fromkeys,
-
-    // ==========================
-    // Shared methods
-    // Used by multiple container types: list, dict, set
-    Pop,
-    Clear,
-    Copy,
-
-    // ==========================
-    // Set methods
-    // Also uses shared: POP, CLEAR, COPY
-    Add,
-    Remove,
-    Discard,
-    Update,
-    Union,
-    Intersection,
-    Difference,
-    SymmetricDifference,
-    Issubset,
-    Issuperset,
-    Isdisjoint,
-
-    // ==========================
-    // String methods
-    // Some methods shared with bytes: FIND, INDEX, COUNT, STARTSWITH, ENDSWITH
-    // Some methods shared with list/tuple: INDEX, COUNT
-    Join,
-    // Simple transformations
-    Lower,
-    Upper,
-    Capitalize,
-    Title,
-    Swapcase,
-    Casefold,
-    // Predicate methods
-    Isalpha,
-    Isdigit,
-    Isalnum,
-    Isnumeric,
-    Isspace,
-    Islower,
-    Isupper,
-    Isascii,
-    Isdecimal,
-    // Search methods (some shared with bytes, list, tuple)
-    Find,
-    Rfind,
-    Index,
-    Rindex,
-    Count,
-    Startswith,
-    Endswith,
-    // Strip/trim methods
-    Strip,
-    Lstrip,
-    Rstrip,
-    Removeprefix,
-    Removesuffix,
-    // Split methods
-    Split,
-    Rsplit,
-    Splitlines,
-    Partition,
-    Rpartition,
-    // Replace/padding methods
-    Replace,
-    Center,
-    Ljust,
-    Rjust,
-    Zfill,
-    Expandtabs,
-    // Keyword argument names for string/bytes methods and constructors
-    Tabsize,
-    Keepends,
-    Obj,
-    Object,
-    Source,
-    Base,
-    // Additional string methods
-    Encode,
-    Isidentifier,
-    Istitle,
-    Isprintable,
-
-    // ==========================
-    // Bytes methods
-    // Also uses string-shared: FIND, INDEX, COUNT, STARTSWITH, ENDSWITH
-    // Also uses most string methods: LOWER, UPPER, CAPITALIZE, TITLE, SWAPCASE,
-    // ISALPHA, ISDIGIT, ISALNUM, ISSPACE, ISLOWER, ISUPPER, ISASCII, ISTITLE,
-    // RFIND, RINDEX, STRIP, LSTRIP, RSTRIP, REMOVEPREFIX, REMOVESUFFIX,
-    // SPLIT, RSPLIT, SPLITLINES, PARTITION, RPARTITION, REPLACE,
-    // CENTER, LJUST, RJUST, ZFILL, JOIN
-    Decode,
-    Hex,
-    Fromhex,
-
-    // ==========================
-    // sys module strings
-    Sys,
-    #[strum(serialize = "sys.version_info")]
-    SysVersionInfo,
-    Version,
-    VersionInfo,
-    Platform,
-    Stdout,
-    Stderr,
-    Major,
-    Minor,
-    Micro,
-    Releaselevel,
-    Serial,
-    Final,
-    #[strum(serialize = "3.14.0 (Monty)")]
-    MontyVersionString,
-    Monty,
-    Argv,
-    Hexversion,
-    ApiVersion,
-    Copyright,
-    /// The value of `sys.copyright`.
-    #[strum(serialize = "Copyright (c) Pydantic Services Inc. 2026 to present")]
-    MontyCopyright,
-    BuiltinModuleNames,
-    Maxsize,
-    Maxunicode,
-    Byteorder,
-    /// The value of `sys.byteorder` on every target Monty builds for.
-    Little,
-    FloatReprStyle,
-    /// The value of `sys.float_repr_style`.
-    Short,
-    Executable,
-    Prefix,
-    ExecPrefix,
-    BasePrefix,
-    BaseExecPrefix,
-    Platlibdir,
-    /// The value of `sys.platlibdir`.
-    Lib,
+    EmptyString = 128,
+    /// `binascii.a2b_base64()` function.
+    #[strum(serialize = "a2b_base64")]
+    A2bBase64,
+    /// `binascii.a2b_hex()` function, an alias of `unhexlify`.
+    #[strum(serialize = "a2b_hex")]
+    A2bHex,
+    /// `binascii.a2b_qp()` function.
+    #[strum(serialize = "a2b_qp")]
+    A2bQp,
+    /// `binascii.a2b_uu()` function.
+    #[strum(serialize = "a2b_uu")]
+    A2bUu,
+    /// `base64.a85decode()` function.
+    #[strum(serialize = "a85decode")]
+    A85Decode,
+    /// `base64.a85encode()` function.
+    #[strum(serialize = "a85encode")]
+    A85Encode,
+    /// `sys.abiflags` attribute.
     Abiflags,
-    DontWriteBytecode,
-    PycachePrefix,
-
-    // ==========================
-    // sys.float_info fields; `Min`/`Max` are shared with the `min`/`max` class
-    // constants of the `datetime` classes.
-    FloatInfo,
-    #[strum(serialize = "sys.float_info")]
-    SysFloatInfo,
-    Max,
-    MaxExp,
-    #[strum(serialize = "max_10_exp")]
-    Max10Exp,
-    Min,
-    MinExp,
-    #[strum(serialize = "min_10_exp")]
-    Min10Exp,
-    Dig,
-    MantDig,
-    Epsilon,
-    Radix,
-    Rounds,
-
-    // ==========================
-    // sys.flags fields
-    // `flags` itself reuses the `Flags` variant added for `pattern.flags`.
-    #[strum(serialize = "sys.flags")]
-    SysFlags,
-    Debug,
-    Inspect,
-    Interactive,
-    Optimize,
-    NoUserSite,
-    NoSite,
-    IgnoreEnvironment,
-    Verbose,
-    BytesWarning,
-    Quiet,
-    HashRandomization,
-    Isolated,
-    DevMode,
-    #[strum(serialize = "utf8_mode")]
-    Utf8Mode,
-    WarnDefaultEncoding,
-    SafePath,
-    IntMaxStrDigits,
-
-    // ==========================
-    // os.stat_result fields
-    #[strum(serialize = "StatResult")]
-    OsStatResult,
-    StMode,
-    StIno,
-    StDev,
-    StNlink,
-    StUid,
-    StGid,
-    StSize,
-    StAtime,
-    StMtime,
-    StCtime,
-
-    // ==========================
-    // typing module strings
-    Typing,
-    #[strum(serialize = "TYPE_CHECKING")]
-    TypeChecking,
-    #[strum(serialize = "Any")]
-    Any,
-    #[strum(serialize = "Optional")]
-    Optional,
-    #[strum(serialize = "Union")]
-    UnionType,
-    #[strum(serialize = "List")]
-    ListType,
-    #[strum(serialize = "Dict")]
-    DictType,
-    #[strum(serialize = "Tuple")]
-    TupleType,
-    #[strum(serialize = "Set")]
-    SetType,
-    #[strum(serialize = "FrozenSet")]
-    FrozenSet,
-    #[strum(serialize = "Callable")]
-    Callable,
-    #[strum(serialize = "Type")]
-    Type,
-    #[strum(serialize = "Sequence")]
-    Sequence,
-    #[strum(serialize = "Mapping")]
-    Mapping,
-    #[strum(serialize = "Iterable")]
-    Iterable,
-    #[strum(serialize = "Iterator")]
-    IteratorType,
-    #[strum(serialize = "Generator")]
-    Generator,
-    #[strum(serialize = "ClassVar")]
-    ClassVar,
-    #[strum(serialize = "Final")]
-    FinalType,
-    #[strum(serialize = "Literal")]
-    Literal,
-    #[strum(serialize = "TypeVar")]
-    TypeVar,
-    #[strum(serialize = "Generic")]
-    Generic,
-    #[strum(serialize = "Protocol")]
-    Protocol,
-    #[strum(serialize = "Annotated")]
-    Annotated,
-    #[strum(serialize = "Self")]
-    SelfType,
-    #[strum(serialize = "Never")]
-    Never,
-    #[strum(serialize = "NoReturn")]
-    NoReturn,
-
-    // ==========================
-    // asyncio module strings
-    Asyncio,
-    Gather,
-    Run,
-
-    // ==========================
-    // os module strings
-    Os,
-    Getenv,
-    Environ,
-    Default,
-
-    // ==========================
-    // Exception attributes
-    Args,
-
-    // ==========================
-    // Type attributes
-    #[strum(serialize = "__name__")]
-    DunderName,
-    #[strum(serialize = "__enter__")]
-    Enter,
-    #[strum(serialize = "__exit__")]
-    Exit,
-
-    // ==========================
-    // pathlib module strings
-    Pathlib,
-    #[strum(serialize = "Path")]
-    PathClass,
-
-    // Path properties (pure - no I/O)
-    Name,
-    Parent,
-    Stem,
-    Suffix,
-    Suffixes,
-    Parts,
-
-    // Path pure methods (no I/O)
-    IsAbsolute,
-    Joinpath,
-    WithName,
-    WithStem,
-    WithSuffix,
-    AsPosix,
-    /// `Path.cwd()` classmethod: answered from the VM's working directory, no host call.
-    Cwd,
-    #[strum(serialize = "__fspath__")]
-    Fspath,
-
-    // Path filesystem methods (require OsAccess - yield external calls)
-    Exists,
-    IsFile,
-    IsDir,
-    IsSymlink,
-    #[strum(serialize = "stat")]
-    StatMethod,
-    ReadBytes,
-    ReadText,
-    Iterdir,
-    Resolve,
+    /// Kwarg name `abs_tol` — `math.isclose(abs_tol=...)`.
+    AbsTol,
+    /// `Path.absolute()` method — yields a host call.
     Absolute,
-
-    // Path write methods (require OsAccess - yield external calls)
-    WriteText,
-    WriteBytes,
-    AppendText,
-    AppendBytes,
-    Mkdir,
-    Unlink,
-    Rmdir,
-    Rename,
-
-    // Path.open(): wraps the same `OsFunction::Open` round-trip as the
-    // `open()` builtin. Handled in `Path::py_call_attr` with custom
-    // mode/kwarg validation (so it cannot go through the generic
-    // `OsFunction::try_from(StaticStrings)` short-circuit).
-    Open,
-
-    // ==========================
-    // File object methods and attributes
-    Read,
-    Write,
-    Close,
-    Flush,
-    Readable,
-    Writable,
-    Seekable,
-    Readline,
-    Readlines,
-    Tell,
-    Seek,
-    Closed,
-    Mode,
-    Encoding,
-    File,
-    Buffering,
-    Errors,
-    Newline,
-    Closefd,
-    Opener,
-    Repl,
-    Old,
-    New,
-
-    // Slice attributes
-    Start,
-    Stop,
-    Step,
-
-    // ==========================
-    // module strings
-    // ==========================
-
-    // math module strings
-    Math,
-    // Rounding
-    Floor,
-    Ceil,
-    Trunc,
-    // Roots & powers
-    Sqrt,
-    Isqrt,
-    Cbrt,
-    Pow,
-    Exp,
-    Exp2,
-    Expm1,
-    // Logarithms
-    Log,
-    Log1p,
-    Log2,
-    Log10,
-    // Float properties
-    Fabs,
-    Isnan,
-    Isinf,
-    Isfinite,
-    Copysign,
-    Isclose,
-    Nextafter,
-    Ulp,
-    // Trigonometric
-    Sin,
-    Cos,
-    Tan,
-    Asin,
+    /// `itertools.accumulate()` function.
+    Accumulate,
+    /// `math.acos()` function.
     Acos,
-    Atan,
-    Atan2,
-    // Hyperbolic
-    Sinh,
-    Cosh,
-    Tanh,
-    Asinh,
+    /// `math.acosh()` function.
     Acosh,
-    Atanh,
-    // Angular conversion
-    Degrees,
-    Radians,
-    // Integer math
-    Factorial,
-    Gcd,
-    Lcm,
-    Comb,
-    Perm,
-    // Modular / decomposition
-    Fmod,
-    Remainder,
-    Modf,
-    Frexp,
-    Ldexp,
-    // Special functions
-    Gamma,
-    Lgamma,
-    Erf,
-    Erfc,
-    // Constants
-    /// `math.pi` constant
-    Pi,
-    /// `math.tau` constant
-    Tau,
-    /// `math.inf` constant
-    #[strum(serialize = "inf")]
-    MathInf,
-    /// `math.nan` constant
-    #[strum(serialize = "nan")]
-    MathNan,
-
-    // ==========================
-    // json module strings
-    /// Module name for `import json`.
-    Json,
-    /// `json.loads()` function.
-    Loads,
-    /// `json.dumps()` function.
-    Dumps,
-    /// `json.JSONDecodeError` exception.
-    #[strum(serialize = "JSONDecodeError")]
-    JsonDecodeError,
-    /// `json.dumps(indent=...)` keyword.
-    Indent,
-    /// `json.dumps(sort_keys=...)` keyword.
-    #[strum(serialize = "sort_keys")]
-    SortKeys,
-    /// `json.dumps(ensure_ascii=...)` keyword.
-    #[strum(serialize = "ensure_ascii")]
-    EnsureAscii,
+    /// `set.add()` method.
+    Add,
+    /// `adobe` parameter of `base64.a85encode()` / `a85decode()`.
+    #[strum(serialize = "adobe")]
+    Adobe,
     /// `json.dumps(allow_nan=...)` keyword.
     #[strum(serialize = "allow_nan")]
     AllowNan,
-    /// `json.dumps(separators=...)` keyword.
-    Separators,
-    /// `json.dumps(skipkeys=...)` keyword.
-    Skipkeys,
-
-    // ==========================
-    // datetime module strings
-    Datetime,
-    Date,
-    Timedelta,
-    Timezone,
-    Today,
-    Now,
-    Utc,
-    TotalSeconds,
-    Tzinfo,
-    // date/datetime field attributes
-    Year,
-    Month,
-    Day,
-    Hour,
-    Minute,
-    Second,
-    Microsecond,
-    Fold,
-    // timedelta constructor/attribute names
-    Days,
-    Seconds,
-    Microseconds,
-    Milliseconds,
-    Minutes,
-    Hours,
-    Weeks,
-    // timezone constructor kwargs
-    Offset,
-    // datetime.now() kwarg
-    Tz,
-    // round() kwargs
-    Number,
-    Ndigits,
-    // date/datetime methods
-    Isoformat,
-    Strftime,
-    Weekday,
-    Isoweekday,
-    Timestamp,
-    Strptime,
-    Fromisoformat,
-
-    // re module strings
-    /// Module name for `import re`.
-    Re,
-    /// `re.compile()` function
-    Compile,
-    /// `re.match()` / `pattern.match()` method
-    Match,
-    /// `re.search()` / `pattern.search()` method
-    Search,
-    /// `re.fullmatch()` / `pattern.fullmatch()` method
-    Fullmatch,
-    /// `re.findall()` / `pattern.findall()` method
-    Findall,
-    /// `re.sub()` / `pattern.sub()` method
-    Sub,
-    /// `match.group()` method
-    Group,
-    /// `match.groups()` method
-    Groups,
-    /// `match.span()` method
-    Span,
-    /// `match.end()` method
-    End,
-    /// `re.Pattern`
-    #[strum(serialize = "Pattern")]
-    PatternClass,
-    /// `re.Match`
-    #[strum(serialize = "Match")]
-    MatchClass,
-    /// `pattern.pattern`
-    #[strum(serialize = "pattern")]
-    PatternAttr,
-    /// `match.string`
-    #[strum(serialize = "string")]
-    StringAttr,
-    /// `pattern.flags`
-    Flags,
-    /// `re.IGNORECASE` flag
-    #[strum(serialize = "IGNORECASE")]
-    Ignorecase,
-    /// `re.MULTILINE` flag
-    #[strum(serialize = "MULTILINE")]
-    MultilineFlag,
-    /// `re.DOTALL` flag
-    #[strum(serialize = "DOTALL")]
-    DotallFlag,
-    /// `re.NOFLAG` flag
-    #[strum(serialize = "NOFLAG")]
-    NoFlag,
+    /// `alpha` parameter of `random.gammavariate()` and the other shape variates.
+    Alpha,
+    /// `altchars` parameter of `base64.b64encode()` / `b64decode()`.
+    #[strum(serialize = "altchars")]
+    Altchars,
+    /// `os.altsep` constant name.
+    Altsep,
+    /// `time.altzone` constant.
+    Altzone,
+    /// `typing.Annotated` marker.
+    #[strum(serialize = "Annotated")]
+    Annotated,
+    /// `typing.Any` marker.
+    #[strum(serialize = "Any")]
+    Any,
+    /// `sys.api_version` attribute.
+    ApiVersion,
+    /// `list.append()` method.
+    Append,
+    /// `Path.append_bytes()` method — yields a host call.
+    AppendBytes,
+    /// `Path.append_text()` method — yields a host call.
+    AppendText,
+    /// `deque.appendleft()` method.
+    Appendleft,
+    /// `BaseException.args` attribute.
+    Args,
+    /// `sys.argv` attribute.
+    Argv,
+    /// `Path.as_posix()` method, answered without host I/O.
+    AsPosix,
     /// `re.ASCII` flag
     #[strum(serialize = "ASCII")]
     AsciiFlag,
-    /// `re.PatternError` exception
-    #[strum(serialize = "PatternError")]
-    PatternError,
-    /// `re.error` exception alias (same as `re.PatternError`)
-    #[strum(serialize = "error")]
-    Error,
-    /// `re.escape()` function
-    Escape,
-    /// `re.finditer()` / `pattern.finditer()` method
-    Finditer,
-    /// `match.groupdict()` method
-    Groupdict,
-
-    // ==========================
-    // gc module strings, recognized in every build but only exposed when
-    // the `test-hooks` feature is enabled.
-    /// Module name for `import gc`.
-    Gc,
-    /// `gc.collect()` function.
-    Collect,
-    /// `gc.disable()` function.
-    Disable,
-    /// `gc.enable()` function.
-    Enable,
-
-    // ==========================
-    // Kwarg names referenced by `#[derive(FromArgs)]` macros and the
-    // hand-written argument extractors they're gradually replacing.
-    // These exist purely as `StaticStrings` so the generated dispatch
-    // code can use `StringId` equality (O(1)) instead of string compare.
-    /// Kwarg name `key` — `sorted(key=...)`, `min(key=...)`, etc.
-    Key,
-    /// Kwarg name `sep` — `str.split(sep=...)`, `print(sep=...)`, etc.
-    Sep,
-    /// Kwarg name `maxsplit` — `str.split(maxsplit=...)`, `re.split(maxsplit=...)`.
-    Maxsplit,
-    /// Kwarg name `strict` — `zip(strict=...)`.
-    Strict,
-    /// Kwarg name `return_exceptions` — `asyncio.gather(return_exceptions=...)`.
-    ReturnExceptions,
-    /// Kwarg name `rel_tol` — `math.isclose(rel_tol=...)`.
-    RelTol,
-    /// Kwarg name `abs_tol` — `math.isclose(abs_tol=...)`.
-    AbsTol,
-    /// Kwarg name `format` — `date.strftime(format=...)`, `datetime.strftime(format=...)`.
-    Format,
-    /// Kwarg name `parents` — `Path.mkdir(parents=...)`.
-    Parents,
-    /// Kwarg name `exist_ok` — `Path.mkdir(exist_ok=...)`.
-    ExistOk,
-
-    // ==========================
-    // sys module test-hook strings (kept interned unconditionally for the
-    // same StringId-stability reason as the gc entries above).
-    /// `sys.setrecursionlimit()` function (only callable under `test-hooks`).
-    Setrecursionlimit,
-
-    // ==========================
-    // unicodedata module strings. The `name()` function reuses the existing
-    // `Name` variant (both intern to "name").
-    /// Module name for `import unicodedata`.
-    Unicodedata,
-    /// `unicodedata.normalize()` function.
-    Normalize,
-    /// `unicodedata.is_normalized()` function.
-    #[strum(serialize = "is_normalized")]
-    IsNormalized,
+    /// `time.asctime()` function.
+    Asctime,
+    /// `math.asin()` function.
+    Asin,
+    /// `math.asinh()` function.
+    Asinh,
+    /// `datetime.astimezone()` method.
+    Astimezone,
+    /// Module name for `import asyncio`.
+    Asyncio,
+    /// `math.atan()` function.
+    Atan,
+    /// `math.atan2()` function.
+    Atan2,
+    /// `math.atanh()` function.
+    Atanh,
+    /// `base64.b16decode()` function.
+    #[strum(serialize = "b16decode")]
+    B16Decode,
+    /// `base64.b16encode()` function.
+    #[strum(serialize = "b16encode")]
+    B16Encode,
+    /// `binascii.b2a_base64()` function.
+    #[strum(serialize = "b2a_base64")]
+    B2aBase64,
+    /// `binascii.b2a_hex()` function, an alias of `hexlify`.
+    #[strum(serialize = "b2a_hex")]
+    B2aHex,
+    /// `binascii.b2a_qp()` function.
+    #[strum(serialize = "b2a_qp")]
+    B2aQp,
+    /// `binascii.b2a_uu()` function.
+    #[strum(serialize = "b2a_uu")]
+    B2aUu,
+    /// `base64.b32decode()` function.
+    #[strum(serialize = "b32decode")]
+    B32Decode,
+    /// `base64.b32encode()` function.
+    #[strum(serialize = "b32encode")]
+    B32Encode,
+    /// `base64.b32hexdecode()` function.
+    #[strum(serialize = "b32hexdecode")]
+    B32HexDecode,
+    /// `base64.b32hexencode()` function.
+    #[strum(serialize = "b32hexencode")]
+    B32HexEncode,
+    /// `base64.b64decode()` function.
+    #[strum(serialize = "b64decode")]
+    B64Decode,
+    /// `base64.b64encode()` function.
+    #[strum(serialize = "b64encode")]
+    B64Encode,
+    /// `base64.b85decode()` function.
+    #[strum(serialize = "b85decode")]
+    B85Decode,
+    /// `base64.b85encode()` function.
+    #[strum(serialize = "b85encode")]
+    B85Encode,
+    /// `backtick` parameter of `binascii.b2a_uu()`.
+    #[strum(serialize = "backtick")]
+    Backtick,
+    /// Kwarg name `base` — `pow(base=...)`.
+    Base,
+    /// Module name for `import base64`.
+    #[strum(serialize = "base64")]
+    Base64,
+    /// `sys.base_exec_prefix` attribute.
+    BaseExecPrefix,
+    /// `sys.base_prefix` attribute.
+    BasePrefix,
+    /// `itertools.batched()` function.
+    Batched,
+    /// `beta` parameter of `random.gammavariate()` and the other shape variates.
+    Beta,
+    /// `random.betavariate()` function.
+    Betavariate,
+    /// Module name for `import binascii`.
+    #[strum(serialize = "binascii")]
+    Binascii,
+    /// `random.binomialvariate()` function.
+    Binomialvariate,
+    /// Kwarg name `buffering` — `open(buffering=...)`.
+    Buffering,
+    /// `sys.builtin_module_names` attribute.
+    BuiltinModuleNames,
+    /// `sys.byteorder` attribute.
+    Byteorder,
+    /// `bytes_per_sep` parameter of `binascii.hexlify()`.
+    #[strum(serialize = "bytes_per_sep")]
+    BytesPerSep,
+    /// `sys.flags.bytes_warning` field.
+    BytesWarning,
+    /// `typing.Callable` marker.
+    #[strum(serialize = "Callable")]
+    Callable,
+    /// `capitalize()` method, shared by `str` and `bytes`.
+    Capitalize,
+    /// `str.casefold()` method.
+    Casefold,
     /// `unicodedata.category()` function.
     Category,
-    /// `unicodedata.lookup()` function.
-    Lookup,
-    /// `unicodedata.combining()` function.
-    Combining,
-    /// `unicodedata.unidata_version` constant.
-    #[strum(serialize = "unidata_version")]
-    UnidataVersion,
-
-    // ==========================
-    // Module dunder values.
-    #[strum(serialize = "__main__")]
-    DunderMain,
-
-    // ==========================
-    // Class dunder attributes.
-    /// `__doc__` — synthesized into the namespace of classes created by the
-    /// 3-arg `type()` builtin when the caller's dict omits it.
-    #[strum(serialize = "__doc__")]
-    DunderDoc,
-
-    // ==========================
-    // Singleton `repr()`/`str()` values. Interned so `str(None)`, `repr(True)`,
-    // `f"{...}"`, `print(False)` etc. resolve to an existing `StringId` instead
-    // of allocating a fresh heap string each time — see `Value::py_repr`.
-    #[strum(serialize = "None")]
-    NoneRepr,
-    #[strum(serialize = "True")]
-    TrueRepr,
-    #[strum(serialize = "False")]
-    FalseRepr,
-    #[strum(serialize = "Ellipsis")]
-    EllipsisRepr,
-
-    // ==========================
-    // os module function/constant names. Constants reuse existing variants where the text
-    // already exists (`Sep` in the kwarg section, `Name`, single-char ASCII
-    // ids for `/`, `.`, `\n`).
-    /// `os.listdir()` function.
-    Listdir,
-    /// `os.makedirs()` function.
-    Makedirs,
-    /// `os.getcwd()` function.
-    Getcwd,
-    /// `os.getcwdb()` function.
-    Getcwdb,
+    /// `math.cbrt()` function.
+    Cbrt,
+    /// `math.ceil()` function.
+    Ceil,
+    /// `center()` method, shared by `str` and `bytes`.
+    Center,
+    /// `itertools.chain()` function.
+    Chain,
     /// `os.chdir()` function.
     Chdir,
-    /// `os.fspath()` function — distinct from `Fspath` (`__fspath__`).
-    #[strum(serialize = "fspath")]
-    OsFspath,
-    /// `os.altsep` constant name.
-    Altsep,
-    /// `os.extsep` constant name.
-    Extsep,
+    /// `random.choice()` function.
+    Choice,
+    /// `random.choices()` function.
+    Choices,
+    /// `__class_getitem__`, the classmethod behind `list[int]`.
+    #[strum(serialize = "__class_getitem__")]
+    ClassGetitem,
+    /// `typing.ClassVar` marker.
+    #[strum(serialize = "ClassVar")]
+    ClassVar,
+    /// `clear()` method, shared by `list`, `dict` and `set`.
+    Clear,
+    /// `file.close()` method.
+    Close,
+    /// `file.closed` attribute.
+    Closed,
+    /// Kwarg name `closefd` — `open(closefd=...)`.
+    Closefd,
+    /// `closure` parameter of exec.
+    Closure,
+    /// The class parameter of the decorator `@dataclass(...)` returns, which
+    /// CPython spells `def wrap(cls)` and so accepts by keyword.
+    Cls,
+    /// `gc.collect()` function.
+    Collect,
+    /// Module name for `import collections`.
+    Collections,
+    /// `math.comb()` function.
+    Comb,
+    /// `itertools.combinations()` function.
+    Combinations,
+    /// `itertools.combinations_with_replacement()` function.
+    #[strum(serialize = "combinations_with_replacement")]
+    CombinationsWithReplacement,
+    /// `datetime.combine()` class method.
+    Combine,
+    /// `unicodedata.combining()` function.
+    Combining,
+    /// `re.compile()` function
+    Compile,
+    /// `itertools.compress()` function.
+    Compress,
+    /// `copy()` method, shared by `list`, `dict` and `set`; also the `copy` module and `copy.copy()`.
+    Copy,
+    /// `sys.copyright` attribute.
+    Copyright,
+    /// `math.copysign()` function.
+    Copysign,
+    /// `math.cos()` function.
+    Cos,
+    /// `math.cosh()` function.
+    Cosh,
+    /// `count()` method, shared by `str`, `bytes`, `list` and `tuple`; also `itertools.count()`.
+    Count,
+    /// The `collections.Counter` type/factory.
+    #[strum(serialize = "Counter")]
+    Counter,
+    /// `counts` parameter of `random.sample()`.
+    Counts,
+    /// `crc` parameter of `binascii.crc32()`.
+    #[strum(serialize = "crc")]
+    Crc,
+    /// `binascii.crc32()` function.
+    #[strum(serialize = "crc32")]
+    Crc32,
+    /// `binascii.crc_hqx()` function.
+    #[strum(serialize = "crc_hqx")]
+    CrcHqx,
+    /// `time.ctime()` function.
+    Ctime,
+    /// `cum_weights` parameter of `random.choices()`.
+    CumWeights,
     /// `os.curdir` constant name.
     Curdir,
-    /// `os.pardir` constant name.
-    Pardir,
-    /// `os.linesep` constant name.
-    Linesep,
-    /// `os.devnull` constant name.
-    Devnull,
-    /// Value of `os.name`.
-    Posix,
-    /// Value of `os.pardir`.
-    #[strum(serialize = "..")]
-    ParentDirString,
-    /// Value of `os.devnull`.
-    #[strum(serialize = "/dev/null")]
-    DevNullString,
-    /// Kwarg name `path` — `os.listdir(path=...)`, `os.stat(path=...)`, etc.
-    Path,
-    /// Kwarg name `dir_fd` — `os.stat(dir_fd=...)`, `os.mkdir(dir_fd=...)`, etc.
-    DirFd,
-    /// Kwarg name `follow_symlinks` — `os.stat(follow_symlinks=...)`.
-    FollowSymlinks,
-    /// Kwarg name `src` — `os.rename(src=...)`, `os.replace(src=...)`.
-    Src,
-    /// Kwarg name `dst` — `os.rename(dst=...)`, `os.replace(dst=...)`.
-    Dst,
-    /// Kwarg name `src_dir_fd` — `os.rename(src_dir_fd=...)`.
-    SrcDirFd,
-    /// Kwarg name `dst_dir_fd` — `os.rename(dst_dir_fd=...)`.
-    DstDirFd,
-
-    // itertools module strings; `count`, `start`, `step` and `object` reuse the
-    // existing variants of the same name.
-    /// Module name for `import itertools`.
-    Itertools,
-    /// `itertools.repeat()` function.
-    Repeat,
-    /// `times` keyword argument of `itertools.repeat()`.
-    Times,
-
-    // ==========================
-    // dataclasses module strings.
-    /// Module name for `import dataclasses`.
-    Dataclasses,
+    /// `Path.cwd()` classmethod: answered from the VM's working directory, no host call.
+    Cwd,
+    /// `itertools.cycle()` function.
+    Cycle,
+    /// `data` keyword argument of `itertools.compress()`.
+    Data,
+    /// `time.strptime()` parameter name `data_string`.
+    DataString,
     /// `dataclasses.dataclass` decorator.
     Dataclass,
-    /// `dataclasses.is_dataclass()` function.
-    IsDataclass,
     /// The `__dataclass_fields__` class attribute `@dataclass` writes: the
     /// name -> `Field` mapping that drives every synthesized dunder.
     #[strum(serialize = "__dataclass_fields__")]
     DataclassFields,
-
-    // ==========================
-    // collections module strings.
-    /// Module name for `import collections`.
-    Collections,
-    /// The `collections.deque` type.
-    Deque,
-    /// `deque.appendleft()` method.
-    Appendleft,
-    /// `deque.extendleft()` method.
-    Extendleft,
-    /// `deque.popleft()` method.
-    Popleft,
-    /// `deque.rotate()` method.
-    Rotate,
-    /// `deque.maxlen` attribute (also a constructor keyword argument).
-    Maxlen,
-    /// `deque(iterable=...)` — the constructor's first parameter, which CPython
-    /// also accepts by keyword. Distinct from [`Self::Iterable`], which is the
-    /// capitalized `typing.Iterable`.
-    #[strum(serialize = "iterable")]
-    IterableArg,
-    /// The `collections.namedtuple` factory function.
-    Namedtuple,
-    /// The `collections.defaultdict` factory function.
-    Defaultdict,
-    /// The `collections.Counter` type/factory.
-    #[strum(serialize = "Counter")]
-    Counter,
-    /// `Counter.most_common()` method.
-    #[strum(serialize = "most_common")]
-    MostCommon,
-    /// `Counter.elements()` method.
-    Elements,
-    /// `Counter.total()` method.
-    Total,
-    /// `Counter.subtract()` method.
-    Subtract,
-    /// `namedtuple(typename=...)` keyword argument.
-    Typename,
-    /// `namedtuple(field_names=...)` keyword argument.
-    #[strum(serialize = "field_names")]
-    FieldNames,
-    /// `NamedTuple._fields` — tuple of field names.
-    #[strum(serialize = "_fields")]
-    UnderFields,
-    /// `NamedTuple._field_defaults` — dict of defaulted field names to values.
-    #[strum(serialize = "_field_defaults")]
-    UnderFieldDefaults,
-    /// `NamedTuple._make(iterable)` classmethod.
-    #[strum(serialize = "_make")]
-    UnderMake,
-    /// `NamedTuple._replace(**kwargs)` method.
-    #[strum(serialize = "_replace")]
-    UnderReplace,
-    /// `NamedTuple._asdict()` method.
-    #[strum(serialize = "_asdict")]
-    UnderAsdict,
-    /// `namedtuple(..., defaults=...)` keyword argument.
-    Defaults,
-    /// `namedtuple(..., module=...)` keyword argument.
-    #[strum(serialize = "module")]
-    ModuleKwarg,
+    /// The `__dataclass_params__` class attribute `@dataclass` writes: the
+    /// options the class was decorated with.
+    #[strum(serialize = "__dataclass_params__")]
+    DataclassParams,
+    /// Module name for `import dataclasses`.
+    Dataclasses,
+    /// The `datetime.date` type.
+    Date,
+    /// Module name for `import datetime`, and the `datetime.datetime` type.
+    Datetime,
+    /// `date` / `datetime` `day` attribute and constructor kwarg.
+    Day,
+    /// `time.daylight` constant.
+    Daylight,
+    /// `timedelta.days` attribute and constructor kwarg.
+    Days,
+    /// `sys.flags.debug` field.
+    Debug,
+    /// `bytes.decode()` method.
+    Decode,
+    /// `base64.decodebytes()` function.
+    #[strum(serialize = "decodebytes")]
+    Decodebytes,
+    /// `copy.deepcopy()`. The module name and `copy.copy()` reuse [`Self::Copy`].
+    Deepcopy,
+    /// Kwarg name `default` — `os.getenv(default=...)`.
+    Default,
     /// `defaultdict.default_factory` attribute.
     #[strum(serialize = "default_factory")]
     DefaultFactory,
+    /// The `collections.defaultdict` factory function.
+    Defaultdict,
+    /// `namedtuple(..., defaults=...)` keyword argument.
+    Defaults,
+    /// `math.degrees()` function.
+    Degrees,
+    /// `delay` parameter of `asyncio.sleep()`.
+    Delay,
+    /// The `collections.deque` type.
+    Deque,
+    /// `sys.flags.dev_mode` field.
+    DevMode,
+    /// Value of `os.devnull`.
+    #[strum(serialize = "/dev/null")]
+    DevNullString,
+    /// `os.devnull` constant name.
+    Devnull,
+    /// `typing.Dict` marker.
+    #[strum(serialize = "Dict")]
+    DictType,
+    /// `set.difference()` method.
+    Difference,
+    /// `sys.float_info.dig` field.
+    Dig,
+    /// Kwarg name `dir_fd` — `os.stat(dir_fd=...)`, `os.mkdir(dir_fd=...)`, etc.
+    DirFd,
+    /// `gc.disable()` function.
+    Disable,
+    /// `set.discard()` method.
+    Discard,
+    /// `math.dist()` function.
+    Dist,
+    /// `sys.dont_write_bytecode` attribute.
+    DontWriteBytecode,
+    /// `re.DOTALL` flag
+    #[strum(serialize = "DOTALL")]
+    DotallFlag,
+    /// `itertools.dropwhile()` function.
+    Dropwhile,
+    /// Kwarg name `dst` — `os.rename(dst=...)`, `os.replace(dst=...)`.
+    Dst,
+    /// Kwarg name `dst_dir_fd` — `os.rename(dst_dir_fd=...)`.
+    DstDirFd,
+    /// `json.dumps()` function.
+    Dumps,
+    /// `__args__` of a `types.GenericAlias`.
+    #[strum(serialize = "__args__")]
+    DunderArgs,
+    /// `__doc__` — synthesized into the namespace of classes created by the
+    /// 3-arg `type()` builtin when the caller's dict omits it.
+    #[strum(serialize = "__doc__")]
+    DunderDoc,
+    /// `__getnewargs__` — the copy/pickle hook on named tuples.
+    #[strum(serialize = "__getnewargs__")]
+    DunderGetnewargs,
+    /// `__main__`, the `__name__` of the module being run.
+    #[strum(serialize = "__main__")]
+    DunderMain,
     /// `defaultdict.__missing__` method.
     #[strum(serialize = "__missing__")]
     DunderMissing,
     /// `__module__` — the defining module name, exposed on namedtuple classes.
     #[strum(serialize = "__module__")]
     DunderModule,
-    /// `__getnewargs__` — the copy/pickle hook on named tuples.
-    #[strum(serialize = "__getnewargs__")]
-    DunderGetnewargs,
+    /// `__name__` attribute of a type.
+    #[strum(serialize = "__name__")]
+    DunderName,
+    /// `__origin__` of a `types.GenericAlias`.
+    #[strum(serialize = "__origin__")]
+    DunderOrigin,
+    /// `__parameters__` of a `types.GenericAlias`.
+    #[strum(serialize = "__parameters__")]
+    DunderParameters,
     /// `__qualname__` — the qualified class name, exposed on namedtuple classes.
     #[strum(serialize = "__qualname__")]
     DunderQualname,
-
-    // ==========================
-    // More itertools module strings.
-    /// `itertools.pairwise()` function.
-    Pairwise,
-    /// `itertools.compress()` function.
-    Compress,
-    /// `data` keyword argument of `itertools.compress()`.
-    Data,
-    /// `selectors` keyword argument of `itertools.compress()`.
-    Selectors,
-    /// `itertools.islice()` function.
-    Islice,
-    /// `itertools.chain()` function.
-    Chain,
-    /// `itertools.cycle()` function.
-    Cycle,
-    /// Python's `NotImplemented` singleton representation.
-    #[strum(serialize = "NotImplemented")]
-    NotImplementedRepr,
-    /// The `__dataclass_params__` class attribute `@dataclass` writes: the
-    /// options the class was decorated with.
-    #[strum(serialize = "__dataclass_params__")]
-    DataclassParams,
-    // `@dataclass(...)` keyword options. Recognised even where unimplemented,
-    // so an unsupported option reports itself rather than looking misspelled.
-    /// `@dataclass(init=...)`.
-    Init,
-    /// `@dataclass(eq=...)`.
-    Eq,
-    /// `@dataclass(repr=...)`.
-    Repr,
-    /// `@dataclass(order=...)`.
-    Order,
-    /// `@dataclass(unsafe_hash=...)`.
-    UnsafeHash,
-    /// `@dataclass(frozen=...)`.
-    Frozen,
-    /// `@dataclass(match_args=...)`.
-    MatchArgs,
-    /// `@dataclass(kw_only=...)`.
-    KwOnly,
-    /// `@dataclass(slots=...)`.
-    Slots,
-    /// `@dataclass(weakref_slot=...)`.
-    WeakrefSlot,
-    /// `dataclasses.FrozenInstanceError` exception.
-    #[strum(serialize = "FrozenInstanceError")]
-    FrozenInstanceError,
-    /// The class parameter of the decorator `@dataclass(...)` returns, which
-    /// CPython spells `def wrap(cls)` and so accepts by keyword.
-    Cls,
-    /// `itertools.takewhile()` function.
-    Takewhile,
-    /// `itertools.dropwhile()` function.
-    Dropwhile,
-    /// `itertools.filterfalse()` function.
-    Filterfalse,
-    /// `itertools.starmap()` function.
-    Starmap,
-
-    // ==========================
-    // functools module strings.
-    /// Module name for `import functools`.
-    Functools,
-    /// `functools.reduce()` function.
-    Reduce,
-    /// `initial` keyword argument of `functools.reduce()` and
-    /// `itertools.accumulate()`.
-    Initial,
-
-    // ==========================
-    // base64 and binascii module strings
-    // Each spells its text out: snake_case would split the digits (`b64_encode`).
-    /// Module name for `import base64`.
-    #[strum(serialize = "base64")]
-    Base64,
-    /// `base64.b64encode()` function.
-    #[strum(serialize = "b64encode")]
-    B64Encode,
-    /// `base64.b64decode()` function.
-    #[strum(serialize = "b64decode")]
-    B64Decode,
-    /// `base64.standard_b64encode()` function.
-    #[strum(serialize = "standard_b64encode")]
-    StandardB64Encode,
-    /// `base64.standard_b64decode()` function.
-    #[strum(serialize = "standard_b64decode")]
-    StandardB64Decode,
-    /// `base64.urlsafe_b64encode()` function.
-    #[strum(serialize = "urlsafe_b64encode")]
-    UrlsafeB64Encode,
-    /// `base64.urlsafe_b64decode()` function.
-    #[strum(serialize = "urlsafe_b64decode")]
-    UrlsafeB64Decode,
-    /// `base64.b32encode()` function.
-    #[strum(serialize = "b32encode")]
-    B32Encode,
-    /// `base64.b32decode()` function.
-    #[strum(serialize = "b32decode")]
-    B32Decode,
-    /// `base64.b32hexencode()` function.
-    #[strum(serialize = "b32hexencode")]
-    B32HexEncode,
-    /// `base64.b32hexdecode()` function.
-    #[strum(serialize = "b32hexdecode")]
-    B32HexDecode,
-    /// `base64.b16encode()` function.
-    #[strum(serialize = "b16encode")]
-    B16Encode,
-    /// `base64.b16decode()` function.
-    #[strum(serialize = "b16decode")]
-    B16Decode,
+    /// `Counter.elements()` method.
+    Elements,
+    /// `repr()`/`str()` text of `Ellipsis`, interned so rendering allocates nothing.
+    #[strum(serialize = "Ellipsis")]
+    EllipsisRepr,
+    /// `gc.enable()` function.
+    Enable,
+    /// `str.encode()` method.
+    Encode,
     /// `base64.encodebytes()` function.
     #[strum(serialize = "encodebytes")]
     Encodebytes,
-    /// `base64.decodebytes()` function.
-    #[strum(serialize = "decodebytes")]
-    Decodebytes,
-    /// `altchars` parameter of `base64.b64encode()` / `b64decode()`.
-    #[strum(serialize = "altchars")]
-    Altchars,
-    /// `validate` parameter of `base64.b64decode()`.
-    #[strum(serialize = "validate")]
-    Validate,
-    /// `map01` parameter of `base64.b32decode()`.
-    #[strum(serialize = "map01")]
-    Map01,
-    /// Module name for `import binascii`.
-    #[strum(serialize = "binascii")]
-    Binascii,
+    /// `file.encoding` attribute and the `open(encoding=...)` kwarg.
+    Encoding,
+    /// `match.end()` method
+    End,
+    /// `endswith()` method, shared by `str` and `bytes`.
+    Endswith,
+    /// `json.dumps(ensure_ascii=...)` keyword.
+    #[strum(serialize = "ensure_ascii")]
+    EnsureAscii,
+    /// `__enter__`, the context-manager entry method.
+    #[strum(serialize = "__enter__")]
+    Enter,
+    /// `os.environ` attribute.
+    Environ,
+    /// `sys.float_info.epsilon` field.
+    Epsilon,
+    /// `@dataclass(eq=...)`.
+    Eq,
+    /// `math.erf()` function.
+    Erf,
+    /// `math.erfc()` function.
+    Erfc,
+    /// `re.error` exception alias (same as `re.PatternError`)
+    #[strum(serialize = "error")]
+    Error,
     /// `binascii.Error` exception class — distinct from [`Self::Error`], which
     /// is the lowercase `re.error` alias.
     #[strum(serialize = "Error")]
     ErrorClass,
-    /// `base64.MAXBINSIZE` module constant.
-    #[strum(serialize = "MAXBINSIZE")]
-    MaxBinSize,
-    /// `base64.MAXLINESIZE` module constant.
-    #[strum(serialize = "MAXLINESIZE")]
-    MaxLineSize,
-    /// `base64.b85encode()` function.
-    #[strum(serialize = "b85encode")]
-    B85Encode,
-    /// `base64.b85decode()` function.
-    #[strum(serialize = "b85decode")]
-    B85Decode,
-    /// `base64.z85encode()` function.
-    #[strum(serialize = "z85encode")]
-    Z85Encode,
-    /// `base64.z85decode()` function.
-    #[strum(serialize = "z85decode")]
-    Z85Decode,
-    /// `binascii.hexlify()` function.
-    #[strum(serialize = "hexlify")]
-    Hexlify,
-    /// `binascii.unhexlify()` function.
-    #[strum(serialize = "unhexlify")]
-    Unhexlify,
-    /// `binascii.b2a_hex()` function, an alias of `hexlify`.
-    #[strum(serialize = "b2a_hex")]
-    B2aHex,
-    /// `binascii.a2b_hex()` function, an alias of `unhexlify`.
-    #[strum(serialize = "a2b_hex")]
-    A2bHex,
-    /// `binascii.b2a_base64()` function.
-    #[strum(serialize = "b2a_base64")]
-    B2aBase64,
-    /// `binascii.a2b_base64()` function.
-    #[strum(serialize = "a2b_base64")]
-    A2bBase64,
-    /// `binascii.crc32()` function.
-    #[strum(serialize = "crc32")]
-    Crc32,
-    /// `pad` parameter of `base64.b85encode()`.
-    #[strum(serialize = "pad")]
-    Pad,
-    /// `bytes_per_sep` parameter of `binascii.hexlify()`.
-    #[strum(serialize = "bytes_per_sep")]
-    BytesPerSep,
-    /// `strict_mode` parameter of `binascii.a2b_base64()`.
-    #[strum(serialize = "strict_mode")]
-    StrictMode,
-    /// `crc` parameter of `binascii.crc32()`.
-    #[strum(serialize = "crc")]
-    Crc,
-    /// `hexstr` parameter of `binascii.unhexlify()`.
-    #[strum(serialize = "hexstr")]
-    Hexstr,
-
-    /// `datetime.time` class name.
-    Time,
-    /// `datetime.timetz` method name.
-    Timetz,
-    /// `utcoffset()` method of `time`, `datetime` and `timezone`.
-    Utcoffset,
-    /// `tzname()` method of `time`, `datetime` and `timezone`. (`dst()` reuses
-    /// the `Dst` variant already interned for the `os` kwarg of the same name.)
-    Tzname,
-    /// `timespec` keyword of `time.isoformat()` and `datetime.isoformat()`.
-    Timespec,
-    /// `functools.partial` type.
-    Partial,
-    /// `partial.func` attribute, and the `accumulate(func=...)` keyword.
-    Func,
-    /// `partial.keywords` attribute.
-    Keywords,
-    /// `base64.a85encode()` function.
-    #[strum(serialize = "a85encode")]
-    A85Encode,
-    /// `base64.a85decode()` function.
-    #[strum(serialize = "a85decode")]
-    A85Decode,
+    /// Kwarg name `errors` — `open(errors=...)`.
+    Errors,
+    /// `re.escape()` function
+    Escape,
+    /// `sys.exec_prefix` attribute.
+    ExecPrefix,
+    /// `sys.executable` attribute.
+    Executable,
+    /// Kwarg name `exist_ok` — `Path.mkdir(exist_ok=...)`.
+    ExistOk,
+    /// `Path.exists()` method — yields a host call.
+    Exists,
+    /// `__exit__`, the context-manager exit method.
+    #[strum(serialize = "__exit__")]
+    Exit,
+    /// `math.exp()` function.
+    Exp,
+    /// `math.exp2()` function.
+    Exp2,
+    /// `str.expandtabs()` method.
+    Expandtabs,
+    /// `math.expm1()` function.
+    Expm1,
+    /// `random.expovariate()` function.
+    Expovariate,
+    /// `extend()` method, shared by `list` and `deque`.
+    Extend,
+    /// `deque.extendleft()` method.
+    Extendleft,
+    /// `os.extsep` constant name.
+    Extsep,
+    /// `math.fabs()` function.
+    Fabs,
+    /// `math.factorial()` function.
+    Factorial,
+    /// `repr()`/`str()` text of `False`, interned so rendering allocates nothing.
+    #[strum(serialize = "False")]
+    FalseRepr,
+    /// `namedtuple(field_names=...)` keyword argument.
+    #[strum(serialize = "field_names")]
+    FieldNames,
+    /// Kwarg name `file` — `open(file=...)`.
+    File,
+    /// `zip_longest(fillvalue=...)` keyword.
+    Fillvalue,
+    /// `itertools.filterfalse()` function.
+    Filterfalse,
+    /// Value of `sys.version_info.releaselevel`.
+    Final,
+    /// `typing.Final` marker.
+    #[strum(serialize = "Final")]
+    FinalType,
+    /// `find()` method, shared by `str` and `bytes`.
+    Find,
+    /// `re.findall()` / `pattern.findall()` method
+    Findall,
+    /// `re.finditer()` / `pattern.finditer()` method
+    Finditer,
+    /// `pattern.flags`
+    Flags,
+    /// `sys.float_info` attribute.
+    FloatInfo,
+    /// `sys.float_repr_style` attribute.
+    FloatReprStyle,
+    /// `math.floor()` function.
+    Floor,
+    /// `file.flush()` method.
+    Flush,
+    /// `math.fma()` function.
+    Fma,
+    /// `math.fmod()` function.
+    Fmod,
+    /// `datetime` / `time` `fold` attribute and constructor kwarg.
+    Fold,
     /// `foldspaces` parameter of `base64.a85encode()` / `a85decode()`.
     #[strum(serialize = "foldspaces")]
     Foldspaces,
-    /// `wrapcol` parameter of `base64.a85encode()`.
-    #[strum(serialize = "wrapcol")]
-    Wrapcol,
-    /// `adobe` parameter of `base64.a85encode()` / `a85decode()`.
-    #[strum(serialize = "adobe")]
-    Adobe,
-    /// `ignorechars` parameter of `base64.a85decode()`.
-    #[strum(serialize = "ignorechars")]
-    Ignorechars,
-
-    // ==========================
-    // Additional itertools module strings.
-    /// `itertools.accumulate()` function.
-    Accumulate,
-    /// `zip_longest(fillvalue=...)` keyword.
-    Fillvalue,
-    /// `itertools.batched()` function.
-    Batched,
-    /// `itertools.zip_longest()` function.
-    ZipLongest,
-
-    // ==========================
-    // math summation and product functions.
-    Hypot,
-    Dist,
-    Fsum,
-    Prod,
-    Sumprod,
-    Fma,
-
-    // ==========================
-    // Additional binascii module strings.
-    /// `binascii.crc_hqx()` function.
-    #[strum(serialize = "crc_hqx")]
-    CrcHqx,
-    /// `binascii.b2a_uu()` function.
-    #[strum(serialize = "b2a_uu")]
-    B2aUu,
-    /// `binascii.a2b_uu()` function.
-    #[strum(serialize = "a2b_uu")]
-    A2bUu,
-    /// `binascii.b2a_qp()` function.
-    #[strum(serialize = "b2a_qp")]
-    B2aQp,
-    /// `binascii.a2b_qp()` function.
-    #[strum(serialize = "a2b_qp")]
-    A2bQp,
-    /// `binascii.Incomplete` exception class.
-    #[strum(serialize = "Incomplete")]
-    IncompleteClass,
-    /// `backtick` parameter of `binascii.b2a_uu()`.
-    #[strum(serialize = "backtick")]
-    Backtick,
-    /// `quotetabs` parameter of `binascii.b2a_qp()`.
-    #[strum(serialize = "quotetabs")]
-    Quotetabs,
-    /// `istext` parameter of `binascii.b2a_qp()`.
-    #[strum(serialize = "istext")]
-    Istext,
-    /// `header` parameter of the `binascii` quoted-printable pair.
-    #[strum(serialize = "header")]
-    Header,
-    /// `__origin__` of a `types.GenericAlias`.
-    #[strum(serialize = "__origin__")]
-    DunderOrigin,
-    /// `__args__` of a `types.GenericAlias`.
-    #[strum(serialize = "__args__")]
-    DunderArgs,
-    /// `__parameters__` of a `types.GenericAlias`.
-    #[strum(serialize = "__parameters__")]
-    DunderParameters,
-    /// `__class_getitem__`, the classmethod behind `list[int]`.
-    #[strum(serialize = "__class_getitem__")]
-    ClassGetitem,
-    // ==========================
-    // Batch-four itertools module strings: the combinatoric iterators,
-    // `groupby` and `chain.from_iterable`. Appended for the same reason as
-    // every block above.
-    /// `itertools.combinations()` function.
-    Combinations,
-    /// `itertools.combinations_with_replacement()` function.
-    #[strum(serialize = "combinations_with_replacement")]
-    CombinationsWithReplacement,
-    /// `itertools.permutations()` function.
-    Permutations,
-    /// `itertools.product()` function.
-    Product,
-    /// `itertools.groupby()` function.
-    Groupby,
+    /// Kwarg name `follow_symlinks` — `os.stat(follow_symlinks=...)`.
+    FollowSymlinks,
+    /// Kwarg name `format` — `date.strftime(format=...)`, `datetime.strftime(format=...)`.
+    Format,
+    /// `math.frexp()` function.
+    Frexp,
     /// `chain.from_iterable` — the one attribute an `itertools` type carries.
     #[strum(serialize = "from_iterable")]
     FromIterable,
-
-    // ==========================
-    // `itertools.tee` and the private types CPython exposes alongside it.
-    /// `itertools.tee()` function.
-    Tee,
-    /// `itertools._tee`, the iterator `tee()` hands out.
-    #[strum(serialize = "_tee")]
-    TeeType,
-    /// `itertools._tee_dataobject`, the buffer those iterators share.
-    #[strum(serialize = "_tee_dataobject")]
-    TeeDataObject,
+    /// `bytes.fromhex()` classmethod.
+    Fromhex,
+    /// `date.fromisoformat()` / `datetime.fromisoformat()` classmethod.
+    Fromisoformat,
+    /// `dict.fromkeys()` classmethod.
+    Fromkeys,
+    /// `@dataclass(frozen=...)`.
+    Frozen,
+    /// `dataclasses.FrozenInstanceError` exception.
+    #[strum(serialize = "FrozenInstanceError")]
+    FrozenInstanceError,
+    /// `typing.FrozenSet` marker.
+    #[strum(serialize = "FrozenSet")]
+    FrozenSet,
+    /// `Path.__fspath__()` method, answered without host I/O.
+    #[strum(serialize = "__fspath__")]
+    Fspath,
+    /// `math.fsum()` function.
+    Fsum,
+    /// `re.fullmatch()` / `pattern.fullmatch()` method
+    Fullmatch,
+    /// `partial.func` attribute, and the `accumulate(func=...)` keyword.
+    Func,
+    /// Module name for `import functools`.
+    Functools,
+    /// `math.gamma()` function.
+    Gamma,
+    /// `random.gammavariate()` function.
+    Gammavariate,
+    /// `asyncio.gather()` function.
+    Gather,
+    /// `random.gauss()` function.
+    Gauss,
+    /// Module name for `import gc`.
+    Gc,
+    /// `math.gcd()` function.
+    Gcd,
+    /// `typing.Generator` marker.
+    #[strum(serialize = "Generator")]
+    Generator,
+    /// `typing.Generic` marker.
+    #[strum(serialize = "Generic")]
+    Generic,
+    /// `dict.get()` method.
+    Get,
+    /// `os.getcwd()` function.
+    Getcwd,
+    /// `os.getcwdb()` function.
+    Getcwdb,
+    /// `os.getenv()` function.
+    Getenv,
+    /// `random.getrandbits()` function.
+    Getrandbits,
+    /// `random.getstate()` function.
+    Getstate,
+    /// `globals` parameter of eval/exec.
+    Globals,
+    /// `time.gmtime()` function.
+    Gmtime,
+    /// `match.group()` method
+    Group,
+    /// `itertools.groupby()` function.
+    Groupby,
+    /// `match.groupdict()` method
+    Groupdict,
     /// `itertools._grouper`, the sub-iterator `groupby` hands out.
     #[strum(serialize = "_grouper")]
     Grouper,
-
-    // ==========================
-    // `random` module: its name doubles as the `random()` function's
+    /// `match.groups()` method
+    Groups,
+    /// `sys.flags.hash_randomization` field.
+    HashRandomization,
+    /// `header` parameter of the `binascii` quoted-printable pair.
+    #[strum(serialize = "header")]
+    Header,
+    /// `bytes.hex()` method.
+    Hex,
+    /// `binascii.hexlify()` function.
+    #[strum(serialize = "hexlify")]
+    Hexlify,
+    /// `hexstr` parameter of `binascii.unhexlify()`.
+    #[strum(serialize = "hexstr")]
+    Hexstr,
+    /// `sys.hexversion` attribute.
+    Hexversion,
+    /// `high` parameter of `random.triangular()`.
+    High,
+    /// `datetime` / `time` `hour` attribute and constructor kwarg.
+    Hour,
+    /// `timedelta(hours=...)` constructor kwarg.
+    Hours,
+    /// `math.hypot()` function.
+    Hypot,
+    /// `sys.flags.ignore_environment` field.
+    IgnoreEnvironment,
+    /// `re.IGNORECASE` flag
+    #[strum(serialize = "IGNORECASE")]
+    Ignorecase,
+    /// `ignorechars` parameter of `base64.a85decode()`.
+    #[strum(serialize = "ignorechars")]
+    Ignorechars,
+    /// `binascii.Incomplete` exception class.
+    #[strum(serialize = "Incomplete")]
+    IncompleteClass,
+    /// `json.dumps(indent=...)` keyword.
+    Indent,
+    /// `index()` method, shared by `str`, `bytes`, `list`, `tuple` and `deque`.
+    Index,
+    /// `@dataclass(init=...)`.
+    Init,
+    /// `initial` keyword argument of `functools.reduce()` and
+    /// `itertools.accumulate()`.
+    Initial,
+    /// `list.insert()` method.
+    Insert,
+    /// `sys.flags.inspect` field.
+    Inspect,
+    /// `sys.flags.int_max_str_digits` field.
+    IntMaxStrDigits,
+    /// `sys.flags.interactive` field.
+    Interactive,
+    /// `set.intersection()` method.
+    Intersection,
+    /// `Path.is_absolute()` method, answered without host I/O.
+    IsAbsolute,
+    /// `dataclasses.is_dataclass()` function.
+    IsDataclass,
+    /// `Path.is_dir()` method — yields a host call.
+    IsDir,
+    /// `Path.is_file()` method — yields a host call.
+    IsFile,
+    /// `unicodedata.is_normalized()` function.
+    #[strum(serialize = "is_normalized")]
+    IsNormalized,
+    /// `Path.is_symlink()` method — yields a host call.
+    IsSymlink,
+    /// `isalnum()` method, shared by `str` and `bytes`.
+    Isalnum,
+    /// `isalpha()` method, shared by `str` and `bytes`.
+    Isalpha,
+    /// `isascii()` method, shared by `str` and `bytes`.
+    Isascii,
+    /// `math.isclose()` function.
+    Isclose,
+    /// `str.isdecimal()` method.
+    Isdecimal,
+    /// `isdigit()` method, shared by `str` and `bytes`.
+    Isdigit,
+    /// `set.isdisjoint()` method.
+    Isdisjoint,
+    /// `math.isfinite()` function.
+    Isfinite,
+    /// `str.isidentifier()` method.
+    Isidentifier,
+    /// `math.isinf()` function.
+    Isinf,
+    /// `itertools.islice()` function.
+    Islice,
+    /// `islower()` method, shared by `str` and `bytes`.
+    Islower,
+    /// `math.isnan()` function.
+    Isnan,
+    /// `str.isnumeric()` method.
+    Isnumeric,
+    /// `date.isoformat()` / `datetime.isoformat()` method.
+    Isoformat,
+    /// `sys.flags.isolated` field.
+    Isolated,
+    /// `date.isoweekday()` / `datetime.isoweekday()` method.
+    Isoweekday,
+    /// `str.isprintable()` method.
+    Isprintable,
+    /// `math.isqrt()` function.
+    Isqrt,
+    /// `isspace()` method, shared by `str` and `bytes`.
+    Isspace,
+    /// `set.issubset()` method.
+    Issubset,
+    /// `set.issuperset()` method.
+    Issuperset,
+    /// `istext` parameter of `binascii.b2a_qp()`.
+    #[strum(serialize = "istext")]
+    Istext,
+    /// `istitle()` method, shared by `str` and `bytes`.
+    Istitle,
+    /// `isupper()` method, shared by `str` and `bytes`.
+    Isupper,
+    /// `dict.items()` method.
+    Items,
+    /// `typing.Iterable` marker.
+    #[strum(serialize = "Iterable")]
+    Iterable,
+    /// `deque(iterable=...)` — the constructor's first parameter, which CPython
+    /// also accepts by keyword. Distinct from [`Self::Iterable`], which is the
+    /// capitalized `typing.Iterable`.
+    #[strum(serialize = "iterable")]
+    IterableArg,
+    /// `typing.Iterator` marker.
+    #[strum(serialize = "Iterator")]
+    IteratorType,
+    /// `Path.iterdir()` method — yields a host call.
+    Iterdir,
+    /// Module name for `import itertools`.
+    Itertools,
+    /// `join()` method, shared by `str` and `bytes`.
+    Join,
+    /// `Path.joinpath()` method, answered without host I/O.
+    Joinpath,
+    /// Module name for `import json`.
+    Json,
+    /// `json.JSONDecodeError` exception.
+    #[strum(serialize = "JSONDecodeError")]
+    JsonDecodeError,
+    /// `kappa` parameter of `random.vonmisesvariate()`.
+    Kappa,
+    /// Kwarg name `keepends` — `str.splitlines(keepends=...)`.
+    Keepends,
+    /// Kwarg name `key` — `sorted(key=...)`, `min(key=...)`, etc.
+    Key,
+    /// `dict.keys()` method.
+    Keys,
+    /// `partial.keywords` attribute.
+    Keywords,
+    /// `@dataclass(kw_only=...)`.
+    KwOnly,
+    /// `lambd` parameter of `random.expovariate()`.
+    Lambd,
+    /// `math.lcm()` function.
+    Lcm,
+    /// `math.ldexp()` function.
+    Ldexp,
+    /// `math.lgamma()` function.
+    Lgamma,
+    /// The value of `sys.platlibdir`.
+    Lib,
+    /// `os.linesep` constant name.
+    Linesep,
+    /// `typing.List` marker.
+    #[strum(serialize = "List")]
+    ListType,
+    /// `os.listdir()` function.
+    Listdir,
+    /// `typing.Literal` marker.
+    #[strum(serialize = "Literal")]
+    Literal,
+    /// The value of `sys.byteorder` on every target Monty builds for.
+    Little,
+    /// `ljust()` method, shared by `str` and `bytes`.
+    Ljust,
+    /// `json.loads()` function.
+    Loads,
+    /// `locals` parameter of eval/exec.
+    Locals,
+    /// `time.localtime()` function.
+    Localtime,
+    /// `math.log()` function.
+    Log,
+    /// `math.log10()` function.
+    Log10,
+    /// `math.log1p()` function.
+    Log1p,
+    /// `math.log2()` function.
+    Log2,
+    /// `random.lognormvariate()` function.
+    Lognormvariate,
+    /// `unicodedata.lookup()` function.
+    Lookup,
+    /// `low` parameter of `random.triangular()`.
+    Low,
+    /// `lower()` method, shared by `str` and `bytes`.
+    Lower,
+    /// `lstrip()` method, shared by `str` and `bytes`.
+    Lstrip,
+    /// `sys.version_info.major` field.
+    Major,
+    /// `os.makedirs()` function.
+    Makedirs,
+    /// `sys.float_info.mant_dig` field.
+    MantDig,
+    /// `map01` parameter of `base64.b32decode()`.
+    #[strum(serialize = "map01")]
+    Map01,
+    /// `typing.Mapping` marker.
+    #[strum(serialize = "Mapping")]
+    Mapping,
+    /// `re.match()` / `pattern.match()` method
+    Match,
+    /// `@dataclass(match_args=...)`.
+    MatchArgs,
+    /// `re.Match`
+    #[strum(serialize = "Match")]
+    MatchClass,
+    /// Module name for `import math`.
+    Math,
+    /// `math.inf` constant
+    #[strum(serialize = "inf")]
+    MathInf,
+    /// `math.nan` constant
+    #[strum(serialize = "nan")]
+    MathNan,
+    /// `sys.float_info.max` field; also the `max` class constant of the `datetime` classes.
+    Max,
+    /// `sys.float_info.max_10_exp` field.
+    #[strum(serialize = "max_10_exp")]
+    Max10Exp,
+    /// `base64.MAXBINSIZE` module constant.
+    #[strum(serialize = "MAXBINSIZE")]
+    MaxBinSize,
+    /// `sys.float_info.max_exp` field.
+    MaxExp,
+    /// `base64.MAXLINESIZE` module constant.
+    #[strum(serialize = "MAXLINESIZE")]
+    MaxLineSize,
+    /// `deque.maxlen` attribute (also a constructor keyword argument).
+    Maxlen,
+    /// `sys.maxsize` attribute.
+    Maxsize,
+    /// Kwarg name `maxsplit` — `str.split(maxsplit=...)`, `re.split(maxsplit=...)`.
+    Maxsplit,
+    /// `sys.maxunicode` attribute.
+    Maxunicode,
+    /// `memo` parameter of `copy.deepcopy()`.
+    Memo,
+    /// `sys.version_info.micro` field.
+    Micro,
+    /// `datetime` / `time` `microsecond` attribute and constructor kwarg.
+    Microsecond,
+    /// `timedelta.microseconds` attribute and constructor kwarg.
+    Microseconds,
+    /// `timedelta(milliseconds=...)` constructor kwarg.
+    Milliseconds,
+    /// `sys.float_info.min` field; also the `min` class constant of the `datetime` classes.
+    Min,
+    /// `sys.float_info.min_10_exp` field.
+    #[strum(serialize = "min_10_exp")]
+    Min10Exp,
+    /// `sys.float_info.min_exp` field.
+    MinExp,
+    /// `sys.version_info.minor` field.
+    Minor,
+    /// `datetime` / `time` `minute` attribute and constructor kwarg.
+    Minute,
+    /// `timedelta(minutes=...)` constructor kwarg.
+    Minutes,
+    /// `Path.mkdir()` and `os.mkdir()` — yields a host call.
+    Mkdir,
+    /// `time.mktime()` function.
+    Mktime,
+    /// `file.mode` attribute and the `open(mode=...)` kwarg.
+    Mode,
+    /// `math.modf()` function.
+    Modf,
+    /// `<module>`, the traceback frame name for top-level code.
+    #[strum(serialize = "<module>")]
+    Module,
+    /// `namedtuple(..., module=...)` keyword argument.
+    #[strum(serialize = "module")]
+    ModuleKwarg,
+    /// `time.monotonic()` function.
+    Monotonic,
+    /// `time.monotonic_ns()` function.
+    MonotonicNs,
+    /// `date` / `datetime` `month` attribute and constructor kwarg.
+    Month,
+    /// Value of `sys.platform`.
+    Monty,
+    /// The value of `sys.copyright`.
+    #[strum(serialize = "Copyright (c) Pydantic Services Inc. 2026 to present")]
+    MontyCopyright,
+    /// Value of `sys.version`.
+    #[strum(serialize = "3.14.0 (Monty)")]
+    MontyVersionString,
+    /// `Counter.most_common()` method.
+    #[strum(serialize = "most_common")]
+    MostCommon,
+    /// `mu` parameter of `random.gauss()` and the other normal variates.
+    Mu,
+    /// `re.MULTILINE` flag
+    #[strum(serialize = "MULTILINE")]
+    MultilineFlag,
+    /// `Path.name` property; also `file.name`, `os.name` and `unicodedata.name()`.
+    Name,
+    /// The `collections.namedtuple` factory function.
+    Namedtuple,
+    /// Kwarg name `ndigits` — `round(ndigits=...)`.
+    Ndigits,
+    /// `typing.Never` marker.
+    #[strum(serialize = "Never")]
+    Never,
+    /// Kwarg name `new` — `str.replace(new=...)`, `bytes.replace(new=...)`.
+    New,
+    /// Kwarg name `newline` — `open(newline=...)`.
+    Newline,
+    /// `math.nextafter()` function.
+    Nextafter,
+    /// `_nil` parameter of `copy.deepcopy()`, CPython's private sentinel.
+    #[strum(serialize = "_nil")]
+    NilSentinel,
+    /// `re.NOFLAG` flag
+    #[strum(serialize = "NOFLAG")]
+    NoFlag,
+    /// `typing.NoReturn` marker.
+    #[strum(serialize = "NoReturn")]
+    NoReturn,
+    /// `sys.flags.no_site` field.
+    NoSite,
+    /// `sys.flags.no_user_site` field.
+    NoUserSite,
+    /// `repr()`/`str()` text of `None`, interned so rendering allocates nothing.
+    #[strum(serialize = "None")]
+    NoneRepr,
+    /// `unicodedata.normalize()` function.
+    Normalize,
+    /// `random.normalvariate()` function.
+    Normalvariate,
+    /// Python's `NotImplemented` singleton representation.
+    #[strum(serialize = "NotImplemented")]
+    NotImplementedRepr,
+    /// `datetime.now()` classmethod.
+    Now,
+    /// Kwarg name `number` — `round(number=...)`.
+    Number,
+    /// Kwarg name `obj` — `json.dumps(obj=...)`.
+    Obj,
+    /// Kwarg name `object` — `str(object=...)`, `itertools.repeat(object=...)`.
+    Object,
+    /// `timezone(offset=...)` constructor kwarg.
+    Offset,
+    /// Kwarg name `old` — `str.replace(old=...)`, `bytes.replace(old=...)`.
+    Old,
+    /// `Path.open()` and the `open()` builtin, which share the `OsFunctionCall::Open`
+    /// round-trip. `Path::py_call_attr` delegates to `builtin_open` for mode/kwarg
+    /// validation rather than taking the generic `is_path_os_method` pre-flight.
+    Open,
+    /// Kwarg name `opener` — `open(opener=...)`.
+    Opener,
+    /// `sys.flags.optimize` field.
+    Optimize,
+    /// `typing.Optional` marker.
+    #[strum(serialize = "Optional")]
+    Optional,
+    /// `@dataclass(order=...)`.
+    Order,
+    /// Module name for `import os`.
+    Os,
+    /// `os.fspath()` function — distinct from `Fspath` (`__fspath__`).
+    #[strum(serialize = "fspath")]
+    OsFspath,
+    /// Named-tuple type name of the `os.stat()` result.
+    #[strum(serialize = "StatResult")]
+    OsStatResult,
+    /// `pad` parameter of `base64.b85encode()`.
+    #[strum(serialize = "pad")]
+    Pad,
+    /// `itertools.pairwise()` function.
+    Pairwise,
+    /// `os.pardir` constant name.
+    Pardir,
+    /// `Path.parent` property.
+    Parent,
+    /// Value of `os.pardir`.
+    #[strum(serialize = "..")]
+    ParentDirString,
+    /// Kwarg name `parents` — `Path.mkdir(parents=...)`.
+    Parents,
+    /// `random.paretovariate()` function.
+    Paretovariate,
+    /// `functools.partial` type.
+    Partial,
+    /// `partition()` method, shared by `str` and `bytes`.
+    Partition,
+    /// `Path.parts` property.
+    Parts,
+    /// Kwarg name `path` — `os.listdir(path=...)`, `os.stat(path=...)`, etc.
+    Path,
+    /// The `pathlib.Path` type.
+    #[strum(serialize = "Path")]
+    PathClass,
+    /// Module name for `import pathlib`.
+    Pathlib,
+    /// `pattern.pattern`
+    #[strum(serialize = "pattern")]
+    PatternAttr,
+    /// `re.Pattern`
+    #[strum(serialize = "Pattern")]
+    PatternClass,
+    /// `re.PatternError` exception
+    #[strum(serialize = "PatternError")]
+    PatternError,
+    /// `time.perf_counter()` function.
+    PerfCounter,
+    /// `time.perf_counter_ns()` function.
+    PerfCounterNs,
+    /// `math.perm()` function.
+    Perm,
+    /// `itertools.permutations()` function.
+    Permutations,
+    /// `math.pi` constant
+    Pi,
+    /// `sys.platform` attribute.
+    Platform,
+    /// `sys.platlibdir` attribute.
+    Platlibdir,
+    /// `pop()` method, shared by `list`, `dict`, `set` and `deque`.
+    Pop,
+    /// `dict.popitem()` method.
+    Popitem,
+    /// `deque.popleft()` method.
+    Popleft,
+    /// `population` parameter of `random.choices()` and `random.sample()`.
+    Population,
+    /// Value of `os.name`.
+    Posix,
+    /// `math.pow()` function.
+    Pow,
+    /// `sys.prefix` attribute.
+    Prefix,
+    /// `time.process_time()` function.
+    ProcessTime,
+    /// `time.process_time_ns()` function.
+    ProcessTimeNs,
+    /// `math.prod()` function.
+    Prod,
+    /// `itertools.product()` function.
+    Product,
+    /// `typing.Protocol` marker.
+    #[strum(serialize = "Protocol")]
+    Protocol,
+    /// `sys.pycache_prefix` attribute.
+    PycachePrefix,
+    /// `sys.flags.quiet` field.
+    Quiet,
+    /// `quotetabs` parameter of `binascii.b2a_qp()`.
+    #[strum(serialize = "quotetabs")]
+    Quotetabs,
+    /// `math.radians()` function.
+    Radians,
+    /// `sys.float_info.radix` field.
+    Radix,
+    /// `random.randbytes()` function.
+    Randbytes,
+    /// `random.randint()` function.
+    Randint,
+    /// Module name for `import random`, and the `random.random()` function.
     Random,
     /// The `random.Random` class.
     #[strum(serialize = "Random")]
@@ -1677,78 +1568,453 @@ pub enum StaticStrings {
     /// `Random.VERSION`, the `getstate()` format number.
     #[strum(serialize = "VERSION")]
     RandomVersion,
-    Seed,
-    Getstate,
-    Setstate,
-    Getrandbits,
-    Randbytes,
+    /// `random.randrange()` function.
     Randrange,
-    Randint,
-    Choice,
-    Choices,
-    Shuffle,
-    Sample,
-    Uniform,
-    Triangular,
-    Normalvariate,
-    Gauss,
-    Lognormvariate,
-    Expovariate,
-    Vonmisesvariate,
-    Gammavariate,
-    Betavariate,
-    Paretovariate,
-    Weibullvariate,
-    Binomialvariate,
-    /// `os.urandom()` function.
-    Urandom,
-    // `random` parameter names
-    Weights,
-    CumWeights,
-    Counts,
-    Population,
-    Seq,
-    Mu,
-    Sigma,
-    Lambd,
-    Kappa,
-    Alpha,
-    Beta,
-    Low,
-    High,
-    /// `size` parameter of `os.urandom()`.
-    Size,
-    /// `state` parameter of `Random.setstate()`.
-    State,
-
-    // ==========================
-    // copy module strings.
-    /// `copy.deepcopy()`. The module name and `copy.copy()` reuse [`Self::Copy`].
-    Deepcopy,
-    /// `memo` parameter of `copy.deepcopy()`.
-    Memo,
-    /// `_nil` parameter of `copy.deepcopy()`, CPython's private sentinel.
-    #[strum(serialize = "_nil")]
-    NilSentinel,
-
-    // ==========================
-    // Additional datetime strings.
-    /// `datetime.combine()` class method.
-    Combine,
+    /// Module name for `import re`.
+    Re,
+    /// `file.read()` method.
+    Read,
+    /// `Path.read_bytes()` method — yields a host call.
+    ReadBytes,
+    /// `Path.read_text()` method — yields a host call.
+    ReadText,
+    /// `file.readable()` method.
+    Readable,
+    /// `file.readline()` method.
+    Readline,
+    /// `file.readlines()` method.
+    Readlines,
+    /// `functools.reduce()` function.
+    Reduce,
+    /// Kwarg name `rel_tol` — `math.isclose(rel_tol=...)`.
+    RelTol,
+    /// `sys.version_info.releaselevel` field.
+    Releaselevel,
+    /// `math.remainder()` function.
+    Remainder,
+    /// `remove()` method, shared by `set`, `list` and `deque`.
+    Remove,
+    /// `removeprefix()` method, shared by `str` and `bytes`.
+    Removeprefix,
+    /// `removesuffix()` method, shared by `str` and `bytes`.
+    Removesuffix,
+    /// `Path.rename()` and `os.rename()` — yields a host call.
+    Rename,
+    /// `itertools.repeat()` function.
+    Repeat,
+    /// Kwarg name `repl` — `re.sub(repl=...)`.
+    Repl,
+    /// `replace()` method, shared by `str` and `bytes`.
+    Replace,
+    /// `@dataclass(repr=...)`.
+    Repr,
     /// `resolution` class constant of the `datetime` classes.
     Resolution,
-
-    // ==========================
-    // `time` module strings, appended at the enum end like every block before
-    // it. The module name itself reuses [`Self::Time`], already interned as
-    // `datetime.time`, since both spell "time".
-    /// `time.sleep()` and `asyncio.sleep()`.
-    Sleep,
-    /// `delay` parameter of `asyncio.sleep()`.
-    Delay,
+    /// `Path.resolve()` method — yields a host call.
+    Resolve,
     /// `result` parameter of `asyncio.sleep()`.
     #[strum(serialize = "result")]
     ResultArg,
+    /// Kwarg name `return_exceptions` — `asyncio.gather(return_exceptions=...)`.
+    ReturnExceptions,
+    /// `list.reverse()` method.
+    Reverse,
+    /// `rfind()` method, shared by `str` and `bytes`.
+    Rfind,
+    /// `rindex()` method, shared by `str` and `bytes`.
+    Rindex,
+    /// `rjust()` method, shared by `str` and `bytes`.
+    Rjust,
+    /// `Path.rmdir()` and `os.rmdir()` — yields a host call.
+    Rmdir,
+    /// `deque.rotate()` method.
+    Rotate,
+    /// `sys.float_info.rounds` field.
+    Rounds,
+    /// `rpartition()` method, shared by `str` and `bytes`.
+    Rpartition,
+    /// `rsplit()` method, shared by `str` and `bytes`.
+    Rsplit,
+    /// `rstrip()` method, shared by `str` and `bytes`.
+    Rstrip,
+    /// `asyncio.run()` function.
+    Run,
+    /// `sys.flags.safe_path` field.
+    SafePath,
+    /// `random.sample()` function.
+    Sample,
+    /// `re.search()` / `pattern.search()` method
+    Search,
+    /// `datetime` / `time` `second` attribute and constructor kwarg.
+    Second,
+    /// `timedelta.seconds` attribute and constructor kwarg.
+    Seconds,
+    /// `random.seed()` function.
+    Seed,
+    /// `file.seek()` method.
+    Seek,
+    /// `file.seekable()` method.
+    Seekable,
+    /// `selectors` keyword argument of `itertools.compress()`.
+    Selectors,
+    /// `typing.Self` marker.
+    #[strum(serialize = "Self")]
+    SelfType,
+    /// Kwarg name `sep` — `str.split(sep=...)`, `print(sep=...)`, etc.
+    Sep,
+    /// `json.dumps(separators=...)` keyword.
+    Separators,
+    /// `seq` parameter of `random.choice()`.
+    Seq,
+    /// `typing.Sequence` marker.
+    #[strum(serialize = "Sequence")]
+    Sequence,
+    /// `sys.version_info.serial` field.
+    Serial,
+    /// `typing.Set` marker.
+    #[strum(serialize = "Set")]
+    SetType,
+    /// `dict.setdefault()` method.
+    Setdefault,
+    /// `sys.setrecursionlimit()` function (only callable under `test-hooks`).
+    Setrecursionlimit,
+    /// `random.setstate()` function.
+    Setstate,
+    /// The value of `sys.float_repr_style`.
+    Short,
+    /// `random.shuffle()` function.
+    Shuffle,
+    /// `sigma` parameter of `random.gauss()` and the other normal variates.
+    Sigma,
+    /// `math.sin()` function.
+    Sin,
+    /// `math.sinh()` function.
+    Sinh,
+    /// `size` parameter of `os.urandom()`.
+    Size,
+    /// `json.dumps(skipkeys=...)` keyword.
+    Skipkeys,
+    /// `time.sleep()` and `asyncio.sleep()`.
+    Sleep,
+    /// `@dataclass(slots=...)`.
+    Slots,
+    /// `list.sort()` method.
+    Sort,
+    /// `json.dumps(sort_keys=...)` keyword.
+    #[strum(serialize = "sort_keys")]
+    SortKeys,
+    /// Kwarg name `source` — `bytes(source=...)`, `bytearray(source=...)`.
+    Source,
+    /// `match.span()` method
+    Span,
+    /// `split()` method, shared by `str` and `bytes`; also `re.split()`.
+    Split,
+    /// `splitlines()` method, shared by `str` and `bytes`.
+    Splitlines,
+    /// `math.sqrt()` function.
+    Sqrt,
+    /// Kwarg name `src` — `os.rename(src=...)`, `os.replace(src=...)`.
+    Src,
+    /// Kwarg name `src_dir_fd` — `os.rename(src_dir_fd=...)`.
+    SrcDirFd,
+    /// `os.stat_result.st_atime` field.
+    StAtime,
+    /// `os.stat_result.st_ctime` field.
+    StCtime,
+    /// `os.stat_result.st_dev` field.
+    StDev,
+    /// `os.stat_result.st_gid` field.
+    StGid,
+    /// `os.stat_result.st_ino` field.
+    StIno,
+    /// `os.stat_result.st_mode` field.
+    StMode,
+    /// `os.stat_result.st_mtime` field.
+    StMtime,
+    /// `os.stat_result.st_nlink` field.
+    StNlink,
+    /// `os.stat_result.st_size` field.
+    StSize,
+    /// `os.stat_result.st_uid` field.
+    StUid,
+    /// `base64.standard_b64decode()` function.
+    #[strum(serialize = "standard_b64decode")]
+    StandardB64Decode,
+    /// `base64.standard_b64encode()` function.
+    #[strum(serialize = "standard_b64encode")]
+    StandardB64Encode,
+    /// `itertools.starmap()` function.
+    Starmap,
+    /// `slice.start` attribute; also the `start` kwarg of `itertools.count()`.
+    Start,
+    /// `startswith()` method, shared by `str` and `bytes`.
+    Startswith,
+    /// `Path.stat()` and `os.stat()` — yields a host call.
+    #[strum(serialize = "stat")]
+    StatMethod,
+    /// `state` parameter of `Random.setstate()`.
+    State,
+    /// `sys.stderr` attribute and the marker it holds.
+    Stderr,
+    /// `sys.stdout` attribute and the marker it holds.
+    Stdout,
+    /// `Path.stem` property.
+    Stem,
+    /// `slice.step` attribute; also the `step` kwarg of `itertools.count()`.
+    Step,
+    /// `slice.stop` attribute.
+    Stop,
+    /// `date.strftime()` / `datetime.strftime()` method.
+    Strftime,
+    /// Kwarg name `strict` — `zip(strict=...)`.
+    Strict,
+    /// `strict_mode` parameter of `binascii.a2b_base64()`.
+    #[strum(serialize = "strict_mode")]
+    StrictMode,
+    /// `match.string`
+    #[strum(serialize = "string")]
+    StringAttr,
+    /// `strip()` method, shared by `str` and `bytes`.
+    Strip,
+    /// `datetime.strptime()` classmethod.
+    Strptime,
+    /// Named-tuple type name of a `time` module `struct_time`.
+    #[strum(serialize = "time.struct_time")]
+    StructTime,
+    /// `re.sub()` / `pattern.sub()` method
+    Sub,
+    /// `Counter.subtract()` method.
+    Subtract,
+    /// `Path.suffix` property.
+    Suffix,
+    /// `Path.suffixes` property.
+    Suffixes,
+    /// `math.sumprod()` function.
+    Sumprod,
+    /// `swapcase()` method, shared by `str` and `bytes`.
+    Swapcase,
+    /// `set.symmetric_difference()` method.
+    SymmetricDifference,
+    /// Module name for `import sys`.
+    Sys,
+    /// Named-tuple type name of `sys.flags`.
+    #[strum(serialize = "sys.flags")]
+    SysFlags,
+    /// Named-tuple type name of `sys.float_info`.
+    #[strum(serialize = "sys.float_info")]
+    SysFloatInfo,
+    /// Named-tuple type name of `sys.version_info`.
+    #[strum(serialize = "sys.version_info")]
+    SysVersionInfo,
+    /// Kwarg name `tabsize` — `str.expandtabs(tabsize=...)`.
+    Tabsize,
+    /// `itertools.takewhile()` function.
+    Takewhile,
+    /// `math.tan()` function.
+    Tan,
+    /// `math.tanh()` function.
+    Tanh,
+    /// `math.tau` constant
+    Tau,
+    /// `itertools.tee()` function.
+    Tee,
+    /// `itertools._tee_dataobject`, the buffer those iterators share.
+    #[strum(serialize = "_tee_dataobject")]
+    TeeDataObject,
+    /// `itertools._tee`, the iterator `tee()` hands out.
+    #[strum(serialize = "_tee")]
+    TeeType,
+    /// `file.tell()` method.
+    Tell,
+    /// `time.thread_time()` function.
+    ThreadTime,
+    /// `time.thread_time_ns()` function.
+    ThreadTimeNs,
+    /// `datetime.time` class name.
+    Time,
+    /// `time.time_ns()` function.
+    TimeNs,
+    /// The `datetime.timedelta` type.
+    Timedelta,
+    /// `times` keyword argument of `itertools.repeat()`.
+    Times,
+    /// `timespec` keyword of `time.isoformat()` and `datetime.isoformat()`.
+    Timespec,
+    /// `datetime.timestamp()` method.
+    Timestamp,
+    /// `datetime.timetz` method name.
+    Timetz,
+    /// The `datetime.timezone` type.
+    Timezone,
+    /// `title()` method, shared by `str` and `bytes`.
+    Title,
+    /// `struct_time.tm_gmtoff` field.
+    TmGmtoff,
+    /// `struct_time.tm_hour` field.
+    TmHour,
+    /// `struct_time.tm_isdst` field.
+    TmIsdst,
+    /// `struct_time.tm_mday` field.
+    TmMday,
+    /// `struct_time.tm_min` field.
+    TmMin,
+    /// `struct_time.tm_mon` field.
+    TmMon,
+    /// `struct_time.tm_sec` field.
+    TmSec,
+    /// `struct_time.tm_wday` field.
+    TmWday,
+    /// `struct_time.tm_yday` field.
+    TmYday,
+    /// `struct_time.tm_year` field.
+    TmYear,
+    /// `struct_time.tm_zone` field.
+    TmZone,
+    /// `date.today()` / `datetime.today()` classmethod.
+    Today,
+    /// `Counter.total()` method.
+    Total,
+    /// `timedelta.total_seconds()` method.
+    TotalSeconds,
+    /// `random.triangular()` function.
+    Triangular,
+    /// `repr()`/`str()` text of `True`, interned so rendering allocates nothing.
+    #[strum(serialize = "True")]
+    TrueRepr,
+    /// `math.trunc()` function.
+    Trunc,
+    /// `typing.Tuple` marker.
+    #[strum(serialize = "Tuple")]
+    TupleType,
+    /// `typing.Type` marker.
+    #[strum(serialize = "Type")]
+    Type,
+    /// `typing.TYPE_CHECKING` constant.
+    #[strum(serialize = "TYPE_CHECKING")]
+    TypeChecking,
+    /// `typing.TypeVar` marker.
+    #[strum(serialize = "TypeVar")]
+    TypeVar,
+    /// `namedtuple(typename=...)` keyword argument.
+    Typename,
+    /// Module name for `import typing`.
+    Typing,
+    /// `datetime.now(tz=...)` kwarg.
+    Tz,
+    /// `datetime.tzinfo` attribute and constructor kwarg.
+    Tzinfo,
+    /// `tzname()` method of `time`, `datetime` and `timezone`. (`dst()` reuses
+    /// the `Dst` variant already interned for the `os` kwarg of the same name.)
+    Tzname,
+    /// `math.ulp()` function.
+    Ulp,
+    /// `NamedTuple._asdict()` method.
+    #[strum(serialize = "_asdict")]
+    UnderAsdict,
+    /// `NamedTuple._field_defaults` — dict of defaulted field names to values.
+    #[strum(serialize = "_field_defaults")]
+    UnderFieldDefaults,
+    /// `NamedTuple._fields` — tuple of field names.
+    #[strum(serialize = "_fields")]
+    UnderFields,
+    /// `NamedTuple._make(iterable)` classmethod.
+    #[strum(serialize = "_make")]
+    UnderMake,
+    /// `NamedTuple._replace(**kwargs)` method.
+    #[strum(serialize = "_replace")]
+    UnderReplace,
+    /// `binascii.unhexlify()` function.
+    #[strum(serialize = "unhexlify")]
+    Unhexlify,
+    /// Module name for `import unicodedata`.
+    Unicodedata,
+    /// `unicodedata.unidata_version` constant.
+    #[strum(serialize = "unidata_version")]
+    UnidataVersion,
+    /// `random.uniform()` function.
+    Uniform,
+    /// `set.union()` method.
+    Union,
+    /// `typing.Union` marker.
+    #[strum(serialize = "Union")]
+    UnionType,
+    /// `Path.unlink()` and `os.unlink()` — yields a host call.
+    Unlink,
+    /// `@dataclass(unsafe_hash=...)`.
+    UnsafeHash,
+    /// `update()` method, shared by `set` and `dict`.
+    Update,
+    /// `upper()` method, shared by `str` and `bytes`.
+    Upper,
+    /// `os.urandom()` function.
+    Urandom,
+    /// `base64.urlsafe_b64decode()` function.
+    #[strum(serialize = "urlsafe_b64decode")]
+    UrlsafeB64Decode,
+    /// `base64.urlsafe_b64encode()` function.
+    #[strum(serialize = "urlsafe_b64encode")]
+    UrlsafeB64Encode,
+    /// `timezone.utc` class constant.
+    Utc,
+    /// `utcoffset()` method of `time`, `datetime` and `timezone`.
+    Utcoffset,
+    /// `sys.flags.utf8_mode` field.
+    #[strum(serialize = "utf8_mode")]
+    Utf8Mode,
+    /// `validate` parameter of `base64.b64decode()`.
+    #[strum(serialize = "validate")]
+    Validate,
+    /// `dict.values()` method.
+    Values,
+    /// `sys.flags.verbose` field.
+    Verbose,
+    /// `sys.version` attribute.
+    Version,
+    /// `sys.version_info` attribute.
+    VersionInfo,
+    /// `random.vonmisesvariate()` function.
+    Vonmisesvariate,
+    /// `sys.flags.warn_default_encoding` field.
+    WarnDefaultEncoding,
+    /// `@dataclass(weakref_slot=...)`.
+    WeakrefSlot,
+    /// `date.weekday()` / `datetime.weekday()` method.
+    Weekday,
+    /// `timedelta(weeks=...)` constructor kwarg.
+    Weeks,
+    /// `random.weibullvariate()` function.
+    Weibullvariate,
+    /// `weights` parameter of `random.choices()`.
+    Weights,
+    /// `Path.with_name()` method, answered without host I/O.
+    WithName,
+    /// `Path.with_stem()` method, answered without host I/O.
+    WithStem,
+    /// `Path.with_suffix()` method, answered without host I/O.
+    WithSuffix,
+    /// `wrapcol` parameter of `base64.a85encode()`.
+    #[strum(serialize = "wrapcol")]
+    Wrapcol,
+    /// `file.writable()` method.
+    Writable,
+    /// `file.write()` method.
+    Write,
+    /// `Path.write_bytes()` method — yields a host call.
+    WriteBytes,
+    /// `Path.write_text()` method — yields a host call.
+    WriteText,
+    /// `date` / `datetime` `year` attribute and constructor kwarg.
+    Year,
+    /// `base64.z85decode()` function.
+    #[strum(serialize = "z85decode")]
+    Z85Decode,
+    /// `base64.z85encode()` function.
+    #[strum(serialize = "z85encode")]
+    Z85Encode,
+    /// `zfill()` method, shared by `str` and `bytes`.
+    Zfill,
+    /// `itertools.zip_longest()` function.
+    ZipLongest,
 }
 
 /// One immutable interned string with directly accessible dispatch metadata.
@@ -1887,102 +2153,10 @@ static CORE_ENTRIES: LazyLock<Vec<InternedString>> = LazyLock::new(|| {
         .collect()
 });
 
-/// Append-only storage: existing references remain valid across insertion.
-/// No API exposes the underlying arena's removal or mutation operations.
-#[derive(Debug)]
-struct StringEntries(StableHeap<InternedString>);
-
-impl StringEntries {
-    /// Reserves stable slots for a new interner.
-    fn with_capacity(capacity: usize) -> Self {
-        Self(StableHeap::with_capacity(capacity))
-    }
-
-    /// Returns the number of assigned executor-local slots.
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    /// Appends an immutable entry without invalidating borrowed text.
-    fn push(&self, entry: InternedString) {
-        self.0.allocate(entry);
-    }
-
-    /// Looks up an existing slot without exposing arena IDs to callers.
-    fn get(&self, index: usize) -> Option<&InternedString> {
-        (index < self.len()).then(|| self.0.get(HeapId::from_index(index)))
-    }
-
-    /// Visits entries in ID order for cloning and snapshots.
-    fn iter(&self) -> impl Iterator<Item = &InternedString> {
-        (0..self.len()).map(|index| &self[index])
-    }
-}
-
-impl Index<usize> for StringEntries {
-    type Output = InternedString;
-    fn index(&self, index: usize) -> &Self::Output {
-        self.get(index).expect("invalid string slot")
-    }
-}
-
-impl Clone for StringEntries {
-    fn clone(&self) -> Self {
-        let entries = Self::with_capacity(self.len());
-        for entry in self.iter() {
-            entries.push(entry.clone());
-        }
-        entries
-    }
-}
-
-impl serde::Serialize for StringEntries {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq(self.iter())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for StringEntries {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let values = <Vec<InternedString> as serde::Deserialize>::deserialize(deserializer)?;
-        let entries = Self::with_capacity(values.len());
-        for value in values {
-            entries.push(value);
-        }
-        Ok(entries)
-    }
-}
-
-/// Interns `s` into the executor-local string table.
-///
-/// ASCII and empty strings remain globally addressable; other strings receive an ordinary
-/// dense interner slot. Static text retains a tag in that slot rather than
-/// encoding the tag in its `StringId`.
-fn intern_str(
-    string_map: &mut AHashMap<String, StringId>,
-    static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
-    strings: &StringEntries,
-    s: &str,
-) -> StringId {
-    if s.is_empty() {
-        StringId::EMPTY
-    } else if s.len() == 1 {
-        StringId::from_ascii(s.as_bytes()[0])
-    } else if let Ok(value) = StaticStrings::from_str(s) {
-        intern_static(static_string_ids, strings, value)
-    } else {
-        *string_map.entry(s.to_owned()).or_insert_with(|| {
-            let id = next_string_id(strings.len());
-            strings.push(InternedString::owned(s.to_owned()));
-            id
-        })
-    }
-}
-
 /// Interns a static tag into an append-only executor-local table.
 fn intern_static(
     static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
-    strings: &StringEntries,
+    strings: &Entries<InternedString>,
     value: StaticStrings,
 ) -> StringId {
     let text: &'static str = value.into();
@@ -2006,6 +2180,7 @@ fn intern_static(
 /// Returns the next dense executor-local string ID.
 fn next_string_id(strings_len: usize) -> StringId {
     let index = strings_len + INTERN_STRING_ID_OFFSET;
+    assert!(index < SOURCE_ID_BASE, "StringId overflow");
     StringId(index.try_into().expect("StringId overflow"))
 }
 
@@ -2031,7 +2206,7 @@ fn get_string_id_by_name(
 /// # Panics
 ///
 /// Panics if the ID is neither reserved nor a slot in this interner.
-fn get_str(strings: &StringEntries, id: StringId) -> &str {
+fn get_str(strings: &Entries<InternedString>, id: StringId) -> &str {
     if let Some(text) = RESERVED_STRS.get(id.index()) {
         text
     } else {
@@ -2041,7 +2216,7 @@ fn get_str(strings: &StringEntries, id: StringId) -> &str {
 
 /// Returns the static tag stored at `id`, if any.
 #[inline]
-fn get_static_string(strings: &StringEntries, id: StringId) -> Option<StaticStrings> {
+fn get_static_string(strings: &Entries<InternedString>, id: StringId) -> Option<StaticStrings> {
     if id == StringId::EMPTY {
         Some(StaticStrings::EmptyString)
     } else if id.index() < INTERN_STRING_ID_OFFSET {
@@ -2051,47 +2226,24 @@ fn get_static_string(strings: &StringEntries, id: StringId) -> Option<StaticStri
     }
 }
 
-/// Storage for interned strings, bytes, long integers and compiled functions.
-///
-/// One table serves parsing, preparation, compilation and execution. Strings
-/// are deduplicated; bytes and long integers are not (large literals are rare).
-/// The table is single-threaded, with static strings appendable through `&self`.
-///
-/// # Append-only ownership in the REPL
-///
-/// Snippets extend the session's table in place, keeping existing IDs stable.
-/// Failed compilation rolls back appended functions; interned literals remain.
-/// Execution takes ownership of the table and hands it back afterwards.
-///
-/// # Hash tables
-///
-/// String entries wrap either a static tag or owned text in [`WithHash`]; bytes
-/// and long integers use `WithHash` directly. Hashes are populated eagerly at
-/// intern/load time, making the runtime hash methods plain index lookups.
-///
-/// # Reverse string lookup
-///
-/// [`get_string_id_by_name`](Self::get_string_id_by_name) returns the
-/// `StringId` for a host-supplied `&str`. Owned text uses an in-memory reverse
-/// map; static tags use a sparse reverse map. Both are rebuilt
-/// deterministically after deserialization. REPL hot paths
-/// such as [`MontyRepl::call_function`](crate::MontyRepl::call_function)
-/// and [`MontyRepl::has_function`](crate::MontyRepl::has_function) call this
-/// per host-supplied name, so the lookup must be O(1) — not the previous
-/// linear scan over `strings`.
+/// Committed strings, literals, functions and snippet sources.
+/// Entries never move or disappear; existing sessions publish private compilation overlays on success.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "InternsWire")]
 pub(crate) struct Interns {
-    strings: StringEntries,
-    bytes: Vec<WithHash<Vec<u8>>>,
-    long_ints: Vec<WithHash<BigInt>>,
-    functions: Vec<Function>,
-    /// Owned-text reverse lookup for [`Self::get_string_id_by_name`].
+    strings: Entries<InternedString>,
+    bytes: Entries<WithHash<Vec<u8>>>,
+    long_ints: Entries<WithHash<BigInt>>,
+    /// Boxes keep a mostly empty storage page from reserving hundreds of function bodies.
+    functions: Entries<Box<Function>>,
+    eval_sources: Entries<Arc<str>>,
     #[serde(skip)]
-    string_id_by_name: AHashMap<String, StringId>,
-    /// Static-tag reverse lookup, rebuilt from `strings` after loading.
+    string_id_by_name: RefCell<AHashMap<String, StringId>>,
     #[serde(skip)]
     static_string_ids: RefCell<AHashMap<StaticStrings, StringId>>,
+    /// Prevents runtime insertion or a second compiler from consuming provisional IDs.
+    #[serde(skip)]
+    compiling: Cell<bool>,
 }
 
 impl Default for Interns {
@@ -2100,102 +2252,84 @@ impl Default for Interns {
     }
 }
 
-/// Serialized form of [`Interns`]
+/// Serialized tables without the derived lookup maps or compilation lock.
 #[derive(serde::Deserialize)]
 struct InternsWire {
-    strings: StringEntries,
-    bytes: Vec<WithHash<Vec<u8>>>,
-    long_ints: Vec<WithHash<BigInt>>,
-    functions: Vec<Function>,
-}
-
-impl From<Interns> for InternsWire {
-    fn from(interns: Interns) -> Self {
-        Self {
-            strings: interns.strings,
-            bytes: interns.bytes,
-            long_ints: interns.long_ints,
-            functions: interns.functions,
-        }
-    }
+    strings: Entries<InternedString>,
+    bytes: Entries<WithHash<Vec<u8>>>,
+    long_ints: Entries<WithHash<BigInt>>,
+    functions: Entries<Box<Function>>,
+    eval_sources: Entries<Arc<str>>,
 }
 
 impl TryFrom<InternsWire> for Interns {
     type Error = String;
 
     fn try_from(wire: InternsWire) -> Result<Self, Self::Error> {
-        let (string_id_by_name, static_string_ids) = build_string_maps(&wire.strings)?;
-        let interns = Self {
+        let mut string_id_by_name = AHashMap::new();
+        let mut static_string_ids = AHashMap::new();
+        let mut seen = AHashSet::new();
+        for (index, entry) in wire.strings.iter().enumerate() {
+            let text = entry.as_str();
+            if text.is_empty() || text.len() == 1 || !seen.insert(text) {
+                return Err(format!("duplicate or reserved interned string {text:?}"));
+            }
+            let id = next_string_id(index);
+            if let Some(value) = entry.static_value() {
+                static_string_ids.insert(value, id);
+            } else {
+                string_id_by_name.insert(text.to_owned(), id);
+            }
+        }
+        Ok(Self {
             strings: wire.strings,
             bytes: wire.bytes,
             long_ints: wire.long_ints,
             functions: wire.functions,
-            string_id_by_name,
-            static_string_ids,
-        };
-        Ok(interns)
+            eval_sources: wire.eval_sources,
+            string_id_by_name: RefCell::new(string_id_by_name),
+            static_string_ids: RefCell::new(static_string_ids),
+            compiling: Cell::new(false),
+        })
     }
 }
 
-/// Reverse maps rebuilt from the serialized ordered string table.
-type StringMaps = (AHashMap<String, StringId>, RefCell<AHashMap<StaticStrings, StringId>>);
-
-/// Rebuilds both reverse maps from the canonical ordered string table.
-///
-/// Duplicate text is rejected because distinct IDs for equal interned strings
-/// would invalidate the ID-equality fast path used by Python string equality.
-fn build_string_maps(strings: &StringEntries) -> Result<StringMaps, String> {
-    let mut seen = AHashMap::with_capacity(strings.len());
-    let mut string_id_by_name = AHashMap::new();
-    let static_string_ids = RefCell::new(AHashMap::new());
-    for (index, entry) in strings.iter().enumerate() {
-        let id = next_string_id(index);
-        if seen.insert(entry.as_str(), id).is_some() {
-            return Err(format!("duplicate interned string {:?}", entry.as_str()));
-        }
-        if let Some(value) = entry.static_value() {
-            static_string_ids.borrow_mut().insert(value, id);
-        } else {
-            string_id_by_name.insert(entry.as_str().to_owned(), id);
-        }
-    }
-    Ok((string_id_by_name, static_string_ids))
-}
+/// Filename-only IDs are separate from canonical Python strings.
+/// Each snippet has distinct source identity but the same displayed filename.
+const SOURCE_ID_BASE: usize = 1 << 31;
 
 impl Interns {
-    /// Moves this table out while leaving a cheap, intentionally unusable placeholder.
-    ///
-    /// Transferring the table between a REPL session and its executor avoids
-    /// full interner initialization on every feed.
+    /// Moves session ownership without initializing another interner.
     pub(crate) fn take(&mut self) -> Self {
         mem::replace(self, Self::placeholder())
     }
 
-    /// Creates the temporary value used only while an interner is moved out.
+    /// Empty replacement used while the executor owns the session's tables.
     fn placeholder() -> Self {
         Self {
-            strings: StringEntries::with_capacity(0),
-            bytes: Vec::new(),
-            long_ints: Vec::new(),
-            functions: Vec::new(),
-            string_id_by_name: AHashMap::new(),
-            static_string_ids: RefCell::new(AHashMap::new()),
+            strings: Entries::default(),
+            bytes: Entries::default(),
+            long_ints: Entries::default(),
+            functions: Entries::default(),
+            eval_sources: Entries::default(),
+            string_id_by_name: RefCell::default(),
+            static_string_ids: RefCell::default(),
+            compiling: Cell::new(false),
         }
     }
 
-    /// Creates a table containing the core strings any execution may materialize.
-    /// Other static strings are interned on demand; `code` supplies a rough
-    /// capacity estimate for source literals.
+    /// Initializes the core static strings; other entries are appended on demand.
     pub fn new(code: &str) -> Self {
-        // Rough guess: count quotes and divide by 2 (open+close per string).
         let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
         let interns = Self {
-            strings: StringEntries::with_capacity(capacity + CORE_STATIC_STRINGS.len()),
-            bytes: Vec::new(),
-            long_ints: Vec::new(),
-            functions: Vec::new(),
-            string_id_by_name: AHashMap::with_capacity(capacity),
+            strings: Entries::with_capacity(capacity + CORE_STATIC_STRINGS.len()),
+            bytes: Entries::default(),
+            long_ints: Entries::default(),
+            functions: Entries::default(),
+            eval_sources: Entries::default(),
+            string_id_by_name: RefCell::new(AHashMap::with_capacity(capacity)),
             static_string_ids: RefCell::new(AHashMap::with_capacity(CORE_STATIC_STRINGS.len())),
+            compiling: Cell::new(false),
         };
         for entry in CORE_ENTRIES.iter() {
             let value = entry.static_value().expect("core entries are static");
@@ -2206,105 +2340,64 @@ impl Interns {
         interns
     }
 
-    /// Interns bytes without deduplication, since bytes literals are rare.
-    pub fn intern_bytes(&mut self, b: &[u8]) -> BytesId {
-        let id = BytesId(self.bytes.len().try_into().expect("BytesId overflow"));
-        self.bytes.push(WithHash::for_bytes(b.to_vec()));
-        id
-    }
-
-    /// Interns a big integer without deduplication, since literals exceeding i64 are rare.
-    pub fn intern_long_int(&mut self, bi: BigInt) -> LongIntId {
-        let id = LongIntId(self.long_ints.len().try_into().expect("LongIntId overflow"));
-        self.long_ints.push(WithHash::for_long_int(bi));
-        id
-    }
-
-    /// Appends a compiled function, returning its index for bytecode operands.
-    pub(crate) fn push_function(&mut self, function: Function) -> usize {
-        let index = self.functions.len();
-        self.functions.push(function);
-        index
-    }
-
-    /// Records the function count before compilation so failures can roll back.
-    pub(crate) fn functions_len(&self) -> usize {
-        self.functions.len()
-    }
-
-    /// Removes functions appended by a rejected compilation.
-    pub(crate) fn truncate_functions(&mut self, len: usize) {
-        self.functions.truncate(len);
-    }
-
-    /// Interns source or host-supplied text, deduplicating it against existing entries.
-    /// ASCII and empty strings use reserved IDs; others receive stable session-local IDs.
-    pub(crate) fn intern(&mut self, s: &str) -> StringId {
-        intern_str(&mut self.string_id_by_name, &self.static_string_ids, &self.strings, s)
-    }
-
-    /// Interns compile-time-known text directly into the append-only table.
+    /// Interns runtime static text without invalidating existing string borrows.
     pub(crate) fn intern_static(&self, value: StaticStrings) -> StringId {
+        assert!(!self.compiling.get(), "runtime interning during compilation");
         intern_static(&self.static_string_ids, &self.strings, value)
     }
 
-    /// Looks up a string by its `StringId`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `StringId` is invalid.
+    /// Looks up a Python string; filename identities use `get_filename` instead.
     #[inline]
     pub fn get_str(&self, id: StringId) -> &str {
         get_str(&self.strings, id)
     }
 
-    /// Returns the static tag stored in an executor-local string slot.
+    /// Resolves a traceback filename, displaying each snippet's source identity as `<string>`.
+    pub(crate) fn get_filename(&self, id: StringId) -> &str {
+        if id.index() >= SOURCE_ID_BASE {
+            assert!(
+                id.index() - SOURCE_ID_BASE < self.eval_sources.len(),
+                "invalid snippet source ID"
+            );
+            "<string>"
+        } else {
+            get_str(&self.strings, id)
+        }
+    }
+
+    /// Returns dispatch metadata independent of the executor-local ID.
     pub(crate) fn static_string(&self, id: StringId) -> Option<StaticStrings> {
         get_static_string(&self.strings, id)
     }
 
-    /// Looks up bytes by their `BytesId`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `BytesId` is invalid.
+    /// Borrows a committed bytes literal.
     #[inline]
     pub fn get_bytes(&self, id: BytesId) -> &[u8] {
         self.bytes[id.index()].value()
     }
 
-    /// Looks up a long integer by its `LongIntId`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `LongIntId` is invalid.
+    /// Borrows a committed integer literal.
     #[inline]
     pub fn get_long_int(&self, id: LongIntId) -> &BigInt {
         self.long_ints[id.index()].value()
     }
 
-    /// Lookup a function by its `FunctionId`
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `FunctionId` is invalid.
+    /// Borrows a function; later compilation cannot invalidate this reference.
     #[inline]
     pub fn get_function(&self, id: FunctionId) -> &Function {
-        self.functions.get(id.index()).expect("Function not found")
+        &self.functions[id.index()]
     }
 
-    /// Returns the Python hash for an interned string.
-    ///
-    /// Reserved-string hashes remain globally lazy. Every executor-local entry, static
-    /// or owned, computes and stores its hash once when interned or loaded.
-    ///
-    /// All three paths must agree with [`hash_python_str`] applied to the
-    /// underlying `&str` — interned and heap strings with equal contents
-    /// must hash identically.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `StringId` is invalid (same as [`Self::get_str`]).
+    /// Looks up source by its filename-only ID, never by the displayed text.
+    pub(crate) fn eval_source(&self, filename: StringId) -> Option<&str> {
+        filename
+            .index()
+            .checked_sub(SOURCE_ID_BASE)
+            .and_then(|index| self.eval_sources.get(index))
+            .map(AsRef::as_ref)
+    }
+
+    /// Returns the same hash as an equal heap string.
     #[inline]
     pub fn str_hash(&self, id: StringId) -> HashValue {
         if id.index() < RESERVED_STRS.len() {
@@ -2314,52 +2407,20 @@ impl Interns {
         }
     }
 
-    /// Returns the Python hash for interned bytes.
-    ///
-    /// Reads the [`HashValue`] from the corresponding [`WithHash`] entry
-    /// (populated at intern time). Must agree with [`hash_python_bytes`]
-    /// applied to the underlying `&[u8]`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `BytesId` is invalid.
+    /// Returns the cached Python hash of a bytes literal.
     #[inline]
     pub fn bytes_hash(&self, id: BytesId) -> HashValue {
         self.bytes[id.index()].hash()
     }
 
-    /// Returns the Python hash for an interned long integer.
-    ///
-    /// Reads the [`HashValue`] from the corresponding [`WithHash`] entry
-    /// (populated at intern time). Must agree with [`hash_python_long_int`].
-    /// Note that interned long ints are only created for values that don't
-    /// fit in `i64` (see `parse.rs`), so the `to_i64()` fast path inside
-    /// `hash_python_long_int` is a defensive consistency guarantee rather
-    /// than a hot path.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `LongIntId` is invalid.
+    /// Returns the cached Python hash of an integer literal.
     #[inline]
     pub fn long_int_hash(&self, id: LongIntId) -> HashValue {
         self.long_ints[id.index()].hash()
     }
 
-    /// Looks up the executor-local `StringId` for previously interned text.
-    ///
-    /// This is the reverse of [`Self::get_str`]: given a string, find its
-    /// `StringId`. The interned-string branch is O(1) via the
-    /// `string_id_by_name` reverse map (built once at construction /
-    /// deserialization), so the entire lookup stays O(1) regardless of how
-    /// many strings have been interned.
-    ///
-    /// Used when the host provides a name (e.g., from a `NameLookup` response,
-    /// [`MontyRepl::call_function`](crate::MontyRepl::call_function),
-    /// [`MontyRepl::has_function`](crate::MontyRepl::has_function), or input
-    /// injection) that was previously interned during preparation.
-    ///
-    /// Returns `None` if the string was never interned.
+    /// Finds canonical text already interned, excluding snippet filename IDs.
     pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
-        get_string_id_by_name(&self.string_id_by_name, &self.static_string_ids, s)
+        get_string_id_by_name(&self.string_id_by_name.borrow(), &self.static_string_ids, s)
     }
 }

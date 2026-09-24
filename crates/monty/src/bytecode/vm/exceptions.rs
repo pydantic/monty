@@ -140,6 +140,7 @@ impl VM<'_> {
         RunError::Exc(ExceptionRaise {
             exc: simple_exc,
             frame: Some(frame),
+            snippet_frame: None,
             hide_caret: false,
         })
     }
@@ -258,6 +259,7 @@ impl VM<'_> {
         RunError::Exc(ExceptionRaise {
             exc: SimpleException::new(ExcType::AssertionError, msg),
             frame: Some(frame),
+            snippet_frame: None,
             hide_caret: false,
         })
     }
@@ -327,15 +329,17 @@ impl VM<'_> {
         loop {
             let (exc_value, this) = exc_guard.as_parts();
             let frame = this.current_frame();
-            let ip = u32::try_from(this.instruction_ip).expect("instruction IP exceeds u32");
+            let code = frame.code;
+            let ip = u32::try_from(this.instruction_ip).unwrap_or(u32::MAX);
 
             // Search exception table for a handler covering this IP
-            if let Some(entry) = frame.code.find_exception_handler(ip) {
+            if let Some(entry) = code.find_exception_handler(ip) {
                 // Unwind operands to the compiler-recorded region depth,
                 // including any in-flight comprehension values.
-                let handler_offset = usize::try_from(entry.handler()).expect("handler offset exceeds usize");
-                let target_stack_depth = frame.stack_base + frame.locals_count as usize + entry.stack_depth() as usize;
-                let target_exc_stack_depth = frame.exception_stack_base + entry.exception_stack_count() as usize;
+                let handler_offset = entry.handler() as usize;
+                let target_stack_depth =
+                    frame.stack_base() + frame.locals_count as usize + entry.stack_depth() as usize;
+                let target_exc_stack_depth = frame.exception_stack_base() + entry.exception_stack_count() as usize;
                 let pushes_exception = entry.pushes_exception();
 
                 // Unwind stack to target depth (drop excess values)

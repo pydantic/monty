@@ -26,6 +26,7 @@ from pydantic_monty import (
     MountDir,
     NameLookupSnapshot,
     OsFunction,
+    SourceRange,
 )
 
 
@@ -206,6 +207,77 @@ def test_future_mechanism_sync(session: MontySession):
     done = nxt.resume({call_id: {'return_value': 99}})
     assert isinstance(done, MontyComplete)
     assert done.output == snapshot(99)
+
+
+def test_function_call_position(session: MontySession):
+    code = 'x = 1\ny = add(x, 2) + 1'
+    snap = session.feed_start(code)
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 10, 'end': 19})
+    assert repr(snap.position) == snapshot("SourceRange(filename='<python-input-0>', start=10, end=19)")
+    assert snap.position == SourceRange(filename='<python-input-0>', start=10, end=19)
+    # offsets are UTF-8 bytes: slice the encoded source
+    assert code.encode()[snap.position.start : snap.position.end].decode() == snapshot('add(x, 2)')
+
+
+def test_position_counts_utf8_bytes(session: MontySession):
+    # the two-byte `é` puts the call at byte 13 but character 12
+    code = "x = 'é'\ny = add(x, 2)"
+    snap = session.feed_start(code)
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.position == SourceRange(filename='<python-input-0>', start=13, end=22)
+    assert code.encode()[snap.position.start : snap.position.end].decode() == snapshot('add(x, 2)')
+
+
+def test_position_inside_a_function_from_an_earlier_feed(session: MontySession):
+    session.feed_run('def helper(n):\n    return fetch(n)')
+    snap = session.feed_start('helper(3)')
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 26, 'end': 34})
+
+
+def test_position_inside_eval_indexes_the_stripped_string(session: MontySession):
+    snap = session.feed_start("eval('  1 + fetch()')")
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.position.dict() == snapshot({'filename': '<string>', 'start': 4, 'end': 11})
+
+
+def test_name_lookup_position(session: MontySession):
+    snap = session.feed_start('total = 1 + missing')
+    assert isinstance(snap, NameLookupSnapshot)
+    assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 12, 'end': 19})
+
+
+def test_os_call_position(session: MontySession):
+    snap = session.feed_start("from pathlib import Path\nPath('/etc/x').read_text()")
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.is_os_function == snapshot(True)
+    assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 25, 'end': 51})
+
+
+def test_future_snapshot_position_is_the_top_level_await(session: MontySession):
+    snap = session.feed_start(
+        'import asyncio\n\nasync def go():\n    return await fetch()\n\nawait asyncio.gather(go(), go())'
+    )
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 49, 'end': 56})
+    second = snap.resume({'future': ...})
+    assert isinstance(second, FunctionSnapshot)
+    futures = second.resume({'future': ...})
+    assert isinstance(futures, FutureSnapshot)
+    assert futures.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 58, 'end': 90})
+
+
+def test_position_survives_dump_and_load(pool: Monty):
+    with pool.checkout() as session:
+        snap = session.feed_start('y = fetch()\ny + 1')
+        assert isinstance(snap, FunctionSnapshot)
+        blob = snap.dump()
+
+    with pool.checkout() as session:
+        loaded_snap = session.load_snapshot(blob)
+        assert isinstance(loaded_snap, FunctionSnapshot)
+        assert loaded_snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 4, 'end': 11})
 
 
 def test_future_cannot_resolve_to_future(session: MontySession):
@@ -718,7 +790,7 @@ async def test_async_resume_auto_awaits_asyncio_sleep_eagerly():
         await asyncio.sleep(args[0])
 
     async with AsyncMonty() as pool:
-        async with pool.checkout() as session:
+        async with pool.checkout(os_policy={'sleep': 'call_host'}) as session:
             snap = await session.feed_start("import asyncio\nawait asyncio.sleep(0.001, 'woken')", os=handle_os)
             assert isinstance(snap, AsyncFunctionSnapshot)
             assert snap.is_os_function
@@ -773,7 +845,7 @@ async def test_async_resume_auto_gathered_asyncio_sleeps_are_futures():
 
     code = "import asyncio\nawait asyncio.gather(asyncio.sleep(0.002, 'a'), asyncio.sleep(0.001, 'b'))"
     async with AsyncMonty() as pool:
-        async with pool.checkout() as session:
+        async with pool.checkout(os_policy={'sleep': 'call_host'}) as session:
             snap: Any = await session.feed_start(code, os=handle_os)
             kinds: list[str] = []
             while not isinstance(snap, MontyComplete):

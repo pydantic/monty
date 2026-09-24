@@ -81,7 +81,13 @@ export class WorkerChannel implements PooledWorker {
     if (!pending) return
     this.pending.delete(reply.id)
     if (pending.timer) clearTimeout(pending.timer)
-    pending.resolve({ status: reply.status, events: reply.events, maxSuspensions: reply.maxSuspensions })
+    // Forward all reported limits for the transport to enforce.
+    pending.resolve({
+      status: reply.status,
+      events: reply.events,
+      maxSuspensions: reply.maxSuspensions,
+      maxTotalSleepMicros: reply.maxTotalSleepMicros,
+    })
   }
 
   private onTimeout(): void {

@@ -32,21 +32,27 @@ pub(crate) enum GeneratorState {
 pub(crate) struct Generator {
     /// Function table entry containing the synthetic bytecode and closure layout.
     pub(crate) function_id: FunctionId,
+    /// Owned explicit globals dict, if created under `eval()` / `exec()`.
+    pub(crate) globals: Option<HeapId>,
     /// Current ownership location of the generator frame's values.
     pub(crate) state: GeneratorState,
 }
 
 impl Generator {
-    /// Creates a generator which owns its initialized frame stack.
-    pub(crate) fn new(function_id: FunctionId, stack: Vec<Value>) -> Self {
+    /// Creates a generator taking ownership of its initialized stack and globals reference.
+    pub(crate) fn new(function_id: FunctionId, stack: Vec<Value>, globals: Option<HeapId>) -> Self {
         Self {
             function_id,
+            globals,
             state: GeneratorState::New { stack },
         }
     }
 
     /// Invokes `on_child` once for every owned heap reference in saved state.
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+        if let Some(globals) = self.globals {
+            on_child(globals);
+        }
         let stack = match &self.state {
             GeneratorState::New { stack } | GeneratorState::Suspended { stack, .. } => stack,
             GeneratorState::Running | GeneratorState::Closed => return,
@@ -61,6 +67,9 @@ impl Generator {
 
 impl HeapItem for Generator {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        if let Some(globals) = self.globals.take() {
+            stack.push(globals);
+        }
         let values = match &mut self.state {
             GeneratorState::New { stack } | GeneratorState::Suspended { stack, .. } => stack,
             GeneratorState::Running | GeneratorState::Closed => return,

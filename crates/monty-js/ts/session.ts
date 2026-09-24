@@ -28,6 +28,7 @@ import {
   MontyTypingError,
   notCallableMessage,
   ProtocolError,
+  type SourceRange,
 } from './errors.js'
 import { PYTHON_EXC_NAMES } from './errors.js'
 import { mountsToNative } from './mount.js'
@@ -662,10 +663,17 @@ class TurnAnswerer {
   }
 
   /**
-   * Answers an OS call: the feed's mounts get first refusal, then the `os`
-   * callback, then the sandbox's own no-handler default.
+   * Handles system sleeps locally; other calls try mounts, `os`, then the sandbox's no-handler default.
    */
   async answerOsCall(call: OsCallTurn, onPrint: PrintCallback): Promise<object> {
+    const wait = this.systemSleepFor(call)
+    if (wait !== null) {
+      if (osCallAcceptsFuture(call.functionName)) {
+        return await this.answerAwaitedCall(call, wait, onPrint)
+      }
+      await wait
+      return await this.resumeWithValue(null, onPrint)
+    }
     const mounted = (await this.native.resumeFromMounts(onPrint)) as NativeTurn | NotMountedTurn
     if (mounted.kind !== 'notMounted') {
       return mounted
@@ -693,6 +701,13 @@ class TurnAnswerer {
       return await this.native.resumeNotHandled(onPrint)
     }
     return await this.resumeWithValue(returned, onPrint)
+  }
+
+  /**
+   * Uses the call's sleep marker, so restored sessions need no local copy of their sleep policy.
+   */
+  private systemSleepFor(call: OsCallTurn): Promise<void> | null {
+    return call.systemSleepSecs === undefined ? null : sleepMs(call.systemSleepSecs * 1000)
   }
 
   /**
@@ -1021,6 +1036,8 @@ export class FunctionSnapshot extends SingleUse {
    *  instance, or a class type (a classmethod, or `__call__` construction).
    *  The receiver is not in `args`; `null` for plain external calls. */
   readonly objectId: string | null
+  /** Where the call expression is in the source. */
+  readonly position: SourceRange
 
   /** @internal */
   constructor(
@@ -1029,6 +1046,7 @@ export class FunctionSnapshot extends SingleUse {
     isOsFunction: boolean,
   ) {
     super(turn.callbackSpanKey, driver.traceBaseContext)
+    this.position = turn.position
     this.functionName = turn.functionName
     const [args, kwargs] = restoreCallArgs(turn, driver.instances)
     this.args = args
@@ -1098,6 +1116,8 @@ export class NameLookupSnapshot extends SingleUse {
    *  instance, or a class type): the receiver's store uuid. `null` for
    *  plain name lookups. */
   readonly objectId: string | null
+  /** Where the name (or attribute access) is in the source. */
+  readonly position: SourceRange
 
   /** @internal */
   constructor(
@@ -1105,6 +1125,7 @@ export class NameLookupSnapshot extends SingleUse {
     private readonly turn: NameLookupTurn,
   ) {
     super(turn.callbackSpanKey, driver.traceBaseContext)
+    this.position = turn.position
     this.variableName = turn.name
     this.objectId = turn.objectId ?? null
   }
@@ -1145,6 +1166,8 @@ export class NameLookupSnapshot extends SingleUse {
 /** A paused execution where every sandbox task is blocked on external futures. */
 export class FutureSnapshot extends SingleUse {
   readonly pendingCallIds: number[]
+  /** Where the main task's blocked `await` is in the source. */
+  readonly position: SourceRange
 
   /** @internal */
   constructor(
@@ -1152,6 +1175,7 @@ export class FutureSnapshot extends SingleUse {
     private readonly turn: ResolveFuturesTurn,
   ) {
     super(turn.callbackSpanKey, driver.traceBaseContext)
+    this.position = turn.position
     this.pendingCallIds = turn.pendingCallIds
   }
 
@@ -1284,4 +1308,18 @@ function bytesForNative(bytes: Uint8Array): Buffer {
 
 function bufferFrom(bytes: Uint8Array): Buffer {
   return (typeof Buffer === 'undefined' ? bytes : Buffer.from(bytes)) as Buffer
+}
+
+/**
+ * Resolves after `ms` milliseconds. `setTimeout` takes a signed 32-bit
+ * millisecond count, so a longer wait is chained rather than cut short.
+ */
+async function sleepMs(ms: number): Promise<void> {
+  const MAX_TIMEOUT_MS = 2 ** 31 - 1
+  let left = ms
+  while (left > MAX_TIMEOUT_MS) {
+    await new Promise<void>((resolve) => setTimeout(resolve, MAX_TIMEOUT_MS))
+    left -= MAX_TIMEOUT_MS
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, left))
 }

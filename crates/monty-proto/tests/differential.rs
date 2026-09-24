@@ -15,12 +15,14 @@
 //! validation now happens during decode, so these tests pin the exact error
 //! messages a misbehaving peer produces.
 
+use std::time::Instant;
+
 use monty::{MontyRun, RunProgress};
-use monty_proto::{WireArena, WireFunctionCall, os_call_to_proto, pb};
+use monty_proto::{WireArena, WireFunctionCall, decode_frame, os_call_to_proto, pb};
 use monty_types::{
-    CallArgs, ClassTypeNode, CompileOptions, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle,
-    MontyGraph, MontyNode, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NodeId,
-    OsFunctionCall, PrintWriter, ResourceTracker,
+    CallArgs, CompileOptions, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
+    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker, SourceRange,
+    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -226,7 +228,10 @@ fn corpus() -> Vec<MontyObject> {
 /// Every corpus value as an arena, plus arenas only sharing can produce: a
 /// doubling ladder, a cycle leaf, and a class node shared by two instances.
 fn graphs() -> Vec<MontyGraph> {
-    let mut graphs: Vec<MontyGraph> = corpus().into_iter().map(|value| value.graph).collect();
+    let mut graphs: Vec<MontyGraph> = corpus()
+        .into_iter()
+        .map(|value| unstable::into_graph_parts(value).0)
+        .collect();
     let mut ladder = MontyGraph::new();
     let mut x = ladder.push(MontyNode::Int(0));
     for _ in 0..4 {
@@ -425,7 +430,7 @@ fn oracle_pairs(pairs: &[(NodeId, NodeId)]) -> oracle::NodePairs {
 
 /// Decodes wire bytes through the hand-written codec.
 fn decode_wire(bytes: &[u8]) -> Result<MontyGraph, String> {
-    let wire = WireArena::decode(bytes).map_err(|err| err.to_string())?;
+    let wire = decode_frame::<WireArena>(bytes).map_err(|err| err.to_string())?;
     wire.into_graph().map_err(|err| err.to_string())
 }
 
@@ -439,6 +444,19 @@ fn hand_encoding_matches_generated_encoding() {
         let hand = WireArena::new(graph.clone()).encode_to_vec();
         let generated = to_oracle(&graph).encode_to_vec();
         assert_eq!(hand, generated, "encodings diverge for {graph:?}");
+    }
+}
+
+/// Extern-mapped reference buffers preserve generated node encoding and length calculations.
+#[test]
+fn reference_adapters_match_generated_encoding() {
+    for graph in graphs() {
+        for node in to_oracle(&graph).nodes {
+            let bytes = node.encode_to_vec();
+            let decoded = decode_frame::<pb::MontyNode>(&bytes).unwrap();
+            assert_eq!(decoded.encoded_len(), bytes.len());
+            assert_eq!(decoded.encode_to_vec(), bytes);
+        }
     }
 }
 
@@ -479,25 +497,34 @@ fn hand_call_payloads_match_generated_encoding() {
     ];
 
     let call = CallArgs::from((args, kwargs));
+    let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&call);
 
     // Both receiver states: a routed call (method / `__call__`) and a plain
     // external call (absent field).
     let receivers = [Some(MontyUuid::from_u128(7)), None];
     for (object_id, allow_eager_await) in receivers.into_iter().flat_map(|id| [(id, false), (id, true)]) {
         let oracle_object_id = object_id.map(|uuid| oracle_uuid(&uuid));
-        let hand_call = WireFunctionCall::new("external".to_owned(), call.clone(), 42, object_id, allow_eager_await);
+        let hand_call = WireFunctionCall::new(
+            "external".to_owned(),
+            call.clone(),
+            42,
+            object_id,
+            allow_eager_await,
+            position(),
+        );
         let generated_call = oracle::FunctionCall {
             function_name: "external".to_owned(),
-            args: call.arg_ids.iter().map(|id| id.0).collect(),
-            kwargs: oracle_pairs(&call.kwarg_ids).pairs,
+            args: arg_ids.iter().map(|id| id.0).collect(),
+            kwargs: oracle_pairs(kwarg_ids).pairs,
             call_id: 42,
             object_id: oracle_object_id,
             allow_eager_await,
-            values: Some(to_oracle(&call.graph)),
+            values: Some(to_oracle(graph)),
+            position: Some(oracle_position()),
         };
         assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
         assert_eq!(
-            WireFunctionCall::decode(generated_call.encode_to_vec().as_slice())
+            decode_frame::<WireFunctionCall>(generated_call.encode_to_vec().as_slice())
                 .expect("generated function call decodes"),
             hand_call
         );
@@ -519,19 +546,22 @@ fn hand_call_payloads_match_generated_encoding() {
             default: default.clone(),
         }),
         false,
+        &position(),
     );
+    let (graph, root) = unstable::graph_parts(&default);
     let generated_os = oracle::OsCall {
         call_id: 7,
-        values: Some(to_oracle(&default.graph)),
+        values: Some(to_oracle(graph)),
         allow_eager_await: false,
         call: Some(oracle::os_call::Call::Getenv(oracle::os_call::Getenv {
             key: "HOME".to_owned(),
-            default: default.root.0,
+            default: root.0,
         })),
+        position: Some(oracle_position()),
     };
     assert_eq!(hand_os.encode_to_vec(), generated_os.encode_to_vec());
     assert_eq!(
-        pb::OsCall::decode(generated_os.encode_to_vec().as_slice()).expect("generated os call decodes"),
+        decode_frame::<pb::OsCall>(generated_os.encode_to_vec().as_slice()).expect("generated os call decodes"),
         hand_os
     );
 
@@ -547,6 +577,7 @@ fn hand_call_payloads_match_generated_encoding() {
                 name: Some("CET".to_owned()),
             }),
         })),
+        position: Some((&position()).into()),
     };
     let generated_now = oracle::OsCall {
         call_id: 9,
@@ -558,10 +589,11 @@ fn hand_call_payloads_match_generated_encoding() {
                 name: Some("CET".to_owned()),
             }),
         })),
+        position: Some(oracle_position()),
     };
     assert_eq!(hand_now.encode_to_vec(), generated_now.encode_to_vec());
     assert_eq!(
-        pb::OsCall::decode(generated_now.encode_to_vec().as_slice()).expect("generated now call decodes"),
+        decode_frame::<pb::OsCall>(generated_now.encode_to_vec().as_slice()).expect("generated now call decodes"),
         hand_now
     );
 }
@@ -584,10 +616,11 @@ fn executed_cycle_value_is_byte_compatible() {
         panic!("expected completion");
     };
     // the cycle leaf, `a`, and the outer list: nothing is exported twice
-    assert_eq!(value.graph.len(), 3);
-    let hand = WireArena::new(value.graph.clone()).encode_to_vec();
-    assert_eq!(hand, to_oracle(&value.graph).encode_to_vec());
-    assert_eq!(decode_wire(&hand).expect("decode failed"), value.graph);
+    let (graph, _) = unstable::graph_parts(&value);
+    assert_eq!(graph.len(), 3);
+    let hand = WireArena::new(graph.clone()).encode_to_vec();
+    assert_eq!(hand, to_oracle(graph).encode_to_vec());
+    assert_eq!(&decode_wire(&hand).expect("decode failed"), graph);
 }
 
 // ============================================================================
@@ -618,7 +651,7 @@ fn invalid_values_are_rejected_during_decode() {
             exc_type: "NotARealError".to_owned(),
             arg: None,
         })),
-        "failed to decode Protobuf message: unknown exception type \"NotARealError\""
+        "frame decode error: failed to decode Protobuf message: unknown exception type \"NotARealError\""
     );
     assert_eq!(
         rejected(Kind::Type(oracle::Type {
@@ -626,7 +659,7 @@ fn invalid_values_are_rejected_during_decode() {
             origin: oracle::TypeOrigin::Builtin as i32,
             ..oracle::Type::default()
         })),
-        "failed to decode Protobuf message: unknown type name \"NotAType\""
+        "frame decode error: failed to decode Protobuf message: unknown type name \"NotAType\""
     );
     // origin must be specified
     assert_eq!(
@@ -634,7 +667,7 @@ fn invalid_values_are_rejected_during_decode() {
             name: "int".to_owned(),
             ..oracle::Type::default()
         })),
-        "failed to decode Protobuf message: invalid value for Type: origin must be specified"
+        "frame decode error: failed to decode Protobuf message: invalid value for Type: origin must be specified"
     );
     // a builtin must not carry an id
     assert_eq!(
@@ -644,7 +677,7 @@ fn invalid_values_are_rejected_during_decode() {
             id: Some(oracle::Uuid { data: vec![0; 16] }),
             ..oracle::Type::default()
         })),
-        "failed to decode Protobuf message: invalid value for Type: a builtin type must not carry an id"
+        "frame decode error: failed to decode Protobuf message: invalid value for Type: a builtin type must not carry an id"
     );
     assert_eq!(
         rejected(Kind::Type(oracle::Type {
@@ -653,7 +686,7 @@ fn invalid_values_are_rejected_during_decode() {
             attrs: Some(oracle::NodePairs::default()),
             ..oracle::Type::default()
         })),
-        "failed to decode Protobuf message: invalid value for Type: a builtin type must not carry attrs"
+        "frame decode error: failed to decode Protobuf message: invalid value for Type: a builtin type must not carry attrs"
     );
     // a class type must carry an id
     assert_eq!(
@@ -662,7 +695,7 @@ fn invalid_values_are_rejected_during_decode() {
             origin: oracle::TypeOrigin::Host as i32,
             ..oracle::Type::default()
         })),
-        "failed to decode Protobuf message: invalid value for Type: a class type must carry an id"
+        "frame decode error: failed to decode Protobuf message: invalid value for Type: a class type must carry an id"
     );
     // a uuid must be exactly 16 bytes
     assert_eq!(
@@ -672,7 +705,7 @@ fn invalid_values_are_rejected_during_decode() {
             id: Some(oracle::Uuid { data: vec![0; 5] }),
             ..oracle::Type::default()
         })),
-        "failed to decode Protobuf message: invalid value for Type.id: uuid must be 16 bytes, got 5"
+        "frame decode error: failed to decode Protobuf message: invalid value for Type.id: uuid must be 16 bytes, got 5"
     );
     // a class instance's class must be a class node, not a builtin type leaf
     let builtin_int = oracle::MontyNode {
@@ -709,7 +742,7 @@ fn invalid_values_are_rejected_during_decode() {
             },
             instance_of(0, None, Some(oracle::NodePairs::default())),
         ]),
-        "failed to decode Protobuf message: missing required field ClassInstanceNode.instance_id"
+        "frame decode error: failed to decode Protobuf message: missing required field ClassInstanceNode.instance_id"
     );
     // attrs is required, even when empty
     assert_eq!(
@@ -719,7 +752,7 @@ fn invalid_values_are_rejected_during_decode() {
             },
             instance_of(0, Some(oracle::Uuid { data: vec![7; 16] }), None),
         ]),
-        "failed to decode Protobuf message: missing required field ClassInstanceNode.attrs"
+        "frame decode error: failed to decode Protobuf message: missing required field ClassInstanceNode.attrs"
     );
     // the instance uuid must be exactly 16 bytes
     assert_eq!(
@@ -733,7 +766,7 @@ fn invalid_values_are_rejected_during_decode() {
                 Some(oracle::NodePairs::default())
             ),
         ]),
-        "failed to decode Protobuf message: invalid value for ClassInstanceNode.instance_id: uuid must be 16 bytes, got 17"
+        "frame decode error: failed to decode Protobuf message: invalid value for ClassInstanceNode.instance_id: uuid must be 16 bytes, got 17"
     );
     // an origin outside the enum is rejected rather than defaulted
     assert_eq!(
@@ -741,11 +774,11 @@ fn invalid_values_are_rejected_during_decode() {
             origin: 99,
             ..class_type("Foo")
         })),
-        "failed to decode Protobuf message: invalid value for Type.origin: unknown origin 99"
+        "frame decode error: failed to decode Protobuf message: invalid value for Type.origin: unknown origin 99"
     );
     assert_eq!(
         rejected(Kind::BuiltinFunction("not_a_builtin".to_owned())),
-        "failed to decode Protobuf message: unknown builtin function \"not_a_builtin\""
+        "frame decode error: failed to decode Protobuf message: unknown builtin function \"not_a_builtin\""
     );
     // update file modes are not yet supported by monty's parser
     assert_eq!(
@@ -754,7 +787,7 @@ fn invalid_values_are_rejected_during_decode() {
             mode: "r+".to_owned(),
             position: 0,
         })),
-        "failed to decode Protobuf message: invalid file mode \"r+\""
+        "frame decode error: failed to decode Protobuf message: invalid file mode \"r+\""
     );
     // timezone_name without offset_seconds
     assert_eq!(
@@ -769,18 +802,18 @@ fn invalid_values_are_rejected_during_decode() {
             offset_seconds: None,
             timezone_name: Some("UTC".to_owned()),
         })),
-        "failed to decode Protobuf message: invalid value for DateTime.timezone_name: timezone_name requires offset_seconds"
+        "frame decode error: failed to decode Protobuf message: invalid value for DateTime.timezone_name: timezone_name requires offset_seconds"
     );
     // the uuid arm is declared in the schema but not yet implemented: the
-    // hand-written decoder skips it like any unknown tag, leaving no kind
+    // UUID values are reserved by the schema but rejected by domain conversion
     assert_eq!(
         rejected(Kind::Uuid(oracle::Uuid { data: vec![7; 16] })),
-        "failed to decode Protobuf message: missing required field MontyNode.kind"
+        "frame decode error: failed to decode Protobuf message: missing required field MontyNode.kind"
     );
     // an absent kind is a valid empty message but not a node
     assert_eq!(
         rejected_nodes(vec![oracle::MontyNode { kind: None }]),
-        "failed to decode Protobuf message: missing required field MontyNode.kind"
+        "frame decode error: failed to decode Protobuf message: missing required field MontyNode.kind"
     );
 }
 
@@ -893,6 +926,63 @@ fn repeated_attrs_fields_merge_like_the_oracle() {
     assert_eq!(ty.attrs.as_ref().unwrap().pairs.len(), 2);
 }
 
+/// Duplicate message kinds merge before semantic validation, as in the generated oracle.
+#[test]
+fn repeated_node_kinds_merge_like_the_oracle() {
+    let cases = [
+        (
+            Kind::List(oracle::Indexes { items: vec![0] }),
+            Kind::List(oracle::Indexes { items: vec![1] }),
+            MontyNode::List(vec![NodeId(0), NodeId(1)]),
+        ),
+        (
+            Kind::Date(oracle::Date {
+                year: 2024,
+                month: 2,
+                day: 0,
+            }),
+            Kind::Date(oracle::Date {
+                year: 0,
+                month: 0,
+                day: 29,
+            }),
+            MontyNode::Date(MontyDate {
+                year: 2024,
+                month: 2,
+                day: 29,
+            }),
+        ),
+        (
+            Kind::List(oracle::Indexes { items: vec![u32::MAX] }),
+            Kind::Int(7),
+            MontyNode::Int(7),
+        ),
+    ];
+    for (first, second, expected) in cases {
+        let mut node = oracle::MontyNode { kind: Some(first) }.encode_to_vec();
+        node.extend(oracle::MontyNode { kind: Some(second) }.encode_to_vec());
+        let mut bytes = oracle::Arena {
+            node_count: 3,
+            nodes: vec![
+                oracle::MontyNode {
+                    kind: Some(Kind::None(oracle::Unit {})),
+                },
+                oracle::MontyNode {
+                    kind: Some(Kind::Int(1)),
+                },
+            ],
+        }
+        .encode_to_vec();
+        encode_key(2, WireType::LengthDelimited, &mut bytes);
+        encode_varint(node.len() as u64, &mut bytes);
+        bytes.extend(node);
+
+        let graph = decode_wire(&bytes).unwrap();
+        assert_eq!(graph.nodes()[2], expected);
+        assert_eq!(oracle::Arena::decode(bytes.as_slice()).unwrap(), to_oracle(&graph));
+    }
+}
+
 /// The wire is untrusted: temporal values that fit their integer fields but
 /// violate the semantic invariants documented on `MontyDate`/`MontyDateTime`/
 /// `MontyTimeDelta` must be rejected during decode.
@@ -910,7 +1000,7 @@ fn out_of_range_temporal_values_are_rejected() {
     assert!(rejected_field(date(2025, 4, 31), "Date.day"));
     assert_eq!(
         rejected(date(2026, 4096, 1)),
-        "failed to decode Protobuf message: invalid value for Date.month: 4096 is outside the range 1..=12"
+        "frame decode error: failed to decode Protobuf message: invalid value for Date.month: 4096 is outside the range 1..=12"
     );
 
     let datetime = |hour, minute, second, microsecond| {
@@ -994,7 +1084,7 @@ fn out_of_range_temporal_values_are_rejected() {
             offset_seconds: 86_400,
             name: None,
         })),
-        "failed to decode Protobuf message: invalid value for TimeZone.offset_seconds: 86400 is outside the range -86399..=86399"
+        "frame decode error: failed to decode Protobuf message: invalid value for TimeZone.offset_seconds: 86400 is outside the range -86399..=86399"
     );
 }
 
@@ -1006,7 +1096,7 @@ fn out_of_range_temporal_values_are_rejected() {
 /// prost's generated decoder.
 #[test]
 fn unknown_fields_are_skipped() {
-    let graph = MontyObject::int(42).graph;
+    let (graph, _) = unstable::into_graph_parts(MontyObject::int(42));
     let mut bytes = WireArena::new(graph.clone()).encode_to_vec();
     // append an unknown varint field: key = 99 << 3 | 0 = 792 (varint
     // 0x98 0x06), value 7
@@ -1019,7 +1109,7 @@ fn unknown_fields_are_skipped() {
 /// carrying message's root ids then catch the missing nodes).
 #[test]
 fn corrupt_frames_fail_cleanly() {
-    let graph = MontyObject::list([MontyObject::int(1)]).graph;
+    let (graph, _) = unstable::into_graph_parts(MontyObject::list([MontyObject::int(1)]));
     let bytes = WireArena::new(graph.clone()).encode_to_vec();
     for cut in 1..bytes.len() {
         if let Ok(prefix) = decode_wire(&bytes[..cut]) {
@@ -1027,4 +1117,88 @@ fn corrupt_frames_fail_cleanly() {
             assert_eq!(prefix.nodes(), &graph.nodes()[..prefix.len()]);
         }
     }
+}
+
+/// The suspension position every hand-built event carries.
+fn position() -> SourceRange {
+    SourceRange {
+        filename: "main.py".to_owned(),
+        start: 30,
+        end: 44,
+    }
+}
+
+/// [`position`] on the oracle's generated types.
+fn oracle_position() -> oracle::SourceRange {
+    oracle::SourceRange {
+        filename: "main.py".to_owned(),
+        start: 30,
+        end: 44,
+    }
+}
+
+/// A `FunctionCall.position` split across two tag-8 fields merges into one
+/// range on both sides, as protobuf requires of a singular message field.
+#[test]
+fn repeated_position_fields_merge_like_the_oracle() {
+    let args = CallArgs::new();
+    let (graph, _, _) = unstable::call_args_parts(&args);
+    let mut bytes = oracle::FunctionCall {
+        function_name: "external".to_owned(),
+        args: vec![],
+        kwargs: vec![],
+        call_id: 1,
+        object_id: None,
+        allow_eager_await: false,
+        values: Some(to_oracle(graph)),
+        position: Some(oracle::SourceRange {
+            filename: "main.py".to_owned(),
+            start: 30,
+            end: 0,
+        }),
+    }
+    .encode_to_vec();
+    // the second occurrence carries only the end
+    let tail = oracle::SourceRange {
+        filename: String::new(),
+        start: 0,
+        end: 44,
+    }
+    .encode_to_vec();
+    encode_key(8, WireType::LengthDelimited, &mut bytes);
+    encode_varint(tail.len() as u64, &mut bytes);
+    bytes.extend(tail);
+
+    let hand = decode_frame::<WireFunctionCall>(bytes.as_slice()).expect("split position decodes");
+    assert_eq!(hand.position, Some(position()));
+    let generated = oracle::FunctionCall::decode(bytes.as_slice()).expect("oracle decodes");
+    assert_eq!(generated.position, Some(oracle_position()));
+
+    // many empty repeats after a long filename must cost their own two bytes
+    // each, not a copy of the filename per repeat
+    let filename = "f".repeat(1 << 20);
+    let mut bytes = oracle::FunctionCall {
+        function_name: "external".to_owned(),
+        args: vec![],
+        kwargs: vec![],
+        call_id: 1,
+        object_id: None,
+        allow_eager_await: false,
+        values: Some(to_oracle(graph)),
+        position: Some(oracle::SourceRange {
+            filename: filename.clone(),
+            start: 0,
+            end: 1,
+        }),
+    }
+    .encode_to_vec();
+    for _ in 0..100_000 {
+        encode_key(8, WireType::LengthDelimited, &mut bytes);
+        encode_varint(0, &mut bytes);
+    }
+    let started = Instant::now();
+    let hand = decode_frame::<WireFunctionCall>(bytes.as_slice()).expect("repeated empty positions decode");
+    let expected = filename[..SourceRange::MAX_FILENAME_LEN].to_owned();
+    assert_eq!(hand.position.map(|p| p.filename), Some(expected));
+    assert!(started.elapsed().as_secs() < 5, "repeats amplified decode work");
 }

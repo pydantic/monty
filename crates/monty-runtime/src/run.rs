@@ -20,28 +20,22 @@ use std::{
 // output keeps using `std::println!` — it is program data, not our styling.
 use anstream::{AutoStream, ColorChoice, eprintln};
 use anstyle::{AnsiColor, Color, Style};
-use monty::{MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress, detect_repl_continuation_mode};
+use monty::{
+    MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress, detect_repl_continuation_mode,
+    source_within_nesting_bound,
+};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, HostClock, MontyException,
-    MontyObject, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig,
-    memory_limit_with_headroom, validate_cwd,
+    CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MontyException, MontyObject,
+    NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker, SOURCE_SCAN_THRESHOLD,
+    SleepMode, TypeCheckingConfig, memory_limit_with_headroom, validate_cwd,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
 use tracing::field::Empty;
 
 use crate::Cli;
-
-/// The clock the CLI lends to sandboxed code for `date.today()`,
-/// `datetime.now()` and `time.time()`.
-///
-/// The same clock a fresh [`MontyRun`] already has, named here so the CLI's
-/// choice does not quietly follow a change to that default.
-/// [`handle_os_call`] reads it too, so the mounted REPL path answers the
-/// suspended calls from the same source.
-const CLI_CLOCK: HostClock = HostClock::System;
 
 /// Dim/gray text (timings). `{DIM}` opens the style, `{DIM:#}` closes it.
 const DIM: Style = Style::new().dimmed();
@@ -133,7 +127,11 @@ fn run_cli(cli: Cli) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let host = HostOs { mounts, max_sleep };
+    let host = HostOs {
+        mounts,
+        max_sleep,
+        sleep_budget: limits.max_total_sleep.map(SleepBudget::new),
+    };
     let cwd = match sandbox_cwd(cli.cwd.as_deref(), first_mount) {
         Ok(cwd) => cwd,
         Err(err) => {
@@ -215,7 +213,10 @@ fn run_script(
     mut host: HostOs,
     cwd: &str,
 ) -> ExitCode {
-    if let Some(config) = type_check {
+    // A source the compiler will reject as too deeply nested skips the (unguarded) type checker.
+    if let Some(config) = type_check
+        && source_within_nesting_bound(&code, SOURCE_SCAN_THRESHOLD)
+    {
         let start = Instant::now();
         let mut checker = TypeChecker::default();
         if let Some(failure) = checker.run(&SourceFile::new(&code, file_path), None, config).unwrap() {
@@ -237,7 +238,7 @@ fn run_script(
     let inputs = vec![];
 
     let mut runner = match MontyRun::new(code, file_path, input_names, CompileOptions::default()) {
-        Ok(ex) => ex.with_host_clock(CLI_CLOCK),
+        Ok(ex) => ex.with_os_policy(host.os_policy()),
         Err(err) => {
             eprintln!("{BOLD_RED}error{BOLD_RED:#}:\n{err}");
             return ExitCode::FAILURE;
@@ -314,7 +315,7 @@ fn run_script(
 /// initialization or I/O errors.
 fn run_repl(file_path: &str, code: &str, tracker: ResourceTracker, mut host: HostOs, cwd: &str) -> ExitCode {
     let mut suspensions = SuspensionBudget::new(&tracker);
-    let mut repl = MontyRepl::new(file_path, tracker, CompileOptions::default()).with_host_clock(CLI_CLOCK);
+    let mut repl = MontyRepl::new(file_path, tracker, CompileOptions::default()).with_os_policy(host.os_policy());
     repl.set_cwd(cwd);
     let mut repl = Some(repl);
 
@@ -486,10 +487,16 @@ fn execute_repl_with_mounts(
         }
         match progress {
             ReplProgress::Complete { repl, value } => return Ok((repl, value)),
-            ReplProgress::OsCall(call) => match call.resume_with(PrintWriter::Stdout, |fc| host.handle_os_call(fc)) {
-                Ok(p) => progress = p,
-                Err(err) => return Err((err.repl, format!("{}", err.error))),
-            },
+            ReplProgress::OsCall(call) => {
+                let outcome = match host.refuse_sleep(&call.function_call) {
+                    Some(exc) => call.abort(exc, PrintWriter::Stdout),
+                    None => call.resume_with(PrintWriter::Stdout, |fc| host.handle_os_call(fc)),
+                };
+                match outcome {
+                    Ok(p) => progress = p,
+                    Err(err) => return Err((err.repl, format!("{}", err.error))),
+                }
+            }
             ReplProgress::FunctionCall(call) => {
                 return Err((
                     call.into_repl(),
@@ -561,10 +568,42 @@ fn run_until_complete(
                     .map_err(|err| format!("{err}"))?;
             }
             RunProgress::OsCall(call) => {
-                progress = call
-                    .resume_with(PrintWriter::Stdout, |fc| host.handle_os_call(fc))
-                    .map_err(|err| format!("{err}"))?;
+                let outcome = match host.refuse_sleep(&call.function_call) {
+                    Some(exc) => call.abort(exc, PrintWriter::Stdout),
+                    None => call.resume_with(PrintWriter::Stdout, |fc| host.handle_os_call(fc)),
+                };
+                progress = outcome.map_err(|err| format!("{err}"))?;
             }
+        }
+    }
+}
+
+/// Charges requested delays before waiting, so `--max-total-sleep` refusal is deterministic.
+struct SleepBudget {
+    limit: Duration,
+    /// Capped delays accepted so far, checked against `limit`.
+    used: Duration,
+}
+
+impl SleepBudget {
+    fn new(limit: Duration) -> Self {
+        Self {
+            limit,
+            used: Duration::ZERO,
+        }
+    }
+
+    /// Charges `delay` or returns an uncatchable error with the same message as the pools.
+    fn charge(&mut self, delay: Duration) -> Option<MontyException> {
+        let total = self.used.saturating_add(delay);
+        if total > self.limit {
+            Some(MontyException::new(
+                ExcType::TimeoutError,
+                Some(format!("sleep limit exceeded: {total:?} > {:?}", self.limit)),
+            ))
+        } else {
+            self.used = total;
+            None
         }
     }
 }
@@ -611,40 +650,44 @@ impl SuspensionBudget {
     }
 }
 
-/// What the CLI lends the sandbox as its host: the `-m` mounts and the
-/// `--max-sleep` cap. Only a run with mounts suspends at all, so the cap
-/// matters there alone.
+/// Handles CLI mounts and sleeps, enforcing per-sleep and total sleep limits.
 struct HostOs {
     mounts: Option<MountTable>,
     /// Longest wait a sleep performs; longer ones are cut short.
     max_sleep: Duration,
+    sleep_budget: Option<SleepBudget>,
 }
 
 impl HostOs {
-    /// Whether OS calls reach the host at all (see `run_script`).
+    /// Mount dispatch and total sleep accounting require OS calls to reach the host.
     fn suspends(&self) -> bool {
-        self.mounts.is_some()
+        self.mounts.is_some() || self.sleep_budget.is_some()
     }
 
-    /// Answers an `OsCall`: the clock, a (capped) sleep, or a mount.
-    ///
-    /// Consumes the call (moving write payloads into the mount backend) and
-    /// returns the operation result as an `ExtFunctionResult` — either a
-    /// successful `MontyObject` or an exception for errors / unsupported
-    /// operations.
-    fn handle_os_call(&mut self, call: OsFunctionCall) -> ExtFunctionResult {
-        // The clock answers `date.today()` / `datetime.now()` / `time.time()`
-        // here for the same reason it is granted to the non-suspending path:
-        // the CLI is the host, and a local script expecting CPython's clock
-        // should get one either way.
-        if let Some(now) = CLI_CLOCK.resolve(&call) {
-            return now.into();
+    /// Uses the system clock and entropy, with `--max-sleep` capping each sleep.
+    /// Without mounts or a sleep budget, the interpreter waits instead of the CLI.
+    fn os_policy(&self) -> OsPolicy {
+        OsPolicy {
+            sleep: SleepMode::System(self.max_sleep),
+            ..OsPolicy::default()
         }
-        // Both sleeps wait on this thread, which is the script's own: a CLI
-        // run is one local script, so there is nothing else to run meanwhile.
-        // `--max-sleep` bounds each wait and `--max-suspensions` how many a
-        // run can ask for.
-        if let OsFunctionCall::Sleep(delay) | OsFunctionCall::AsyncSleep(delay) = call {
+    }
+
+    /// Charges system sleeps after capping them at `--max-sleep`, or returns an error to abort the feed.
+    /// Other calls are free.
+    fn refuse_sleep(&mut self, call: &OsFunctionCall) -> Option<MontyException> {
+        match (call, self.sleep_budget.as_mut()) {
+            (OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay), Some(budget)) => {
+                budget.charge((*delay).min(self.max_sleep))
+            }
+            _ => None,
+        }
+    }
+
+    /// Waits for system sleeps, enforcing `--max-sleep` again in case the sandbox did not.
+    /// Other calls go to the mounts, transferring write payloads without copying.
+    fn handle_os_call(&mut self, call: OsFunctionCall) -> ExtFunctionResult {
+        if let OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) = call {
             thread::sleep(delay.min(self.max_sleep));
             return MontyObject::none().into();
         }
@@ -672,10 +715,10 @@ fn resolve_external_call(function_name: &str, args: &CallArgs) -> Result<MontyOb
         return Err(format!("unknown external function: {function_name}({})", rendered()));
     }
 
-    if args.arg_ids.len() != 2 {
+    if args.args().len() != 2 {
         return Err(format!(
             "add_ints requires exactly 2 arguments, got {}",
-            args.arg_ids.len()
+            args.args().len()
         ));
     }
 

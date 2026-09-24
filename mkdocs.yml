@@ -1,5 +1,5 @@
 site_name: Monty
-site_description: A sandboxed Python interpreter, written in Rust, for code written by AI.
+site_description: A secure Python sandbox, written in Rust, for code written by AI.
 
 theme:
   name: 'material'
@@ -44,6 +44,7 @@ nav:
       - Overview: 'limitations/index.md'
       - Python language / parser: 'limitations/language.md'
       - Built-in functions: 'limitations/builtins.md'
+      - eval(), exec() and locals(): 'limitations/eval_exec.md'
       - Classes: 'limitations/classes.md'
       - dataclasses: 'limitations/dataclasses.md'
       - Named tuples: 'limitations/namedtuple.md'

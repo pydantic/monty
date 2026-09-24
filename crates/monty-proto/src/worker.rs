@@ -22,19 +22,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump};
+use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump, source_within_nesting_bound};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
-    PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, TypeCheckState, TypeCheckingConfig,
+    OsPolicy, PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, SOURCE_SCAN_THRESHOLD,
+    TypeCheckState, TypeCheckingConfig,
 };
 
 use super::{
-    DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError, WireFunctionCall,
-    check_protocol_version, exceeds_max_frame_len, ext_result_from_proto, future_results_from_proto,
+    BudgetVec, DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError,
+    WireFunctionCall, check_protocol_version, exceeds_max_frame_len, ext_result_from_proto, future_results_from_proto,
     named_values_from_proto, os_call_from_proto, os_call_to_proto, pb, write_frame,
 };
-use crate::wire::uuid_to_pb;
+use crate::{convert::limits::micros_field, wire::uuid_to_pb};
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
@@ -169,6 +170,8 @@ pub struct SessionBudget {
     /// Maximum suspensions the host may service; enforced outside the child.
     /// `None` only when no session exists.
     pub max_suspensions: Option<usize>,
+    /// Host-enforced sleep budget; `None` when unlimited or no session exists.
+    pub max_total_sleep: Option<Duration>,
 }
 
 /// REPL session state of the child.
@@ -208,6 +211,8 @@ pub struct Child {
     /// `Configure`. `Duration::ZERO` means line buffering (see the field's
     /// documentation in the schema).
     print_flush_interval: Duration,
+    /// The session's `OsPolicy` from `Configure`, applied when creating the REPL.
+    os_policy: OsPolicy,
 }
 
 impl Default for Child {
@@ -218,6 +223,7 @@ impl Default for Child {
             type_checker: TypeChecker::default(),
             type_check: None,
             print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
+            os_policy: OsPolicy::default(),
         }
     }
 }
@@ -345,6 +351,11 @@ impl Child {
                 type_check: config.type_check,
                 // the wire default applies before the repl exists too
                 max_suspensions: Some(ResourceLimits::from(config.limits.unwrap_or_default()).max_suspensions),
+                max_total_sleep: config
+                    .limits
+                    .as_ref()
+                    .and_then(|limits| limits.max_total_sleep_micros)
+                    .map(Duration::from_micros),
             },
             SessionState::Configured(None) => SessionBudget::default(),
             SessionState::Ready(repl) => self.tracker_budget(repl.tracker()),
@@ -358,6 +369,7 @@ impl Child {
             max_memory: tracker.max_memory(),
             type_check: self.type_check.is_some(),
             max_suspensions: Some(tracker.max_suspensions()),
+            max_total_sleep: tracker.max_total_sleep(),
         }
     }
 
@@ -437,6 +449,18 @@ impl Child {
             self.print_flush_interval = configure
                 .print_flush_interval_ms
                 .map_or(DEFAULT_PRINT_FLUSH_INTERVAL, |ms| Duration::from_millis(u64::from(ms)));
+            // Reject invalid settings on the Configure turn.
+            self.os_policy = match configure.os_policy.clone().map(OsPolicy::try_from) {
+                None => OsPolicy::default(),
+                Some(Ok(os_policy)) => os_policy,
+                Some(Err(err)) => return protocol_violation(&format!("invalid os_policy: {err}")),
+            };
+            // ty parses the stubs with every feed, unguarded.
+            if let Some(stubs) = &configure.type_check_stubs
+                && !source_within_nesting_bound(stubs, SOURCE_SCAN_THRESHOLD)
+            {
+                return protocol_violation("invalid type_check_stubs: Source is too deeply nested");
+            }
             self.state = SessionState::Configured(Some(Box::new(configure)));
             ok_event()
         } else {
@@ -476,6 +500,8 @@ impl Child {
             monty_version: _,
             // applied when the `Configure` arrived, so a `Load` honors it too
             print_flush_interval_ms: _,
+            // validated and stored when the `Configure` arrived
+            os_policy: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;
@@ -490,25 +516,35 @@ impl Child {
                 AssertMessageAnnotations::default,
                 AssertMessageAnnotations::from_max_bytes,
             ),
+            // Not on the wire: every host gets the default.
+            source_scan_threshold: SOURCE_SCAN_THRESHOLD,
         };
-        self.state = SessionState::Ready(Box::new(MontyRepl::new(
-            &self.script_name,
-            ResourceTracker::new(limits),
-            options,
-        )));
+        let repl = MontyRepl::new(&self.script_name, ResourceTracker::new(limits), options)
+            .with_os_policy(self.os_policy.clone());
+        self.state = SessionState::Ready(Box::new(repl));
         Ok(())
     }
 
-    /// Runs a `Feed` on the ready session: type-checks the snippet (unless
-    /// skipped), injects inputs, and drives execution to the turn-ending event.
+    /// Runs a `Feed` on the ready session: scans the snippet for nesting,
+    /// type-checks it (unless skipped), injects inputs, and drives execution to
+    /// the turn-ending event.
     fn handle_repl_feed(&mut self, feed: pb::Feed, sink: &mut dyn EventSink) -> pb::ChildEvent {
         if let Err(event) = self.ensure_repl() {
             return *event;
         }
-        if !matches!(self.state, SessionState::Ready(_)) {
+        let SessionState::Ready(repl) = &self.state else {
             // ensure_repl left it un-Ready only when mid-suspension
             return protocol_violation("Feed without a session ready for input");
-        }
+        };
+        // Before anything parses the snippet: neither ty nor the compile scan again.
+        let code = match repl.check_source(&feed.code) {
+            Ok(code) => code,
+            Err(error) => {
+                return event(pb::child_event::Kind::Error(pb::Error {
+                    exception: Some((&error).into()),
+                }));
+            }
+        };
         if !feed.skip_type_check
             && let Some(event) = self.type_check_feed(&feed.code)
         {
@@ -535,7 +571,7 @@ impl Child {
             state.pending_snippet = Some(feed.code.clone());
         }
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
-        let result = repl.feed_start(&feed.code, inputs, PrintWriter::Callback(&mut print));
+        let result = repl.feed_start_checked(code, inputs, PrintWriter::Callback(&mut print));
         let event = self.drive(result);
         print.drain();
         event
@@ -712,7 +748,9 @@ impl Child {
             SessionState::Configured(_) => unreachable!("ensure_repl materialized the repl or errored"),
         };
         match dump(&self.script_name, self.type_check.as_ref(), session) {
-            Ok(state) => event(pb::child_event::Kind::DumpResult(pb::DumpResult { state })),
+            Ok(state) => event(pb::child_event::Kind::DumpResult(pb::DumpResult {
+                state: state.into(),
+            })),
             Err(err) => protocol_violation(&format!("dump failed: {err}")),
         }
     }
@@ -781,9 +819,8 @@ impl Child {
         event
     }
 
-    /// Drives execution until it needs the parent, returning the turn-ending
-    /// event. Every OS call surfaces to the parent — the child performs no
-    /// filesystem I/O (mounts are serviced parent-side).
+    /// Runs until a turn-ending event. OS calls not answered by `OsPolicy`
+    /// go to the parent, including all filesystem I/O.
     fn drive(&mut self, result: Result<ReplProgress, Box<ReplStartError>>) -> pb::ChildEvent {
         match result {
             Ok(ReplProgress::Complete { repl, value }) => {
@@ -876,6 +913,7 @@ impl Child {
         self.type_check = None;
         self.script_name = String::new();
         self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;
+        self.os_policy = OsPolicy::default();
         self.type_checker.reset()
     }
 }
@@ -902,7 +940,7 @@ pub fn protocol_violation(message: &str) -> pb::ChildEvent {
         exception: Some(pb::RaisedException {
             exc_type: ExcType::RuntimeError.to_string(),
             message: Some(format!("protocol violation: {message}")),
-            traceback: vec![],
+            traceback: BudgetVec::new(),
             data: None,
         }),
     }))
@@ -930,7 +968,7 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
         exception: Some(pb::RaisedException {
             exc_type: exc_type.to_string(),
             message: Some(message.to_owned()),
-            traceback: vec![],
+            traceback: BudgetVec::new(),
             data: None,
         }),
     }))
@@ -941,9 +979,10 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
 /// is size-checked with the stamps it will carry.
 fn stamp_budget(event: &mut pb::ChildEvent, tracker: &ResourceTracker) {
     event.total_execution_micros = u64::try_from(tracker.elapsed().as_micros()).unwrap_or(u64::MAX);
-    event.max_duration_micros = tracker
-        .max_duration()
-        .map(|max| u64::try_from(max.as_micros()).unwrap_or(u64::MAX));
+    event.feed_execution_micros = u64::try_from(tracker.feed_elapsed().as_micros()).unwrap_or(u64::MAX);
+    event.max_feed_duration_micros = micros_field(tracker.max_feed_duration());
+    event.max_turn_duration_micros = micros_field(tracker.max_turn_duration());
+    event.max_total_sleep_micros = micros_field(tracker.max_total_sleep());
     event.max_suspensions = Some(tracker.max_suspensions() as u64);
 }
 
@@ -975,6 +1014,7 @@ fn suspension_event_function_call(call: &mut monty::ReplFunctionCall) -> pb::Chi
         call.call_id,
         call.object_id,
         call.allow_eager_await,
+        call.position.clone(),
     )))
 }
 
@@ -989,6 +1029,7 @@ fn suspension_event_os_call(call: &mut monty::ReplOsCall) -> pb::ChildEvent {
         call.call_id,
         function_call,
         call.allow_eager_await,
+        &call.position,
     )))
 }
 
@@ -1007,9 +1048,11 @@ fn suspension_event(progress: &mut ReplProgress) -> pb::ChildEvent {
         ReplProgress::NameLookup(lookup) => event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: lookup.name.clone(),
             object_id: lookup.object_id().as_ref().map(uuid_to_pb),
+            position: Some((&lookup.position).into()),
         })),
         ReplProgress::ResolveFutures(state) => event(pb::child_event::Kind::ResolveFutures(pb::ResolveFutures {
-            pending_call_ids: state.pending_call_ids().to_vec(),
+            pending_call_ids: state.pending_call_ids().to_vec().into(),
+            position: Some(state.position().into()),
         })),
         ReplProgress::Complete { .. } => unreachable!("Complete is handled before suspension_event"),
     }
@@ -1127,7 +1170,9 @@ impl<'a> ProtoPrint<'a> {
 
     /// Sends `segments` as one `Print` event.
     fn send(&mut self, segments: Vec<pb::PrintSegment>) -> Result<(), MontyException> {
-        let event = event(pb::child_event::Kind::Print(pb::Print { segments }));
+        let event = event(pb::child_event::Kind::Print(pb::Print {
+            segments: segments.into(),
+        }));
         self.sink.send(&event).map_err(|err| {
             MontyException::new(
                 ExcType::RuntimeError,

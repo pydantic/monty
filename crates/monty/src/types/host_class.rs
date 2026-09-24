@@ -5,7 +5,7 @@ use std::{
     mem,
 };
 
-use monty_types::{ClassTypeNode, MontyUuid};
+use monty_types::{MontyUuid, unstable::ClassTypeNode};
 
 use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value, str::allocate_string};
 use crate::{
@@ -298,7 +298,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
 ///
 /// Each caller supplies its own field list via `field`, mapping an index to that
 /// field's name and a cloned value (dropped here). A cycle renders `...`, a
-/// `None` value `<?>`, and exhausting `max_duration` truncates `...[timeout]`.
+/// `None` value `<?>`, and exhausting a time limit truncates `...[timeout]`.
 ///
 /// `field` is resolved immediately before that field is written, never all up
 /// front, so a `__repr__` that mutates a later field is observed — matching the
@@ -320,7 +320,7 @@ pub(crate) fn write_dataclass_repr<'h>(
     for i in 0..field_count {
         if i > 0 {
             // Same between-item checkpoint as sequence repr, so a wide instance
-            // cannot outrun `max_duration`.
+            // cannot outrun its time limit.
             if vm.heap.tracker.check_memory_time_every(i).is_err() {
                 f.write_str(", ...[timeout]")?;
                 break;

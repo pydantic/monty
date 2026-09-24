@@ -2,15 +2,19 @@
 //!
 //! Eligible coroutines are awaited at their call suspension. Other coroutines
 //! are spawned as tokio tasks and resolved in batches when the sandbox blocks.
+//! System sleeps use the same scheduling with tokio timers.
 
-use std::future::Future;
+use std::{future::Future, pin::Pin, time::Duration};
 
 use monty_pool::ResumeValue;
 use monty_proto::python::InstanceStore;
-use monty_types::{CallArgs, ExtFunctionResult, MontyUuid, OsFunctionCall};
+use monty_types::{CallArgs, ExtFunctionResult, MontyObject, MontyUuid, OsFunctionCall};
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
 use pyo3_async_runtimes::{into_future_with_locals, tokio::get_current_locals};
-use tokio::task::{JoinError, JoinSet};
+use tokio::{
+    task::{JoinError, JoinSet},
+    time::sleep,
+};
 
 use crate::external::{
     CallResult, ExternalLookup, dispatch_object_call_or_coroutine, py_err_to_ext_result, py_obj_to_ext_result,
@@ -69,6 +73,9 @@ impl CoroutineMode {
     }
 }
 
+/// An answer the drive loop can await or spawn.
+pub(crate) type AnswerFuture = Pin<Box<dyn Future<Output = ExtFunctionResult> + Send>>;
+
 /// Converts the coroutine a host callback answered `call_id` with, spawning it
 /// into `join_set` or handing it back to await outside the callback context.
 pub(crate) fn dispatch_coroutine(
@@ -77,16 +84,40 @@ pub(crate) fn dispatch_coroutine(
     mode: CoroutineMode,
     join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
     instances: &InstanceStore,
-) -> PyResult<Dispatched<impl Future<Output = ExtFunctionResult> + Send + use<>>> {
+) -> PyResult<Dispatched<AnswerFuture>> {
     let future = coroutine_future(coro, instances)?;
-    Ok(match mode {
+    Ok(dispatch_future(Box::pin(future), call_id, mode, join_set))
+}
+
+/// Schedules a system sleep like a coroutine answer, allowing gathered sleeps to overlap.
+pub(crate) fn dispatch_system_sleep(
+    delay: Duration,
+    call_id: u32,
+    mode: CoroutineMode,
+    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+) -> Dispatched<AnswerFuture> {
+    let wait = async move {
+        sleep(delay).await;
+        ExtFunctionResult::Return(MontyObject::none())
+    };
+    dispatch_future(Box::pin(wait), call_id, mode, join_set)
+}
+
+/// Spawns deferred answers; returns other futures for awaiting outside the callback context.
+fn dispatch_future(
+    future: AnswerFuture,
+    call_id: u32,
+    mode: CoroutineMode,
+    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+) -> Dispatched<AnswerFuture> {
+    match mode {
         CoroutineMode::Eager => Dispatched::Eager(future),
         CoroutineMode::Future => {
             join_set.spawn(async move { (call_id, future.await) });
             Dispatched::Done(ResumeValue::Future)
         }
         CoroutineMode::AsValue => Dispatched::AsValue(future),
-    })
+    }
 }
 
 /// Converts a coroutine under the current asyncio task-locals, for awaiting or spawning.

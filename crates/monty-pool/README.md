@@ -65,13 +65,18 @@ async fn main() -> Result<(), PoolError> {
 }
 ```
 
-`ReplConfig` also enables per-session sandbox `ResourceLimits`, type checking of every fed
-snippet, and `print_flush_interval` — how long the worker may batch `print()` output before
-sending it, so a burst of prints costs one event rather than one each (`Duration::ZERO`
-restores line buffering, one event per completed line); `Checkout::feed` accepts inputs (host values exposed as sandbox globals) and
-per-feed filesystem mounts (`MountSpec`) and, through `Checkout::feed_with_cwd`, a switch of the
-sandbox's working directory (the first feed's first mount by default; it then persists across feeds). Sessions can be snapshotted with `Checkout::dump`
-and restored later — including on a different worker or machine — with `Checkout::restore`.
+`ReplConfig` sets per-session `ResourceLimits`, type checking of every snippet, and `print_flush_interval`.
+The flush interval batches `print()` output; `Duration::ZERO` sends one event per completed line.
+Its `os_policy` sets the clock, timezone, initial random state and sleep policy for the session.
+`CallHost` delegates calls to the caller's OS handler through `TurnEvent::OsCall`.
+Every suspension variant of `TurnEvent` carries `position`, a `SourceRange` locating the suspending expression.
+The default `SleepMode::System` sets `system_sleep` to the capped delay for the caller to await directly.
+`SleepMode::Zero` returns immediately.
+
+`Checkout::feed` accepts inputs exposed as sandbox globals and per-feed filesystem mounts (`MountSpec`); mounts that
+overlap on the host or repeat a virtual path fail the feed with a session-preserving `PoolError::Runtime`.
+`Checkout::feed_with_cwd` also changes the working directory, which defaults to the first feed's first mount and persists.
+`Checkout::dump` snapshots a session; `Checkout::restore` can restore it on another worker or machine.
 The caller must establish that restored bytes are unmodified output from a trusted, compatible Monty producer.
 Neither the pool nor the interpreter authenticates snapshots; successful loading does not establish validity.
 Invalid snapshots have no correctness or availability guarantees.
@@ -84,8 +89,10 @@ Invalid snapshots have no correctness or availability guarantees.
 - **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds
   `request_timeout` (`PoolError::Timeout`), backstopping the sandbox's own resource limits
   and catching hangs those limits cannot see. Synchronous host telemetry processors delay
-  enforcement while they run because the timer cannot be polled. When a session has a `max_duration` budget,
-  the deadline also enforces it (plus `duration_limit_grace`) from outside the child.
+  enforcement while they run because the timer cannot be polled. When a session has a
+  `max_feed_duration` or `max_turn_duration` budget, the deadline also enforces it from outside the child,
+  each with its own grace (`feed_duration_limit_grace`, `turn_duration_limit_grace`, 1s by default;
+  `None` disables that backstop).
   A `max_suspensions` budget is enforced by the pool alone: it counts the suspensions it services
   and ends the feed past the budget with an uncatchable `RuntimeError` in the sandbox.
   `PoolConfig::subprocess` sets neither `request_timeout` nor `checkout_timeout` by
@@ -105,8 +112,9 @@ Invalid snapshots have no correctness or availability guarantees.
 
 Ordinary sandbox exceptions leave the session usable.
 After a soft memory or time limit, the worker survives but the heap has no correctness guarantees.
-A spent cumulative `max_duration` budget makes later feeds fail; after a soft memory limit, later feeds may succeed.
-Discard the session in either case.
+Later feeds may still succeed: the duration budgets restart at the next feed, and a soft memory limit does not end
+the session either.
+Discard it yourself.
 A failed restore also discards the worker.
 
 Timeouts kill the single worker PID, not a process group; the Monty sandbox must never spawn subprocesses.

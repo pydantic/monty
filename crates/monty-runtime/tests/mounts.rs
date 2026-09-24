@@ -91,6 +91,37 @@ fn max_sleep_caps_a_long_sleep() {
     assert!(start.elapsed().as_secs() < 5, "the sleep was not capped");
 }
 
+/// A sleep exceeding `--max-total-sleep` raises an uncatchable `TimeoutError` before waiting.
+#[test]
+fn max_total_sleep_refuses_a_sleep_over_budget() {
+    // exact binary fractions, so the reported total is exact too
+    let script_dir =
+        script_dir("import time\ntime.sleep(0.125)\ntry:\n    time.sleep(5)\nexcept TimeoutError:\n    pass\n");
+    let script = script_dir.path().join("script.py");
+
+    let start = Instant::now();
+    let (success, stderr) = run_monty(&["--max-total-sleep", "0.25", script.to_str().expect("utf-8 path")]);
+
+    assert!(!success, "the sleep over budget should fail the run: {stderr}");
+    assert!(
+        stderr.contains("TimeoutError: sleep limit exceeded: 5.125s > 250ms"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(start.elapsed().as_secs() < 5, "the sleep was not refused");
+}
+
+#[test]
+fn max_sleep_applies_without_a_mount() {
+    let script_dir = script_dir("import time\ntime.sleep(3600)\nprint('woke')\n");
+    let script = script_dir.path().join("script.py");
+
+    let start = Instant::now();
+    let (success, stderr) = run_monty(&["--max-sleep", "0.001", script.to_str().expect("utf-8 path")]);
+
+    assert!(success, "unexpected stderr: {stderr}");
+    assert!(start.elapsed().as_secs() < 5, "the sleep was not capped");
+}
+
 #[test]
 fn mount_write_limit_is_enforced_from_cli_spec() {
     let host_dir = TempDir::new().expect("tempdir should be created");

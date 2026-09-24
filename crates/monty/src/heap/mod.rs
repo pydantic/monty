@@ -81,20 +81,24 @@ pub(crate) enum CcColor {
     /// Live and not currently a cycle candidate. Default state for every newly
     /// allocated entry.
     #[default]
+    #[serde(rename = "B")]
     Black,
     /// Visited by `MarkGray` during a collection cycle. Children's refcounts
     /// have been provisionally decremented; a later `Scan` pass decides whether
     /// to resurrect (back to [`Black`](Self::Black)) or condemn
     /// ([`White`](Self::White)) the entry.
+    #[serde(rename = "G")]
     Gray,
     /// Confirmed unreachable by the current collection: every reference into
     /// the entry comes from another condemned entry. `CollectWhite` will free
     /// it. Only seen mid-collection.
+    #[serde(rename = "W")]
     White,
     /// Candidate cycle root. Set by `dec_ref` whenever a GC-tracked entry's
     /// refcount drops to a non-zero value — the only situation in which a new
     /// reference cycle can become unreachable. The collector seeds its work
     /// from every entry currently flagged Purple.
+    #[serde(rename = "P")]
     Purple,
 }
 
@@ -262,9 +266,10 @@ macro_rules! define_heap_read_support {
         $variant:ident($storage:ident $payload:ty)
     ),* $(,)?) => {
         /// A type-safe read handle for any payload stored in the heap.
+        /// Variants mirror `HeapData`, which carries their docs; its serde attributes
+        /// would not compile here, so the registry's attributes are not repeated.
         pub enum HeapReadOutput<'a> {
             $(
-                $(#[$meta])*
                 $variant(HeapObjectRead<'a, $payload>),
             )*
         }
@@ -820,6 +825,7 @@ impl<'a> HeapPtr<'a> {
 /// collector's `mark_gray`/`scan`/`scan_black`).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct HeapEntry {
+    #[serde(rename = "R")]
     refcount: Cell<usize>,
     /// Number of active `HeapRead` pointers into this entry's data.
     ///
@@ -827,9 +833,10 @@ pub struct HeapEntry {
     /// the `HeapRead` is dropped. `dec_ref` panics if it would free an entry that
     /// still has active readers — this guarantees that `HeapRead` pointers remain
     /// valid for as long as they exist.
-    #[serde(skip, default)] // should always be 0 during serde ops
+    #[serde(skip)] // should always be 0 during serde ops
     readers: Cell<usize>,
     /// The payload data
+    #[serde(rename = "D")]
     data: UnsafeHeapData,
     /// Cycle-collector color. See [`CcColor`].
     ///
@@ -837,7 +844,7 @@ pub struct HeapEntry {
     /// instructions can capture entries in the [`Purple`](CcColor::Purple)
     /// pending-collection state; dropping the color on restore would leak
     /// any cycle that became unreachable just before the snapshot.
-    #[serde(default)]
+    #[serde(rename = "C")]
     color: Cell<CcColor>,
 }
 
@@ -976,11 +983,8 @@ impl<'de> serde::Deserialize<'de> for Heap {
         struct HeapFields {
             entries: StableHeap<HeapEntry>,
             tracker: ResourceTracker,
-            #[serde(default)]
             purple_count: usize,
-            #[serde(default)]
             allocations_since_gc: u32,
-            #[serde(default)]
             timezone_utc: Option<HeapId>,
         }
         let fields = HeapFields::deserialize(deserializer)?;
@@ -1904,6 +1908,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                     on_child(*id);
                 }
             }
+            if let Some(globals) = closure.globals {
+                on_child(globals);
+            }
         }
         HeapData::FunctionDefaults(fd) => {
             // Add default values that are heap references
@@ -1911,6 +1918,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 if let Value::Ref(id) = default {
                     on_child(*id);
                 }
+            }
+            if let Some(globals) = fd.globals {
+                on_child(globals);
             }
         }
         HeapData::Cell(cell) => {
@@ -2031,6 +2041,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                     on_child(*id);
                 }
             }
+            if let Some(globals) = coro.globals {
+                on_child(globals);
+            }
         }
         HeapData::GatherFuture(gather) => {
             // Add inc_ref'd item HeapIds. Both coroutines and external
@@ -2132,12 +2145,14 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             for default in &mut closure.defaults {
                 default.py_dec_ref_ids(stack);
             }
+            stack.extend(closure.globals);
         }
         HeapData::FunctionDefaults(fd) => {
             // Decrement ref count for default values that are heap references
             for default in &mut fd.defaults {
                 default.py_dec_ref_ids(stack);
             }
+            stack.extend(fd.globals);
         }
         HeapData::Cell(cell) => cell.0.py_dec_ref_ids(stack),
         HeapData::HostClass(dc) => dc.py_dec_ref_ids(stack),
@@ -2169,6 +2184,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             for value in &mut coro.namespace {
                 value.py_dec_ref_ids(stack);
             }
+            stack.extend(coro.globals);
         }
         HeapData::GatherFuture(gather) => {
             // Decrement ref count for owned item HeapIds (coroutines and
@@ -2494,9 +2510,9 @@ mod tests {
         assert_eq!(heap.purple_count, 1);
         assert_eq!(heap.entries.get(id).color.get(), CcColor::Purple);
 
-        // Round-trip through postcard.
-        let bytes = postcard::to_allocvec(&heap).expect("serialize");
-        let mut restored: Heap = postcard::from_bytes(&bytes).expect("deserialize");
+        // Round-trip through the dump codec.
+        let bytes = minicbor_serde::to_vec(&heap).expect("serialize");
+        let mut restored: Heap = minicbor_serde::from_slice(&bytes).expect("deserialize");
 
         // `purple_count` and the per-entry color must round-trip.
         assert_eq!(restored.purple_count, 1);

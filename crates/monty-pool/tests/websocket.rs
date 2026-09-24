@@ -21,7 +21,7 @@ use monty_pool::{
     ResumeValue, TurnEvent,
 };
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb, resume_call_from_proto};
-use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits};
+use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits, SourceRange};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
@@ -434,6 +434,7 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
                 call_id: 7,
                 values: None,
                 allow_eager_await: false,
+                position: Some((&position()).into()),
                 call: Some(pb::os_call::Call::ReadText("/mnt/data.txt".to_owned())),
             })),
         );
@@ -500,6 +501,7 @@ async fn eager_bit_on_a_non_future_os_call_is_dropped() {
                 call_id: 7,
                 values: None,
                 allow_eager_await: true,
+                position: Some((&position()).into()),
                 call: Some(pb::os_call::Call::ReadText("/mnt/data.txt".to_owned())),
             })),
         );
@@ -576,6 +578,7 @@ async fn malformed_os_call_is_a_protocol_error() {
                 call_id: 3,
                 values: None,
                 allow_eager_await: false,
+                position: Some((&position()).into()),
                 call: Some(pb::os_call::Call::Open(pb::os_call::Open {
                     path: "/mnt/data.txt".to_owned(),
                     mode: "q".to_owned(),
@@ -605,14 +608,14 @@ async fn malformed_os_call_is_a_protocol_error() {
     join_server(server).await;
 }
 
-/// The parent-side `max_duration` backstop (remaining budget + grace) kills a
-/// worker that never answers a feed — the case where the child's own time
-/// enforcement has failed. No `request_timeout` is configured, so the
+/// The parent-side `max_feed_duration` backstop (remaining budget + grace)
+/// kills a worker that never answers a feed — the case where the child's own
+/// time enforcement has failed. No `request_timeout` is configured, so the
 /// backstop is the only armed deadline.
 #[tokio::test]
 async fn duration_backstop_kills_an_unresponsive_worker() {
     let (listener, mut config) = ws_pool_config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -628,7 +631,7 @@ async fn duration_backstop_kills_an_unresponsive_worker() {
     let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .await
@@ -647,11 +650,11 @@ async fn duration_backstop_kills_an_unresponsive_worker() {
 
 /// The same backstop arms on the raw path, which a relay drives instead of
 /// `feed`. `turn_raw` used to arm `request_timeout` alone, so a session whose
-/// only bound was `max_duration` had no parent-side deadline at all.
+/// only bound was `max_feed_duration` had no parent-side deadline at all.
 #[tokio::test]
 async fn duration_backstop_arms_on_the_raw_path() {
     let (listener, mut config) = ws_pool_config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -667,7 +670,7 @@ async fn duration_backstop_arms_on_the_raw_path() {
     let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .await
@@ -675,7 +678,7 @@ async fn duration_backstop_arms_on_the_raw_path() {
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "while True:\n    pass".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -697,7 +700,7 @@ async fn duration_backstop_arms_on_the_raw_path() {
 #[tokio::test]
 async fn a_raw_load_adopts_the_dumps_duration_budget() {
     let (listener, mut config) = ws_pool_config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -711,9 +714,12 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
             &mut socket,
             &pb::ChildEvent {
                 total_execution_micros: 0,
-                max_duration_micros: Some(100_000),
                 max_suspensions: None,
                 restored_script_name: None,
+                feed_execution_micros: 0,
+                max_feed_duration_micros: Some(100_000),
+                max_turn_duration_micros: None,
+                max_total_sleep_micros: None,
                 kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             },
         );
@@ -725,21 +731,23 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
     let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_secs(5))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_secs(5))),
             ..ReplConfig::default()
         })
         .await
         .expect("checkout");
     let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
     let load = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: vec![1, 2, 3] })),
+        kind: Some(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![1, 2, 3].into(),
+        })),
         ..pb::ParentRequest::default()
     };
     checkout.turn_raw(&load, &mut on_event).await.expect("load");
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "while True:\n    pass".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -798,7 +806,7 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -820,7 +828,7 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
 #[tokio::test]
 async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let (listener, mut config) = ws_pool_config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -837,7 +845,7 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .await
@@ -845,7 +853,7 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
     let load = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Load(pb::Load {
-            state: vec![0; MAX_FRAME_LEN as usize + 1],
+            state: vec![0; MAX_FRAME_LEN as usize + 1].into(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -854,7 +862,7 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "while True:\n    pass".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -888,7 +896,7 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
         send_event(
             &mut socket,
             &event_kind(pb::child_event::Kind::Shutdown(pb::ShutdownDump {
-                dump: Some(b"relay-signed state".to_vec()),
+                dump: Some(b"relay-signed state".to_vec().into()),
             })),
         );
     });
@@ -898,7 +906,7 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -925,9 +933,9 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
 /// serviced inside the turn, so a worker that simply runs too long before
 /// announcing it is killed by the deadline exactly as without mounts.
 ///
-/// Each resume starts a new deadline; `max_duration` bounds cumulative worker
-/// time across a loop of calls. Neither limit covers the host I/O itself; see
-/// docs/filesystem.md#io-timeouts-and-cancellation.
+/// Each resume starts a new deadline; `max_feed_duration` bounds worker time
+/// across a loop of calls within one feed. Neither limit covers the host I/O
+/// itself; see docs/filesystem.md#io-timeouts-and-cancellation.
 #[tokio::test]
 async fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
     let dir = tempfile::tempdir().unwrap();
@@ -966,13 +974,13 @@ async fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
     join_server(server).await;
 }
 
-/// A restored session re-adopts its `max_duration` budget from the timing
+/// A restored session re-adopts its `max_feed_duration` budget from the timing
 /// fields the worker stamps on the `Load` reply, re-arming the parent-side
 /// backstop without the parent ever seeing the original `ReplConfig`.
 #[tokio::test]
 async fn restored_session_rearms_the_duration_backstop() {
     let (listener, mut config) = ws_pool_config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -988,8 +996,11 @@ async fn restored_session_rearms_the_duration_backstop() {
                 kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
                 restored_script_name: Some("restored.py".to_owned()),
                 total_execution_micros: 0,
-                max_duration_micros: Some(100_000),
                 max_suspensions: None,
+                feed_execution_micros: 0,
+                max_feed_duration_micros: Some(100_000),
+                max_turn_duration_micros: None,
+                max_total_sleep_micros: None,
             },
         );
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
@@ -1025,6 +1036,7 @@ fn serve_endless_suspensions(socket: &mut WebSocket<TcpStream>, expected_calls: 
             call_id,
             None,
             false,
+            position(),
         )))
     };
     assert!(matches!(read_request(socket), pb::parent_request::Kind::Feed(_)));
@@ -1168,6 +1180,7 @@ async fn a_malformed_over_budget_os_call_is_a_protocol_violation() {
                     values: None,
                     call: None,
                     allow_eager_await: false,
+                    position: Some((&position()).into()),
                 })),
                 max_suspensions: Some(0),
                 ..Default::default()
@@ -1217,7 +1230,7 @@ async fn suspension_limit_is_enforced_on_the_raw_path() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "fetch()".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1265,6 +1278,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
                 call_id,
                 None,
                 false,
+                position(),
             )))
         };
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
@@ -1278,7 +1292,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
                     exception: Some(pb::RaisedException {
                         exc_type: "RuntimeError".to_owned(),
                         message: Some("protocol violation: Load requires a session that has not started".to_owned()),
-                        traceback: vec![],
+                        traceback: vec![].into(),
                         data: None,
                     }),
                 })),
@@ -1317,7 +1331,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "fetch()".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1327,7 +1341,9 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
     let event = checkout.turn_raw(&feed, &mut on_event).await.expect("feed");
     assert!(matches!(event.kind, Some(pb::child_event::Kind::FunctionCall(_))));
     let load = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: vec![1, 2, 3] })),
+        kind: Some(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![1, 2, 3].into(),
+        })),
         ..pb::ParentRequest::default()
     };
     let event = checkout.turn_raw(&load, &mut on_event).await.expect("refused load");
@@ -1468,7 +1484,7 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
         ));
         send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         let function_call =
-            |call_id: u32| WireFunctionCall::new("fetch".to_owned(), CallArgs::new(), call_id, None, false);
+            |call_id: u32| WireFunctionCall::new("fetch".to_owned(), CallArgs::new(), call_id, None, false, position());
         let abort_reply = |socket: &mut WebSocket<TcpStream>| {
             let pb::parent_request::Kind::AbortFeed(abort) = read_request(socket) else {
                 panic!("expected AbortFeed");
@@ -1512,7 +1528,9 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
         .expect("checkout");
     let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
     let load = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: vec![1, 2, 3] })),
+        kind: Some(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![1, 2, 3].into(),
+        })),
         ..pb::ParentRequest::default()
     };
     let event = checkout.turn_raw(&load, &mut on_event).await.expect("aborted restore");
@@ -1523,7 +1541,7 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "fetch()".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1622,7 +1640,7 @@ fn ok_event() -> pb::child_event::Kind {
 /// Builds a `ShutdownDump` turn-ender.
 fn shutdown(dump: Option<&[u8]>) -> pb::child_event::Kind {
     pb::child_event::Kind::Shutdown(pb::ShutdownDump {
-        dump: dump.map(<[u8]>::to_vec),
+        dump: dump.map(|bytes| bytes.to_vec().into()),
     })
 }
 
@@ -1634,6 +1652,7 @@ fn function_call(call_id: u32) -> pb::child_event::Kind {
         call_id,
         None,
         false,
+        position(),
     ))
 }
 
@@ -2015,4 +2034,13 @@ async fn a_dropped_connection_is_a_disconnect() {
         .await
         .expect_err("a closed connection must fail the turn");
     assert!(matches!(err, PoolError::Disconnected { .. }), "got {err:?}");
+}
+
+/// The suspension position every hand-built event carries.
+fn position() -> SourceRange {
+    SourceRange {
+        filename: "main.py".to_owned(),
+        start: 0,
+        end: 7,
+    }
 }

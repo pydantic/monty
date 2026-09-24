@@ -1,6 +1,7 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
+import { kind } from './env.js'
 import { setupPool } from './helpers.js'
 import { encodeValue } from '../ts/worker/value.js'
 
@@ -196,6 +197,40 @@ test('ellipsis input', async () => {
 
 test('ellipsis output', async () => {
   t.deepEqual(await run('...'), { __monty_type__: 'Ellipsis' })
+})
+
+// =============================================================================
+// Builtin function tests
+// =============================================================================
+
+test('builtin function output', async () => {
+  t.deepEqual(await run('len'), { __monty_type__: 'BuiltinFunction', value: 'len' })
+})
+
+test('builtin function input', async () => {
+  // the marker carries only the name, and resolves back to the builtin itself
+  t.is(await run('x is len', { inputs: { x: { __monty_type__: 'BuiltinFunction', value: 'len' } } }), true)
+})
+
+test('builtin function round-trip', async () => {
+  t.deepEqual(await run('x', { inputs: { x: await run('sorted') } }), {
+    __monty_type__: 'BuiltinFunction',
+    value: 'sorted',
+  })
+})
+
+test('unknown builtin function input', async () => {
+  const error = await t.throwsAsync(
+    () => run('x', { inputs: { x: { __monty_type__: 'BuiltinFunction', value: 'nope' } } }),
+    { instanceOf: Error },
+  )
+  // both transports reject the name; the wasm one surfaces it through the component boundary
+  t.is(
+    error.message,
+    kind === 'browser'
+      ? 'RuntimeError: protocol violation: malformed component request: unknown builtin function "nope"'
+      : 'unknown builtin function "nope"',
+  )
 })
 
 // =============================================================================

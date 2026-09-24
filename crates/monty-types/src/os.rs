@@ -12,12 +12,13 @@
 use std::{borrow::Cow, fmt, ops::Deref, time::Duration};
 
 use crate::{
-    args::{PushValue, ToArgs},
+    args::ToArgs,
     exceptions::{ExcType, MontyException},
     file_mode::FileMode,
     format::StringRepr,
     graph::{MontyGraph, MontyNode, NodeId},
     object::{CallArgs, MontyObject, MontyTimeZone},
+    unstable::{self, PushValue},
     virtual_path::normalize_virtual_path,
 };
 // =============================================================================
@@ -119,13 +120,20 @@ pub enum OsFunctionCall {
     #[strum(serialize = "os.urandom")]
     Urandom(UrandomArgs),
     /// Read the host clock as `time.time()` does: seconds since the Unix
-    /// epoch, answered with a [`MontyNode::Float`].
+    /// epoch, answered with [`MontyObject::float`]. Every clock-reading `time`
+    /// function arrives here; [`TimeCaller`], the call's only argument, says which.
     #[strum(serialize = "time.time")]
-    Time,
-    /// `time.sleep(seconds)` — the host waits, then answers with any value
-    /// (`time.sleep` discards it and evaluates to `None`).
+    Time(TimeCaller),
+    /// `time.sleep(seconds)` under `SleepMode::CallHost` — the host's `os`
+    /// handler waits, then answers with any value (`time.sleep` discards it
+    /// and evaluates to `None`).
     #[strum(serialize = "time.sleep")]
     Sleep(Duration),
+    /// `time.sleep(seconds)` under `SleepMode::System`, capped at its maximum.
+    /// The host charges `max_total_sleep`, waits and returns `None` without its
+    /// `os` handler. The distinct name identifies the policy for the host.
+    #[strum(serialize = "system.sleep")]
+    SystemSleep(Duration),
     /// `asyncio.sleep(delay)` — like [`Sleep`](Self::Sleep), except the
     /// sandbox turns the answer into an awaitable, so a host that runs an
     /// event loop should answer with a future (`ExtFunctionResult::Future`)
@@ -134,18 +142,20 @@ pub enum OsFunctionCall {
     /// `result` argument itself and produces it from the `await`.
     #[strum(serialize = "asyncio.sleep")]
     AsyncSleep(Duration),
+    /// `asyncio.sleep(delay)` under `SleepMode::System`: the awaitable form of
+    /// [`SystemSleep`](Self::SystemSleep), which a host running an event loop
+    /// answers with a future it resolves once the delay elapses.
+    #[strum(serialize = "system.async_sleep")]
+    AsyncSystemSleep(Duration),
 }
 
 impl OsFunctionCall {
-    /// Whether a host may answer the call with this [`name`](Self::name) with
-    /// `ExtFunctionResult::Future` and resolve it later, letting the sandbox's
-    /// other tasks run meanwhile.
-    ///
-    /// Only `asyncio.sleep` qualifies: every other call is a value the
-    /// calling code is waiting on, so the host must answer it in place.
+    /// Whether this [`name`](Self::name) accepts `ExtFunctionResult::Future`,
+    /// letting other tasks run until the host resolves it. Only `asyncio.sleep`
+    /// qualifies, in either sleep mode; all other calls require an immediate answer.
     #[must_use]
     pub fn accepts_future(name: &str) -> bool {
-        name == "asyncio.sleep"
+        matches!(name, "asyncio.sleep" | "system.async_sleep")
     }
 
     /// Stable string name for this OS function — surfaces in
@@ -193,9 +203,12 @@ impl OsFunctionCall {
             Self::Getenv(a) => a.to_args(),
             Self::Urandom(a) => a.to_args(),
             // Unit & single-value non-FS variants.
-            Self::GetEnviron | Self::DateToday | Self::Time => CallArgs::new(),
+            Self::GetEnviron | Self::DateToday => CallArgs::new(),
+            Self::Time(caller) => single_arg(caller),
             Self::DateTimeNow(tz) => single_arg(tz.map_or(MontyNode::None, MontyNode::TimeZone)),
-            Self::Sleep(delay) | Self::AsyncSleep(delay) => single_arg(MontyNode::Float(delay.as_secs_f64())),
+            Self::Sleep(delay) | Self::SystemSleep(delay) | Self::AsyncSleep(delay) | Self::AsyncSystemSleep(delay) => {
+                single_arg(MontyNode::Float(delay.as_secs_f64()))
+            }
         }
     }
 
@@ -299,9 +312,11 @@ impl OsFunctionCall {
             | Self::DateToday
             | Self::DateTimeNow(_)
             | Self::Urandom(_)
-            | Self::Time
+            | Self::Time(_)
             | Self::Sleep(_)
-            | Self::AsyncSleep(_) => None,
+            | Self::SystemSleep(_)
+            | Self::AsyncSleep(_)
+            | Self::AsyncSystemSleep(_) => None,
         }
     }
 
@@ -344,9 +359,11 @@ impl OsFunctionCall {
             | Self::DateToday
             | Self::DateTimeNow(_)
             | Self::Urandom(_)
-            | Self::Time
+            | Self::Time(_)
             | Self::Sleep(_)
-            | Self::AsyncSleep(_) => (None, None),
+            | Self::SystemSleep(_)
+            | Self::AsyncSleep(_)
+            | Self::AsyncSystemSleep(_) => (None, None),
         };
         primary.into_iter().chain(dst)
     }
@@ -379,10 +396,79 @@ impl fmt::Display for OsFunctionCall {
         f.write_str(self.name())
     }
 }
+
+/// Which `time` function is reading the clock in an [`OsFunctionCall::Time`].
+///
+/// All share the `time.time` call name since all want the current instant as epoch
+/// seconds; the caller, passed as the call's single positional argument spelled as
+/// the Python function (`"time.perf_counter"`), lets a host that cares answer them
+/// differently (say a virtual clock advancing only for `time.monotonic`).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::EnumIter,
+    strum::EnumString,
+    strum::IntoStaticStr,
+)]
+pub enum TimeCaller {
+    /// `time.time()`.
+    #[strum(serialize = "time.time")]
+    Time,
+    /// `time.time_ns()`.
+    #[strum(serialize = "time.time_ns")]
+    TimeNs,
+    /// `time.monotonic()`.
+    #[strum(serialize = "time.monotonic")]
+    Monotonic,
+    /// `time.monotonic_ns()`.
+    #[strum(serialize = "time.monotonic_ns")]
+    MonotonicNs,
+    /// `time.perf_counter()`.
+    #[strum(serialize = "time.perf_counter")]
+    PerfCounter,
+    /// `time.perf_counter_ns()`.
+    #[strum(serialize = "time.perf_counter_ns")]
+    PerfCounterNs,
+    /// `time.gmtime()` with no argument.
+    #[strum(serialize = "time.gmtime")]
+    Gmtime,
+    /// `time.localtime()` with no argument.
+    #[strum(serialize = "time.localtime")]
+    Localtime,
+    /// `time.asctime()` with no argument.
+    #[strum(serialize = "time.asctime")]
+    Asctime,
+    /// `time.ctime()` with no argument.
+    #[strum(serialize = "time.ctime")]
+    Ctime,
+    /// `time.strftime(format)` with no time argument.
+    #[strum(serialize = "time.strftime")]
+    Strftime,
+}
+
+impl TimeCaller {
+    /// The Python function's name, as the host receives it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        self.into()
+    }
+}
+
+impl fmt::Display for TimeCaller {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A call with one positional argument.
 fn single_arg(value: impl PushValue) -> CallArgs {
     let mut call = CallArgs::new();
-    call.push_arg(value);
+    unstable::push_arg(&mut call, value);
     call
 }
 
@@ -406,12 +492,11 @@ pub struct PathStringDataArgs {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct PathBytesDataArgs {
     pub path: MontyPath,
+    #[serde(with = "serde_bytes")]
     pub data: Vec<u8>,
 }
 
-/// `open(path, mode)` shape. The mode is parsed into [`FileMode`] before
-/// construction so the fs/ backend doesn't re-parse; [`ToArgs`](crate::args::ToArgs) re-serialises
-/// it back to a [`MontyNode::String`] for the host.
+/// Arguments to `open()`: a virtual path and a parsed file mode.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct OpenCallArgs {
     pub path: MontyPath,
@@ -513,8 +598,7 @@ pub fn sleep_duration_saturating(seconds: f64) -> Result<Duration, SleepError> {
 /// Owned virtual (sandbox) path carried by OS-call args.
 ///
 /// Preserves the supplied string, including invalid components, for host validation.
-/// Derefs to `&str` for routing; [`PushValue`](crate::args::PushValue)
-/// projects it back to a [`MontyNode::Path`] at the host boundary.
+/// Derefs to `&str` for routing.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MontyPath(String);
 

@@ -3,7 +3,10 @@
 
 use std::collections::HashMap;
 
-use monty_types::{ClassTypeNode, MontyException, MontyGraph, MontyNode, MontyObject, NodeId};
+use monty_types::{
+    BuiltinsFunctions, MontyException, MontyObject,
+    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+};
 use pyo3::{
     prelude::*,
     types::{PyBool, PyBytes, PyDate, PyDelta, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple},
@@ -12,17 +15,19 @@ use pyo3::{
 use super::{
     class_instance::{ClassHeader, InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy},
     convert::{
-        PyMontyFileHandle, builtin_function_to_py, get_namedtuple, get_pure_posix_path, import_builtins,
-        monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py, type_object_to_py,
+        PyMontyFileHandle, get_namedtuple, get_pure_posix_path, host_type_object, import_builtins,
+        monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py,
     },
     exceptions::exc_monty_to_py,
+    std_type_proxy::{PyMontyStdTypeProxy, StdTypeRef},
 };
 
 /// Converts one value to a native Python object. A class instance found in
 /// `store` resolves to the ORIGINAL wrapped object (identity preserved);
 /// otherwise it becomes a read-only `MontyClassProxy`.
 pub fn monty_to_py(py: Python<'_>, value: &MontyObject, store: &InstanceStore) -> PyResult<Py<PyAny>> {
-    Ok(DecodedArena::new(py, &value.graph, store)?.get(py, value.root))
+    let (graph, root) = unstable::graph_parts(value);
+    Ok(DecodedArena::new(py, graph, store)?.get(py, root))
 }
 
 /// One message's arena as Python objects.
@@ -126,8 +131,15 @@ impl Decoder<'_, '_> {
                 .map(Bound::into_any)
                 .map(Bound::unbind),
             MontyNode::TimeZone(timezone) => monty_timezone_to_py(py, timezone),
-            MontyNode::Type(t) => type_object_to_py(py, t),
-            MontyNode::BuiltinFunction(f) => builtin_function_to_py(py, &f.to_string()),
+            // a data type resolves to the host class; anything else is a proxy
+            MontyNode::Type(t) => match host_type_object(py, *t)? {
+                Some(ty) => Ok(ty),
+                None => std_type_proxy(py, StdTypeRef::Type(*t)),
+            },
+            // `type` is the one builtin function on the host-class allowlist; every
+            // other one crosses as a proxy carrying its name, never the host's callable
+            MontyNode::BuiltinFunction(BuiltinsFunctions::Type) => import_builtins(py)?.getattr(py, "type"),
+            MontyNode::BuiltinFunction(f) => std_type_proxy(py, StdTypeRef::Function(*f)),
             // a registered host class resolves to the original class object,
             // anything else to a read-only `MontyClassTypeProxy`
             MontyNode::ClassType(class) => {
@@ -225,6 +237,11 @@ impl Decoder<'_, '_> {
         self.namedtuple_types.insert(key, nt_type.clone_ref(py));
         Ok(nt_type)
     }
+}
+
+/// A [`PyMontyStdTypeProxy`] standing for `inner`, as a Python object.
+fn std_type_proxy(py: Python<'_>, inner: StdTypeRef) -> PyResult<Py<PyAny>> {
+    Ok(Py::new(py, PyMontyStdTypeProxy { inner })?.into_any())
 }
 
 /// The class as a proxy records it: the node's header without its attrs,

@@ -26,7 +26,9 @@ export interface WasmPoolOptions {
   /** Hard per-turn deadline in seconds; on expiry the worker is terminated. */
   requestTimeout?: number
   /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
-  durationLimitGrace?: number | null
+  feedDurationLimitGrace?: number | null
+  /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
+  turnDurationLimitGrace?: number | null
   /** Recycle a worker after serving this many sessions. */
   maxCheckoutsPerWorker?: number
   /** Overrides the worker entry URL used by the browser backend. */
@@ -121,7 +123,15 @@ export {
 export type { PooledWorker, WorkerFactory, WorkerPoolOptions } from './pool.js'
 export { WorkerTransport } from './transport.js'
 export type { ResourceLimits, WorkerSessionConfig } from './transport.js'
-export type { AssertMessageAnnotations, TypeCheckFormat } from '../options.js'
+export type {
+  AssertMessageAnnotations,
+  OsPolicy,
+  DateTimeSource,
+  RandomStart,
+  SleepMode,
+  TimeZone,
+  TypeCheckFormat,
+} from '../options.js'
 export { WasmHost, inProcessDispatcher } from './host.js'
 export type { ComponentModules, Dispatcher } from './host.js'
 export { WorkerChannel } from './channel.js'

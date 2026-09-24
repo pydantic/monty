@@ -1,18 +1,15 @@
 //! The `random.Random` generator: CPython's MT19937 core plus the seeding and
 //! state that `random.py` adds to it.
 //!
-//! [`Mt19937`] reproduces `Modules/_randommodule.c` bit for bit (`init_by_array`
-//! seeding, `random()`'s 53-bit float, `getrandbits()`'s word packing), so a
-//! seeded Monty generator yields exactly CPython's sequence. [`Random`] adds
-//! `gauss()`'s cached second value and an *unseeded* state: an unseeded
-//! generator requests entropy from the host through `os.urandom` on its first
-//! draw (see `modules::random`), so seeded code never suspends. The module-level
-//! functions use the generator stored on the VM ([`RandomTarget::Global`]);
-//! `random.Random(...)` instances are stored on the heap.
+//! [`Mt19937`] matches CPython's `init_by_array` seeding, 53-bit `random()` and
+//! `getrandbits()` word packing. [`Random`] adds the `gauss()` cache and an
+//! unseeded state initialized from [`RandomStart`] on the first draw.
+//! Module functions use the VM's generator ([`RandomTarget::Global`]);
+//! `random.Random(...)` instances use the heap.
 
 use std::{fmt::Write, mem};
 
-use monty_types::ResourceTracker;
+use monty_types::{RandomSeed, RandomStart, ResourceTracker};
 use num_bigint::{BigInt, BigUint};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
@@ -21,7 +18,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes, hash_python_str, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
@@ -41,21 +38,61 @@ const MATRIX_A: u32 = 0x9908_b0df;
 const UPPER_MASK: u32 = 0x8000_0000;
 const LOWER_MASK: u32 = 0x7fff_ffff;
 
-/// Bytes of entropy an unseeded generator asks the host for: one full state
-/// vector, exactly what CPython's `random_seed_urandom` reads.
+/// Entropy bytes per state vector, matching CPython's `random_seed_urandom`.
 pub(crate) const SEED_BYTES: usize = N * 4;
 
-/// A `random.Random` generator, seeded or not yet.
-///
-/// `None` in `rng` is the *unseeded* state: `random.Random()` and the
-/// module-level generator start here and stay here until a seed is given or
-/// the first draw fetches entropy from the host. Serialized as VM/heap state,
-/// so a seeded generator survives a dump, a REPL feed boundary, and a mid-call
-/// suspension.
+/// Module generator and initialization stream, preserved across REPL feeds and dumps.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(crate) struct SessionRandom {
+    /// The generator behind `random.random()` and friends.
+    pub(crate) module: Random,
+    /// Lazily derived from [`RandomStart::Seed`] for unseeded instances and `seed()`.
+    /// Produces deterministic states distinct from the module generator's.
+    derived: Option<Mt19937>,
+}
+
+impl SessionRandom {
+    /// Initializes the module generator as `random.seed(s)` under `Seed(s)`;
+    /// other targets use [`Self::fresh_state`]. `None` requests host entropy.
+    /// Errors only if OS entropy fails.
+    pub(crate) fn first_state(&mut self, target: RandomTarget, start: &RandomStart) -> RunResult<Option<Mt19937>> {
+        match (start, target) {
+            (RandomStart::Seed(seed), RandomTarget::Global) => Ok(Some(Mt19937::from_key(&seed_key_from_seed(seed)))),
+            _ => self.fresh_state(start),
+        }
+    }
+
+    /// Initializes `seed()` / `seed(None)` or an unseeded instance from OS entropy
+    /// or the next state derived from `Seed(s)`. `None` requests host entropy.
+    /// Errors only if OS entropy fails.
+    pub(crate) fn fresh_state(&mut self, start: &RandomStart) -> RunResult<Option<Mt19937>> {
+        match start {
+            RandomStart::System => Mt19937::from_os_entropy().map(Some),
+            RandomStart::CallHost => Ok(None),
+            RandomStart::Seed(seed) => {
+                let stream = self.derived.get_or_insert_with(|| {
+                    // One extra word keeps the stream distinct from `seed(s)`'s own state.
+                    let mut key = seed_key_from_seed(seed);
+                    key.push(DERIVED_STREAM_TAG);
+                    Mt19937::from_key(&key)
+                });
+                let words: Vec<u32> = (0..N).map(|_| stream.next_u32()).collect();
+                Ok(Some(Mt19937::from_key(&words)))
+            }
+        }
+    }
+}
+
+/// Appended to a session seed's key for the derived stream (`SessionRandom::derived`).
+const DERIVED_STREAM_TAG: u32 = 0x6d6f_6e74; // "mont"
+
+/// A `random.Random` generator, initially unseeded until an explicit seed or
+/// first draw initializes it from [`RandomStart`]. Serialized with VM/heap state
+/// to preserve draws across dumps, REPL feeds and suspensions.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct Random {
-    /// `None` until explicitly seeded, restored with `setstate()`, or initialized
-    /// from host entropy on the first draw. Also temporarily `None` while
+    /// `None` until explicitly seeded, restored with `setstate()`, or
+    /// initialized on the first draw. Also temporarily `None` while
     /// [`RandomTarget::with_generator`] holds the state outside its owner.
     rng: Option<Mt19937>,
     /// `gauss()`'s spare deviate, cleared by every reseed as CPython does.
@@ -71,7 +108,6 @@ impl Random {
         }
     }
 
-    /// Whether a draw can proceed without asking the host for entropy.
     pub(crate) fn is_seeded(&self) -> bool {
         self.rng.is_some()
     }
@@ -141,10 +177,9 @@ pub(crate) enum RandomTarget {
 }
 
 impl RandomTarget {
-    /// Whether the target can draw without host entropy.
     pub(crate) fn is_seeded(self, vm: &VM<'_>) -> bool {
         match self {
-            Self::Global => vm.random.is_seeded(),
+            Self::Global => vm.random.module.is_seeded(),
             Self::Instance(id) => match vm.heap.get(id) {
                 HeapData::Random(random) => random.is_seeded(),
                 _ => unreachable!("RandomTarget::Instance points at a non-Random heap entry"),
@@ -173,7 +208,7 @@ impl RandomTarget {
     /// Replaces the target's generator with `random`.
     fn restore(self, vm: &mut VM<'_>, random: Random) {
         match self {
-            Self::Global => vm.random = random,
+            Self::Global => vm.random.module = random,
             Self::Instance(id) => match vm.heap.read(id) {
                 HeapReadOutput::Random(mut handle) => *handle.get_mut(vm.heap) = random,
                 _ => unreachable!("RandomTarget::Instance points at a non-Random heap entry"),
@@ -184,7 +219,7 @@ impl RandomTarget {
     /// Lifts the generator out, leaving an unseeded placeholder behind.
     fn take(self, vm: &mut VM<'_>) -> Random {
         match self {
-            Self::Global => mem::take(&mut vm.random),
+            Self::Global => mem::take(&mut vm.random.module),
             Self::Instance(id) => match vm.heap.read(id) {
                 HeapReadOutput::Random(mut handle) => mem::take(handle.get_mut(vm.heap)),
                 _ => unreachable!("RandomTarget::Instance points at a non-Random heap entry"),
@@ -221,6 +256,16 @@ pub(crate) fn seed_key_from_value(value: &Value, version: i64, vm: &VM<'_>) -> R
         _ => return Err(ExcType::random_seed_type()),
     };
     Ok(key)
+}
+
+/// Converts a host seed using `random.seed(seed, version=2)` semantics.
+fn seed_key_from_seed(seed: &RandomSeed) -> Vec<u32> {
+    match seed {
+        RandomSeed::Int(n) => key_from_bigint(n),
+        RandomSeed::Float(f) => key_from_u64(cpython_float_hash(*f)),
+        RandomSeed::Str(s) => key_from_text(&SeedText::Str(s), SEED_VERSION_DEFAULT),
+        RandomSeed::Bytes(b) => key_from_text(&SeedText::Bytes(b), SEED_VERSION_DEFAULT),
+    }
 }
 
 /// A `str` or `bytes` seed, which `random.py` treats alike apart from encoding.
@@ -399,8 +444,19 @@ impl Mt19937 {
         mt
     }
 
-    /// Seeds from host entropy: `SEED_BYTES` bytes read as little-endian words,
-    /// as `random_seed_urandom` does.
+    /// Seeds from OS entropy. Failure ends the run with an uncatchable error
+    /// instead of CPython's predictable time-and-pid fallback.
+    pub(crate) fn from_os_entropy() -> RunResult<Self> {
+        let mut bytes = [0u8; SEED_BYTES];
+        getrandom::fill(&mut bytes).map_err(|err| {
+            RunError::UncatchableExc(
+                SimpleException::new_msg(ExcType::OSError, format!("OS entropy source unavailable: {err}")).into(),
+            )
+        })?;
+        Ok(Self::from_entropy(&bytes))
+    }
+
+    /// Seeds from `SEED_BYTES` bytes of entropy read as little-endian words.
     pub(crate) fn from_entropy(bytes: &[u8]) -> Self {
         let words: Vec<u32> = bytes
             .as_chunks::<4>()

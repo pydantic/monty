@@ -71,7 +71,7 @@ pub enum MontyNode {
     /// Python string.
     String(String),
     /// Python bytes.
-    Bytes(Vec<u8>),
+    Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
     /// Python `datetime.date`.
     Date(MontyDate),
     /// Python `datetime.datetime`.
@@ -397,9 +397,8 @@ impl MontyGraph {
         Ok(Self { nodes })
     }
 
-    /// Checks the arena invariants: every child id is lower than its holder's
-    /// index, a class-instance node points at a class-type node, and a `Type`
-    /// leaf is never `MontyType::Instance`.
+    /// Checks that child ids precede their holders and class-instance nodes
+    /// reference class-type nodes.
     pub fn validate(nodes: &[MontyNode]) -> Result<(), GraphError> {
         nodes
             .iter()

@@ -148,11 +148,8 @@ impl StandardLib {
 
 /// All stdlib module function (but not builtins).
 ///
-/// Serde encodes these by declaration index and every dump reaches them through
-/// `Value::ModuleFunction`, so ALWAYS APPEND new variants, ahead of the gated
-/// block — inserting one misdecodes old dumps into the wrong function instead
-/// of failing. The leading alphabetical run is an accident, not a rule;
-/// reordering needs a `DUMP_VERSION` bump.
+/// Every dump reaches these through `Value::ModuleFunction`, encoded by variant
+/// name, so renaming a variant needs `#[serde(alias)]` (see `DUMP_VERSION`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ModuleFunctions {
     Asyncio(asyncio::AsyncioFunctions),

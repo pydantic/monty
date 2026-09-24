@@ -168,14 +168,97 @@ interface worker {
         value: u32,
     }
 
-    /// Resource limits. The host enforces `max-suspensions`; the sandbox
-    /// enforces the others.
+    /// The host enforces suspension and total sleep limits; the sandbox enforces the others.
     record resource-limits {
-        max-duration-micros: option<u64>,
+        max-feed-duration-micros: option<u64>,
+        max-turn-duration-micros: option<u64>,
         max-memory-bytes: option<u64>,
         gc-interval: option<u64>,
         max-recursion-depth: option<u64>,
         max-suspensions: option<u64>,
+        /// Maximum cumulative system sleep duration, enforced by the host.
+        max-total-sleep-micros: option<u64>,
+    }
+
+    /// A frozen clock reading (see `os-policy`).
+    record fixed-datetime {
+        /// Seconds since the Unix epoch, UTC.
+        unix-seconds: s64,
+        /// 0..=999999.
+        microsecond: u32,
+    }
+
+    /// A fixed UTC offset with an optional name.
+    record fixed-time-zone {
+        offset-seconds: s32,
+        name: option<string>,
+    }
+
+    /// The sandbox's local zone; UTC unless set.
+    variant time-zone {
+        /// UTC, the default.
+        utc,
+        /// An IANA zone name (`Europe/London`), resolved from the bundled tz database.
+        named(string),
+        fixed(fixed-time-zone),
+    }
+
+    /// What `date.today()`, `datetime.now()` and `time.time()` read.
+    variant datetime-source {
+        /// The worker's own clock.
+        system,
+        /// Delegate clock calls to the host.
+        call-host,
+        /// One frozen instant.
+        fixed(fixed-datetime),
+    }
+
+    /// What `time.sleep()` and `asyncio.sleep()` do.
+    variant sleep-mode {
+        /// The host waits, capped at this duration in microseconds (default 10s).
+        system(option<u64>),
+        call-host,
+        /// Return at once without waiting.
+        zero,
+    }
+
+    /// A `random.seed()` argument: the types CPython accepts.
+    variant random-seed {
+        /// Two's-complement little-endian bytes, any size.
+        int(list<u8>),
+        /// Must be finite.
+        float(f64),
+        str(string),
+        bytes(list<u8>),
+    }
+
+    /// Where an unseeded `random` generator gets its first state.
+    variant random-start {
+        /// The worker's own OS entropy.
+        system,
+        /// Suspend the first draw with an `os.urandom` call for the host.
+        call-host,
+        /// As `random.seed(seed)` would.
+        seed(random-seed),
+    }
+
+    /// What `time.process_time()` and `time.thread_time()` report.
+    variant process-time {
+        /// Always zero, so elapsed execution time is not observable in the sandbox.
+        zero,
+        /// The session's accumulated execution time.
+        elapsed,
+    }
+
+    /// The session's clock, zone, sleep, process-clock and randomness policies;
+    /// absent fields use the system clock, UTC, host sleeps capped at 10s, OS
+    /// entropy, and a zero process clock.
+    record os-policy {
+        datetime: option<datetime-source>,
+        timezone: option<time-zone>,
+        sleep: option<sleep-mode>,
+        random-start: option<random-start>,
+        process-time: option<process-time>,
     }
 
     /// Available renderings for type-check diagnostics.
@@ -203,6 +286,8 @@ interface worker {
         /// How long the child may hold buffered print output. Absent takes its
         /// default; zero restores line buffering, one event per completed line.
         print-flush-interval-ms: option<u32>,
+        /// The session's `os-policy`; absent uses every default.
+        os-policy: option<os-policy>,
     }
 
     /// One Python snippet and its host inputs.
@@ -296,6 +381,17 @@ interface worker {
         hide-frame-name: bool,
     }
 
+    /// Where the expression that suspended execution is in the source: UTF-8
+    /// byte offsets, exclusive end. `filename` names the source as a traceback
+    /// frame does: `<python-input-N>` for the session's N-th feed, or
+    /// `<string>` inside an `eval()` / `exec()` string. An empty filename means
+    /// the child reported no position.
+    record source-range {
+        filename: string,
+        start: u32,
+        end: u32,
+    }
+
     /// A Python exception raised by the sandbox.
     record raised-exception {
         exc-type: string,
@@ -325,6 +421,8 @@ interface worker {
         object-id: option<string>,
         /// A coroutine may settle before replying with resume-futures.
         allow-eager-await: bool,
+        /// Where the call expression is in the source.
+        position: source-range,
     }
 
     /// A suspended name or lazy-attribute lookup.
@@ -334,6 +432,15 @@ interface worker {
         /// instance, or a class type): its uuid string
         /// (`NameLookup.object_id`).
         object-id: option<string>,
+        /// Where the name (or attribute access) is in the source.
+        position: source-range,
+    }
+
+    /// Every sandbox task is blocked on external futures.
+    record resolve-futures-event {
+        pending-call-ids: list<u32>,
+        /// Where the main task's blocked `await` is in the source.
+        position: source-range,
     }
 
     /// A suspended OS call projected into the public callback shape.
@@ -347,6 +454,11 @@ interface worker {
         /// As on `function-call-event`: the host may await its wait and answer
         /// with `resume-futures`. Only ever set on `asyncio.sleep`.
         allow-eager-await: bool,
+        /// System sleep duration for the host to await directly, in seconds.
+        /// The child caps it; the host must cap it again and charge `max-total-sleep` before waiting.
+        system-sleep-secs: option<f64>,
+        /// Where the call expression is in the source.
+        position: source-range,
     }
 
     /// A finished feed's value: an index into its arena.
@@ -361,7 +473,7 @@ interface worker {
         function-call(function-call-event),
         os-call(os-call-event),
         name-lookup(name-lookup-event),
-        resolve-futures(list<u32>),
+        resolve-futures(resolve-futures-event),
         complete(complete-event),
         error(raised-exception),
         typing-error(string),
@@ -380,6 +492,8 @@ interface worker {
         /// The current session's suspension limit. A host uses this after
         /// `load`, whose dump replaces the configured session limits.
         max-suspensions: option<u64>,
+        /// Session sleep limit in microseconds, reported for host enforcement after `load`.
+        max-total-sleep-micros: option<u64>,
     }
 
     /// Handles one semantic request using the retained child.

@@ -1,7 +1,7 @@
 # monty-fs
 
 Host-side filesystem mounts for [Monty](https://github.com/pydantic/monty), the
-sandboxed Python interpreter.
+Python sandbox.
 
 Provides `MountTable`, which maps virtual POSIX paths inside the sandbox
 (e.g. `/mnt/data`) to real host directories with configurable access modes

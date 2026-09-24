@@ -31,11 +31,16 @@ use monty_pool::{
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
+#[cfg(unix)]
+use monty_types::SourceRange;
 use monty_types::{
-    CallArgs, ExcType, MontyException, MontyNode, MontyObject, NameLookupResult, PrintStream, ResourceLimits,
-    TypeCheckingConfig, TypeCheckingFormat,
+    CallArgs, DateTimeSource, ExcType, MontyException, MontyObject, NameLookupResult, OsPolicy, PrintStream,
+    RandomSeed, RandomStart, ResourceLimits, SleepMode, TypeCheckingConfig, TypeCheckingFormat,
+    unstable::{self, MontyNode},
 };
 use tokio::time::sleep;
+#[cfg(unix)]
+use tokio::time::timeout;
 
 /// Locates (building once if needed) the `monty` CLI binary for tests.
 fn monty_binary() -> PathBuf {
@@ -322,7 +327,7 @@ async fn cyclic_return_value_decodes_and_keeps_the_worker_alive() {
     };
     assert_eq!(pairs.len(), 1);
     assert_eq!(pairs[0].0, MontyObject::string("self".to_owned()));
-    assert!(matches!(pairs[0].1.node(), MontyNode::Cycle(placeholder) if placeholder == "{...}"));
+    assert!(matches!(unstable::node(pairs[0].1), MontyNode::Cycle(placeholder) if placeholder == "{...}"));
     // the session must still be usable on the same worker
     let event = session
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
@@ -910,25 +915,6 @@ async fn restored_os_call_is_serviced_by_restore_mounts() {
     let event = feed_with_mounts(&mut restored, Ok(event)).await.unwrap();
     assert_eq!(expect_complete(event), MontyObject::string("from mount".to_owned()));
     restored.finish().await.unwrap();
-}
-
-/// A `max_duration` near `Duration::MAX` must not overflow the parent's
-/// backstop deadline arithmetic (limit plus grace).
-#[tokio::test]
-async fn huge_max_duration_does_not_overflow_the_backstop() {
-    let pool = Pool::new(config()).await.unwrap();
-    let mut session = pool
-        .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::MAX)),
-            ..ReplConfig::default()
-        })
-        .await
-        .unwrap();
-    let event = session
-        .feed("1 + 1", vec![], vec![], false, &mut no_print)
-        .await
-        .unwrap();
-    assert_eq!(expect_complete(event), MontyObject::int(2));
 }
 
 /// An over-limit frame must fail as a clean, session-preserving error rather
@@ -1557,7 +1543,7 @@ async fn child_resource_limits_do_not_kill_the_worker() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .await
@@ -1640,7 +1626,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
     replies.extend(framed(&child_event(pb::child_event::Kind::Shutdown(
         pb::ShutdownDump {
-            dump: Some(b"a dump the child minted itself".to_vec()),
+            dump: Some(b"a dump the child minted itself".to_vec().into()),
         },
     ))));
     let replies_path = dir.path().join("replies.bin");
@@ -1661,7 +1647,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1705,7 +1691,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1753,7 +1739,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
@@ -1861,14 +1847,14 @@ async fn special_files_in_mounts_are_rejected_without_blocking() {
 
 #[tokio::test]
 async fn suspension_time_does_not_consume_the_duration_budget() {
-    // `max_duration` measures cumulative sandbox execution time; the worker
-    // reports it on every turn and its clock is paused while suspended. The
-    // host staying away for twice the entire budget must therefore not time
-    // the session out.
+    // `max_feed_duration` measures sandbox execution time; the worker reports
+    // it on every turn and its clock is paused while suspended. The host
+    // staying away for twice the entire budget must therefore not time the
+    // feed out.
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(300))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(300))),
             ..ReplConfig::default()
         })
         .await
@@ -1889,6 +1875,128 @@ async fn suspension_time_does_not_consume_the_duration_budget() {
         .await
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::string("body!".to_owned()));
+    session.finish().await.unwrap();
+}
+
+/// Clock and entropy requests cost no turns; system sleeps reach the caller capped.
+/// Fixed clocks and seeds survive `Configure` unchanged.
+#[tokio::test]
+async fn os_policy_are_answered_in_the_worker() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            os_policy: OsPolicy {
+                sleep: SleepMode::System(Duration::from_millis(10)),
+                ..OsPolicy::default()
+            },
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let code = "import asyncio, random, time\nfrom datetime import date\nt = time.time()\ntime.sleep(3600)\n\
+                (date.today().year >= 2026, time.time() >= t + 0.01, \
+                asyncio.run(asyncio.sleep(3600, 'woken')), 0 <= random.random() < 1)";
+    let mut event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+    let mut slept = vec![];
+    while let TurnEvent::OsCall {
+        function_name,
+        system_sleep,
+        ..
+    } = &event
+    {
+        let delay = system_sleep.expect("only the sleeps reach the caller");
+        slept.push((function_name.clone(), delay));
+        sleep(delay).await;
+        event = session
+            .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        slept,
+        vec![
+            ("system.sleep".to_owned(), Duration::from_millis(10)),
+            ("system.async_sleep".to_owned(), Duration::from_millis(10)),
+        ]
+    );
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::tuple([
+            MontyObject::bool(true),
+            MontyObject::bool(true),
+            MontyObject::string("woken"),
+            MontyObject::bool(true),
+        ])
+    );
+    session.finish().await.unwrap();
+
+    let mut session = pool
+        .checkout(&ReplConfig {
+            os_policy: OsPolicy {
+                datetime: DateTimeSource::Fixed {
+                    unix_seconds: 1_700_000_000,
+                    microsecond: 0,
+                },
+                sleep: SleepMode::Zero,
+                random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
+                ..OsPolicy::default()
+            },
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    // CPython: random.seed(42); random.random()
+    let code = "import random, time\ntime.sleep(3600)\n(time.time(), random.random())";
+    let event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::tuple([
+            MontyObject::float(1_700_000_000.0),
+            MontyObject::float(0.639_426_798_457_883_7),
+        ])
+    );
+    session.finish().await.unwrap();
+}
+
+#[tokio::test]
+async fn call_host_delivers_clock_and_sleeps_as_os_calls() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            os_policy: OsPolicy {
+                datetime: DateTimeSource::CallHost,
+                sleep: SleepMode::CallHost,
+                ..OsPolicy::default()
+            },
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let code = "import time
+time.sleep(1.5)
+time.time()";
+    let event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+    let TurnEvent::OsCall {
+        function_name, args, ..
+    } = event
+    else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(function_name, "time.sleep");
+    assert_eq!(args, CallArgs::from(vec![MontyObject::float(1.5)]));
+    let event = session
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+        .await
+        .unwrap();
+    let TurnEvent::OsCall { function_name, .. } = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(function_name, "time.time");
+    let event = session
+        .resume(ResumeValue::Return(MontyObject::float(7.5)), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::float(7.5));
     session.finish().await.unwrap();
 }
 
@@ -1978,13 +2086,13 @@ async fn restored_session_readopts_its_suspension_limit() {
 
 #[tokio::test]
 async fn loaded_session_keeps_its_duration_budget() {
-    // The `max_duration` budget and consumed execution time travel inside the
-    // dump — a session restored via `restore` keeps the original limits even
-    // though the parent never saw the original `ReplConfig`.
+    // The `max_feed_duration` budget travels inside the dump — a session
+    // restored via `restore` keeps the original limits even though the parent
+    // never saw the original `ReplConfig`.
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .await
@@ -2434,4 +2542,301 @@ async fn worker_environment_is_empty() {
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::int(2));
     session.finish().await.unwrap();
+}
+
+/// The per-feed budget restarts at each feed, so a session survives any number
+/// of short feeds and the worker is never killed — the sandbox raises
+/// `TimeoutError` well inside `feed_duration_limit_grace`.
+#[tokio::test]
+async fn max_feed_duration_bounds_each_feed_without_killing_the_worker() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        let event = session
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert_eq!(expect_complete(event), MontyObject::int(2));
+    }
+    let err = session
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.exc_type().to_string(), "TimeoutError");
+    // The session survived, so the budget really did restart.
+    let event = session
+        .feed("2 + 2", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::int(4));
+    session.finish().await.unwrap();
+    assert_eq!(pool.idle_workers(), 1);
+}
+
+/// The per-turn budget is enforced in the sandbox too, and likewise leaves the
+/// session usable.
+#[tokio::test]
+async fn max_turn_duration_bounds_a_runaway_turn() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_turn_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let err = session
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.exc_type().to_string(), "TimeoutError");
+    session.finish().await.unwrap();
+    assert_eq!(pool.idle_workers(), 1);
+}
+
+/// Budgets near `Duration::MAX` must not overflow the parent's backstop
+/// arithmetic (remaining budget plus grace), in either scope.
+#[tokio::test]
+async fn huge_feed_and_turn_budgets_do_not_overflow_the_backstop() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(
+                ResourceLimits::default()
+                    .max_feed_duration(Duration::MAX)
+                    .max_turn_duration(Duration::MAX),
+            ),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::int(2));
+}
+
+/// A worker that reports less feed time than it already reported cannot rewind
+/// the parent's feed backstop.
+///
+/// The stand-in spends the whole 60s budget on its first suspension, then
+/// claims zero on the second and goes quiet. The ratchet keeps the spent
+/// figure, so the next turn is armed with the grace alone — without it the
+/// parent would hand a hostile worker the budget back, every turn, for free.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
+    let dir = tempfile::tempdir().unwrap();
+    let suspension = |feed_execution_micros| pb::ChildEvent {
+        feed_execution_micros,
+        ..child_event(pb::child_event::Kind::NameLookup(pb::NameLookup {
+            name: "x".to_owned(),
+            object_id: None,
+            position: Some(position()),
+        }))
+    };
+    // `Ok` answers Configure, then the honest suspension and the rewound one.
+    // Nothing answers the third request: that is the turn the backstop must end.
+    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    replies.extend(framed(&suspension(60_000_000)));
+    replies.extend(framed(&suspension(0)));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 30\n", replies_path.display()),
+    );
+
+    let grace = Duration::from_millis(100);
+    let mut config = PoolConfig::subprocess(&fake);
+    config.feed_duration_limit_grace = Some(grace);
+    // The feed backstop must be what fires, not a blanket per-turn deadline.
+    config.request_timeout = None;
+    let pool = Pool::new(config).await.unwrap();
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_secs(60))),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("the stand-in answers Configure with Ok");
+
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "x".to_owned(),
+            inputs: vec![].into(),
+            values: None,
+            skip_type_check: false,
+            cwd: "/".to_owned(),
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let resume = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+            kind: Some(pb::resume_name_lookup::Kind::Undefined(pb::Unit {})),
+            values: None,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    checkout.turn_raw(&feed, &mut on_event).await.unwrap();
+    checkout.turn_raw(&resume, &mut on_event).await.unwrap();
+
+    // Bounded so a regression fails here rather than waiting out the 60s
+    // budget the rewind would have restored.
+    let outcome = timeout(Duration::from_secs(5), checkout.turn_raw(&resume, &mut on_event)).await;
+    let Ok(Err(PoolError::Timeout { timeout })) = outcome else {
+        panic!("the spent feed budget must still backstop the next turn, got {outcome:?}");
+    };
+    assert_eq!(timeout, grace);
+}
+
+/// A child that predates the position field announces suspensions without
+/// it; the parent reports an unknown range rather than rejecting them.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_suspension_without_a_position_reads_as_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    replies.extend(framed(&child_event(pb::child_event::Kind::NameLookup(
+        pb::NameLookup {
+            name: "x".to_owned(),
+            object_id: None,
+            position: None,
+        },
+    ))));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 30\n", replies_path.display()),
+    );
+
+    let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
+    let mut checkout = pool
+        .checkout(&ReplConfig::default())
+        .await
+        .expect("the stand-in answers Configure with Ok");
+    let event = checkout.feed("x", vec![], vec![], false, &mut no_print).await.unwrap();
+    let TurnEvent::NameLookup { name, position, .. } = event else {
+        panic!("expected a name lookup, got {event:?}");
+    };
+    assert_eq!(name, "x");
+    assert_eq!(position, SourceRange::unknown());
+}
+
+/// A second raw `Feed` restarts the parent's feed clock, as `Checkout::feed`
+/// does — the previous feed's total must not shorten the new feed's backstop.
+///
+/// The deadline is read off the `Timeout` error rather than timed, so the
+/// assertion is exact: `begin_feed` gives the whole budget back, and without
+/// it the second feed would be armed with the grace alone.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_raw_feed_restarts_the_parent_feed_clock() {
+    let dir = tempfile::tempdir().unwrap();
+    let budget = Duration::from_millis(300);
+    let grace = Duration::from_millis(100);
+    // `Ok` answers Configure; the suspension ends the first feed having spent
+    // the whole budget. The second feed goes unanswered.
+    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    replies.extend(framed(&pb::ChildEvent {
+        feed_execution_micros: u64::try_from(budget.as_micros()).unwrap(),
+        ..child_event(pb::child_event::Kind::NameLookup(pb::NameLookup {
+            name: "x".to_owned(),
+            object_id: None,
+            position: Some(position()),
+        }))
+    }));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 30\n", replies_path.display()),
+    );
+
+    let mut config = PoolConfig::subprocess(&fake);
+    config.feed_duration_limit_grace = Some(grace);
+    config.request_timeout = None;
+    let pool = Pool::new(config).await.unwrap();
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_feed_duration(budget)),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("the stand-in answers Configure with Ok");
+
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "x".to_owned(),
+            inputs: vec![].into(),
+            values: None,
+            skip_type_check: false,
+            cwd: "/".to_owned(),
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    checkout.turn_raw(&feed, &mut on_event).await.unwrap();
+    let err = checkout
+        .turn_raw(&feed, &mut on_event)
+        .await
+        .expect_err("the stand-in never answers the second feed");
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected the feed backstop to fire, got {err:?}");
+    };
+    assert_eq!(timeout, budget + grace);
+}
+
+/// With the grace turned off the parent does not backstop that budget at all,
+/// so the sandbox's own `TimeoutError` is what ends the feed — the worker must
+/// still come back alive.
+#[tokio::test]
+async fn a_disabled_grace_leaves_the_sandbox_limit_in_charge() {
+    let mut pool_config = config();
+    pool_config.feed_duration_limit_grace = None;
+    pool_config.turn_duration_limit_grace = None;
+    let pool = Pool::new(pool_config).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let err = session
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.exc_type().to_string(), "TimeoutError");
+    session.finish().await.unwrap();
+    assert_eq!(pool.idle_workers(), 1);
+}
+
+/// The suspension position every hand-built event carries; only the
+/// unix-gated forged-frame tests build events.
+#[cfg(unix)]
+fn position() -> pb::SourceRange {
+    pb::SourceRange {
+        filename: "main.py".to_owned(),
+        start: 0,
+        end: 1,
+    }
 }
