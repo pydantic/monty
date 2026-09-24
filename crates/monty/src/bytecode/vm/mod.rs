@@ -602,23 +602,29 @@ impl CallFrame<'_> {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SerializedFrame {
     /// Which function's code this frame executes (None = module-level).
+    #[serde(rename = "F")]
     function_id: Option<FunctionId>,
 
     /// Instruction pointer within this frame's bytecode.
+    #[serde(rename = "P")]
     ip: usize,
 
     /// Base index into the VM stack for this frame's locals region.
+    #[serde(rename = "S")]
     stack_base: usize,
 
     /// Number of local variable slots (0 for module-level frames).
+    #[serde(rename = "L")]
     locals_count: u16,
 
     /// Base index into the VM-wide `exception_stack` for this frame.
     /// See `CallFrame.exception_stack_base`.
+    #[serde(rename = "E")]
     exception_stack_base: usize,
 
     /// Caller's bytecode offset at the call site (for tracebacks). See
     /// `CallFrame.call_offset`.
+    #[serde(rename = "C")]
     call_offset: Option<u32>,
 
     /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
@@ -627,10 +633,12 @@ pub struct SerializedFrame {
     /// across a suspend (an `__init__` that calls an external/OS function), so it
     /// must round-trip — otherwise the resumed frame would push `__init__`'s
     /// `None` instead of leaving the instance on the stack.
+    #[serde(rename = "I")]
     is_initializer: bool,
 
     /// Frame namespace, with ownership of its dict references (see
     /// `CallFrame.namespace`).
+    #[serde(rename = "N")]
     namespace: Option<Box<FrameNamespace>>,
 }
 

@@ -266,9 +266,10 @@ macro_rules! define_heap_read_support {
         $variant:ident($storage:ident $payload:ty)
     ),* $(,)?) => {
         /// A type-safe read handle for any payload stored in the heap.
+        /// Variants mirror `HeapData`, which carries their docs; its serde attributes
+        /// would not compile here, so the registry's attributes are not repeated.
         pub enum HeapReadOutput<'a> {
             $(
-                $(#[$meta])*
                 $variant(HeapObjectRead<'a, $payload>),
             )*
         }

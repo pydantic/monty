@@ -35,35 +35,48 @@ macro_rules! heap_storage_type {
 
 /// Invokes a consumer macro with every concrete payload stored by the heap.
 ///
-/// This is the single payload registry. Its order is append-only because
-/// `HeapData`'s serde discriminants are snapshot data.
+/// This is the single payload registry. Dumps tag each variant by its serde name, so
+/// renaming a variant needs an alias; hot variants take one letter to keep dumps small.
 macro_rules! heap_payloads {
     ($consumer:ident) => {
         $consumer! {
+            #[serde(rename = "S")]
             Str(inline $crate::types::Str),
+            #[serde(rename = "B")]
             Bytes(inline $crate::types::Bytes),
+            #[serde(rename = "L")]
             List(inline $crate::types::List),
             /// `collections.deque` — a double-ended queue with an optional `maxlen`.
+            #[serde(rename = "Q")]
             Deque(inline $crate::types::Deque),
+            #[serde(rename = "T")]
             Tuple(inline $crate::types::Tuple),
+            #[serde(rename = "N")]
             NamedTuple(boxed $crate::types::NamedTuple),
             /// A `collections.namedtuple` class object (the callable that builds instances).
             NamedTupleClass(boxed $crate::types::NamedTupleClass),
+            #[serde(rename = "D")]
             Dict(inline $crate::types::Dict),
             DictKeysView(inline $crate::types::DictKeysView),
             DictItemsView(inline $crate::types::DictItemsView),
             DictValuesView(inline $crate::types::DictValuesView),
+            #[serde(rename = "E")]
             Set(inline $crate::types::Set),
+            #[serde(rename = "F")]
             FrozenSet(inline $crate::types::FrozenSet),
+            #[serde(rename = "C")]
             Closure(inline $crate::heap_data::Closure),
+            #[serde(rename = "U")]
             FunctionDefaults(inline $crate::heap_data::FunctionDefaults),
             /// A cell wrapping a single mutable value for closure support.
+            #[serde(rename = "K")]
             Cell(inline $crate::heap_data::CellValue),
             /// A range object such as `range(1, 10, 2)`.
             Range(inline $crate::types::Range),
             /// A slice object such as `slice(1, 10, 2)`.
             Slice(inline $crate::types::Slice),
             /// An exception instance such as `ValueError('message')`.
+            #[serde(rename = "X")]
             Exception(inline $crate::exception_private::SimpleException),
             /// A host-backed class instance (the heap form of the wire `ClassInstance`).
             HostClass(boxed $crate::types::HostClass),
@@ -72,10 +85,13 @@ macro_rules! heap_payloads {
             /// stand-in (see `HostClassType`).
             HostClassType(boxed $crate::types::HostClassType),
             /// A user-defined class object created by a `class` statement.
+            #[serde(rename = "A")]
             Class(boxed $crate::types::Class),
             /// An instance of a user-defined class.
+            #[serde(rename = "I")]
             Instance(boxed $crate::types::Instance),
             /// A method bound to an instance.
+            #[serde(rename = "M")]
             BoundMethod(inline $crate::types::BoundMethod),
             /// One `dataclasses.Field` held by a class's `__dataclass_fields__` dictionary.
             DataclassField(inline $crate::modules::dataclasses::DataclassField),
@@ -102,10 +118,12 @@ macro_rules! heap_payloads {
             /// A `callable_iterator` object from `iter(callable, sentinel)`.
             CallableIterator(inline $crate::types::callable_iterator::CallableIterator),
             /// An arbitrary-precision integer used when a Python `int` does not fit in `i64`.
+            #[serde(rename = "G")]
             LongInt(inline $crate::types::LongInt),
             /// A Python module and its attributes.
             Module(boxed $crate::types::Module),
             /// A coroutine object from an async function call.
+            #[serde(rename = "O")]
             Coroutine(inline $crate::asyncio::Coroutine),
             /// An `asyncio.gather()` result tracking multiple coroutines or tasks.
             GatherFuture(boxed $crate::asyncio::GatherFuture),
@@ -129,16 +147,11 @@ macro_rules! heap_payloads {
             TimeDelta(inline $crate::types::timedelta::TimeDelta),
             /// A fixed-offset `datetime.timezone` value.
             TimeZone(inline $crate::types::timezone::TimeZone),
-            // Append-only: a mid-list insertion changes serde's discriminants for all
-            // following variants and makes snapshots decode as the wrong payload type.
             /// Any `itertools` iterator (`count`, `repeat`, and others).
             Itertools(inline $crate::types::ItertoolsIter),
             /// The options of a `@dataclass`, held in `__dataclass_params__`.
             DataclassParams(inline $crate::modules::dataclasses::DataclassParams),
             /// A `datetime.time` value stored with narrow integer fields.
-            ///
-            /// Appended here rather than beside `DateTime` because this list is
-            /// append-only (see the note above).
             Time(inline $crate::types::time::Time),
             /// A `functools.partial` object.
             Partial(boxed $crate::types::Partial),
@@ -364,15 +377,19 @@ impl Deref for CellValue {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Closure {
     /// The function definition being captured.
+    #[serde(rename = "F")]
     pub func_id: FunctionId,
     /// Captured cells from enclosing scopes. Boxed slices rather than `Vec`s
     /// (never grown after construction) keep this the size of the largest
     /// `HeapData` variant, not larger.
+    #[serde(rename = "C")]
     pub cells: Box<[HeapId]>,
     /// Evaluated default parameter values (if any).
+    #[serde(rename = "D")]
     pub defaults: Box<[Value]>,
     /// Owned reference to the `exec()` / `eval()` globals dict the closure was
     /// defined under; `None` when its globals are module slots.
+    #[serde(rename = "G")]
     pub globals: Option<HeapId>,
 }
 
@@ -385,11 +402,14 @@ pub(crate) struct Closure {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FunctionDefaults {
     /// The function definition being captured.
+    #[serde(rename = "F")]
     pub func_id: FunctionId,
     /// Evaluated default parameter values (if any).
+    #[serde(rename = "D")]
     pub defaults: Vec<Value>,
     /// Owned reference to the `exec()` / `eval()` globals dict the function
     /// was defined under; `None` when its globals are module slots.
+    #[serde(rename = "G")]
     pub globals: Option<HeapId>,
 }
 

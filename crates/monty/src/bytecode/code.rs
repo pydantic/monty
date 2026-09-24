@@ -14,15 +14,18 @@ use crate::{intern::StringId, parse::CodeRange, value::Value};
 pub struct Code {
     /// Variable-width instructions, addressed by body-relative offsets.
     #[serde(with = "serde_bytes")]
+    #[serde(rename = "B")]
     bytecode: Vec<u8>,
 
     /// Immediate constants indexed by `LoadConst`; heap literals live in `Interns`.
+    #[serde(rename = "C")]
     constants: Vec<Value>,
 
     /// Source location table for tracebacks.
     ///
     /// Maps bytecode offsets to source locations. Used to generate Python-style
     /// tracebacks with line numbers and caret markers when exceptions occur.
+    #[serde(rename = "L")]
     location_table: Vec<LocationEntry>,
 
     /// Exception handler table.
@@ -30,12 +33,14 @@ pub struct Code {
     /// Maps protected bytecode ranges to their exception handlers. Consulted when
     /// an exception is raised to find the appropriate handler. Entries are ordered
     /// innermost-first for nested try blocks.
+    #[serde(rename = "E")]
     exception_table: Vec<ExceptionEntry>,
 
     /// Local variable names for error messages.
     ///
     /// Maps slot indices to variable names. Used to generate proper NameError
     /// messages when accessing undefined local variables (e.g., "name 'x' is not defined").
+    #[serde(rename = "N")]
     local_names: Vec<StringId>,
 }
 
@@ -218,12 +223,15 @@ pub enum HandlerKind {
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct ExceptionEntry {
     /// Start of protected bytecode range (inclusive).
+    #[serde(rename = "S")]
     start: u32,
 
     /// End of protected bytecode range (exclusive).
+    #[serde(rename = "E")]
     end: u32,
 
     /// Bytecode offset of the exception handler.
+    #[serde(rename = "H")]
     handler: u32,
 
     /// Stack depth when entering the try block.
@@ -231,11 +239,13 @@ pub struct ExceptionEntry {
     /// Used to unwind the operand stack before jumping to handler.
     /// The VM pops values until the stack reaches this depth, then
     /// pushes the exception value.
+    #[serde(rename = "D")]
     stack_depth: u16,
 
     /// This frame's `exception_stack` depth at region entry.
     /// Unwinding trims later entries so bare `raise` cannot revive exceptions
     /// from abandoned handlers.
+    #[serde(rename = "C")]
     exception_stack_count: u16,
 
     /// Whether the handler wants the exception on the operand stack.
