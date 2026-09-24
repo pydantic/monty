@@ -79,6 +79,12 @@ assert {f() for f in {lambda: a for a in {b for b in [5]}}} == {5}
 assert {k: v() for k, v in {a: (lambda: a) for a in [b for b in 'xy']}.items()} == {'x': 'y', 'y': 'y'}
 assert [[g() for g in [lambda: a for a in [b for b in [c, c + 1]]]] for c in [10, 20]] == [[11, 11], [21, 21]]
 assert [g() for g in [f() for f in [lambda: a for a in [lambda: b for b in [1, 2]]]]] == [2, 2]
+# The nested comprehension's slots are released before the first iterable ends, but stay reserved.
+assert [f() for f in [lambda: a for a in [[b for b in [1]] for c in [1]]]] == [[1]]
+assert [f() for f in [lambda: a for a in [[[d for d in [b]] for b in [1]] for c in [2]]]] == [[[1]]]
+assert [f() + g() for f, g in [(lambda: a, lambda: e) for a in [[b for b in [1]] for c in [1]] for e in [[2]]]] == [
+    [1, 2]
+]
 # Later iterables are prepared after every target, so their comprehensions get fresh slot IDs.
 assert [f() for f in [lambda: a for x in [1] for a in [b for b in [2, 3]]]] == [3, 3]
 
