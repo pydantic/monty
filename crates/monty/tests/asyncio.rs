@@ -1924,3 +1924,93 @@ await main()
         "only the awaited failure reached the main task"
     );
 }
+
+// === awaits inside a builtin's callback ===
+
+/// A builtin runs its Python callback on a nested `run()`, whose native frame a
+/// task switch cannot save, so an `await` that would block there raises rather
+/// than switching (which panicked, or ran the sort's caller inside the key).
+/// Monty-only: CPython's `asyncio.run` starts a fresh loop and succeeds.
+#[test]
+fn blocking_await_in_builtin_callback_raises() {
+    let code = r"
+import asyncio
+
+async def c():
+    return 1
+
+async def p():
+    return await asyncio.gather(c(), c())
+
+def blocking_key(x):
+    try:
+        asyncio.run(p())
+    except NotImplementedError as e:
+        errors.append(str(e))
+    return -x
+
+def plain_key(x):
+    return asyncio.run(c()) * -x
+
+errors = []
+results = [
+    sorted([1, 2, 3], key=blocking_key),
+    min([1, 2], key=blocking_key),
+    list(map(blocking_key, [1])),
+    sorted([1, 2, 3], key=plain_key),
+    asyncio.run(p()),
+]
+
+async def main():
+    s = sorted([1, 2], key=blocking_key)
+    return s, await asyncio.gather(c(), p())
+
+results.append(asyncio.run(main()))
+(set(errors), results)
+";
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let result = runner.run_no_limits(vec![]).unwrap();
+    assert_eq!(
+        result.to_string(),
+        "({\"awaiting a pending future inside a builtin's callback is not yet supported\"}, \
+         [[3, 2, 1], 2, [-1], [3, 2, 1], [1, 1], ([2, 1], [1, [1, 1]])])"
+    );
+}
+
+/// A pending external future awaited inside a callback raises without taking
+/// the future's awaiter slot, so the host's answer still reaches a later await.
+#[test]
+fn pending_external_future_in_builtin_callback_raises() {
+    let code = r"
+import asyncio
+
+f = foo()
+
+def key(x):
+    try:
+        asyncio.run(f)
+    except NotImplementedError as e:
+        errors.append(str(e))
+    return x
+
+errors = []
+sorted([1], key=key)
+(errors, await f)
+";
+    let call = start_external(code).into_function_call().unwrap();
+    let call_id = call.call_id;
+    let waiting = resolve_name_lookups(call.resume_pending(PrintWriter::Stdout).unwrap())
+        .unwrap()
+        .into_resolve_futures()
+        .unwrap();
+    let done = waiting
+        .resume(
+            vec![(call_id, ExtFunctionResult::Return(MontyObject::int(42)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(
+        done.into_complete().unwrap().to_string(),
+        "([\"awaiting a pending future inside a builtin's callback is not yet supported\"], 42)"
+    );
+}

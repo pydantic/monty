@@ -198,6 +198,15 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited coroutine").into()
     }
 
+    /// Creates the `NotImplementedError` for awaiting an unsettled gather or a
+    /// pending external future while a builtin is calling back into Python (a
+    /// sort key, a `map` function): the scheduler cannot switch tasks under the
+    /// builtin's native frame, even when the gather's children would not wait.
+    #[must_use]
+    fn await_pending_in_callback() -> RunError {
+        Self::not_implemented("awaiting a pending future inside a builtin's callback is not yet supported").into()
+    }
+
     /// Creates a TypeError for item assignment on types that don't support it.
     ///
     /// Matches CPython's format: `TypeError: '{type}' object does not support item assignment`
