@@ -28,11 +28,13 @@ test('an overrun the interpreter catches leaves the instance alive', async (ctx)
   const pool = await Monty.create()
   const maxMemory = 1024 * 1024
   const session = await pool.checkout({ limits: { maxMemory } })
-  // The incomplete comprehension is unwound at a checkpoint before the hard limit.
+  // The incomplete comprehension is unwound by a list-growth preflight before
+  // the hard limit. The figure includes a worker's first feed paying for
+  // one-off allocations a type checker built at startup used to cover.
   const error = await t.throwsAsync(() => session.feedRun('[str(i) for i in range(131_072)]'), {
     instanceOf: MontyRuntimeError,
   })
-  assertMemoryError(error, 1_068_412, maxMemory)
+  assertMemoryError(error, 1_092_605, maxMemory)
   t.is(error.exception.typeName, 'MemoryError')
   t.is(await session.feedRun('1 + 1'), 2)
   await session.close()
