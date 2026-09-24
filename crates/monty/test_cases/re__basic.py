@@ -776,6 +776,27 @@ assert re.sub('(a)', r'\012', 'a') == '\n'
 assert re.sub('(a)', r'\077', 'a') == '?'
 assert re.sub('(a)', r'\123', 'a') == 'S'
 assert re.sub('(a)', r'\0123', 'a') == '\n3'
+assert re.sub('(a)', r'\0444', 'a') == '$4'
+
+pattern = re.compile('(a)')
+assert pattern.sub(r'\0', 'a') == '\x00'
+assert pattern.sub(r'\0444', 'a') == '$4'
+for count in [0, -1]:
+    try:
+        pattern.sub(r'\400', 'a', count)
+        assert False, 'expected PatternError for out-of-range octal escape'
+    except re.PatternError as e:
+        assert str(e) == 'octal escape value \\400 outside of range 0-0o377 at position 0'
+
+# The positive-count Pattern.sub path still checks the subject type.
+try:
+    pattern.sub('X', 123)
+    assert False, 'expected TypeError for non-string Pattern.sub subject'
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'expected string, not int'
+    else:
+        assert str(e) == "expected string or bytes-like object, got 'int'"
 
 # Three-digit octal escapes above 0o377 are invalid replacement templates.
 for repl, count, expected in [

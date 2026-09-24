@@ -532,16 +532,14 @@ fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: 
     // CPython processes the replacement template *before* its match loop, so
     // this check must precede the negative-count early return below: a bad
     // repl raises even when zero substitutions will run.
-    if !repl_val.is_str(vm.heap) {
+    let Ok(repl) = repl_val.to_str(vm) else {
         return Err(ExcType::type_error(
             "callable replacement is not yet supported in re.sub()",
         ));
-    }
-
-    let repl = repl_val.to_str(vm)?.to_owned();
+    };
     let Some(count) = count else {
         // Validate octal escapes even when the negative count skips matching.
-        translate_replacement(&repl)?;
+        translate_replacement(repl)?;
         // Negative count — Pattern.sub returns the input string unchanged.
         // The subject is still type-checked (`to_str` raises this method's
         // `expected string, not {t}` wording) before the refcount bump; no
@@ -550,8 +548,8 @@ fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: 
         return Ok(string_val.clone_with_heap(vm.heap));
     };
 
-    let text = string_val.to_str(vm)?.to_owned();
-    pattern.get(vm.heap).sub(&repl, &text, count, vm.heap)
+    let text = string_val.to_str(vm)?;
+    pattern.get(vm.heap).sub(repl, text, count, vm.heap)
 }
 
 /// Handles `pattern.split(string, maxsplit=0)` argument extraction and dispatch.
@@ -757,7 +755,13 @@ pub(crate) fn translate_replacement(repl: &str) -> RunResult<Cow<'_, str>> {
                                 "octal escape value \\{octal:03o} outside of range 0-0o377 at position {position}"
                             )));
                         }
-                        result.push(char::from_u32(octal).expect("validated octal escape is a valid character"));
+                        let decoded = char::from_u32(octal).expect("validated octal escape is a valid character");
+                        if decoded == '$' {
+                            // Keep an octal-escaped dollar literal in the regex replacement syntax.
+                            result.push_str("$$");
+                        } else {
+                            result.push(decoded);
+                        }
                     } else {
                         // TODO: This only handles single-digit backrefs (\1–\9).
                         // Multi-digit like \10 should be ${10} when group 10 exists,
