@@ -70,6 +70,18 @@ assert repeated_unpack_funcs[0]() == 2
 nested_funcs = [[lambda: item for item in row] for item, row in [('outer', ['a', 'b'])]]
 assert nested_funcs[0][0]() == 'b'
 
+# A comprehension in the first iterable is prepared before the outer targets are
+# reserved, so it must not hand its slots to them while their cells are live.
+assert [lambda: a for a in [b for b in ()]] == []
+assert [0 for a in [0 for b in [1]] if (lambda: a)] == [0]
+assert [f() for f in [lambda: a for a in [b * 2 for b in range(3)]]] == [4, 4, 4]
+assert {f() for f in {lambda: a for a in {b for b in [5]}}} == {5}
+assert {k: v() for k, v in {a: (lambda: a) for a in [b for b in 'xy']}.items()} == {'x': 'y', 'y': 'y'}
+assert [[g() for g in [lambda: a for a in [b for b in [c, c + 1]]]] for c in [10, 20]] == [[11, 11], [21, 21]]
+assert [g() for g in [f() for f in [lambda: a for a in [lambda: b for b in [1, 2]]]]] == [2, 2]
+# Later iterables are prepared after every target, so their comprehensions get fresh slot IDs.
+assert [f() for f in [lambda: a for x in [1] for a in [b for b in [2, 3]]]] == [3, 3]
+
 # === Nested-tuple comp target (exercises LiftToTop) ===
 # Flat parts of the tuple stay at their UNPACK position; the inner (b, c)
 # requires a Lift to bring it to TOS for further unpacking. The compiler
