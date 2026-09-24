@@ -92,7 +92,13 @@ matches a Python exception type and `RuntimeError` otherwise.
 | `dict`              | `Map`                                           |
 | `set` / `frozenset` | `Set`                                           |
 | `datetime` family   | marker objects carrying `__monty_type__`        |
+| builtin types       | `{ __monty_type__: 'Type', value }`             |
+| builtin functions   | `{ __monty_type__: 'BuiltinFunction', value }`  |
 | file handles        | `MontyFileHandle`                               |
+
+Builtin type and function markers carry the builtin's name, never a JavaScript callable.
+Passing a marker back resolves it to that builtin; unrecognized names are rejected with `unknown type name` or
+`unknown builtin function`.
 
 Plain objects with string keys are accepted as `dict` inputs.
 Repeated references within one message preserve identity; see [host-value limitations](../limitations/host-values.md)

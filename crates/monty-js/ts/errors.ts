@@ -292,8 +292,7 @@ export function notCallableMessage(value: unknown): string {
 }
 
 /**
- * `__monty_type__` marker → the Python type its conversion produces. `Type`
- * and `BuiltinFunction` cannot round-trip and convert to reprs; a
+ * `__monty_type__` marker → the Python type its conversion produces. A
  * `ClassInstance` marker is named by its class (see [`pyTypeName`]); an
  * unknown marker converts as a plain dict.
  */
@@ -305,8 +304,8 @@ const MARKED_TYPE_NAMES: Readonly<Record<string, string>> = {
   Time: 'time',
   TimeDelta: 'timedelta',
   TimeZone: 'timezone',
-  Type: 'repr',
-  BuiltinFunction: 'repr',
+  Type: 'type',
+  BuiltinFunction: 'builtin_function_or_method',
 }
 
 /** Python type name the JS value converts to (mirrors the Rust `js_to_monty`). */

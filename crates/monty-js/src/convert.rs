@@ -22,8 +22,8 @@
 //! - `Ellipsis` → `{ __monty_type__: 'Ellipsis' }`
 //! - `Tuple` → `Array` with `__tuple__: true`
 //! - `Exception` → `{ __monty_type__: 'Exception', excType, message }`
-//! - `Type` → `{ __monty_type__: 'Type', value }`
-//! - `BuiltinFunction` → `{ __monty_type__: 'BuiltinFunction', value }`
+//! - `Type` ↔ `{ __monty_type__: 'Type', value }`
+//! - `BuiltinFunction` ↔ `{ __monty_type__: 'BuiltinFunction', value }`
 //! - `ClassInstance` → `{ __monty_type__: 'ClassInstance', type, instanceId, attrs }`
 //! - `FileHandle` ↔ `{ __monty_type__: 'FileHandle', path, mode, position }`
 //! - `Repr` → plain `string`
@@ -34,8 +34,8 @@ use std::{borrow::Cow, collections::HashMap, ptr, vec::IntoIter};
 
 use monty_types::{
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
-    ExcType, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
-    MontyTimeZone, MontyType, MontyUuid,
+    BuiltinsFunctions, ExcType, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
+    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
 };
 use napi::{bindgen_prelude::*, sys::Status};
 use num_bigint::BigInt as NumBigInt;
@@ -751,10 +751,14 @@ impl<'e> GraphEncoder<'e> {
                     Ok(self.leaf(MontyNode::Type(t)))
                 };
             }
-            // BuiltinFunction objects can't be fully round-tripped; return as Repr
+            // like a builtin type marker, carries only the name, resolved the
+            // same way the wasm worker path does
             "BuiltinFunction" => {
                 let value: String = obj.get_named_property("value")?;
-                MontyNode::Repr(format!("<built-in function {value}>"))
+                let function = value
+                    .parse::<BuiltinsFunctions>()
+                    .map_err(|_| Error::from_reason(format!("unknown builtin function {value:?}")))?;
+                MontyNode::BuiltinFunction(function)
             }
             "FileHandle" => {
                 let path = get_required_string_property(&obj, "path", "MontyFileHandle")?;

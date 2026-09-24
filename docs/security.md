@@ -3,14 +3,14 @@
 Monty is designed to run code that a language model wrote and nobody reviewed.
 This page describes what that buys you and what it does not.
 
-The sandbox has been through two completed rounds of the [Hack Monty](https://pydantic.dev/articles/hack-monty-3)
-bounty program, and a third is under way.
-If you find a way out of it, please [open an issue](https://github.com/pydantic/monty/issues) or claim the bounty.
+Monty has a continuous bounty program for reported security vulnerabilities.
+If you find a way out of the sandbox, do not open a public issue; report it privately by creating a
+[security advisory](https://github.com/pydantic/monty/security).
 
 ## What "secure" means here
 
 Monty is a **language-level sandbox**, not an OS-level one.
-There is no container, no seccomp filter and no VM.
+There is no container, no seccomp filter and no virtual machine.
 The isolation comes from the interpreter itself: sandboxed code cannot express an operation that touches the host,
 because the interpreter implements no such operation.
 
@@ -18,19 +18,16 @@ because the interpreter implements no such operation.
 
     If you want Monty combined with OS-level isolation, see [Full Monty](server.md), the commercial version of Monty.
 
-Concretely:
+In practice that means:
 
 - **There is no ambient authority.** With no mounts and no host functions configured, the sandbox cannot read a file,
     read an environment variable, open a socket, or spawn a process.
     Not "it is blocked" — the capability does not exist in the bytecode VM.
     The wall clock and OS entropy are the exceptions: every session reads the clock by default and seeds `random`
-    from entropy; see [the clock](#the-clock) and [entropy](#entropy).
+    from entropy, although even those can be disabled or customised; see [the clock](#the-clock) and [entropy](#entropy).
 - **The interpreter performs no filesystem I/O at all.** It suspends with a description of the operation it wants, and a
     host component decides what to do about it.
-    All filesystem code lives in a separate crate (`monty-fs`) that worker artifacts do not even link in some builds.
-- **The dangerous modules are absent.** `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes`
-    are not importable, and are also missing from the bundled typeshed, so [type checking](type-checking.md) rejects code
-    that uses them before it runs.
+    All filesystem code lives in a separate crate (`monty-fs`).
 - **No FFI, no C dependencies.** Nothing in the sandbox can call into native code.
 
 ## The three host-access mechanisms

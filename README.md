@@ -17,13 +17,13 @@
 
 ______________________________________________________________________
 
-> [!NOTE]
-> **Hack Monty Round 3 is live** - the last round before Monty V1. See [pydantic.dev/monty](https://pydantic.dev/monty) for details.
+Monty avoids the latency, complexity and cost of a container based sandbox for running LLM generated code.
+It comes in two forms: **OSS Monty**, the MIT licensed Python 3.14 sandbox you install as a package, and
+[**Full Monty**](https://pydantic.dev/docs/monty/commercial-support/server/), the commercial server that runs the same sandbox behind a WebSocket as a service.
 
-Monty runs Python written by a model with no container, VM or sandboxing service in the loop.
-Creating a sandbox and running ten commands in it takes 5 ms (Docker: 900 ms, a sandboxing service: 1900 ms), a paused
-interpreter serialises to bytes you can resume later, and memory, time and recursion limits are enforced by the VM
-itself.
+A new OSS Monty sandbox takes under **1ms** from a running pool (Full Monty: about **2ms**)
+[compared to](https://pydantic.dev/docs/monty/reference/alternatives/) around **1500ms** for a sandbox service.
+
 Filesystem, environment variables and network do not exist inside the sandbox: it reaches the host only through the
 functions and mounts you pass in.
 

@@ -23,7 +23,7 @@ use crate::{
     heap_data::heap_subscript,
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
-    modules::{ModuleFunctions, itertools::ItertoolsFunctions},
+    modules::ModuleFunctions,
     percent_format::{copy_bytes_template, percent_format, percent_format_bytes},
     resource_checks::check_pow_size,
     types::{
@@ -1803,44 +1803,14 @@ impl Value {
                     return Ok(call_result);
                 }
             }
+            // Type objects (`list`, `date`, `chain`) answer for themselves:
+            // `__name__`, class constants and the members handed out as values
+            // all live with the type, including the `AttributeError`.
             Self::Builtin(Builtins::Type(t)) => {
-                // Handle type object attributes like __name__
-                let is_dunder_name = attr.static_string(vm.interns).map_or_else(
-                    || attr.as_str(vm.interns) == "__name__",
-                    |ss| ss == StaticStrings::DunderName,
-                );
-                if is_dunder_name {
-                    return Ok(CallResult::Value(allocate_string(
-                        t.dunder_name(vm.heap, vm.interns),
-                        vm.heap,
-                    )));
-                }
-                let t = *t;
-                if let Some(constant) = t.class_constant(attr, vm) {
-                    return Ok(CallResult::Value(constant));
-                }
-                // `chain.from_iterable`, the one attribute an `itertools`
-                // type carries. Handed out as a value so it can be bound and
-                // called later, not only called in place.
-                if t == Type::ItertoolsChain && attr.static_string(vm.interns) == Some(StaticStrings::FromIterable) {
-                    return Ok(CallResult::Value(Self::ModuleFunction(ModuleFunctions::Itertools(
-                        ItertoolsFunctions::ChainFromIterable,
-                    ))));
-                }
-                // `object.__setattr__` is the only member `object` carries: it
-                // exists so a class that hooks attribute writes has a way to
-                // perform one (see `limitations/classes.md`).
-                if t == Type::Object && attr.as_str(vm.interns) == "__setattr__" {
-                    return Ok(CallResult::Value(Self::Builtin(Builtins::Function(
-                        BuiltinsFunctions::ObjectSetattr,
-                    ))));
-                }
-                // CPython names the class rather than the metaclass here:
-                // `type object 'list' has no attribute 'nonexistent'`.
-                return Err(ExcType::attribute_error_type(
-                    &t.name(vm.heap, vm.interns),
-                    attr.as_str(vm.interns),
-                ));
+                return match t.class_getattr(attr, vm) {
+                    Some(value) => Ok(CallResult::Value(value)),
+                    None => Err(t.attribute_error(attr, vm)),
+                };
             }
             _ => {}
         }
