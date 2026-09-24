@@ -843,7 +843,7 @@ external + ' ' + Path('/mnt/data.txt').read_text()";
     drop(session);
 
     let mut restored = pool.checkout(&ReplConfig::default()).await.unwrap();
-    let (event, _) = restored.restore(state, mount(), false, &mut no_print).await.unwrap();
+    let (event, _) = restored.restore(state, mount(), &mut no_print).await.unwrap();
     // the re-announcement carries the full call payload, so the uncovered
     // call surfaces exactly like a fresh suspension — name and args intact;
     // answering it lets the feed continue, and its remaining mounted read is
@@ -906,7 +906,6 @@ async fn restored_os_call_is_serviced_by_restore_mounts() {
         .restore(
             state,
             vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()],
-            false,
             &mut no_print,
         )
         .await
@@ -2065,7 +2064,7 @@ async fn restored_session_readopts_its_suspension_limit() {
     drop(session);
 
     let mut restored = pool.checkout(&ReplConfig::default()).await.unwrap();
-    let (event, _script_name) = restored.restore(state, vec![], false, &mut no_print).await.unwrap();
+    let (event, _script_name) = restored.restore(state, vec![], &mut no_print).await.unwrap();
     // the re-announced suspension is the restored checkout's first
     assert!(matches!(event, Some(TurnEvent::FunctionCall { .. })), "got {event:?}");
     let event = restored
@@ -2102,7 +2101,7 @@ async fn loaded_session_keeps_its_duration_budget() {
     drop(session);
 
     let mut restored = pool.checkout(&ReplConfig::default()).await.unwrap();
-    let (event, _script_name) = restored.restore(state, vec![], false, &mut no_print).await.unwrap();
+    let (event, _script_name) = restored.restore(state, vec![], &mut no_print).await.unwrap();
     assert!(event.is_none(), "idle dump should restore without a suspension");
     let err = restored
         .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
@@ -2433,7 +2432,7 @@ async fn dump_survives_worker_death_and_loads_elsewhere() {
 
     // restore into a fresh worker by loading over its empty session
     let mut restored = pool.checkout(&ReplConfig::default()).await.unwrap();
-    let (event, script_name) = restored.restore(state, vec![], false, &mut no_print).await.unwrap();
+    let (event, script_name) = restored.restore(state, vec![], &mut no_print).await.unwrap();
     // the worker echoes the dump's adopted script name back to the parent
     assert_eq!(script_name.as_deref(), Some("main.py"));
     let Some(TurnEvent::FunctionCall { ref function_name, .. }) = event else {
@@ -2495,7 +2494,7 @@ async fn a_restored_session_honors_its_checkout_flush_interval() {
         ..ReplConfig::default()
     };
     let mut restored = pool.checkout(&repl).await.unwrap();
-    restored.restore(state, vec![], false, &mut no_print).await.unwrap();
+    restored.restore(state, vec![], &mut no_print).await.unwrap();
     let mut lines = Vec::new();
     restored
         .feed(

@@ -609,7 +609,7 @@ enum Persistence {
   PERSISTENCE_UNSPECIFIED = 0;
   // Never stored: no session ID, never parked, and `Dump` is refused.
   PERSISTENCE_EPHEMERAL = 1;
-  // Parked on idle, drain or disconnect, and resumable by its session ID.
+  // Parked on idle, drain or disconnect, and loadable by its session ID.
   PERSISTENCE_STORED = 2;
 }
 
@@ -692,20 +692,18 @@ message ResumeFutures {
 // (idle or suspended). The child stays usable afterwards. The bytes carry
 // monty's own dump format, versioned independently of this schema, and can
 // only be restored via `Load` by a child built with the same dump version.
-// A relay that stores sessions instead returns a snapshot ID, which `Load`
-// copies from.
+// A relay that stores sessions instead saves the state under the session's
+// ID and returns that ID.
 message Dump {}
 
 // Restores state produced by `Dump`. Valid only from no session. If
 // the restored state was suspended, the child re-emits the suspension event so
 // the parent learns the resume point; otherwise it replies `Ok`.
 message Load {
-  // Dump bytes, or an ID minted by a relay that stores sessions (a session ID
-  // from `ChildEvent.session_id`, or a snapshot ID from `DumpResult.state`).
+  // Dump bytes, or a session ID from a relay that stores sessions. Loading an
+  // ID always starts a new session, with its own ID, from the state last
+  // stored under it; the stored session is never resumed in place.
   bytes state = 1;
-  // Relay-only: copy a stored session under a new ID instead of claiming it.
-  // Children ignore it, since loading bytes is always a copy.
-  bool fork = 2;
 }
 
 // Ends the checkout: the child drops all session state and returns to the
@@ -796,7 +794,8 @@ message ChildEvent {
 
   // The session this connection now holds, set only by a relay that stores
   // sessions, on its first reply to `Configure` or `Load` whatever that
-  // reply's kind. Unset for ephemeral sessions and from children.
+  // reply's kind (a `Load` always names a new session). Unset for ephemeral
+  // sessions and from children.
   optional bytes session_id = 28;
 }
 
@@ -1028,7 +1027,7 @@ message TypingError {
 }
 
 message DumpResult {
-  // Opaque versioned snapshot, or a snapshot ID from a relay that stores
+  // Opaque versioned snapshot, or the session ID from a relay that stores
   // sessions; see `Dump`.
   bytes state = 1;
 }

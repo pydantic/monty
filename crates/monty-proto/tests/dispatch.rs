@@ -425,10 +425,7 @@ fn load_rejects_old_dump_version() {
 
     let mut child = Child::default();
     create_repl(&mut child);
-    let request = frame_request(pb::parent_request::Kind::Load(pb::Load {
-        state: state.into(),
-        ..Default::default()
-    }));
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     let (_, event) = split_turn(&bytes);
@@ -463,10 +460,7 @@ fn load_re_announces_deep_suspension_args() {
 
     let mut child = Child::default();
     create_repl(&mut child);
-    let request = frame_request(pb::parent_request::Kind::Load(pb::Load {
-        state: state.into(),
-        ..Default::default()
-    }));
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     let (_, event) = split_turn(&bytes);

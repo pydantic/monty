@@ -770,9 +770,7 @@ impl Child {
         if !matches!(self.state, SessionState::Configured(_)) {
             return protocol_violation("Load requires a session that has not started (a feed has already run)");
         }
-        // `fork` is a relay's concern: loading bytes is always a copy
-        let pb::Load { state, fork: _ } = load;
-        let restored = match Dump::load(state) {
+        let restored = match Dump::load(&load.state) {
             Ok(restored) => restored,
             Err(err) => return protocol_violation(&format!("failed to load session: {err}")),
         };

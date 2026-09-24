@@ -29,16 +29,18 @@ Neither exception occurs on the local subprocess transport.
 
 A server that stores sessions gives each one an opaque ID instead of sending its state back.
 [`session_id`][pydantic_monty.AsyncMontySession.session_id] holds it; it is `None` against a server that stores nothing.
-Pass it to [`load_session()`][pydantic_monty.AsyncMontySession.load_session] or
-[`load_snapshot()`][pydantic_monty.AsyncMontySession.load_snapshot] on a fresh session, from any process, to claim the
-session.
-With `fork=True` the server copies it under a new ID instead, leaving the original in place.
-Against such a server [`dump()`][pydantic_monty.AsyncMontySession.dump] returns a snapshot ID, which loads as a copy.
+Against such a server [`dump()`][pydantic_monty.AsyncMontySession.dump] saves the session's current state under that ID
+and returns the ID.
+Passing the ID to [`load_session()`][pydantic_monty.AsyncMontySession.load_session] or
+[`load_snapshot()`][pydantic_monty.AsyncMontySession.load_snapshot] on a fresh session, from any process, starts a new
+session with its own ID from the state last stored under it: its last `dump()`, or when the server parked it.
+A stored session is never resumed in place, so loading one ID twice gives two independent sessions, and a session
+still running elsewhere is unaffected.
 `checkout(ephemeral=True)` asks the server never to store the session, so it has no ID and `dump()` is refused.
 
-When such a server drains a session, the client redials, reclaims the session by its ID and re-sends the request, so
-the caller sees the result rather than `MontyShutdown`.
-`MontyShutdown` still surfaces if the reclaim fails, if `auto_resume=False` is passed to
+When such a server drains a session, the client redials, loads the session's ID into a new session and re-sends the
+request, so the caller sees the result rather than `MontyShutdown`; `session_id` then names the new session.
+`MontyShutdown` still surfaces if the reload fails, if `auto_resume=False` is passed to
 [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket], or if the session has no ID.
 The redial uses the headers `connect_headers` returned when the session was entered, so an expired token makes the
 resume fail.

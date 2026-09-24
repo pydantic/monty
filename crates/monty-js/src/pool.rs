@@ -675,7 +675,7 @@ impl NativeSession {
             outcome_fn(move |checkout, on_print| {
                 Box::pin(async move {
                     // JS snapshots expose no script name, so the restored name is unused
-                    match checkout.restore(state, mounts, false, on_print).await {
+                    match checkout.restore(state, mounts, on_print).await {
                         Ok((Some(event), _)) => TurnOutcome::Event(event),
                         Ok((None, _)) => TurnOutcome::LoadedIdle,
                         Err(err) => TurnOutcome::from(Err(err)),

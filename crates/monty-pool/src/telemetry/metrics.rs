@@ -1421,7 +1421,6 @@ mod tests {
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
             state: vec![].into(),
-            ..Default::default()
         })));
         metrics.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
@@ -1462,7 +1461,6 @@ mod tests {
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
             state: vec![].into(),
-            ..Default::default()
         })));
         metrics.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::NameLookup(pb::NameLookup {

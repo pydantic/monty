@@ -309,14 +309,14 @@ async def test_plain_relay_names_no_session(ws_url: str):
                 assert await session.feed_run('1 + 1') == snapshot(2)
 
 
-async def test_fork_is_ignored_by_a_plain_relay(ws_url: str):
-    """Without storage `state` is dump bytes, and loading bytes is already a copy."""
+async def test_loaded_session_has_no_id_on_a_plain_relay(ws_url: str):
+    """Without storage `state` is dump bytes, and the loaded session gets no ID."""
     async with AsyncMontyWebsocket(ws_url, request_timeout=30.0) as pool:
         async with pool.checkout() as session:
             await session.feed_run('x = 20')
             dump = await session.dump()
         async with pool.checkout() as session:
-            await session.load_session(dump, fork=True)
+            await session.load_session(dump)
             assert session.session_id is None
             assert await session.feed_run('x + 1') == snapshot(21)
 

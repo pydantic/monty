@@ -1258,7 +1258,6 @@ mod tests {
 
         recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
             state: vec![0; 8].into(),
-            ..Default::default()
         })));
         recorder.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
@@ -1313,7 +1312,6 @@ mod tests {
         recorder.event(&event(pb::child_event::Kind::Ok(pb::Ok {})));
         recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
             state: vec![].into(),
-            ..Default::default()
         })));
         recorder.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
@@ -1354,7 +1352,6 @@ mod tests {
 
         recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
             state: vec![].into(),
-            ..Default::default()
         })));
         recorder.event(&event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "value".to_owned(),

@@ -695,7 +695,7 @@ impl PendingKey {
     }
 }
 
-/// What a WebSocket checkout keeps to redial its relay and reclaim a drained
+/// What a WebSocket checkout keeps to redial its relay and reload a drained
 /// session (see [`PoolConfig::auto_resume`]).
 pub(crate) struct Redial {
     /// Re-sent as the new worker's `Configure`.
@@ -775,14 +775,13 @@ impl Checkout {
     /// Invalid snapshots have no correctness or availability guarantees.
     /// Successful loading is not authentication or validation.
     ///
-    /// Against a relay that stores sessions, `state` may instead be a session or
-    /// snapshot ID it minted. `fork` then copies the session under a new ID
-    /// instead of claiming it; subprocess workers ignore it.
+    /// Against a relay that stores sessions, `state` may instead be a session ID
+    /// it minted. Loading one always starts a new session, with its own
+    /// [`Checkout::session_id`], from the state last stored under that ID.
     pub async fn restore(
         &mut self,
         state: Vec<u8>,
         mounts: Vec<MountSpec>,
-        fork: bool,
         on_print: OnPrint<'_>,
     ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
         self.ensure_ready()?;
@@ -793,13 +792,10 @@ impl Checkout {
         self.pending = None;
         self.begin_load();
         self.restored_script_name = None;
-        // a fork or snapshot load names a new session; the reply supplies it
+        // a load names a new session; a storing relay's reply supplies its ID
         self.session_id = None;
         self.feed_mounts = feed_mounts;
-        let request = request(pb::parent_request::Kind::Load(pb::Load {
-            state: state.into(),
-            fork,
-        }));
+        let request = request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
         let outcome = self
             .request_turn(&request, self.pool.config.request_timeout, on_print)
             .await;
@@ -1343,9 +1339,9 @@ impl Checkout {
             )
     }
 
-    /// Reclaims a drained session on a new worker and re-sends `request`, which
+    /// Reloads a drained session on a new worker and re-sends `request`, which
     /// the relay reported it did not run. Resumes at most once per request: any
-    /// failure reclaiming returns the original `shutdown`.
+    /// failure reloading returns the original `shutdown`.
     async fn resume_drained(
         &mut self,
         shutdown: PoolError,
@@ -1353,21 +1349,21 @@ impl Checkout {
         deadline: Option<Duration>,
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
-        let reclaimed = self.reclaim_session().await;
+        let reloaded = self.reload_session().await;
         #[cfg(feature = "telemetry")]
         if let Some(metrics) = &self.pool.config.metrics {
-            metrics.session_resumed(if reclaimed.is_ok() { "ok" } else { "error" });
+            metrics.session_resumed(if reloaded.is_ok() { "ok" } else { "error" });
         }
-        match reclaimed {
+        match reloaded {
             Ok(()) => self.request_turn_once(request, deadline, on_print).await,
             Err(_) => Err(shutdown),
         }
     }
 
-    /// Dials a new worker, re-creates the session and loads it by its ID. The
-    /// reply must match the drained state: `Ok` when idle, or the same pending
-    /// suspension re-announced when mid-feed.
-    async fn reclaim_session(&mut self) -> Result<(), PoolError> {
+    /// Dials a new worker, re-creates the session and loads its ID, which starts
+    /// a new session under a new ID. The reply must match the drained state:
+    /// `Ok` when idle, or the same pending suspension re-announced when mid-feed.
+    async fn reload_session(&mut self) -> Result<(), PoolError> {
         let redial = self.redial.as_ref().expect("checked by can_resume");
         let session_id = self.session_id.clone().expect("checked by can_resume");
         let configure = configure_request(&redial.repl);
@@ -1385,7 +1381,6 @@ impl Checkout {
         self.begin_load();
         let load = request(pb::parent_request::Kind::Load(pb::Load {
             state: session_id.into(),
-            fork: false,
         }));
         let reply = self.request_turn_once(&load, timeout, &mut no_print).await;
         self.end_load();

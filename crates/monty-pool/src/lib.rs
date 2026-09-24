@@ -95,7 +95,7 @@ pub struct PoolConfig {
     /// bound the impact of any slow leak in a long-lived child.
     pub max_checkouts_per_worker: Option<u32>,
     /// Resume a session transparently when a relay that stores sessions drains
-    /// it: the checkout redials, reclaims the session by its ID and re-sends
+    /// it: the checkout redials, reloads the session by its ID and re-sends
     /// the request the relay reported it did not run. WebSocket transport only;
     /// on by default.
     pub auto_resume: bool,

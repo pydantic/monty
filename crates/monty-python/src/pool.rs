@@ -490,8 +490,7 @@ impl PyMontySession {
             return Err(session_used_err());
         }
         let checkout = Arc::clone(&self.checkout);
-        // sync sessions are local-only, and a subprocess ignores `fork`
-        let result = py.detach(|| block_on_sync(restore_turn(&checkout, state, mounts, false)))?;
+        let result = py.detach(|| block_on_sync(restore_turn(&checkout, state, mounts)))?;
         result.map_err(|e| pool_err_to_py(py, e))
     }
 }
@@ -935,10 +934,7 @@ impl PyAsyncMontySession {
     /// Async counterpart of [`PyMontySession::load_session`]: the coroutine
     /// restores a dumped idle session, resolving to `None`. Valid only on a
     /// fresh session; raises if the dump is actually a suspended snapshot.
-    /// `fork` asks a storing server to copy the session under a new ID
-    /// instead of claiming it; subprocess workers ignore it.
-    #[pyo3(signature = (state, *, fork=false))]
-    fn load_session<'py>(&self, py: Python<'py>, state: Vec<u8>, fork: bool) -> PyResult<Bound<'py, PyAny>> {
+    fn load_session<'py>(&self, py: Python<'py>, state: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
         // claim the session in the synchronous prologue (which completes before
         // the future), so a concurrent call is rejected at call time and the
         // off-thread restore can't race onto a fresh session
@@ -949,7 +945,7 @@ impl PyAsyncMontySession {
         let session_id = Arc::clone(&self.session_id);
         future_into_py(py, async move {
             // an idle session has no snapshot, so the restored name is unused
-            let restored = restore_turn(&checkout, state, Vec::new(), fork).await;
+            let restored = restore_turn(&checkout, state, Vec::new()).await;
             refresh_session_id(&checkout, &session_id).await;
             let restored = restored.map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             if restored.0.is_some() {
@@ -967,10 +963,8 @@ impl PyAsyncMontySession {
     /// `resume(...)` / `resume_auto()` is awaitable). Valid only on a fresh
     /// session; raises if the dump is actually an idle session. `external_lookup`
     /// / `os` are captured for `resume_auto()` with the same caveats as the sync
-    /// method (a restored `FutureSnapshot` cannot be `resume_auto`'d). `fork`
-    /// is as for [`load_session`](Self::load_session).
-    #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, os=None, fork=false))]
-    #[expect(clippy::too_many_arguments)]
+    /// method (a restored `FutureSnapshot` cannot be `resume_auto`'d).
+    #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, os=None))]
     fn load_snapshot<'py>(
         &self,
         py: Python<'py>,
@@ -979,7 +973,6 @@ impl PyAsyncMontySession {
         print_callback: Option<&Bound<'_, PyAny>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
         os: Option<Py<PyAny>>,
-        fork: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         // extract args before committing the session (a bad-args error leaves
         // it loadable), then claim it in the synchronous prologue
@@ -996,7 +989,7 @@ impl PyAsyncMontySession {
         let trace_context = capture_otel_context(py);
         let session_id = Arc::clone(&self.session_id);
         future_into_py(py, async move {
-            let restored = restore_turn(&checkout, state, mounts, fork).await;
+            let restored = restore_turn(&checkout, state, mounts).await;
             refresh_session_id(&checkout, &session_id).await;
             let (event, restored_script_name) = restored.map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             let Some(event) = event else {
@@ -1071,7 +1064,7 @@ impl PyAsyncMontySession {
 }
 
 /// Copies the checkout's session ID into the getter's cache after a load,
-/// which may have replaced it (a fork or snapshot load names a new session).
+/// which replaced it: loading a session ID names a new session.
 async fn refresh_session_id(checkout: &SharedCheckout, cache: &Mutex<Option<Vec<u8>>>) {
     let id = checkout
         .lock()
@@ -1159,14 +1152,13 @@ async fn restore_turn(
     checkout: &SharedCheckout,
     state: Vec<u8>,
     mounts: Vec<MountSpec>,
-    fork: bool,
 ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
     let result = {
         let mut guard = checkout.lock().await;
         match guard.as_mut() {
             Some(checkout) => {
                 checkout
-                    .restore(state, mounts, fork, &mut monty_pool::on_print_sync(|_, _| {}))
+                    .restore(state, mounts, &mut monty_pool::on_print_sync(|_, _| {}))
                     .await
             }
             None => Err(PoolError::Finished),

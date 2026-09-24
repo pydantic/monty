@@ -741,7 +741,6 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
     let load = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Load(pb::Load {
             state: vec![1, 2, 3].into(),
-            ..Default::default()
         })),
         ..pb::ParentRequest::default()
     };
@@ -856,7 +855,6 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let load = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Load(pb::Load {
             state: vec![0; MAX_FRAME_LEN as usize + 1].into(),
-            ..Default::default()
         })),
         ..pb::ParentRequest::default()
     };
@@ -1015,7 +1013,7 @@ async fn restored_session_rearms_the_duration_backstop() {
     let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let (event, script_name) = checkout
-        .restore(vec![1, 2, 3], vec![], false, &mut no_print)
+        .restore(vec![1, 2, 3], vec![], &mut no_print)
         .await
         .expect("restore");
     assert!(event.is_none());
@@ -1347,7 +1345,6 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
     let load = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Load(pb::Load {
             state: vec![1, 2, 3].into(),
-            ..Default::default()
         })),
         ..pb::ParentRequest::default()
     };
@@ -1409,7 +1406,7 @@ async fn configured_suspension_limit_caps_a_restored_one() {
             .await
             .expect("checkout");
         let (event, _) = checkout
-            .restore(vec![1, 2, 3], vec![], false, &mut no_print)
+            .restore(vec![1, 2, 3], vec![], &mut no_print)
             .await
             .expect("restore");
         assert!(event.is_none());
@@ -1535,7 +1532,6 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
     let load = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Load(pb::Load {
             state: vec![1, 2, 3].into(),
-            ..Default::default()
         })),
         ..pb::ParentRequest::default()
     };
@@ -1593,7 +1589,7 @@ async fn restored_session_readopts_the_suspension_limit() {
     let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let (event, _) = checkout
-        .restore(vec![1, 2, 3], vec![], false, &mut no_print)
+        .restore(vec![1, 2, 3], vec![], &mut no_print)
         .await
         .expect("restore");
     assert!(event.is_none());
@@ -1744,10 +1740,7 @@ async fn shutdown_hands_back_a_restorable_dump() {
     // the checkout's worker is gone; a fresh one restores the dump and the
     // never-executed feed can simply be re-run
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("second checkout");
-    let (event, _name) = checkout
-        .restore(dump, vec![], false, &mut no_print)
-        .await
-        .expect("restore");
+    let (event, _name) = checkout.restore(dump, vec![], &mut no_print).await.expect("restore");
     assert!(event.is_none(), "an idle dump has no suspension to re-announce");
     let event = checkout
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
@@ -1805,10 +1798,7 @@ async fn shutdown_during_a_suspension_carries_the_suspended_dump() {
 
     // restoring re-announces the suspension, so the host can answer it again
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("second checkout");
-    let (event, _name) = checkout
-        .restore(dump, vec![], false, &mut no_print)
-        .await
-        .expect("restore");
+    let (event, _name) = checkout.restore(dump, vec![], &mut no_print).await.expect("restore");
     assert!(
         matches!(event, Some(TurnEvent::FunctionCall { call_id: 7, .. })),
         "got {event:?}"
@@ -1841,7 +1831,7 @@ async fn shutdown_without_a_session_carries_no_dump() {
 // ---- session IDs -----------------------------------------------------------
 //
 // A storing relay names the session in `ChildEvent.session_id`; the client
-// treats it as opaque bytes and sends `persistence` and `fork` through.
+// treats it as opaque bytes and sends `persistence` through.
 
 /// Sends one `ChildEvent` with the given kind, naming the session `session_id`.
 fn send_with_session_id(socket: &mut WebSocket<TcpStream>, kind: pb::child_event::Kind, session_id: &[u8]) {
@@ -1918,34 +1908,30 @@ async fn session_id_is_read_from_the_configure_reply() {
 }
 
 #[tokio::test]
-async fn restore_sends_fork_and_adopts_the_new_session_id() {
+async fn restore_adopts_the_new_session_id() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         try_read_request(&mut socket).expect("configure");
         send_with_session_id(&mut socket, ok_event(), b"sess-new");
-        let request = try_read_request(&mut socket).expect("load");
-        let Some(pb::parent_request::Kind::Load(load)) = request.kind else {
-            panic!("expected Load, got {request:?}");
-        };
-        assert_eq!(load.state, &b"sess-1"[..]);
-        assert!(load.fork);
-        // a suspended session re-announces its call, which carries the new ID
-        send_with_session_id(&mut socket, function_call(7), b"sess-fork");
+        expect_load(&mut socket, b"sess-1");
+        // loading an ID starts a new session; a suspended one re-announces its
+        // call, which carries the new ID
+        send_with_session_id(&mut socket, function_call(7), b"sess-2");
         while try_read_request(&mut socket).is_some() {}
     });
 
     let (_pool, mut checkout) = websocket_checkout(port).await;
     let (event, _name) = checkout
-        .restore(b"sess-1".to_vec(), vec![], true, &mut no_print)
+        .restore(b"sess-1".to_vec(), vec![], &mut no_print)
         .await
         .expect("restore");
     assert!(
         matches!(event, Some(TurnEvent::FunctionCall { call_id: 7, .. })),
         "got {event:?}"
     );
-    assert_eq!(checkout.session_id(), Some(&b"sess-fork"[..]));
+    assert_eq!(checkout.session_id(), Some(&b"sess-2"[..]));
     checkout.finish().await.expect("finish");
     join_server(server).await;
 }
@@ -1967,7 +1953,7 @@ async fn restore_clears_a_stale_session_id() {
     let (_pool, mut checkout) = websocket_checkout(port).await;
     assert_eq!(checkout.session_id(), Some(&b"sess-1"[..]));
     checkout
-        .restore(b"dump-bytes".to_vec(), vec![], false, &mut no_print)
+        .restore(b"dump-bytes".to_vec(), vec![], &mut no_print)
         .await
         .expect("restore");
     assert_eq!(checkout.session_id(), None);
@@ -1978,7 +1964,8 @@ async fn restore_clears_a_stale_session_id() {
 // ---- auto-resume -------------------------------------------------------------
 //
 // A storing relay that drains names the session in `ShutdownDump`; the checkout
-// redials, reclaims it by ID and re-sends the request the relay did not run.
+// redials, loads its ID into a new session and re-sends the request the relay
+// did not run.
 
 /// Acknowledges the next request, which must be `Configure`, naming the session `id`.
 fn configure_with_session_id(socket: &mut WebSocket<TcpStream>, id: &[u8]) {
@@ -1988,16 +1975,6 @@ fn configure_with_session_id(socket: &mut WebSocket<TcpStream>, id: &[u8]) {
         "expected Configure, got {request:?}"
     );
     send_with_session_id(socket, ok_event(), id);
-}
-
-/// Asserts the next request reclaims (not forks) the session `id`.
-fn expect_reclaim(socket: &mut WebSocket<TcpStream>, id: &[u8]) {
-    let request = try_read_request(socket).expect("load");
-    let Some(pb::parent_request::Kind::Load(load)) = request.kind else {
-        panic!("expected Load, got {request:?}");
-    };
-    assert_eq!(load.state, id);
-    assert!(!load.fork, "a resume claims the session rather than copying it");
 }
 
 /// Asserts the next request answers call `call_id`.
@@ -2026,11 +2003,11 @@ async fn shutdown_resumes_transparently() {
         configure_with_session_id(&mut socket, b"sess-1");
         expect_feed(&mut socket, "1 + 1");
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
-        // the checkout redials, reclaims the session and re-sends the feed
+        // the checkout redials, reloads the session and re-sends the feed
         let mut socket = accept_ws(&listener);
         expect_configure(&mut socket);
-        expect_reclaim(&mut socket, b"sess-1");
-        send_with_session_id(&mut socket, ok_event(), b"sess-1");
+        expect_load(&mut socket, b"sess-1");
+        send_with_session_id(&mut socket, ok_event(), b"sess-2");
         expect_feed(&mut socket, "1 + 1");
         send_complete(&mut socket);
         while try_read_request(&mut socket).is_some() {}
@@ -2045,7 +2022,8 @@ async fn shutdown_resumes_transparently() {
         matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
         "got {event:?}"
     );
-    assert_eq!(checkout.session_id(), Some(&b"sess-1"[..]));
+    // the reload started a new session under a new ID
+    assert_eq!(checkout.session_id(), Some(&b"sess-2"[..]));
     checkout.finish().await.expect("finish");
     join_server(server).await;
 }
@@ -2063,8 +2041,8 @@ async fn shutdown_while_suspended_resumes_after_the_same_call_is_reannounced() {
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
         let mut socket = accept_ws(&listener);
         expect_configure(&mut socket);
-        expect_reclaim(&mut socket, b"sess-1");
-        send_with_session_id(&mut socket, function_call(7), b"sess-1");
+        expect_load(&mut socket, b"sess-1");
+        send_with_session_id(&mut socket, function_call(7), b"sess-2");
         expect_resume_call(&mut socket, 7);
         send_complete(&mut socket);
         while try_read_request(&mut socket).is_some() {}
@@ -2104,9 +2082,9 @@ async fn resume_rejects_a_different_reannounced_call() {
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
         let mut socket = accept_ws(&listener);
         expect_configure(&mut socket);
-        expect_reclaim(&mut socket, b"sess-1");
+        expect_load(&mut socket, b"sess-1");
         // not the call the drained session was waiting on
-        send_with_session_id(&mut socket, function_call(8), b"sess-1");
+        send_with_session_id(&mut socket, function_call(8), b"sess-2");
         while try_read_request(&mut socket).is_some() {}
     });
 
@@ -2141,12 +2119,12 @@ async fn resume_refused_returns_the_original_shutdown() {
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
         let mut socket = accept_ws(&listener);
         expect_configure(&mut socket);
-        expect_reclaim(&mut socket, b"sess-1");
-        // e.g. another connection already claimed the session
+        expect_load(&mut socket, b"sess-1");
+        // e.g. the store no longer holds the session
         send_kind(
             &mut socket,
             pb::child_event::Kind::FatalError(pb::FatalError {
-                message: "session already claimed".to_owned(),
+                message: "unknown session".to_owned(),
             }),
         );
     });

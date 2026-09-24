@@ -212,12 +212,13 @@ A local subprocess claiming shutdown is a protocol violation.
 
 A relay that stores sessions names each one with an opaque ID, `Checkout::session_id`.
 `ReplConfig::persistence` asks it to store the session or not; subprocess workers ignore it.
-`Checkout::restore` takes such an ID in place of dump bytes, and its `fork` flag copies the session under a new ID
-instead of claiming it.
+`Checkout::dump` saves the session's current state under its ID and returns the ID.
+`Checkout::restore` takes such an ID in place of dump bytes and always starts a new session, with its own ID, from the
+state last stored under it; a stored session is never resumed in place, so two loads of one ID give two sessions.
 With `PoolConfig::auto_resume` (the default), a drain of a named session is not returned: the checkout redials,
-reclaims the session by ID and re-sends the request.
-It returns the original `PoolError::Shutdown` if the new connection fails, or if the reclaimed session is not in the
-state it was drained in.
+loads the session's ID into a new session and re-sends the request.
+It returns the original `PoolError::Shutdown` if the new connection fails, or if the new session is not in the
+state the old one was drained in.
 The redial reuses the checkout's original upgrade headers, so a short-lived token in them can make the resume fail.
 A bare disconnect is never resumed, since the request may have run.
 

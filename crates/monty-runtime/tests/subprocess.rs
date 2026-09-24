@@ -801,10 +801,7 @@ fn suspended_call_keeps_its_arguments_for_a_dump() {
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load {
-        state: dump.state,
-        ..Default::default()
-    }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
     let (_, event) = fresh.recv_turn();
     let pb::child_event::Kind::FunctionCall(restored) = event else {
         panic!("expected re-emitted FunctionCall after Load, got {event:?}");
@@ -835,10 +832,7 @@ fn suspended_os_call_keeps_its_payload_for_a_dump() {
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load {
-        state: dump.state,
-        ..Default::default()
-    }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
     let (_, event) = fresh.recv_turn();
     let pb::child_event::Kind::OsCall(restored) = event else {
         panic!("expected re-emitted OsCall after Load, got {event:?}");
@@ -2002,10 +1996,7 @@ fn loading_a_dump_applies_its_own_memory_limit() {
     source.shutdown();
 
     let mut restored = ChildProc::spawn_stderr_piped();
-    restored.send(pb::parent_request::Kind::Load(pb::Load {
-        state: dump.state,
-        ..Default::default()
-    }));
+    restored.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
     let pb::child_event::Kind::Ok(_) = restored.recv() else {
         panic!("expected Ok for Load");
     };
@@ -2259,10 +2250,7 @@ fn type_check_format_survives_dump_and_load() {
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load {
-        state: dump.state,
-        ..Default::default()
-    }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
     let pb::child_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
@@ -2304,10 +2292,7 @@ fn dump_then_load_into_fresh_child_resumes() {
 
     // a fresh child restores the dump and re-announces the suspension
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load {
-        state: dump.state,
-        ..Default::default()
-    }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
     let (_, event) = fresh.recv_turn();
     let pb::child_event::Kind::FunctionCall(restored) = event else {
         panic!("expected re-emitted FunctionCall after Load, got {event:?}");
@@ -2344,10 +2329,7 @@ fn type_check_state_survives_dump_and_load() {
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load {
-        state: dump.state,
-        ..Default::default()
-    }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
     let pb::child_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
@@ -2382,10 +2364,7 @@ fn assert_annotation_option_survives_dump_and_load() {
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load {
-        state: dump.state,
-        ..Default::default()
-    }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
     let pb::child_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
@@ -2418,10 +2397,7 @@ fn assert_annotation_custom_limit_survives_dump_and_load() {
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load {
-        state: dump.state,
-        ..Default::default()
-    }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
     let pb::child_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };

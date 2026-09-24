@@ -959,9 +959,9 @@ class AsyncMontyWebsocket:
     raises `MontyDisconnectError`.
 
     A server that stores sessions gives each one an ID (`session.session_id`)
-    instead of handing state back: `load_session` / `load_snapshot` resume it
-    from any process, `fork=True` copies it under a new ID, and `dump()`
-    returns a snapshot ID. `checkout(ephemeral=True)` opts a session out.
+    instead of handing state back: `dump()` saves the current state under it
+    and returns it, and `load_session` / `load_snapshot` start a new session
+    from it, in any process. `checkout(ephemeral=True)` opts a session out.
     When such a server drains, the session resumes on another server without
     the caller noticing (see `auto_resume`).
 
@@ -1023,7 +1023,7 @@ class AsyncMontyWebsocket:
                 session dying with its worker. `None` disables this backstop.
             turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
             auto_resume: When a server that stores sessions drains one, redial,
-                reclaim the session by its `session_id` and re-send the request
+                load its `session_id` into a new session and re-send the request
                 it did not run, instead of raising `MontyShutdown`. `MontyShutdown`
                 still surfaces when the resume fails. A closed connection is never
                 resumed: the request may have run.
@@ -1188,16 +1188,17 @@ class AsyncMontySession:
                 session was checked out with `type_check=True`.
         """
 
-    async def load_session(self, state: bytes, *, fork: bool = False) -> None:
+    async def load_session(self, state: bytes) -> None:
         """
         Async counterpart of `MontySession.load_session`: restore a session between feeds.
 
         The snapshot trust requirements of `MontySession.load_session` also apply here.
 
-        Against a server that stores sessions, `state` may be a `session_id` or
-        a snapshot ID from `dump()`. Loading a session ID claims that session;
-        `fork=True` copies it under a new ID instead. Local workers and servers
-        that store nothing ignore `fork`, since loading a dump is always a copy.
+        Against a server that stores sessions, `state` may be a `session_id`.
+        Loading it always starts a new session, with its own `session_id`, from
+        the state last stored under that ID (its last `dump()`, or when the
+        server parked it). The stored session is never resumed in place, so
+        loading one ID twice gives two independent sessions.
         """
 
     async def load_snapshot(
@@ -1208,7 +1209,6 @@ class AsyncMontySession:
         print_callback: PrintCallback | None = None,
         external_lookup: dict[str, Any] | None = None,
         os: OsHandler | None = None,
-        fork: bool = False,
     ) -> AsyncSnapshot:
         """
         Async counterpart of `MontySession.load_snapshot`.
@@ -1220,7 +1220,7 @@ class AsyncMontySession:
         `external_lookup` / `os` are captured for `resume_auto()`, with the same
         restored-snapshot caveats as the sync method (a restored `FutureSnapshot`
         cannot be driven with `resume_auto()` — its pending coroutines are gone).
-        `state` and `fork` work as in `load_session`.
+        `state` may be a `session_id`, as in `load_session`.
         """
 
     async def dump(self) -> bytes:
@@ -1228,8 +1228,9 @@ class AsyncMontySession:
         Serialize the worker's session state (idle or suspended) to opaque
         bytes using monty's existing dump format. The session stays usable.
 
-        A server that stores sessions returns a snapshot ID instead, which
-        `load_session` / `load_snapshot` copy from.
+        A server that stores sessions instead saves the state under the
+        session's `session_id` and returns that ID, which `load_session` /
+        `load_snapshot` start new sessions from.
         """
 
     async def install_dependencies(self, requirements: list[str]) -> None:

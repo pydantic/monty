@@ -29,7 +29,7 @@ pub mod worker;
 /// requires. Purely additive changes an older peer can ignore do not need a
 /// bump.
 ///
-/// `Configure.persistence`, `Load.fork` and `ChildEvent.session_id` did not bump it:
+/// `Configure.persistence` and `ChildEvent.session_id` did not bump it:
 /// only a serving relay acts on them, and a child that drops them loses nothing.
 pub const PROTOCOL_VERSION: u32 = 5;
 

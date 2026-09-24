@@ -884,8 +884,8 @@ pub struct ResumeFutures {
 /// (idle or suspended). The child stays usable afterwards. The bytes carry
 /// monty's own dump format, versioned independently of this schema, and can
 /// only be restored via `Load` by a child built with the same dump version.
-/// A relay that stores sessions instead returns a snapshot ID, which `Load`
-/// copies from.
+/// A relay that stores sessions instead saves the state under the session's
+/// ID and returns that ID.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct Dump {}
@@ -895,14 +895,11 @@ pub struct Dump {}
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct Load {
-    /// Dump bytes, or an ID minted by a relay that stores sessions (a session ID
-    /// from `ChildEvent.session_id`, or a snapshot ID from `DumpResult.state`).
+    /// Dump bytes, or a session ID from a relay that stores sessions. Loading an
+    /// ID always starts a new session, with its own ID, from the state last
+    /// stored under it; the stored session is never resumed in place.
     #[prost(bytes = "vec", tag = "1")]
     pub state: crate::budgeted_prost::alloc::vec::Vec<u8>,
-    /// Relay-only: copy a stored session under a new ID instead of claiming it.
-    /// Children ignore it, since loading bytes is always a copy.
-    #[prost(bool, tag = "2")]
-    pub fork: bool,
 }
 /// Ends the checkout: the child drops all session state and returns to the
 /// no-session state, ready for the next `Configure` or `Load`.
@@ -982,7 +979,8 @@ pub struct ChildEvent {
     >,
     /// The session this connection now holds, set only by a relay that stores
     /// sessions, on its first reply to `Configure` or `Load` whatever that
-    /// reply's kind. Unset for ephemeral sessions and from children.
+    /// reply's kind (a `Load` always names a new session). Unset for ephemeral
+    /// sessions and from children.
     #[prost(bytes = "vec", optional, tag = "28")]
     pub session_id: ::core::option::Option<crate::budgeted_prost::alloc::vec::Vec<u8>>,
     #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
@@ -1339,7 +1337,7 @@ pub struct TypingError {
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct DumpResult {
-    /// Opaque versioned snapshot, or a snapshot ID from a relay that stores
+    /// Opaque versioned snapshot, or the session ID from a relay that stores
     /// sessions; see `Dump`.
     #[prost(bytes = "vec", tag = "1")]
     pub state: crate::budgeted_prost::alloc::vec::Vec<u8>,
@@ -1447,7 +1445,7 @@ pub enum Persistence {
     Unspecified = 0,
     /// Never stored: no session ID, never parked, and `Dump` is refused.
     Ephemeral = 1,
-    /// Parked on idle, drain or disconnect, and resumable by its session ID.
+    /// Parked on idle, drain or disconnect, and loadable by its session ID.
     Stored = 2,
 }
 impl Persistence {
