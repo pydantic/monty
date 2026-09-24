@@ -122,7 +122,14 @@ The tables round the numbers; the measured cold-start values are in the text bel
     Cold start is `Daytona().create()` followed by `sandbox.process.code_run("print(1 + 1)")`.
     The agent run creates a sandbox, warms it with one call, then makes ten `code_run` calls with the replayed programs,
     so each command is one HTTPS round trip plus a CPython start on the sandbox; the sandbox is deleted afterwards.
-    Daytona advertises sub-90 ms sandbox creation; the 1.5 s measured here includes the network round trips from London.
+    A cold start is three requests: `POST /api/sandbox`, a `GET` confirming the sandbox started, and the first
+    `code_run` through the EU sandbox proxy.
+    Re-measured on 2026-09-24 with the 0.216.1 SDK from Azure in London and Virginia, to remove the local network,
+    sandbox creation took 0.5–1.1 s and the first `code_run` 0.45–1 s.
+    The API is 7 ms from Virginia and the EU sandbox proxy, in Frankfurt, 20 ms from London, so the network explains
+    at most about 200 ms of the 1.5 s.
+    Daytona advertises sub-90 ms sandbox creation; we used `create()` with default arguments in the EU region and did
+    not reproduce it.
 - **Pyodide**: [`mcp-run-python`](https://pypi.org/project/mcp-run-python/) 0.0.22, which starts a Deno 2.5.5 process
     running Pyodide 0.28.2 and exposes it as an MCP server over stdio.
     Cold start is `code_sandbox()`, which spawns Deno and loads Pyodide, followed by one `eval`; installing a package such
@@ -249,9 +256,10 @@ Running your own sandbox cluster on Kubernetes has the same characteristics, wit
 - **Execution environment**: the provider's machines.
     An escape reaches a machine in their fleet, the code and its inputs leave your network, and capacity is the
     provider's to add.
-- **Start latency**: a network round trip plus container startup.
-    We measured 1.5 s to create a sandbox and run one line with Daytona EU from London, and about 40 ms per call to an
-    existing sandbox; Daytona advertises sub-90 ms latency, presumably for the latter.
+- **Start latency**: a few network round trips plus sandbox creation.
+    We measured 1.5 s to create a sandbox and run one line with Daytona EU from London, most of it Daytona creating
+    the sandbox and running the first command rather than the network, and about 40 ms per call to an existing sandbox;
+    see [how each setup was measured](#how-each-setup-was-measured).
 - **FOSS**: pay per execution or compute time; some implementations are open source.
 - **Setup complexity**: API integration and auth tokens, plus a network dependency on the provider that some
     procurement policies rule out.
