@@ -1,0 +1,28 @@
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_2708508cd7f9d2::t_9a18d2d2087d03 872-874,882-885,1330-1331,1358-1360
+crates/monty-pool/tests/websocket.rs
+  s_2708508cd7f9d2::t_dd406c99119d08 2226-2227,2229
+  s_2708508cd7f9d2::t_87504ba6c333c7 2005-2006,2010,2026,2173-2225,2228,2230-2285,2295-2321
+  s_2708508cd7f9d2::t_53efd3f9a7e4d8 2286-2294
+crates/monty-pool/src/checkout.rs
+  s_2708508cd7f9d2::t_dc99fb28cad099 796,803-806,1316-1317,1332-1333,1348-1351,1354,1359,1362,1365-1373,1377-1382,1396,1399,1410-1412,2071-2078,2080-2085
+  s_2708508cd7f9d2::t_ffe109c3e00a55 2079
+crates/monty-proto/src/generated/monty.v1.rs
+  s_2708508cd7f9d2::t_9a18d2d2087d03 887-889,899-902,1342-1343,1373-1375
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "75f3c4f8f33c0241eabf1e5b0e674f5fc98209ad",
+  "prompts": {},
+  "sessions": {
+    "s_2708508cd7f9d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "08a71cb8-ceab-4512-b7ea-487abf892d2f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
