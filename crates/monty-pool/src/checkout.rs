@@ -1506,14 +1506,15 @@ impl Checkout {
     /// actually sent. `on_event` sees each streamed `Print` before the
     /// turn-ender.
     ///
-    /// **Bypasses this checkout's suspension bookkeeping** (`pending`,
-    /// `feed_mounts`, `restored_script_name`) — never interleave with
-    /// `feed`/`resume`/`restore`. Worker lifecycle, poisoning and parent-side
+    /// **Bypasses this checkout's session bookkeeping** (`pending`,
+    /// `feed_mounts`, `restored_script_name`, `session_id`) — never interleave
+    /// with `feed`/`resume`/`restore`: the driver reads what a reply names from
+    /// the frame it forwards. Worker lifecycle, poisoning and parent-side
     /// limits work as on the typed path; a raw `Load` re-adopts its budget like
     /// [`Checkout::restore`]. A `FatalError`
     /// (or WebSocket `ShutdownDump`) turn-ender is returned so the driver can
     /// forward it, but discards the worker first — later calls report
-    /// [`PoolError::Finished`].
+    /// [`PoolError::Finished`]; a raw driver is never auto-resumed.
     ///
     /// # Security
     /// `request` is typically a remote client's, so it is treated as hostile:

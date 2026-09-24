@@ -2633,12 +2633,14 @@ fn format_cpython_exception(py: Python<'_>, e: &PyErr) -> String {
 /// Timeout duration for Monty tests.
 ///
 /// Tests that exceed this duration are considered to be hanging (infinite loop)
-/// and will fail with a timeout error. Disabled under miri since the interpreter
-/// overhead makes normal tests exceed the 4s limit.
+/// and will fail with a timeout error. Generous, because the cases run in
+/// parallel in a debug build on small CI runners: `recursion__deep_hash.py`
+/// takes about a second alone and has exceeded 4s there. Disabled under miri
+/// since the interpreter overhead makes normal tests exceed the limit.
 const TEST_TIMEOUT: Duration = if cfg!(miri) {
     Duration::from_mins(10)
 } else {
-    Duration::from_secs(4)
+    Duration::from_secs(15)
 };
 
 /// Result from running a test with a timeout.
