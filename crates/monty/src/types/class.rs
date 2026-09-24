@@ -72,6 +72,8 @@ pub(crate) struct Class {
     /// Baked in for the same reason as `options`: CPython decides at decoration
     /// whether the generated `__init__` calls the hook at all, so one attached
     /// to the class afterwards is never called.
+    /// Defaults on load: dumps written before the hook existed never called it.
+    #[serde(default)]
     has_post_init: bool,
     /// Boundary identity, generated lazily the first time the class (or one of
     /// its instances) crosses to the host; dumped with the heap so it stays
