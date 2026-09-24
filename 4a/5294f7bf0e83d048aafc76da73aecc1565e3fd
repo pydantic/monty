@@ -1,0 +1,21 @@
+crates/monty/tests/dump_compat.rs
+  s_d7395db8d665f2::t_e015d9691d082c 217-220
+crates/monty-datatest/src/main.rs
+  s_d7395db8d665f2::t_e015d9691d082c 2735,2737-2739
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4a5294f7bf0e83d048aafc76da73aecc1565e3fd",
+  "prompts": {},
+  "sessions": {
+    "s_d7395db8d665f2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6838a25f-2c6e-45af-9d8a-1e0485adfa39",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
