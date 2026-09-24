@@ -214,6 +214,10 @@ fn fixture_dump_loads_and_resumes() {
                 .resume(NameLookupResult::Value(host), PrintWriter::Stdout)
                 .unwrap();
         }
+        let ReplProgress::FunctionCall(call) = &progress else {
+            panic!("the fixture must suspend on host_call, got {progress:?}");
+        };
+        assert_eq!(call.function_name, "host_call");
         let bytes = dump("fixture.py", None, SessionRef::Suspended(&progress)).unwrap();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, bytes).unwrap();

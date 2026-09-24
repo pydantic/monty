@@ -2732,8 +2732,11 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
         } else {
             try_run_test(&path_owned, &code, &expectation, &config)?;
             // Suspending cases already round-trip at every host call; this covers the rest.
+            // Not for xfail cases, whose expected failure must come from the run itself.
             #[cfg(not(feature = "memory-model-checks"))]
-            idle_dump_round_trip(&path_owned, &code, &config)?;
+            if !config.xfail_monty {
+                idle_dump_round_trip(&path_owned, &code, &config)?;
+            }
             Ok(())
         }
     });
