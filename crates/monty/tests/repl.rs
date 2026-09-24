@@ -157,17 +157,18 @@ fn dump_rejects_transient_gc_colors() {
     // The microsecond 444555 as a CBOR u32 is distinctive; the heap entry's
     // `color` field follows its time payload.
     const MICROSECOND: [u8; 5] = [0x1a, 0x00, 0x06, 0xc8, 0x8b];
-    const BLACK: &[u8] = b"\x65color\x65Black";
+    // `color` is serialized as key `C`, `Black` as `B`, `Gray`/`White` as `G`/`W`.
+    const BLACK: &[u8] = b"\x61C\x61B";
     let bytes = dump_repl("import datetime\nt = datetime.time(11, 22, 33, 444555)");
     let after_time = offset_of(&bytes, &MICROSECOND) + MICROSECOND.len();
-    let color = after_time + offset_of(&bytes[after_time..], BLACK) + b"\x65color".len();
+    let color = after_time + offset_of(&bytes[after_time..], BLACK) + b"\x61C".len();
     assert!(Dump::load(&bytes).is_ok());
 
-    let rejections: Vec<String> = [&b"\x64Gray"[..], b"\x65White"]
+    let rejections: Vec<String> = [&b"\x61G"[..], b"\x61W"]
         .into_iter()
         .map(|transient| {
             let mut forged = bytes.clone();
-            forged.splice(color..color + b"\x65Black".len(), transient.iter().copied());
+            forged.splice(color..color + b"\x61B".len(), transient.iter().copied());
             let err = Dump::load(&forged).unwrap_err();
             assert!(matches!(err, DumpError::Payload(_)));
             err.to_string()
