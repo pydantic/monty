@@ -236,6 +236,9 @@ it). Adding a field (`#[serde(default)]`), removing one, or inserting a variant 
 loading, while tuple structs and tuple variants are positional and may only grow at the end; the names are the
 persistence contract, so renaming a serialized field or variant needs `#[serde(alias = "old")]`, and `#[serde(deny_unknown_fields)]` must never go on a dumped type.
 Persisted `Vec<u8>` / `[u8; N]` data takes `#[serde(with = "serde_bytes")]` so it is written as one byte string.
+Types written many times (`Value`, `HeapEntry`, `CcColor`, `List`, `Tuple`, `Dict`, `DictEntry`, `SetEntry`,
+`CodeRange`, `LocationEntry`, `CodeLoc`) rename every field and variant to one upper-case
+letter, since key strings otherwise dominate the dump; a new field or variant on them takes an unused letter.
 `DUMP_VERSION` still bumps when the *meaning* of stored data changes: opcodes, `BuiltinsFunctions` order (its
 discriminants are bytecode operands), `CmpOperator` values, the compiler's constant layout, how a key hashes (dict and
 set entries persist their hash, which is why keys without a heap identity hash by name or a persisted id such as a

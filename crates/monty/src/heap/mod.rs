@@ -81,20 +81,24 @@ pub(crate) enum CcColor {
     /// Live and not currently a cycle candidate. Default state for every newly
     /// allocated entry.
     #[default]
+    #[serde(rename = "B")]
     Black,
     /// Visited by `MarkGray` during a collection cycle. Children's refcounts
     /// have been provisionally decremented; a later `Scan` pass decides whether
     /// to resurrect (back to [`Black`](Self::Black)) or condemn
     /// ([`White`](Self::White)) the entry.
+    #[serde(rename = "G")]
     Gray,
     /// Confirmed unreachable by the current collection: every reference into
     /// the entry comes from another condemned entry. `CollectWhite` will free
     /// it. Only seen mid-collection.
+    #[serde(rename = "W")]
     White,
     /// Candidate cycle root. Set by `dec_ref` whenever a GC-tracked entry's
     /// refcount drops to a non-zero value — the only situation in which a new
     /// reference cycle can become unreachable. The collector seeds its work
     /// from every entry currently flagged Purple.
+    #[serde(rename = "P")]
     Purple,
 }
 
@@ -820,6 +824,7 @@ impl<'a> HeapPtr<'a> {
 /// collector's `mark_gray`/`scan`/`scan_black`).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct HeapEntry {
+    #[serde(rename = "R")]
     refcount: Cell<usize>,
     /// Number of active `HeapRead` pointers into this entry's data.
     ///
@@ -830,6 +835,7 @@ pub struct HeapEntry {
     #[serde(skip)] // should always be 0 during serde ops
     readers: Cell<usize>,
     /// The payload data
+    #[serde(rename = "D")]
     data: UnsafeHeapData,
     /// Cycle-collector color. See [`CcColor`].
     ///
@@ -837,6 +843,7 @@ pub struct HeapEntry {
     /// instructions can capture entries in the [`Purple`](CcColor::Purple)
     /// pending-collection state; dropping the color on restore would leak
     /// any cycle that became unreachable just before the snapshot.
+    #[serde(rename = "C")]
     color: Cell<CcColor>,
 }
 

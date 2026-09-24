@@ -31,8 +31,10 @@ use crate::{
 /// Entry in the set storage, containing a value and its cached hash.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct SetEntry {
+    #[serde(rename = "V")]
     pub(crate) value: Value,
     /// Cached hash for efficient lookup and reinsertion.
+    #[serde(rename = "H")]
     pub(crate) hash: u64,
 }
 

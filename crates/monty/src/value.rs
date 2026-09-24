@@ -59,37 +59,53 @@ use crate::{
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Value {
     // Immediate values (stored inline, no heap allocation)
+    #[serde(rename = "U")]
     Undefined,
+    #[serde(rename = "E")]
     Ellipsis,
+    #[serde(rename = "N")]
     NotImplemented,
+    #[serde(rename = "O")]
     None,
+    #[serde(rename = "B")]
     Bool(bool),
+    #[serde(rename = "I")]
     Int(i64),
+    #[serde(rename = "F")]
     Float(f64),
     /// An interned string literal. The StringId references the string in the Interns table.
     /// To get the actual string content, use `interns.get(string_id)`.
+    #[serde(rename = "T")]
     InternString(StringId),
     /// An interned bytes literal. The BytesId references the bytes in the Interns table.
     /// To get the actual bytes content, use `interns.get_bytes(bytes_id)`.
+    #[serde(rename = "R")]
     InternBytes(BytesId),
     /// An interned long integer literal. The `LongIntId` references the `BigInt` in the Interns table.
     /// Used for integer literals exceeding i64 range. Converted to heap-allocated `LongInt` on load.
+    #[serde(rename = "L")]
     InternLongInt(LongIntId),
     /// A builtin function or exception type
+    #[serde(rename = "A")]
     Builtin(Builtins),
     /// A function from a module (not a global builtin).
     /// Module functions require importing a module to access (e.g., `asyncio.gather`).
+    #[serde(rename = "M")]
     ModuleFunction(ModuleFunctions),
     /// A function defined in the module (not a closure, doesn't capture any variables)
+    #[serde(rename = "D")]
     DefFunction(FunctionId),
     /// A marker value representing special objects like sys.stdout/stderr.
     /// These exist but have minimal functionality in the sandboxed environment.
+    #[serde(rename = "K")]
     Marker(Marker),
     /// A property descriptor that computes its value when accessed.
     /// When retrieved via `py_getattr`, the property's getter is invoked.
+    #[serde(rename = "P")]
     Property(Property),
 
     // Heap-allocated values (stored in arena)
+    #[serde(rename = "C")]
     Ref(HeapId),
 
     /// Sentinel value indicating this Value was properly cleaned up via `drop_with`.
@@ -97,6 +113,7 @@ pub(crate) enum Value {
     /// correctness - if a `Ref` variant is dropped without calling `drop_with`, the
     /// Drop impl will panic.
     #[cfg(feature = "memory-model-checks")]
+    #[serde(rename = "G")]
     Dereferenced,
 }
 

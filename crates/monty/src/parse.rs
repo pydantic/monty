@@ -2455,10 +2455,13 @@ fn describe_expr_kind(expr: &AstExpr) -> &'static str {
 #[derive(Clone, Copy, Default, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CodeRange {
     /// Filename identity, resolved by `Interns::get_filename`.
+    #[serde(rename = "F")]
     pub filename: StringId,
     /// Byte offset of the range start within the source text.
+    #[serde(rename = "S")]
     pub start_byte: u32,
     /// Byte offset of the range end (exclusive) within the source text.
+    #[serde(rename = "E")]
     pub end_byte: u32,
 }
 

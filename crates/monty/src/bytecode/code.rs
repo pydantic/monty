@@ -150,15 +150,18 @@ pub struct LocationEntry {
     ///
     /// The entry applies from this offset until the next entry's offset
     /// (or end of bytecode).
+    #[serde(rename = "B")]
     bytecode_offset: u32,
 
     /// Full source range of the expression (for the underline).
+    #[serde(rename = "R")]
     range: CodeRange,
 
     /// Optional focus point within the range (for the ^ caret).
     ///
     /// If None, the entire range is underlined without a focus caret.
     /// This can be populated later for Python 3.11-style focused tracebacks.
+    #[serde(rename = "F")]
     focus: Option<CodeRange>,
 }
 

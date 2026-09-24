@@ -725,8 +725,10 @@ impl fmt::Display for StackFrame {
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CodeLoc {
     /// Line number (1-based).
+    #[serde(rename = "L")]
     pub line: u32,
     /// Column number (1-based), counted in characters (not bytes).
+    #[serde(rename = "C")]
     pub column: u32,
 }
 
