@@ -1,0 +1,24 @@
+crates/monty-python/tests/test_feed_start.py
+  s_ad7fe5a5ed7985::t_00b4883731692b 223-231
+crates/monty-python/tests/test_telemetry.py
+  s_ad7fe5a5ed7985::t_00b4883731692b 326-327,341-342
+crates/monty-js/__test__/feed_start.spec.ts
+  s_ad7fe5a5ed7985::t_00b4883731692b 196-198,200-210
+  s_ad7fe5a5ed7985::t_2b30a2b30bbcb2 199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b4b28048b2f069d5857f1b43dd74d5703ce80743",
+  "prompts": {},
+  "sessions": {
+    "s_ad7fe5a5ed7985": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b11a97e8-e7fa-4d01-908a-66d334639f05",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
