@@ -133,6 +133,18 @@ fn os_call_points_at_the_call_expression() {
 }
 
 #[test]
+fn an_os_call_after_a_nested_dunder_call_points_at_the_call() {
+    // `sleep` runs `__index__` in a nested frame before suspending; returning
+    // from it must not move the position on to the next instruction, `other`
+    let code = "import time\nclass Index:\n    def __index__(self):\n        return 0\nother = 1\nprint(time.sleep(Index()), other)";
+    let call = start(code).into_os_call().unwrap();
+    assert_eq!(call.function_call.name(), "system.sleep");
+    assert_eq!(call.position, range("test.py", 6, 7, 26));
+    let done = call.resume(MontyObject::none(), PrintWriter::Stdout).unwrap();
+    assert!(done.into_complete().is_some());
+}
+
+#[test]
 fn a_call_inside_eval_points_into_the_string() {
     let call = start("eval('1 + fetch()')").into_function_call().unwrap();
     assert_eq!(call.position, range("<string>", 1, 5, 12));
