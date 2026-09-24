@@ -813,8 +813,11 @@ impl Checkout {
             .request_turn(&request, self.pool.config.request_timeout, on_print)
             .await;
         self.end_load();
-        // a frame-size rejection preserves the session, and with it its ID
-        if !self.request_sent {
+        // A `Runtime` error that named no session leaves the worker's as it
+        // was — a frame-size rejection before the send, or a load the worker
+        // refused — so it keeps the ID it had, which a storing relay still
+        // holds it under. (An aborted over-budget load named the new one.)
+        if matches!(outcome, Err(PoolError::Runtime(_))) && self.session_id.is_none() {
             self.session_id = session_id;
         }
         let event = match outcome? {

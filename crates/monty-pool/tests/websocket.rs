@@ -1961,6 +1961,40 @@ async fn restore_clears_a_stale_session_id() {
     join_server(server).await;
 }
 
+/// A load the worker refuses leaves the session it already had, which a
+/// storing relay still names by the ID from `Configure`: the checkout must not
+/// forget it, or it would decline to resume a session the relay can hand back.
+#[tokio::test]
+async fn refused_restore_keeps_the_session_id() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_load(&mut socket, b"bad-dump");
+        // the refusal: an ordinary Error, which names no session
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Error(pb::Error {
+                exception: Some(pb::RaisedException {
+                    exc_type: "RuntimeError".to_owned(),
+                    message: Some("unknown session".to_owned()),
+                    traceback: vec![].into(),
+                    data: None,
+                }),
+            }),
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let refused = checkout.restore(b"bad-dump".to_vec(), vec![], &mut no_print).await;
+    assert!(matches!(refused, Err(PoolError::Runtime(_))), "{refused:?}");
+    assert_eq!(checkout.session_id(), Some(&b"sess-1"[..]));
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
 // ---- auto-resume -------------------------------------------------------------
 //
 // A storing relay that drains names the session in `ShutdownDump`; the checkout
