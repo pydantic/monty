@@ -298,3 +298,31 @@ async def test_checkout_rejects_unknown_limits():
     assert exc_info.value.args[0] == snapshot(
         "unknown limits key 'max_memroy'; accepted keys are 'max_feed_duration_secs', 'max_turn_duration_secs', 'max_memory', 'gc_interval', 'max_recursion_depth', 'max_suspensions', 'max_total_sleep_secs'"
     )
+
+
+async def test_plain_relay_names_no_session(ws_url: str):
+    """The dev relay stores nothing, so sessions get no ID and `ephemeral` changes nothing."""
+    async with AsyncMontyWebsocket(ws_url, request_timeout=30.0) as pool:
+        for ephemeral in (None, True, False):
+            async with pool.checkout(ephemeral=ephemeral) as session:
+                assert session.session_id is None
+                assert await session.feed_run('1 + 1') == snapshot(2)
+
+
+async def test_fork_is_ignored_by_a_plain_relay(ws_url: str):
+    """Without storage `state` is dump bytes, and loading bytes is already a copy."""
+    async with AsyncMontyWebsocket(ws_url, request_timeout=30.0) as pool:
+        async with pool.checkout() as session:
+            await session.feed_run('x = 20')
+            dump = await session.dump()
+        async with pool.checkout() as session:
+            await session.load_session(dump, fork=True)
+            assert session.session_id is None
+            assert await session.feed_run('x + 1') == snapshot(21)
+
+
+async def test_auto_resume_can_be_disabled(ws_url: str):
+    """Only a storing server's drain triggers a resume, so a plain relay behaves the same either way."""
+    async with AsyncMontyWebsocket(ws_url, request_timeout=30.0, auto_resume=False) as pool:
+        async with pool.checkout() as session:
+            assert await session.feed_run('1 + 1') == snapshot(2)

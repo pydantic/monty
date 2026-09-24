@@ -397,3 +397,5 @@ See the [Rust quickstart](quickstart/rust.md#serialization).
 - **Approval gates.** Pause at a sensitive call, store the snapshot, resume once a human approves.
 - **Forking.** One snapshot restored into several sessions explores several branches from the same state.
 - **Surviving restarts.** A remote server draining for deploy answers with a dump you can restore elsewhere.
+    A server that stores sessions instead resumes them for you; see
+    [stored sessions](api/python/websocket.md#stored-sessions).

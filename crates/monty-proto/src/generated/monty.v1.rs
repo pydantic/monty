@@ -789,6 +789,10 @@ pub struct Configure {
     /// with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
     #[prost(message, optional, tag = "11")]
     pub os_policy: ::core::option::Option<OsPolicy>,
+    /// Relay-only: whether a serving relay may store the session. Children ignore
+    /// it, so it needs no protocol version bump.
+    #[prost(enumeration = "Persistence", tag = "12")]
+    pub persistence: i32,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -880,6 +884,8 @@ pub struct ResumeFutures {
 /// (idle or suspended). The child stays usable afterwards. The bytes carry
 /// monty's own dump format, versioned independently of this schema, and can
 /// only be restored via `Load` by a child built with the same dump version.
+/// A relay that stores sessions instead returns a snapshot ID, which `Load`
+/// copies from.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct Dump {}
@@ -889,8 +895,14 @@ pub struct Dump {}
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct Load {
+    /// Dump bytes, or an ID minted by a relay that stores sessions (a session ID
+    /// from `ChildEvent.session_id`, or a snapshot ID from `DumpResult.state`).
     #[prost(bytes = "vec", tag = "1")]
     pub state: crate::budgeted_prost::alloc::vec::Vec<u8>,
+    /// Relay-only: copy a stored session under a new ID instead of claiming it.
+    /// Children ignore it, since loading bytes is always a copy.
+    #[prost(bool, tag = "2")]
+    pub fork: bool,
 }
 /// Ends the checkout: the child drops all session state and returns to the
 /// no-session state, ready for the next `Configure` or `Load`.
@@ -968,6 +980,11 @@ pub struct ChildEvent {
     pub restored_script_name: ::core::option::Option<
         crate::budgeted_prost::alloc::string::String,
     >,
+    /// The session this connection now holds, set only by a relay that stores
+    /// sessions, on its first reply to `Configure` or `Load` whatever that
+    /// reply's kind. Unset for ephemeral sessions and from children.
+    #[prost(bytes = "vec", optional, tag = "28")]
+    pub session_id: ::core::option::Option<crate::budgeted_prost::alloc::vec::Vec<u8>>,
     #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
@@ -1322,7 +1339,8 @@ pub struct TypingError {
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct DumpResult {
-    /// Opaque versioned snapshot; see `Dump`.
+    /// Opaque versioned snapshot, or a snapshot ID from a relay that stores
+    /// sessions; see `Dump`.
     #[prost(bytes = "vec", tag = "1")]
     pub state: crate::budgeted_prost::alloc::vec::Vec<u8>,
 }
@@ -1351,9 +1369,9 @@ pub struct FatalError {
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct ShutdownDump {
-    /// Session state captured immediately before shutdown (same bytes as
-    /// `DumpResult.state`), restorable into a fresh worker via `Load`. Absent
-    /// when there was no session yet or the dump itself failed.
+    /// Whatever `Load.state` restores the session from: dump bytes from a relay
+    /// without storage, or the session ID from one with it. Absent when there
+    /// was no session yet or the dump itself failed.
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<crate::budgeted_prost::alloc::vec::Vec<u8>>,
 }
@@ -1406,6 +1424,50 @@ impl TypeOrigin {
             "TYPE_ORIGIN_BUILTIN" => Some(Self::Builtin),
             "TYPE_ORIGIN_SANDBOX" => Some(Self::Sandbox),
             "TYPE_ORIGIN_HOST" => Some(Self::Host),
+            _ => None,
+        }
+    }
+}
+/// How a serving relay treats the session's state; children ignore it.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    crate::budgeted_prost::Enumeration
+)]
+#[prost(prost_path = "crate::budgeted_prost")]
+#[repr(i32)]
+pub enum Persistence {
+    /// The relay's default.
+    Unspecified = 0,
+    /// Never stored: no session ID, never parked, and `Dump` is refused.
+    Ephemeral = 1,
+    /// Parked on idle, drain or disconnect, and resumable by its session ID.
+    Stored = 2,
+}
+impl Persistence {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PERSISTENCE_UNSPECIFIED",
+            Self::Ephemeral => "PERSISTENCE_EPHEMERAL",
+            Self::Stored => "PERSISTENCE_STORED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PERSISTENCE_UNSPECIFIED" => Some(Self::Unspecified),
+            "PERSISTENCE_EPHEMERAL" => Some(Self::Ephemeral),
+            "PERSISTENCE_STORED" => Some(Self::Stored),
             _ => None,
         }
     }

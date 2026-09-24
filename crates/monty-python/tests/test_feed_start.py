@@ -588,6 +588,28 @@ async def test_async_dump_load_round_trip():
             assert done.output == snapshot(42)
 
 
+async def test_async_load_with_fork_is_a_plain_copy_locally():
+    # `fork` only means something to a storing server; a local worker loads the bytes either way
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            await session.feed_run('x = 20')
+            idle = await session.dump()
+            await session.feed_start('y = fetch()\ny + x')
+            suspended = await session.dump()
+
+        async with pool.checkout() as session:
+            await session.load_session(idle, fork=True)
+            assert session.session_id is None
+            assert await session.feed_run('x + 1') == snapshot(21)
+
+        async with pool.checkout() as session:
+            loaded_snap = await session.load_snapshot(suspended, fork=True)
+            assert isinstance(loaded_snap, AsyncFunctionSnapshot)
+            done = await loaded_snap.resume({'return_value': 1})
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot(21)
+
+
 # =============================================================================
 # resume_auto: answer each suspension from the captured external_lookup / os
 # =============================================================================

@@ -526,10 +526,10 @@ class MontyShutdown(MontyError):
     that raised it **did not run**, so re-running it on a fresh session is
     safe.
 
-    `dump` carries the session state captured just before shutdown — restore
-    it on a new session to carry the session across a server restart, with
+    `dump` is what restores the session on a new one, with
     `session.load_session` (idle, between feeds) or `session.load_snapshot`
-    (suspended mid-feed).
+    (suspended mid-feed): the session ID from a server that stores sessions,
+    or the session state captured just before shutdown from one that does not.
 
     One caveat: if the interrupted request was answering a suspension (an
     external function or `os` callback), the host already ran that call and
@@ -541,7 +541,7 @@ class MontyShutdown(MontyError):
 
     @property
     def dump(self) -> bytes | None:
-        """Restorable session dump, or `None` when nothing had run yet or the server's dump failed."""
+        """What `load_session` / `load_snapshot` restores, or `None` when nothing had run yet or the dump failed."""
 
 @final
 class Monty:
@@ -958,6 +958,13 @@ class AsyncMontyWebsocket:
     drop (idle, session or turn timeout, capacity) closes the connection and
     raises `MontyDisconnectError`.
 
+    A server that stores sessions gives each one an ID (`session.session_id`)
+    instead of handing state back: `load_session` / `load_snapshot` resume it
+    from any process, `fork=True` copies it under a new ID, and `dump()`
+    returns a snapshot ID. `checkout(ephemeral=True)` opts a session out.
+    When such a server drains, the session resumes on another server without
+    the caller noticing (see `auto_resume`).
+
     ```python
     async with AsyncMontyWebsocket('ws://127.0.0.1:8799') as pool:
         async with pool.checkout() as session:
@@ -975,6 +982,7 @@ class AsyncMontyWebsocket:
         connect_headers: Callable[[], Mapping[str, str]] | None = None,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
+        auto_resume: bool = True,
     ) -> Self:
         """
         Configure a remote worker pool; connections are made by `async with` and
@@ -1014,6 +1022,11 @@ class AsyncMontyWebsocket:
                 sandbox time to raise `TimeoutError` itself rather than the
                 session dying with its worker. `None` disables this backstop.
             turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
+            auto_resume: When a server that stores sessions drains one, redial,
+                reclaim the session by its `session_id` and re-send the request
+                it did not run, instead of raising `MontyShutdown`. `MontyShutdown`
+                still surfaces when the resume fails. A closed connection is never
+                resumed: the request may have run.
         """
 
     async def __aenter__(self) -> Self: ...
@@ -1030,21 +1043,28 @@ class AsyncMontyWebsocket:
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
         os_policy: OSPolicy | None = None,
+        ephemeral: bool | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated remote connection.
 
-        Identical to `AsyncMonty.checkout`; the connection is opened by
-        `async with` on the returned session.
+        Identical to `AsyncMonty.checkout`, except for `ephemeral`; the
+        connection is opened by `async with` on the returned session.
+
+        Arguments:
+            ephemeral: Whether a server that stores sessions may store this one.
+                `True` means it is never stored, gets no `session_id`, and
+                `dump()` is refused; `False` asks for it to be stored; `None`
+                takes the server's default. Servers that store nothing ignore it.
         """
 
 @final
 class AsyncMontySession:
     """
-    A REPL session running in a dedicated `monty` subprocess worker.
+    A REPL session running in a dedicated `monty` worker, local or remote.
 
-    Obtained from `AsyncMonty.checkout()` and used as an async context
-    manager. Session state (globals, functions) persists across
+    Obtained from `AsyncMonty.checkout()` or `AsyncMontyWebsocket.checkout()`
+    and used as an async context manager. Session state (globals, functions) persists across
     `feed_run` calls within the session.
     """
 
@@ -1168,11 +1188,16 @@ class AsyncMontySession:
                 session was checked out with `type_check=True`.
         """
 
-    async def load_session(self, state: bytes) -> None:
+    async def load_session(self, state: bytes, *, fork: bool = False) -> None:
         """
         Async counterpart of `MontySession.load_session`: restore a session between feeds.
 
         The snapshot trust requirements of `MontySession.load_session` also apply here.
+
+        Against a server that stores sessions, `state` may be a `session_id` or
+        a snapshot ID from `dump()`. Loading a session ID claims that session;
+        `fork=True` copies it under a new ID instead. Local workers and servers
+        that store nothing ignore `fork`, since loading a dump is always a copy.
         """
 
     async def load_snapshot(
@@ -1183,6 +1208,7 @@ class AsyncMontySession:
         print_callback: PrintCallback | None = None,
         external_lookup: dict[str, Any] | None = None,
         os: OsHandler | None = None,
+        fork: bool = False,
     ) -> AsyncSnapshot:
         """
         Async counterpart of `MontySession.load_snapshot`.
@@ -1194,12 +1220,16 @@ class AsyncMontySession:
         `external_lookup` / `os` are captured for `resume_auto()`, with the same
         restored-snapshot caveats as the sync method (a restored `FutureSnapshot`
         cannot be driven with `resume_auto()` — its pending coroutines are gone).
+        `state` and `fork` work as in `load_session`.
         """
 
     async def dump(self) -> bytes:
         """
         Serialize the worker's session state (idle or suspended) to opaque
         bytes using monty's existing dump format. The session stays usable.
+
+        A server that stores sessions returns a snapshot ID instead, which
+        `load_session` / `load_snapshot` copy from.
         """
 
     async def install_dependencies(self, requirements: list[str]) -> None:
@@ -1221,6 +1251,15 @@ class AsyncMontySession:
 
         `None` when no worker is attached or a turn is currently in flight
         on another thread (the getter never blocks on a running turn).
+        """
+
+    @property
+    def session_id(self) -> bytes | None:
+        """The opaque ID a server that stores sessions gave this session.
+
+        Pass it to `load_session` / `load_snapshot` to resume the session from any
+        process. `None` for local workers, ephemeral sessions and servers that
+        store nothing.
         """
 
 @final

@@ -16,7 +16,7 @@ use tokio::{
 
 use crate::{
     PoolConfig, PoolError,
-    checkout::{Checkout, CheckoutOptions, ReplConfig, request},
+    checkout::{Checkout, CheckoutOptions, Redial, ReplConfig, request},
     worker::Worker,
 };
 
@@ -105,9 +105,16 @@ impl Pool {
             options.connect_headers.splice(0..0, telemetry.propagation_headers());
         }
         let worker = self.inner.acquire_worker(&options.connect_headers).await?;
+        let config = &self.inner.config;
+        let redial = (config.auto_resume && config.transport.is_websocket()).then(|| Redial {
+            repl: repl.clone(),
+            connect_headers: options.connect_headers.clone(),
+            #[cfg(feature = "telemetry")]
+            telemetry: options.telemetry.clone(),
+        });
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(options.telemetry);
-        Checkout::create(worker, Arc::clone(&self.inner), repl).await
+        Checkout::create(worker, Arc::clone(&self.inner), repl, redial).await
     }
 
     /// Asks idle workers to exit cleanly and reaps them, capping the wait per

@@ -352,6 +352,14 @@ impl Worker {
         self
     }
 
+    /// Marks this worker's session span as a session resumed after its relay drained.
+    #[cfg(feature = "telemetry")]
+    pub(crate) fn mark_resumed(&mut self) {
+        if let Some(recorder) = &mut self.recorder {
+            recorder.mark_resumed();
+        }
+    }
+
     /// Receives one event. EOF/close is an error here because within a
     /// checkout the child must never close its side first.
     ///

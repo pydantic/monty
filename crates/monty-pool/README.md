@@ -157,12 +157,13 @@ linked SDK or streams raw measurements to the foreign host. Either turns on the 
 pool health
 (`monty.pool.workers.live`, `monty.pool.workers.idle`,
 `monty.pool.workers.suspended`, `monty.pool.checkout.wait`, `monty.pool.worker.terminated`,
-`monty.pool.session.duration`) and per-turn cost (`monty.run.duration`,
+`monty.pool.session.duration`, `monty.pool.session.resumed`) and per-turn cost (`monty.run.duration`,
 `monty.run.execution_time`, `monty.turn.duration`, `monty.run.suspensions`,
 `monty.ext.call.duration`, `monty.snapshot.bytes`, `monty.print.bytes`,
 `monty.wire.frame.bytes`).
 `monty.pool.session.duration` uses `ok` for a clean finish, `error` when the worker is lost, and `abandoned` when a
 live checkout is dropped.
+`monty.pool.session.resumed` counts auto-resume attempts, with `ok` or `error`.
 
 Two differences from the spans above. Metrics cover **every** checkout, not only the ones a
 host gave a parent context — an aggregate over traced sessions alone would be misleading —
@@ -208,6 +209,17 @@ A draining server can instead return `PoolError::Shutdown` with an optional sess
 The interrupted request did not run, but restoring a suspended dump repeats its host call, which may already have
 had side effects; callbacks used this way should be idempotent.
 A local subprocess claiming shutdown is a protocol violation.
+
+A relay that stores sessions names each one with an opaque ID, `Checkout::session_id`.
+`ReplConfig::persistence` asks it to store the session or not; subprocess workers ignore it.
+`Checkout::restore` takes such an ID in place of dump bytes, and its `fork` flag copies the session under a new ID
+instead of claiming it.
+With `PoolConfig::auto_resume` (the default), a drain of a named session is not returned: the checkout redials,
+reclaims the session by ID and re-sends the request.
+It returns the original `PoolError::Shutdown` if the new connection fails, or if the reclaimed session is not in the
+state it was drained in.
+The redial reuses the checkout's original upgrade headers, so a short-lived token in them can make the resume fail.
+A bare disconnect is never resumed, since the request may have run.
 
 ## Monty crates
 

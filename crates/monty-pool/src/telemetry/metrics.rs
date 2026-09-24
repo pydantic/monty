@@ -74,6 +74,14 @@ static WORKER_TERMINATED: Instrument = Instrument {
     description: "Workers discarded by the pool, by reason.",
 };
 
+/// Sessions resumed after their relay drained.
+static SESSION_RESUMED: Instrument = Instrument {
+    kind: MetricKind::Counter,
+    name: "monty.pool.session.resumed",
+    unit: "{session}",
+    description: "Drained sessions the pool tried to resume, by outcome.",
+};
+
 /// Checkout lifetime.
 static SESSION_DURATION: Instrument = Instrument {
     kind: MetricKind::Histogram,
@@ -231,6 +239,15 @@ impl Metrics {
         self.record(
             &SESSION_DURATION,
             MetricValue::seconds(elapsed),
+            &[KeyValue::new("outcome", outcome)],
+        );
+    }
+
+    /// One attempt to resume a session its relay drained (`ok` or `error`).
+    pub(crate) fn session_resumed(&self, outcome: &'static str) {
+        self.record(
+            &SESSION_RESUMED,
+            MetricValue::I64(1),
             &[KeyValue::new("outcome", outcome)],
         );
     }
@@ -1084,6 +1101,7 @@ mod tests {
             total_execution_micros: 0,
             max_suspensions: None,
             restored_script_name: None,
+            session_id: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
@@ -1312,6 +1330,7 @@ mod tests {
                 total_execution_micros: total,
                 max_suspensions: None,
                 restored_script_name: None,
+                session_id: None,
                 feed_execution_micros: 0,
                 max_feed_duration_micros: None,
                 max_turn_duration_micros: None,
@@ -1402,12 +1421,14 @@ mod tests {
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
             state: vec![].into(),
+            ..Default::default()
         })));
         metrics.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 10_000_000,
             max_suspensions: None,
             restored_script_name: Some("dumped.py".to_owned()),
+            session_id: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
@@ -1419,6 +1440,7 @@ mod tests {
             total_execution_micros: 10_000_100,
             max_suspensions: None,
             restored_script_name: None,
+            session_id: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
@@ -1440,6 +1462,7 @@ mod tests {
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
             state: vec![].into(),
+            ..Default::default()
         })));
         metrics.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::NameLookup(pb::NameLookup {
@@ -1450,6 +1473,7 @@ mod tests {
             total_execution_micros: 10_000_000,
             max_suspensions: None,
             restored_script_name: None,
+            session_id: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
@@ -1472,6 +1496,7 @@ mod tests {
             total_execution_micros: 10_000_050,
             max_suspensions: None,
             restored_script_name: None,
+            session_id: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,

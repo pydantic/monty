@@ -42,8 +42,8 @@ use std::{
 };
 
 use monty_pool::{
-    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, MountSpec, OnPrint, Pool, PoolConfig, PoolError,
-    PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, MountSpec, OnPrint, Persistence, Pool, PoolConfig,
+    PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value};
 use monty_types::{
@@ -223,6 +223,7 @@ impl PyMonty {
                 assert_message_annotations,
                 print_flush_interval,
                 os_policy.unwrap_or_default().0,
+                Persistence::ServerDefault,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -489,7 +490,8 @@ impl PyMontySession {
             return Err(session_used_err());
         }
         let checkout = Arc::clone(&self.checkout);
-        let result = py.detach(|| block_on_sync(restore_turn(&checkout, state, mounts)))?;
+        // sync sessions are local-only, and a subprocess ignores `fork`
+        let result = py.detach(|| block_on_sync(restore_turn(&checkout, state, mounts, false)))?;
         result.map_err(|e| pool_err_to_py(py, e))
     }
 }
@@ -616,12 +618,14 @@ impl PyAsyncMonty {
                 assert_message_annotations,
                 print_flush_interval,
                 os_policy.unwrap_or_default().0,
+                Persistence::ServerDefault,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
             connect_headers: None,
             used: AtomicBool::new(false),
             drive_abandoned: Arc::new(AtomicBool::new(false)),
+            session_id: Arc::new(Mutex::new(None)),
         })
     }
 }
@@ -669,6 +673,7 @@ impl PyAsyncMontyWebsocket {
         connect_headers = None,
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
+        auto_resume = true,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -680,6 +685,7 @@ impl PyAsyncMontyWebsocket {
         connect_headers: Option<Py<PyAny>>,
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
+        auto_resume: bool,
     ) -> PyResult<Self> {
         check_callable(py, connect_headers.as_ref())?;
         Ok(Self {
@@ -692,6 +698,7 @@ impl PyAsyncMontyWebsocket {
                     feed: feed_duration_limit_grace,
                     turn: turn_duration_limit_grace,
                 },
+                auto_resume,
             )?,
             pool: Arc::new(Mutex::new(None)),
             connect_headers,
@@ -734,6 +741,7 @@ impl PyAsyncMontyWebsocket {
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
         os_policy = None,
+        ephemeral = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -748,6 +756,7 @@ impl PyAsyncMontyWebsocket {
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
         os_policy: Option<OsPolicyArg>,
+        ephemeral: Option<bool>,
     ) -> PyResult<PyAsyncMontySession> {
         Ok(PyAsyncMontySession {
             pool: Arc::clone(&self.pool),
@@ -764,12 +773,18 @@ impl PyAsyncMontyWebsocket {
                 assert_message_annotations,
                 print_flush_interval,
                 os_policy.unwrap_or_default().0,
+                match ephemeral {
+                    None => Persistence::ServerDefault,
+                    Some(true) => Persistence::Ephemeral,
+                    Some(false) => Persistence::Stored,
+                },
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
             connect_headers: self.connect_headers.as_ref().map(|cb| cb.clone_ref(py)),
             used: AtomicBool::new(false),
             drive_abandoned: Arc::new(AtomicBool::new(false)),
+            session_id: Arc::new(Mutex::new(None)),
         })
     }
 }
@@ -792,6 +807,9 @@ pub struct PyAsyncMontySession {
     /// Set by [`AbandonGuard`] when a `feed_run` future is cancelled mid-drive
     /// but the discard had to be deferred; the next drive finishes it.
     drive_abandoned: Arc<AtomicBool>,
+    /// The checkout's session ID, copied after `__aenter__` and each load so the
+    /// getter never waits on the checkout lock a running turn holds.
+    session_id: Arc<Mutex<Option<Vec<u8>>>>,
 }
 
 #[pymethods]
@@ -816,11 +834,13 @@ impl PyAsyncMontySession {
         let options = CheckoutOptions::default()
             .with_telemetry(capture_telemetry_context(py))
             .with_connect_headers(connect_headers);
+        let session_id = Arc::clone(&this.session_id);
         future_into_py(py, async move {
             let checkout = pool
                 .checkout_with(&repl_config, options)
                 .await
                 .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+            *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
             *slot.lock().await = Some(checkout);
             Ok(slf)
         })
@@ -915,7 +935,10 @@ impl PyAsyncMontySession {
     /// Async counterpart of [`PyMontySession::load_session`]: the coroutine
     /// restores a dumped idle session, resolving to `None`. Valid only on a
     /// fresh session; raises if the dump is actually a suspended snapshot.
-    fn load_session<'py>(&self, py: Python<'py>, state: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
+    /// `fork` asks a storing server to copy the session under a new ID
+    /// instead of claiming it; subprocess workers ignore it.
+    #[pyo3(signature = (state, *, fork=false))]
+    fn load_session<'py>(&self, py: Python<'py>, state: Vec<u8>, fork: bool) -> PyResult<Bound<'py, PyAny>> {
         // claim the session in the synchronous prologue (which completes before
         // the future), so a concurrent call is rejected at call time and the
         // off-thread restore can't race onto a fresh session
@@ -923,11 +946,12 @@ impl PyAsyncMontySession {
             return Err(session_used_err());
         }
         let checkout = Arc::clone(&self.checkout);
+        let session_id = Arc::clone(&self.session_id);
         future_into_py(py, async move {
             // an idle session has no snapshot, so the restored name is unused
-            let restored = restore_turn(&checkout, state, Vec::new())
-                .await
-                .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+            let restored = restore_turn(&checkout, state, Vec::new(), fork).await;
+            refresh_session_id(&checkout, &session_id).await;
+            let restored = restored.map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             if restored.0.is_some() {
                 discard_checkout(&checkout).await;
                 return Err(PyRuntimeError::new_err(
@@ -943,8 +967,10 @@ impl PyAsyncMontySession {
     /// `resume(...)` / `resume_auto()` is awaitable). Valid only on a fresh
     /// session; raises if the dump is actually an idle session. `external_lookup`
     /// / `os` are captured for `resume_auto()` with the same caveats as the sync
-    /// method (a restored `FutureSnapshot` cannot be `resume_auto`'d).
-    #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, os=None))]
+    /// method (a restored `FutureSnapshot` cannot be `resume_auto`'d). `fork`
+    /// is as for [`load_session`](Self::load_session).
+    #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, os=None, fork=false))]
+    #[expect(clippy::too_many_arguments)]
     fn load_snapshot<'py>(
         &self,
         py: Python<'py>,
@@ -953,6 +979,7 @@ impl PyAsyncMontySession {
         print_callback: Option<&Bound<'_, PyAny>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
         os: Option<Py<PyAny>>,
+        fork: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         // extract args before committing the session (a bad-args error leaves
         // it loadable), then claim it in the synchronous prologue
@@ -967,10 +994,11 @@ impl PyAsyncMontySession {
         let instances = self.instances.clone_ref(py);
         let config_script_name = self.repl_config.script_name.clone();
         let trace_context = capture_otel_context(py);
+        let session_id = Arc::clone(&self.session_id);
         future_into_py(py, async move {
-            let (event, restored_script_name) = restore_turn(&checkout, state, mounts)
-                .await
-                .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+            let restored = restore_turn(&checkout, state, mounts, fork).await;
+            refresh_session_id(&checkout, &session_id).await;
+            let (event, restored_script_name) = restored.map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             let Some(event) = event else {
                 discard_checkout(&checkout).await;
                 return Err(PyRuntimeError::new_err(
@@ -1023,6 +1051,35 @@ impl PyAsyncMontySession {
     fn worker_pid(&self) -> Option<u32> {
         self.checkout.try_lock().ok()?.as_ref().and_then(Checkout::pid)
     }
+
+    /// The opaque ID a storing `monty-server` minted for this session, which
+    /// `load_session` / `load_snapshot` resume from any process. `None` for
+    /// local workers, ephemeral sessions and servers that store nothing.
+    ///
+    /// Reads the checkout when its lock is free (so an auto-resume is seen),
+    /// else the cached copy: blocking here could deadlock as `worker_pid` notes.
+    #[getter]
+    fn session_id<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
+        let mut cache = lock(&self.session_id);
+        if let Ok(checkout) = self.checkout.try_lock()
+            && let Some(checkout) = checkout.as_ref()
+        {
+            *cache = checkout.session_id().map(<[u8]>::to_vec);
+        }
+        cache.as_deref().map(|id| PyBytes::new(py, id))
+    }
+}
+
+/// Copies the checkout's session ID into the getter's cache after a load,
+/// which may have replaced it (a fork or snapshot load names a new session).
+async fn refresh_session_id(checkout: &SharedCheckout, cache: &Mutex<Option<Vec<u8>>>) {
+    let id = checkout
+        .lock()
+        .await
+        .as_ref()
+        .and_then(Checkout::session_id)
+        .map(<[u8]>::to_vec);
+    *lock(cache) = id;
 }
 
 // =============================================================================
@@ -1102,13 +1159,14 @@ async fn restore_turn(
     checkout: &SharedCheckout,
     state: Vec<u8>,
     mounts: Vec<MountSpec>,
+    fork: bool,
 ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
     let result = {
         let mut guard = checkout.lock().await;
         match guard.as_mut() {
             Some(checkout) => {
                 checkout
-                    .restore(state, mounts, &mut monty_pool::on_print_sync(|_, _| {}))
+                    .restore(state, mounts, fork, &mut monty_pool::on_print_sync(|_, _| {}))
                     .await
             }
             None => Err(PoolError::Finished),
@@ -1174,8 +1232,10 @@ fn parse_websocket_config(
     checkout_timeout: Option<f64>,
     request_timeout: Option<f64>,
     graces: GraceArgs,
+    auto_resume: bool,
 ) -> PyResult<PoolConfig> {
     let mut config = PoolConfig::websocket(url);
+    config.auto_resume = auto_resume;
     if let Some(max) = max_processes {
         config.max_processes = max;
     }
@@ -1241,6 +1301,7 @@ pub(crate) fn parse_repl_config(
     assert_message_annotations: AssertAnnotationsArg,
     print_flush_interval: Option<f64>,
     os_policy: OsPolicy,
+    persistence: Persistence,
 ) -> PyResult<ReplConfig> {
     Ok(ReplConfig {
         script_name: script_name.to_owned(),
@@ -1253,6 +1314,7 @@ pub(crate) fn parse_repl_config(
             .map(|secs| duration_from_secs("print_flush_interval", secs))
             .transpose()?,
         os_policy,
+        persistence,
     })
 }
 

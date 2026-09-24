@@ -502,6 +502,8 @@ impl Child {
             print_flush_interval_ms: _,
             // validated and stored when the `Configure` arrived
             os_policy: _,
+            // a relay's concern; the child never stores sessions
+            persistence: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;
@@ -768,7 +770,9 @@ impl Child {
         if !matches!(self.state, SessionState::Configured(_)) {
             return protocol_violation("Load requires a session that has not started (a feed has already run)");
         }
-        let restored = match Dump::load(&load.state) {
+        // `fork` is a relay's concern: loading bytes is always a copy
+        let pb::Load { state, fork: _ } = load;
+        let restored = match Dump::load(state) {
             Ok(restored) => restored,
             Err(err) => return protocol_violation(&format!("failed to load session: {err}")),
         };

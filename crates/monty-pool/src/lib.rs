@@ -18,8 +18,8 @@ use monty_types::MontyException;
 use crate::telemetry::Metrics;
 pub use crate::{
     checkout::{
-        Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, PrintFuture, ReplConfig, ResumeValue,
-        TurnEvent, on_print_sync,
+        Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, Persistence, PrintFuture, ReplConfig,
+        ResumeValue, TurnEvent, on_print_sync,
     },
     pool::Pool,
 };
@@ -94,6 +94,11 @@ pub struct PoolConfig {
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child.
     pub max_checkouts_per_worker: Option<u32>,
+    /// Resume a session transparently when a relay that stores sessions drains
+    /// it: the checkout redials, reclaims the session by its ID and re-sends
+    /// the request the relay reported it did not run. WebSocket transport only;
+    /// on by default.
+    pub auto_resume: bool,
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).
     /// `None` records nothing at all. Independent of tracing: metrics cover
@@ -130,6 +135,7 @@ impl PoolConfig {
             feed_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             turn_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             max_checkouts_per_worker: None,
+            auto_resume: true,
             #[cfg(feature = "telemetry")]
             metrics: None,
         }
@@ -187,11 +193,13 @@ pub enum PoolError {
         context: String,
     },
     /// The remote server is shutting down and did **not** run the request —
-    /// re-running it on a fresh session is safe. `dump` carries the session
-    /// state captured just before shutdown, restorable via
-    /// [`Checkout::restore`] on a fresh checkout.
+    /// re-running it on a fresh session is safe. `dump` restores the session
+    /// via [`Checkout::restore`] on a fresh checkout: the session ID from a
+    /// relay that stores sessions (returned only when
+    /// [`PoolConfig::auto_resume`] could not resume it), otherwise the state
+    /// captured just before shutdown.
     Shutdown {
-        /// Restorable session dump, absent when there was no session yet or
+        /// What restores the session, absent when there was no session yet or
         /// the server's dump failed.
         dump: Option<Vec<u8>>,
     },

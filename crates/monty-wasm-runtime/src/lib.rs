@@ -329,7 +329,10 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
             exception: Some(raised_exception_from_component(error)),
         }),
         Request::Dump => pb::parent_request::Kind::Dump(pb::Dump {}),
-        Request::Load(state) => pb::parent_request::Kind::Load(pb::Load { state: state.into() }),
+        Request::Load(state) => pb::parent_request::Kind::Load(pb::Load {
+            state: state.into(),
+            fork: false,
+        }),
         Request::Reset => pb::parent_request::Kind::Reset(pb::Reset {}),
     };
     Ok(pb::ParentRequest {
@@ -363,6 +366,8 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         // and a print collector charges its cap per frame.
         print_flush_interval_ms: request.print_flush_interval_ms,
         os_policy: request.os_policy.map(os_policy_from_component),
+        // a relay's concern; the component is a child and never stores sessions
+        persistence: pb::Persistence::Unspecified.into(),
     }
 }
 

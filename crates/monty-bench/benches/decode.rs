@@ -46,6 +46,7 @@ fn complete_frame(value: MontyObject) -> Vec<u8> {
         total_execution_micros: 0,
         max_suspensions: None,
         restored_script_name: None,
+        session_id: None,
         feed_execution_micros: 0,
         max_feed_duration_micros: None,
         max_turn_duration_micros: None,
