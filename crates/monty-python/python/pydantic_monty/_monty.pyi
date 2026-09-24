@@ -528,8 +528,9 @@ class MontyShutdown(MontyError):
 
     `dump` is what restores the session on a new one, with
     `session.load_session` (idle, between feeds) or `session.load_snapshot`
-    (suspended mid-feed): an ID from a server that stores sessions, or the
-    session state captured just before shutdown from one that does not.
+    (suspended mid-feed): the session's ID from a server that stores sessions.
+    It is `None` from a server that stores nothing, for an ephemeral session,
+    or when the server could not store the session in time.
 
     One caveat: if the interrupted request was answering a suspension (an
     external function or `os` callback), the host already ran that call and
@@ -541,7 +542,7 @@ class MontyShutdown(MontyError):
 
     @property
     def dump(self) -> bytes | None:
-        """What `load_session` / `load_snapshot` restores, or `None` when nothing had run yet or the dump failed."""
+        """What `load_session` / `load_snapshot` restores, or `None` when there is nothing to load."""
 
 @final
 class Monty:
@@ -1201,7 +1202,8 @@ class AsyncMontySession:
         returned by `dump()` loads the state dumped. Loading either always
         starts a new session, with its own `session_id`; the record is unchanged
         and the session that wrote it is never resumed in place, so loading one
-        ID twice gives two independent sessions.
+        ID twice gives two independent sessions. A server that stores nothing
+        raises `MontyRuntimeError`; the session stays usable.
         """
 
     async def load_snapshot(
@@ -1234,7 +1236,8 @@ class AsyncMontySession:
         A server that stores sessions instead writes the state to a record that
         never changes and returns that record's ID, which `load_session` /
         `load_snapshot` start new sessions from. The session continues under
-        its existing `session_id`.
+        its existing `session_id`. A server that stores nothing raises
+        `MontyRuntimeError`; the session stays usable.
         """
 
     async def install_dependencies(self, requirements: list[str]) -> None:

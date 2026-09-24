@@ -258,10 +258,10 @@ With a session store, the server parks the session first and the client resumes 
 caller noticing; see [stored sessions](api/python/websocket.md#stored-sessions).
 Otherwise, or when the session has no ID, or when that resume fails or is disabled, the request raises
 `pydantic_monty.MontyShutdown`; it did not run and can be resent after restoration.
-Its `dump` is what restores the session: the session's ID from a server with a store, or the signed session state from
-one without, or `None` when nothing could be stored. Check that the
-dump is not `None`, then restore an idle dump on a fresh session with `await session.load_session(exc.dump)` before
-resending the request; a dump captured while a feed is suspended instead uses
+Its `dump` is the session's ID, which restores the session on another replica sharing the store, or `None` when
+nothing could be stored: the server has no store, the session is ephemeral, or the park failed. Check that the
+dump is not `None`, then restore an idle session on a fresh one with `await session.load_session(exc.dump)` before
+resending the request; a session that was suspended mid-feed instead uses
 `await session.load_snapshot(exc.dump, ...)`.
 
 If the interrupted request was answering an external function or `os` callback, the host already ran that callback and
@@ -269,10 +269,11 @@ the restored snapshot re-announces it. Make such callbacks idempotent or dedupli
 shutdown.
 
 Sessions that remain silent through `--drain-grace` (default 30s) are dropped without a dump.
-Set the pod's `terminationGracePeriodSeconds` above `--drain-grace`. Use the same `MONTY_SERVER_DUMP_KEY` on every
-replica: a session parked or dumped by one replica is loaded by another, and a dump from a server without a store can
-be restored after reconnecting to a different one.
-Dumps only load into a worker of the same Monty version, so roll clients and servers together.
+Set the pod's `terminationGracePeriodSeconds` above `--drain-grace`. Point every replica at the same store with the
+same `MONTY_SERVER_DUMP_KEY`: a session parked or dumped by one replica is loaded by another.
+A server without a store refuses `dump()` and `load_session()` / `load_snapshot()` with `MontyRuntimeError`, and its
+drain hands nothing back.
+Stored sessions only load into a worker of the same Monty version, so roll clients and servers together.
 
 ## Tracing
 

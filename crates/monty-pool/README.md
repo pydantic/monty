@@ -206,7 +206,8 @@ input so adapters that do not support metrics continue to work.
 
 A WebSocket connection lost mid-session reports `PoolError::Disconnected`; it cannot distinguish a worker crash
 from a server policy drop.
-A draining server can instead return `PoolError::Shutdown` with an optional session dump.
+A draining server can instead return `PoolError::Shutdown`, naming what to load the session from when it could store
+it.
 The interrupted request did not run, but restoring a suspended dump repeats its host call, which may already have
 had side effects; callbacks used this way should be idempotent.
 A local subprocess claiming shutdown is a protocol violation.
@@ -217,6 +218,8 @@ A remote that supports persistence names sessions with an opaque ID, `Checkout::
 intentional or due to parking from e.g. an idle timeout or a remote restart.
 The remote is free to determine what `Checkout::restore` will do, for example it may lock the existing session to
 other consumers or it may issue a new session.
+A remote without persistence refuses `Checkout::dump` and `Checkout::restore` with `PoolError::Runtime`, and the
+session carries on.
 With `PoolConfig::auto_resume` (the default), a shutdown answering a named session's request is not returned: the
 checkout redials, loads what the `ShutdownDump` named into a new session, re-sends the request and adopts the new
 session's ID.

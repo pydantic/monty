@@ -1480,7 +1480,8 @@ impl Checkout {
     /// otherwise `Reset` away the operator-chosen resource limits and
     /// re-`Configure` its own). A `Load`'s bytes DO reach the worker's
     /// deserialiser — the driver must verify a dump is one it issued
-    /// (monty-server signs and checks them) before passing it in.
+    /// (monty-server loads only records it stored and signed) before passing
+    /// it in.
     ///
     /// # Errors
     /// As [`Checkout::feed`]: a dead worker, a protocol violation, or a turn

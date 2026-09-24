@@ -868,12 +868,14 @@ pub struct ResumeFutures {
 /// Requests an opaque serialized snapshot of the current session state
 /// (idle or suspended). The session stays usable afterwards. The byte payload
 /// format is at the discretion of the remote (e.g. it may be an ID or a full dump
-/// of state).
+/// of state). A relay without session storage answers `Error` and the session
+/// carries on.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Dump {}
 /// Restores state produced by `Dump`. Valid only from no session. If
 /// the restored state was suspended, the child re-emits the suspension event so
-/// the parent learns the resume point; otherwise it replies `Ok`.
+/// the parent learns the resume point; otherwise it replies `Ok`. A relay
+/// without session storage answers `Error` and the session carries on.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Load {
     /// Either:
@@ -1349,9 +1351,10 @@ pub struct FatalError {
 /// hand back.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ShutdownDump {
-    /// Session state captured immediately before shutdown (same bytes as
-    /// `DumpResult.state`), restorable into a fresh worker via `Load`. Absent
-    /// when there was no session yet or the dump itself failed.
+    /// What `Load` restores the session from on a fresh connection: the ID a
+    /// relay with session storage parked it under. Absent when there is nothing
+    /// to load: no session yet, an ephemeral session, a relay without storage, or
+    /// a park that failed.
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }

@@ -194,12 +194,13 @@ pub enum PoolError {
     },
     /// The remote server is shutting down and did **not** run the request —
     /// re-running it on a fresh session is safe. `dump` restores the session
-    /// via [`Checkout::restore`] on a fresh checkout: an ID from a relay that
-    /// stores sessions (returned only when [`PoolConfig::auto_resume`] could
-    /// not resume it), otherwise the state captured just before shutdown.
+    /// via [`Checkout::restore`] on a fresh checkout: the session's ID from a
+    /// relay that stores sessions, returned only when
+    /// [`PoolConfig::auto_resume`] could not resume it.
     Shutdown {
-        /// What restores the session, absent when there was no session yet or
-        /// the server's dump failed.
+        /// What restores the session; absent when there is nothing to load —
+        /// no session yet, an ephemeral one, a relay without storage, or a
+        /// park that failed.
         dump: Option<Vec<u8>>,
     },
 }
