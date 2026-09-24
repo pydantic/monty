@@ -126,7 +126,11 @@ test('an attr outside the eager list raises AttributeError', async () => {
 
 test('returning a host-sent instance gives the original object back', async () => {
   const g = new Greeter('hello')
-  t.is(await run('x', { inputs: { x: new ClassInstance(g, { eagerAttrs: 'all' }) } }), g)
+  const inputs = { x: new ClassInstance(g, { eagerAttrs: 'all' }) }
+  t.is(await run('x', { inputs }), g)
+  const [first, [nested]] = (await run('[x, [x]]', { inputs })) as [Greeter, [Greeter]]
+  t.is(first, g)
+  t.is(nested, g)
 })
 
 test('the same instance round-trips across feeds in one session', async () => {
@@ -176,9 +180,15 @@ test('method call with args and kwargs', async () => {
   t.is(result, '1-2')
 })
 
-test('promise-returning method resolves via the future machinery', async () => {
-  const c = new Calculator(4)
-  t.is(await run('await c.fetch()', { inputs: { c: new ClassInstance(c, { allowedMethods: 'all' }) } }), 40)
+test('promise-returning methods use one suspension per call', async () => {
+  const c = new ClassInstance(new Calculator(4), { allowedMethods: 'all' })
+  t.is(
+    await run('a = await c.fetch()\nb = await c.fetch()\na + b', {
+      inputs: { c },
+      limits: { maxSuspensions: 2 },
+    }),
+    80,
+  )
 })
 
 test('denied method raises AttributeError', async () => {

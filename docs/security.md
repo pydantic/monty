@@ -394,16 +394,16 @@ the same design makes it easy to run many Monty interpreters in parallel.
 The Python package and the native `@pydantic/monty` binding never run the interpreter in your process: every session
 runs in a `monty` worker subprocess.
 
-The WebAssembly build has no subprocess to use.
-In a browser it runs off-thread in a `Worker`; under Node, which has no global `Worker`, `@pydantic/monty/wasm` runs
-in-process outright.
-See [in-process execution](#in-process-execution).
+The WebAssembly build runs off-thread in a browser Web Worker or Node `worker_threads` worker.
+Both support hard termination and replacement after WASM traps; environments without workers are rejected.
+These are not subprocesses: JS-engine crashes or process-wide OOM can still affect the host.
+Browser worker failures have no OS exit status; Node can report the thread's exit code.
 
 When a worker dies, the pool observes the death, discards the worker, spawns a replacement, and the call raises
 [`MontyCrashedError`][pydantic_monty.MontyCrashedError] ([`PoolError::Crashed`](api/rust/monty-pool.md#poolerror) in Rust).
-The session is lost; your process is not.
+The session is lost; subprocess isolation protects the host process.
 
-Two more properties of the worker boundary matter:
+Two more properties of the subprocess worker boundary matter:
 
 - **Workers spawn with an empty environment** (Windows keeps only `SystemRoot`), so host secrets are never in a worker's
     memory to begin with.
@@ -473,11 +473,9 @@ sandboxed as the callback you wrote.
 
 ### In-process execution
 
-The Rust `monty` crate and the WebAssembly in-process degrade run the interpreter in the calling process.
+The Rust `monty` crate runs the interpreter in the calling process.
 The language-level sandbox still holds, but crash isolation does not: an abort in the sandbox is an abort in your
-process.
-In the browser, a real `Worker` restores isolation and gives the watchdog a hard kill via `Worker.terminate()`; where no
-`Worker` exists, the same API degrades to in-process with no preemption.
+process. The Python and JavaScript APIs do not offer an in-process execution mode.
 
 ### Remote workers
 

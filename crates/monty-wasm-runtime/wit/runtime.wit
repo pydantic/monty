@@ -470,6 +470,11 @@ interface worker {
         max-suspensions: option<u64>,
         /// Session sleep limit in microseconds, reported for host enforcement after `load`.
         max-total-sleep-micros: option<u64>,
+        /// Sandbox execution consumed by the current feed, excluding host suspensions.
+        feed-execution-micros: u64,
+        /// Duration budgets used by the host's hard-kill backstops, including after load.
+        max-feed-duration-micros: option<u64>,
+        max-turn-duration-micros: option<u64>,
     }
 
     /// Handles one semantic request using the retained child.

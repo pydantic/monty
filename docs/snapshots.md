@@ -83,6 +83,9 @@ Instead of driving a snippet to completion it hands control back at every suspen
     `FutureSnapshot`.
 
 In JavaScript those are separate methods: `resume(value)`, `resumeError(err)` and `resumeFuture()`.
+For a `NameLookupSnapshot`, use `resumeValue(value)` to answer a variable or lazy attribute read;
+`resume(name)` resolves an external function, and `resume()` leaves the lookup unresolved.
+Both call and lookup snapshots carry `objectId` for host-object requests, or `null` otherwise.
 
 A snapshot refers to the worker's current suspension; it does not own an independent copy of the execution state.
 Only one suspension is live per session.

@@ -168,12 +168,15 @@ interface PendingFuture {
 }
 
 /**
- * One worker process dedicated to one REPL session; created by
+ * One worker dedicated to one REPL session; created by
  * [`Monty.checkout`]. Session state (globals, functions) persists across
  * `feedRun` calls. Close it (or `await using`) to return the worker to the
  * pool.
  */
 export class MontySession {
+  /** Stable worker identity within its pool, retained during turns and after session close. */
+  readonly workerId: number | undefined
+
   private readonly native: NativeSession
   /** Set once the session is unusable: crashed worker or protocol error. */
   private broken: Error | null = null
@@ -189,6 +192,7 @@ export class MontySession {
   /** @internal — sessions are created by `Monty.checkout`. */
   constructor(native: NativeSession) {
     this.native = native
+    this.workerId = (native as { workerId?: number }).workerId ?? native.workerPid ?? undefined
   }
 
   /**

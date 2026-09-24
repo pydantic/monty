@@ -330,6 +330,11 @@ JavaScript has no equivalent class, so the TypeScript tab answers the same opera
     console.log(await session.feedRun(code, { os: fs })) // 2
     ```
 
+For JavaScript `open` callbacks, return `new MontyFileHandle(path, mode, { position: 0 })` from `@pydantic/monty`.
+The marker canonicalizes `mode` and exposes `path`, `mode`, `position`, `binary`, `readable` and `writable`.
+Paths are virtual POSIX paths; `position` defaults to zero.
+Returning a handle answers only `open`; reads and writes are separate callbacks, never operations on a live host descriptor.
+
 [`OSAccess`][pydantic_monty.OSAccess] backed by [`MemoryFile`][pydantic_monty.MemoryFile] objects is fully sandboxed: content lives in host memory, path traversal cannot escape
 to real files, and `os.getenv` sees only the `environ` mapping you passed.
 

@@ -5,10 +5,9 @@
 // converts only between public JavaScript values and the component's flat value
 // arena; protobuf is now entirely internal to Rust.
 
-import type { NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
+import { MontyCrashedError } from '../errors.js'
+import type { CrashedTurn, NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
 import {
-  type AssertMessageAnnotations,
-  type OsPolicy,
   type EncodedOsPolicy,
   type EncodedRandomSeed,
   type TypeCheckFormat,
@@ -17,6 +16,7 @@ import {
   encodeTypeCheckFormat,
   systemSleepCapOf,
 } from '../options.js'
+import type { CheckoutOptions, ResourceLimits } from '../pool.js'
 import type {
   Arena,
   OsPolicy as ComponentOsPolicy,
@@ -53,49 +53,15 @@ function flushIntervalMs(interval: number): number {
   return interval === 0 ? 0 : Math.min(Math.max(Math.floor(interval * 1000), 1), 0xffffffff)
 }
 
-/** Resource limits mirrored from the napi pool; the transport enforces `maxSuspensions` and `maxTotalSleepSecs`. */
-export interface ResourceLimits {
-  /**
-   * @deprecated Removed: it capped a whole session, which neither replacement
-   * does, so there is no value to carry over. Pick `maxFeedDurationSecs` or
-   * `maxTurnDurationSecs`. Declared `never` so a stale key still fails to
-   * compile rather than being silently dropped at the boundary.
-   */
-  maxDurationSecs?: never
-  maxFeedDurationSecs?: number
-  maxTurnDurationSecs?: number
-  maxMemory?: number
-  gcInterval?: number
-  maxRecursionDepth?: number
-  maxSuspensions?: number
-  maxTotalSleepSecs?: number
-}
+export type { ResourceLimits } from '../pool.js'
 
-/** Session-creation options sent to the component worker. */
-export interface WorkerSessionConfig {
-  scriptName?: string
-  limits?: ResourceLimits
-  typeCheck?: boolean
-  typeCheckStubs?: string
-  /** How typing diagnostics are rendered by the worker (default `'full'`). */
-  typeCheckFormat?: TypeCheckFormat
-  /** Render typing diagnostics with ANSI colour escapes (default false). */
-  typeCheckColor?: boolean
-  /**
-   * Give failed `assert`s introspected messages. Absent/true means the
-   * child's default, false disables them, and an integer customizes truncation.
-   */
-  assertMessageAnnotations?: AssertMessageAnnotations
-  /**
-   * How long, in seconds, the worker may hold buffered `print()` output before
-   * sending it (default 0.005). `0` restores line buffering, delivering each
-   * completed line on its own. A turn's frames all reach the host together
-   * here, but this still sets how they are split: one `printCallback` call per
-   * frame, and a print collector charges its `maxBytes` cap per frame.
-   */
-  printFlushInterval?: number
-  /** The session's clock, zone, sleep, process-clock and randomness policies; see `OsPolicy`. */
-  osPolicy?: OsPolicy
+/** Shared checkout options; WASM delivers all print frames together at the end of a turn. */
+export type WorkerSessionConfig = CheckoutOptions
+
+/** Host-side grace periods; null explicitly disables the corresponding backstop. */
+export interface DurationGraces {
+  feedDurationLimitGraceMs?: number | null
+  turnDurationLimitGraceMs?: number | null
 }
 
 /** A session-shaped adapter over one semantic component dispatcher. */
@@ -109,6 +75,12 @@ export class WorkerTransport {
 
   /** Whether a crash or channel error made this worker unreusable. */
   private dead = false
+  private finished = false
+  private failure: CrashedTurn | null = null
+  private exitStatus: string | undefined
+  private feedBudgetMs: number | undefined
+  private turnBudgetMs: number | undefined
+  private feedExecutionMs = 0
 
   private suspensionLimit: bigint | undefined
   private suspensionsSeen = 0n
@@ -123,18 +95,31 @@ export class WorkerTransport {
   private sleepUsedMicros = 0n
 
   /** Reports whether the worker can return to its pool when the session ends. */
-  onFinish?: (reusable: boolean) => void
+  onFinish?: (reusable: boolean) => void | Promise<void>
 
   private constructor(
     private readonly dispatcher: Dispatcher,
     configuredSleepLimitMicros: bigint | undefined,
+    private readonly graces: DurationGraces,
+    readonly workerId: number,
   ) {
     this.configuredSleepLimitMicros = configuredSleepLimitMicros
   }
 
   /** Creates a configured REPL session over `dispatcher`. */
-  static async create(dispatcher: Dispatcher, config: WorkerSessionConfig = {}): Promise<WorkerTransport> {
-    const transport = new WorkerTransport(dispatcher, encodeLimits(config.limits ?? {}).maxTotalSleepMicros)
+  static async create(
+    dispatcher: Dispatcher,
+    config: WorkerSessionConfig = {},
+    graces: DurationGraces = {},
+    workerId = 0,
+  ): Promise<WorkerTransport> {
+    const limits = encodeLimits(config.limits ?? {})
+    const transport = new WorkerTransport(dispatcher, limits.maxTotalSleepMicros, graces, workerId)
+    transport.suspensionLimit = limits.maxSuspensions ?? 1000n
+    transport.feedBudgetMs =
+      config.limits?.maxFeedDurationSecs === undefined ? undefined : config.limits.maxFeedDurationSecs * 1000
+    transport.turnBudgetMs =
+      config.limits?.maxTurnDurationSecs === undefined ? undefined : config.limits.maxTurnDurationSecs * 1000
     const assertMessageAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
     const encodedOsPolicy = encodeOsPolicy(config.osPolicy ?? {})
     transport.systemSleepMaxSecs = systemSleepCapOf(encodedOsPolicy)
@@ -144,7 +129,7 @@ export class WorkerTransport {
         tag: 'configure',
         val: {
           scriptName: config.scriptName ?? 'main.py',
-          ...(config.limits === undefined ? {} : { limits: encodeLimits(config.limits) }),
+          ...(config.limits === undefined ? {} : { limits }),
           typeCheck: config.typeCheck ?? false,
           ...(config.typeCheckStubs === undefined ? {} : { typeCheckStubs: config.typeCheckStubs }),
           ...(assertMessageAnnotations === undefined ? {} : { assertMessageAnnotations }),
@@ -305,23 +290,22 @@ export class WorkerTransport {
       throw new Error('the wasm worker does not support filesystem mounts (browser has no host filesystem)')
     }
     const event = await this.run({ tag: 'load', val: state }, onPrint)
-    if (!event) return crashed('worker exited without a turn-ending event')
+    if (!event) return this.crash()
     return event.tag === 'ok' ? { kind: 'loaded' } : this.enforceLimits(this.toTurn(event), onPrint)
   }
 
   /** Resets a live worker for reuse and disposes a dead worker. */
   async finish(): Promise<void> {
-    if (this.dead) {
-      this.onFinish?.(false)
-    } else {
+    if (this.finished) return
+    this.finished = true
+    if (!this.dead) {
       try {
         await this.control({ tag: 'reset' }, 'ok', 'Reset')
-        this.onFinish?.(true)
       } catch {
         this.dead = true
-        this.onFinish?.(false)
       }
     }
+    await this.onFinish?.(!this.dead)
   }
 
   /** Answers the current function or OS suspension. */
@@ -332,7 +316,7 @@ export class WorkerTransport {
   /** Sends one request and converts its terminating event into a native turn. */
   private async turn(request: ComponentRequest, onPrint: OnPrint): Promise<NativeTurn> {
     const event = await this.run(request, onPrint)
-    const turn = event ? this.toTurn(event) : crashed('worker exited without a turn-ending event')
+    const turn = event ? this.toTurn(event) : this.crash()
     return this.enforceLimits(turn, onPrint)
   }
 
@@ -350,14 +334,17 @@ export class WorkerTransport {
         if (refused !== null) turn = await this.abortFeed('TimeoutError', refused, onPrint)
       }
     }
-    if (turn.kind === 'crashed') this.dead = true
+    if (turn.kind === 'crashed' || turn.kind === 'protocol') {
+      this.dead = true
+      await this.finish()
+    }
     return turn
   }
 
   /** Aborts the feed with an uncatchable exception instead of exposing an over-budget suspension to the host. */
   private async abortFeed(excType: string, message: string, onPrint: OnPrint): Promise<NativeTurn> {
     const aborted = await this.run({ tag: 'abort-feed', val: { excType, message } }, onPrint)
-    const turn = aborted ? this.toTurn(aborted) : crashed('worker exited without a turn-ending event')
+    const turn = aborted ? this.toTurn(aborted) : this.crash()
     // Reject suspensions after abort: servicing them would bypass the host's budget.
     if (turn.kind !== 'error' && turn.kind !== 'crashed') {
       this.dead = true
@@ -384,7 +371,10 @@ export class WorkerTransport {
   /** Sends a control request and verifies its expected event kind. */
   private async control(request: ComponentRequest, kind: ComponentEvent['tag'], what: string): Promise<ComponentEvent> {
     const event = await this.run(request, undefined)
-    if (!event) throw new Error(`${what} produced no turn-ending event (worker crashed)`)
+    if (!event) {
+      const failure = this.crash()
+      throw new MontyCrashedError(failure.message, failure)
+    }
     // the worker's own reason, e.g. a zone name its tz database lacks
     if (event.tag === 'error' && kind !== 'error') throw new Error(`${what} failed: ${event.val.message}`)
     if (event.tag !== kind) throw new Error(`${what} expected event ${kind}, got ${event.tag}`)
@@ -393,20 +383,45 @@ export class WorkerTransport {
 
   /** Runs one turn, forwarding buffered prints and retaining its terminator. */
   private async run(request: ComponentRequest, onPrint: OnPrint | undefined): Promise<ComponentEvent | null> {
+    if (this.dead) return null
+    if (request.tag === 'feed') this.feedExecutionMs = 0
+    if (request.tag === 'load') {
+      this.feedBudgetMs = undefined
+      this.turnBudgetMs = undefined
+      this.feedExecutionMs = 0
+    }
     let events: ComponentEvent[]
     try {
-      const result = await this.dispatcher(request)
-      if (result.status === 'shutdown') this.dead = true
+      const result = await this.dispatcher(request, this.backstopMs())
+      this.feedExecutionMs = Math.max(this.feedExecutionMs, Number(result.feedExecutionMicros) / 1000)
+      this.feedBudgetMs ??=
+        result.maxFeedDurationMicros === undefined ? undefined : Number(result.maxFeedDurationMicros) / 1000
+      this.turnBudgetMs ??=
+        result.maxTurnDurationMicros === undefined ? undefined : Number(result.maxTurnDurationMicros) / 1000
+      if (result.status === 'shutdown') {
+        this.dead = true
+        this.exitStatus = result.exitStatus ?? undefined
+      }
       // the component reports the limit in force (the configured one, else
       // the 1000 default; a dump's on load), so it is adopted from the reply
       if (request.tag === 'configure' || request.tag === 'load') {
-        this.suspensionLimit = result.maxSuspensions
+        this.suspensionLimit = tighter(this.suspensionLimit, result.maxSuspensions)
         this.suspensionsSeen = 0n
         this.sleepLimitMicros = tighter(this.configuredSleepLimitMicros, result.maxTotalSleepMicros)
         this.sleepUsedMicros = 0n
       }
       events = result.events
-    } catch {
+    } catch (error) {
+      this.dead = true
+      this.failure =
+        error instanceof MontyCrashedError
+          ? {
+              kind: 'crashed',
+              message: error.exception.message,
+              timedOut: error.timedOut,
+              exitStatus: error.exitStatus ?? undefined,
+            }
+          : { kind: 'crashed', message: 'worker exited without a turn-ending event', timedOut: false }
       return null
     }
     let terminating: ComponentEvent | null = null
@@ -417,7 +432,27 @@ export class WorkerTransport {
         terminating = event
       }
     }
+    if (this.dead && this.onFinish) await this.finish()
     return terminating
+  }
+
+  /** Retains crash metadata so subsequent requests cannot revive a dead component. */
+  private crash(): CrashedTurn {
+    this.dead = true
+    return (this.failure ??= {
+      kind: 'crashed',
+      message: 'worker exited without a turn-ending event',
+      timedOut: false,
+      exitStatus: this.exitStatus,
+    })
+  }
+
+  /** Bounds each turn by the remaining feed budget and the full turn budget, plus grace. */
+  private backstopMs(): number | undefined {
+    const feed = remainingDeadline(this.feedBudgetMs, this.feedExecutionMs, this.graces.feedDurationLimitGraceMs)
+    const turn = remainingDeadline(this.turnBudgetMs, 0, this.graces.turnDurationLimitGraceMs)
+    const deadline = Math.min(feed, turn)
+    return Number.isFinite(deadline) ? deadline : undefined
   }
 
   /** Projects one semantic component event into `MontySession`'s turn shape. */
@@ -470,11 +505,16 @@ export class WorkerTransport {
       case 'resolve-futures':
         return { kind: 'resolveFutures', pendingCallIds: [...event.val] }
       case 'fatal-error':
-        return crashed(event.val)
+        return { kind: 'crashed', message: event.val, timedOut: false, exitStatus: this.exitStatus }
       default:
         return { kind: 'protocol', message: `unexpected event kind ${event.tag}` }
     }
   }
+}
+
+/** An absent budget or explicitly disabled grace leaves this backstop unbounded. */
+function remainingDeadline(budget: number | undefined, elapsed: number, grace: number | null | undefined): number {
+  return budget === undefined || grace === null ? Infinity : Math.max(0, budget - elapsed) + (grace ?? 1000)
 }
 
 /** Maps the public diagnostic name to the component's WIT enum. */
@@ -656,11 +696,6 @@ function lazyAttrValue(value: unknown): NameLookupRequest {
       values: EMPTY_ARENA,
     }
   }
-}
-
-/** Creates the standard worker-crash turn. */
-function crashed(message: string): NativeTurn {
-  return { kind: 'crashed', message, timedOut: false }
 }
 
 /** Matches Rust's `Duration` debug format in pool error messages. */

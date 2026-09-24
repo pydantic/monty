@@ -49,7 +49,7 @@ use napi::{
 };
 use napi_derive::napi;
 use opentelemetry::{trace::TraceContextExt, Context};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{watch, Mutex as AsyncMutex};
 
 use crate::{
     convert::{js_to_monty, monty_to_js, DecodedArena, GraphEncoder},
@@ -234,6 +234,8 @@ impl NativeMountDir {
 pub struct NativePool {
     config: PoolConfig,
     pool: SharedPool,
+    /// Cancels pending checkouts without interrupting sessions already checked out.
+    closing: watch::Sender<bool>,
 }
 
 #[napi]
@@ -272,6 +274,7 @@ impl NativePool {
         Ok(Self {
             config,
             pool: Arc::new(Mutex::new(None)),
+            closing: watch::channel(false).0,
         })
     }
 
@@ -294,6 +297,7 @@ impl NativePool {
         let os_policy = extract_os_policy(&options)?;
         Ok(NativeSession {
             pool: Arc::clone(&self.pool),
+            closing: self.closing.subscribe(),
             repl_config: ReplConfig {
                 script_name: options.script_name,
                 limits,
@@ -320,10 +324,11 @@ impl NativePool {
         })
     }
 
-    /// Shuts the pool down: idle workers exit, capacity is gone. Sessions
-    /// still checked out keep their workers until they finish.
+    /// Cancels pending checkouts and shuts idle workers down. Sessions
+    /// already checked out keep their workers until they finish.
     #[napi]
     pub fn close<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, ()>> {
+        self.closing.send_replace(true);
         let slot = Arc::clone(&self.pool);
         env.spawn_future(async move {
             let pool = lock(&slot).take();
@@ -374,6 +379,8 @@ impl NativeTelemetryContext {
 #[napi(js_name = "NativeSession")]
 pub struct NativeSession {
     pool: SharedPool,
+    /// Observes closure while waiting to acquire a worker; unused after entry.
+    closing: watch::Receiver<bool>,
     repl_config: ReplConfig,
     checkout: SharedCheckout,
 }
@@ -390,22 +397,30 @@ impl NativeSession {
         telemetry_context: Option<NativeTelemetryContext>,
     ) -> Result<PromiseRaw<'env, ()>> {
         let pool = Arc::clone(&self.pool);
+        let mut closing = self.closing.clone();
         let repl_config = self.repl_config.clone();
         let slot = Arc::clone(&self.checkout);
         let telemetry_context =
             telemetry_context.and_then(|context| configured_tracing_adapter().map(|adapter| context.parse(adapter)));
         env.spawn_future(async move {
-            let pool = lock(&pool)
-                .as_ref()
-                .map(Arc::clone)
-                .ok_or_else(|| invalid("the pool is not started — create it with Monty.create()"))?;
-            let checkout = pool
-                .checkout_with(
-                    &repl_config,
-                    CheckoutOptions::default().with_telemetry(telemetry_context),
-                )
-                .await
-                .map_err(pool_error)?;
+            let checkout = tokio::select! {
+                biased;
+                _ = closing.wait_for(|closed| *closed) => {
+                    return Err(invalid("the pool is closed — create a new Monty pool"));
+                }
+                checkout = async {
+                    let pool = lock(&pool)
+                        .as_ref()
+                        .map(Arc::clone)
+                        .ok_or_else(|| invalid("the pool is not started — create it with Monty.create()"))?;
+                    pool.checkout_with(
+                        &repl_config,
+                        CheckoutOptions::default().with_telemetry(telemetry_context),
+                    )
+                    .await
+                    .map_err(pool_error)
+                } => checkout?,
+            };
             *slot.lock().await = Some(checkout);
             Ok(())
         })

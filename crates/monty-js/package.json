@@ -8,7 +8,7 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "browser": "./dist/worker/index.browser.js",
+      "browser": "./dist/worker/index.js",
       "node": "./dist/node.js",
       "default": "./dist/node.js"
     },
@@ -19,7 +19,6 @@
     "./wasm": {
       "types": "./dist/worker/index.d.ts",
       "node": "./dist/worker/index.node.js",
-      "browser": "./dist/worker/index.browser.js",
       "default": "./dist/worker/index.js"
     }
   },

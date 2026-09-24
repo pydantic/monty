@@ -209,8 +209,8 @@ export class Monty {
   }
 
   /**
-   * Shuts the pool down: idle workers exit and no new checkouts are
-   * accepted. Sessions still checked out keep their workers until closed.
+   * Shuts the pool down: idle workers exit and pending/new checkouts reject.
+   * Sessions already checked out keep their workers until closed.
    */
   async close(): Promise<void> {
     if (this.closed) {

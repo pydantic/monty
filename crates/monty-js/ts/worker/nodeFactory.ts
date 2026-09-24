@@ -23,8 +23,9 @@ export function nodeWorkerFactory(modules: ComponentModules, options: WorkerChan
       post: (message) => worker.postMessage(message),
       onMessage: (handler) => worker.on('message', handler),
       onError: (handler) => worker.on('error', handler),
-      terminate: () => void worker.terminate(),
+      onExit: (handler) => worker.on('exit', (code) => handler(`exit code: ${code}`)),
+      terminate: async () => `exit code: ${await worker.terminate()}`,
     }
-    return Promise.resolve(new WorkerChannel(like, options))
+    return WorkerChannel.create(like, options)
   }
 }

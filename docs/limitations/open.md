@@ -21,8 +21,8 @@ handle, no buffered data, no descriptor number.
 
 This is what makes subprocess `dump()` / `load()` safe: a session can be
 serialized at a pause point and resumed later without dangling references to
-host resources. The wasm in-process API exposes the same idea as
-`MontySnapshot`. It also means external processes can observe partial state
+host resources, including when using WASM worker sessions and snapshots.
+It also means external processes can observe partial state
 between calls, and that there is no protection against the underlying file
 being changed or removed between calls, both documented further down.
 

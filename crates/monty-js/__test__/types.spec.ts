@@ -350,34 +350,50 @@ test('number at the i64 boundary', async () => {
 // datetime.time tests
 // =============================================================================
 
-test('time output from sandbox', async () => {
-  t.deepEqual(await run('import datetime\ndatetime.time(1, 2, 3, 4)'), {
+test.each([
+  [0, 0, 0, 0],
+  [1, 2, 3, 4],
+])('time output from sandbox: %s:%s:%s.%s', async (hour, minute, second, microsecond) => {
+  t.deepEqual(await run(`import datetime\ndatetime.time(${hour}, ${minute}, ${second}, ${microsecond})`), {
     __monty_type__: 'Time',
-    hour: 1,
-    minute: 2,
-    second: 3,
-    microsecond: 4,
+    hour,
+    minute,
+    second,
+    microsecond,
     fold: 0,
   })
 })
 
-test('aware time output from sandbox', async () => {
-  const code = 'import datetime\ndatetime.time(6, 7, tzinfo=datetime.timezone(datetime.timedelta(hours=2), "P2"))'
-  t.deepEqual(await run(code), {
+test.each([
+  {
+    args: '6, 7',
+    zone: 'datetime.timezone(datetime.timedelta(hours=2), "P2")',
+    time: { hour: 6, minute: 7, second: 0, microsecond: 0, offsetSeconds: 7200, timezoneName: 'P2' },
+  },
+  {
+    args: '23, 59, 59, 999999',
+    zone: 'datetime.timezone(datetime.timedelta(hours=-5))',
+    time: { hour: 23, minute: 59, second: 59, microsecond: 999999, offsetSeconds: -18000 },
+  },
+])('aware time output from sandbox: $zone', async ({ args, zone, time }) => {
+  t.deepEqual(await run(`import datetime\ndatetime.time(${args}, tzinfo=${zone})`), {
     __monty_type__: 'Time',
-    hour: 6,
-    minute: 7,
-    second: 0,
-    microsecond: 0,
-    offsetSeconds: 7200,
-    timezoneName: 'P2',
+    ...time,
     fold: 0,
   })
 })
 
-test('time input round-trips', async () => {
-  const time = { __monty_type__: 'Time', hour: 10, minute: 20, second: 30, microsecond: 40, fold: 1 }
+test.each([
+  { fields: { hour: 10, minute: 20, second: 30, microsecond: 40, fold: 1 }, iso: '10:20:30.000040' },
+  {
+    fields: { hour: 1, minute: 2, second: 3, microsecond: 4, fold: 1, offsetSeconds: 7200, timezoneName: 'P2' },
+    iso: '01:02:03.000004+02:00',
+  },
+  { fields: { hour: 12, minute: 0, second: 0, microsecond: 0, fold: 0, offsetSeconds: 0 }, iso: '12:00:00+00:00' },
+])('time input round-trips: $iso', async ({ fields, iso }) => {
+  const time = { __monty_type__: 'Time', ...fields }
   t.deepEqual(await run('x', { inputs: { x: time } }), time)
+  t.is(await run('x.isoformat()', { inputs: { x: time } }), iso)
 })
 
 test('time input is a real sandbox time', async () => {

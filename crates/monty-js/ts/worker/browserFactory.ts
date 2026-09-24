@@ -33,6 +33,6 @@ export function browserWorkerFactory(
       onError: (handler) => worker.addEventListener('error', (event) => handler(event)),
       terminate: () => worker.terminate(),
     }
-    return Promise.resolve(new WorkerChannel(like, options))
+    return WorkerChannel.create(like, options)
   }
 }

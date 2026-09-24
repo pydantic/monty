@@ -5,10 +5,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { t } from './assertions.js'
-import { skipIfBrowser } from './env.js'
+import { skipIfWasm } from './env.js'
 import { WorkerTransport } from '../ts/worker/transport.js'
 
-import { Monty, MontyCrashedError, MontyRuntimeError, MountDir } from '@pydantic/monty/node'
+import { Monty, MontyCrashedError, MontyRuntimeError } from '@pydantic/monty'
+import { MountDir } from '@pydantic/monty/node'
 
 // =============================================================================
 // Pool lifecycle
@@ -18,35 +19,47 @@ test('wasm transport discards a component after shutdown', async () => {
   let dispatches = 0
   const transport = await WorkerTransport.create(async () => {
     dispatches += 1
-    return { status: 'shutdown', events: [{ tag: 'ok' }] }
+    return { status: 'shutdown', events: [{ tag: 'ok' }], feedExecutionMicros: 0n, exitStatus: 'exit code: 7' }
   })
   let reusable: boolean | undefined
   transport.onFinish = (value) => {
     reusable = value
   }
+  t.deepEqual(await transport.feed('1', null, [], { skipTypeCheck: true }, () => {}), {
+    kind: 'crashed',
+    message: 'worker exited without a turn-ending event',
+    timedOut: false,
+    exitStatus: 'exit code: 7',
+  })
   await transport.finish()
   t.is(reusable, false)
   t.is(dispatches, 1)
 })
 
-test('checkout after close rejects', async (ctx) => {
-  skipIfBrowser(ctx)
+test('checkout after close rejects', async () => {
   const pool = await Monty.create()
   await pool.close()
   const error = await t.throwsAsync(() => pool.checkout())
   t.is(error.message, 'the pool is closed — create a new Monty pool')
 })
 
-test('close is idempotent', async (ctx) => {
-  skipIfBrowser(ctx)
+test('close is idempotent', async () => {
   const pool = await Monty.create()
   await pool.close()
   await pool.close()
   t.pass()
 })
 
-test('feed after session close rejects', async (ctx) => {
-  skipIfBrowser(ctx)
+test('close rejects waiting checkouts but preserves active sessions', async () => {
+  const pool = await Monty.create({ maxProcesses: 1 })
+  await using session = await pool.checkout()
+  const waiting = t.throwsAsync(() => pool.checkout())
+  await pool.close()
+  t.is((await waiting).message, 'the pool is closed — create a new Monty pool')
+  t.is(await session.feedRun('40 + 2'), 42)
+})
+
+test('feed after session close rejects', async () => {
   await using pool = await Monty.create()
   const session = await pool.checkout()
   await session.close()
@@ -54,31 +67,28 @@ test('feed after session close rejects', async (ctx) => {
   t.is(error.message, 'the session is closed — check out a new one')
 })
 
-test('workers are reused across checkouts', async (ctx) => {
-  skipIfBrowser(ctx)
+test('workers are reused across checkouts', async () => {
   await using pool = await Monty.create({ maxProcesses: 1 })
   const first = await pool.checkout()
-  const pid = first.workerPid
-  t.truthy(pid)
+  const id = first.workerId
+  t.truthy(id)
   await first.close()
   const second = await pool.checkout()
-  t.is(second.workerPid, pid)
+  t.is(second.workerId, id)
   await second.close()
 })
 
-test('maxCheckoutsPerWorker recycles the worker', async (ctx) => {
-  skipIfBrowser(ctx)
+test('maxCheckoutsPerWorker recycles the worker', async () => {
   await using pool = await Monty.create({ maxCheckoutsPerWorker: 1 })
   const first = await pool.checkout()
-  const pid = first.workerPid
+  const id = first.workerId
   await first.close()
   const second = await pool.checkout()
-  t.not(second.workerPid, pid)
+  t.not(second.workerId, id)
   await second.close()
 })
 
-test('maxMemory leaves normal work alone', async (ctx) => {
-  skipIfBrowser(ctx)
+test('maxMemory leaves normal work alone', async () => {
   // a session's limit must not disturb work that stays inside it
   await using pool = await Monty.create()
   const session = await pool.checkout({ limits: { maxMemory: 1024 ** 2 } })
@@ -87,7 +97,7 @@ test('maxMemory leaves normal work alone', async (ctx) => {
 })
 
 test('a refused allocation raises MemoryError and the pool recovers', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   await using pool = await Monty.create()
   const session = await pool.checkout()
   // no maxMemory, so the sandbox tracker allows this outright: the allocation is
@@ -104,7 +114,7 @@ test('a refused allocation raises MemoryError and the pool recovers', async (ctx
 })
 
 test('exceeding maxMemory in the allocator raises MemoryError and the pool recovers', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   await using pool = await Monty.create()
   const session = await pool.checkout({ limits: { maxMemory: 1024 } })
   // the fed snippet is memory the interpreter never accounts for — the worker
@@ -120,13 +130,12 @@ test('exceeding maxMemory in the allocator raises MemoryError and the pool recov
   await next.close()
 })
 
-test('concurrent sessions run in distinct workers', async (ctx) => {
-  skipIfBrowser(ctx)
+test('concurrent sessions run in distinct workers', async () => {
   await using pool = await Monty.create()
   const a = await pool.checkout()
   const b = await pool.checkout()
   try {
-    t.not(a.workerPid, b.workerPid)
+    t.not(a.workerId, b.workerId)
     const [ra, rb] = await Promise.all([a.feedRun('1 + 1'), b.feedRun('2 + 2')])
     t.is(ra, 2)
     t.is(rb, 4)
@@ -136,8 +145,7 @@ test('concurrent sessions run in distinct workers', async (ctx) => {
   }
 })
 
-test('exhausted pool times out the checkout', async (ctx) => {
-  skipIfBrowser(ctx)
+test('exhausted pool times out the checkout', async () => {
   await using pool = await Monty.create({ maxProcesses: 1, checkoutTimeout: 0.2 })
   const held = await pool.checkout()
   try {
@@ -148,8 +156,7 @@ test('exhausted pool times out the checkout', async (ctx) => {
   }
 })
 
-test('released worker is handed to a waiting checkout', async (ctx) => {
-  skipIfBrowser(ctx)
+test('released worker is handed to a waiting checkout', async () => {
   await using pool = await Monty.create({ maxProcesses: 1 })
   const held = await pool.checkout()
   const waiting = pool.checkout()
@@ -164,7 +171,7 @@ test('released worker is handed to a waiting checkout', async (ctx) => {
 // =============================================================================
 
 test('killed worker surfaces as MontyCrashedError', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   await using pool = await Monty.create()
   const session = await pool.checkout()
   process.kill(session.workerPid!, 'SIGKILL')
@@ -177,7 +184,7 @@ test('killed worker surfaces as MontyCrashedError', async (ctx) => {
 })
 
 test('session is unusable after a crash but the pool recovers', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   await using pool = await Monty.create()
   const session = await pool.checkout()
   process.kill(session.workerPid!, 'SIGKILL')
@@ -192,7 +199,7 @@ test('session is unusable after a crash but the pool recovers', async (ctx) => {
 })
 
 test('worker crashing while idle is replaced transparently', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   await using pool = await Monty.create({ maxProcesses: 1 })
   const first = await pool.checkout()
   const pid = first.workerPid!
@@ -210,15 +217,23 @@ test('worker crashing while idle is replaced transparently', async (ctx) => {
 // Request timeout watchdog
 // =============================================================================
 
-test('requestTimeout kills a wedged worker', async (ctx) => {
-  skipIfBrowser(ctx)
-  await using pool = await Monty.create({ requestTimeout: 0.5 })
+test('requestTimeout kills a wedged worker', async () => {
+  await using pool = await Monty.create({ maxProcesses: 1, requestTimeout: 0.5 })
   const session = await pool.checkout()
+  let hostResponsive = false
+  const timer = setTimeout(() => {
+    hostResponsive = true
+  }, 50)
   const error = await t.throwsAsync(() => session.feedRun('while True:\n    pass'), {
     instanceOf: MontyCrashedError,
   })
+  clearTimeout(timer)
+  t.true(hostResponsive)
   t.true(error.timedOut)
   t.is(error.message, 'RuntimeError: monty worker killed after exceeding request timeout of 500ms')
+  await t.throwsAsync(() => session.feedRun('1'), { instanceOf: MontyCrashedError })
+  await using fresh = await pool.checkout()
+  t.is(await fresh.feedRun('6 * 7'), 42)
   await session.close()
 })
 
@@ -227,7 +242,7 @@ test('requestTimeout kills a wedged worker', async (ctx) => {
 // The sandbox sees a catchable PermissionError and the session stays usable.
 // Unix-only (mkfifo).
 test('special files in mounts are rejected without blocking', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   if (process.platform === 'win32') {
     ctx.skip()
   }
@@ -250,8 +265,7 @@ test('special files in mounts are rejected without blocking', async (ctx) => {
   }
 })
 
-test('suspension time does not consume the duration budget', async (ctx) => {
-  skipIfBrowser(ctx)
+test('suspension time does not consume the duration budget', async () => {
   // maxFeedDurationSecs measures sandbox execution time; the worker reports
   // it on every turn and its clock is paused while suspended. The host taking
   // twice the entire budget to answer an external call must therefore not
@@ -278,7 +292,7 @@ test('suspension time does not consume the duration budget', async (ctx) => {
 // reach them. Linux-only because it observes the child via /proc (CI runs
 // the JS tests on Linux).
 test('worker environment is empty', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   if (process.platform !== 'linux') {
     ctx.skip()
   }
