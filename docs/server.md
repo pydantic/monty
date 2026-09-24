@@ -256,8 +256,8 @@ receiving a 503 response. Existing WebSocket sessions remain connected while the
 next request is answered with a shutdown instead of being run.
 With a session store, the server parks the session first and the client resumes it on another replica without the
 caller noticing; see [stored sessions](api/python/websocket.md#stored-sessions).
-Otherwise, or when that resume fails or is disabled, the request raises `pydantic_monty.MontyShutdown`; it did not run
-and can be resent after restoration.
+Otherwise, or when the session has no ID, or when that resume fails or is disabled, the request raises
+`pydantic_monty.MontyShutdown`; it did not run and can be resent after restoration.
 Its `dump` is what restores the session: the session's ID from a server with a store, or the signed session state from
 one without, or `None` when nothing could be stored. Check that the
 dump is not `None`, then restore an idle dump on a fresh session with `await session.load_session(exc.dump)` before

@@ -2193,6 +2193,97 @@ async fn an_aborted_load_reply_still_names_the_session() {
 }
 
 #[tokio::test]
+async fn resume_rejects_a_reannounced_lookup_on_another_object() {
+    // the same name on a different receiver is another lookup
+    let lookup = |object: u8| {
+        pb::child_event::Kind::NameLookup(pb::NameLookup {
+            name: "x".to_owned(),
+            object_id: Some(pb::Uuid {
+                data: vec![object; 16].into(),
+            }),
+            position: Some((&position()).into()),
+        })
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "obj.x");
+        send_kind(&mut socket, lookup(1));
+        let request = try_read_request(&mut socket).expect("resume");
+        assert!(
+            matches!(request.kind, Some(pb::parent_request::Kind::ResumeNameLookup(_))),
+            "expected ResumeNameLookup, got {request:?}"
+        );
+        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"sess-1");
+        send_with_session_id(&mut socket, lookup(2), b"sess-2");
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let event = checkout
+        .feed("obj.x", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert!(matches!(event, TurnEvent::NameLookup { .. }), "got {event:?}");
+    let err = checkout
+        .resume_name_lookup(MontyObject::int(1), &mut no_print)
+        .await
+        .expect_err("a mismatched session must not be resumed");
+    assert!(matches!(err, PoolError::Shutdown { .. }), "got {err:?}");
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn resumed_session_keeps_its_duration_backstop() {
+    // the reload's `Load` reply reports no limits, as a worker hiding them
+    // would; the configured feed budget still bounds the resumed feed
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "ext()");
+        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"sess-1");
+        send_with_session_id(&mut socket, ok_event(), b"sess-2");
+        expect_feed(&mut socket, "ext()");
+        send_kind(&mut socket, function_call(7));
+        expect_resume_call(&mut socket, 7);
+        // past the 100ms budget plus 100ms grace, so only the backstop ends the turn
+        thread::sleep(Duration::from_millis(500));
+        send_complete(&mut socket);
+    });
+
+    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    config.max_processes = 1;
+    config.request_timeout = Some(Duration::from_secs(10));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(100));
+    let pool = Pool::new(config).await.expect("pool");
+    let repl = ReplConfig {
+        limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
+        ..ReplConfig::default()
+    };
+    let mut checkout = pool.checkout(&repl).await.expect("checkout");
+    checkout
+        .feed("ext()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    let err = checkout
+        .resume(ResumeValue::Return(MontyObject::int(5)), &mut no_print)
+        .await
+        .expect_err("the configured feed budget survives the reload");
+    assert!(matches!(err, PoolError::Timeout { .. }), "got {err:?}");
+    join_server(server).await;
+}
+
+#[tokio::test]
 async fn resume_refused_returns_the_original_shutdown() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();

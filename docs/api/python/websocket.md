@@ -45,7 +45,8 @@ Loading an ID restores a dump, so [what restoring does not carry](../../snapshot
 applies: host objects sent before the dump, in particular, are unknown to the new session.
 To branch a session at a chosen point, call `dump()`, then `load_session()` with its ID once per branch; the original
 session can carry on as well.
-`checkout(ephemeral=True)` asks the server never to store the session, so it has no ID and `dump()` is refused.
+`checkout(ephemeral=True)` asks the server not to store the session on its own, so it has no ID; whether it honours
+`dump()` is the server's choice.
 
 When such a server drains a session, the client redials, loads the state the server named into a new session and
 re-sends the request, so the caller sees the result rather than `MontyShutdown`; `session_id` then names the new

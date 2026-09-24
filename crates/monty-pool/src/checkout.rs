@@ -90,7 +90,7 @@ pub enum Persistence {
     /// Whatever the relay does by default.
     #[default]
     ServerDefault,
-    /// Never stored: no session ID, never parked, and `dump` is refused.
+    /// Never stored by the relay on its own: no session ID and never parked.
     Ephemeral,
     /// Parked on idle, drain or disconnect, and resumable by its session ID.
     Stored,
@@ -673,18 +673,18 @@ enum Pending {
         /// Accept a settled coroutine for this call via `ResumeFutures`.
         allow_eager_await: bool,
     },
-    /// The name looked up, kept only to recognise it re-announced after a shutdown.
-    NameLookup { name: String },
+    /// The lookup's name and receiver, kept only to recognise it re-announced after a shutdown.
+    NameLookup { name: String, object_id: Option<MontyUuid> },
     /// The ids awaited, kept only to recognise them re-announced after a shutdown.
     Futures { pending_call_ids: Vec<u32> },
 }
 
 /// A suspension's identity, compared when a resumed session re-announces it:
-/// the call id and name, the looked-up name, or the awaited ids.
+/// the call id and name, the looked-up name and receiver, or the awaited ids.
 #[derive(Debug, PartialEq, Eq)]
 enum PendingKey {
     Call { call_id: u32, function_name: String },
-    NameLookup { name: String },
+    NameLookup { name: String, object_id: Option<MontyUuid> },
     Futures { pending_call_ids: Vec<u32> },
 }
 
@@ -697,7 +697,10 @@ impl PendingKey {
                 call_id: *call_id,
                 function_name: function_name.clone(),
             },
-            Pending::NameLookup { name } => Self::NameLookup { name: name.clone() },
+            Pending::NameLookup { name, object_id } => Self::NameLookup {
+                name: name.clone(),
+                object_id: *object_id,
+            },
             Pending::Futures { pending_call_ids } => Self::Futures {
                 pending_call_ids: pending_call_ids.clone(),
             },
@@ -1407,8 +1410,9 @@ impl Checkout {
     /// Dials a new worker, re-creates the session and loads `state` (a session
     /// ID against a storing relay), which starts a new session under a new ID.
     /// The reply must match the state at the shutdown: `Ok` when idle, or the
-    /// same pending suspension re-announced when mid-feed. The host-counted
-    /// suspension and sleep totals carry over, so a shutdown grants nothing.
+    /// same pending suspension re-announced when mid-feed. The session's budget
+    /// is kept, not re-adopted as `restore` does: it is the same session, so the
+    /// reply can only tighten its limits, and a shutdown grants nothing.
     async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
         let configure = configure_request(&redial.repl);
         let worker = self.pool.acquire_worker(&redial.connect_headers).await?;
@@ -1422,13 +1426,16 @@ impl Checkout {
             ControlEvent::Ok => {}
             other => return Err(self.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
         }
+        // a re-announced suspension counts and charges itself again on arrival,
+        // as after `restore`: let it through on zeroed totals, then put the
+        // session's true totals back
         let (suspensions_seen, sleep_used) = (self.budget.suspensions_seen, self.budget.sleep_used);
-        self.begin_load();
+        self.budget.suspensions_seen = 0;
+        self.budget.sleep_used = Duration::ZERO;
         let load = request(pb::parent_request::Kind::Load(pb::Load {
             state: state.to_vec().into(),
         }));
         let reply = self.request_turn(&load, timeout, &mut no_print).await;
-        self.end_load();
         // the session's script name is the one it already had
         self.restored_script_name = None;
         let matches = match reply? {
@@ -1436,7 +1443,6 @@ impl Checkout {
             ControlEvent::Turn(_) => expected.is_some() && expected == self.pending.as_ref().map(PendingKey::of),
             ControlEvent::Dump(_) => false,
         };
-        // after the reply: a re-announced suspension counted itself again on arrival
         self.budget.suspensions_seen = suspensions_seen;
         self.budget.sleep_used = sleep_used;
         if matches {
@@ -1749,6 +1755,7 @@ impl Checkout {
                     };
                     self.pending = Some(Pending::NameLookup {
                         name: lookup.name.clone(),
+                        object_id,
                     });
                     return Ok(ControlEvent::Turn(TurnEvent::NameLookup {
                         name: lookup.name,

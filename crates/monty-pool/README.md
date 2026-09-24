@@ -211,15 +211,12 @@ The interrupted request did not run, but restoring a suspended dump repeats its 
 had side effects; callbacks used this way should be idempotent.
 A local subprocess claiming shutdown is a protocol violation.
 
-A relay that stores sessions names each one with an opaque ID, `Checkout::session_id`.
-`ReplConfig::persistence` asks it to store the session or not; subprocess workers ignore it.
-`Checkout::dump` writes the session's current state to a new record that never changes and returns that record's ID;
-the session continues under the ID it had.
-The relay also writes a session's state under its own ID whenever it parks the session (idle, host gone, drain).
-`Checkout::restore` takes either ID in place of dump bytes and always starts a new session, with its own ID: a
-session ID loads the state as of its last park, a dump ID the state dumped.
-A record is never modified by a load and a session is never resumed in place, so two loads of one ID give two
-independent sessions, and a session still live elsewhere is unaffected.
+A remote that supports persistence names sessions with an opaque ID, `Checkout::session_id`;
+`ReplConfig::persistence` asks it to store the session or not, and subprocess workers ignore both.
+`Checkout::restore` can accept this ID instead of dump bytes to restore a session's state after a disconnect, whether
+intentional or due to parking from e.g. an idle timeout or a remote restart.
+The remote is free to determine what `Checkout::restore` will do, for example it may lock the existing session to
+other consumers or it may issue a new session.
 With `PoolConfig::auto_resume` (the default), a shutdown answering a named session's request is not returned: the
 checkout redials, loads what the `ShutdownDump` named into a new session, re-sends the request and adopts the new
 session's ID.

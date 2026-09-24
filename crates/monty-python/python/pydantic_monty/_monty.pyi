@@ -1055,9 +1055,9 @@ class AsyncMontyWebsocket:
 
         Arguments:
             ephemeral: Whether a server that stores sessions may store this one.
-                `True` means it is never stored, gets no `session_id`, and
-                `dump()` is refused; `False` asks for it to be stored; `None`
-                takes the server's default. Servers that store nothing ignore it.
+                `True` means the server never stores it on its own and it gets
+                no `session_id`; `False` asks for it to be stored; `None` takes
+                the server's default. Servers that store nothing ignore it.
         """
 
 @final

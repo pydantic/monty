@@ -781,7 +781,7 @@ pub struct Configure {
     #[prost(message, optional, tag = "11")]
     pub os_policy: ::core::option::Option<OsPolicy>,
     /// Relay-only: whether a serving relay may store the session. Children ignore
-    /// it, so it needs no protocol version bump.
+    /// it.
     #[prost(enumeration = "Persistence", tag = "12")]
     pub persistence: i32,
 }
@@ -866,12 +866,9 @@ pub struct ResumeFutures {
     pub values: ::core::option::Option<Arena>,
 }
 /// Requests an opaque serialized snapshot of the current session state
-/// (idle or suspended). The child stays usable afterwards. The bytes carry
-/// monty's own dump format, versioned independently of this schema, and can
-/// only be restored via `Load` by a child built with the same dump version.
-/// A relay that stores sessions instead writes the state to a new record that
-/// never changes and returns that record's ID; the session continues under the
-/// ID it already had.
+/// (idle or suspended). The session stays usable afterwards. The byte payload
+/// format is at the discretion of the remote (e.g. it may be an ID or a full dump
+/// of state).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Dump {}
 /// Restores state produced by `Dump`. Valid only from no session. If
@@ -879,10 +876,9 @@ pub struct Dump {}
 /// the parent learns the resume point; otherwise it replies `Ok`.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Load {
-    /// Dump bytes, or an ID from a relay that stores sessions: a session ID loads
-    /// the state as of the session's last park, a `Dump` ID the state it dumped.
-    /// Loading an ID always starts a new session, with its own ID; the record is
-    /// unchanged and the session that wrote it is never resumed in place.
+    /// Either:
+    /// - Dump bytes, or
+    /// - A previously named session ID from `ChildEvent::session_id`
     #[prost(bytes = "vec", tag = "1")]
     pub state: ::prost::alloc::vec::Vec<u8>,
 }
@@ -954,10 +950,10 @@ pub struct ChildEvent {
     /// on a successful `Load` reply; unset on all other events.
     #[prost(string, optional, tag = "23")]
     pub restored_script_name: ::core::option::Option<::prost::alloc::string::String>,
-    /// The session this connection now holds, set only by a relay that stores
+    /// The session this connection now holds, set only by a remote that stores
     /// sessions, on its first reply to `Configure` or `Load` whatever that
-    /// reply's kind (a `Load` always names a new session). Unset for ephemeral
-    /// sessions and from children.
+    /// reply's kind. Unset for ephemeral sessions or for remotes that don't
+    /// support persistence.
     #[prost(bytes = "vec", optional, tag = "28")]
     pub session_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
     #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
@@ -1327,8 +1323,7 @@ pub struct TypingError {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DumpResult {
-    /// Opaque versioned snapshot, or the ID of the record a relay that stores
-    /// sessions wrote; see `Dump`.
+    /// Opaque versioned snapshot; see `Dump`.
     #[prost(bytes = "vec", tag = "1")]
     pub state: ::prost::alloc::vec::Vec<u8>,
 }
@@ -1354,10 +1349,9 @@ pub struct FatalError {
 /// hand back.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ShutdownDump {
-    /// Whatever `Load.state` restores the session from: dump bytes from a relay
-    /// without storage, or an ID from one with it, sent only once the state is
-    /// stored. Absent when there was no session yet or the dump itself failed,
-    /// in which case there is nothing to resume from.
+    /// Session state captured immediately before shutdown (same bytes as
+    /// `DumpResult.state`), restorable into a fresh worker via `Load`. Absent
+    /// when there was no session yet or the dump itself failed.
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
@@ -1409,7 +1403,7 @@ impl TypeOrigin {
 pub enum Persistence {
     /// The relay's default.
     Unspecified = 0,
-    /// Never stored: no session ID, never parked, and `Dump` is refused.
+    /// Never stored by the relay on its own: no session ID and never parked.
     Ephemeral = 1,
     /// Parked on idle, drain or disconnect, and loadable by its session ID.
     Stored = 2,
