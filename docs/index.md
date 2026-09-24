@@ -19,7 +19,7 @@ A minimal, secure Python sandbox written in Rust for code written by AI.
 
 Monty avoids the latency, complexity and cost of a container based sandbox for running LLM generated code.
 It comes in two forms: **OSS Monty**, the MIT licensed Python 3.14 sandbox you install as a package, and
-[**Full Monty**](server.md), the commercial server that runs the same sandbox behind a WebSocket as a container image.
+[**Full Monty**](server.md), the commercial server that runs the same sandbox behind a WebSocket as a service.
 
 ## Latency
 
