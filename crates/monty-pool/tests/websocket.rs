@@ -2256,9 +2256,9 @@ async fn resumed_session_keeps_its_duration_backstop() {
         expect_feed(&mut socket, "ext()");
         send_kind(&mut socket, function_call(7));
         expect_resume_call(&mut socket, 7);
-        // past the 100ms budget plus 100ms grace, so only the backstop ends the turn
-        thread::sleep(Duration::from_millis(500));
-        send_complete(&mut socket);
+        // never answered: the backstop (100ms budget plus 100ms grace) must end
+        // the turn, and the client closes the connection when it does
+        while try_read_request(&mut socket).is_some() {}
     });
 
     let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
