@@ -323,7 +323,8 @@ async def test_eager_coroutine_result_is_recorded_on_the_call_span(fail: bool):
             raise ValueError('failed')
         return 42
 
-    code = 'try:\n    result = await fetch()\nexcept ValueError:\n    result = 0\nresult'
+    # the `é` makes byte offsets differ from character offsets
+    code = '# é\ntry:\n    result = await fetch()\nexcept ValueError:\n    result = 0\nresult'
     async with AsyncMonty() as pool:
         async with pool.checkout() as session:
             assert await session.feed_run(code, external_lookup={'fetch': fetch}) == (0 if fail else 42)
@@ -337,8 +338,8 @@ async def test_eager_coroutine_result_is_recorded_on_the_call_span(fail: bool):
     assert {k: v for k, v in call.attributes.items() if k.startswith('sandbox.')} == snapshot(
         {
             'sandbox.code.file.path': '<python-input-0>',
-            'sandbox.code.offset.start': 24,
-            'sandbox.code.offset.end': 31,
+            'sandbox.code.offset.start': 29,
+            'sandbox.code.offset.end': 36,
         }
     )
     assert call.parent is not None and run.context is not None

@@ -220,6 +220,15 @@ def test_function_call_position(session: MontySession):
     assert code.encode()[snap.position.start : snap.position.end].decode() == snapshot('add(x, 2)')
 
 
+def test_position_counts_utf8_bytes(session: MontySession):
+    # the two-byte `é` puts the call at byte 13 but character 12
+    code = "x = 'é'\ny = add(x, 2)"
+    snap = session.feed_start(code)
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.position == SourceRange(filename='<python-input-0>', start=13, end=22)
+    assert code.encode()[snap.position.start : snap.position.end].decode() == snapshot('add(x, 2)')
+
+
 def test_position_inside_a_function_from_an_earlier_feed(session: MontySession):
     session.feed_run('def helper(n):\n    return fetch(n)')
     snap = session.feed_start('helper(3)')

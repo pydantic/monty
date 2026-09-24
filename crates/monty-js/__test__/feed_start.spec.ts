@@ -193,6 +193,21 @@ test('every snapshot kind carries the position of the suspending expression', as
   }
 })
 
+test('the position counts UTF-8 bytes, not characters', async () => {
+  const session = await pool().checkout()
+  try {
+    // the two-byte `é` puts the call at byte 13 but character 12
+    const code = "x = 'é'\ny = add(x, 2)"
+    const call = (await session.feedStart(code)) as FunctionSnapshot
+    t.deepEqual(call.position, { filename: '<python-input-0>', start: 13, end: 22 })
+    const bytes = new TextEncoder().encode(code).subarray(call.position.start, call.position.end)
+    t.is(new TextDecoder().decode(bytes), 'add(x, 2)')
+    await call.resume(3)
+  } finally {
+    await session.close()
+  }
+})
+
 test('the position survives dump and loadSnapshot', async () => {
   let blob: Buffer
   {
