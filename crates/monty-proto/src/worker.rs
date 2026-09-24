@@ -204,8 +204,9 @@ pub struct Child {
     /// Script name of the current session (used for error and type-check
     /// diagnostics).
     script_name: String,
-    /// Built by the first type-checked feed and kept for the worker's life; its
-    /// memory joins the baseline rather than that session's budget.
+    /// Built by the first type-checked feed and kept for the worker's life; what
+    /// building it allocates joins the baseline rather than that session's budget.
+    /// What its first run caches is charged to the session, as it always was.
     type_checker: Option<TypeChecker>,
     /// `Some` when the session was created with `type_check: true`.
     type_check: Option<TypeCheckState>,
