@@ -869,8 +869,9 @@ pub struct ResumeFutures {
 /// (idle or suspended). The child stays usable afterwards. The bytes carry
 /// monty's own dump format, versioned independently of this schema, and can
 /// only be restored via `Load` by a child built with the same dump version.
-/// A relay that stores sessions instead saves the state under the session's
-/// ID and returns that ID.
+/// A relay that stores sessions instead writes the state to a new record that
+/// never changes and returns that record's ID; the session continues under the
+/// ID it already had.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Dump {}
 /// Restores state produced by `Dump`. Valid only from no session. If
@@ -878,9 +879,10 @@ pub struct Dump {}
 /// the parent learns the resume point; otherwise it replies `Ok`.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Load {
-    /// Dump bytes, or a session ID from a relay that stores sessions. Loading an
-    /// ID always starts a new session, with its own ID, from the state last
-    /// stored under it; the stored session is never resumed in place.
+    /// Dump bytes, or an ID from a relay that stores sessions: a session ID loads
+    /// the state as of the session's last park, a `Dump` ID the state it dumped.
+    /// Loading an ID always starts a new session, with its own ID; the record is
+    /// unchanged and the session that wrote it is never resumed in place.
     #[prost(bytes = "vec", tag = "1")]
     pub state: ::prost::alloc::vec::Vec<u8>,
 }
@@ -1325,8 +1327,8 @@ pub struct TypingError {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DumpResult {
-    /// Opaque versioned snapshot, or the session ID from a relay that stores
-    /// sessions; see `Dump`.
+    /// Opaque versioned snapshot, or the ID of the record a relay that stores
+    /// sessions wrote; see `Dump`.
     #[prost(bytes = "vec", tag = "1")]
     pub state: ::prost::alloc::vec::Vec<u8>,
 }
@@ -1353,8 +1355,9 @@ pub struct FatalError {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ShutdownDump {
     /// Whatever `Load.state` restores the session from: dump bytes from a relay
-    /// without storage, or the session ID from one with it. Absent when there
-    /// was no session yet or the dump itself failed.
+    /// without storage, or an ID from one with it, sent only once the state is
+    /// stored. Absent when there was no session yet or the dump itself failed,
+    /// in which case there is nothing to resume from.
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }

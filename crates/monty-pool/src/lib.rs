@@ -95,9 +95,9 @@ pub struct PoolConfig {
     /// bound the impact of any slow leak in a long-lived child.
     pub max_checkouts_per_worker: Option<u32>,
     /// Resume a session transparently when a relay that stores sessions drains
-    /// it: the checkout redials, reloads the session by its ID and re-sends
-    /// the request the relay reported it did not run. WebSocket transport only;
-    /// on by default.
+    /// it: the checkout redials, reloads the state the drain named and re-sends
+    /// the request the relay reported it did not run. The session's suspension
+    /// and sleep totals carry over. WebSocket transport only; on by default.
     pub auto_resume: bool,
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).
@@ -194,10 +194,9 @@ pub enum PoolError {
     },
     /// The remote server is shutting down and did **not** run the request —
     /// re-running it on a fresh session is safe. `dump` restores the session
-    /// via [`Checkout::restore`] on a fresh checkout: the session ID from a
-    /// relay that stores sessions (returned only when
-    /// [`PoolConfig::auto_resume`] could not resume it), otherwise the state
-    /// captured just before shutdown.
+    /// via [`Checkout::restore`] on a fresh checkout: an ID from a relay that
+    /// stores sessions (returned only when [`PoolConfig::auto_resume`] could
+    /// not resume it), otherwise the state captured just before shutdown.
     Shutdown {
         /// What restores the session, absent when there was no session yet or
         /// the server's dump failed.

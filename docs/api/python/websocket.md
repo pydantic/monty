@@ -19,6 +19,8 @@ It does not distinguish a worker crash from a server policy drop; check out a ne
 
 [`MontyShutdown`][pydantic_monty.MontyShutdown] means the server declined the next request because it is shutting down.
 That request did not run.
+Against a server that stores sessions the client resumes the session itself before raising, see
+[stored sessions](#stored-sessions); the exception is raised only when that fails or is disabled.
 If the exception includes a dump, restore it into a fresh session using the appropriate
 [snapshot loader](../../snapshots.md#storing-and-restoring).
 Restoring a suspended call re-announces it even if the host already executed the callback, so callback side effects
@@ -29,19 +31,24 @@ Neither exception occurs on the local subprocess transport.
 
 A server that stores sessions gives each one an opaque ID instead of sending its state back.
 [`session_id`][pydantic_monty.AsyncMontySession.session_id] holds it; it is `None` against a server that stores nothing.
-Against such a server [`dump()`][pydantic_monty.AsyncMontySession.dump] saves the session's current state under that ID
-and returns the ID.
-Passing the ID to [`load_session()`][pydantic_monty.AsyncMontySession.load_session] or
+Against such a server [`dump()`][pydantic_monty.AsyncMontySession.dump] writes the session's current state to a
+record that never changes and returns that record's ID; the session continues under its `session_id`.
+The server also writes the session's state under `session_id` whenever it parks the session: idle for its
+`--park-after`, the client gone, or a drain.
+Passing either ID to [`load_session()`][pydantic_monty.AsyncMontySession.load_session] or
 [`load_snapshot()`][pydantic_monty.AsyncMontySession.load_snapshot] on a fresh session, from any process, starts a new
-session with its own ID from the state last stored under it: its last `dump()`, or when the server parked it.
-A stored session is never resumed in place, so loading one ID twice gives two independent sessions, and a session
-still running elsewhere is unaffected.
+session with its own ID: a `session_id` gives the state as of that session's last park, a `dump()` ID the state dumped.
+The record is unchanged and the session that wrote it is never resumed in place, so loading one ID twice gives two
+independent sessions, and a session still running elsewhere is unaffected.
+To branch a session at a chosen point, call `dump()`, then `load_session()` with its ID once per branch; the original
+session can carry on as well.
 `checkout(ephemeral=True)` asks the server never to store the session, so it has no ID and `dump()` is refused.
 
-When such a server drains a session, the client redials, loads the session's ID into a new session and re-sends the
-request, so the caller sees the result rather than `MontyShutdown`; `session_id` then names the new session.
-`MontyShutdown` still surfaces if the reload fails, if `auto_resume=False` is passed to
-[`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket], or if the session has no ID.
+When such a server drains a session, the client redials, loads the state the server named into a new session and
+re-sends the request, so the caller sees the result rather than `MontyShutdown`; `session_id` then names the new
+session, and the session's suspension and sleep totals carry over.
+`MontyShutdown` is still raised if the server named nothing to load, if the reload fails, if `auto_resume=False` is
+passed to [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket], or if the session has no ID.
 The redial uses the headers `connect_headers` returned when the session was entered, so an expired token makes the
 resume fail.
 `MontyDisconnectError` is never resumed, because the request may have run.

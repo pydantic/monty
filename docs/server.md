@@ -253,8 +253,13 @@ Use `/health` for readiness and `/` for liveness.
 
 On SIGTERM, the server stops listening immediately, so new HTTP and WebSocket connections are refused rather than
 receiving a 503 response. Existing WebSocket sessions remain connected while the server drains. Each existing session's
-next request raises `pydantic_monty.MontyShutdown`; that protocol request did not run and can be resent after restoration.
-Its `dump` contains the signed session state when state exists and dumping succeeds, or `None` otherwise. Check that the
+next request is answered with a shutdown instead of being run.
+With a session store, the server parks the session first and the client resumes it on another replica without the
+caller noticing; see [stored sessions](api/python/websocket.md#stored-sessions).
+Otherwise, or when that resume fails or is disabled, the request raises `pydantic_monty.MontyShutdown`; it did not run
+and can be resent after restoration.
+Its `dump` is what restores the session: the session's ID from a server with a store, or the signed session state from
+one without, or `None` when nothing could be stored. Check that the
 dump is not `None`, then restore an idle dump on a fresh session with `await session.load_session(exc.dump)` before
 resending the request; a dump captured while a feed is suspended instead uses
 `await session.load_snapshot(exc.dump, ...)`.
@@ -265,7 +270,8 @@ shutdown.
 
 Sessions that remain silent through `--drain-grace` (default 30s) are dropped without a dump.
 Set the pod's `terminationGracePeriodSeconds` above `--drain-grace`. Use the same `MONTY_SERVER_DUMP_KEY` on every
-replica so the client can restore a dump after reconnecting to a different one.
+replica: a session parked or dumped by one replica is loaded by another, and a dump from a server without a store can
+be restored after reconnecting to a different one.
 Dumps only load into a worker of the same Monty version, so roll clients and servers together.
 
 ## Tracing

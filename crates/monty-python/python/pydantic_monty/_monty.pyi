@@ -528,8 +528,8 @@ class MontyShutdown(MontyError):
 
     `dump` is what restores the session on a new one, with
     `session.load_session` (idle, between feeds) or `session.load_snapshot`
-    (suspended mid-feed): the session ID from a server that stores sessions,
-    or the session state captured just before shutdown from one that does not.
+    (suspended mid-feed): an ID from a server that stores sessions, or the
+    session state captured just before shutdown from one that does not.
 
     One caveat: if the interrupted request was answering a suspension (an
     external function or `os` callback), the host already ran that call and
@@ -959,11 +959,12 @@ class AsyncMontyWebsocket:
     raises `MontyDisconnectError`.
 
     A server that stores sessions gives each one an ID (`session.session_id`)
-    instead of handing state back: `dump()` saves the current state under it
-    and returns it, and `load_session` / `load_snapshot` start a new session
-    from it, in any process. `checkout(ephemeral=True)` opts a session out.
-    When such a server drains, the session resumes on another server without
-    the caller noticing (see `auto_resume`).
+    instead of handing state back: `dump()` writes the current state to a
+    record that never changes and returns its ID, and `load_session` /
+    `load_snapshot` start a new session from either ID, in any process.
+    `checkout(ephemeral=True)` opts a session out. When such a server drains,
+    the session resumes on another server without the caller noticing (see
+    `auto_resume`).
 
     ```python
     async with AsyncMontyWebsocket('ws://127.0.0.1:8799') as pool:
@@ -1023,10 +1024,11 @@ class AsyncMontyWebsocket:
                 session dying with its worker. `None` disables this backstop.
             turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
             auto_resume: When a server that stores sessions drains one, redial,
-                load its `session_id` into a new session and re-send the request
-                it did not run, instead of raising `MontyShutdown`. `MontyShutdown`
-                still surfaces when the resume fails. A closed connection is never
-                resumed: the request may have run.
+                load the state it named into a new session and re-send the
+                request it did not run, instead of raising `MontyShutdown`; the
+                session's suspension and sleep totals carry over. `MontyShutdown`
+                is still raised when the resume fails. A closed connection is
+                never resumed: the request may have run.
         """
 
     async def __aenter__(self) -> Self: ...
@@ -1194,11 +1196,12 @@ class AsyncMontySession:
 
         The snapshot trust requirements of `MontySession.load_session` also apply here.
 
-        Against a server that stores sessions, `state` may be a `session_id`.
-        Loading it always starts a new session, with its own `session_id`, from
-        the state last stored under that ID (its last `dump()`, or when the
-        server parked it). The stored session is never resumed in place, so
-        loading one ID twice gives two independent sessions.
+        Against a server that stores sessions, `state` may be an ID: a
+        `session_id` loads the state as of that session's last park, and an ID
+        returned by `dump()` loads the state dumped. Loading either always
+        starts a new session, with its own `session_id`; the record is unchanged
+        and the session that wrote it is never resumed in place, so loading one
+        ID twice gives two independent sessions.
         """
 
     async def load_snapshot(
@@ -1220,7 +1223,7 @@ class AsyncMontySession:
         `external_lookup` / `os` are captured for `resume_auto()`, with the same
         restored-snapshot caveats as the sync method (a restored `FutureSnapshot`
         cannot be driven with `resume_auto()` — its pending coroutines are gone).
-        `state` may be a `session_id`, as in `load_session`.
+        `state` may be an ID, as in `load_session`.
         """
 
     async def dump(self) -> bytes:
@@ -1228,9 +1231,10 @@ class AsyncMontySession:
         Serialize the worker's session state (idle or suspended) to opaque
         bytes using monty's existing dump format. The session stays usable.
 
-        A server that stores sessions instead saves the state under the
-        session's `session_id` and returns that ID, which `load_session` /
-        `load_snapshot` start new sessions from.
+        A server that stores sessions instead writes the state to a record that
+        never changes and returns that record's ID, which `load_session` /
+        `load_snapshot` start new sessions from. The session continues under
+        its existing `session_id`.
         """
 
     async def install_dependencies(self, requirements: list[str]) -> None:
@@ -1258,9 +1262,9 @@ class AsyncMontySession:
     def session_id(self) -> bytes | None:
         """The opaque ID a server that stores sessions gave this session.
 
-        Pass it to `load_session` / `load_snapshot` to resume the session from any
-        process. `None` for local workers, ephemeral sessions and servers that
-        store nothing.
+        Pass it to `load_session` / `load_snapshot` to start a new session from
+        the state as of this one's last park, from any process. `None` for local
+        workers, ephemeral sessions and servers that store nothing.
         """
 
 @final
