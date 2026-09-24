@@ -30,37 +30,39 @@ FULL_MONTY_URL = os.environ.get('FULL_MONTY_URL', 'ws://localhost:8000/')
 # after re-running.
 
 
-def run_monty():
+def run_monty(rounds: int = 20, idle: float = 1.0):
+    # a new sandbox is a checkout from a pool the host already created; each
+    # waits `idle` seconds first, as a pool does while an agent waits on its
+    # model, since back-to-back checkouts hit caches an idle worker has lost
+    with Monty() as pool:
+        with pool.checkout() as session:
+            session.feed_run(code)
+        samples: list[float] = []
+        for _ in range(rounds):
+            time.sleep(idle)
+            start = time.perf_counter()
+            with pool.checkout() as session:
+                result = session.feed_run(code)
+            samples.append(time.perf_counter() - start)
+            assert result == 2, f'Unexpected result: {result!r}'
+    print(f'Monty new sandbox time: {(statistics.median(samples) * 1000):.3f} milliseconds (median of {rounds})')
+
+
+def run_monty_new_pool():
     start = time.perf_counter()
-    # cold start includes spawning a worker subprocess and the protocol
+    # creating the pool spawns a worker subprocess and completes the protocol
     # handshake — execution is always subprocess-isolated
     with Monty() as pool:
         with pool.checkout() as session:
             result = session.feed_run(code)
     diff = time.perf_counter() - start
     assert result == 2, f'Unexpected result: {result!r}'
-    print(f'Monty cold start time: {(diff * 1000):.3f} milliseconds')
-
-
-def run_monty_warm(rounds: int = 20):
-    # the steady state of a long-running host: a worker already exists, so a
-    # checkout is one message each way
-    with Monty() as pool:
-        with pool.checkout() as session:
-            session.feed_run(code)
-        samples: list[float] = []
-        for _ in range(rounds):
-            start = time.perf_counter()
-            with pool.checkout() as session:
-                result = session.feed_run(code)
-            samples.append(time.perf_counter() - start)
-            assert result == 2, f'Unexpected result: {result!r}'
-    print(f'Monty warm pool time: {(statistics.median(samples) * 1000):.3f} milliseconds (median of {rounds})')
+    print(f'Monty new pool time: {(diff * 1000):.3f} milliseconds')
 
 
 def run_full_monty():
     async def run() -> Any:
-        # cold start dials the server, which spawns a worker for the session
+        # a new client pool dials the server, which spawns a worker for the session
         async with AsyncMontyWebsocket(FULL_MONTY_URL) as pool:
             async with pool.checkout() as session:
                 return await session.feed_run(code)
@@ -69,7 +71,7 @@ def run_full_monty():
     result = asyncio.run(run())
     diff = time.perf_counter() - start
     assert result == 2, f'Unexpected result: {result!r}'
-    print(f'Full Monty cold start time: {(diff * 1000):.3f} milliseconds')
+    print(f'Full Monty new client pool time: {(diff * 1000):.3f} milliseconds')
 
 
 def run_full_monty_warm(rounds: int = 20):
@@ -89,7 +91,7 @@ def run_full_monty_warm(rounds: int = 20):
         return samples
 
     samples = asyncio.run(run())
-    print(f'Full Monty warm time: {(statistics.median(samples) * 1000):.3f} milliseconds (median of {rounds})')
+    print(f'Full Monty new sandbox time: {(statistics.median(samples) * 1000):.3f} milliseconds (median of {rounds})')
 
 
 def run_pyodide():
@@ -101,7 +103,7 @@ def run_pyodide():
     result = asyncio.run(run())
     diff = time.perf_counter() - start
     assert result == {'status': 'success', 'output': [], 'return_value': 2}, f'Unexpected result: {result!r}'
-    print(f'Pyodide cold start time: {(diff * 1000):.3f} milliseconds')
+    print(f'Pyodide new sandbox time: {(diff * 1000):.3f} milliseconds')
 
 
 def run_docker():
@@ -114,7 +116,7 @@ def run_docker():
     diff = time.perf_counter() - start
     output = result.stdout.strip()
     assert output == '2', f'Unexpected result: {output!r}'
-    print(f'Docker cold start time: {(diff * 1000):.3f} milliseconds')
+    print(f'Docker new sandbox time: {(diff * 1000):.3f} milliseconds')
 
 
 def run_starlark():
@@ -127,7 +129,7 @@ def run_starlark():
     result = sl.eval(mod, ast, glb)
     diff = time.perf_counter() - start
     assert result == 2, f'Unexpected result: {result!r}'
-    print(f'Starlark cold start time: {(diff * 1000):.3f} milliseconds')
+    print(f'Starlark new sandbox time: {(diff * 1000):.3f} milliseconds')
 
 
 def run_daytona():
@@ -145,7 +147,7 @@ def run_daytona():
     response = daytona.create().process.code_run(f'print({code})')
     diff = time.perf_counter() - start
     assert response.result.strip() == '2', f'Unexpected result: {response.result!r}'
-    print(f'Daytona cold start time: {(diff * 1000):.3f} milliseconds')
+    print(f'Daytona new sandbox time: {(diff * 1000):.3f} milliseconds')
 
 
 def run_wasmer():
@@ -159,7 +161,7 @@ def run_wasmer():
     diff = time.perf_counter() - start
     output = result.stdout.strip()
     assert output == '2', f'Unexpected result: {output!r}'
-    print(f'Wasmer cold start time: {(diff * 1000):.3f} milliseconds')
+    print(f'Wasmer new sandbox time: {(diff * 1000):.3f} milliseconds')
 
 
 def run_wasmtime():
@@ -202,7 +204,7 @@ def run_wasmtime():
     diff = time.perf_counter() - start
     output = stdout.read_text().strip()
     assert output == '2', f'Unexpected result: {output!r}'
-    print(f'wasmtime (precompiled CPython) cold start time: {(diff * 1000):.3f} milliseconds')
+    print(f'wasmtime (precompiled CPython) new sandbox time: {(diff * 1000):.3f} milliseconds')
 
 
 def run_subprocess_python():
@@ -215,7 +217,7 @@ def run_subprocess_python():
     diff = time.perf_counter() - start
     output = result.stdout.strip()
     assert output == '2', f'Unexpected result: {output!r}'
-    print(f'Subprocess Python cold start time: {(diff * 1000):.3f} milliseconds')
+    print(f'Subprocess Python new sandbox time: {(diff * 1000):.3f} milliseconds')
 
 
 def run_exec_python():
@@ -223,7 +225,7 @@ def run_exec_python():
     result = eval(code)
     diff = time.perf_counter() - start
     assert result == 2, f'Unexpected result: {result!r}'
-    print(f'Exec Python cold start time: {(diff * 1000):.3f} milliseconds')
+    print(f'Exec Python new sandbox time: {(diff * 1000):.3f} milliseconds')
 
 
 # --- indicative agent run: 10 REPL feeds ---------------------------------------
@@ -280,7 +282,7 @@ def agent_monty(warm: bool):
         with Monty() as pool:
             output = feeds(pool)
         diff = time.perf_counter() - start
-        report_agent('Monty cold start', diff, output)
+        report_agent('Monty new pool', diff, output)
 
 
 def agent_full_monty(warm: bool):
@@ -306,7 +308,7 @@ def agent_full_monty(warm: bool):
         return time.perf_counter() - start, output
 
     diff, output = asyncio.run(run())
-    report_agent('Full Monty warm' if warm else 'Full Monty cold start', diff, output)
+    report_agent('Full Monty warm' if warm else 'Full Monty new client pool', diff, output)
 
 
 def agent_wasmtime():
@@ -432,7 +434,7 @@ def agent_exec_python():
 # only the measurements whose name is one of the arguments, all with no arguments
 MEASUREMENTS = [
     ('monty', run_monty),
-    ('monty', run_monty_warm),
+    ('monty', run_monty_new_pool),
     ('full_monty', run_full_monty),
     ('full_monty', run_full_monty_warm),
     ('pyodide', run_pyodide),

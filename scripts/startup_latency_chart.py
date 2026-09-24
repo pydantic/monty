@@ -12,11 +12,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# (label, milliseconds, is_monty): cold start plus a warm agent run of 10 REPL
+# (label, milliseconds, is_monty): a new sandbox plus a warm agent run of 10 REPL
 # commands, the "Combined" column of the table in docs/index.md
 ROWS: list[tuple[str, float, bool]] = [
-    ('OSS Monty', 4.9, True),
-    ('Full Monty', 7.4, True),
+    ('OSS Monty', 1.2, True),
+    ('Full Monty', 5.5, True),
     ('WASI / wasmtime', 200, False),
     ('Docker', 900, False),
     ('Sandboxing service', 1900, False),
@@ -34,7 +34,7 @@ MARGIN_BOTTOM = 40
 AXIS_MAX_MS = 3000
 AXIS_STEP_MS = 500
 PLOT_WIDTH = WIDTH - LABEL_WIDTH - 90
-CAPTION = 'Combined cold start + agent run'
+CAPTION = 'Combined new sandbox + agent run'
 
 TEXT = '#8a8f98'
 MONTY_BAR = '#e520e9'

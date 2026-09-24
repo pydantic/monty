@@ -25,25 +25,27 @@ It comes in two forms: **OSS Monty**, the MIT licensed Python 3.14 sandbox you i
 
 ![Time to create a sandbox and run 10 REPL commands](img/startup-latency.svg)
 
-| Sandbox                | Cold start | Agent run, warm† | Combined‡ | Execution env§ |
-| ---------------------- | ---------- | ---------------- | --------- | -------------- |
-| OSS Monty              | 4.50 ms    | 0.40 ms          | 4.90 ms   | local          |
-| Full Monty (WebSocket) | 3.50 ms    | 3.90 ms          | 7.40 ms   | remote         |
-| WASI / wasmtime        | 16 ms      | 180 ms           | 200 ms    | local          |
-| local Docker           | 195 ms     | 700 ms           | 900 ms    | local          |
-| Sandboxing service     | 1500 ms    | 400 ms           | 1900 ms   | remote         |
-| Pyodide in Deno        | 2700 ms    | 35 ms            | 2700 ms   | local          |
+| Sandbox                | New sandbox¹ | Agent run² | Combined³ | Execution env⁴ |
+| ---------------------- | ------------ | ---------- | --------- | -------------- |
+| OSS Monty              | 0.80 ms      | 0.40 ms    | 1.20 ms   | local          |
+| Full Monty (WebSocket) | 1.60 ms      | 3.90 ms    | 5.50 ms   | remote         |
+| WASI / wasmtime        | 16 ms        | 180 ms     | 200 ms    | local          |
+| local Docker           | 195 ms       | 700 ms     | 900 ms    | local          |
+| Sandboxing service     | 1500 ms      | 400 ms     | 1900 ms   | remote         |
+| Pyodide in Deno        | 2700 ms      | 35 ms      | 2700 ms   | local          |
 
-**†** 10 commands run in a REPL against a sandbox that already exists, as you might expect from a simple agent with code
-mode.
-OSS Monty and Full Monty keep the session, so each command is one feed; the others have no persistent interpreter, so
-command *n* re-runs commands 1 to *n*.
-
-**‡** The time to create the sandbox and perform the agent run: the two columns added together.
-
-**§** OSS Monty, WASI, local Docker and Pyodide run the code on the same machine as the application calling them.
-Full Monty and sandboxing services run it remotely, which reduces the blast radius of an escape and lets the sandboxes
-scale independently of the hosts calling them.
+1. **New sandbox**: the time to get a fresh sandbox and run `1 + 1` in it.
+    For OSS Monty and Full Monty that is a checkout from a pool the application already created.
+    The others have no pool, so each new sandbox starts from nothing.
+1. **Agent run**: 10 commands run in a REPL against a sandbox that already exists, as you might expect from a simple
+    agent with code mode.
+    OSS Monty and Full Monty keep the session, so each command is one feed; the others have no persistent interpreter,
+    so command *n* re-runs commands 1 to *n*.
+1. **Combined**: the time to create the sandbox and perform the agent run: the two columns added together.
+1. **Execution env**: OSS Monty, WASI, local Docker and Pyodide run the code on the same machine as the application
+    calling them.
+    Full Monty and sandboxing services run it remotely, which reduces the blast radius of an escape and lets the
+    sandboxes scale independently of the hosts calling them.
 
 Learn more in the [comparison to alternatives](alternatives.md).
 
@@ -56,9 +58,9 @@ Learn more in the [comparison to alternatives](alternatives.md).
 
 ## Why Monty
 
-1. **Latency in milliseconds, not seconds.** A sandbox plus ten REPL commands takes 5 ms vs. 1900 ms for a
-    sandboxing service, because the sandbox is a subprocess, a command is one message each way, and the
-    session persists so nothing is re-run.
+1. **Latency in milliseconds, not seconds.** A new sandbox plus ten REPL commands takes 1.2 ms vs. 1900 ms for
+    a sandboxing service, because a sandbox is a checkout from a pool of worker subprocesses, a command is one
+    message each way, and the session persists so nothing is re-run.
     See [start latency](#latency).
 1. **Simple to deploy at massive scale.** Because you're not provisioning a new VM or container for every sandbox
     you can run thousands of workers with minimal cost and complexity.
