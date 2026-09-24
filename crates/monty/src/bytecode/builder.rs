@@ -3,10 +3,8 @@
 //! `CodeBuilder` provides methods for emitting opcodes and operands, handling
 //! forward jumps with patching, and tracking source locations for tracebacks.
 
-use monty_types::CodeLoc;
-
 use super::{
-    code::{Code, ExceptionEntry, HandlerKind, LocationEntry},
+    code::{Code, ExceptionEntry, HandlerKind, LocationEntry, SuspendPosition},
     compiler::CompileError,
     op::{Opcode, Operand},
 };
@@ -27,9 +25,12 @@ pub struct CodeBuilder {
     /// Constants collected during compilation.
     constants: Vec<Value>,
 
-    /// Source locations recorded per instruction, resolved to lines and
-    /// columns by [`Self::build`].
-    locations: Vec<RecordedLocation>,
+    /// Source location entries for traceback generation.
+    location_table: Vec<LocationEntry>,
+
+    /// Offset and range of each instruction that can suspend, resolved to
+    /// lines and columns by [`Self::build`].
+    suspend_sites: Vec<(u32, CodeRange)>,
 
     /// Exception handler entries.
     exception_table: Vec<ExceptionEntry>,
@@ -441,49 +442,46 @@ impl CodeBuilder {
 
     /// Finishes a compiled body, transferring its buffers and metadata to `Code`.
     ///
-    /// `lines` indexes the source every recorded range points into; each range
-    /// is resolved to a line and column here, once, so suspensions need not.
+    /// `lines` indexes the source every recorded range points into; each
+    /// suspending instruction's range is resolved to a line and column here,
+    /// once, so suspensions need not.
     #[must_use]
     pub fn build(self, lines: &SourceMap<'_>) -> Code {
         // Unnamed slots use the sentinel understood by local-name lookup.
         let local_names = self.local_names.into_iter().map(Option::unwrap_or_default).collect();
-        let mut previous: Option<(CodeRange, CodeLoc, CodeLoc)> = None;
-        let location_table = self
-            .locations
+        let suspend_positions = self
+            .suspend_sites
             .into_iter()
-            .map(|location| {
-                // consecutive instructions of one expression share its range
-                let (start, end) = match previous {
-                    Some((range, start, end)) if range == location.range => (start, end),
-                    _ => lines.resolve_span(location.range),
-                };
-                previous = Some((location.range, start, end));
-                LocationEntry::new(location.offset, location.range, location.focus, start, end)
+            .map(|(offset, range)| {
+                let (start, end) = lines.resolve_span(range);
+                SuspendPosition::new(offset, range.filename, start, end)
             })
             .collect();
         Code::new(
             self.bytecode,
             self.constants,
-            location_table,
+            self.location_table,
+            suspend_positions,
             self.exception_table,
             local_names,
         )
     }
 
-    /// Records the current location in the location table if set.
+    /// Records the current location for `op`, if set: in the location table,
+    /// and as a suspend site when `op` can suspend.
     ///
     /// Returns a `CompileError` if the bytecode offset has grown past
     /// `u32::MAX` — the i16 jump-offset cap means this is practically
     /// unreachable, but `LocationEntry`'s offset is `u32` so we surface the
     /// limit cleanly rather than panic.
-    fn record_location(&mut self) -> Result<(), CompileError> {
+    fn record_location(&mut self, op: Opcode) -> Result<(), CompileError> {
         if let Some(range) = self.current_location {
             let offset = u32::try_from(self.bytecode.len()).map_err(|_| self.bytecode_too_large())?;
-            self.locations.push(RecordedLocation {
-                offset,
-                range,
-                focus: self.current_focus,
-            });
+            self.location_table
+                .push(LocationEntry::new(offset, range, self.current_focus));
+            if op.can_suspend() {
+                self.suspend_sites.push((offset, range));
+            }
         }
         Ok(())
     }
@@ -533,7 +531,7 @@ impl CodeBuilder {
         if self.is_dead() {
             return Ok(());
         }
-        self.record_location()?;
+        self.record_location(op)?;
         self.bytecode.push(op as u8);
         match operand {
             Operand::None => {}
@@ -800,18 +798,6 @@ struct JumpTargetInner {
     /// The stack depth that at this position. Used in `calculate_jump_offset`
     /// to enforce the invariant that all paths arriving at a given bytecode.
     stack_depth: u16,
-}
-
-/// A location recorded while emitting, before [`CodeBuilder::build`]
-/// resolves its range to a line and column.
-#[derive(Debug)]
-struct RecordedLocation {
-    /// Bytecode offset of the instruction the location applies from.
-    offset: u32,
-    /// Source range of the instruction's expression.
-    range: CodeRange,
-    /// Optional caret focus within `range`.
-    focus: Option<CodeRange>,
 }
 
 #[cfg(test)]

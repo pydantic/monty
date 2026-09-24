@@ -2396,10 +2396,16 @@ impl<'h> VM<'h> {
     /// `instruction_ip` still names the suspending opcode, and its line and
     /// column were resolved at compile time, so this reads no source.
     pub(crate) fn suspension_position(&self) -> SourceRange {
-        self.current_frame
+        let position = self
+            .current_frame
             .code
-            .location_for_offset(self.instruction_ip)
-            .map_or_else(SourceRange::unknown, |entry| entry.source_range(self.interns))
+            .suspend_position(self.instruction_ip, self.interns);
+        debug_assert!(
+            position.is_some(),
+            "no suspend position at offset {}: is the opcode missing from `Opcode::can_suspend`?",
+            self.instruction_ip
+        );
+        position.unwrap_or_else(SourceRange::unknown)
     }
 
     /// Returns the source position of the `await` the main task is blocked on.
@@ -2417,9 +2423,9 @@ impl<'h> VM<'h> {
                     // `save_task_context` pushes the executing frame last.
                     let frame = task.frames.last()?;
                     frame_code(self.interns, self.module_code, frame.function_id)
-                        .location_for_offset(task.instruction_ip)
+                        .suspend_position(task.instruction_ip, self.interns)
                 })
-                .map_or_else(SourceRange::unknown, |entry| entry.source_range(self.interns))
+                .unwrap_or_else(SourceRange::unknown)
         }
     }
 

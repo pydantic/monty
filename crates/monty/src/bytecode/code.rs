@@ -34,6 +34,12 @@ pub struct Code {
     #[serde(rename = "L")]
     location_table: Vec<LocationEntry>,
 
+    /// Resolved positions of the instructions that can suspend, sorted by offset.
+    ///
+    /// Only [`Opcode::can_suspend`](super::op::Opcode::can_suspend) instructions
+    /// have one, so the line and column of every other instruction cost nothing.
+    suspend_positions: Vec<SuspendPosition>,
+
     /// Exception handler table.
     ///
     /// Maps protected bytecode ranges to their exception handlers. Consulted when
@@ -54,7 +60,7 @@ impl Code {
     /// Creates an empty code object for tests that only need VM context.
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
-        Self::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        Self::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
     }
 
     /// Creates a new Code object with all components.
@@ -65,6 +71,7 @@ impl Code {
         bytecode: Vec<u8>,
         constants: Vec<Value>,
         location_table: Vec<LocationEntry>,
+        suspend_positions: Vec<SuspendPosition>,
         exception_table: Vec<ExceptionEntry>,
         local_names: Vec<StringId>,
     ) -> Self {
@@ -72,6 +79,7 @@ impl Code {
             bytecode,
             constants,
             location_table,
+            suspend_positions,
             exception_table,
             local_names,
         }
@@ -117,6 +125,23 @@ impl Code {
         after.checked_sub(1).map(|index| &self.location_table[index])
     }
 
+    /// The position a suspension at the instruction starting at `offset` reports,
+    /// or `None` if that instruction cannot suspend.
+    #[must_use]
+    pub fn suspend_position(&self, offset: usize, interns: &Interns) -> Option<SourceRange> {
+        let offset = u32::try_from(offset).ok()?;
+        let index = self
+            .suspend_positions
+            .binary_search_by_key(&offset, |position| position.bytecode_offset)
+            .ok()?;
+        let position = &self.suspend_positions[index];
+        Some(SourceRange {
+            filename: interns.get_filename(position.filename).to_owned(),
+            start: position.start,
+            end: position.end,
+        })
+    }
+
     /// Finds an exception handler for the given bytecode offset.
     ///
     /// Searches the exception table for an entry whose protected range contains
@@ -137,6 +162,7 @@ impl Clone for Code {
             bytecode: self.bytecode.clone(),
             constants: self.constants.iter().map(Value::copy_immediate).collect(),
             location_table: self.location_table.clone(),
+            suspend_positions: self.suspend_positions.clone(),
             exception_table: self.exception_table.clone(),
             local_names: self.local_names.clone(),
         }
@@ -173,24 +199,16 @@ pub struct LocationEntry {
     /// This can be populated later for Python 3.11-style focused tracebacks.
     #[serde(rename = "F")]
     focus: Option<CodeRange>,
-
-    /// Line and column where `range` starts, resolved at compile time.
-    start: CodeLoc,
-
-    /// Line and column where `range` ends (exclusive), resolved at compile time.
-    end: CodeLoc,
 }
 
 impl LocationEntry {
-    /// Creates a new location entry; `start` / `end` are `range` resolved against its source.
+    /// Creates a new location entry.
     #[must_use]
-    pub fn new(bytecode_offset: u32, range: CodeRange, focus: Option<CodeRange>, start: CodeLoc, end: CodeLoc) -> Self {
+    pub fn new(bytecode_offset: u32, range: CodeRange, focus: Option<CodeRange>) -> Self {
         Self {
             bytecode_offset,
             range,
             focus,
-            start,
-            end,
         }
     }
 
@@ -199,14 +217,31 @@ impl LocationEntry {
     pub fn range(&self) -> CodeRange {
         self.range
     }
+}
 
-    /// The position a suspension at this entry reports, without rereading the source.
+/// Line and column of an instruction that can suspend, resolved at compile time
+/// so a suspension reports its position without rereading the source.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SuspendPosition {
+    /// Offset of the suspending instruction; lookups match it exactly.
+    bytecode_offset: u32,
+    /// Filename identity, resolved by `Interns::get_filename`.
+    filename: StringId,
+    /// Where the instruction's expression starts.
+    start: CodeLoc,
+    /// Where the instruction's expression ends (exclusive).
+    end: CodeLoc,
+}
+
+impl SuspendPosition {
+    /// Creates a position for the instruction at `bytecode_offset`.
     #[must_use]
-    pub fn source_range(&self, interns: &Interns) -> SourceRange {
-        SourceRange {
-            filename: interns.get_filename(self.range.filename).to_owned(),
-            start: self.start,
-            end: self.end,
+    pub fn new(bytecode_offset: u32, filename: StringId, start: CodeLoc, end: CodeLoc) -> Self {
+        Self {
+            bytecode_offset,
+            filename,
+            start,
+            end,
         }
     }
 }

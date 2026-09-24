@@ -31,8 +31,8 @@ fn count_chars(bytes: &[u8]) -> usize {
 ///
 /// Monty's parser stores only byte offsets per AST node to keep the post-parse
 /// hot path O(1) per node. A `SourceMap` is built once per compilation, so
-/// every bytecode location stores its line and column up front and a
-/// suspension copies them, and once at the diagnostic boundary to resolve the
+/// every instruction that can suspend stores its line and column up front and
+/// a suspension copies them, and once at the diagnostic boundary to resolve the
 /// frames of a traceback. Building it scans the source once to index line
 /// starts; with a 100k-line source this is a few hundred microseconds.
 ///
