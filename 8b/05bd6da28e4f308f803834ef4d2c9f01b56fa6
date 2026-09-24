@@ -1,0 +1,25 @@
+scripts/startup_latency_chart.py
+  s_15f2bbb6361916::t_8ae3ee86d9c019 21
+docs/alternatives.md
+  s_15f2bbb6361916::t_8ae3ee86d9c019 22,63-64,139-140,149-155,158-165
+docs/img/startup-latency.svg
+  s_15f2bbb6361916::t_8ae3ee86d9c019 23
+docs/index.md
+  s_15f2bbb6361916::t_8ae3ee86d9c019 31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8b05bd6da28e4f308f803834ef4d2c9f01b56fa6",
+  "prompts": {},
+  "sessions": {
+    "s_15f2bbb6361916": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "29d83d0b-fbe7-4954-b79a-89c9ff1e4755",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
