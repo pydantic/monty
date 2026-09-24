@@ -1,0 +1,38 @@
+docs/server.md
+  s_2708508cd7f9d2::t_a2f2954209be7c 259-260
+crates/monty-proto/src/generated/monty.v1.rs
+  s_2708508cd7f9d2::t_7f0f0201caaacd 793,884-886,896-898,978,980-981,1338,1367-1369,1443
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_2708508cd7f9d2::t_a2f2954209be7c 602,610,692-694,701-703,793,795-796,1028,1052-1054
+docs/api/python/websocket.md
+  s_2708508cd7f9d2::t_a2f2954209be7c 48-49
+crates/monty-pool/README.md
+  s_2708508cd7f9d2::t_a2f2954209be7c 214-219
+crates/monty-pool/tests/websocket.rs
+  s_2708508cd7f9d2::t_7f0f0201caaacd 2196-2203,2205-2285
+  s_2708508cd7f9d2::t_a567218980342d 2204
+crates/monty-pool/src/checkout.rs
+  s_2708508cd7f9d2::t_a2f2954209be7c 93,676,683,700-703,1413-1415,1758
+  s_2708508cd7f9d2::t_7f0f0201caaacd 677,687
+  s_2708508cd7f9d2::t_201a6843314a44 1429-1431,1433-1434
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_2708508cd7f9d2::t_a2f2954209be7c 1058-1060
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_2708508cd7f9d2::t_7f0f0201caaacd 784,869-871,879-881,953,955-956,1326,1352-1354,1406
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8d5eb19bff006ecfe8e77c7810564c58b07ffdb4",
+  "prompts": {},
+  "sessions": {
+    "s_2708508cd7f9d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "08a71cb8-ceab-4512-b7ea-487abf892d2f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
