@@ -1,0 +1,43 @@
+docker-compose.yml
+  s_065bd2ed705bbf::t_6b1652183aa5e6 44-46
+crates/monty-worker/src/lib.rs
+  s_065bd2ed705bbf::t_fbddc10c53eaf9 128-132,360-362
+  s_065bd2ed705bbf::t_4eaab7ebdd6d2c 308,313,325-331,400
+crates/monty-server-tests/tests/client/main.rs
+  s_065bd2ed705bbf::t_fbb7004318a1d5 14
+crates/monty-worker/src/session.rs
+  s_065bd2ed705bbf::t_32bfa8352e00fb 81-85,97-98,241-249,282,340,733-734,754-756,766-794
+crates/monty-server-tests/src/client/session.rs
+  s_065bd2ed705bbf::t_4eaab7ebdd6d2c 157-167,172-181,381-385
+  s_065bd2ed705bbf::t_8777a464c7b017 168-171
+crates/monty-server-tests/src/server.rs
+  s_065bd2ed705bbf::t_4eaab7ebdd6d2c 348-349
+crates/monty-server-tests/tests/wire/mid_turn.rs
+  s_065bd2ed705bbf::t_364a27c8120f65 192-200,202-213
+  s_065bd2ed705bbf::t_8777a464c7b017 10,201
+crates/monty-server-tests/tests/client/recycling.rs
+  s_065bd2ed705bbf::t_19ffee064e06ad 25-26,29
+  s_065bd2ed705bbf::t_4eaab7ebdd6d2c 1-24,27-28,30-58
+crates/monty-worker/README.md
+  s_065bd2ed705bbf::t_fbddc10c53eaf9 16-20
+crates/monty-worker/src/main.rs
+  s_065bd2ed705bbf::t_fbddc10c53eaf9 42-46
+crates/monty-worker/CLAUDE.md
+  s_065bd2ed705bbf::t_7c999c24e7aae2 172-176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f06af7291f98084f9a0eb5e9c47fbe406860a4e1",
+  "prompts": {},
+  "sessions": {
+    "s_065bd2ed705bbf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc421dd5-2fec-42f6-8fbb-3b8320b8d6af",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
