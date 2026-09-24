@@ -87,6 +87,52 @@ For a `NameLookupSnapshot`, use `resumeValue(value)` to answer a variable or laz
 `resume(name)` resolves an external function, and `resume()` leaves the lookup unresolved.
 Both call and lookup snapshots carry `objectId` for host-object requests, or `null` otherwise.
 
+### Where execution stopped
+
+Every snapshot carries `position`, a [`SourceRange`][pydantic_monty.SourceRange] locating the expression that
+suspended: the call of a `FunctionSnapshot`, the name of a `NameLookupSnapshot`, and the `await` the main task is
+blocked on for a `FutureSnapshot`.
+`start` and `end` are UTF-8 byte offsets into the source, `end` exclusive, so slice the encoded source rather than
+the string.
+
+=== "Python"
+
+    ```python
+    from pydantic_monty import FunctionSnapshot, Monty
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            code = 'x = 1\ny = greet(x)'
+            snapshot = session.feed_start(code)
+            assert isinstance(snapshot, FunctionSnapshot)
+            position = snapshot.position
+            print(position.start, position.end)
+            #> 10 18
+            print(code.encode()[position.start : position.end].decode())
+            #> greet(x)
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { FunctionSnapshot, Monty } from '@pydantic/monty'
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    const code = 'x = 1\ny = greet(x)'
+    const snapshot = await session.feedStart(code)
+    if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
+    const { start, end } = snapshot.position // { filename: '<python-input-0>', start: 10, end: 18 }
+    console.log(new TextDecoder().decode(new TextEncoder().encode(code).subarray(start, end))) // 'greet(x)'
+    ```
+
+`filename` names the source the range indexes the way a traceback frame does: `<python-input-N>` for the session's
+N-th feed, so a suspension inside a function defined by an earlier feed points into that feed, and `<string>` inside an
+`eval()` / `exec()` string.
+The position is part of the suspended state, so a restored snapshot reports the same one.
+A worker that predates the field (an older `monty` binary or server) reports none, and the snapshot then carries an
+empty `filename` with both offsets 0.
+
 A snapshot refers to the worker's current suspension; it does not own an independent copy of the execution state.
 Only one suspension is live per session.
 Resuming twice or feeding while suspended raises `RuntimeError` in Python.

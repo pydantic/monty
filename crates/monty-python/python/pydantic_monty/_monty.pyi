@@ -29,6 +29,7 @@ __all__ = [
     'CollectStreams',
     'CollectString',
     'Frame',
+    'SourceRange',
     'Monty',
     'MontyClassProxy',
     'MontyClassTypeProxy',
@@ -310,6 +311,41 @@ class Frame:
 
     def dict(self) -> dict[str, int | str | None]:
         """dict of attributes."""
+
+@final
+class SourceRange:
+    """Where the expression that suspended execution is in the source.
+
+    Every snapshot exposes one as `position`: the call expression of a
+    `FunctionSnapshot`, the name (or attribute access) of a
+    `NameLookupSnapshot`, and the `await` the main task is blocked on
+    for a `FutureSnapshot`. `start` and `end` are UTF-8 byte offsets into
+    the source, `end` exclusive, so slice the encoded source:
+    `source.encode()[position.start:position.end].decode()`. A worker that
+    predates the field reports none: `filename` is then empty and both
+    offsets 0.
+    """
+
+    def __new__(cls, *, filename: str, start: int, end: int) -> SourceRange: ...
+    @property
+    def filename(self) -> str:
+        """The source the range indexes, named as in a traceback `Frame`:
+        `<python-input-N>` for the session's N-th feed (a suspension inside a
+        function defined by an earlier feed points into that feed), or
+        `<string>` inside an `eval()` / `exec()` string."""
+
+    @property
+    def start(self) -> int:
+        """UTF-8 byte offset where the expression starts."""
+
+    @property
+    def end(self) -> int:
+        """UTF-8 byte offset where the expression ends (exclusive)."""
+
+    def dict(self) -> dict[str, int | str]:
+        """dict of attributes."""
+
+    def __repr__(self) -> str: ...
 
 @final
 class MontyFileHandle:
@@ -1218,6 +1254,9 @@ class FunctionSnapshot:
     @property
     def script_name(self) -> str: ...
     @property
+    def position(self) -> SourceRange:
+        """The call expression that suspended execution."""
+    @property
     def is_os_function(self) -> bool: ...
     @property
     def object_id(self) -> uuid.UUID | None:
@@ -1279,6 +1318,9 @@ class NameLookupSnapshot:
     @property
     def script_name(self) -> str: ...
     @property
+    def position(self) -> SourceRange:
+        """The name, or the attribute access, that suspended execution."""
+    @property
     def variable_name(self) -> str: ...
     @property
     def object_id(self) -> uuid.UUID | None:
@@ -1315,6 +1357,9 @@ class FutureSnapshot:
     @property
     def script_name(self) -> str: ...
     @property
+    def position(self) -> SourceRange:
+        """The `await` the main task is blocked on."""
+    @property
     def pending_call_ids(self) -> list[int]: ...
     def trace_context(self) -> Context:
         """As `FunctionSnapshot.trace_context`, for this future-resolution suspension."""
@@ -1343,6 +1388,9 @@ class AsyncFunctionSnapshot:
 
     @property
     def script_name(self) -> str: ...
+    @property
+    def position(self) -> SourceRange:
+        """As `FunctionSnapshot.position`: the call expression."""
     @property
     def is_os_function(self) -> bool: ...
     @property
@@ -1376,6 +1424,9 @@ class AsyncNameLookupSnapshot:
     @property
     def script_name(self) -> str: ...
     @property
+    def position(self) -> SourceRange:
+        """As `NameLookupSnapshot.position`: the name or attribute access."""
+    @property
     def variable_name(self) -> str: ...
     @property
     def object_id(self) -> uuid.UUID | None:
@@ -1397,6 +1448,9 @@ class AsyncFutureSnapshot:
 
     @property
     def script_name(self) -> str: ...
+    @property
+    def position(self) -> SourceRange:
+        """As `FutureSnapshot.position`: the main task's `await`."""
     @property
     def pending_call_ids(self) -> list[int]: ...
     def trace_context(self) -> Context:

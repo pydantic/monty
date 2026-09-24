@@ -21,7 +21,7 @@ use monty_pool::{
     ResumeValue, TurnEvent,
 };
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb, resume_call_from_proto};
-use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits};
+use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits, SourceRange};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
@@ -434,6 +434,7 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
                 call_id: 7,
                 values: None,
                 allow_eager_await: false,
+                position: Some((&position()).into()),
                 call: Some(pb::os_call::Call::ReadText("/mnt/data.txt".to_owned())),
             })),
         );
@@ -500,6 +501,7 @@ async fn eager_bit_on_a_non_future_os_call_is_dropped() {
                 call_id: 7,
                 values: None,
                 allow_eager_await: true,
+                position: Some((&position()).into()),
                 call: Some(pb::os_call::Call::ReadText("/mnt/data.txt".to_owned())),
             })),
         );
@@ -576,6 +578,7 @@ async fn malformed_os_call_is_a_protocol_error() {
                 call_id: 3,
                 values: None,
                 allow_eager_await: false,
+                position: Some((&position()).into()),
                 call: Some(pb::os_call::Call::Open(pb::os_call::Open {
                     path: "/mnt/data.txt".to_owned(),
                     mode: "q".to_owned(),
@@ -1033,6 +1036,7 @@ fn serve_endless_suspensions(socket: &mut WebSocket<TcpStream>, expected_calls: 
             call_id,
             None,
             false,
+            position(),
         )))
     };
     assert!(matches!(read_request(socket), pb::parent_request::Kind::Feed(_)));
@@ -1176,6 +1180,7 @@ async fn a_malformed_over_budget_os_call_is_a_protocol_violation() {
                     values: None,
                     call: None,
                     allow_eager_await: false,
+                    position: Some((&position()).into()),
                 })),
                 max_suspensions: Some(0),
                 ..Default::default()
@@ -1273,6 +1278,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
                 call_id,
                 None,
                 false,
+                position(),
             )))
         };
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
@@ -1478,7 +1484,7 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
         ));
         send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         let function_call =
-            |call_id: u32| WireFunctionCall::new("fetch".to_owned(), CallArgs::new(), call_id, None, false);
+            |call_id: u32| WireFunctionCall::new("fetch".to_owned(), CallArgs::new(), call_id, None, false, position());
         let abort_reply = |socket: &mut WebSocket<TcpStream>| {
             let pb::parent_request::Kind::AbortFeed(abort) = read_request(socket) else {
                 panic!("expected AbortFeed");
@@ -1646,6 +1652,7 @@ fn function_call(call_id: u32) -> pb::child_event::Kind {
         call_id,
         None,
         false,
+        position(),
     ))
 }
 
@@ -2027,4 +2034,13 @@ async fn a_dropped_connection_is_a_disconnect() {
         .await
         .expect_err("a closed connection must fail the turn");
     assert!(matches!(err, PoolError::Disconnected { .. }), "got {err:?}");
+}
+
+/// The suspension position every hand-built event carries.
+fn position() -> SourceRange {
+    SourceRange {
+        filename: "main.py".to_owned(),
+        start: 0,
+        end: 7,
+    }
 }

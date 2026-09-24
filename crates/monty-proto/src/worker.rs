@@ -1014,6 +1014,7 @@ fn suspension_event_function_call(call: &mut monty::ReplFunctionCall) -> pb::Chi
         call.call_id,
         call.object_id,
         call.allow_eager_await,
+        call.position.clone(),
     )))
 }
 
@@ -1028,6 +1029,7 @@ fn suspension_event_os_call(call: &mut monty::ReplOsCall) -> pb::ChildEvent {
         call.call_id,
         function_call,
         call.allow_eager_await,
+        &call.position,
     )))
 }
 
@@ -1046,9 +1048,11 @@ fn suspension_event(progress: &mut ReplProgress) -> pb::ChildEvent {
         ReplProgress::NameLookup(lookup) => event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: lookup.name.clone(),
             object_id: lookup.object_id().as_ref().map(uuid_to_pb),
+            position: Some((&lookup.position).into()),
         })),
         ReplProgress::ResolveFutures(state) => event(pb::child_event::Kind::ResolveFutures(pb::ResolveFutures {
             pending_call_ids: state.pending_call_ids().to_vec().into(),
+            position: Some(state.position().into()),
         })),
         ReplProgress::Complete { .. } => unreachable!("Complete is handled before suspension_event"),
     }

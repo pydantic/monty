@@ -11,8 +11,8 @@ use monty_types::{
     MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
     MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues,
     OpenCallArgs, OsFunctionCall, OsPolicy, PathBytesDataArgs, PathStringDataArgs, ProcessTime, RandomSeed,
-    RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, StackFrame, TimeCaller, UnicodeErrorData,
-    UrandomArgs, sleep_duration, sleep_duration_saturating,
+    RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, SourceRange, StackFrame, TimeCaller,
+    UnicodeErrorData, UrandomArgs, sleep_duration, sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
@@ -904,8 +904,15 @@ fn invalid_arenas_are_rejected() {
 #[track_caller]
 fn assert_os_call_round_trip(call: OsFunctionCall) {
     let expected = format!("{call:?}");
-    let bytes = os_call_to_proto(3, call, false).encode_to_vec();
+    let position = SourceRange {
+        filename: "main.py".to_owned(),
+        start: 10,
+        end: 18,
+    };
+    let bytes = os_call_to_proto(3, call, false, &position).encode_to_vec();
     let decoded = decode_frame::<pb::OsCall>(bytes.as_slice()).expect("wire bytes -> OsCall failed");
+    let back = decoded.position.clone().expect("the position survives the wire");
+    assert_eq!(SourceRange::from(back), position);
     let (call_id, back) = os_call_from_proto(decoded).expect("wire call -> OsFunctionCall failed");
     assert_eq!(call_id, 3);
     assert_eq!(format!("{back:?}"), expected);
@@ -1078,6 +1085,7 @@ fn os_call_conversion_rejects_invalid_payloads() {
             key: "HOME".to_owned(),
             default: 1,
         })),
+        position: None,
     };
     assert!(matches!(
         os_call_from_proto(getenv(None)),
@@ -1123,4 +1131,22 @@ fn out_of_range_now_timezone_is_rejected() {
         OsFunctionCall::try_from(call).unwrap_err().to_string(),
         "invalid value for TimeZone.offset_seconds: -2147483648 is outside the range -86399..=86399"
     );
+}
+
+#[test]
+fn source_range_filename_is_capped_on_a_char_boundary() {
+    let wire = pb::SourceRange {
+        filename: "é".repeat(200),
+        start: 1,
+        end: 2,
+    };
+    let range = SourceRange::from(&wire);
+    assert_eq!(range.filename, "é".repeat(SourceRange::MAX_FILENAME_LEN / 2));
+    assert_eq!((range.start, range.end), (1, 2));
+    let odd = format!("x{}", "é".repeat(200));
+    assert_eq!(
+        SourceRange::new(&odd, 0, 0).filename.len(),
+        SourceRange::MAX_FILENAME_LEN - 1
+    );
+    assert_eq!(SourceRange::new("<python-input-3>", 0, 0).filename, "<python-input-3>");
 }

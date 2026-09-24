@@ -80,6 +80,30 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
+## Where a snapshot stopped
+
+Every snapshot exposes `position`, a `SourceRange` with `filename`, `start` and `end` locating the suspending
+expression: the call of a `FunctionSnapshot`, the name of a `NameLookupSnapshot`, and the `await` the main task is
+blocked on for a `FutureSnapshot`.
+`start` and `end` are UTF-8 byte offsets into the source, `end` exclusive, so slice the encoded source rather than the
+string; `filename` is the traceback filename of the source (`<python-input-N>` for the session's N-th feed, `<string>`
+inside `eval()` / `exec()`).
+
+```python
+from pydantic_monty import FunctionSnapshot, Monty
+
+with Monty() as pool:
+    with pool.checkout() as session:
+        code = 'x = 1\ny = greet(x)'
+        snapshot = session.feed_start(code)
+        assert isinstance(snapshot, FunctionSnapshot)
+        position = snapshot.position
+        print(position.start, position.end)
+        #> 10 18
+        print(code.encode()[position.start : position.end].decode())
+        #> greet(x)
+```
+
 ## Tracing snapshot handlers
 
 All sync and async snapshot types provide `snapshot.trace_context()` for manual handlers.

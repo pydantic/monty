@@ -112,7 +112,7 @@ async fn run_code(
                     .resume_name_lookup(name_lookup_value(name), &mut *on_print)
                     .await?
             }
-            TurnEvent::ResolveFutures { pending_call_ids } => {
+            TurnEvent::ResolveFutures { pending_call_ids, .. } => {
                 let results = pending_call_ids
                     .into_iter()
                     .map(|call_id| (call_id, ResumeValue::Return(MontyObject::none())))

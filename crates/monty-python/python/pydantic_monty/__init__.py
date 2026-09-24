@@ -36,6 +36,7 @@ from ._monty import (
     MontyTypingError,
     MountDir,
     NameLookupSnapshot,
+    SourceRange,
     __version__,
     _install_telemetry,
 )
@@ -81,6 +82,7 @@ __all__ = (
     'CollectStreams',
     'CollectString',
     'Frame',
+    'SourceRange',
     'Monty',
     'MontyClassProxy',
     'MontyClassTypeProxy',

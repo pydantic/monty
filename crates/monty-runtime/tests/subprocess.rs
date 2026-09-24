@@ -17,7 +17,7 @@ use monty_proto::{
 };
 use monty_types::{
     CallArgs, DateTimeSource, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult, NamedValues,
-    OsPolicy, RandomSeed, RandomStart, SandboxTimeZone, SleepMode,
+    OsPolicy, RandomSeed, RandomStart, SandboxTimeZone, SleepMode, SourceRange,
     unstable::{self, MontyNode},
 };
 
@@ -414,6 +414,11 @@ fn near_limit_suspension_is_refused_cleanly() {
             1,
             None,
             false,
+            SourceRange {
+                filename: "main.py".to_owned(),
+                start: 0,
+                end: 7,
+            },
         ))),
         ..Default::default()
     };

@@ -27,7 +27,7 @@ use std::sync::OnceLock;
 
 pub use exceptions::{
     MontyConversionError, MontyCrashedError, MontyDisconnectError, MontyError, MontyRuntimeError, MontyShutdown,
-    MontySyntaxError, MontyTypingError, PyFrame,
+    MontySyntaxError, MontyTypingError, PyFrame, PySourceRange,
 };
 pub use mount::PyMountDir;
 pub use pool::{PyAsyncMonty, PyAsyncMontySession, PyAsyncMontyWebsocket, PyMonty, PyMontySession};
@@ -144,6 +144,8 @@ mod _monty {
     use super::PyMountDir as MountDir;
     #[pymodule_export]
     use super::PyNameLookupSnapshot as NameLookupSnapshot;
+    #[pymodule_export]
+    use super::PySourceRange as SourceRange;
     #[pymodule_export]
     use super::telemetry::_install_telemetry;
     use super::{get_not_handled, get_version};

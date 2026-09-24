@@ -46,6 +46,7 @@ export {
   ProtocolError,
   type ExceptionInfo,
   type Frame,
+  type SourceRange,
 } from './errors.js'
 export {
   type MontyDate,

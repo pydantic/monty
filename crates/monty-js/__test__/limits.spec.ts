@@ -221,6 +221,7 @@ test('a suspension answering abort-feed ends the wasm worker', async () => {
       args: new Uint32Array(),
       kwargs: [],
       allowEagerAwait: false,
+      position: { filename: '<python-input-0>', start: 0, end: 7 },
     },
   })
   const requests: string[] = []
@@ -260,7 +261,12 @@ test.each([
           events:
             request.tag === 'configure' || request.tag === 'load'
               ? [{ tag: 'ok' }]
-              : [{ tag: 'name-lookup', val: { name: 'fetch' } }],
+              : [
+                  {
+                    tag: 'name-lookup',
+                    val: { name: 'fetch', position: { filename: '<python-input-0>', start: 0, end: 5 } },
+                  },
+                ],
           // A malicious reply cannot rewind the clock during the same feed.
           feedExecutionMicros: request.tag === 'feed' ? 400_000n : 100_000n,
           maxFeedDurationMicros: 2_000_000n,

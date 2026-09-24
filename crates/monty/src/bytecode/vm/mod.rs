@@ -21,7 +21,7 @@ use std::{borrow::Cow, mem};
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
-use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
+use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameNamespace, function_namespace};
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
 use scheduler::Scheduler;
@@ -417,6 +417,16 @@ pub struct CallFrame<'code> {
 #[inline]
 pub(super) fn stack_index(index: usize) -> u32 {
     u32::try_from(index).expect("VM stack index exceeds u32")
+}
+
+/// The code a saved frame runs: its function's, or `module_code` for the
+/// module-level frame, which has no function ID.
+pub(super) fn frame_code<'code>(
+    interns: &'code Interns,
+    module_code: &'code Code,
+    function_id: Option<FunctionId>,
+) -> &'code Code {
+    function_id.map_or(module_code, |id| &interns.get_function(id).code)
 }
 
 impl<'code> CallFrame<'code> {
@@ -962,10 +972,7 @@ impl<'h> VM<'h> {
             .frames
             .into_iter()
             .map(|sf| {
-                let code = match sf.function_id {
-                    Some(func_id) => &interns.get_function(func_id).code,
-                    None => &program.module_code,
-                };
+                let code = frame_code(interns, &program.module_code, sf.function_id);
                 CallFrame {
                     code,
                     bytecode: code.bytecode(),
@@ -2382,6 +2389,46 @@ impl<'h> VM<'h> {
             .location_for_offset(self.instruction_ip)
             .map(LocationEntry::range)
             .unwrap_or_default()
+    }
+
+    /// Returns the position a suspension at the current instruction reports.
+    ///
+    /// `instruction_ip` still names the suspending opcode; its location entry
+    /// gives the byte range, so this reads no source.
+    pub(crate) fn suspension_position(&self) -> SourceRange {
+        self.code_position(self.current_frame.code, self.instruction_ip)
+    }
+
+    /// Returns the source position of the `await` the main task is blocked on.
+    ///
+    /// The position reported when every task is blocked on host futures: the
+    /// blocked main task may be the loaded context, or parked in the scheduler
+    /// with its frames saved while a spawned task ran last.
+    pub(crate) fn main_task_position(&self) -> SourceRange {
+        if self.is_main_task() && !self.current_frame.is_parked {
+            self.suspension_position()
+        } else {
+            // `save_task_context` pushes the executing frame last.
+            self.scheduler
+                .main_task()
+                .and_then(|task| Some((task.frames.last()?, task.instruction_ip)))
+                .map_or_else(SourceRange::unknown, |(frame, ip)| {
+                    self.code_position(frame_code(self.interns, self.module_code, frame.function_id), ip)
+                })
+        }
+    }
+
+    /// The byte range of the instruction at `offset` in `code`, named by its source.
+    fn code_position(&self, code: &Code, offset: usize) -> SourceRange {
+        code.location_for_offset(offset)
+            .map_or_else(SourceRange::unknown, |entry| {
+                let range = entry.range();
+                SourceRange::new(
+                    self.interns.get_filename(range.filename),
+                    range.start_byte,
+                    range.end_byte,
+                )
+            })
     }
 
     /// Captures the caller's current bytecode offset for a call site, or `None`

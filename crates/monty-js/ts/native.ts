@@ -17,6 +17,14 @@ export interface NativeFrame {
   hideFrameName: boolean
 }
 
+/** Where the expression that suspended execution is in the source; the
+ *  `SourceRange` of `errors.ts`, as the native binding ships it. */
+export interface NativeSourceRange {
+  filename: string
+  start: number
+  end: number
+}
+
 /** A sandbox exception: type name, message, the worker-rendered Python
  *  traceback string, and the structured frames behind it. */
 export interface NativeException {
@@ -37,6 +45,8 @@ export interface CompleteTurn {
 interface CallbackTurn {
   /** Host-generated native span identity, resolved by the telemetry bridge. */
   callbackSpanKey?: string
+  /** Where the suspending expression is in the source. */
+  position: NativeSourceRange
 }
 
 /** The sandbox called an external function — answer with a `resume*` call. */

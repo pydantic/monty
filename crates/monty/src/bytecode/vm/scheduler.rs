@@ -177,6 +177,12 @@ impl Scheduler {
         self.ready_queue.is_empty() && self.pending_externals.is_empty()
     }
 
+    /// Returns the main task, whose context is saved here whenever another
+    /// task is loaded; `None` once it has been cancelled.
+    pub fn main_task(&self) -> Option<&Task> {
+        self.tasks.get(&TaskId::default())
+    }
+
     /// Returns a mutable reference to a task by ID.
     ///
     /// # Panics
@@ -392,14 +398,6 @@ impl Scheduler {
         self.tasks
             .get(&task_id)
             .is_some_and(|task| matches!(task.state, TaskState::Blocked(_)))
-    }
-
-    /// Returns true if a task with `task_id` currently exists in the
-    /// scheduler. Cancelled tasks are removed from the map, so this returning
-    /// `false` means the task is gone.
-    #[inline]
-    pub fn has_task(&self, task_id: TaskId) -> bool {
-        self.tasks.contains_key(&task_id)
     }
 
     /// Number of tasks the scheduler still holds.

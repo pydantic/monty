@@ -420,6 +420,19 @@ pub struct CodeLoc {
     #[prost(uint32, tag = "2")]
     pub column: u32,
 }
+/// Where the expression that suspended execution is in the source. `filename`
+/// names the source as a traceback frame does: `<python-input-N>` for the
+/// session's N-th feed, or `<string>` inside an `eval()` / `exec()` string.
+/// `start` and `end` are UTF-8 byte offsets into that source, `end` exclusive.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SourceRange {
+    #[prost(string, tag = "1")]
+    pub filename: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub start: u32,
+    #[prost(uint32, tag = "3")]
+    pub end: u32,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StackFrame {
     #[prost(string, tag = "1")]
@@ -1011,6 +1024,10 @@ pub struct FunctionCall {
     /// twice crosses once.
     #[prost(message, optional, tag = "7")]
     pub values: ::core::option::Option<Arena>,
+    /// Where the call expression is in the source. Absent from a child that
+    /// predates the field; the parent then reports an empty range at offset 0.
+    #[prost(message, optional, tag = "8")]
+    pub position: ::core::option::Option<SourceRange>,
 }
 /// Suspension: the sandbox performed an OS operation, surfaced for the parent
 /// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
@@ -1038,6 +1055,9 @@ pub struct OsCall {
     /// call a future may answer at all.
     #[prost(bool, tag = "51")]
     pub allow_eager_await: bool,
+    /// Where the call expression is in the source; absent as on `FunctionCall`.
+    #[prost(message, optional, tag = "52")]
+    pub position: ::core::option::Option<SourceRange>,
     #[prost(
         oneof = "os_call::Call",
         tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
@@ -1246,6 +1266,10 @@ pub struct NameLookup {
     /// a class type (a lazy class attribute): the uuid of the receiver.
     #[prost(message, optional, tag = "2")]
     pub object_id: ::core::option::Option<Uuid>,
+    /// Where the name (or attribute access) is in the source; absent as on
+    /// `FunctionCall`.
+    #[prost(message, optional, tag = "3")]
+    pub position: ::core::option::Option<SourceRange>,
 }
 /// Suspension: every sandbox task is blocked on external futures previously
 /// registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
@@ -1253,6 +1277,10 @@ pub struct NameLookup {
 pub struct ResolveFutures {
     #[prost(uint32, repeated, tag = "1")]
     pub pending_call_ids: ::prost::alloc::vec::Vec<u32>,
+    /// Where the main task's blocked `await` is in the source; absent as on
+    /// `FunctionCall`.
+    #[prost(message, optional, tag = "2")]
+    pub position: ::core::option::Option<SourceRange>,
 }
 /// Turn end: the snippet completed with this value. The session is ready for
 /// the next `Feed`.

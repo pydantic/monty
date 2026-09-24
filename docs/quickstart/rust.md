@@ -105,6 +105,9 @@ It returns a [`TurnEvent`](../api/rust/monty-pool.md#turnevent):
 | [`NameLookup { name, object_id }`](../api/rust/monty-pool.md#turnevent) | The sandbox read an undefined name, or a lazy attribute of a host object when `object_id` is `Some`                                                                    | [`Checkout::resume_name_lookup`](../api/rust/monty-pool.md#checkout)             |
 | [`ResolveFutures { .. }`](../api/rust/monty-pool.md#turnevent)          | Every sandbox task is blocked on host futures                                                                                                                          | [`Checkout::resume_futures`](../api/rust/monty-pool.md#checkout)                 |
 
+Every suspension variant also carries `position`, a `SourceRange` locating the suspending expression: the call, the
+name, or the `await` the main task is blocked on.
+
 A [`Checkout`](../api/rust/monty-pool.md#checkout) dropped without `finish()` kills its worker rather than returning it — mid-execution state cannot be
 trusted back into the pool.
 

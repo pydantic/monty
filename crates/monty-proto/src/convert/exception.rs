@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 
-use monty_types::{CodeLoc, ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject};
+use monty_types::{
+    CodeLoc, ExcData, JsonErrorData, MontyException, SourceRange, StackFrame, UnicodeErrorData, UnicodeErrorObject,
+};
 
 use crate::{convert::ProtoConvertError, pb};
 
@@ -234,6 +236,43 @@ impl TryFrom<pb::StackFrame> for StackFrame {
             hide_caret: frame.hide_caret,
             hide_frame_name: frame.hide_frame_name,
         })
+    }
+}
+
+impl From<&SourceRange> for pb::SourceRange {
+    fn from(range: &SourceRange) -> Self {
+        Self {
+            filename: range.filename.clone(),
+            start: range.start,
+            end: range.end,
+        }
+    }
+}
+
+/// Owned form: moves the filename, for decoders that merge repeated fields
+/// without copying what they already hold.
+impl From<SourceRange> for pb::SourceRange {
+    fn from(range: SourceRange) -> Self {
+        Self {
+            filename: range.filename,
+            start: range.start,
+            end: range.end,
+        }
+    }
+}
+
+/// Total: nothing renders carets from a suspension's range, so no bounds check
+/// is needed (cf. `StackFrame`).
+impl From<pb::SourceRange> for SourceRange {
+    fn from(range: pb::SourceRange) -> Self {
+        Self::from(&range)
+    }
+}
+
+/// Borrowed form for a position read off an event that stays whole.
+impl From<&pb::SourceRange> for SourceRange {
+    fn from(range: &pb::SourceRange) -> Self {
+        Self::new(&range.filename, range.start, range.end)
     }
 }
 

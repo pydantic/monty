@@ -31,7 +31,8 @@ mod value;
 use bindings::exports::pydantic::monty::worker::{
     CallResult, CompleteEvent, ConfigureRequest, DatetimeSource, DispatchResult, Event, FunctionCallEvent, Guest,
     NameLookupEvent, NameLookupResult, OsCallEvent, OsPolicy, PrintEvent, ProcessTime, RaisedError, RaisedException,
-    RandomSeed, RandomStart, Request, SleepMode, StackFrame, Status, TimeZone, TypeCheckFormat,
+    RandomSeed, RandomStart, Request, ResolveFuturesEvent, SleepMode, SourceRange, StackFrame, Status, TimeZone,
+    TypeCheckFormat,
 };
 
 thread_local! {
@@ -225,13 +226,16 @@ struct PreparedOsEvent {
     allow_eager_await: bool,
     /// System sleep duration for the host to await directly.
     system_sleep_secs: Option<f64>,
+    /// Where the call expression is in the source.
+    position: SourceRange,
 }
 
 impl PreparedOsEvent {
     /// Validates and projects a typed protocol call without building WIT
     /// arenas; the error names what was wrong with the call.
-    fn from_proto(call: pb::OsCall) -> Result<Self, String> {
+    fn from_proto(mut call: pb::OsCall) -> Result<Self, String> {
         let eager_bit = call.allow_eager_await;
+        let position = source_range_from_proto(call.position.take());
         let (call_id, call) = os_call_from_proto(call).map_err(|error| format!("invalid OS call: {error}"))?;
         Ok(Self {
             function_name: call.name().to_owned(),
@@ -245,6 +249,7 @@ impl PreparedOsEvent {
             },
             args: call.to_args(),
             call_id,
+            position,
         })
     }
 
@@ -264,8 +269,24 @@ impl PreparedOsEvent {
             args: value::raw_ids(args),
             kwargs: value::raw_pairs(kwargs),
             call_id: self.call_id,
+            position: self.position,
         })
     }
+}
+
+/// Lifts an already-validated position into the component record.
+fn component_source_range(range: monty_types::SourceRange) -> SourceRange {
+    SourceRange {
+        filename: range.filename,
+        start: range.start,
+        end: range.end,
+    }
+}
+
+/// Lifts a suspension's position; a self-produced event always carries one,
+/// and a missing one reads as an empty range, as in the pool.
+fn source_range_from_proto(position: Option<pb::SourceRange>) -> SourceRange {
+    component_source_range(position.map_or_else(monty_types::SourceRange::unknown, monty_types::SourceRange::from))
 }
 
 /// Converts a semantic component request into the child state machine's
@@ -456,6 +477,7 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
         Some(pb::child_event::Kind::Print(_)) => invalid_event("Print event bypassed segment expansion"),
         Some(pb::child_event::Kind::FunctionCall(call)) => {
             let object_id = call.object_id.map(|uuid| uuid.to_string());
+            let position = component_source_range(call.position.unwrap_or_else(monty_types::SourceRange::unknown));
             Event::FunctionCall(FunctionCallEvent {
                 function_name: call.function_name,
                 values: value::into_component(call.values.0.into_inner()),
@@ -464,6 +486,7 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
                 call_id: call.call_id,
                 object_id,
                 allow_eager_await: call.allow_eager_await,
+                position,
             })
         }
         Some(pb::child_event::Kind::OsCall(_)) => invalid_event("OsCall event bypassed component budget preparation"),
@@ -474,10 +497,12 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
                 .object_id
                 .and_then(|uuid| MontyUuid::try_from_slice(&uuid.data))
                 .map(|uuid| uuid.to_string()),
+            position: source_range_from_proto(lookup.position),
         }),
-        Some(pb::child_event::Kind::ResolveFutures(futures)) => {
-            Event::ResolveFutures(futures.pending_call_ids.into_inner())
-        }
+        Some(pb::child_event::Kind::ResolveFutures(futures)) => Event::ResolveFutures(ResolveFuturesEvent {
+            pending_call_ids: futures.pending_call_ids.into_inner(),
+            position: source_range_from_proto(futures.position),
+        }),
         Some(pb::child_event::Kind::Complete(complete)) => complete.values.map_or_else(
             || invalid_event("Complete event carried no values"),
             |arena| {

@@ -15,11 +15,13 @@
 //! validation now happens during decode, so these tests pin the exact error
 //! messages a misbehaving peer produces.
 
+use std::time::Instant;
+
 use monty::{MontyRun, RunProgress};
 use monty_proto::{WireArena, WireFunctionCall, decode_frame, os_call_to_proto, pb};
 use monty_types::{
     CallArgs, CompileOptions, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker,
+    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker, SourceRange,
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
@@ -501,7 +503,14 @@ fn hand_call_payloads_match_generated_encoding() {
     let receivers = [Some(MontyUuid::from_u128(7)), None];
     for (object_id, allow_eager_await) in receivers.into_iter().flat_map(|id| [(id, false), (id, true)]) {
         let oracle_object_id = object_id.map(|uuid| oracle_uuid(&uuid));
-        let hand_call = WireFunctionCall::new("external".to_owned(), call.clone(), 42, object_id, allow_eager_await);
+        let hand_call = WireFunctionCall::new(
+            "external".to_owned(),
+            call.clone(),
+            42,
+            object_id,
+            allow_eager_await,
+            position(),
+        );
         let generated_call = oracle::FunctionCall {
             function_name: "external".to_owned(),
             args: arg_ids.iter().map(|id| id.0).collect(),
@@ -510,6 +519,7 @@ fn hand_call_payloads_match_generated_encoding() {
             object_id: oracle_object_id,
             allow_eager_await,
             values: Some(to_oracle(graph)),
+            position: Some(oracle_position()),
         };
         assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
         assert_eq!(
@@ -535,6 +545,7 @@ fn hand_call_payloads_match_generated_encoding() {
             default: default.clone(),
         }),
         false,
+        &position(),
     );
     let (graph, root) = unstable::graph_parts(&default);
     let generated_os = oracle::OsCall {
@@ -545,6 +556,7 @@ fn hand_call_payloads_match_generated_encoding() {
             key: "HOME".to_owned(),
             default: root.0,
         })),
+        position: Some(oracle_position()),
     };
     assert_eq!(hand_os.encode_to_vec(), generated_os.encode_to_vec());
     assert_eq!(
@@ -564,6 +576,7 @@ fn hand_call_payloads_match_generated_encoding() {
                 name: Some("CET".to_owned()),
             }),
         })),
+        position: Some((&position()).into()),
     };
     let generated_now = oracle::OsCall {
         call_id: 9,
@@ -575,6 +588,7 @@ fn hand_call_payloads_match_generated_encoding() {
                 name: Some("CET".to_owned()),
             }),
         })),
+        position: Some(oracle_position()),
     };
     assert_eq!(hand_now.encode_to_vec(), generated_now.encode_to_vec());
     assert_eq!(
@@ -1102,4 +1116,88 @@ fn corrupt_frames_fail_cleanly() {
             assert_eq!(prefix.nodes(), &graph.nodes()[..prefix.len()]);
         }
     }
+}
+
+/// The suspension position every hand-built event carries.
+fn position() -> SourceRange {
+    SourceRange {
+        filename: "main.py".to_owned(),
+        start: 30,
+        end: 44,
+    }
+}
+
+/// [`position`] on the oracle's generated types.
+fn oracle_position() -> oracle::SourceRange {
+    oracle::SourceRange {
+        filename: "main.py".to_owned(),
+        start: 30,
+        end: 44,
+    }
+}
+
+/// A `FunctionCall.position` split across two tag-8 fields merges into one
+/// range on both sides, as protobuf requires of a singular message field.
+#[test]
+fn repeated_position_fields_merge_like_the_oracle() {
+    let args = CallArgs::new();
+    let (graph, _, _) = unstable::call_args_parts(&args);
+    let mut bytes = oracle::FunctionCall {
+        function_name: "external".to_owned(),
+        args: vec![],
+        kwargs: vec![],
+        call_id: 1,
+        object_id: None,
+        allow_eager_await: false,
+        values: Some(to_oracle(graph)),
+        position: Some(oracle::SourceRange {
+            filename: "main.py".to_owned(),
+            start: 30,
+            end: 0,
+        }),
+    }
+    .encode_to_vec();
+    // the second occurrence carries only the end
+    let tail = oracle::SourceRange {
+        filename: String::new(),
+        start: 0,
+        end: 44,
+    }
+    .encode_to_vec();
+    encode_key(8, WireType::LengthDelimited, &mut bytes);
+    encode_varint(tail.len() as u64, &mut bytes);
+    bytes.extend(tail);
+
+    let hand = decode_frame::<WireFunctionCall>(bytes.as_slice()).expect("split position decodes");
+    assert_eq!(hand.position, Some(position()));
+    let generated = oracle::FunctionCall::decode(bytes.as_slice()).expect("oracle decodes");
+    assert_eq!(generated.position, Some(oracle_position()));
+
+    // many empty repeats after a long filename must cost their own two bytes
+    // each, not a copy of the filename per repeat
+    let filename = "f".repeat(1 << 20);
+    let mut bytes = oracle::FunctionCall {
+        function_name: "external".to_owned(),
+        args: vec![],
+        kwargs: vec![],
+        call_id: 1,
+        object_id: None,
+        allow_eager_await: false,
+        values: Some(to_oracle(graph)),
+        position: Some(oracle::SourceRange {
+            filename: filename.clone(),
+            start: 0,
+            end: 1,
+        }),
+    }
+    .encode_to_vec();
+    for _ in 0..100_000 {
+        encode_key(8, WireType::LengthDelimited, &mut bytes);
+        encode_varint(0, &mut bytes);
+    }
+    let started = Instant::now();
+    let hand = decode_frame::<WireFunctionCall>(bytes.as_slice()).expect("repeated empty positions decode");
+    let expected = filename[..SourceRange::MAX_FILENAME_LEN].to_owned();
+    assert_eq!(hand.position.map(|p| p.filename), Some(expected));
+    assert!(started.elapsed().as_secs() < 5, "repeats amplified decode work");
 }

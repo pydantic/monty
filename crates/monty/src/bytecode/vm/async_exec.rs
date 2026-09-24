@@ -11,7 +11,7 @@ use std::{mem, task::Poll};
 use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
-use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM, function_namespace, stack_index};
+use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM, frame_code, function_namespace, stack_index};
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
@@ -580,11 +580,7 @@ impl<'h> VM<'h> {
             let mut frames: Vec<_> = frames
                 .into_iter()
                 .map(|sf| {
-                    let code = match sf.function_id {
-                        Some(func_id) => &self.interns.get_function(func_id).code,
-                        // The main task's module-level code.
-                        None => self.module_code,
-                    };
+                    let code = frame_code(self.interns, self.module_code, sf.function_id);
                     CallFrame {
                         code,
                         bytecode: code.bytecode(),
@@ -886,10 +882,7 @@ impl<'h> VM<'h> {
     /// suspension the user sees.
     pub fn abort(&mut self, exc: MontyException) -> RunResult<FrameExit> {
         let main = TaskId::default();
-        if self.current_frame.is_parked
-            && self.scheduler.has_task(main)
-            && !self.scheduler.get_task_mut(main).frames.is_empty()
-        {
+        if self.current_frame.is_parked && self.scheduler.main_task().is_some_and(|task| !task.frames.is_empty()) {
             self.scheduler.set_current_task(Some(main));
             self.load_or_init_task(main)?;
         }

@@ -159,6 +159,72 @@ test('the sandbox future mechanism is caller-driven', async () => {
   }
 })
 
+test('every snapshot kind carries the position of the suspending expression', async () => {
+  const session = await pool().checkout()
+  try {
+    const call = (await session.feedStart('x = 1\ny = add(x, 2) + 1')) as FunctionSnapshot
+    t.true(call instanceof FunctionSnapshot)
+    t.deepEqual(call.position, { filename: '<python-input-0>', start: 10, end: 19 })
+    await call.resume(3)
+
+    const name = (await session.feedStart('total = 1 + missing')) as NameLookupSnapshot
+    t.true(name instanceof NameLookupSnapshot)
+    t.deepEqual(name.position, { filename: '<python-input-1>', start: 12, end: 19 })
+    await name.resumeValue(1)
+
+    const osCall = (await session.feedStart("from pathlib import Path\nPath('/etc/x').read_text()")) as FunctionSnapshot
+    t.true(osCall.isOsFunction)
+    t.deepEqual(osCall.position, { filename: '<python-input-2>', start: 25, end: 51 })
+    await osCall.resume('body')
+
+    const code = 'import asyncio\n\nasync def go():\n    return await fetch()\n\nawait asyncio.gather(go(), go())'
+    const first = (await session.feedStart(code)) as FunctionSnapshot
+    t.deepEqual(first.position, { filename: '<python-input-3>', start: 49, end: 56 })
+    const second = (await first.resumeFuture()) as FunctionSnapshot
+    const futures = (await second.resumeFuture()) as FutureSnapshot
+    t.true(futures instanceof FutureSnapshot)
+    t.deepEqual(futures.position, { filename: '<python-input-3>', start: 58, end: 90 })
+    await futures.resume([
+      { callId: first.callId, value: 1 },
+      { callId: second.callId, value: 2 },
+    ])
+  } finally {
+    await session.close()
+  }
+})
+
+test('the position counts UTF-8 bytes, not characters', async () => {
+  const session = await pool().checkout()
+  try {
+    // the two-byte `é` puts the call at byte 13 but character 12
+    const code = "x = 'é'\ny = add(x, 2)"
+    const call = (await session.feedStart(code)) as FunctionSnapshot
+    t.deepEqual(call.position, { filename: '<python-input-0>', start: 13, end: 22 })
+    const bytes = new TextEncoder().encode(code).subarray(call.position.start, call.position.end)
+    t.is(new TextDecoder().decode(bytes), 'add(x, 2)')
+    await call.resume(3)
+  } finally {
+    await session.close()
+  }
+})
+
+test('the position survives dump and loadSnapshot', async () => {
+  let blob: Buffer
+  {
+    const session = await pool().checkout()
+    const snap = (await session.feedStart('y = fetch()\ny + 1')) as FunctionSnapshot
+    blob = await snap.dump()
+    await session.close()
+  }
+  const session = await pool().checkout()
+  try {
+    const snap = (await session.loadSnapshot(blob)) as FunctionSnapshot
+    t.deepEqual(snap.position, { filename: '<python-input-0>', start: 4, end: 11 })
+  } finally {
+    await session.close()
+  }
+})
+
 test('dump at a suspension, then loadSnapshot and resume', async () => {
   let blob: Buffer
   {

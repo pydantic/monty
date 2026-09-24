@@ -33,7 +33,7 @@ use std::{
 
 use monty_types::{
     BuiltinsFunctions, CallArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyDate, MontyDateTime,
-    MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
+    MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, SourceRange,
     unstable::{self, ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
@@ -166,6 +166,9 @@ pub struct WireFunctionCall {
     pub object_id: Option<MontyUuid>,
     /// The worker accepts an eagerly settled coroutine via `ResumeFutures`.
     pub allow_eager_await: bool,
+    /// Where the call expression is in the source; `None` for a frame from a
+    /// child that predates the field.
+    pub position: Option<SourceRange>,
 }
 
 impl WireFunctionCall {
@@ -177,6 +180,7 @@ impl WireFunctionCall {
         call_id: u32,
         object_id: Option<MontyUuid>,
         allow_eager_await: bool,
+        position: SourceRange,
     ) -> Self {
         let (graph, args, kwargs) = unstable::into_call_args_parts(args);
         Self {
@@ -187,6 +191,7 @@ impl WireFunctionCall {
             call_id,
             object_id,
             allow_eager_await,
+            position: Some(position),
         }
     }
 
@@ -214,6 +219,9 @@ impl Message for WireFunctionCall {
             encoding::bool::encode(6, &true, buf);
         }
         encoding::message::encode(7, &self.values, buf);
+        if let Some(position) = &self.position {
+            encode_source_range(8, position, buf);
+        }
     }
 
     fn encoded_len(&self) -> usize {
@@ -231,6 +239,10 @@ impl Message for WireFunctionCall {
                 0
             }
             + encoding::message::encoded_len(7, &self.values)
+            + self
+                .position
+                .as_ref()
+                .map_or(0, |position| submessage_len(8, source_range_len(position)))
     }
 
     fn merge_field(
@@ -256,6 +268,18 @@ impl Message for WireFunctionCall {
             }
             6 => encoding::bool::merge(wire_type, &mut self.allow_eager_await, buf, ctx),
             7 => encoding::message::merge(wire_type, &mut self.values, buf, ctx),
+            8 => {
+                // a singular message field repeated on the wire merges, as in
+                // prost's generated decoder; the held value moves rather than
+                // clones, so repeats cost their own bytes and not the filename's
+                let mut position = self
+                    .position
+                    .take()
+                    .map_or_else(pb::SourceRange::default, pb::SourceRange::from);
+                encoding::message::merge(wire_type, &mut position, buf, ctx)?;
+                self.position = Some(SourceRange::from(position));
+                Ok(())
+            }
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
@@ -268,6 +292,7 @@ impl Message for WireFunctionCall {
         self.call_id = 0;
         self.object_id = None;
         self.allow_eager_await = false;
+        self.position = None;
     }
 }
 
@@ -501,6 +526,20 @@ fn node_len(node: &MontyNode) -> usize {
         MontyNode::Repr(r) => encoding::string::encoded_len(tag::REPR, r),
         MontyNode::Cycle(placeholder) => encoding::string::encoded_len(tag::CYCLE, placeholder),
     }
+}
+
+/// A `SourceRange` message encoded from the borrowed domain value, so the
+/// filename is written in place rather than cloned into a `pb::SourceRange`.
+fn encode_source_range(tag: u32, range: &SourceRange, buf: &mut impl BufMut) {
+    encode_message_key(tag, source_range_len(range), buf);
+    encode_str(1, &range.filename, buf);
+    encode_uint32(2, range.start, buf);
+    encode_uint32(3, range.end, buf);
+}
+
+/// Body length of [`encode_source_range`]'s message.
+fn source_range_len(range: &SourceRange) -> usize {
+    str_len(1, &range.filename) + uint32_len(2, range.start) + uint32_len(3, range.end)
 }
 
 /// Writes the key and length prefix of a length-delimited field.

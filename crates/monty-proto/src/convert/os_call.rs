@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use monty_types::{
     GetenvArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MkdirCallArgs, MontyPath, MontyTimeZone,
-    OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, UrandomArgs, sleep_duration,
-    unstable,
+    OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, SourceRange, UrandomArgs,
+    sleep_duration, unstable,
 };
 
 use crate::{
@@ -20,16 +20,22 @@ use crate::{
     wire::WireArena,
 };
 
-/// Builds the `OsCall` envelope: call id, typed arm, the eager-await hint and,
-/// for `Getenv`, the arena its default indexes.
+/// Builds the `OsCall` envelope: call id, typed arm, the eager-await hint,
+/// the call's source position and, for `Getenv`, the arena its default indexes.
 #[must_use]
-pub fn os_call_to_proto(call_id: u32, call: OsFunctionCall, allow_eager_await: bool) -> pb::OsCall {
+pub fn os_call_to_proto(
+    call_id: u32,
+    call: OsFunctionCall,
+    allow_eager_await: bool,
+    position: &SourceRange,
+) -> pb::OsCall {
     let (call, values) = call_to_proto(call);
     pb::OsCall {
         call_id,
         values,
         call: Some(call),
         allow_eager_await,
+        position: Some(position.into()),
     }
 }
 
